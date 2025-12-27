@@ -1,189 +1,122 @@
-# Axiograph v6
+# Axiograph
 
-**Proof-carrying knowledge graphs with Rust + Lean (mathlib)**
+**Proof-carrying knowledge graphs with an untrusted Rust engine and a trusted Lean checker (mathlib).**
+
+Axiograph is built around “untrusted engine, trusted checker”:
+
+- **Canonical meaning plane:** `.axi` (schema + theory + instances; what we treat as “the input truth”)
+- **Runtime/index plane:** `.axpd` (PathDB snapshot + indexes; derived/untrusted)
+- **Certificates:** emitted by Rust, verified by Lean; anchored to `.axi` digests + snapshot-scoped fact ids
+
+> A verified certificate proves *derivability from the declared inputs* (and invariants about the runtime), not that the inputs are “true”. Inputs can still be wrong.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           AXIOGRAPH v6                                       │
+│                               AXIOGRAPH                                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐   │
-│  │   Ingestion       │     │     PathDB       │     │   Lean checker   │   │
-│  │ (untrusted Rust)  │────►│  (.axpd, untrusted│────►│ (trusted, mathlib│   │
-│  │  docs/sql/json →  │     │   indexes)       │     │  verifies certs) │   │
-│  │  proposals.json   │     └──────────────────┘     └──────────────────┘   │
+│  ┌─────────────────────┐     ┌───────────────────┐     ┌──────────────────┐│
+│  │      Ingestion       │     │       PathDB      │     │   Lean checker   ││
+│  │   (untrusted Rust)   │────►│   .axpd snapshot  │────►│ (trusted, mathlib││
+│  │ docs/sql/json/proto  │     │ + WAL overlays    │     │  verifies certs) ││
+│  │      → proposals     │     └───────────────────┘     └──────────────────┘│
 │         │                          ▲                         ▲              │
 │         ▼                          │ certificates            │              │
-│  ┌──────────────────┐              │                         │              │
-│  │ Canonical `.axi`  │◄─────────────┴─────────────────────────┘              │
-│  │ (accepted facts)  │   Rust emits result + certificate; Lean verifies      │
-│  └──────────────────┘                                                        │
+│  ┌─────────────────────┐           │                         │              │
+│  │  Canonical `.axi`    │◄──────────┴─────────────────────────┘              │
+│  │ (accepted snapshots) │     Rust emits result + certificate; Lean verifies │
+│  └─────────────────────┘                                                     │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+## Quick start
 
 ```bash
-# Build everything
-make all
-
-# Run demo
+./scripts/setup.sh
 make demo
-
-# Run tests
-make test
-
-# Focused semantics verification (Rust + Lean)
 make verify-semantics
 ```
 
-## Components
-
-### Rust Crates (`rust/`)
-
-| Crate | Description |
-|-------|-------------|
-| `axiograph-cli` | CLI for validation/ingestion/promotion/snapshots |
-| `axiograph-dsl` | Canonical `.axi` parser (`axi_v1`) |
-| `axiograph-pathdb` | Binary graph DB (`.axpd`) + certificates |
-| `axiograph-llm-sync` | Untrusted LLM sync scaffolding |
-| `axiograph-storage` | Storage helpers (`.axi` + `.axpd`) |
-| `axiograph-ingest-docs` | Docs/convos → `proposals.json` (+chunks/facts) |
-| `axiograph-ingest-sql` | SQL DDL → `proposals.json` |
-| `axiograph-ingest-json` | JSON schema → `proposals.json` |
-| `axiograph-ingest-proto` | Buf/Protobuf APIs → `proposals.json` (+chunks) |
-
-### Lean (`lean/`)
-
-The trusted checker/spec lives in `lean/` (mathlib-backed). It verifies certificates emitted by Rust:
-
-- `make lean`
-- `make verify-lean-certificates`
-- `make verify-lean-e2e-suite`
-
-## Building
-
-### Prerequisites
-
-- **Rust** 1.75+ (with cargo)
-- **Lean4 + Lake** (optional, for certificate checking)
-
-## Formal Verification
-
-- Start here: `docs/README.md`
-- How to run verification: `docs/howto/FORMAL_VERIFICATION.md`
-- Certificate formats: `docs/reference/CERTIFICATES.md`
-
-### Commands
+### REPL
 
 ```bash
-# Full build
-make all
+./bin/axiograph repl
+```
 
-# Rust only
+### Server (HTTP API + `/viz`)
+
+```bash
+./bin/axiograph db serve --dir ./build/accepted_plane --listen 127.0.0.1:7878
+```
+
+### Browser explorer (viz + snapshots + optional LLM panel)
+
+```bash
+./scripts/graph_explorer_full_demo.sh
+
+# Optional (requires `ollama serve`):
+LLM_BACKEND=ollama LLM_MODEL=nemotron-3-nano KEEP_RUNNING=1 ./scripts/graph_explorer_full_demo.sh
+```
+
+## Demos
+
+The repository has a lot of runnable scripts in `scripts/`. A few good entry points:
+
+- `scripts/graph_explorer_full_demo.sh` — accepted plane + WAL overlays + contexts + snapshots + viz
+- `scripts/network_quality_demo.sh` — network analysis + quality gates (for ontology engineering loops)
+- `scripts/ontology_engineering_proto_evolution_ollama_demo.sh` — proto ingest + over-time discovery loop (LLM optional)
+- `scripts/rdfowl_public_datasets_demo.sh` — RDF/OWL import demo (boundary adapter, not trusted kernel)
+
+## Canonical `.axi` examples
+
+These are the main “canonical” modules used throughout the Rust↔Lean parity checks and demos:
+
+- `examples/economics/EconomicFlows.axi`
+- `examples/learning/MachinistLearning.axi`
+- `examples/ontology/SchemaEvolution.axi`
+
+## Build + test
+
+### Prereqs
+
+- **Rust** (stable). If you see a Cargo error about `edition2024`, upgrade Rust/Cargo (our deps may use the Rust 2024 edition).
+- **Lean4 + Lake** (optional; required for certificate checking).
+  - macOS note: building the native Lean executable may require Xcode Command Line Tools (`xcode-select --install`).
+
+### Common targets
+
+```bash
 make rust
+make binaries
 
-# Lean checker (optional)
 make lean
-make verify-lean
-make verify-lean-e2e
+make lean-exe
+
+make test
 make verify-semantics
-
-# Install to /usr/local/bin
-make install
-```
-
-## Examples
-
-### 1. Machining Knowledge Graph
-
-```bash
-# Run E2E demo
-cargo run --release --example e2e_demo
-```
-
-### 2. LLM Grounding
-
-```rust
-// Build knowledge graph
-let kg = KnowledgeGraph::new();
-kg.ingest_pdf("machining_handbook.pdf")?;
-
-// Ground LLM response
-let answer = kg.ground("What speed for titanium?");
-println!("{}", answer);
-// "Based on verified knowledge:
-//  - Cutting speed: 60-150 SFM (conf: 95%)
-//  - Expert tip: Watch for blue chips (conf: 92%)"
-```
-
-### 3. Lean certificate checking (Rust emits, Lean verifies)
-
-```bash
-make verify-semantics
-```
-
-## Configuration
-
-### Environment Variables
-
-```bash
-# LLM API (choose one)
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-export LOCAL_LLM_URL=http://localhost:11434
-
-# Data directory
-export AXIOGRAPH_DATA_DIR=./data
 ```
 
 ## Containers + Kubernetes
 
-The Docker image defaults to running the PathDB server (`/viz` + `/query`):
+Build + run the server locally:
 
 ```bash
-docker run --rm -p 7878:7878 \
-  -v "$(pwd)/build/accepted_plane:/data/accepted" \
-  ghcr.io/axiograph/axiograph:latest
+docker build -t axiograph .
+docker run --rm -p 7878:7878 -v "$(pwd)/build/accepted_plane:/data/accepted" axiograph
 ```
 
-Kubernetes manifests are in `deploy/k8s/` and a Helm chart lives in
-`deploy/helm/axiograph/` (StatefulSet + PVC by default). Example values presets:
-`deploy/helm/axiograph/values-replicas.yaml` and
-`deploy/helm/axiograph/values-ingress.yaml`, plus
-`deploy/helm/axiograph/values-rwx-sync.yaml` for RWX/shared storage.
-
-### Feature Flags
-
-```toml
-[features]
-pdf = ["pdf-extract"]        # PDF ingestion
-rdf = ["sophia"]             # OWL/RDF parsing
-openai = ["reqwest"]         # OpenAI API
-full = ["pdf", "rdf", "openai", "anthropic", "local"]
-```
+Kubernetes manifests are in `deploy/k8s/` and the Helm chart is in `deploy/helm/axiograph/`.
 
 ## Documentation
 
-- Start here (Diataxis index): `docs/README.md`
+- Docs index (Diataxis): `docs/README.md`
 - End-to-end “book”: `docs/explanation/BOOK.md`
-
-## Testing
-
-```bash
-# All tests
-make test
-
-# Property-based tests
-make test-property
-
-# E2E tests
-make test-e2e
-```
+- Formal verification how-to: `docs/howto/FORMAL_VERIFICATION.md`
+- REPL + scripts tutorial: `docs/tutorials/REPL.md`
 
 ## License
 
-MIT
+PolyForm Perimeter License 1.0.1

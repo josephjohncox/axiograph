@@ -53,7 +53,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
-      - uses: azure/setup-kubectl@v4
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          ver="v0.6.7"
+          curl -fsSL -o /tmp/kubeconform.tgz \
+            "https://github.com/yannh/kubeconform/releases/download/${ver}/kubeconform-linux-amd64.tar.gz"
+          tar -C /tmp -xzf /tmp/kubeconform.tgz
+          sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
       - name: Helm lint
         run: |
           helm lint deploy/helm/axiograph
@@ -63,9 +71,9 @@ jobs:
       - name: Render Helm chart
         run: helm template axiograph deploy/helm/axiograph > /tmp/axiograph.yaml
       - name: Validate raw manifests
-        run: kubectl apply --dry-run=client --validate=false -f deploy/k8s
+        run: kubeconform -strict -summary -kubernetes-version 1.28.0 deploy/k8s/*.yaml
       - name: Validate Helm render
-        run: kubectl apply --dry-run=client --validate=false -f /tmp/axiograph.yaml
+        run: kubeconform -strict -summary -kubernetes-version 1.28.0 /tmp/axiograph.yaml
 
   container-build:
     name: Container Build (Dockerfile)

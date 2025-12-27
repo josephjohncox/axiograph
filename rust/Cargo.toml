@@ -25,7 +25,7 @@ members = [
 version = "0.6.0"
 edition = "2021"
 authors = ["Axiograph Team"]
-license = "MIT"
+license = "PolyForm-Perimeter-1.0.1"
 repository = "https://github.com/axiograph/axiograph"
 
 [workspace.dependencies]
