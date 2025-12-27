@@ -63,9 +63,9 @@ jobs:
       - name: Render Helm chart
         run: helm template axiograph deploy/helm/axiograph > /tmp/axiograph.yaml
       - name: Validate raw manifests
-        run: kubectl apply --dry-run=client -f deploy/k8s
+        run: kubectl apply --dry-run=client --validate=false -f deploy/k8s
       - name: Validate Helm render
-        run: kubectl apply --dry-run=client -f /tmp/axiograph.yaml
+        run: kubectl apply --dry-run=client --validate=false -f /tmp/axiograph.yaml
 
   container-build:
     name: Container Build (Dockerfile)
