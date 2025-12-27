@@ -18,12 +18,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache elan toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+          key: ${{ runner.os }}-elan-${{ hashFiles('lean/lean-toolchain') }}
+      - name: Cache lake build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lean/.lake
+            ~/.cache/lake
+          key: ${{ runner.os }}-lake-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.lean', 'lean/lake-manifest.json') }}
+          restore-keys: |
+            ${{ runner.os }}-lake-
       - name: Install Lean (elan)
         run: |
           if [ ! -x "$HOME/.elan/bin/elan" ]; then
             curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
           fi
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Fetch precompiled Lean dependencies (mathlib cache)
+        run: |
+          cd lean
+          lake update
+          lake exe cache get
       - name: Verify semantics
         run: make verify-semantics
 

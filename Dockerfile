@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:1.75-slim-bookworm AS builder
+# Some transitive dependencies require a Cargo version that understands the Rust 2024 edition.
+ARG RUST_IMAGE=rust:slim-bookworm
+
+FROM ${RUST_IMAGE} AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
