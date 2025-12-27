@@ -1,5 +1,7 @@
 # Axiograph
 
+![Axiograph Logo](axiograph.png)
+
 **Proof-carrying knowledge graphs with an untrusted Rust engine and a trusted Lean checker (mathlib).**
 
 Axiograph is built around “untrusted engine, trusted checker”:
