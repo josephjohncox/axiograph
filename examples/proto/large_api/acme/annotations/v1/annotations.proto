@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package acme.annotations.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// Minimal annotation schema used by the Axiograph proto ingestion example.
+//
+// This is intentionally similar to common real-world patterns:
+// - HTTP bindings (like google.api.http)
+// - RPC semantics (idempotency, auth scopes, stability, tags)
+// - Field semantics (required/PII/units/examples)
+//
+// Buf will preserve these extensions in descriptor-set JSON as keys like:
+//
+//   "[acme.annotations.v1.http]": { "get": "/v1/..." }
+//
+// Axiograph ingests those keys to drive annotation-aware understanding.
+
+message HttpRule {
+  // Exactly one should typically be set.
+  string get = 1;
+  string post = 2;
+  string put = 3;
+  string patch = 4;
+  string delete = 5;
+
+  // Body mapping for REST-style POST/PATCH (e.g. "*" or a field name).
+  string body = 6;
+}
+
+message RpcSemantics {
+  // Idempotent operations can be retried safely.
+  bool idempotent = 1;
+
+  // Authorization scope (stringly-typed on purpose; teams vary).
+  string auth_scope = 2;
+
+  // Example: "alpha", "beta", "ga", "deprecated".
+  string stability = 3;
+
+  // Lightweight tags for discovery (domain-specific).
+  repeated string tags = 4;
+}
+
+extend google.protobuf.MethodOptions {
+  HttpRule http = 50001;
+  RpcSemantics semantics = 50002;
+}
+
+message FieldSemantics {
+  bool required = 1;
+  bool pii = 2;
+  string units = 3;
+  string example = 4;
+}
+
+extend google.protobuf.FieldOptions {
+  FieldSemantics field = 51001;
+}
+

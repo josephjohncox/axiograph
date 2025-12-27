@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: axiograph
+  labels:
+    app: axiograph-db
+spec:
+  rules:
+    - host: axiograph.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: axiograph-db
+                port:
+                  number: 7878

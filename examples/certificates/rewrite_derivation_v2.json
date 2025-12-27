@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "kind": "rewrite_derivation_v2",
+  "proof": {
+    "input": {
+      "type": "trans",
+      "left": {
+        "type": "reflexive",
+        "entity": 1
+      },
+      "right": {
+        "type": "step",
+        "from": 1,
+        "rel_type": 10,
+        "to": 2
+      }
+    },
+    "output": {
+      "type": "step",
+      "from": 1,
+      "rel_type": 10,
+      "to": 2
+    },
+    "derivation": [
+      {
+        "pos": [],
+        "rule": "id_left"
+      }
+    ]
+  }
+}

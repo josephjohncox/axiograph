@@ -1,0 +1,25 @@
+# Example: RWX-backed shared storage + external snapshot sync.
+# Use a storage class that supports ReadWriteMany or an external sync sidecar.
+statefulset:
+  replicas: 2
+  args:
+    - db
+    - serve
+    - --dir
+    - /data/accepted
+    - --layer
+    - accepted
+    - --snapshot
+    - head
+    - --role
+    - replica
+    - --watch-head
+    - --listen
+    - 0.0.0.0:7878
+  persistence:
+    enabled: true
+    storageClass: "<rwx-storage-class>"
+    size: 50Gi
+
+service:
+  type: ClusterIP

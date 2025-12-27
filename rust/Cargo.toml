@@ -1,0 +1,125 @@
+[package]
+name = "axiograph-workspace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/axiograph-cli",
+    "crates/axiograph-dsl",
+    "crates/axiograph-ingest-sql",
+    "crates/axiograph-ingest-docs",
+    "crates/axiograph-ingest-json",
+    "crates/axiograph-ingest-proto",
+    "crates/axiograph-ingest-rdfowl",
+    "crates/axiograph-pathdb",
+    "crates/axiograph-llm-sync",
+    "crates/axiograph-storage",
+]
+
+[workspace.package]
+version = "0.6.0"
+edition = "2021"
+authors = ["Axiograph Team"]
+license = "MIT"
+repository = "https://github.com/axiograph/axiograph"
+
+[workspace.dependencies]
+# Core utilities
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ciborium = "0.2"  # CBOR serialization
+
+# Parsing
+regex = "1.10"
+nom = "7.1"
+pest = "2.7"
+pest_derive = "2.7"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+colored = "2.1"
+
+# Ingestion
+quick-xml = "0.31"           # XML parsing (STEP/IGES)
+oxrdf = "0.2"                # RDF
+rio_turtle = "0.8"           # Turtle/N3 parsing
+rio_xml = "0.8"              # RDF/XML parsing
+sophia = { version = "0.9", features = ["xml"] } # RDF parsing toolkit (Turtle/N-Triples/N-Quads/TriG/RDF/XML)
+sqlparser = "0.43"           # SQL parsing
+pdf-extract = "0.7"          # PDF text extraction
+image = "0.24"               # Image metadata
+tesseract-rs = "0.6"         # OCR (optional)
+prost = "0.12"               # Protocol buffers
+walkdir = "2.4"
+
+# Async (for gRPC/network)
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+
+# UUID and time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# PathDB: Efficient binary storage
+roaring = { version = "0.10", features = ["serde"] }              # Roaring bitmaps
+memmap2 = "0.9"               # Memory-mapped files
+bincode = "1.3"               # Fast binary serialization
+rkyv = { version = "0.8", features = ["bytecheck"] }  # Zero-copy deserialize + validation
+ahash = "0.8"                 # Fast hashing
+dashmap = "6"                 # Concurrent hash map
+rayon = "1.8"                 # Parallel processing
+parking_lot = "0.12"          # Better mutexes
+
+# HTTP client for LLM APIs
+reqwest = { version = "0.12", features = ["json"] }
+
+# Web ingestion / scraping (tooling, untrusted boundary)
+url = "2.5"
+scraper = "0.23"
+htmd = "0.5.0"
+robotstxt = "0.3.0"
+
+# Property testing
+proptest = "1.4"
+
+# Approx comparisons for tests
+approx = "0.5"
+
+# Approximate nearest-neighbor index (deterministic retrieval)
+hnsw_rs = "0.3"
+
+# ============================================================================
+# Workspace-level integration tests
+# ============================================================================
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+
+[dev-dependencies]
+libc = "0.2"
+tempfile = "3"
+serde_json.workspace = true
+axiograph-dsl = { path = "crates/axiograph-dsl" }
+axiograph-storage = { path = "crates/axiograph-storage" }
+axiograph-pathdb = { path = "crates/axiograph-pathdb" }
+axiograph-llm-sync = { path = "crates/axiograph-llm-sync" }
+tokio.workspace = true
+chrono.workspace = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

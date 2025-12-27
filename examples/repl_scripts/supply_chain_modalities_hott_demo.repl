@@ -1,0 +1,101 @@
+# Axiograph REPL script: modalities + dependent-type-like witnesses (supply chain)
+#
+# Demonstrates:
+# - Context/world scoping via `@context Context` (Plan vs Observed)
+# - Higher structure: `RouteEquivalence` as a 2-cell with a proof object
+# - Proof terms: `JustificationPath` objects for obligations + equivalence between justifications
+# - Typed query elaboration (`q --elaborate`) + meta-plane-as-type-layer
+# - Tacit knowledge exploration: add `DocChunk` nodes with `text=...` and use `fts(...)`
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/supply_chain_modalities_hott_demo.repl
+#
+# Or (from repo root, installed binary):
+#   axiograph repl --script examples/repl_scripts/supply_chain_modalities_hott_demo.repl
+
+import_axi examples/manufacturing/SupplyChainModalitiesHoTT.axi
+
+schema SupplyChainModal
+constraints SupplyChainModal
+validate_axi
+stats
+
+ctx list
+
+# ------------------------------------------------------------
+# A) Context-scoped facts (unknown ≠ false)
+# ------------------------------------------------------------
+# Use Plan as the default context.
+ctx use Plan
+
+# In Plan, Supplier A is modeled as delivering in 7 days.
+q --elaborate select ?flow ?time where ?flow = Flow(from=RawMetal_A, to=RawMaterial_WH, material=Steel_Billet, time=?time) limit 10
+
+# Switch to Observed context.
+ctx use Observed
+
+# In Observed, Supplier A is modeled as delivering in 14 days.
+q --elaborate select ?flow ?time where ?flow = Flow(from=RawMetal_A, to=RawMaterial_WH, material=Steel_Billet, time=?time) limit 10
+
+# ------------------------------------------------------------
+# B) Dependent-type-ish witnesses: 2-cells (route equivalence)
+# ------------------------------------------------------------
+ctx use Plan
+
+# In Plan we asserted a route equivalence (2-cell) with an explicit proof object.
+q --elaborate select ?eq ?route2 ?proof where ?eq = RouteEquivalence(from=RawMetal_A, to=Machining_Plant, route1=Route_Via_SupplierA, route2=?route2, proof=?proof) limit 10
+
+# In Observed we did not assert the equivalence (it is unknown, not false in the meta-theory).
+ctx use Observed
+q --elaborate select ?eq where ?eq = RouteEquivalence(from=RawMetal_A, to=Machining_Plant, route1=Route_Via_SupplierA) limit 10
+
+# ------------------------------------------------------------
+# C) Deontic + epistemic surfaces: obligations + evidence
+# ------------------------------------------------------------
+# Obligations are world-relative (explicit relation), not just implicit policy text.
+q --elaborate select ?obl where name("Plan") -Obligatory-> ?obl limit 10
+
+# Evidence is context-scoped (Policy vs Observed).
+ctx use Policy
+q --elaborate select ?ev ?p where ?f = EvidenceSupports(ev=?ev, prop=?p) limit 10
+ctx use Observed
+q --elaborate select ?ev ?p where ?f = EvidenceSupports(ev=?ev, prop=?p) limit 10
+
+# ------------------------------------------------------------
+# D) Proof terms: justifications for obligations (and equivalences between them)
+# ------------------------------------------------------------
+q --elaborate select ?p2 where ?j = JustificationEquiv(path1=Justification_Policy, path2=?p2) limit 10
+q --elaborate select ?ev where ?j = JustificationUsesEvidence(path=Justification_ObservedDelay, ev=?ev) limit 10
+
+# ------------------------------------------------------------
+# E) Knowledge generation / exploration (tacit knowledge chunks)
+# ------------------------------------------------------------
+# Add doc chunks as entities with a `text=...` attribute (tooling layer),
+# link them to evidence, and search via `fts(...)`.
+add_entity DocChunk doc_policy_0 text="Policy: if supplier delay risk is high, switch to backup supplier RawMetal_B." document_id=policy0 span_id=s0
+add_entity DocChunk doc_erp_0 text="ERP: Supplier RawMetal_A lead time slipped to 14 days for Steel_Billet." document_id=erp0 span_id=s0
+
+add_edge EvidenceChunk PolicyDoc_0 doc_policy_0
+add_edge EvidenceChunk ERPEvent_0 doc_erp_0
+
+# Add two suggestion edges with different confidences so `min_confidence` matters.
+add_edge EvidenceSuggestsObligation ERPEvent_0 UseBackupSupplier_B confidence 0.45
+add_edge EvidenceSuggestsObligation PolicyDoc_0 UseBackupSupplier_B confidence 0.95
+
+q select ?obl where name("ERPEvent_0") -EvidenceSuggestsObligation-> ?obl limit 10
+q select ?obl where name("ERPEvent_0") -EvidenceSuggestsObligation-> ?obl min_confidence 0.80 limit 10
+
+# Note: REPL command parsing is token-based. Prefer single-token `fts` queries
+# in scripts (no spaces) to avoid escaping issues.
+q select ?c where ?c is DocChunk, fts(?c, text, backup) limit 10
+q select ?c where ?c is DocChunk, fts(?c, text, lead) limit 10
+
+# Typed overlay viz (shows inferred supertypes + relation signatures + constraints).
+viz build/supply_chain_modalities_hott_typed.html format html plane both focus_name RawMetal_A hops 2 max_nodes 360 typed_overlay
+viz build/supply_chain_modalities_hott_evidence.html format html plane both focus_name ERPEvent_0 hops 2 max_nodes 360 typed_overlay
+
+# E2E tests expect every script to support a default “Homotopy query” certificate.
+add_entity Homotopy demo_homotopy_0
+
+export_axi build/supply_chain_modalities_hott_export_v1.axi
+save build/supply_chain_modalities_hott.axpd

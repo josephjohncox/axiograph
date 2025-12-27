@@ -1,0 +1,42 @@
+# Axiograph REPL script: enterprise scenario demo
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/enterprise_demo.repl
+#
+# Or (from repo root, installed binary):
+#   axiograph repl --script examples/repl_scripts/enterprise_demo.repl
+
+# Generate a realistic scenario graph (shapes + equivalences + homotopies).
+gen enterprise 5 3 1
+
+stats
+
+# Follow from `team_0` (entity id 0) to its owned service(s).
+follow 0 owns
+
+# RPQ follow: from team -> service -> endpoint(s).
+follow 0 owns/exposes max_hops 4
+
+# AxQL: canonical “enterprise” example queries.
+q select ?svc where name("team_0") -owns-> ?svc limit 10
+q select ?svc where name("person_0_0") -memberOf/owns-> ?svc limit 10
+q select ?ep where name("svc_0") -exposes-> ?ep limit 10
+
+# Proof-relevant structures (paths between paths):
+# `doc_0_0` reaches `svc_0` in at least two ways; we record a Homotopy explicitly.
+q select ?svc where name("doc_0_0") -mentionsService-> ?svc limit 10
+q select ?svc where name("doc_0_0") -mentionsEndpoint/belongsTo-> ?svc max_hops 4 limit 10
+q select ?h ?lhs ?rhs where ?h is Homotopy, ?h -from-> name("doc_0_0"), ?h -lhs-> ?lhs, ?h -rhs-> ?rhs limit 10
+q select ?p where ?p is PathWitness, ?p -from-> name("doc_0_0") limit 10
+
+# Ask templates (deterministic, no LLM).
+ask from 0 follow owns then exposes max hops 4
+ask find Service named svc_0
+
+# LLM mock backend (deterministic): proposes a query from the question.
+llm use mock
+llm ask find Service named svc_0
+
+# Export reversible snapshots.
+export_axi build/enterprise_export_v1.axi
+save build/enterprise.axpd

@@ -1,0 +1,41 @@
+# Axiograph REPL script: modalities (epistemic + deontic) + explicit tacit evidence
+#
+# This demo imports a canonical `.axi` module and then explores:
+#
+# - epistemic structure: worlds + accessibility + propositions-at-worlds
+# - deontic structure: ideal worlds + obligations
+# - tacit/approx structure: evidence + confidence
+# - 2-morphisms: alternative justifications related by `JustificationEquiv`
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/modalities_axi_demo.repl
+
+import_axi examples/modal/Modalities.axi
+
+schema Modal
+constraints Modal
+validate_axi
+stats
+
+# Accessible worlds (S5-like: both worlds are mutually accessible).
+q select ?w where name("W0") -Accessible-> ?w limit 10
+
+# Truth-at-world relation (extensional semantics).
+q select ?p where name("W1") -Holds-> ?p limit 10
+
+# Knowledge/belief are explicit (separate from evidence, and separately queryable).
+q select ?p where name("Alice") -Knows-> ?p limit 10
+q select ?p ?c where ?f = Believes(agent=Alice, prop=?p, conf=?c) limit 10
+
+# Deontic view: obligations at a world.
+q select ?obl where name("W0") -Obligatory-> ?obl limit 10
+
+# Evidence supports propositions with explicit confidence (tacit/approx edges).
+q select ?ev ?conf where ?f = EvidenceSupports(ev=?ev, prop=HighSpeedOk, conf=?conf) limit 10
+
+# "Paths between paths": compare alternative justifications for the same obligation.
+q select ?p2 where ?j = JustificationEquiv(path1=Path_Policy, path2=?p2, witness=?w) limit 10
+
+export_axi build/modalities_axi_export_v1.axi
+save build/modalities_axi.axpd
+

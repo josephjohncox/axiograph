@@ -1,0 +1,83 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  rust-tests:
+    name: Rust Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run Rust tests
+        run: make rust-test
+
+  semantics:
+    name: Semantics Verification (Rust + Lean)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Lean (elan)
+        run: |
+          if [ ! -x "$HOME/.elan/bin/elan" ]; then
+            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Verify semantics
+        run: make verify-semantics
+
+  k8s-manifests:
+    name: Kubernetes Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Helm lint
+        run: |
+          helm lint deploy/helm/axiograph
+          helm lint deploy/helm/axiograph -f deploy/helm/axiograph/values-replicas.yaml
+          helm lint deploy/helm/axiograph -f deploy/helm/axiograph/values-ingress.yaml
+          helm lint deploy/helm/axiograph -f deploy/helm/axiograph/values-rwx-sync.yaml
+      - name: Render Helm chart
+        run: helm template axiograph deploy/helm/axiograph > /tmp/axiograph.yaml
+      - name: Validate raw manifests
+        run: kubectl apply --dry-run=client -f deploy/k8s
+      - name: Validate Helm render
+        run: kubectl apply --dry-run=client -f /tmp/axiograph.yaml
+
+  container-build:
+    name: Container Build (Dockerfile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build container image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: axiograph:ci
+      - name: Generate tiny axpd
+        run: |
+          docker run --rm -v /tmp:/out axiograph:ci \
+            tools perf pathdb \
+            --entities 200 --edges-per-entity 2 --rel-types 2 \
+            --index-depth 1 --path-len 1 --queries 10 \
+            --out-axpd /out/ci.axpd
+      - name: Smoke test /status
+        run: |
+          cid=$(docker run --rm -d -p 7878:7878 -v /tmp:/data axiograph:ci \
+            db serve --axpd /data/ci.axpd --listen 0.0.0.0:7878)
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:7878/status >/dev/null; then
+              docker stop "$cid"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$cid" || true
+          docker stop "$cid" || true
+          exit 1

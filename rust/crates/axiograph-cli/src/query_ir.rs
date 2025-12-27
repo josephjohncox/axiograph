@@ -1,0 +1,650 @@
+//! Typed query IR (JSON) for tooling/LLMs.
+//!
+//! Motivation:
+//! - LLMs are good at producing *structured* JSON, but often produce invalid
+//!   AxQL text (small syntax errors, wrong sugar forms, etc).
+//! - A typed JSON IR lets us validate and compile into the same AxQL core,
+//!   avoiding brittle parsing and enabling better error messages.
+//!
+//! Non-goals (v1):
+//! - This is not a stable public API yet; it is a pragmatic bridge for REPL/LLM
+//!   integration.
+//! - We keep the IR minimal and compile into the existing AxQL core.
+
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use crate::axql::{parse_axql_path_expr, AxqlAtom, AxqlContextSpec, AxqlQuery, AxqlTerm};
+
+pub const QUERY_IR_V1_VERSION: u32 = 1;
+
+/// A JSON query IR that compiles into AxQL.
+///
+/// This IR is designed to be easy for tools/LLMs:
+/// - most terms can be written as simple strings (e.g. `"?x"`, `"Alice"`, `"_"`
+///   where bare names mean `name("...")`)
+/// - paths are written as AxQL path expressions (e.g. `"rel_0/rel_1"`, `"(a|b)*"`)
+/// - disjunction is explicit via `disjuncts`, but a single `where` clause is also accepted
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryIrV1 {
+    #[serde(default = "default_query_ir_v1_version")]
+    pub version: u32,
+
+    /// Optional explicit select list. Empty means “implicit select”.
+    #[serde(default, alias = "select")]
+    pub select_vars: Vec<String>,
+
+    /// Convenience: a single conjunctive `where` clause.
+    ///
+    /// If present, this is compiled into `disjuncts = [where]` unless `disjuncts`
+    /// is also present.
+    #[serde(default, alias = "where")]
+    pub where_atoms: Option<Vec<QueryAtomIrV1>>,
+
+    /// Top-level disjunction (UCQ): OR of conjunctive branches.
+    #[serde(default)]
+    pub disjuncts: Option<Vec<Vec<QueryAtomIrV1>>>,
+
+    #[serde(default)]
+    pub limit: Option<usize>,
+
+    #[serde(default)]
+    pub max_hops: Option<u32>,
+
+    /// Minimum per-edge confidence threshold (0..=1).
+    #[serde(default)]
+    pub min_confidence: Option<f32>,
+
+    /// Optional context/world scoping for fact nodes.
+    #[serde(default)]
+    pub contexts: Vec<QueryContextIrV1>,
+}
+
+fn default_query_ir_v1_version() -> u32 {
+    QUERY_IR_V1_VERSION
+}
+
+impl QueryIrV1 {
+    pub fn to_axql_query(&self) -> Result<AxqlQuery> {
+        if self.version != QUERY_IR_V1_VERSION {
+            return Err(anyhow!(
+                "unsupported query_ir_v1 version {} (expected {QUERY_IR_V1_VERSION})",
+                self.version
+            ));
+        }
+
+        let disjuncts = match (&self.where_atoms, &self.disjuncts) {
+            (Some(_), Some(_)) => {
+                return Err(anyhow!(
+                    "query_ir_v1: cannot set both `where` and `disjuncts`"
+                ))
+            }
+            (Some(w), None) => vec![w.clone()],
+            (None, Some(d)) => d.clone(),
+            (None, None) => {
+                return Err(anyhow!(
+                    "query_ir_v1: missing query body (provide `where` or `disjuncts`)"
+                ))
+            }
+        };
+
+        let mut compiled_disjuncts: Vec<Vec<AxqlAtom>> = Vec::with_capacity(disjuncts.len());
+        for d in disjuncts {
+            let mut atoms: Vec<AxqlAtom> = Vec::with_capacity(d.len());
+            for a in d {
+                atoms.push(a.to_axql_atom()?);
+            }
+            compiled_disjuncts.push(atoms);
+        }
+
+        let mut select_vars: Vec<String> = Vec::new();
+        for v in &self.select_vars {
+            let v = v.trim();
+            if v.is_empty() || v == "*" {
+                continue;
+            }
+            select_vars.push(normalize_var_name(v));
+        }
+
+        let mut contexts: Vec<AxqlContextSpec> = Vec::new();
+        for c in &self.contexts {
+            contexts.push(c.to_context_spec()?);
+        }
+
+        let limit = self.limit.unwrap_or(20);
+
+        let min_confidence = self.min_confidence.map(|c| {
+            if !c.is_finite() {
+                return 0.0;
+            }
+            c.clamp(0.0, 1.0)
+        });
+
+        Ok(AxqlQuery {
+            select_vars,
+            disjuncts: compiled_disjuncts,
+            limit,
+            contexts,
+            max_hops: self.max_hops,
+            min_confidence,
+        })
+    }
+
+    /// Render the IR as an AxQL query string (best-effort, for debugging).
+    pub fn to_axql_text(&self) -> Result<String> {
+        let q = self.to_axql_query()?;
+        Ok(render_axql_query(&q))
+    }
+}
+
+fn normalize_var_name(v: &str) -> String {
+    if v.starts_with('?') {
+        v.to_string()
+    } else {
+        format!("?{v}")
+    }
+}
+
+fn axql_string_lit(s: &str) -> String {
+    let mut out = String::new();
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn render_term(t: &AxqlTerm) -> String {
+    match t {
+        AxqlTerm::Var(v) => v.clone(),
+        AxqlTerm::Const(id) => id.to_string(),
+        AxqlTerm::Wildcard => "_".to_string(),
+        AxqlTerm::Lookup { key, value } => {
+            if key == "name" {
+                format!("name({})", axql_string_lit(value))
+            } else {
+                format!(
+                    "entity({}, {})",
+                    axql_string_lit(key),
+                    axql_string_lit(value)
+                )
+            }
+        }
+    }
+}
+
+fn render_atom(a: &AxqlAtom) -> String {
+    match a {
+        AxqlAtom::Type { term, type_name } => {
+            format!("{} : {}", render_term(term), type_name)
+        }
+        AxqlAtom::Edge { left, path, right } => {
+            // Keep the path in the compact "unbracketed" form.
+            format!(
+                "{} -{}-> {}",
+                render_term(left),
+                render_path_expr(path),
+                render_term(right)
+            )
+        }
+        AxqlAtom::AttrEq { term, key, value } => format!(
+            "attr({}, {}, {})",
+            render_term(term),
+            axql_string_lit(key),
+            axql_string_lit(value)
+        ),
+        AxqlAtom::AttrContains { term, key, needle } => format!(
+            "contains({}, {}, {})",
+            render_term(term),
+            axql_string_lit(key),
+            axql_string_lit(needle)
+        ),
+        AxqlAtom::AttrFts { term, key, query } => format!(
+            "fts({}, {}, {})",
+            render_term(term),
+            axql_string_lit(key),
+            axql_string_lit(query)
+        ),
+        AxqlAtom::AttrFuzzy {
+            term,
+            key,
+            needle,
+            max_dist,
+        } => format!(
+            "fuzzy({}, {}, {}, {max_dist})",
+            render_term(term),
+            axql_string_lit(key),
+            axql_string_lit(needle)
+        ),
+        AxqlAtom::Fact {
+            fact,
+            relation,
+            fields,
+        } => {
+            let mut s = String::new();
+            if let Some(fact) = fact {
+                s.push_str(&format!("{} = ", render_term(fact)));
+            }
+            s.push_str(relation);
+            s.push('(');
+            let mut parts: Vec<String> = Vec::new();
+            for (k, v) in fields {
+                parts.push(format!("{k}={}", render_term(v)));
+            }
+            s.push_str(&parts.join(", "));
+            s.push(')');
+            s
+        }
+        AxqlAtom::HasOut { term, rels } => {
+            format!("has({}, {})", render_term(term), rels.join(", "))
+        }
+        AxqlAtom::Attrs { term, pairs } => {
+            let mut parts: Vec<String> = Vec::new();
+            for (k, v) in pairs {
+                parts.push(format!("{k}={}", axql_string_lit(v)));
+            }
+            format!("attrs({}, {})", render_term(term), parts.join(", "))
+        }
+        AxqlAtom::Shape {
+            term,
+            type_name,
+            rels,
+            attrs,
+        } => {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(t) = type_name {
+                parts.push(format!("is {t}"));
+            }
+            for r in rels {
+                parts.push(r.clone());
+            }
+            for (k, v) in attrs {
+                parts.push(format!("{k}={}", axql_string_lit(v)));
+            }
+            format!("{} {{ {} }}", render_term(term), parts.join(", "))
+        }
+    }
+}
+
+fn render_path_expr(p: &crate::axql::AxqlPathExpr) -> String {
+    fn render_re(re: &crate::axql::AxqlRegex) -> String {
+        use crate::axql::AxqlRegex;
+        match re {
+            AxqlRegex::Epsilon => "ε".to_string(),
+            AxqlRegex::Rel(r) => r.clone(),
+            AxqlRegex::Seq(parts) => parts.iter().map(render_re).collect::<Vec<_>>().join("/"),
+            AxqlRegex::Alt(parts) => {
+                format!("({})", parts.iter().map(render_re).collect::<Vec<_>>().join("|"))
+            }
+            AxqlRegex::Star(inner) => format!("{}*", render_re(inner)),
+            AxqlRegex::Plus(inner) => format!("{}+", render_re(inner)),
+            AxqlRegex::Opt(inner) => format!("{}?", render_re(inner)),
+        }
+    }
+    render_re(&p.regex)
+}
+
+fn render_axql_query(q: &AxqlQuery) -> String {
+    let mut out = String::new();
+    if !q.select_vars.is_empty() {
+        out.push_str("select ");
+        out.push_str(&q.select_vars.join(" "));
+        out.push(' ');
+    }
+
+    out.push_str("where ");
+    let mut disjunct_texts: Vec<String> = Vec::new();
+    for d in &q.disjuncts {
+        let atoms = d.iter().map(render_atom).collect::<Vec<_>>().join(", ");
+        disjunct_texts.push(atoms);
+    }
+    out.push_str(&disjunct_texts.join(" or "));
+
+    if !q.contexts.is_empty() {
+        let render_ctx = |c: &AxqlContextSpec| -> String {
+            match c {
+                AxqlContextSpec::EntityId(id) => id.to_string(),
+                AxqlContextSpec::Name(name) => name.clone(),
+            }
+        };
+        out.push_str(" in ");
+        if q.contexts.len() == 1 {
+            out.push_str(&render_ctx(&q.contexts[0]));
+        } else {
+            out.push('{');
+            out.push_str(
+                &q.contexts
+                    .iter()
+                    .map(|c| render_ctx(c))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            out.push('}');
+        }
+    }
+
+    if let Some(max_hops) = q.max_hops {
+        out.push_str(&format!(" max_hops {max_hops}"));
+    }
+    if let Some(min_conf) = q.min_confidence {
+        out.push_str(&format!(" min_confidence {min_conf}"));
+    }
+
+    out.push_str(&format!(" limit {}", q.limit));
+    out
+}
+
+/// A term in the typed query IR.
+///
+/// For convenience, tools may use:
+/// - strings: `"?x"`, `"Alice"`, `"_"` (wildcard)
+/// - numbers: `123` (entity id)
+/// - objects: `{"kind": "name", "value": "Alice"}`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum QueryTermIrV1 {
+    /// Convenience form; compiled as:
+    /// - `"?x"` → variable
+    /// - `"_"` → wildcard
+    /// - `"Alice"` → name("Alice")
+    Simple(String),
+    /// Convenience form: numeric entity id.
+    Id(u32),
+    /// Explicit term object.
+    Obj(QueryTermObjIrV1),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QueryTermObjIrV1 {
+    Var { name: String },
+    Name { value: String },
+    Entity { key: String, value: String },
+    Wildcard {},
+}
+
+impl QueryTermIrV1 {
+    fn to_axql_term(&self) -> Result<AxqlTerm> {
+        Ok(match self {
+            QueryTermIrV1::Simple(s) => {
+                let s = s.trim();
+                if s == "_" {
+                    AxqlTerm::Wildcard
+                } else if s.starts_with('?') {
+                    AxqlTerm::Var(s.to_string())
+                } else {
+                    AxqlTerm::Lookup {
+                        key: "name".to_string(),
+                        value: s.to_string(),
+                    }
+                }
+            }
+            QueryTermIrV1::Id(id) => AxqlTerm::Const(*id),
+            QueryTermIrV1::Obj(obj) => match obj {
+                QueryTermObjIrV1::Var { name } => AxqlTerm::Var(normalize_var_name(name)),
+                QueryTermObjIrV1::Name { value } => AxqlTerm::Lookup {
+                    key: "name".to_string(),
+                    value: value.clone(),
+                },
+                QueryTermObjIrV1::Entity { key, value } => AxqlTerm::Lookup {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                QueryTermObjIrV1::Wildcard {} => AxqlTerm::Wildcard,
+            },
+        })
+    }
+}
+
+/// Context/world selector for scoping fact-node matches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum QueryContextIrV1 {
+    Name(String),
+    EntityId(u32),
+    Obj(QueryContextObjIrV1),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QueryContextObjIrV1 {
+    Name { name: String },
+    EntityId { id: u32 },
+}
+
+impl QueryContextIrV1 {
+    fn to_context_spec(&self) -> Result<AxqlContextSpec> {
+        Ok(match self {
+            QueryContextIrV1::Name(name) => AxqlContextSpec::Name(name.clone()),
+            QueryContextIrV1::EntityId(id) => AxqlContextSpec::EntityId(*id),
+            QueryContextIrV1::Obj(obj) => match obj {
+                QueryContextObjIrV1::Name { name } => AxqlContextSpec::Name(name.clone()),
+                QueryContextObjIrV1::EntityId { id } => AxqlContextSpec::EntityId(*id),
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QueryAtomIrV1 {
+    Type {
+        term: QueryTermIrV1,
+        #[serde(alias = "type", alias = "ty")]
+        type_name: String,
+    },
+    Edge {
+        left: QueryTermIrV1,
+        /// AxQL path expression (e.g. `rel_0/rel_1`, `(a|b)*`).
+        path: String,
+        right: QueryTermIrV1,
+    },
+    AttrEq {
+        term: QueryTermIrV1,
+        key: String,
+        value: String,
+    },
+    AttrContains {
+        term: QueryTermIrV1,
+        key: String,
+        needle: String,
+    },
+    AttrFts {
+        term: QueryTermIrV1,
+        key: String,
+        query: String,
+    },
+    AttrFuzzy {
+        term: QueryTermIrV1,
+        key: String,
+        needle: String,
+        max_dist: usize,
+    },
+    Fact {
+        /// Optional explicit fact node binder (must be a variable or `_`).
+        #[serde(default)]
+        fact: Option<QueryTermIrV1>,
+        relation: String,
+        /// Map field name → term (order is irrelevant).
+        fields: BTreeMap<String, QueryTermIrV1>,
+    },
+    HasOut {
+        term: QueryTermIrV1,
+        rels: Vec<String>,
+    },
+    Attrs {
+        term: QueryTermIrV1,
+        pairs: BTreeMap<String, String>,
+    },
+    Shape {
+        term: QueryTermIrV1,
+        #[serde(default)]
+        type_name: Option<String>,
+        #[serde(default)]
+        rels: Vec<String>,
+        #[serde(default)]
+        attrs: BTreeMap<String, String>,
+    },
+}
+
+impl QueryAtomIrV1 {
+    fn to_axql_atom(&self) -> Result<AxqlAtom> {
+        Ok(match self {
+            QueryAtomIrV1::Type { term, type_name } => AxqlAtom::Type {
+                term: term.to_axql_term()?,
+                type_name: type_name.clone(),
+            },
+            QueryAtomIrV1::Edge { left, path, right } => AxqlAtom::Edge {
+                left: left.to_axql_term()?,
+                path: parse_axql_path_expr(path)?,
+                right: right.to_axql_term()?,
+            },
+            QueryAtomIrV1::AttrEq { term, key, value } => AxqlAtom::AttrEq {
+                term: term.to_axql_term()?,
+                key: key.clone(),
+                value: value.clone(),
+            },
+            QueryAtomIrV1::AttrContains { term, key, needle } => AxqlAtom::AttrContains {
+                term: term.to_axql_term()?,
+                key: key.clone(),
+                needle: needle.clone(),
+            },
+            QueryAtomIrV1::AttrFts { term, key, query } => AxqlAtom::AttrFts {
+                term: term.to_axql_term()?,
+                key: key.clone(),
+                query: query.clone(),
+            },
+            QueryAtomIrV1::AttrFuzzy {
+                term,
+                key,
+                needle,
+                max_dist,
+            } => AxqlAtom::AttrFuzzy {
+                term: term.to_axql_term()?,
+                key: key.clone(),
+                needle: needle.clone(),
+                max_dist: *max_dist,
+            },
+            QueryAtomIrV1::Fact {
+                fact,
+                relation,
+                fields,
+            } => {
+                let fact = match fact {
+                    None => None,
+                    Some(t) => match t.to_axql_term()? {
+                        AxqlTerm::Wildcard => None,
+                        other => Some(other),
+                    },
+                };
+                let mut out_fields: Vec<(String, AxqlTerm)> = Vec::new();
+                for (k, v) in fields {
+                    out_fields.push((k.clone(), v.to_axql_term()?));
+                }
+                out_fields.sort_by(|a, b| a.0.cmp(&b.0));
+                AxqlAtom::Fact {
+                    fact,
+                    relation: relation.clone(),
+                    fields: out_fields,
+                }
+            }
+            QueryAtomIrV1::HasOut { term, rels } => AxqlAtom::HasOut {
+                term: term.to_axql_term()?,
+                rels: rels.clone(),
+            },
+            QueryAtomIrV1::Attrs { term, pairs } => {
+                let mut out_pairs: Vec<(String, String)> = pairs
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                out_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                AxqlAtom::Attrs {
+                    term: term.to_axql_term()?,
+                    pairs: out_pairs,
+                }
+            }
+            QueryAtomIrV1::Shape {
+                term,
+                type_name,
+                rels,
+                attrs,
+            } => {
+                let mut out_attrs: Vec<(String, String)> = attrs
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                out_attrs.sort_by(|a, b| a.0.cmp(&b.0));
+                AxqlAtom::Shape {
+                    term: term.to_axql_term()?,
+                    type_name: type_name.clone(),
+                    rels: rels.clone(),
+                    attrs: out_attrs,
+                }
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_ir_v1_compiles_where_clause() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"},
+                {"kind": "attr_eq", "term": "?x", "key": "name", "value": "a"}
+              ],
+              "limit": 10
+            }"#,
+        )?;
+        let axql = q.to_axql_query()?;
+        assert_eq!(axql.select_vars, vec!["?x"]);
+        assert_eq!(axql.disjuncts.len(), 1);
+        assert_eq!(axql.limit, 10);
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_compiles_disjunction() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "disjuncts": [
+                [ {"kind": "type", "term": "?x", "type": "A"} ],
+                [ {"kind": "type", "term": "?x", "type": "B"} ]
+              ]
+            }"#,
+        )?;
+        let axql = q.to_axql_query()?;
+        assert_eq!(axql.disjuncts.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_term_string_is_name_lookup() -> Result<()> {
+        let t: QueryTermIrV1 = serde_json::from_str(r#""Alice""#)?;
+        let ax = t.to_axql_term()?;
+        assert_eq!(
+            ax,
+            AxqlTerm::Lookup {
+                key: "name".to_string(),
+                value: "Alice".to_string()
+            }
+        );
+        Ok(())
+    }
+}

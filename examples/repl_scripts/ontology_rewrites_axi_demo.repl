@@ -1,0 +1,38 @@
+# Axiograph REPL script: ontology rewrite rules (first-class, `.axi`-anchored)
+#
+# Demonstrates:
+# - importing a canonical `.axi` module with first-class rewrite rules
+# - inspecting rewrite rules via the meta-plane (`rules`)
+# - querying for *both* sides of a definitional equivalence
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/ontology_rewrites_axi_demo.repl
+
+import_axi examples/ontology/OntologyRewrites.axi
+
+schema OrgFamily
+constraints OrgFamily
+validate_axi
+
+# Tooling: quality report + network analysis (ontology engineering helpers).
+quality build/ontology_rewrites_quality.json format json profile strict plane both no_fail
+analyze network plane both skip_facts communities top 8
+analyze network build/ontology_rewrites_network.json format json plane both skip_facts communities top 25
+
+# Rewrite rules are loaded into the meta-plane as first-class objects.
+rules
+rules OrgFamilySemantics grandparent_def
+
+# The instance includes both:
+# - the composed Parent/Parent path, and
+# - the direct Grandparent fact,
+# so queries on either surface should agree.
+q select ?gc where name("Alice") -Parent/Parent-> ?gc limit 10
+q select ?gc where name("Alice") -Grandparent-> ?gc limit 10
+
+# Inverse-pair sanity check: ReportsTo and ManagerOf point opposite directions.
+q select ?m where name("Eve") -ReportsTo-> ?m limit 10
+q select ?e where name("Bob") -ManagerOf-> ?e limit 10
+
+export_axi build/ontology_rewrites_axi_export_v1.axi
+save build/ontology_rewrites_axi.axpd

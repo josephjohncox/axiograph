@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "kind": "resolution_v2",
+  "proof": {
+    "first_confidence_fp": 800000,
+    "second_confidence_fp": 600000,
+    "threshold_fp": 200000,
+    "decision": { "tag": "choose_first" }
+  }
+}
+

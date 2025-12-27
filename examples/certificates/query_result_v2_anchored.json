@@ -1,0 +1,105 @@
+{
+  "version": 2,
+  "anchor": {
+    "axi_digest_v1": "fnv1a64:410960cf9e6c1f5e"
+  },
+  "kind": "query_result_v2",
+  "proof": {
+    "query": {
+      "select_vars": [
+        "?y"
+      ],
+      "disjuncts": [
+        [
+          {
+            "type": "path",
+            "left": {
+              "type": "const",
+              "entity": 0
+            },
+            "regex": {
+              "type": "rel",
+              "rel_type_id": 5
+            },
+            "right": {
+              "type": "var",
+              "name": "?y"
+            }
+          }
+        ],
+        [
+          {
+            "type": "path",
+            "left": {
+              "type": "const",
+              "entity": 1
+            },
+            "regex": {
+              "type": "rel",
+              "rel_type_id": 6
+            },
+            "right": {
+              "type": "var",
+              "name": "?y"
+            }
+          }
+        ]
+      ]
+    },
+    "rows": [
+      {
+        "disjunct": 0,
+        "bindings": [
+          {
+            "var": "?y",
+            "entity": 1
+          }
+        ],
+        "witnesses": [
+          {
+            "type": "path",
+            "proof": {
+              "type": "step",
+              "from": 0,
+              "rel_type": 5,
+              "to": 1,
+              "rel_confidence_fp": 900000,
+              "relation_id": 0,
+              "rest": {
+                "type": "reflexive",
+                "entity": 1
+              }
+            }
+          }
+        ]
+      },
+      {
+        "disjunct": 1,
+        "bindings": [
+          {
+            "var": "?y",
+            "entity": 2
+          }
+        ],
+        "witnesses": [
+          {
+            "type": "path",
+            "proof": {
+              "type": "step",
+              "from": 1,
+              "rel_type": 6,
+              "to": 2,
+              "rel_confidence_fp": 800000,
+              "relation_id": 1,
+              "rest": {
+                "type": "reflexive",
+                "entity": 2
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "truncated": false
+  }
+}

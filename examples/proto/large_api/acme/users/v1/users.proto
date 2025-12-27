@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package acme.users.v1;
+
+import "acme/annotations/v1/annotations.proto";
+
+// Users API.
+//
+// This file includes a PII-annotated field (`email`) to demonstrate field-level
+// annotations in the descriptor-set JSON.
+
+message User {
+  string user_id = 1 [(acme.annotations.v1.field).required = true, (acme.annotations.v1.field).example = "usr_123"];
+  string email = 2 [(acme.annotations.v1.field).pii = true, (acme.annotations.v1.field).example = "alice@example.com"];
+  string display_name = 3;
+}
+
+message CreateUserRequest {
+  string email = 1 [(acme.annotations.v1.field).required = true, (acme.annotations.v1.field).pii = true];
+  string display_name = 2;
+}
+
+message CreateUserResponse {
+  User user = 1;
+}
+
+message GetUserRequest {
+  string user_id = 1 [(acme.annotations.v1.field).required = true];
+}
+
+message GetUserResponse {
+  User user = 1;
+}
+
+message UpdateUserRequest {
+  string user_id = 1 [(acme.annotations.v1.field).required = true];
+  string display_name = 2;
+}
+
+message UpdateUserResponse {
+  User user = 1;
+}
+
+message ListUsersRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  string next_page_token = 2;
+}
+
+service UserService {
+  // Create a user.
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse) {
+    option (acme.annotations.v1.http) = { post: "/v1/users" body: "*" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "users.write"
+      stability: "beta"
+      tags: "users"
+      tags: "create"
+    };
+  }
+
+  // Get a user by id.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse) {
+    option (acme.annotations.v1.http) = { get: "/v1/users/{user_id}" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "users.read"
+      stability: "beta"
+      tags: "users"
+      tags: "get"
+    };
+  }
+
+  // Update display name.
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse) {
+    option (acme.annotations.v1.http) = { patch: "/v1/users/{user_id}" body: "*" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: false
+      auth_scope: "users.write"
+      stability: "beta"
+      tags: "users"
+      tags: "update"
+    };
+  }
+
+  // List users.
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+    option (acme.annotations.v1.http) = { get: "/v1/users" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "users.read"
+      stability: "beta"
+      tags: "users"
+      tags: "list"
+    };
+  }
+}
+

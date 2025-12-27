@@ -1,0 +1,117 @@
+{
+  "version": 2,
+  "kind": "delta_f_v1",
+  "proof": {
+    "morphism": {
+      "source_schema": "S1",
+      "target_schema": "S2",
+      "objects": [
+        {
+          "source_object": "A",
+          "target_object": "X"
+        },
+        {
+          "source_object": "B",
+          "target_object": "Y"
+        }
+      ],
+      "arrows": [
+        {
+          "source_arrow": "f",
+          "target_path": [
+            "g"
+          ]
+        }
+      ]
+    },
+    "source_schema": {
+      "name": "S1",
+      "objects": [
+        "A",
+        "B"
+      ],
+      "arrows": [
+        {
+          "name": "f",
+          "src": "A",
+          "dst": "B"
+        }
+      ],
+      "subtypes": [],
+      "relations": [],
+      "equations": []
+    },
+    "target_instance": {
+      "name": "I2",
+      "schema": "S2",
+      "objects": [
+        {
+          "obj": "X",
+          "elems": [
+            "x1",
+            "x2"
+          ]
+        },
+        {
+          "obj": "Y",
+          "elems": [
+            "y1",
+            "y2"
+          ]
+        }
+      ],
+      "arrows": [
+        {
+          "arrow": "g",
+          "pairs": [
+            [
+              "x1",
+              "y1"
+            ],
+            [
+              "x2",
+              "y2"
+            ]
+          ]
+        }
+      ],
+      "relations": []
+    },
+    "pulled_back_instance": {
+      "name": "I2_delta_f",
+      "schema": "S1",
+      "objects": [
+        {
+          "obj": "A",
+          "elems": [
+            "x1",
+            "x2"
+          ]
+        },
+        {
+          "obj": "B",
+          "elems": [
+            "y1",
+            "y2"
+          ]
+        }
+      ],
+      "arrows": [
+        {
+          "arrow": "f",
+          "pairs": [
+            [
+              "x1",
+              "y1"
+            ],
+            [
+              "x2",
+              "y2"
+            ]
+          ]
+        }
+      ],
+      "relations": []
+    }
+  }
+}

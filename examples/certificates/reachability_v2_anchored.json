@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "anchor": {
+    "axi_digest_v1": "fnv1a64:410960cf9e6c1f5e"
+  },
+  "kind": "reachability_v2",
+  "proof": {
+    "type": "step",
+    "from": 0,
+    "rel_type": 5,
+    "to": 1,
+    "rel_confidence_fp": 900000,
+    "relation_id": 0,
+    "rest": {
+      "type": "step",
+      "from": 1,
+      "rel_type": 6,
+      "to": 2,
+      "rel_confidence_fp": 800000,
+      "relation_id": 1,
+      "rest": {
+        "type": "reflexive",
+        "entity": 2
+      }
+    }
+  }
+}

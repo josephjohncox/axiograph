@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "kind": "reachability_v2",
+  "proof": {
+    "type": "step",
+    "from": 1,
+    "rel_type": 10,
+    "to": 2,
+    "rel_confidence_fp": 900000,
+    "rest": {
+      "type": "step",
+      "from": 2,
+      "rel_type": 11,
+      "to": 3,
+      "rel_confidence_fp": 800000,
+      "rest": {
+        "type": "reflexive",
+        "entity": 3
+      }
+    }
+  }
+}

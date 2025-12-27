@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package acme.catalog.v1;
+
+import "acme/annotations/v1/annotations.proto";
+
+// Catalog API.
+//
+// Typical flow:
+// - SearchProducts to find candidates (often user-facing)
+// - GetProduct to fetch details
+// - CreatePayment (in payments.v1) to purchase
+//
+// The first two steps are captured here; Axiograph can later reconcile across
+// packages to build a larger interaction graph.
+
+message Price {
+  string currency_code = 1 [(acme.annotations.v1.field).required = true, (acme.annotations.v1.field).example = "USD"];
+  int64 units = 2 [(acme.annotations.v1.field).units = "currency_units"];
+}
+
+message Product {
+  string product_id = 1 [(acme.annotations.v1.field).required = true, (acme.annotations.v1.field).example = "prd_123"];
+  string title = 2;
+  Price price = 3;
+}
+
+message GetProductRequest {
+  string product_id = 1 [(acme.annotations.v1.field).required = true];
+}
+
+message GetProductResponse {
+  Product product = 1;
+}
+
+message ListProductsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  string next_page_token = 2;
+}
+
+message SearchProductsRequest {
+  string query = 1 [(acme.annotations.v1.field).required = true, (acme.annotations.v1.field).example = "titanium end mill"];
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message SearchProductsResponse {
+  repeated Product products = 1;
+  string next_page_token = 2;
+}
+
+service CatalogService {
+  // Get a product by id.
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse) {
+    option (acme.annotations.v1.http) = { get: "/v1/products/{product_id}" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "catalog.read"
+      stability: "beta"
+      tags: "catalog"
+      tags: "get"
+    };
+  }
+
+  // List products.
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse) {
+    option (acme.annotations.v1.http) = { get: "/v1/products" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "catalog.read"
+      stability: "beta"
+      tags: "catalog"
+      tags: "list"
+    };
+  }
+
+  // Search products by query string.
+  rpc SearchProducts(SearchProductsRequest) returns (SearchProductsResponse) {
+    option (acme.annotations.v1.http) = { get: "/v1/products:search" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "catalog.read"
+      stability: "beta"
+      tags: "catalog"
+      tags: "search"
+    };
+  }
+}
+

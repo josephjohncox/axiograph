@@ -1,0 +1,17 @@
+# Axiograph REPL script: `fts(...)` demo
+#
+# This exercises the full-text-ish token index used for discovery workflows.
+#
+# Run:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/fts_demo.repl
+
+gen proto_api 2 3 1
+
+# Create a DocChunk node with `text` attribute.
+add_entity DocChunk doc_chunk_demo text="capture payment now" document_id=doc0 span_id=span0
+
+# Token-based search (AND semantics): matches because both tokens appear.
+q select ?c where ?c : DocChunk, fts(?c, 'text', 'capture payment') limit 10
+
+export_axi build/fts_demo_export_v1.axi
+save build/fts_demo.axpd

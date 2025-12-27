@@ -1,0 +1,2872 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Axiograph Graph Explorer</title>
+<style>
+
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; }
+header { padding: 12px 16px; border-bottom: 1px solid #eee; display: flex; flex-direction: column; gap: 6px; }
+main { display: grid; grid-template-columns: 340px 1fr; height: calc(100vh - 56px); }
+aside { border-right: 1px solid #eee; overflow: auto; padding: 12px; }
+section { overflow: auto; padding: 0; display: grid; grid-template-rows: 420px 1fr; }
+.graph { border-bottom: 1px solid #eee; background: #fcfcfd; }
+.detail { overflow: auto; padding: 12px 16px; }
+input[type="search"] { width: 100%; padding: 8px 10px; font-size: 14px; }
+.serverbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.serverbar select { padding: 6px 8px; font-size: 13px; border: 1px solid #ddd; border-radius: 8px; background: #fff; }
+.filters select { padding: 6px 8px; font-size: 13px; border: 1px solid #ddd; border-radius: 8px; background: #fff; }
+.btn { padding: 6px 10px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+.btn:hover { border-color: #bbb; }
+.tabs { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tabbtn { padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 13px; }
+.tabbtn:hover { border-color: #bbb; }
+.tabbtn.active { border-color: #2b7fff; background: #f5f9ff; }
+.tabpanel { display: none; }
+.tabpanel.active { display: block; }
+.filters { margin-top: 10px; padding: 10px; border: 1px solid #eee; border-radius: 10px; background: #fff; }
+.filters .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.filters label { font-size: 13px; color: #333; user-select: none; }
+.filters input[type="checkbox"] { margin-right: 6px; }
+.filters button { padding: 6px 10px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+.filters button:hover { border-color: #bbb; }
+.node { padding: 8px 10px; border: 1px solid #eee; border-radius: 8px; margin-top: 8px; cursor: pointer; }
+.node:hover { border-color: #ccc; }
+.node.selected { border-color: #2b7fff; box-shadow: 0 0 0 2px rgba(43,127,255,0.15); }
+.node.highlighted { border-color: #ff9800; box-shadow: 0 0 0 2px rgba(255,152,0,0.15); }
+.nodegroup { margin-top: 10px; }
+.nodegroup > summary { cursor: pointer; font-size: 13px; user-select:none; }
+.nodegroup > summary .muted { margin-left: 6px; }
+.nodegroup .node { margin-top: 6px; }
+.muted { color: #666; font-size: 12px; }
+.llmchat { border: 1px solid #eee; border-radius: 8px; padding: 8px; max-height: 220px; overflow: auto; background: #fafafa; }
+.llmmsg { margin: 0 0 10px 0; }
+.llmmsg:last-child { margin-bottom: 0; }
+.llmmsg .role { font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+.llmmsg.user .role { color: #2b7fff; }
+.llmmsg.assistant .role { color: #8a5a00; }
+.llmmsg .text { white-space: pre-wrap; font-size: 12px; color: #222; }
+.detailtabs { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin: 6px 0 12px 0; }
+.detailtabbtn { padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 13px; }
+.detailtabbtn:hover { border-color: #bbb; }
+.detailtabbtn.active { border-color: #2b7fff; background: #f5f9ff; }
+.detailtabpanel { display:none; }
+.detailtabpanel.active { display:block; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+a.link { color: #2b7fff; text-decoration: none; }
+a.link:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<header>
+<strong>Axiograph Graph Explorer</strong>
+<div class="muted">nodes={{NODES_COUNT}}, edges={{EDGES_COUNT}}, truncated={{TRUNCATED}}</div>
+<div id="server_controls" class="serverbar muted"></div>
+</header>
+<main>
+<aside>
+<input id="search" type="search" placeholder="Search by id/type/name…"/>
+<div class="tabs">
+  <button class="tabbtn active" data-tab="explore" type="button">explore</button>
+  <button class="tabbtn" data-tab="query" type="button">query</button>
+  <button class="tabbtn" data-tab="llm" type="button">llm</button>
+  <button class="tabbtn" data-tab="add" type="button">add</button>
+</div>
+
+<div id="tab_explore" class="filters tabpanel active">
+  <div class="row"><strong style="font-size:13px;">Explore</strong> <span class="muted">(shift-click 2 nodes to highlight a path)</span></div>
+  <div class="row" style="margin-top:8px;"><span class="muted">planes:</span>
+    <label><input type="checkbox" id="show_plane_accepted" checked/>accepted</label>
+    <label><input type="checkbox" id="show_plane_evidence" checked/>evidence</label>
+    <label><input type="checkbox" id="show_plane_data" checked/>data</label>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">context:</span>
+    <select id="context_filter"></select>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">nodes:</span>
+    <label><input type="checkbox" id="show_entity" checked/>entity</label>
+    <label><input type="checkbox" id="show_fact" checked/>fact</label>
+    <label><input type="checkbox" id="show_morphism" checked/>morphism</label>
+    <label><input type="checkbox" id="show_homotopy" checked/>homotopy</label>
+    <label><input type="checkbox" id="show_meta" checked/>meta</label>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">edges:</span>
+    <label><input type="checkbox" id="show_edge_relation" checked/>relation</label>
+    <label><input type="checkbox" id="show_edge_equivalence" checked/>equiv</label>
+    <label><input type="checkbox" id="show_edge_meta" checked/>meta</label>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">confidence:</span>
+    <label style="display:flex; align-items:center; gap:8px;">min <input type="range" id="min_confidence" min="0" max="1" step="0.05" value="0"/> <span id="min_confidence_val" class="muted">0.00</span></label>
+    <label><input type="checkbox" id="opacity_by_confidence" checked/>opacity</label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="clear_path" type="button">Clear path</button>
+    <button id="certify_path" type="button">Certify path</button>
+    <button id="verify_path" type="button">Verify path</button>
+    <span id="path_status" class="muted"></span>
+  </div>
+
+  <div style="margin-top:10px;">
+    <div class="row"><strong style="font-size:13px;">Nodes</strong> <span class="muted">(grouped by type)</span></div>
+    <div id="nodes"></div>
+  </div>
+</div>
+
+<div id="tab_query" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">Query</strong> <span class="muted">(AxQL)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="axql_query" rows="4" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="select ?x where ..."></textarea>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="axql_run" class="btn">run</button>
+    <button id="axql_cert" class="btn">certify</button>
+    <button id="axql_verify" class="btn">certify+verify</button>
+    <span id="axql_status" class="muted"></span>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">query output</summary><pre id="axql_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:8px;"><summary class="muted">certificate</summary><pre id="cert_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+
+<div id="tab_llm" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">LLM</strong> <span class="muted">(tool-loop)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <input id="llm_question" type="search" placeholder="Ask a question…"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="llm_auto_commit" type="checkbox"/>
+      auto-commit validated overlays (requires admin token)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="llm_ask" class="btn">ask</button>
+    <button id="llm_to_query" class="btn">to query</button>
+    <button id="llm_clear" class="btn">clear chat</button>
+    <span id="llm_status" class="muted"></span>
+  </div>
+  <div id="llm_chat" class="llmchat" style="margin-top:8px;"></div>
+  <details style="margin-top:8px;"><summary class="muted">llm debug</summary><pre id="llm_debug" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+
+<div id="tab_add" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">Add Data</strong> <span class="muted">(WAL overlay → new snapshot)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <input id="add_rel_type" type="search" placeholder="relation type (e.g. Parent)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="add_source_name" rows="2" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="source name(s) (one per line; e.g. Alice)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="add_target_name" rows="2" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="target name(s) (one per line; e.g. Bob)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px;">
+    <span class="muted">pairing</span>
+    <select id="add_pairing">
+      <option value="cartesian">all pairs (cartesian)</option>
+      <option value="zip">zip pairs (line i ↔ line i)</option>
+    </select>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px;">
+    <input id="add_context" type="search" placeholder="context (optional; e.g. FamilyTree)"/>
+    <button id="add_ctx_from_filter" class="btn" title="Fill context from current context filter">use</button>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="add_evidence_text" rows="3" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="evidence text (optional; stored as DocChunk for grounding)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label style="display:flex; align-items:center; gap:8px; width:100%;">
+      <span class="muted">confidence</span>
+      <input type="range" id="add_confidence" min="0" max="1" step="0.05" value="0.9" style="flex:1;"/>
+      <span id="add_confidence_val" class="muted">0.90</span>
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input id="add_message" type="search" placeholder="commit message (optional)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input id="add_admin_token" type="password" placeholder="admin token (optional; for commit)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="add_generate" class="btn">generate</button>
+    <button id="add_commit" class="btn">commit</button>
+    <span id="add_status" class="muted"></span>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">generated proposals</summary><pre id="add_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:8px;"><summary class="muted">commit response</summary><pre id="add_commit_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <div class="row" style="margin-top:10px;"><strong style="font-size:13px;">Discovery</strong> <span class="muted">(draft canonical .axi)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <button id="add_draft_axi" class="btn">draft .axi</button>
+    <button id="add_promote_axi" class="btn">promote</button>
+    <span id="add_promote_status" class="muted"></span>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">draft axi text</summary><textarea id="add_axi_text" rows="10" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="draft .axi text will appear here (editable before promotion)"></textarea></details>
+  <details style="margin-top:8px;"><summary class="muted">promote response</summary><pre id="add_promote_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+</aside>
+<section>
+<div class="graph"><svg id="svg" width="100%" height="100%"></svg></div>
+<div id="detail" class="detail muted">Select a node to inspect attributes and edges.</div>
+</section>
+</main>
+<script>
+const graph = {{GRAPH_JSON}};
+
+const nodesEl = document.getElementById("nodes");
+const detailEl = document.getElementById("detail");
+const searchEl = document.getElementById("search");
+const svg = document.getElementById("svg");
+const serverControlsEl = document.getElementById("server_controls");
+
+const nodeById = new Map(graph.nodes.map(n => [n.id, n]));
+const outEdgesBySource = new Map();
+const inEdgesByTarget = new Map();
+for (const e of graph.edges) {
+  if (!outEdgesBySource.has(e.source)) outEdgesBySource.set(e.source, []);
+  outEdgesBySource.get(e.source).push(e);
+  if (!inEdgesByTarget.has(e.target)) inEdgesByTarget.set(e.target, []);
+  inEdgesByTarget.get(e.target).push(e);
+}
+let selectedId = null;
+
+const show_plane_accepted = document.getElementById("show_plane_accepted");
+const show_plane_evidence = document.getElementById("show_plane_evidence");
+const show_plane_data = document.getElementById("show_plane_data");
+const contextFilterEl = document.getElementById("context_filter");
+const llmQuestionEl = document.getElementById("llm_question");
+const llmAutoCommitEl = document.getElementById("llm_auto_commit");
+const llmAskBtn = document.getElementById("llm_ask");
+const llmToQueryBtn = document.getElementById("llm_to_query");
+const llmClearBtn = document.getElementById("llm_clear");
+const llmStatusEl = document.getElementById("llm_status");
+const llmChatEl = document.getElementById("llm_chat");
+const llmDebugEl = document.getElementById("llm_debug");
+
+const axqlQueryEl = document.getElementById("axql_query");
+const axqlRunBtn = document.getElementById("axql_run");
+const axqlCertBtn = document.getElementById("axql_cert");
+const axqlVerifyBtn = document.getElementById("axql_verify");
+const axqlStatusEl = document.getElementById("axql_status");
+const axqlOutputEl = document.getElementById("axql_output");
+const certOutputEl = document.getElementById("cert_output");
+
+const addRelTypeEl = document.getElementById("add_rel_type");
+const addSourceNameEl = document.getElementById("add_source_name");
+const addTargetNameEl = document.getElementById("add_target_name");
+const addPairingEl = document.getElementById("add_pairing");
+const addContextEl = document.getElementById("add_context");
+const addCtxFromFilterBtn = document.getElementById("add_ctx_from_filter");
+const addEvidenceTextEl = document.getElementById("add_evidence_text");
+const addConfidenceEl = document.getElementById("add_confidence");
+const addConfidenceValEl = document.getElementById("add_confidence_val");
+const addMessageEl = document.getElementById("add_message");
+const addAdminTokenEl = document.getElementById("add_admin_token");
+const addGenerateBtn = document.getElementById("add_generate");
+const addCommitBtn = document.getElementById("add_commit");
+const addStatusEl = document.getElementById("add_status");
+const addOutputEl = document.getElementById("add_output");
+const addCommitOutputEl = document.getElementById("add_commit_output");
+const addDraftAxiBtn = document.getElementById("add_draft_axi");
+const addPromoteAxiBtn = document.getElementById("add_promote_axi");
+const addPromoteStatusEl = document.getElementById("add_promote_status");
+const addAxiTextEl = document.getElementById("add_axi_text");
+const addPromoteOutputEl = document.getElementById("add_promote_output");
+
+const show_entity = document.getElementById("show_entity");
+const show_fact = document.getElementById("show_fact");
+const show_morphism = document.getElementById("show_morphism");
+const show_homotopy = document.getElementById("show_homotopy");
+const show_meta = document.getElementById("show_meta");
+const show_edge_relation = document.getElementById("show_edge_relation");
+const show_edge_equivalence = document.getElementById("show_edge_equivalence");
+const show_edge_meta = document.getElementById("show_edge_meta");
+const clearPathBtn = document.getElementById("clear_path");
+const certifyPathBtn = document.getElementById("certify_path");
+const verifyPathBtn = document.getElementById("verify_path");
+const pathStatusEl = document.getElementById("path_status");
+const minConfidenceEl = document.getElementById("min_confidence");
+const minConfidenceValEl = document.getElementById("min_confidence_val");
+const opacityByConfidenceEl = document.getElementById("opacity_by_confidence");
+
+const ui = {
+  pathStart: null,
+  pathEnd: null,
+  pathEdgeIdxs: [],
+  pathMessage: "",
+  highlightIds: new Set(),
+  addLastGenerated: null,
+};
+
+// Sidebar tabs (keep the UI scannable as tooling grows).
+const tabButtons = Array.from(document.querySelectorAll(".tabbtn"));
+const tabPanels = {
+  explore: document.getElementById("tab_explore"),
+  query: document.getElementById("tab_query"),
+  llm: document.getElementById("tab_llm"),
+  add: document.getElementById("tab_add"),
+};
+
+function setActiveTab(name) {
+  const want = (name && tabPanels[name]) ? name : "explore";
+  for (const btn of tabButtons) {
+    btn.classList.toggle("active", (btn.dataset && btn.dataset.tab) === want);
+  }
+  for (const [k, panel] of Object.entries(tabPanels)) {
+    if (!panel) continue;
+    panel.classList.toggle("active", k === want);
+  }
+  try { localStorage.setItem("axiograph_viz_sidebar_tab", want); } catch (_e) {}
+}
+
+function initTabs() {
+  if (!tabButtons.length) return;
+  for (const btn of tabButtons) {
+    btn.addEventListener("click", () => {
+      const tab = (btn.dataset && btn.dataset.tab) || "explore";
+      setActiveTab(tab);
+    });
+  }
+  let initial = "explore";
+  try {
+    const v = localStorage.getItem("axiograph_viz_sidebar_tab");
+    if (v) initial = v;
+  } catch (_e) {}
+  setActiveTab(initial);
+}
+initTabs();
+
+// Context scoping (worlds) UI:
+// - tuple-like nodes are reified facts/morphisms/homotopies
+// - context scoping is represented as: tuple -axi_fact_in_context-> Context
+//
+// In server mode we prefer server-provided:
+// - `graph.contexts` (id -> name),
+// - `graph.tuple_contexts` (tupleId -> [contextId...]),
+// because context edges/nodes may be truncated from the neighborhood graph.
+const factContexts = new Map(); // tupleId -> Set(contextId)
+const contextNameById = new Map(); // contextId -> name
+if (Array.isArray(graph.contexts)) {
+  for (const c of graph.contexts) {
+    if (!c) continue;
+    const id = Number(c.id);
+    if (!Number.isFinite(id)) continue;
+    const name = String(c.name || `Context#${id}`);
+    contextNameById.set(id, name);
+  }
+}
+for (const n of graph.nodes) {
+  if (n.entity_type === "Context") {
+    contextNameById.set(n.id, n.name || `Context#${n.id}`);
+  }
+}
+if (graph.tuple_contexts && typeof graph.tuple_contexts === "object") {
+  for (const [k, v] of Object.entries(graph.tuple_contexts)) {
+    const tid = Number(k);
+    if (!Number.isFinite(tid)) continue;
+    const arr = Array.isArray(v) ? v : [];
+    for (const cidRaw of arr) {
+      const cid = Number(cidRaw);
+      if (!Number.isFinite(cid)) continue;
+      if (!factContexts.has(tid)) factContexts.set(tid, new Set());
+      factContexts.get(tid).add(cid);
+    }
+  }
+} else {
+  // Fallback: derive membership from edges in the neighborhood graph.
+  for (const e of graph.edges) {
+    if (e.label === "axi_fact_in_context") {
+      if (!factContexts.has(e.source)) factContexts.set(e.source, new Set());
+      factContexts.get(e.source).add(e.target);
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// On-demand describe (server mode)
+// ----------------------------------------------------------------------------
+
+ui.describeCache = ui.describeCache || new Map(); // id -> { status, data }
+
+async function fetchDescribeEntity(id) {
+  if (!isServerMode()) return;
+  if (!Number.isFinite(id) || id <= 0) return;
+  const cached = ui.describeCache.get(id);
+  if (cached && (cached.status === "ok" || cached.status === "loading")) return;
+  ui.describeCache.set(id, { status: "loading", data: null });
+  if (selectedId === id) renderDetail(id);
+  try {
+    const resp = await fetch(`/entity/describe?id=${encodeURIComponent(String(id))}`, { cache: "no-store" });
+    const data = await resp.json();
+    if (!resp.ok) {
+      ui.describeCache.set(id, { status: "error", data });
+    } else {
+      ui.describeCache.set(id, { status: "ok", data });
+    }
+  } catch (e) {
+    ui.describeCache.set(id, { status: "error", data: { error: String(e) } });
+  }
+  if (selectedId === id) renderDetail(id);
+}
+
+function initContextFilter() {
+  if (!contextFilterEl) return;
+  contextFilterEl.innerHTML = "";
+
+  const hasAny = factContexts.size > 0;
+  if (!hasAny) {
+    const opt = document.createElement("option");
+    opt.value = "*";
+    opt.textContent = "(no contexts)";
+    contextFilterEl.appendChild(opt);
+    contextFilterEl.disabled = true;
+    return;
+  }
+
+  function addOpt(value, text) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = text;
+    contextFilterEl.appendChild(opt);
+  }
+
+  addOpt("*", "(all)");
+  addOpt("__none__", "(no context)");
+
+  const ids = new Set();
+  for (const ctxs of factContexts.values()) {
+    for (const id of ctxs.values()) ids.add(id);
+  }
+  const sorted = Array.from(ids).sort((a,b) => a-b);
+  for (const id of sorted) {
+    const name = contextNameById.get(id) || `Context#${id}`;
+    addOpt(String(id), name);
+  }
+}
+
+function selectedContextFilter() {
+  if (!contextFilterEl || contextFilterEl.disabled) return "*";
+  return String(contextFilterEl.value || "*");
+}
+
+function clamp01(x) {
+  if (!Number.isFinite(x)) return 0;
+  if (x < 0) return 0;
+  if (x > 1) return 1;
+  return x;
+}
+
+function currentMinConfidence() {
+  if (!minConfidenceEl) return 0;
+  return clamp01(Number(minConfidenceEl.value));
+}
+
+function updateMinConfidenceLabel() {
+  if (!minConfidenceValEl) return;
+  minConfidenceValEl.textContent = currentMinConfidence().toFixed(2);
+}
+
+function edgeConfidence(e) {
+  if (e.confidence == null) return 1.0;
+  return clamp01(Number(e.confidence));
+}
+
+function nodeTitle(n) {
+  const display = nodeDisplayName(n);
+  if (display && display !== `${n.entity_type}#${n.id}`) {
+    return `${n.entity_type}#${n.id} — ${display}`;
+  }
+  return `${n.entity_type}#${n.id}`;
+}
+
+function effectiveTypeLabel(n) {
+  if (!n) return "(unknown)";
+  if (n.type_label) return String(n.type_label);
+  if ((n.kind === "fact" || n.kind === "morphism" || n.kind === "homotopy") && n.attrs && n.attrs.axi_relation) {
+    return String(n.attrs.axi_relation);
+  }
+  return n.entity_type || "(unknown)";
+}
+
+function nodeColor(n) {
+  if (n.kind === "meta") return "#d6d6d6";
+  if (n.kind === "morphism") return "#c6f6d5";
+  if (n.kind === "homotopy") return "#e9d8fd";
+  if (n.kind === "fact") return "#ffe08a";
+  return "#9ec5ff";
+}
+
+function edgeColor(e) {
+  if (e.kind === "equivalence") return "#999";
+  if (e.kind.startsWith("meta")) return "#bbb";
+  const src = nodeById.get(e.source);
+  if (src && src.kind === "morphism") return "#2f855a";
+  if (src && src.kind === "homotopy") return "#6b46c1";
+  if (src && src.kind === "fact") return "#8a5a00";
+  return "#666";
+}
+
+function parseRelationSignatureFieldOrder(sig) {
+  const parsed = parseRelationSignature(sig);
+  if (!parsed || !parsed.fields || !parsed.fields.length) return null;
+  return parsed.fields.map(f => f.name);
+}
+
+function parseRelationSignature(sig) {
+  if (!sig) return null;
+  const s = String(sig);
+  const i0 = s.indexOf("(");
+  const i1 = s.lastIndexOf(")");
+  if (i0 < 0 || i1 <= i0) return null;
+  const relation = s.slice(0, i0).trim() || null;
+  const inner = s.slice(i0 + 1, i1).trim();
+  if (!inner) return { relation, fields: [] };
+  const fields = [];
+  for (const part of inner.split(",")) {
+    const p = part.trim();
+    if (!p) continue;
+    const [nameRaw, tyRaw] = p.split(":");
+    const name = (nameRaw || "").trim();
+    const ty = (tyRaw || "").trim();
+    if (!name) continue;
+    fields.push({ name, ty: ty || null });
+  }
+  return { relation, fields };
+}
+
+function nodeShortLabel(n) {
+  if (!n) return "(unknown)";
+  if (n.name) return String(n.name);
+  return `${n.entity_type}#${n.id}`;
+}
+
+function isTupleLike(n) {
+  if (!n) return false;
+  return n.kind === "fact" || n.kind === "morphism" || n.kind === "homotopy";
+}
+
+function firstOutTargetId(srcId, edgeLabel) {
+  const edges = outEdgesBySource.get(srcId) || [];
+  for (const e of edges) {
+    if (!e || e.kind !== "relation") continue;
+    if (String(e.label || "") !== edgeLabel) continue;
+    return e.target;
+  }
+  return null;
+}
+
+function factSummary(n) {
+  if (!n || n.kind !== "fact") return null;
+
+  const rel = (n.attrs && n.attrs.axi_relation) ? String(n.attrs.axi_relation) : String(n.entity_type || "Fact");
+  const order = parseRelationSignatureFieldOrder(n.attrs && n.attrs.axi_overlay_relation_signature);
+  const rank = new Map();
+  if (order) {
+    for (let i = 0; i < order.length; i++) rank.set(order[i], i);
+  }
+
+  const edges = outEdgesBySource.get(n.id) || [];
+  const fields = [];
+  for (const e of edges) {
+    if (!e || e.kind !== "relation") continue;
+    const label = String(e.label || "");
+    if (!label) continue;
+    // Runtime/meta affordances: keep the "typed record" fields readable.
+    if (label === "axi_fact_of") continue;
+    if (label === "axi_fact_in_context") continue;
+    if (label.startsWith("axi_")) continue;
+    const t = nodeById.get(e.target);
+    const value = t ? nodeShortLabel(t) : String(e.target);
+    fields.push({ label, value });
+  }
+
+  if (!fields.length) return rel;
+
+  fields.sort((a, b) => {
+    const ra = rank.has(a.label) ? rank.get(a.label) : 10_000;
+    const rb = rank.has(b.label) ? rank.get(b.label) : 10_000;
+    if (ra !== rb) return ra - rb;
+    return a.label.localeCompare(b.label);
+  });
+
+  const parts = fields.map(f => `${f.label}=${f.value}`);
+  return `${rel}(${parts.join(", ")})`;
+}
+
+function tupleFallbackSummary(n) {
+  if (!n || !isTupleLike(n)) return null;
+
+  const rel = (n.attrs && n.attrs.axi_relation) ? String(n.attrs.axi_relation) : String(n.entity_type || "Tuple");
+  const order = parseRelationSignatureFieldOrder(n.attrs && n.attrs.axi_overlay_relation_signature);
+  const rank = new Map();
+  if (order) {
+    for (let i = 0; i < order.length; i++) rank.set(order[i], i);
+  }
+
+  const edges = outEdgesBySource.get(n.id) || [];
+  const fields = [];
+  for (const e of edges) {
+    if (!e || e.kind !== "relation") continue;
+    const label = String(e.label || "");
+    if (!label) continue;
+    // Runtime/meta affordances: keep tuple summaries readable.
+    if (label === "axi_fact_of") continue;
+    if (label === "axi_fact_in_context") continue;
+    if (label.startsWith("axi_")) continue;
+    const t = nodeById.get(e.target);
+    const value = t ? nodeShortLabel(t) : String(e.target);
+    fields.push({ label, value });
+  }
+
+  if (!fields.length) return rel;
+
+  fields.sort((a, b) => {
+    const ra = rank.has(a.label) ? rank.get(a.label) : 10_000;
+    const rb = rank.has(b.label) ? rank.get(b.label) : 10_000;
+    if (ra !== rb) return ra - rb;
+    return a.label.localeCompare(b.label);
+  });
+
+  const parts = fields.map(f => `${f.label}=${f.value}`);
+  return `${rel}(${parts.join(", ")})`;
+}
+
+function morphismSummary(n) {
+  if (!n || n.kind !== "morphism") return null;
+  const rel = (n.attrs && n.attrs.axi_relation) ? String(n.attrs.axi_relation) : String(n.entity_type || "Morphism");
+  const fromId = firstOutTargetId(n.id, "from");
+  const toId = firstOutTargetId(n.id, "to");
+  const from = fromId != null ? nodeShortLabel(nodeById.get(fromId)) : "";
+  const to = toId != null ? nodeShortLabel(nodeById.get(toId)) : "";
+  if (from && to) return `${rel}: ${from} → ${to}`;
+  return tupleFallbackSummary(n) || rel;
+}
+
+function homotopySummary(n) {
+  if (!n || n.kind !== "homotopy") return null;
+  const rel = (n.attrs && n.attrs.axi_relation) ? String(n.attrs.axi_relation) : String(n.entity_type || "Homotopy");
+  const lhsId = firstOutTargetId(n.id, "lhs");
+  const rhsId = firstOutTargetId(n.id, "rhs");
+  const lhs = lhsId != null ? nodeShortLabel(nodeById.get(lhsId)) : "";
+  const rhs = rhsId != null ? nodeShortLabel(nodeById.get(rhsId)) : "";
+  if (lhs && rhs) return `${rel}: ${lhs} ≃ ${rhs}`;
+  return tupleFallbackSummary(n) || rel;
+}
+
+function shortenHash(h) {
+  const s = String(h || "").trim();
+  if (!s) return "";
+  if (s.length <= 10) return s;
+  return s.slice(0, 10) + "…";
+}
+
+function shortLocator(loc) {
+  const s0 = String(loc || "").trim();
+  if (!s0) return "";
+  const s = s0.replace(/[?#].*$/, "");
+  const parts = s.split(/[\\/]/g).filter(p => p.length > 0);
+  if (parts.length >= 1) return parts[parts.length - 1];
+  return s0.length > 36 ? s0.slice(0, 36) + "…" : s0;
+}
+
+function proposalRunSummary(n) {
+  if (!n || n.entity_type !== "ProposalRun") return null;
+  const attrs = n.attrs || {};
+  const digest = shortenHash(attrs.proposals_digest);
+  const hint = String(attrs.schema_hint || "").trim();
+  const stype = String(attrs.source_type || "").trim();
+  const loc = shortLocator(attrs.source_locator || attrs.source || "");
+  const tag = hint || stype || "run";
+  if (digest && loc) return `${tag} @ ${loc} (${digest})`;
+  if (digest) return `${tag} (${digest})`;
+  if (loc) return `${tag} @ ${loc}`;
+  return tag;
+}
+
+function documentSummary(n) {
+  if (!n || n.entity_type !== "Document") return null;
+  const attrs = n.attrs || {};
+  const doc = shortLocator(attrs.document_id || n.name || "");
+  if (!doc) return "Document";
+  return `doc ${doc}`;
+}
+
+function docChunkSummary(n) {
+  if (!n || n.entity_type !== "DocChunk") return null;
+  const attrs = n.attrs || {};
+  const chunk = shortLocator(attrs.chunk_id || n.name || "");
+  const aboutId = firstOutTargetId(n.id, "doc_chunk_about");
+  const about = aboutId != null ? nodeShortLabel(nodeById.get(aboutId)) : "";
+  if (chunk && about) return `chunk ${chunk} (about ${about})`;
+  if (chunk) return `chunk ${chunk}`;
+  if (about) return `chunk (about ${about})`;
+  return "chunk";
+}
+
+function nodeDisplayName(n) {
+  if (!n) return "";
+  if (n.display_name) return String(n.display_name);
+  if (n.kind === "fact") {
+    return factSummary(n) || (n.name ? String(n.name) : `${n.entity_type}#${n.id}`);
+  }
+  if (n.kind === "morphism") {
+    return morphismSummary(n) || (n.name ? String(n.name) : `${n.entity_type}#${n.id}`);
+  }
+  if (n.kind === "homotopy") {
+    return homotopySummary(n) || (n.name ? String(n.name) : `${n.entity_type}#${n.id}`);
+  }
+  if (n.entity_type === "ProposalRun") {
+    return proposalRunSummary(n) || (n.name ? String(n.name) : `${n.entity_type}#${n.id}`);
+  }
+  if (n.entity_type === "Document") {
+    return documentSummary(n) || (n.name ? String(n.name) : `${n.entity_type}#${n.id}`);
+  }
+  if (n.entity_type === "DocChunk") {
+    return docChunkSummary(n) || (n.name ? String(n.name) : `${n.entity_type}#${n.id}`);
+  }
+  if (n.name) return String(n.name);
+  return `${n.entity_type}#${n.id}`;
+}
+
+function isNodeVisible(n) {
+  if (!n) return false;
+  if (n.plane === "accepted" && show_plane_accepted && !show_plane_accepted.checked) return false;
+  if (n.plane === "evidence" && show_plane_evidence && !show_plane_evidence.checked) return false;
+  if (n.plane === "data" && show_plane_data && !show_plane_data.checked) return false;
+  const ctx = selectedContextFilter();
+  if (ctx !== "*") {
+    // Filter facts by context membership.
+    if (isTupleLike(n)) {
+      const ctxs = factContexts.get(n.id);
+      if (ctx === "__none__") {
+        if (ctxs && ctxs.size > 0) return false;
+      } else {
+        const want = Number(ctx);
+        if (!ctxs || !ctxs.has(want)) return false;
+      }
+    }
+    // Reduce clutter: when a specific context is selected, hide other Context nodes.
+    if (n.entity_type === "Context") {
+      if (ctx === "__none__") return false;
+      if (String(n.id) !== ctx) return false;
+    }
+  }
+  if (n.kind === "meta") return !!show_meta.checked;
+  if (n.kind === "fact") return !!show_fact.checked;
+  if (n.kind === "morphism") return !!show_morphism.checked;
+  if (n.kind === "homotopy") return !!show_homotopy.checked;
+  return !!show_entity.checked;
+}
+
+function edgeClass(e) {
+  if (e.kind === "equivalence") return "equivalence";
+  if (e.kind.startsWith("meta")) return "meta";
+  return "relation";
+}
+
+function isEdgeVisible(e) {
+  const cls = edgeClass(e);
+  if (cls === "equivalence" && !show_edge_equivalence.checked) return false;
+  if (cls === "meta" && !show_edge_meta.checked) return false;
+  if (cls === "relation" && !show_edge_relation.checked) return false;
+  if (!isNodeVisible(nodeById.get(e.source))) return false;
+  if (!isNodeVisible(nodeById.get(e.target))) return false;
+  const minC = currentMinConfidence();
+  if (minC > 0 && edgeConfidence(e) < minC) return false;
+  return true;
+}
+
+function visibleEdgeIdxsAll() {
+  const idxs = [];
+  for (let i = 0; i < graph.edges.length; i++) {
+    if (isEdgeVisible(graph.edges[i])) idxs.push(i);
+  }
+  return idxs;
+}
+
+function updatePathStatus() {
+  if (!pathStatusEl) return;
+  const msg = ui.pathMessage ? ` — ${ui.pathMessage}` : "";
+  if (ui.pathStart == null) {
+    pathStatusEl.textContent = "";
+    return;
+  }
+  if (ui.pathEnd == null) {
+    pathStatusEl.textContent = `path: start=${ui.pathStart}${msg}`;
+    return;
+  }
+  if (!ui.pathEdgeIdxs.length) {
+    pathStatusEl.textContent = `path: ${ui.pathStart} → ${ui.pathEnd} (no path)${msg}`;
+    return;
+  }
+  pathStatusEl.textContent = `path: ${ui.pathStart} → ${ui.pathEnd} (${ui.pathEdgeIdxs.length} edges)${msg}`;
+}
+
+function clearPath() {
+  ui.pathStart = null;
+  ui.pathEnd = null;
+  ui.pathEdgeIdxs = [];
+  ui.pathMessage = "";
+  updatePathStatus();
+}
+
+function shortestPathEdgeIdxs(startId, endId) {
+  const edgeIdxs = visibleEdgeIdxsAll();
+  const adj = new Map();
+  function addAdj(a, b, edgeIdx) {
+    if (!adj.has(a)) adj.set(a, []);
+    adj.get(a).push({ to: b, edgeIdx });
+  }
+  for (const idx of edgeIdxs) {
+    const e = graph.edges[idx];
+    addAdj(e.source, e.target, idx);
+    addAdj(e.target, e.source, idx); // undirected for exploration
+  }
+  const q = [];
+  const prev = new Map(); // node -> { node: prevNode, edgeIdx }
+  q.push(startId);
+  prev.set(startId, null);
+  while (q.length) {
+    const cur = q.shift();
+    if (cur === endId) break;
+    const nexts = adj.get(cur) || [];
+    for (const step of nexts) {
+      if (prev.has(step.to)) continue;
+      prev.set(step.to, { node: cur, edgeIdx: step.edgeIdx });
+      q.push(step.to);
+    }
+  }
+  if (!prev.has(endId)) return [];
+  const out = [];
+  let cur = endId;
+  while (cur !== startId) {
+    const p = prev.get(cur);
+    if (!p) break;
+    out.push(p.edgeIdx);
+    cur = p.node;
+  }
+  out.reverse();
+  return out;
+}
+
+function renderNodeList(filter) {
+  nodesEl.innerHTML = "";
+  const f = (filter || "").trim().toLowerCase();
+
+  const groups = new Map(); // key -> { kind, entity_type, nodes: [] }
+  for (const n of graph.nodes) {
+    if (!isNodeVisible(n)) continue;
+    const disp = nodeDisplayName(n);
+    const hay = `${n.id} ${n.entity_type} ${n.kind || ""} ${disp}`.toLowerCase();
+    if (f && !hay.includes(f)) continue;
+    const kind = n.kind || "entity";
+    const entityType = effectiveTypeLabel(n);
+    const key = `${kind}::${entityType}`;
+    if (!groups.has(key)) groups.set(key, { kind, entityType, nodes: [] });
+    groups.get(key).nodes.push(n);
+  }
+
+  if (!groups.size) {
+    nodesEl.innerHTML = `<div class="muted" style="margin-top:8px;">(no matching nodes)</div>`;
+    return;
+  }
+
+  const kindOrder = new Map([["entity", 0], ["fact", 1], ["morphism", 2], ["homotopy", 3], ["meta", 4]]);
+  const sortedGroups = Array.from(groups.values()).sort((a, b) => {
+    const ka = kindOrder.has(a.kind) ? kindOrder.get(a.kind) : 99;
+    const kb = kindOrder.has(b.kind) ? kindOrder.get(b.kind) : 99;
+    if (ka !== kb) return ka - kb;
+    return a.entityType.localeCompare(b.entityType);
+  });
+
+  for (const g of sortedGroups) {
+    g.nodes.sort((a, b) => {
+      const na = nodeDisplayName(a) || "";
+      const nb = nodeDisplayName(b) || "";
+      if (na !== nb) return na.localeCompare(nb);
+      return a.id - b.id;
+    });
+
+    const details = document.createElement("details");
+    details.className = "nodegroup";
+    details.open = !!f || g.nodes.length <= 20;
+
+    const summary = document.createElement("summary");
+    summary.innerHTML = `<strong>${escapeHtml(g.entityType)}</strong><span class="muted">${escapeHtml(g.kind)} • ${g.nodes.length}</span>`;
+    details.appendChild(summary);
+
+    for (const n of g.nodes) {
+      const disp = nodeDisplayName(n);
+      const div = document.createElement("div");
+      div.className = "node";
+      div.dataset.id = String(n.id);
+      const isHighlighted = ui.highlightIds && ui.highlightIds.has(n.id);
+      if (isHighlighted) div.classList.add("highlighted");
+      div.innerHTML = `<div><strong>${escapeHtml(effectiveTypeLabel(n))}</strong> <span class="muted">#${n.id} • ${escapeHtml(n.kind || "entity")}</span></div>`
+        + (disp ? `<div>${isHighlighted ? "★ " : ""}${escapeHtml(disp)}</div>` : `<div class="muted">(no name)</div>`);
+      div.addEventListener("click", (ev) => selectNode(n.id, ev.shiftKey));
+      details.appendChild(div);
+    }
+
+    nodesEl.appendChild(details);
+  }
+}
+
+function setActiveDetailTab(name) {
+  const want = String(name || "overview");
+  ui.detailTab = want;
+  const btns = Array.from(detailEl.querySelectorAll(".detailtabbtn"));
+  const panels = Array.from(detailEl.querySelectorAll(".detailtabpanel"));
+  for (const b of btns) b.classList.toggle("active", (b.dataset && b.dataset.dtab) === want);
+  for (const p of panels) p.classList.toggle("active", (p.dataset && p.dataset.dtab) === want);
+}
+
+function categorizeAttrs(attrs) {
+  const out = { content: [], overlay: [], axi: [], other: [] };
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "text" || k === "search_text" || k === "markdown") out.content.push([k, v]);
+    else if (k.startsWith("axi_overlay_")) out.overlay.push([k, v]);
+    else if (k.startsWith("axi_")) out.axi.push([k, v]);
+    else out.other.push([k, v]);
+  }
+  return out;
+}
+
+function renderEdgesGrouped(edges, dir) {
+  // dir: "out" | "in"
+  const byLabel = new Map();
+  for (const e of edges) {
+    const label = String(e.label || "");
+    if (!byLabel.has(label)) byLabel.set(label, []);
+    byLabel.get(label).push(e);
+  }
+  const labels = Array.from(byLabel.keys()).sort((a, b) => a.localeCompare(b));
+  if (!labels.length) return `<div class="muted">(none)</div>`;
+
+  const parts = [];
+  for (const label of labels) {
+    const es = byLabel.get(label) || [];
+    es.sort((a, b) => {
+      const ia = dir === "out" ? a.target : a.source;
+      const ib = dir === "out" ? b.target : b.source;
+      return ia - ib;
+    });
+    const open = es.length <= 5;
+    const rows = es.map(e => {
+      const otherId = dir === "out" ? e.target : e.source;
+      const other = nodeById.get(otherId);
+      const otherTitle = other ? nodeTitle(other) : String(otherId);
+      const conf = e.confidence != null ? Number(e.confidence).toFixed(3) : "";
+      const link = other ? `<a class="link" href="#" data-id="${otherId}">${escapeHtml(otherTitle)}</a>` : escapeHtml(otherTitle);
+      const kind = escapeHtml(e.kind || "");
+      return `<tr><td>${link}</td><td class="muted">${kind}</td><td class="muted">${conf}</td></tr>`;
+    }).join("");
+    parts.push(`
+      <details ${open ? "open" : ""} style="margin-top:10px;">
+        <summary><code>${escapeHtml(label)}</code><span class="muted" style="margin-left:6px;">${es.length} edge${es.length === 1 ? "" : "s"}</span></summary>
+        <table style="margin-top:8px;">
+          <thead><tr><th>${dir === "out" ? "to" : "from"}</th><th>kind</th><th>conf</th></tr></thead>
+          <tbody>${rows || `<tr><td class="muted">(none)</td><td></td><td></td></tr>`}</tbody>
+        </table>
+      </details>
+    `);
+  }
+  return parts.join("");
+}
+
+function renderTargetsGrouped(targetIds, options) {
+  const limit = (options && Number(options.limit)) || 120;
+  const title = options && options.title ? String(options.title) : "";
+  const empty = options && options.empty ? String(options.empty) : "(none)";
+
+  const nodes = [];
+  for (const id of (targetIds || [])) {
+    const n = nodeById.get(id);
+    if (!n) continue;
+    nodes.push(n);
+  }
+  if (!nodes.length) return `<div class="muted">${escapeHtml(empty)}</div>`;
+
+  const groups = new Map(); // key -> { kind, entityType, ids: [] }
+  for (const n of nodes) {
+    const kind = n.kind || "entity";
+    const entityType = effectiveTypeLabel(n);
+    const key = `${kind}::${entityType}`;
+    if (!groups.has(key)) groups.set(key, { kind, entityType, nodes: [] });
+    groups.get(key).nodes.push(n);
+  }
+
+  const kindOrder = new Map([["entity", 0], ["fact", 1], ["morphism", 2], ["homotopy", 3], ["meta", 4]]);
+  const sortedGroups = Array.from(groups.values()).sort((a, b) => {
+    const ka = kindOrder.has(a.kind) ? kindOrder.get(a.kind) : 99;
+    const kb = kindOrder.has(b.kind) ? kindOrder.get(b.kind) : 99;
+    if (ka !== kb) return ka - kb;
+    return a.entityType.localeCompare(b.entityType);
+  });
+
+  const parts = [];
+  if (title) parts.push(`<h3>${escapeHtml(title)}</h3>`);
+
+  for (const g of sortedGroups) {
+    g.nodes.sort((a, b) => {
+      const na = nodeDisplayName(a) || "";
+      const nb = nodeDisplayName(b) || "";
+      if (na !== nb) return na.localeCompare(nb);
+      return a.id - b.id;
+    });
+    const shown = g.nodes.slice(0, limit);
+    const rows = shown.map(n => {
+      const disp = nodeDisplayName(n) || nodeTitle(n);
+      return `<tr><td><a class="link" href="#" data-id="${n.id}">${escapeHtml(disp)}</a></td><td class="muted">${escapeHtml(n.kind || "entity")}</td></tr>`;
+    }).join("");
+    const more = g.nodes.length > limit ? `<div class="muted" style="margin-top:6px;">showing ${limit} of ${g.nodes.length} (increase viz max_nodes/hops for more)</div>` : "";
+    parts.push(`
+      <details open style="margin-top:10px;">
+        <summary><strong>${escapeHtml(g.entityType)}</strong><span class="muted" style="margin-left:6px;">${escapeHtml(g.kind)} • ${g.nodes.length}</span></summary>
+        <table style="margin-top:8px;"><thead><tr><th>node</th><th>kind</th></tr></thead><tbody>${rows}</tbody></table>
+        ${more}
+      </details>
+    `);
+  }
+
+  return parts.join("");
+}
+
+function kvTable(pairs) {
+  const rows = (pairs || []).filter(p => p && p.length >= 2).map(([k, v]) => {
+    if (v === null || v === undefined) return "";
+    const vs = String(v);
+    if (!vs.trim()) return "";
+    return `<tr><td><code>${escapeHtml(k)}</code></td><td>${escapeHtml(vs)}</td></tr>`;
+  }).filter(s => s.length > 0).join("");
+  if (!rows) return `<div class="muted">(no details)</div>`;
+  return `<table><tbody>${rows}</tbody></table>`;
+}
+
+function renderFactFieldsTable(factNode) {
+  const parsed = parseRelationSignature(factNode.attrs && factNode.attrs.axi_overlay_relation_signature);
+  const order = parsed && parsed.fields ? parsed.fields : null;
+  const rank = new Map();
+  if (order) for (let i = 0; i < order.length; i++) rank.set(order[i].name, i);
+
+  const edges = outEdgesBySource.get(factNode.id) || [];
+  const fields = [];
+  for (const e of edges) {
+    if (!e || e.kind !== "relation") continue;
+    const label = String(e.label || "");
+    if (!label) continue;
+    // Hide runtime/meta affordances from the "statement" view.
+    if (label === "axi_fact_of") continue;
+    if (label === "axi_fact_in_context") continue;
+    if (label.startsWith("axi_")) continue;
+    const t = nodeById.get(e.target);
+    fields.push({ label, targetId: e.target, targetNode: t || null });
+  }
+  if (!fields.length) return `<div class="muted">(no fields)</div>`;
+
+  fields.sort((a, b) => {
+    const ra = rank.has(a.label) ? rank.get(a.label) : 10_000;
+    const rb = rank.has(b.label) ? rank.get(b.label) : 10_000;
+    if (ra !== rb) return ra - rb;
+    return a.label.localeCompare(b.label);
+  });
+
+  const tyByField = new Map();
+  if (order) for (const f of order) tyByField.set(f.name, f.ty || "");
+
+  const rows = fields.map(f => {
+    const ty = tyByField.get(f.label) || "";
+    const valueTitle = f.targetNode ? nodeTitle(f.targetNode) : String(f.targetId);
+    const link = f.targetNode
+      ? `<a class="link" href="#" data-id="${f.targetId}">${escapeHtml(nodeShortLabel(f.targetNode))}</a>`
+      : escapeHtml(valueTitle);
+    return `<tr><td><code>${escapeHtml(f.label)}</code></td><td>${ty ? `<span class="muted">${escapeHtml(ty)}</span>` : ""}</td><td>${link}</td></tr>`;
+  }).join("");
+
+  return `
+    <table>
+      <thead><tr><th>field</th><th>type</th><th>value</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderDetail(id) {
+  const n = nodeById.get(id);
+  if (!n) return;
+  detailEl.classList.remove("muted");
+  const outgoing = (outEdgesBySource.get(id) || []).filter(isEdgeVisible);
+  const incoming = (inEdgesByTarget.get(id) || []).filter(isEdgeVisible);
+
+  const tupleSummaryText = (n.kind === "fact")
+    ? factSummary(n)
+    : (n.kind === "morphism")
+      ? morphismSummary(n)
+      : (n.kind === "homotopy")
+        ? homotopySummary(n)
+        : null;
+  const summaryText = tupleSummaryText
+    || (n.entity_type === "ProposalRun" ? proposalRunSummary(n) : null)
+    || (n.entity_type === "Document" ? documentSummary(n) : null)
+    || (n.entity_type === "DocChunk" ? docChunkSummary(n) : null);
+  const attrs = n.attrs || {};
+  const cats = categorizeAttrs(attrs);
+
+  // "Facts mentioning this entity": incoming edges from fact nodes (reified tuples).
+  const mentionsByRel = new Map(); // relName -> [{ field, factId }]
+  if (!isTupleLike(n)) {
+    for (const e of incoming) {
+      const s = nodeById.get(e.source);
+      if (!s || !isTupleLike(s)) continue;
+      const rel = (s.attrs && s.attrs.axi_relation) ? String(s.attrs.axi_relation) : String(s.entity_type || "Fact");
+      if (!mentionsByRel.has(rel)) mentionsByRel.set(rel, []);
+      mentionsByRel.get(rel).push({ field: String(e.label || ""), factId: s.id, factNode: s });
+    }
+  }
+
+  const mentionsHtml = (() => {
+    if (n.entity_type === "ProposalRun") {
+      const ids = outgoing.filter(e => String(e.label || "") === "run_has_proposal").map(e => e.target);
+      return `
+        <div class="muted" style="margin-bottom:10px;">Evidence-plane proposals imported in this run.</div>
+        ${renderTargetsGrouped(ids, { title: "Proposals (visible in this view)", empty: "(no proposals in this view)", limit: 200 })}
+      `;
+    }
+    if (n.entity_type === "Document") {
+      const ids = outgoing.filter(e => String(e.label || "") === "document_has_chunk").map(e => e.target);
+      return `
+        <div class="muted" style="margin-bottom:10px;">Document evidence chunks (extension layer).</div>
+        ${renderTargetsGrouped(ids, { title: "Chunks (visible in this view)", empty: "(no chunks in this view)", limit: 80 })}
+      `;
+    }
+    if (n.entity_type === "DocChunk") {
+      const aboutId = firstOutTargetId(n.id, "doc_chunk_about");
+      const inDocId = firstOutTargetId(n.id, "chunk_in_document");
+      const aboutN = aboutId != null ? nodeById.get(aboutId) : null;
+      const docN = inDocId != null ? nodeById.get(inDocId) : null;
+      const preview = String(attrs.text || "").trim();
+      const snippet = preview.length > 280 ? preview.slice(0, 280) + "…" : preview;
+      return `
+        ${aboutN ? `<div class="muted" style="margin-bottom:6px;">about: <a class="link" href="#" data-id="${aboutId}">${escapeHtml(nodeTitle(aboutN))}</a></div>` : ""}
+        ${docN ? `<div class="muted" style="margin-bottom:10px;">document: <a class="link" href="#" data-id="${inDocId}">${escapeHtml(nodeTitle(docN))}</a></div>` : ""}
+        ${snippet ? `<pre style="white-space:pre-wrap; max-height:260px; overflow:auto; margin:0;">${escapeHtml(snippet)}</pre>` : `<div class="muted">(no text)</div>`}
+      `;
+    }
+    if (isTupleLike(n)) {
+      const sig = attrs.axi_overlay_relation_signature ? String(attrs.axi_overlay_relation_signature) : "";
+      const constraints = attrs.axi_overlay_constraints ? String(attrs.axi_overlay_constraints) : "";
+      return `
+        <div style="margin-bottom:10px;">
+          ${tupleSummaryText ? `<div><code>${escapeHtml(tupleSummaryText)}</code></div>` : ""}
+          <div class="muted" style="margin-top:6px;">Tuple nodes are reified n-ary facts. Some are additionally tagged as <code>Morphism</code> or <code>Homotopy</code> (so arrows/equivalences are first-class objects). This is how we attach context/time/provenance/constraints and later certificates to the *assertion itself*.</div>
+        </div>
+        ${sig ? `<div class="muted" style="margin-bottom:6px;">signature: <code>${escapeHtml(sig)}</code></div>` : ""}
+        ${constraints ? `<div class="muted" style="margin-bottom:10px;">constraints: <code>${escapeHtml(constraints)}</code></div>` : ""}
+        ${renderFactFieldsTable(n)}
+      `;
+    }
+
+    const rels = Array.from(mentionsByRel.keys()).sort((a, b) => a.localeCompare(b));
+    if (!rels.length) return `<div class="muted">(no fact nodes mention this)</div>`;
+    const parts = [];
+    for (const rel of rels) {
+      const items = mentionsByRel.get(rel) || [];
+      items.sort((a, b) => a.factId - b.factId);
+      const rows = items.map(it => {
+        const f = it.factNode;
+        const title = f ? nodeTitle(f) : `Fact#${it.factId}`;
+        const link = f ? `<a class="link" href="#" data-id="${it.factId}">${escapeHtml(factSummary(f) || title)}</a>` : escapeHtml(title);
+        return `<tr><td><code>${escapeHtml(it.field)}</code></td><td>${link}</td></tr>`;
+      }).join("");
+      parts.push(`
+        <details open style="margin-top:10px;">
+          <summary><strong>${escapeHtml(rel)}</strong> <span class="muted">(${items.length})</span></summary>
+          <table style="margin-top:8px;">
+            <thead><tr><th>as field</th><th>fact</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </details>
+      `);
+    }
+    return parts.join("");
+  })();
+
+  const dbDescribeHtml = (() => {
+    if (!isServerMode()) {
+      return `<div class="muted">DB describe requires server mode (<code>axiograph db serve</code>).</div>`;
+    }
+
+    const entry = ui.describeCache ? ui.describeCache.get(id) : null;
+    if (!entry || entry.status === "loading") return `<div class="muted">Loading…</div>`;
+    if (entry.status === "error") {
+      return `<pre style="white-space:pre-wrap; max-height:340px; overflow:auto; margin:0;">${escapeHtml(JSON.stringify(entry.data || { error: "unknown" }, null, 2))}</pre>`;
+    }
+    const payload = entry.data && entry.data.result ? entry.data.result : entry.data;
+    if (!payload) return `<div class="muted">(no data)</div>`;
+
+    const contexts = Array.isArray(payload.contexts) ? payload.contexts : [];
+    const equivs = Array.isArray(payload.equivalences) ? payload.equivalences : [];
+    const outGroups = Array.isArray(payload.outgoing) ? payload.outgoing : [];
+    const inGroups = Array.isArray(payload.incoming) ? payload.incoming : [];
+
+    function linkForEntityView(ev) {
+      if (!ev || ev.id == null) return "";
+      const eid = Number(ev.id);
+      const name = String(ev.name || ev.id);
+      const inView = nodeById.has(eid);
+      if (inView) {
+        return `<a class="link" href="#" data-id="${eid}">${escapeHtml(name)}</a>`;
+      }
+      return `<a class="link" href="#" data-focus-id="${eid}">${escapeHtml(name)}</a>`;
+    }
+
+    function renderGroups(groups) {
+      if (!groups.length) return `<div class="muted">(none)</div>`;
+      const parts = [];
+      for (const g of groups) {
+        if (!g) continue;
+        const rel = String(g.rel || "");
+        const count = Number(g.count || 0);
+        const edges = Array.isArray(g.edges) ? g.edges : [];
+        const rows = edges.map(e => {
+          const conf = (e && e.confidence != null) ? Number(e.confidence).toFixed(3) : "1.000";
+          const ev = e && e.entity ? e.entity : null;
+          const link = linkForEntityView(ev);
+          return `<li><code>${escapeHtml(conf)}</code> ${link || escapeHtml(String(ev && ev.id || ""))}</li>`;
+        }).join("");
+        parts.push(`
+          <details style="margin-top:10px;">
+            <summary><code>${escapeHtml(rel)}</code> <span class="muted">(${count})</span></summary>
+            <ul style="margin-top:8px; padding-left:18px;">${rows || `<li class="muted">(no samples)</li>`}</ul>
+          </details>
+        `);
+      }
+      return parts.join("");
+    }
+
+    const ctxHtml = contexts.length
+      ? `<ul style="margin:0; padding-left:18px;">${contexts.map(c => `<li>${linkForEntityView(c)}</li>`).join("")}</ul>`
+      : `<div class="muted">(none)</div>`;
+
+    const equivHtml = equivs.length
+      ? `<ul style="margin:0; padding-left:18px;">${equivs.map(e => {
+          const other = e && e.other ? e.other : null;
+          const kind = e && e.kind ? String(e.kind) : "";
+          return `<li>${linkForEntityView(other)} ${kind ? `<span class="muted">(${escapeHtml(kind)})</span>` : ""}</li>`;
+        }).join("")}</ul>`
+      : `<div class="muted">(none)</div>`;
+
+    return `
+      <div class="muted" style="margin-bottom:10px;">Full-snapshot details (on-demand; not limited to this neighborhood view).</div>
+      <h3>Contexts</h3>
+      ${ctxHtml}
+      <h3 style="margin-top:14px;">Equivalences</h3>
+      ${equivHtml}
+      <h3 style="margin-top:14px;">Outgoing</h3>
+      ${renderGroups(outGroups)}
+      <h3 style="margin-top:14px;">Incoming</h3>
+      ${renderGroups(inGroups)}
+    `;
+  })();
+
+  const attrsPanelHtml = (() => {
+    function rowsForPairs(pairs) {
+      return pairs.map(([k, v]) => {
+        const vs = String(v);
+        const isText = (k === "text" || k === "search_text" || k === "markdown");
+        const cell = isText
+          ? `<pre style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:0;">${escapeHtml(vs)}</pre>`
+          : escapeHtml(vs);
+        return `<tr><td><code>${escapeHtml(k)}</code></td><td>${cell}</td></tr>`;
+      }).join("");
+    }
+
+    const other = rowsForPairs(cats.other);
+    const content = rowsForPairs(cats.content);
+    const overlay = rowsForPairs(cats.overlay);
+    const axi = rowsForPairs(cats.axi);
+
+    return `
+      ${cats.content.length ? `<h3>Content</h3><table><tbody>${content}</tbody></table>` : `<div class="muted">(no content fields)</div>`}
+      <details style="margin-top:12px;" ${cats.other.length ? "open" : ""}>
+        <summary>Other attributes <span class="muted">(${cats.other.length})</span></summary>
+        <table style="margin-top:8px;"><tbody>${other || `<tr><td class="muted">(none)</td><td></td></tr>`}</tbody></table>
+      </details>
+      <details style="margin-top:12px;">
+        <summary>Axi metadata <span class="muted">(${cats.axi.length})</span></summary>
+        <table style="margin-top:8px;"><tbody>${axi || `<tr><td class="muted">(none)</td><td></td></tr>`}</tbody></table>
+      </details>
+      <details style="margin-top:12px;">
+        <summary>Overlay attributes <span class="muted">(${cats.overlay.length})</span></summary>
+        <table style="margin-top:8px;"><tbody>${overlay || `<tr><td class="muted">(none)</td><td></td></tr>`}</tbody></table>
+      </details>
+    `;
+  })();
+
+  const overviewHtml = (() => {
+    const plane = n.plane ? String(n.plane) : "";
+    const kind = n.kind ? String(n.kind) : "entity";
+    const overviewExtra = (() => {
+      if (n.entity_type === "ProposalRun") {
+        const visible = outgoing.filter(e => String(e.label || "") === "run_has_proposal").length;
+        return kvTable([
+          ["schema_hint", attrs.schema_hint],
+          ["source_type", attrs.source_type],
+          ["source_locator", attrs.source_locator],
+          ["generated_at", attrs.generated_at],
+          ["proposals_digest", attrs.proposals_digest ? shortenHash(attrs.proposals_digest) : ""],
+          ["visible_proposals", String(visible)],
+        ]);
+      }
+      if (n.entity_type === "Document") {
+        const visible = outgoing.filter(e => String(e.label || "") === "document_has_chunk").length;
+        return kvTable([
+          ["document_id", attrs.document_id],
+          ["visible_chunks", String(visible)],
+        ]);
+      }
+      if (n.entity_type === "DocChunk") {
+        return kvTable([
+          ["chunk_id", attrs.chunk_id],
+          ["document_id", attrs.document_id],
+          ["span_id", attrs.span_id],
+          ["page", attrs.page],
+        ]);
+      }
+      return "";
+    })();
+    return `
+      <div style="margin-bottom:10px;">
+        <div class="muted">type: <code>${escapeHtml(n.entity_type)}</code> • id: <code>${n.id}</code> • kind: <code>${escapeHtml(kind)}</code>${plane ? ` • plane: <code>${escapeHtml(plane)}</code>` : ""}</div>
+        ${summaryText ? `<div class="muted" style="margin-top:6px;">summary: <code>${escapeHtml(summaryText)}</code></div>` : ""}
+      </div>
+      ${overviewExtra || ""}
+      ${(ui.pathStart != null && ui.pathEnd != null)
+        ? `<h3>Selected path</h3>
+           <div class="muted">Shift-click two nodes (in list or graph) to highlight a shortest path (within the current filtered subgraph).</div>
+           <table style="margin-top:8px;"><thead><tr><th>step</th><th>edge</th><th>between</th></tr></thead><tbody>${
+              (ui.pathEdgeIdxs.length
+                ? ui.pathEdgeIdxs.map((edgeIdx, i) => {
+                    const e = graph.edges[edgeIdx];
+                    const s = nodeById.get(e.source);
+                    const t = nodeById.get(e.target);
+                    const src = s ? nodeTitle(s) : String(e.source);
+                    const dst = t ? nodeTitle(t) : String(e.target);
+                    return `<tr><td>${i}</td><td><code>${escapeHtml(e.label)}</code></td><td>${escapeHtml(src)} → ${escapeHtml(dst)}</td></tr>`;
+                  }).join("")
+                : `<tr><td class="muted">(no path found)</td><td></td><td></td></tr>`
+              )
+           }</tbody></table>`
+        : `<div class="muted">(tip: shift-click 2 nodes to highlight a path)</div>`
+      }
+    `;
+  })();
+
+  detailEl.innerHTML = `
+    <h2 style="margin:0 0 6px 0;">${escapeHtml(nodeTitle(n))}</h2>
+
+    <div class="detailtabs">
+      <button class="detailtabbtn" data-dtab="overview" type="button">overview</button>
+      <button class="detailtabbtn" data-dtab="facts" type="button">${isTupleLike(n) ? "tuple" : "facts"}</button>
+      <button class="detailtabbtn" data-dtab="edges" type="button">edges</button>
+      <button class="detailtabbtn" data-dtab="attrs" type="button">attrs</button>
+      <button class="detailtabbtn" data-dtab="db" type="button">db</button>
+    </div>
+
+    <div class="detailtabpanel" data-dtab="overview">${overviewHtml}</div>
+    <div class="detailtabpanel" data-dtab="facts">${mentionsHtml}</div>
+    <div class="detailtabpanel" data-dtab="edges">
+      <h3>Outgoing</h3>
+      ${renderEdgesGrouped(outgoing, "out")}
+      <h3 style="margin-top:16px;">Incoming</h3>
+      ${renderEdgesGrouped(incoming, "in")}
+    </div>
+    <div class="detailtabpanel" data-dtab="attrs">${attrsPanelHtml}</div>
+    <div class="detailtabpanel" data-dtab="db">${dbDescribeHtml}</div>
+  `;
+
+  const defaultTab = isTupleLike(n) ? "facts" : "overview";
+  const initialTab = ui.detailTab || defaultTab;
+  setActiveDetailTab(initialTab);
+
+  for (const b of detailEl.querySelectorAll(".detailtabbtn")) {
+    b.addEventListener("click", () => setActiveDetailTab((b.dataset && b.dataset.dtab) || "overview"));
+  }
+
+  for (const a of detailEl.querySelectorAll("a.link")) {
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      const tid = Number(a.dataset.id || "0");
+      const focusId = Number(a.dataset.focusId || "0");
+      if (tid) {
+        selectNode(tid, false);
+        return;
+      }
+      if (focusId && isServerMode()) {
+        const p = new URLSearchParams(window.location.search || "");
+        p.set("focus_id", String(focusId));
+        p.delete("focus_name");
+        window.location.search = p.toString();
+      }
+    });
+  }
+}
+
+function selectNode(id, shiftKey) {
+  selectedId = id;
+  for (const el of nodesEl.querySelectorAll(".node")) {
+    el.classList.toggle("selected", el.dataset.id === String(id));
+  }
+  if (shiftKey) {
+    if (ui.pathStart == null || (ui.pathStart != null && ui.pathEnd != null)) {
+      ui.pathStart = id;
+      ui.pathEnd = null;
+      ui.pathEdgeIdxs = [];
+      ui.pathMessage = "";
+    } else if (ui.pathEnd == null) {
+      ui.pathEnd = id;
+      ui.pathEdgeIdxs = shortestPathEdgeIdxs(ui.pathStart, ui.pathEnd);
+      ui.pathMessage = "";
+    }
+    updatePathStatus();
+  }
+  renderDetail(id);
+  renderGraph(id);
+  fetchDescribeEntity(id);
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+searchEl.addEventListener("input", rerender);
+renderNodeList("");
+
+function bfsDepths(startIds) {
+  const depth = new Map();
+  const q = [];
+  for (const sid of startIds) {
+    depth.set(sid, 0);
+    q.push(sid);
+  }
+  while (q.length) {
+    const cur = q.shift();
+    const d = depth.get(cur) || 0;
+    for (const e of graph.edges) {
+      if (e.source !== cur) continue;
+      if (!depth.has(e.target)) {
+        depth.set(e.target, d + 1);
+        q.push(e.target);
+      }
+    }
+    for (const e of graph.edges) {
+      if (e.target !== cur) continue;
+      if (!depth.has(e.source)) {
+        depth.set(e.source, d + 1);
+        q.push(e.source);
+      }
+    }
+  }
+  return depth;
+}
+
+function renderGraph(selectedId) {
+  const focus = (graph.summary && graph.summary.focus_ids && graph.summary.focus_ids.length)
+    ? graph.summary.focus_ids
+    : (graph.nodes.length ? [graph.nodes[0].id] : []);
+  if (!focus.length) return;
+
+  const depth = bfsDepths(focus);
+  const maxDepth = Math.max(...Array.from(depth.values()), 0);
+  const rings = [];
+  for (let d = 0; d <= maxDepth; d++) rings.push([]);
+  for (const n of graph.nodes) {
+    const d = depth.has(n.id) ? depth.get(n.id) : (maxDepth + 1);
+    if (!rings[d]) rings[d] = [];
+    rings[d].push(n);
+  }
+  for (const ring of rings) ring.sort((a,b) => a.id - b.id);
+
+  const W = 1000, H = 800;
+  // Preserve any user pan/zoom state (viewBox is managed by handlers below).
+  if (!svg.getAttribute("viewBox")) svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = "";
+
+  const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+  defs.innerHTML = `
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#666"></path>
+    </marker>
+  `;
+  svg.appendChild(defs);
+
+  const cx = W / 2, cy = H / 2;
+  const ringStep = 120;
+  const baseRadius = 40;
+
+  const pos = new Map();
+  for (let d = 0; d < rings.length; d++) {
+    const ring = rings[d];
+    if (!ring || !ring.length) continue;
+    const radius = baseRadius + d * ringStep;
+    const count = ring.length;
+    for (let i = 0; i < count; i++) {
+      const ang = (2 * Math.PI * i) / count - Math.PI / 2;
+      const x = cx + radius * Math.cos(ang);
+      const y = cy + radius * Math.sin(ang);
+      pos.set(ring[i].id, { x, y, d });
+    }
+  }
+
+  const maxDrawEdges = 2200;
+  const visibleIdxs = visibleEdgeIdxsAll();
+  const pathEdgeSet = new Set(ui.pathEdgeIdxs || []);
+  let drawEdgeIdxs = visibleIdxs.slice();
+  if (drawEdgeIdxs.length > maxDrawEdges) {
+    const keep = new Set(drawEdgeIdxs.slice(0, maxDrawEdges));
+    for (const idx of pathEdgeSet) keep.add(idx);
+    drawEdgeIdxs = Array.from(keep).sort((a,b) => a - b);
+  }
+
+  const neighborSet = new Set();
+  if (selectedId != null) {
+    for (const idx of visibleIdxs) {
+      const e = graph.edges[idx];
+      if (e.source === selectedId) neighborSet.add(e.target);
+      if (e.target === selectedId) neighborSet.add(e.source);
+    }
+  }
+
+  for (const idx of drawEdgeIdxs) {
+    const e = graph.edges[idx];
+    const a = pos.get(e.source);
+    const b = pos.get(e.target);
+    if (!a || !b) continue;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", a.x);
+    line.setAttribute("y1", a.y);
+    line.setAttribute("x2", b.x);
+    line.setAttribute("y2", b.y);
+    const onPath = pathEdgeSet.has(idx);
+    const touchesSelected = (selectedId != null) && (e.source === selectedId || e.target === selectedId);
+    const conf01 = edgeConfidence(e);
+    line.setAttribute("stroke", onPath ? "#ff006e" : edgeColor(e));
+    const baseWidth = onPath ? 2.8 : (touchesSelected ? 2.1 : (e.kind === "equivalence" ? 1.5 : 1.2));
+    const width = baseWidth * (0.85 + 0.30 * conf01);
+    line.setAttribute("stroke-width", String(width.toFixed(2)));
+    const baseOpacity = onPath ? 0.95 : (selectedId != null && !touchesSelected ? 0.45 : 0.85);
+    const confOpacity = (opacityByConfidenceEl && opacityByConfidenceEl.checked) ? (0.20 + 0.80 * conf01) : 1.0;
+    line.setAttribute("opacity", String((baseOpacity * confOpacity).toFixed(3)));
+    if (e.kind === "equivalence") line.setAttribute("stroke-dasharray", "4 4");
+    if (e.kind === "meta_relation" || e.kind === "meta_virtual") line.setAttribute("stroke-dasharray", "2 4");
+    line.setAttribute("marker-end", "url(#arrow)");
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    const conf = e.confidence != null ? ` (${Number(e.confidence).toFixed(3)})` : "";
+    title.textContent = `${e.label}${conf}`;
+    line.appendChild(title);
+    svg.appendChild(line);
+  }
+
+  for (const n of graph.nodes) {
+    if (!isNodeVisible(n)) continue;
+    const p = pos.get(n.id);
+    if (!p) continue;
+
+    const gEl = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    gEl.setAttribute("data-id", String(n.id));
+    gEl.style.cursor = "pointer";
+
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", p.x);
+    circle.setAttribute("cy", p.y);
+    const isSelected = n.id === selectedId;
+    const isNeighbor = neighborSet.has(n.id);
+    const isHighlighted = ui.highlightIds && ui.highlightIds.has(n.id);
+    circle.setAttribute("r", isSelected ? "12" : (isNeighbor ? "10" : (isHighlighted ? "10" : "9")));
+    circle.setAttribute("fill", nodeColor(n));
+    circle.setAttribute("stroke", isSelected ? "#2b7fff" : (isNeighbor ? "#ff006e" : (isHighlighted ? "#ff9800" : "#444")));
+    circle.setAttribute("stroke-width", isSelected ? "2.5" : (isNeighbor ? "2.0" : (isHighlighted ? "2.0" : "1.2")));
+    circle.setAttribute("opacity", (selectedId != null && !isSelected && !isNeighbor) ? "0.65" : "1.0");
+
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", p.x);
+    label.setAttribute("y", p.y - 14);
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("font-size", "10");
+    label.setAttribute("fill", "#333");
+    const short = nodeDisplayName(n) || `${n.entity_type}#${n.id}`;
+    label.textContent = short.length > 24 ? short.slice(0, 24) + "…" : short;
+    label.setAttribute("opacity", (selectedId != null && !isSelected && !isNeighbor) ? "0.65" : "1.0");
+
+    gEl.appendChild(circle);
+    gEl.appendChild(label);
+    gEl.addEventListener("click", (ev) => selectNode(n.id, ev.shiftKey));
+    svg.appendChild(gEl);
+  }
+}
+
+// Auto-select focus node if available.
+if (graph.summary && graph.summary.focus_ids && graph.summary.focus_ids.length) {
+  selectNode(graph.summary.focus_ids[0], false);
+} else if (graph.nodes.length) {
+  selectNode(graph.nodes[0].id, false);
+}
+
+function rerender() {
+  renderNodeList(searchEl.value);
+  if (selectedId != null) {
+    for (const el of nodesEl.querySelectorAll(".node")) {
+      el.classList.toggle("selected", el.dataset.id === String(selectedId));
+    }
+    renderDetail(selectedId);
+    renderGraph(selectedId);
+  }
+}
+
+for (const el of [
+  show_plane_accepted, show_plane_evidence, show_plane_data,
+  show_entity, show_fact, show_morphism, show_homotopy, show_meta,
+  show_edge_relation, show_edge_equivalence, show_edge_meta
+]) {
+  if (!el) continue;
+  el.addEventListener("change", rerender);
+}
+if (contextFilterEl) {
+  contextFilterEl.addEventListener("change", rerender);
+}
+if (opacityByConfidenceEl) {
+  opacityByConfidenceEl.addEventListener("change", rerender);
+}
+if (minConfidenceEl) {
+  minConfidenceEl.addEventListener("input", () => { updateMinConfidenceLabel(); rerender(); });
+  updateMinConfidenceLabel();
+}
+if (clearPathBtn) {
+  clearPathBtn.addEventListener("click", () => { clearPath(); rerender(); });
+}
+updatePathStatus();
+initContextFilter();
+
+// ---------------------------------------------------------------------------
+// Add data (WAL overlays)
+// ---------------------------------------------------------------------------
+
+function setAddStatus(msg) {
+  if (!addStatusEl) return;
+  addStatusEl.textContent = msg || "";
+}
+
+function setAddOutput(obj) {
+  if (!addOutputEl) return;
+  if (obj === null || obj === undefined) addOutputEl.textContent = "";
+  else addOutputEl.textContent = JSON.stringify(obj, null, 2);
+}
+
+function setAddCommitOutput(obj) {
+  if (!addCommitOutputEl) return;
+  if (obj === null || obj === undefined) addCommitOutputEl.textContent = "";
+  else addCommitOutputEl.textContent = JSON.stringify(obj, null, 2);
+}
+
+function setAddPromoteStatus(msg) {
+  if (!addPromoteStatusEl) return;
+  addPromoteStatusEl.textContent = msg || "";
+}
+
+function setAddPromoteOutput(obj) {
+  if (!addPromoteOutputEl) return;
+  if (obj === null || obj === undefined) addPromoteOutputEl.textContent = "";
+  else addPromoteOutputEl.textContent = JSON.stringify(obj, null, 2);
+}
+
+function isServerMode() {
+  const proto = window.location && window.location.protocol;
+  return proto === "http:" || proto === "https:";
+}
+
+function loadAdminToken() {
+  try {
+    const v = localStorage.getItem("axiograph_admin_token") || "";
+    if (addAdminTokenEl && !addAdminTokenEl.value) addAdminTokenEl.value = v;
+  } catch (_e) {}
+}
+
+function saveAdminToken() {
+  try {
+    if (!addAdminTokenEl) return;
+    const v = (addAdminTokenEl.value || "").trim();
+    localStorage.setItem("axiograph_admin_token", v);
+  } catch (_e) {}
+}
+
+loadAdminToken();
+if (addAdminTokenEl) addAdminTokenEl.addEventListener("change", saveAdminToken);
+
+function currentContextNameFromFilter() {
+  if (!contextFilterEl) return null;
+  const v = contextFilterEl.value || "*";
+  if (v === "*" || v === "__none__") return null;
+  const id = Number(v);
+  if (!Number.isFinite(id)) return null;
+  return contextNameById.get(id) || null;
+}
+
+if (addCtxFromFilterBtn) addCtxFromFilterBtn.addEventListener("click", () => {
+  const name = currentContextNameFromFilter();
+  if (name && addContextEl) addContextEl.value = name;
+});
+
+function updateAddConfidenceLabel() {
+  if (!addConfidenceEl || !addConfidenceValEl) return;
+  const v = Number(addConfidenceEl.value || "0");
+  addConfidenceValEl.textContent = v.toFixed(2);
+}
+if (addConfidenceEl) addConfidenceEl.addEventListener("input", updateAddConfidenceLabel);
+updateAddConfidenceLabel();
+
+function prefillAddFromToolLoop(outcome) {
+  if (!outcome) return false;
+  const steps = Array.isArray(outcome.steps) ? outcome.steps : [];
+
+  function applyGeneratedOverlay(generated, opts) {
+    const r = generated || null;
+    if (!r || !r.proposals_json) return false;
+
+    ui.addLastGenerated = r;
+    setAddOutput(r);
+    setAddCommitOutput(null);
+    const notePrefix = (opts && opts.notePrefix) ? String(opts.notePrefix) : "generated from LLM";
+    if (r.validation && r.validation.ok === false) {
+      setAddStatus(`${notePrefix} (validation failed; fix before commit)`);
+    } else if (r.validation && r.validation.ok === true) {
+      setAddStatus(`${notePrefix} (validated; review then commit)`);
+    } else {
+      setAddStatus(`${notePrefix} (review then commit)`);
+    }
+
+    const summary = r.summary || {};
+    const relType = (opts && opts.relType) ? opts.relType : (summary.rel_type || null);
+    if (addRelTypeEl && relType) addRelTypeEl.value = String(relType);
+
+    const sourceNames = (opts && Array.isArray(opts.sourceNames)) ? opts.sourceNames : null;
+    const targetNames = (opts && Array.isArray(opts.targetNames)) ? opts.targetNames : null;
+
+    if (addSourceNameEl) {
+      if (sourceNames && sourceNames.length) addSourceNameEl.value = sourceNames.join("\n");
+      else if (Array.isArray(summary.source_names)) addSourceNameEl.value = summary.source_names.join("\n");
+      else if (summary.source_name) addSourceNameEl.value = summary.source_name;
+    }
+    if (addTargetNameEl) {
+      if (targetNames && targetNames.length) addTargetNameEl.value = targetNames.join("\n");
+      else if (Array.isArray(summary.target_names)) addTargetNameEl.value = summary.target_names.join("\n");
+      else if (summary.target_name) addTargetNameEl.value = summary.target_name;
+    }
+
+    const pairing = (opts && opts.pairing) ? String(opts.pairing) : null;
+    if (addPairingEl && pairing) addPairingEl.value = pairing;
+
+    const ctx = (opts && opts.context) ? opts.context : (summary.context || null);
+    if (addContextEl && ctx) addContextEl.value = String(ctx);
+
+    const confidence = (opts && opts.confidence != null) ? opts.confidence : summary.confidence;
+    if (addConfidenceEl && confidence != null) {
+      const c = Number(confidence);
+      if (Number.isFinite(c)) {
+        addConfidenceEl.value = String(c);
+        updateAddConfidenceLabel();
+      }
+    }
+
+    if (addEvidenceTextEl && Array.isArray(r.chunks) && r.chunks.length) {
+      const t = (r.chunks[0] && r.chunks[0].text) ? String(r.chunks[0].text) : "";
+      if (t.trim()) addEvidenceTextEl.value = t;
+    }
+
+    setActiveTab("add");
+    return true;
+  }
+
+  function mergeGeneratedOverlays(generatedList) {
+    if (!Array.isArray(generatedList) || !generatedList.length) return null;
+
+    const base = generatedList.find(x => x && x.proposals_json) || null;
+    if (!base) return null;
+
+    const merged = {
+      proposals_json: JSON.parse(JSON.stringify(base.proposals_json)),
+      chunks: [],
+      summary: {},
+      validation: null,
+    };
+
+    const proposalSeen = new Set();
+    const outProposals = [];
+    for (const g of generatedList) {
+      const pj = g && g.proposals_json ? g.proposals_json : null;
+      const props = pj && Array.isArray(pj.proposals) ? pj.proposals : [];
+      for (const p of props) {
+        const id = (p && typeof p.proposal_id === "string" && p.proposal_id) ? p.proposal_id : JSON.stringify(p);
+        if (proposalSeen.has(id)) continue;
+        proposalSeen.add(id);
+        outProposals.push(p);
+      }
+    }
+    if (merged.proposals_json && typeof merged.proposals_json === "object") {
+      merged.proposals_json.proposals = outProposals;
+    }
+
+    const chunkSeen = new Set();
+    const outChunks = [];
+    for (const g of generatedList) {
+      const chunks = (g && Array.isArray(g.chunks)) ? g.chunks : [];
+      for (const c of chunks) {
+        const id = (c && typeof c.chunk_id === "string" && c.chunk_id) ? c.chunk_id : JSON.stringify(c);
+        if (chunkSeen.has(id)) continue;
+        chunkSeen.add(id);
+        outChunks.push(c);
+      }
+    }
+    merged.chunks = outChunks;
+
+    const validations = generatedList
+      .map(g => (g && g.validation) ? g.validation : null)
+      .filter(v => v && typeof v.ok === "boolean");
+    if (validations.length) {
+      const anyFalse = validations.some(v => v.ok === false);
+      const allTrue = validations.length === generatedList.length && validations.every(v => v.ok === true);
+      if (anyFalse) merged.validation = { ok: false, note: "merged validations: at least one failed", validations };
+      else if (allTrue) merged.validation = { ok: true, note: "merged validations: all ok", validations };
+      else merged.validation = null;
+    }
+
+    // Prefer the most recent summary as a UX hint (not trusted).
+    for (let i = generatedList.length - 1; i >= 0; i--) {
+      const s = generatedList[i] && generatedList[i].summary ? generatedList[i].summary : null;
+      if (s && typeof s === "object") {
+        merged.summary = s;
+        break;
+      }
+    }
+
+    return merged;
+  }
+
+  // Prefer backend-extracted artifacts (stable) over interpreting the transcript (brittle).
+  try {
+    if (outcome && outcome.artifacts && outcome.artifacts.generated_overlay) {
+      return applyGeneratedOverlay(outcome.artifacts.generated_overlay, { notePrefix: "generated from LLM" });
+    }
+  } catch (_e) {}
+
+  // Prefer the batch tool (it avoids “last step wins” when users ask for many facts).
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (!s || s.tool !== "propose_relations_proposals") continue;
+    const r = s.result || null;
+    if (!r || !r.proposals_json) continue;
+    const a = s.args || {};
+    const srcs = Array.isArray(a.source_names) ? a.source_names.map(String) : [];
+    const tgts = Array.isArray(a.target_names) ? a.target_names.map(String) : [];
+    const pairing = (a.pairing != null) ? String(a.pairing) : null;
+    const ctx = (a.context != null) ? String(a.context) : null;
+    const rel = (a.rel_type != null) ? String(a.rel_type) : null;
+    const conf = (a.confidence != null) ? Number(a.confidence) : null;
+    return applyGeneratedOverlay(r, {
+      notePrefix: "generated from LLM (batch)",
+      relType: rel,
+      sourceNames: srcs,
+      targetNames: tgts,
+      pairing: pairing,
+      context: ctx,
+      confidence: conf,
+    });
+  }
+
+  // Next: merge multiple single-pair proposal generations if present.
+  const singleGenerated = [];
+  const singleSources = [];
+  const singleTargets = [];
+  let relTypeHint = null;
+  let contextHint = null;
+  let confidenceHint = null;
+  for (const s of steps) {
+    if (!s || s.tool !== "propose_relation_proposals") continue;
+    const r = s.result || null;
+    if (!r || !r.proposals_json) continue;
+    singleGenerated.push(r);
+
+    const summary = r.summary || {};
+    if (!relTypeHint && summary.rel_type) relTypeHint = String(summary.rel_type);
+    if (!contextHint && summary.context) contextHint = String(summary.context);
+    if (confidenceHint == null && summary.confidence != null) {
+      const c = Number(summary.confidence);
+      if (Number.isFinite(c)) confidenceHint = c;
+    }
+
+    const src = summary.source_name || (s.args && s.args.source_name) || null;
+    const dst = summary.target_name || (s.args && s.args.target_name) || null;
+    if (src && !singleSources.includes(String(src))) singleSources.push(String(src));
+    if (dst && !singleTargets.includes(String(dst))) singleTargets.push(String(dst));
+  }
+  if (singleGenerated.length > 1) {
+    const merged = mergeGeneratedOverlays(singleGenerated);
+    return applyGeneratedOverlay(merged, {
+      notePrefix: `generated from LLM (merged ${singleGenerated.length} overlays)`,
+      relType: relTypeHint,
+      sourceNames: singleSources,
+      targetNames: singleTargets,
+      context: contextHint,
+      confidence: confidenceHint,
+    });
+  }
+
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (!s || s.tool !== "propose_relation_proposals") continue;
+    const r = s.result || null;
+    if (!r || !r.proposals_json) continue;
+    return applyGeneratedOverlay(r, null);
+  }
+  return false;
+}
+
+function parseTextList(text) {
+  const raw = String(text || "");
+  const parts = raw
+    .split(/[\n,;]+/g)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+  // de-dupe while preserving order
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    const key = p.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+async function generateRelationProposals() {
+  setAddStatus("");
+  setAddOutput(null);
+  setAddCommitOutput(null);
+  ui.addLastGenerated = null;
+
+  if (!isServerMode()) {
+    setAddStatus("requires server mode (`axiograph db serve`)");
+    return;
+  }
+
+  const relType = (addRelTypeEl && addRelTypeEl.value || "").trim();
+  const sourceNames = parseTextList(addSourceNameEl && addSourceNameEl.value || "");
+  const targetNames = parseTextList(addTargetNameEl && addTargetNameEl.value || "");
+  const evidenceText = (addEvidenceTextEl && addEvidenceTextEl.value || "").trim();
+
+  if (!relType || !sourceNames.length || !targetNames.length) {
+    setAddStatus("missing rel/source/target");
+    return;
+  }
+
+  let context = (addContextEl && addContextEl.value || "").trim();
+  if (!context) {
+    const fromFilter = currentContextNameFromFilter();
+    if (fromFilter) {
+      context = fromFilter;
+      if (addContextEl) addContextEl.value = fromFilter;
+    }
+  }
+
+  const confidence = addConfidenceEl ? Number(addConfidenceEl.value || "0.9") : 0.9;
+
+  try {
+    setAddStatus("generating…");
+    const isBatch = sourceNames.length > 1 || targetNames.length > 1;
+    const pairing = (addPairingEl && addPairingEl.value || "cartesian").trim() || "cartesian";
+    const path = isBatch ? "/proposals/relations" : "/proposals/relation";
+    const req = isBatch
+      ? {
+          rel_type: relType,
+          source_names: sourceNames,
+          target_names: targetNames,
+          pairing: pairing,
+          context: context || null,
+          confidence: confidence,
+          evidence_text: evidenceText || null,
+          evidence_locator: "viz_ui",
+        }
+      : {
+          rel_type: relType,
+          source_name: sourceNames[0],
+          target_name: targetNames[0],
+          context: context || null,
+          confidence: confidence,
+          evidence_text: evidenceText || null,
+          evidence_locator: "viz_ui",
+        };
+
+    const resp = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    const data = await resp.json();
+    setAddOutput(data);
+    if (!resp.ok) {
+      setAddStatus(`error (${resp.status})`);
+      return;
+    }
+    ui.addLastGenerated = data;
+    if (data && data.validation && data.validation.ok === false) {
+      const te = (data.validation.axi_typecheck && Array.isArray(data.validation.axi_typecheck.errors))
+        ? data.validation.axi_typecheck.errors.length : 0;
+      const qe = (data.validation.quality_delta && data.validation.quality_delta.summary)
+        ? Number(data.validation.quality_delta.summary.error_count || 0) : 0;
+      setAddStatus(`validation failed (typecheck_errors=${te} quality_errors=${qe})`);
+    } else if (data && data.validation && data.validation.ok === true) {
+      setAddStatus("ok (validated)");
+    } else {
+      setAddStatus("ok");
+    }
+  } catch (e) {
+    setAddStatus("error");
+    setAddOutput(String(e));
+  }
+}
+
+async function commitGeneratedOverlay() {
+  setAddStatus("");
+  setAddCommitOutput(null);
+
+  if (!isServerMode()) {
+    setAddStatus("requires server mode (`axiograph db serve`)");
+    return;
+  }
+  if (!ui.addLastGenerated || !ui.addLastGenerated.proposals_json) {
+    setAddStatus("generate proposals first");
+    return;
+  }
+  if (ui.addLastGenerated.validation && ui.addLastGenerated.validation.ok === false) {
+    setAddStatus("refusing to commit: validation failed (fix proposals first)");
+    return;
+  }
+
+  const message = (addMessageEl && addMessageEl.value || "").trim();
+
+  let acceptedSnapshot = null;
+  try {
+    const statusResp = await fetch("/status", { cache: "no-store" });
+    if (statusResp.ok) {
+      const status = await statusResp.json();
+      if (status && status.snapshot && status.snapshot.accepted_snapshot_id) {
+        acceptedSnapshot = status.snapshot.accepted_snapshot_id;
+      }
+      if (status && status.role && String(status.role).toLowerCase() !== "master") {
+        setAddStatus("commit requires master server (role != master)");
+        return;
+      }
+    }
+  } catch (_e) {}
+
+  const req = {
+    accepted_snapshot: acceptedSnapshot,
+    chunks: Array.isArray(ui.addLastGenerated.chunks) ? ui.addLastGenerated.chunks : [],
+    proposals: ui.addLastGenerated.proposals_json,
+    message: message || null,
+  };
+
+  const headers = { "content-type": "application/json" };
+  const token = (addAdminTokenEl && addAdminTokenEl.value || "").trim();
+  if (token) headers["authorization"] = `Bearer ${token}`;
+
+  try {
+    setAddStatus("committing…");
+    const resp = await fetch("/admin/accept/pathdb-commit", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(req),
+    });
+    const data = await resp.json();
+    setAddCommitOutput(data);
+    if (!resp.ok) {
+      setAddStatus(`error (${resp.status})`);
+      return;
+    }
+    setAddStatus("ok");
+
+    if (data && data.snapshot_id) {
+      const p = new URLSearchParams(window.location.search || "");
+      p.set("snapshot", data.snapshot_id);
+      window.location.search = p.toString();
+    }
+  } catch (e) {
+    setAddStatus("error");
+    setAddCommitOutput(String(e));
+  }
+}
+
+if (addGenerateBtn) addGenerateBtn.addEventListener("click", generateRelationProposals);
+if (addCommitBtn) addCommitBtn.addEventListener("click", commitGeneratedOverlay);
+
+async function draftAxiFromGeneratedOverlay() {
+  setAddPromoteStatus("");
+  setAddPromoteOutput(null);
+  if (addAxiTextEl) addAxiTextEl.value = "";
+
+  if (!isServerMode()) {
+    setAddPromoteStatus("requires server mode (`axiograph db serve`)");
+    return;
+  }
+  if (!ui.addLastGenerated || !ui.addLastGenerated.proposals_json) {
+    setAddPromoteStatus("generate proposals first");
+    return;
+  }
+
+  try {
+    setAddPromoteStatus("drafting…");
+    const req = {
+      proposals: ui.addLastGenerated.proposals_json,
+      infer_constraints: true,
+    };
+    const resp = await fetch("/discover/draft-axi", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    const data = await resp.json();
+    setAddPromoteOutput(data);
+    if (!resp.ok) {
+      setAddPromoteStatus(`error (${resp.status})`);
+      return;
+    }
+    if (addAxiTextEl && data && typeof data.axi_text === "string") {
+      addAxiTextEl.value = data.axi_text;
+    }
+    setAddPromoteStatus("ok");
+  } catch (e) {
+    setAddPromoteStatus("error");
+    setAddPromoteOutput(String(e));
+  }
+}
+
+async function promoteDraftAxiText() {
+  setAddPromoteStatus("");
+  setAddPromoteOutput(null);
+
+  if (!isServerMode()) {
+    setAddPromoteStatus("requires server mode (`axiograph db serve`)");
+    return;
+  }
+  if (!addAxiTextEl || !String(addAxiTextEl.value || "").trim()) {
+    setAddPromoteStatus("draft .axi text is empty (click 'draft .axi' or paste)");
+    return;
+  }
+
+  const token = (addAdminTokenEl && addAdminTokenEl.value || "").trim();
+  if (!token) {
+    setAddPromoteStatus("promote requires admin token");
+    return;
+  }
+
+  // Verify role is master (same check as commit).
+  try {
+    const statusResp = await fetch("/status", { cache: "no-store" });
+    if (statusResp.ok) {
+      const status = await statusResp.json();
+      if (status && status.role && String(status.role).toLowerCase() !== "master") {
+        setAddPromoteStatus("promote requires master server (role != master)");
+        return;
+      }
+    }
+  } catch (_e) {}
+
+  const message = (addMessageEl && addMessageEl.value || "").trim();
+  const req = {
+    axi_text: String(addAxiTextEl.value || ""),
+    message: message || null,
+    quality: "fast",
+  };
+
+  const headers = { "content-type": "application/json", "authorization": `Bearer ${token}` };
+
+  try {
+    setAddPromoteStatus("promoting…");
+    const resp = await fetch("/admin/accept/promote", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(req),
+    });
+    const data = await resp.json();
+    setAddPromoteOutput(data);
+    if (!resp.ok) {
+      setAddPromoteStatus(`error (${resp.status})`);
+      return;
+    }
+    setAddPromoteStatus("ok");
+    // NOTE: If the server is currently serving the accepted plane (accepted/head),
+    // it will auto-reload. If serving pathdb/head, you'll still need to build/commit
+    // a new PathDB snapshot derived from the new accepted snapshot.
+  } catch (e) {
+    setAddPromoteStatus("error");
+    setAddPromoteOutput(String(e));
+  }
+}
+
+if (addDraftAxiBtn) addDraftAxiBtn.addEventListener("click", draftAxiFromGeneratedOverlay);
+if (addPromoteAxiBtn) addPromoteAxiBtn.addEventListener("click", promoteDraftAxiText);
+
+function setLlmStatus(text) {
+  if (!llmStatusEl) return;
+  llmStatusEl.textContent = text || "";
+}
+
+function llmHistoryStorageKey() {
+  // Snapshot changes are a URL param; we want the conversation to survive
+  // reloads/time-travel within the same server.
+  const host = (window.location && window.location.host) ? window.location.host : "offline";
+  return `axiograph_llm_history_v1:${host}`;
+}
+
+function loadLlmHistory() {
+  try {
+    const raw = localStorage.getItem(llmHistoryStorageKey()) || "";
+    if (!raw.trim()) return [];
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v)) return [];
+    return v
+      .map(m => ({ role: String(m && m.role || ""), content: String(m && m.content || "") }))
+      .filter(m => m.role && m.content);
+  } catch (_e) {
+    return [];
+  }
+}
+
+function saveLlmHistory() {
+  try {
+    localStorage.setItem(llmHistoryStorageKey(), JSON.stringify(llmHistory));
+  } catch (_e) {}
+}
+
+let llmHistory = loadLlmHistory(); // {role, content}
+
+function renderLlmChat() {
+  if (!llmChatEl) return;
+  llmChatEl.innerHTML = "";
+  if (!llmHistory.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "Ask a question to start a conversation.";
+    llmChatEl.appendChild(empty);
+    return;
+  }
+  for (const m of llmHistory) {
+    const box = document.createElement("div");
+    box.className = `llmmsg ${m.role || "unknown"}`;
+    const role = document.createElement("div");
+    role.className = "role";
+    role.textContent = (m.role || "unknown") + ":";
+    const text = document.createElement("div");
+    text.className = "text";
+    text.textContent = String(m.content || "");
+    box.appendChild(role);
+    box.appendChild(text);
+    llmChatEl.appendChild(box);
+  }
+  llmChatEl.scrollTop = llmChatEl.scrollHeight;
+}
+
+function appendLlmMessage(role, content) {
+  llmHistory.push({ role, content: String(content || "") });
+  if (llmHistory.length > 40) llmHistory.splice(0, llmHistory.length - 40);
+  // Keep localStorage bounded too (models sometimes emit long answers).
+  for (const m of llmHistory) {
+    if (m && typeof m.content === "string" && m.content.length > 2800) {
+      m.content = m.content.slice(0, 2800) + "…";
+    }
+  }
+  saveLlmHistory();
+  renderLlmChat();
+}
+
+renderLlmChat();
+
+function loadLlmAutoCommit() {
+  try {
+    const v = localStorage.getItem("axiograph_llm_auto_commit") || "";
+    if (llmAutoCommitEl) llmAutoCommitEl.checked = (v === "1" || v === "true" || v === "yes" || v === "on");
+  } catch (_e) {}
+}
+
+function saveLlmAutoCommit() {
+  try {
+    if (!llmAutoCommitEl) return;
+    localStorage.setItem("axiograph_llm_auto_commit", llmAutoCommitEl.checked ? "1" : "0");
+  } catch (_e) {}
+}
+
+loadLlmAutoCommit();
+if (llmAutoCommitEl) llmAutoCommitEl.addEventListener("change", saveLlmAutoCommit);
+
+function setLlmDebug(obj) {
+  if (!llmDebugEl) return;
+  try {
+    llmDebugEl.textContent = obj ? JSON.stringify(obj, null, 2) : "";
+  } catch {
+    llmDebugEl.textContent = String(obj || "");
+  }
+}
+
+function clearHighlights() {
+  ui.highlightIds = new Set();
+}
+
+function highlightFromToolLoop(outcome) {
+  const ids = new Set();
+  const steps = (outcome && outcome.steps) ? outcome.steps : [];
+  for (const step of steps) {
+    if (!step || step.tool !== "axql_run") continue;
+    const res = step.result || {};
+    const results = res.results || {};
+    const rows = results.rows || [];
+    for (const row of rows) {
+      for (const k of Object.keys(row || {})) {
+        const v = row[k];
+        if (v && typeof v.id === "number") ids.add(v.id);
+      }
+    }
+  }
+
+  // Also support tools that directly return highlight ids (e.g. describe_entity).
+  for (const step of steps) {
+    if (!step || step.tool !== "describe_entity") continue;
+    const res = step.result || {};
+    const list = Array.isArray(res.highlight_ids) ? res.highlight_ids : [];
+    for (const id of list) {
+      if (typeof id === "number") ids.add(id);
+    }
+  }
+  ui.highlightIds = ids;
+}
+
+function highlightFromQueryResponse(resp) {
+  const ids = new Set();
+  const rows = (resp && Array.isArray(resp.rows)) ? resp.rows : [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    for (const k of Object.keys(row)) {
+      const v = row[k];
+      if (v && typeof v.id === "number") ids.add(v.id);
+    }
+  }
+  ui.highlightIds = ids;
+}
+
+async function llmAgentAsk() {
+  if (!llmQuestionEl) return;
+  const q = String(llmQuestionEl.value || "").trim();
+  if (!q) return;
+
+  const proto = window.location && window.location.protocol;
+  if (!(proto === "http:" || proto === "https:")) {
+    setLlmStatus("LLM requires server mode (open via `axiograph db serve`).");
+    return;
+  }
+
+  // Send a bounded amount of prior conversation as context (assistant text is
+  // untrusted; the tool-loop should validate via tools).
+  const historyToSend = llmHistory.slice(-12);
+  appendLlmMessage("user", q);
+  setLlmStatus("asking…");
+  setLlmDebug(null);
+
+    const ctx = selectedContextFilter();
+    const contexts = [];
+    if (ctx !== "*" && ctx !== "__none__") contexts.push(ctx);
+
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const snapshot = params.get("snapshot");
+    const body = { question: q, contexts, history: historyToSend };
+    if (snapshot) body.snapshot = snapshot;
+
+    const resp = await fetch("/llm/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      setLlmStatus(`error (${resp.status})`);
+      setLlmDebug(data);
+      appendLlmMessage("assistant", (data && data.error) ? data.error : "LLM request failed.");
+      return;
+    }
+    setLlmStatus("ok");
+    setLlmDebug(data);
+    const outcome = data && data.outcome ? data.outcome : null;
+    if (outcome && outcome.final_answer && outcome.final_answer.answer) {
+      appendLlmMessage("assistant", outcome.final_answer.answer);
+    } else {
+      appendLlmMessage("assistant", "No answer.");
+    }
+    const didPrefill = prefillAddFromToolLoop(outcome);
+    if (didPrefill) {
+      const wantsAutoCommit = llmAutoCommitEl && llmAutoCommitEl.checked;
+      const token = (addAdminTokenEl && addAdminTokenEl.value || "").trim();
+      if (wantsAutoCommit) {
+        if (!token) {
+          appendLlmMessage("assistant", "Auto-commit is enabled but no admin token is set. Paste it in the Add tab, then retry.");
+        } else {
+          if (addMessageEl && !String(addMessageEl.value || "").trim()) {
+            addMessageEl.value = `llm: ${q}`;
+          }
+          appendLlmMessage("assistant", "Auto-committing validated overlay…");
+          await commitGeneratedOverlay();
+        }
+      } else {
+        appendLlmMessage("assistant", "Review the generated overlay in the Add tab, then click commit to apply it (requires master/admin token).");
+      }
+    }
+    clearHighlights();
+    highlightFromToolLoop(outcome);
+    rerender();
+  } catch (e) {
+    setLlmStatus("error");
+    appendLlmMessage("assistant", String(e));
+  }
+}
+
+if (llmAskBtn) llmAskBtn.addEventListener("click", llmAgentAsk);
+async function llmToQuery() {
+  if (!llmQuestionEl || !axqlQueryEl) return;
+  const q = String(llmQuestionEl.value || "").trim();
+  if (!q) return;
+
+  const proto = window.location && window.location.protocol;
+  if (!(proto === "http:" || proto === "https:")) {
+    setLlmStatus("LLM requires server mode (open via `axiograph db serve`).");
+    return;
+  }
+
+  setLlmStatus("to_query…");
+  setLlmDebug(null);
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const snapshot = params.get("snapshot");
+    const body = { question: q };
+    if (snapshot) body.snapshot = snapshot;
+
+    const resp = await fetch("/llm/to_query", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      setLlmStatus(`error (${resp.status})`);
+      setLlmDebug(data);
+      return;
+    }
+    if (data && typeof data.axql === "string" && data.axql.trim()) {
+      axqlQueryEl.value = data.axql;
+      setAxqlStatus("filled from llm");
+      setActiveTab("query");
+    } else {
+      setAxqlStatus("LLM returned no query");
+    }
+    setLlmStatus("ok");
+    setLlmDebug(data);
+  } catch (e) {
+    setLlmStatus("error");
+    setLlmDebug(String(e));
+  }
+}
+if (llmToQueryBtn) llmToQueryBtn.addEventListener("click", llmToQuery);
+if (llmQuestionEl) llmQuestionEl.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") {
+    ev.preventDefault();
+    llmAgentAsk();
+  }
+});
+if (llmClearBtn) llmClearBtn.addEventListener("click", () => {
+  setLlmStatus("");
+  llmHistory.splice(0, llmHistory.length);
+  saveLlmHistory();
+  renderLlmChat();
+  setLlmDebug(null);
+  clearHighlights();
+  rerender();
+});
+
+function setAxqlStatus(text) {
+  if (!axqlStatusEl) return;
+  axqlStatusEl.textContent = text || "";
+}
+
+function setAxqlOutput(obj) {
+  if (!axqlOutputEl) return;
+  if (obj == null) {
+    axqlOutputEl.textContent = "";
+    return;
+  }
+  try {
+    if (typeof obj === "string") axqlOutputEl.textContent = obj;
+    else axqlOutputEl.textContent = JSON.stringify(obj, null, 2);
+  } catch {
+    axqlOutputEl.textContent = String(obj);
+  }
+}
+
+function setCertOutput(obj) {
+  if (!certOutputEl) return;
+  if (obj == null) {
+    certOutputEl.textContent = "";
+    return;
+  }
+  try {
+    if (typeof obj === "string") certOutputEl.textContent = obj;
+    else certOutputEl.textContent = JSON.stringify(obj, null, 2);
+  } catch {
+    certOutputEl.textContent = String(obj);
+  }
+}
+
+async function axqlRequest(certify, verify) {
+  if (!axqlQueryEl) return;
+  const q = String(axqlQueryEl.value || "").trim();
+  if (!q) return;
+
+  const proto = window.location && window.location.protocol;
+  if (!(proto === "http:" || proto === "https:")) {
+    setAxqlStatus("AxQL requires server mode (open via `axiograph db serve`).");
+    return;
+  }
+
+  setAxqlStatus(verify ? "certifying+verifying…" : (certify ? "certifying…" : "running…"));
+  setAxqlOutput("");
+  setCertOutput("");
+
+  const ctx = selectedContextFilter();
+  const contexts = [];
+  if (ctx !== "*" && ctx !== "__none__") contexts.push(ctx);
+
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const snapshot = params.get("snapshot");
+    const body = {
+      query: q,
+      lang: "axql",
+      show_elaboration: true,
+      contexts,
+      certify: !!certify,
+      verify: !!verify,
+      include_anchor: false,
+    };
+    if (snapshot) body.snapshot = snapshot;
+
+    const resp = await fetch("/query", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      setAxqlStatus(`error (${resp.status})`);
+      setAxqlOutput(data);
+      return;
+    }
+    setAxqlStatus("ok");
+    setAxqlOutput(data);
+    if (data && data.certificate) setCertOutput(data.certificate);
+    clearHighlights();
+    highlightFromQueryResponse(data);
+    rerender();
+  } catch (e) {
+    setAxqlStatus("error");
+    setAxqlOutput(String(e));
+  }
+}
+
+if (axqlRunBtn) axqlRunBtn.addEventListener("click", () => axqlRequest(false, false));
+if (axqlCertBtn) axqlCertBtn.addEventListener("click", () => axqlRequest(true, false));
+if (axqlVerifyBtn) axqlVerifyBtn.addEventListener("click", () => axqlRequest(true, true));
+if (axqlQueryEl) axqlQueryEl.addEventListener("keydown", (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
+    ev.preventDefault();
+    axqlRequest(false, false);
+  }
+});
+
+function directedShortestPathEdgeIdxs(startId, endId) {
+  const edgeIdxs = visibleEdgeIdxsAll();
+  const adj = new Map();
+  function addAdj(a, b, edgeIdx) {
+    if (!adj.has(a)) adj.set(a, []);
+    adj.get(a).push({ to: b, edgeIdx });
+  }
+  for (const idx of edgeIdxs) {
+    const e = graph.edges[idx];
+    if (e.relation_id == null) continue;
+    addAdj(e.source, e.target, idx);
+  }
+  const q = [];
+  const prev = new Map(); // node -> { node: prevNode, edgeIdx }
+  q.push(startId);
+  prev.set(startId, null);
+  while (q.length) {
+    const cur = q.shift();
+    if (cur === endId) break;
+    const nexts = adj.get(cur) || [];
+    for (const step of nexts) {
+      if (prev.has(step.to)) continue;
+      prev.set(step.to, { node: cur, edgeIdx: step.edgeIdx });
+      q.push(step.to);
+    }
+  }
+  if (!prev.has(endId)) return [];
+  const out = [];
+  let cur = endId;
+  while (cur !== startId) {
+    const p = prev.get(cur);
+    if (!p) break;
+    out.push(p.edgeIdx);
+    cur = p.node;
+  }
+  out.reverse();
+  return out;
+}
+
+async function certifySelectedPath(verify) {
+  if (ui.pathStart == null || ui.pathEnd == null) {
+    ui.pathMessage = "shift-click 2 nodes first";
+    updatePathStatus();
+    return;
+  }
+
+  const proto = window.location && window.location.protocol;
+  if (!(proto === "http:" || proto === "https:")) {
+    ui.pathMessage = "certification requires server mode";
+    updatePathStatus();
+    return;
+  }
+
+  const directed = directedShortestPathEdgeIdxs(ui.pathStart, ui.pathEnd);
+  if (!directed.length) {
+    ui.pathMessage = "no directed relation path (certifiable)";
+    updatePathStatus();
+    return;
+  }
+
+  // Update highlighted path to the certifiable directed one.
+  ui.pathEdgeIdxs = directed;
+  updatePathStatus();
+  rerender();
+
+  const relationIds = [];
+  let cur = ui.pathStart;
+  for (const idx of directed) {
+    const e = graph.edges[idx];
+    if (e.relation_id == null) {
+      ui.pathMessage = "path contains non-relation edges";
+      updatePathStatus();
+      return;
+    }
+    if (e.source !== cur) {
+      ui.pathMessage = "path direction mismatch (internal)";
+      updatePathStatus();
+      return;
+    }
+    relationIds.push(e.relation_id);
+    cur = e.target;
+  }
+
+  ui.pathMessage = verify ? "certifying+verifying…" : "certifying…";
+  updatePathStatus();
+  setCertOutput("");
+
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const snapshot = params.get("snapshot");
+    const body = {
+      start: ui.pathStart,
+      relation_ids: relationIds,
+      verify: !!verify,
+      include_anchor: false,
+    };
+    if (snapshot) body.snapshot = snapshot;
+    const resp = await fetch("/cert/reachability", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    setCertOutput(data);
+    if (!resp.ok) {
+      ui.pathMessage = `error (${resp.status})`;
+      updatePathStatus();
+      return;
+    }
+    ui.pathMessage = verify ? (data.certificate_verified ? "verified" : "not verified") : "ok";
+    updatePathStatus();
+  } catch (e) {
+    ui.pathMessage = "error";
+    updatePathStatus();
+    setCertOutput(String(e));
+  }
+}
+
+if (certifyPathBtn) certifyPathBtn.addEventListener("click", () => certifySelectedPath(false));
+if (verifyPathBtn) verifyPathBtn.addEventListener("click", () => certifySelectedPath(true));
+
+async function initServerControls() {
+  if (!serverControlsEl) return;
+  const proto = window.location && window.location.protocol;
+  if (!(proto === "http:" || proto === "https:")) return;
+
+  try {
+    const [statusResp, snapsResp] = await Promise.all([
+      fetch("/status", { cache: "no-store" }),
+      fetch("/snapshots", { cache: "no-store" }),
+    ]);
+    if (!statusResp.ok || !snapsResp.ok) return;
+    const status = await statusResp.json();
+    const snaps = await snapsResp.json();
+    if (status && status.llm && llmStatusEl) {
+      if (status.llm.enabled) setLlmStatus(`ready (${status.llm.backend})`);
+      else setLlmStatus("disabled");
+    }
+    const list = Array.isArray(snaps.snapshots) ? snaps.snapshots : [];
+    if (!list.length) return;
+
+    const layer = snaps.layer || "";
+    const statusSnap = (layer === "pathdb")
+      ? (status.snapshot && status.snapshot.pathdb_snapshot_id)
+      : (status.snapshot && status.snapshot.accepted_snapshot_id);
+
+    const params = new URLSearchParams(window.location.search || "");
+    const cur = params.get("snapshot") || statusSnap || list[0].snapshot_id;
+    const idx = list.findIndex(s => s.snapshot_id === cur);
+
+    function gotoSnapshot(idOrNull) {
+      const p = new URLSearchParams(window.location.search || "");
+      if (!idOrNull) p.delete("snapshot");
+      else p.set("snapshot", idOrNull);
+      window.location.search = p.toString();
+    }
+
+    const label = document.createElement("span");
+    label.textContent = "snapshot:";
+
+    const headBtn = document.createElement("button");
+    headBtn.className = "btn";
+    headBtn.textContent = "Head";
+    headBtn.addEventListener("click", () => gotoSnapshot(null));
+
+    const newerBtn = document.createElement("button");
+    newerBtn.className = "btn";
+    newerBtn.textContent = "Newer";
+    newerBtn.disabled = !(idx > 0);
+    newerBtn.addEventListener("click", () => {
+      if (idx > 0) gotoSnapshot(list[idx - 1].snapshot_id);
+    });
+
+    const olderBtn = document.createElement("button");
+    olderBtn.className = "btn";
+    olderBtn.textContent = "Older";
+    olderBtn.disabled = !(idx >= 0 && idx + 1 < list.length);
+    olderBtn.addEventListener("click", () => {
+      if (idx >= 0 && idx + 1 < list.length) gotoSnapshot(list[idx + 1].snapshot_id);
+    });
+
+    const sel = document.createElement("select");
+    for (const s of list) {
+      const opt = document.createElement("option");
+      const msg = s.message ? ` — ${s.message}` : "";
+      opt.value = s.snapshot_id;
+      opt.textContent = `${s.snapshot_id}${msg}`;
+      sel.appendChild(opt);
+    }
+    sel.value = cur;
+    sel.addEventListener("change", () => gotoSnapshot(sel.value));
+
+    const info = document.createElement("span");
+    info.className = "muted";
+    info.textContent = `layer=${layer} snapshots=${list.length}`;
+
+    serverControlsEl.innerHTML = "";
+    serverControlsEl.appendChild(label);
+    serverControlsEl.appendChild(headBtn);
+    serverControlsEl.appendChild(newerBtn);
+    serverControlsEl.appendChild(olderBtn);
+    serverControlsEl.appendChild(sel);
+    serverControlsEl.appendChild(info);
+  } catch (_e) {
+    // ignore: offline or no server endpoints
+  }
+}
+initServerControls();
+
+// Basic pan/zoom (viewBox-based). Pan with Alt+drag (keeps normal click-to-select).
+function parseViewBox() {
+  const vb = svg.getAttribute("viewBox");
+  if (!vb) return { x: 0, y: 0, w: 1000, h: 800 };
+  const parts = vb.trim().split(/\s+/).map(Number);
+  if (parts.length !== 4 || parts.some(x => !Number.isFinite(x))) return { x: 0, y: 0, w: 1000, h: 800 };
+  return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
+}
+
+const view = parseViewBox();
+function setViewBox() {
+  svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+}
+setViewBox();
+
+let panning = false;
+let panStart = null;
+
+svg.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const rect = svg.getBoundingClientRect();
+  const mx = view.x + (ev.clientX - rect.left) * (view.w / rect.width);
+  const my = view.y + (ev.clientY - rect.top) * (view.h / rect.height);
+  const zoom = ev.deltaY < 0 ? 0.9 : 1.1;
+  const newW = Math.min(8000, Math.max(200, view.w * zoom));
+  const newH = Math.min(8000, Math.max(200, view.h * zoom));
+  const relX = (mx - view.x) / view.w;
+  const relY = (my - view.y) / view.h;
+  view.x = mx - relX * newW;
+  view.y = my - relY * newH;
+  view.w = newW;
+  view.h = newH;
+  setViewBox();
+}, { passive: false });
+
+svg.addEventListener("mousedown", (ev) => {
+  if (!ev.altKey) return;
+  panning = true;
+  panStart = { x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y };
+  ev.preventDefault();
+});
+
+window.addEventListener("mousemove", (ev) => {
+  if (!panning || !panStart) return;
+  const rect = svg.getBoundingClientRect();
+  const dx = (ev.clientX - panStart.x) * (view.w / rect.width);
+  const dy = (ev.clientY - panStart.y) * (view.h / rect.height);
+  view.x = panStart.vx - dx;
+  view.y = panStart.vy - dy;
+  setViewBox();
+});
+
+window.addEventListener("mouseup", () => { panning = false; panStart = null; });
+
+</script>
+</body>
+</html>

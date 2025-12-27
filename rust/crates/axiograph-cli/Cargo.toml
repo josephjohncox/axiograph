@@ -1,0 +1,47 @@
+[package]
+name = "axiograph-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Axiograph command-line interface"
+
+[[bin]]
+name = "axiograph"
+path = "src/main.rs"
+
+[dependencies]
+axiograph-dsl = { path = "../axiograph-dsl" }
+axiograph-ingest-sql = { path = "../axiograph-ingest-sql" }
+axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
+axiograph-ingest-json = { path = "../axiograph-ingest-json" }
+axiograph-ingest-proto = { path = "../axiograph-ingest-proto" }
+axiograph-ingest-rdfowl = { path = "../axiograph-ingest-rdfowl" }
+axiograph-pathdb = { path = "../axiograph-pathdb" }
+anyhow.workspace = true
+clap.workspace = true
+colored.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+walkdir.workspace = true
+nom.workspace = true
+roaring.workspace = true
+sqlparser.workspace = true
+tokio.workspace = true
+ciborium.workspace = true
+hnsw_rs.workspace = true
+hyper = { version = "1.8", features = ["server", "http1"] }
+hyper-util = "0.1"
+http-body-util = "0.1"
+bytes = "1.11"
+rustyline = { version = "14.0", optional = true, default-features = true }
+reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
+url.workspace = true
+scraper.workspace = true
+htmd.workspace = true
+robotstxt.workspace = true
+
+[features]
+default = ["repl-rustyline", "llm-ollama"]
+repl-rustyline = ["dep:rustyline"]
+llm-ollama = ["dep:reqwest"]

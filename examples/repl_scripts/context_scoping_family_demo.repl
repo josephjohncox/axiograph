@@ -1,0 +1,41 @@
+# Axiograph REPL script: context/world scoping + typed elaboration + typed viz overlay
+#
+# Demonstrates:
+# - canonical `.axi` contexts via `@context` / `ctx=...`
+# - PathDB-derived `axi_fact_in_context` edges on import
+# - AxQL scoping (`in <ctx>`) and REPL defaults (`ctx use ...`)
+# - schema-directed query elaboration (`q --elaborate`)
+# - typed visualization overlay (`typed_overlay`)
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/context_scoping_family_demo.repl
+
+import_axi examples/Family.axi
+schema Fam
+constraints Fam
+validate_axi
+
+# List contexts discovered in the snapshot.
+ctx list
+
+# Set a default scope for subsequent queries.
+ctx use CensusData
+
+# Scoped query (inherits ctx=CensusData from REPL state).
+q --elaborate select ?f ?child ?parent where ?f = Parent(child=?child, parent=?parent) limit 10
+
+# This parent fact exists only in FamilyTree, so it should not match while scoped to CensusData.
+q --elaborate select ?f where ?f = Parent(child=Eve) limit 10
+
+# Multi-context union scoping (execution-only; not certifiable yet).
+ctx add FamilyTree
+q --elaborate select ?f where ?f = Parent(child=Eve) limit 10
+
+# Visualize a neighborhood with typed overlay enabled (shows supertypes + relation signatures + constraints).
+viz build/family_context_typed.html format html plane data focus_name Carol hops 2 max_nodes 220 typed_overlay
+
+# E2E tests expect every script to support a default “Homotopy query” certificate.
+add_entity Homotopy demo_homotopy_0
+
+# Export a reversible snapshot `.axi` (used by CI smoke tests and for certificate anchoring).
+export_axi build/context_scoping_family_export_v1.axi

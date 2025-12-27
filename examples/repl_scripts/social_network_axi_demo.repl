@@ -1,0 +1,44 @@
+# Axiograph REPL script: import canonical `.axi` schema module (SocialNetwork)
+#
+# Demonstrates:
+# - importing a canonical `axi_schema_v1` module (schema/theory/instance)
+# - inspecting meta-plane schema + constraints
+# - schema-directed validation of imported fact nodes (reified tuples)
+# - visualization "layering": schema/meta-plane + instance data + fact nodes
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/social_network_axi_demo.repl
+
+import_axi examples/social/SocialNetwork.axi
+
+# Inspect imported schema/theory metadata (meta-plane).
+schema SocialGraph
+constraints SocialGraph
+
+# Schema-directed validation: check that imported fact nodes are well-typed.
+validate_axi
+stats
+
+# Current relationships (derived binary edges from `Relationship(from,to,relType)`).
+q select ?x where name("Alice") -Relationship-> ?x limit 10
+
+# Relationship evolution and equivalence objects are first-class.
+q select ?p where ?p is RelationshipPath, ?p -from-> name("Alice") limit 10
+q select ?e where name("Alice") -HistoryEquivalence-> ?e limit 10
+
+# Typecheck + show elaborated query (meta-plane-driven).
+q --elaborate select ?x ?t where ?f = Relationship(from=Alice, to=?x, relType=?t) limit 5
+
+# Visualize the schema meta-plane.
+viz build/social_network_axi_schema.dot format dot plane meta focus_name SocialGraph hops 3 max_nodes 320
+viz build/social_network_axi_schema.html format html plane meta focus_name SocialGraph hops 3 max_nodes 320
+
+# Visualize a combined neighborhood around a person (shows entity nodes + fact nodes + schema links).
+viz build/social_network_axi_alice_both.dot format dot plane both focus_name Alice hops 2 max_nodes 240
+viz build/social_network_axi_alice_both.html format html plane both focus_name Alice hops 2 max_nodes 240
+
+# Typed overlay: annotate data-plane nodes using meta-plane schema/theory info.
+viz build/social_network_axi_alice_both_typed.html format html plane both focus_name Alice hops 2 max_nodes 240 typed_overlay
+
+export_axi build/social_network_axi_export_v1.axi
+save build/social_network_axi.axpd

@@ -1,0 +1,44 @@
+# Axiograph REPL script: social_network scenario demo
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/social_network_demo.repl
+#
+# Or (from repo root, installed binary):
+#   axiograph repl --script examples/repl_scripts/social_network_demo.repl
+
+# Generate a social-network higher-groupoid-ish dataset.
+gen social_network 2 3 1
+
+stats
+
+# List people.
+q select ?p where ?p is Person limit 20
+
+# Relationship edges (direct).
+q select ?x where name("Alice_0") -Friend-> ?x limit 10
+
+# Relationship evolution objects.
+q select ?p where ?p is RelationshipPath, ?p -from-> name("Alice_0") limit 10
+
+# Trust paths (with witnesses).
+q select ?t where ?t is TrustPath, ?t -from-> name("Alice_0") limit 10
+
+# Homotopies / history equivalences.
+q select ?h where ?h is Homotopy, ?h -from-> name("Alice_0") limit 10
+q select ?e where ?e is HistoryEquivalence, ?e -from-> name("Alice_0") limit 10
+
+# Proof-relevant structure: two history witnesses and their equivalence.
+q select ?lhs ?rhs where name("homotopy_Alice_to_Carol_history_0") -lhs-> ?lhs, name("homotopy_Alice_to_Carol_history_0") -rhs-> ?rhs limit 10
+q select ?p1 ?p2 where name("HistoryEquivalence_Alice_to_Carol_0") -path1-> ?p1, name("HistoryEquivalence_Alice_to_Carol_0") -path2-> ?p2 limit 10
+
+# Visualize a small neighborhood graph around a named entity.
+#
+# Outputs:
+# - Graphviz DOT (render with: `dot -Tsvg build/social_network_viz.dot -o build/social_network_viz.svg`)
+# - self-contained offline HTML explorer
+viz build/social_network_viz.dot format dot focus_name Alice_0 hops 2 max_nodes 120
+viz build/social_network_viz.html format html focus_name Alice_0 hops 2 max_nodes 120
+
+# Export reversible snapshots.
+export_axi build/social_network_export_v1.axi
+save build/social_network.axpd

@@ -1,0 +1,20 @@
+[package]
+name = "axiograph-ingest-rdfowl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "RDF/OWL ingestion for Axiograph"
+
+[dependencies]
+axiograph-dsl = { path = "../axiograph-dsl" }
+axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sophia.workspace = true
+
+[features]
+default = []
+rdf = []

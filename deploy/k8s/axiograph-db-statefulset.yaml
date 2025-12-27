@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: axiograph-db
+  labels:
+    app: axiograph-db
+spec:
+  serviceName: axiograph-db-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: axiograph-db
+  template:
+    metadata:
+      labels:
+        app: axiograph-db
+    spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 0
+        fsGroup: 0
+      containers:
+        - name: axiograph
+          image: ghcr.io/axiograph/axiograph:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - db
+            - serve
+            - --dir
+            - /data/accepted
+            - --listen
+            - 0.0.0.0:7878
+          ports:
+            - name: http
+              containerPort: 7878
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi

@@ -1,0 +1,47 @@
+# Axiograph REPL script: schema discovery demo (proto toy)
+#
+# This demo imports a *candidate* canonical `.axi` module that was generated from
+# evidence-plane `proposals.json` (proto/gRPC-ish ingestion).
+#
+# Source proposals:
+#   examples/schema_discovery/proto_api_proposals.json
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/proto_schema_discovery_axi_demo.repl
+
+import_axi examples/schema_discovery/ProtoApi.proposals.axi
+
+# Inspect schema metadata imported into the meta-plane.
+schema ProtoApi
+
+# Inspect extensional constraints imported from the module's theory block.
+constraints ProtoApi
+
+# Validate imported fact nodes against the schema declarations.
+validate_axi
+
+# Visualize the imported schema meta-plane (purely tooling; not certifiable).
+viz build/proto_schema_discovery_schema.dot format dot plane meta focus_name ProtoApi hops 3 max_nodes 260
+viz build/proto_schema_discovery_schema.html format html plane meta focus_name ProtoApi hops 3 max_nodes 260
+
+stats
+
+# Derived binary edges enable direct traversal (service → rpc → endpoint).
+q select ?rpc where UserService -proto_service_has_rpc-> ?rpc limit 10
+q select ?ep where GetUser -proto_rpc_http_endpoint-> ?ep limit 10
+q select ?msg where GetUser -proto_rpc_request-> ?msg limit 10
+q select ?msg where GetUser -proto_rpc_response-> ?msg limit 10
+
+# Visualize a small neighborhood around the service.
+viz build/proto_schema_discovery_user_service.dot format dot focus_name UserService hops 2 max_nodes 140
+viz build/proto_schema_discovery_user_service.html format html focus_name UserService hops 2 max_nodes 140
+
+# Fact atoms query the reified tuple nodes (uses FactIndex via `axi_relation="proto_rpc_http_endpoint"`).
+q select ?f where ?f = proto_rpc_http_endpoint(from=GetUser, to=GET_v1_users_user_id) limit 10
+
+# Repeat to demonstrate the REPL's compiled query cache (same query IR + snapshot key).
+q select ?f where ?f = proto_rpc_http_endpoint(from=GetUser, to=GET_v1_users_user_id) limit 10
+
+export_axi build/proto_schema_discovery_export_v1.axi
+save build/proto_schema_discovery.axpd
+

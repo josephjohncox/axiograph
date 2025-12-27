@@ -1,0 +1,34 @@
+# Axiograph REPL script: import canonical `.axi` schema module (PhysicsKnowledge)
+#
+# Demonstrates that `import_axi` accepts:
+# - PathDB snapshot exports (`PathDBExportV1`)
+# - Canonical `axi_schema_v1` modules (schema/theory/instance)
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/physics_knowledge_demo.repl
+#
+# Or (from repo root, installed binary):
+#   axiograph repl --script examples/repl_scripts/physics_knowledge_demo.repl
+
+import_axi examples/machining/PhysicsKnowledge.axi
+
+# Inspect imported schema/theory metadata (meta-plane).
+schema Physics
+
+# Schema-directed validation: check that imported fact nodes (reified tuples)
+# are well-typed w.r.t. the imported `.axi` schema declarations.
+validate_axi
+
+stats
+
+# Derived binary edges for 2-field relations let us traverse directly.
+q select ?cat where name("NewtonsSecond") -LawCategory-> ?cat limit 10
+
+# Reified tuples are still available as first-class objects (fact nodes).
+q select ?rule where name("CuttingForceProportional") -HeuristicRule-> ?rule limit 10
+
+# Fact atom demo: query the relation tuples directly (uses FactIndex via `axi_relation="LawCategory"`).
+q select ?f ?cat where ?f = LawCategory(law=NewtonsSecond, category=?cat) limit 10
+
+export_axi build/physics_knowledge_export_v1.axi
+save build/physics_knowledge.axpd

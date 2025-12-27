@@ -1,0 +1,15 @@
+[package]
+name = "axiograph-ingest-step"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "STEP/B-Rep/Assembly parser for Axiograph"
+
+[dependencies]
+axiograph-dsl = { path = "../axiograph-dsl" }
+anyhow.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+

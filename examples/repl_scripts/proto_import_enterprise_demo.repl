@@ -1,0 +1,50 @@
+# Axiograph REPL script: proto import + enterprise matching demo
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/proto_import_enterprise_demo.repl
+#
+# This demo shows a real proto import (Buf descriptor JSON) and then a simple
+# heuristic "matching" step that links imported `ProtoService` nodes to an
+# enterprise scenario `Service` graph.
+#
+# Note: the matching step is intentionally untrusted/heuristic (like entity
+# resolution). It's meant for exploration and for producing explicit candidates
+# (later certifiable once we extend reconciliation certificates).
+
+# 1) Generate an enterprise scenario whose service names align with the proto fixture.
+gen enterprise_large_api 3 3 1
+stats
+
+# 2) Import the proto descriptor set JSON (checked into the repo).
+# If you run this script from a tmp directory (tests do), the REPL will fall
+# back to treating this as repo-root-relative.
+import_proto examples/proto/large_api/descriptor.json
+stats
+
+# 3) Add heuristic links: Service ↔ ProtoService.
+match_proto_enterprise
+
+# Sanity: list services in each "plane".
+q select ?svc where ?svc is Service limit 10
+q select ?psvc where ?psvc is ProtoService limit 10
+
+# Show an explicit mapping: enterprise service → proto service.
+q select ?psvc where name("svc_users") -mapsToProtoService-> ?psvc limit 10
+
+# Visualize the mapping neighborhood: Service ↔ ProtoService ↔ ProtoRpc.
+viz build/enterprise_large_api_proto_import_mapping.dot format dot plane data focus_name svc_users hops 2 max_nodes 260
+viz build/enterprise_large_api_proto_import_mapping.html format html plane data focus_name svc_users hops 2 max_nodes 260
+
+# Now we can traverse from enterprise concepts into the imported proto surface.
+# Team → Service → ProtoService → ProtoRpc
+q select ?rpc where name("team_0") -owns/mapsToProtoService/proto_service_has_rpc-> ?rpc max_hops 8 limit 20
+
+# ProtoRpc → HttpEndpoint (annotation-driven)
+q select ?ep where name("acme.users.v1.UserService.GetUser") -proto_rpc_http_endpoint-> ?ep limit 10
+
+# End-to-end: Team → … → HttpEndpoint
+q select ?ep where name("team_0") -owns/mapsToProtoService/proto_service_has_rpc/proto_rpc_http_endpoint-> ?ep max_hops 10 limit 20
+
+# Export reversible snapshots.
+export_axi build/enterprise_large_api_proto_import_export_v1.axi
+save build/enterprise_large_api_proto_import.axpd

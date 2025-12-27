@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "kind": "normalize_path_v2",
+  "proof": {
+    "input": {
+      "type": "trans",
+      "left": { "type": "step", "from": 1, "rel_type": 10, "to": 2 },
+      "right": {
+        "type": "inv",
+        "path": { "type": "step", "from": 1, "rel_type": 10, "to": 2 }
+      }
+    },
+    "normalized": { "type": "reflexive", "entity": 1 },
+    "derivation": [{ "pos": [], "rule": "cancel_head" }]
+  }
+}

@@ -1,0 +1,20 @@
+# Axiograph REPL script: schema evolution demo
+#
+# Run:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/schema_evolution_demo.repl
+
+gen schema_evolution 1 3 1
+stats
+
+q select ?s where name("ProductV1_0") -outgoingMigration/toSchema-> ?s limit 10
+q select ?s where name("ProductV1_0") -outgoingMigration/toSchema/outgoingMigration/toSchema-> ?s max_hops 6 limit 10
+q select ?eq where ?eq is SchemaEquiv, ?eq -left-> name("ProductV3_0") limit 10
+q select ?inv where name("Normalize") -inverseOf-> ?inv limit 10
+q select ?h where ?h is Homotopy, ?h -from-> name("ProductV1_0") limit 10
+
+# Proof-relevant structure: a commuting diagram witness for migration composition.
+q select ?lhs ?rhs where name("homotopy_ProductV1_to_ProductV3_0") -lhs-> ?lhs, name("homotopy_ProductV1_to_ProductV3_0") -rhs-> ?rhs limit 10
+q select ?p where ?p is PathWitness, ?p -from-> name("ProductV1_0") limit 10
+
+export_axi build/schema_evolution_export_v1.axi
+save build/schema_evolution.axpd

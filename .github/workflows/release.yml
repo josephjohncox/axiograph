@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build binaries (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release binary
+        working-directory: rust
+        run: cargo build -p axiograph-cli --release
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          OS_RAW="${{ runner.os }}"
+          OS="$(echo "$OS_RAW" | tr '[:upper:]' '[:lower:]')"
+          ARCH="$(uname -m)"
+          EXT=""
+          if [ "$OS_RAW" = "Windows" ]; then
+            EXT=".exe"
+          fi
+          mkdir -p dist
+          cp "rust/target/release/axiograph${EXT}" "dist/axiograph${EXT}"
+          if [ "$OS_RAW" = "Windows" ]; then
+            7z a "dist/axiograph-${OS}-${ARCH}.zip" "./dist/axiograph${EXT}"
+          else
+            tar -czf "dist/axiograph-${OS}-${ARCH}.tar.gz" -C dist "axiograph${EXT}"
+          fi
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 dist/* > dist/sha256.txt
+          elif command -v sha256sum >/dev/null 2>&1; then
+            sha256sum dist/* > dist/sha256.txt
+          elif command -v certutil >/dev/null 2>&1; then
+            rm -f dist/sha256.txt
+            for f in dist/*; do
+              certutil -hashfile "$f" SHA256 >> dist/sha256.txt
+            done
+          fi
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: axiograph-${{ runner.os }}
+          path: dist/*
+      - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

@@ -1,0 +1,38 @@
+# Axiograph REPL script: “real-ish” physics ontology (diff geom / symplectic / relativity / QFT)
+#
+# Demonstrates:
+# - importing a canonical `.axi` module
+# - schema/theory inspection (meta-plane)
+# - schema-directed validation of imported facts
+# - learning-graph extraction (Concept prerequisites, guidelines, examples)
+# - subtyping-aware type constraints (SmoothManifold includes Spacetime, PhaseSpace, ...)
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/physics_ontology_axi_demo.repl
+
+import_axi examples/physics/PhysicsOntology.axi
+
+schema Physics
+constraints Physics
+validate_axi
+
+# Typed learning graph (Concept/SafetyGuideline/Example overlay).
+learning_graph Physics
+
+# Subtyping demo:
+# - `Spacetime` is a subtype of `LorentzianManifold`, which is a subtype of `SmoothManifold`.
+# - `PhaseSpace` is a subtype of `SymplecticManifold`, which is also a subtype of `SmoothManifold`.
+q select ?m where ?m is SmoothManifold limit 20
+
+# A concrete “physics” query: QED’s gauge group.
+q select ?g where name("QFT_QED") -QFTHasGaugeGroup-> ?g limit 10
+
+# Differential forms: the Maxwell 2-form degree (fact-node atom).
+q select ?deg where ?f = FormDegree(form=Form_Maxwell_F, degree=?deg) limit 10
+
+# Concept graph: what does QuantumFieldTheoryConcept require?
+q select ?p where name("QuantumFieldTheoryConcept") -requires-> ?p limit 20
+
+export_axi build/physics_ontology_axi_export_v1.axi
+save build/physics_ontology_axi.axpd
+

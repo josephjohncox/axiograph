@@ -1,0 +1,21 @@
+# Axiograph REPL script: machinist learning demo
+#
+# Run:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/machinist_learning_demo.repl
+
+gen machinist_learning 3 3 1
+stats
+
+q select ?g where name("op_0") -guardrailedBy-> ?g limit 10
+q select ?g where name("op_0") -hasMaterial/involvesConcept/explains-> ?g max_hops 6 limit 10
+q select ?h where ?h is Homotopy, ?h -from-> name("op_0") limit 10
+
+# Proof-relevant structure: two derivations from an operation to a guideline.
+q select ?lhs ?rhs where name("homotopy_op0_guardrail_vs_concept") -lhs-> ?lhs, name("homotopy_op0_guardrail_vs_concept") -rhs-> ?rhs limit 10
+q select ?p where ?p is PathWitness, ?p -from-> name("op_0") limit 10
+
+llm use mock
+llm ask find Material named mat_0_Titanium6Al4V
+
+export_axi build/machinist_learning_export_v1.axi
+save build/machinist_learning.axpd

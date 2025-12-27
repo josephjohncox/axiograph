@@ -1,0 +1,94 @@
+{
+  "version": 2,
+  "kind": "path_equiv_v2",
+  "proof": {
+    "left": {
+      "type": "trans",
+      "left": {
+        "type": "trans",
+        "left": {
+          "type": "trans",
+          "left": {
+            "type": "reflexive",
+            "entity": 1
+          },
+          "right": {
+            "type": "step",
+            "from": 1,
+            "rel_type": 10,
+            "to": 2
+          }
+        },
+        "right": {
+          "type": "step",
+          "from": 2,
+          "rel_type": 20,
+          "to": 3
+        }
+      },
+      "right": {
+        "type": "reflexive",
+        "entity": 3
+      }
+    },
+    "right": {
+      "type": "trans",
+      "left": {
+        "type": "step",
+        "from": 1,
+        "rel_type": 10,
+        "to": 2
+      },
+      "right": {
+        "type": "trans",
+        "left": {
+          "type": "reflexive",
+          "entity": 2
+        },
+        "right": {
+          "type": "step",
+          "from": 2,
+          "rel_type": 20,
+          "to": 3
+        }
+      }
+    },
+    "normalized": {
+      "type": "trans",
+      "left": {
+        "type": "step",
+        "from": 1,
+        "rel_type": 10,
+        "to": 2
+      },
+      "right": {
+        "type": "step",
+        "from": 2,
+        "rel_type": 20,
+        "to": 3
+      }
+    },
+    "left_derivation": [
+      {
+        "pos": [],
+        "rule": "id_right"
+      },
+      {
+        "pos": [],
+        "rule": "assoc_right"
+      },
+      {
+        "pos": [],
+        "rule": "id_left"
+      }
+    ],
+    "right_derivation": [
+      {
+        "pos": [
+          1
+        ],
+        "rule": "id_left"
+      }
+    ]
+  }
+}

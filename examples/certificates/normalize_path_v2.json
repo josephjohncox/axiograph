@@ -1,0 +1,50 @@
+{
+  "version": 2,
+  "kind": "normalize_path_v2",
+  "proof": {
+    "input": {
+      "type": "trans",
+      "left": {
+        "type": "inv",
+        "path": {
+          "type": "trans",
+          "left": {
+            "type": "trans",
+            "left": { "type": "reflexive", "entity": 1 },
+            "right": { "type": "step", "from": 1, "rel_type": 10, "to": 2 }
+          },
+          "right": {
+            "type": "trans",
+            "left": { "type": "reflexive", "entity": 2 },
+            "right": { "type": "step", "from": 2, "rel_type": 20, "to": 3 }
+          }
+        }
+      },
+      "right": {
+        "type": "trans",
+        "left": {
+          "type": "trans",
+          "left": { "type": "step", "from": 1, "rel_type": 10, "to": 2 },
+          "right": { "type": "step", "from": 2, "rel_type": 20, "to": 3 }
+        },
+        "right": { "type": "reflexive", "entity": 3 }
+      }
+    },
+    "normalized": { "type": "reflexive", "entity": 3 },
+    "derivation": [
+      { "pos": [0], "rule": "inv_trans" },
+      { "pos": [], "rule": "assoc_right" },
+      { "pos": [0], "rule": "inv_trans" },
+      { "pos": [], "rule": "assoc_right" },
+      { "pos": [1, 0], "rule": "inv_refl" },
+      { "pos": [1], "rule": "id_left" },
+      { "pos": [1, 0], "rule": "inv_trans" },
+      { "pos": [1], "rule": "assoc_right" },
+      { "pos": [1, 1, 0], "rule": "inv_refl" },
+      { "pos": [1, 1], "rule": "id_left" },
+      { "pos": [1, 1], "rule": "id_right" },
+      { "pos": [1], "rule": "cancel_head" },
+      { "pos": [], "rule": "cancel_head" }
+    ]
+  }
+}

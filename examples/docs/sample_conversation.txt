@@ -1,0 +1,18 @@
+John (10:30): Hey, I've been having trouble with the titanium job. Getting a lot of chatter.
+Sarah (10:31): What speed are you running at?
+John (10:31): About 200 SFM with the carbide endmill
+Sarah (10:32): That's too fast for titanium. Try reducing to 100 SFM.
+John (10:33): Really? That seems slow.
+Sarah (10:34): Yeah, but the heat needs to go into the chip, not the workpiece. Higher feeds, lower speeds.
+John (10:35): What about feed rate?
+Sarah (10:36): For roughing, try 0.004 IPT. Keep the chip load high enough to avoid rubbing.
+John (10:37): Makes sense. What about depth of cut?
+Sarah (10:38): Keep it light, maybe 0.050" axial. Titanium work hardens if you're too aggressive.
+John (10:39): Got it. Should I use coolant?
+Sarah (10:40): Absolutely. Flood coolant, high pressure if you have it. Helps evacuate chips and cool the cut.
+John (10:41): Thanks! I'll try those settings.
+Sarah (10:42): Also, make sure your tool is sharp. Titanium is very sensitive to worn edges - you'll see increased cutting forces and more heat.
+Mike (10:45): Adding to what Sarah said - for titanium, I always use TiAlN coated carbide. Better heat resistance than TiN.
+John (10:46): Good tip, thanks Mike.
+Sarah (10:47): One more thing - listen for the sound. Stable cutting has a consistent tone. If it starts to warble, you're entering chatter territory.
+

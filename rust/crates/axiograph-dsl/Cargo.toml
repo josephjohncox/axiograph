@@ -1,0 +1,12 @@
+[package]
+name = "axiograph-dsl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Axiograph DSL types and parser"
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+nom.workspace = true

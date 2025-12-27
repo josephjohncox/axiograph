@@ -1,0 +1,7 @@
+{
+  "FollowPath": {
+    "start": "name:person_0_0",
+    "path": ["memberOf", "owns"]
+  }
+}
+

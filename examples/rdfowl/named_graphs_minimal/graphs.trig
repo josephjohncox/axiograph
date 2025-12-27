@@ -1,0 +1,25 @@
+@prefix ex: <http://example.org/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+# Two named graphs that disagree about who `ex:a` knows.
+#
+# Axiograph should ingest these as two distinct contexts/worlds:
+# - `g_plan`
+# - `g_observed`
+#
+# Then you can scope queries using:
+# - `ctx use g_plan`
+# - `ctx use g_observed`
+
+ex:g_plan {
+  ex:a rdf:type ex:Person .
+  ex:b rdf:type ex:Person .
+  ex:a ex:knows ex:b .
+}
+
+ex:g_observed {
+  ex:a rdf:type ex:Person .
+  ex:c rdf:type ex:Person .
+  ex:a ex:knows ex:c .
+}
+

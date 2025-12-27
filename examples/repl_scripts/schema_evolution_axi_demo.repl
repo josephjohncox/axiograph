@@ -1,0 +1,46 @@
+# Axiograph REPL script: import canonical `.axi` schema module (SchemaEvolution)
+#
+# Demonstrates:
+# - importing a canonical `axi_schema_v1` module (schema/theory/instance)
+# - morphisms as first-class *witness nodes* (reified tuples tagged `Morphism`)
+# - homotopies as first-class *witness nodes* (reified tuples tagged `Homotopy`)
+# - visualization of a schema-evolution neighborhood (migrations + equivalences)
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/schema_evolution_axi_demo.repl
+
+import_axi examples/ontology/SchemaEvolution.axi
+
+# Inspect imported schema/theory metadata (meta-plane).
+schema OntologyMeta
+constraints OntologyMeta
+
+# Schema-directed validation: check that imported fact nodes are well-typed.
+validate_axi
+stats
+
+# Migrations as objects; follow typed relations (derived binary edges).
+q select ?src where name("AddCategories") -MigrationFrom-> ?src limit 10
+q select ?dst where name("AddCategories") -MigrationTo-> ?dst limit 10
+
+# Schema equivalence: these are also tagged as Homotopy witnesses during import.
+q select ?h ?lhs ?rhs where ?h is Homotopy, ?h -lhs-> ?lhs, ?h -rhs-> ?rhs limit 10
+
+# Generic morphism view (works across many relations).
+q select ?m ?from ?to where ?m is Morphism, ?m -from-> ?from, ?m -to-> ?to limit 10
+
+# Visualize the schema meta-plane.
+viz build/schema_evolution_axi_schema.dot format dot plane meta focus_name OntologyMeta hops 3 max_nodes 360
+viz build/schema_evolution_axi_schema.html format html plane meta focus_name OntologyMeta hops 3 max_nodes 360
+
+# Visualize a migration neighborhood (shows morphism witness nodes).
+viz build/schema_evolution_axi_addcategories_both.dot format dot plane both focus_name AddCategories hops 2 max_nodes 260
+viz build/schema_evolution_axi_addcategories_both.html format html plane both focus_name AddCategories hops 2 max_nodes 260
+
+# Visualize a schema node neighborhood (shows SchemaEquiv homotopy witness nodes).
+viz build/schema_evolution_axi_productv3_both.dot format dot plane both focus_name ProductV3 hops 2 max_nodes 260
+viz build/schema_evolution_axi_productv3_both.html format html plane both focus_name ProductV3 hops 2 max_nodes 260
+
+export_axi build/schema_evolution_axi_export_v1.axi
+save build/schema_evolution_axi.axpd
+

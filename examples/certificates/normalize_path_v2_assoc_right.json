@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "kind": "normalize_path_v2",
+  "proof": {
+    "input": {
+      "type": "trans",
+      "left": {
+        "type": "trans",
+        "left": { "type": "step", "from": 1, "rel_type": 10, "to": 2 },
+        "right": { "type": "step", "from": 2, "rel_type": 20, "to": 3 }
+      },
+      "right": { "type": "step", "from": 3, "rel_type": 30, "to": 4 }
+    },
+    "normalized": {
+      "type": "trans",
+      "left": { "type": "step", "from": 1, "rel_type": 10, "to": 2 },
+      "right": {
+        "type": "trans",
+        "left": { "type": "step", "from": 2, "rel_type": 20, "to": 3 },
+        "right": { "type": "step", "from": 3, "rel_type": 30, "to": 4 }
+      }
+    },
+    "derivation": [{ "pos": [], "rule": "assoc_right" }]
+  }
+}

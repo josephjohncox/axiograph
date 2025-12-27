@@ -1,0 +1,25 @@
+# Example: multiple read-only replicas.
+# Note: replicas require shared storage or external sync of the snapshot store.
+statefulset:
+  replicas: 3
+  args:
+    - db
+    - serve
+    - --dir
+    - /data/accepted
+    - --layer
+    - accepted
+    - --snapshot
+    - head
+    - --role
+    - replica
+    - --watch-head
+    - --listen
+    - 0.0.0.0:7878
+  persistence:
+    enabled: true
+    # For >1 replicas, use an RWX-capable storage class or an external sync job.
+    # storageClass: "<rwx-storage-class>"
+
+service:
+  type: ClusterIP

@@ -1,0 +1,34 @@
+# Axiograph REPL script: physics + tacit knowledge + learning graph
+#
+# This demo extends `PhysicsKnowledge.axi` with a small learning graph:
+# - Concept prerequisites (`requires`)
+# - Concept → guideline links (`explains`)
+# - Example → concept links (`demonstrates`)
+#
+# It also keeps tacit heuristics explicit via confidence + rationale.
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/physics_learning_demo.repl
+
+import_axi examples/machining/PhysicsKnowledge.axi
+
+# Inspect imported schema/theory metadata (meta-plane).
+schema Physics
+
+# Extract the typed learning graph from the schema-scoped instance.
+learning_graph Physics
+
+# Concepts explain guidelines (heuristics reused as SafetyGuideline).
+q select ?g where name("RegenerativeChatter") -explains-> ?g limit 10
+
+# Guidelines remain tacit: confidence + rationale are explicit.
+q select ?conf ?why where name("TitaniumLowSpeed") -HeuristicConfidence-> ?conf, name("TitaniumLowSpeed") -HeuristicRationale-> ?why limit 10
+
+# Example-driven "learning" surface: examples demonstrate concepts.
+q select ?c where name("Example_Ti_Roughing_TooFast") -demonstrates-> ?c limit 10
+
+# Concepts have description nodes (stable identifiers; attach chunks/docs for prose).
+q select ?t where name("ThermalConductivityConcept") -conceptDescription-> ?t limit 10
+
+export_axi build/physics_learning_export_v1.axi
+save build/physics_learning.axpd

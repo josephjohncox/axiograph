@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package acme.payments.v1;
+
+import "acme/annotations/v1/annotations.proto";
+
+// Payments API.
+//
+// Typical interaction flow (documented):
+// - CreatePayment: create an authorization attempt
+// - CapturePayment: finalize the payment (moves toward "CAPTURED")
+// - RefundPayment: refund after capture (moves toward "REFUNDED")
+//
+// Axiograph ingests both:
+// - documented flow (comments, as chunks)
+// - annotation-driven flow (HTTP + semantics options)
+// - tacit flow (heuristics from method naming: Create/Get/List/Capture/Refund)
+
+message Money {
+  string currency_code = 1 [(acme.annotations.v1.field).required = true, (acme.annotations.v1.field).example = "USD"];
+  int64 units = 2 [(acme.annotations.v1.field).units = "currency_units"];
+  int32 nanos = 3 [(acme.annotations.v1.field).units = "currency_nanos"];
+}
+
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  PAYMENT_STATUS_CREATED = 1;
+  PAYMENT_STATUS_CAPTURED = 2;
+  PAYMENT_STATUS_REFUNDED = 3;
+}
+
+message Payment {
+  string payment_id = 1 [(acme.annotations.v1.field).required = true, (acme.annotations.v1.field).example = "pay_123"];
+  string user_id = 2 [(acme.annotations.v1.field).required = true, (acme.annotations.v1.field).example = "usr_123"];
+  Money amount = 3 [(acme.annotations.v1.field).required = true];
+  PaymentStatus status = 4;
+}
+
+message CreatePaymentRequest {
+  // User to charge.
+  string user_id = 1 [(acme.annotations.v1.field).required = true];
+  Money amount = 2 [(acme.annotations.v1.field).required = true];
+}
+
+message CreatePaymentResponse {
+  Payment payment = 1;
+}
+
+message GetPaymentRequest {
+  string payment_id = 1 [(acme.annotations.v1.field).required = true];
+}
+
+message GetPaymentResponse {
+  Payment payment = 1;
+}
+
+message CapturePaymentRequest {
+  string payment_id = 1 [(acme.annotations.v1.field).required = true];
+}
+
+message CapturePaymentResponse {
+  Payment payment = 1;
+}
+
+message RefundPaymentRequest {
+  string payment_id = 1 [(acme.annotations.v1.field).required = true];
+  Money amount = 2;
+}
+
+message RefundPaymentResponse {
+  Payment payment = 1;
+}
+
+message ListPaymentsRequest {
+  string user_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPaymentsResponse {
+  repeated Payment payments = 1;
+  string next_page_token = 2;
+}
+
+service PaymentService {
+  // Create a payment authorization.
+  //
+  // NOTE: This is intended to be idempotent with respect to client retries
+  // (e.g. via a client-generated idempotency key, not modeled here).
+  rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse) {
+    option (acme.annotations.v1.http) = { post: "/v1/payments" body: "*" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "payments.write"
+      stability: "beta"
+      tags: "payments"
+      tags: "create"
+    };
+  }
+
+  // Get a payment by id.
+  rpc GetPayment(GetPaymentRequest) returns (GetPaymentResponse) {
+    option (acme.annotations.v1.http) = { get: "/v1/payments/{payment_id}" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "payments.read"
+      stability: "beta"
+      tags: "payments"
+      tags: "get"
+    };
+  }
+
+  // Capture an authorized payment.
+  rpc CapturePayment(CapturePaymentRequest) returns (CapturePaymentResponse) {
+    option (acme.annotations.v1.http) = { post: "/v1/payments/{payment_id}:capture" body: "*" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: false
+      auth_scope: "payments.write"
+      stability: "beta"
+      tags: "payments"
+      tags: "capture"
+    };
+  }
+
+  // Refund a captured payment (full or partial).
+  rpc RefundPayment(RefundPaymentRequest) returns (RefundPaymentResponse) {
+    option (acme.annotations.v1.http) = { post: "/v1/payments/{payment_id}:refund" body: "*" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: false
+      auth_scope: "payments.write"
+      stability: "beta"
+      tags: "payments"
+      tags: "refund"
+    };
+  }
+
+  // List payments (optionally filtered by user).
+  rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse) {
+    option (acme.annotations.v1.http) = { get: "/v1/payments" };
+    option (acme.annotations.v1.semantics) = {
+      idempotent: true
+      auth_scope: "payments.read"
+      stability: "beta"
+      tags: "payments"
+      tags: "list"
+    };
+  }
+}
+

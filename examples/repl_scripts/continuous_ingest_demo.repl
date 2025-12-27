@@ -1,0 +1,72 @@
+# Axiograph REPL script: continuous ingest demo (mutation + visualization)
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/continuous_ingest_demo.repl
+#
+# This demo simulates “continuous ingest” as a sequence of small mutations:
+# new docs arrive, we add low-confidence edges and explicit witness objects,
+# and we re-render neighborhood visualizations after each ingest tick.
+
+# Start from a small but semantically rich base graph.
+gen enterprise 2 3 1
+stats
+
+# Baseline: neighborhood around a service.
+viz build/continuous_ingest_round0.dot format dot plane data focus_name svc_0 hops 2 max_nodes 260
+viz build/continuous_ingest_round0.html format html plane data focus_name svc_0 hops 2 max_nodes 260
+
+# ----------------------------------------------------------------------------
+# Ingest tick 1: new doc arrives (mentions a service + endpoint).
+# Also add an explicit homotopy witness that ties together two derivations:
+#   doc -mentionsService-> svc
+#   doc -mentionsEndpoint-> ep -belongsTo-> svc
+# ----------------------------------------------------------------------------
+
+add_entity Doc doc_stream_0 kind=slack
+add_edge mentionsService doc_stream_0 svc_0 confidence 0.72
+add_edge mentionsEndpoint doc_stream_0 svc_0.rpc_0 confidence 0.72
+
+add_entity PathWitness path_doc_stream_0_direct repr=mentionsService
+add_entity PathWitness path_doc_stream_0_via_endpoint repr=mentionsEndpoint/belongsTo
+add_entity Homotopy homotopy_doc_stream_0 repr=mentionsService~mentionsEndpoint/belongsTo
+
+add_edge from path_doc_stream_0_direct doc_stream_0
+add_edge to path_doc_stream_0_direct svc_0
+
+add_edge from path_doc_stream_0_via_endpoint doc_stream_0
+add_edge to path_doc_stream_0_via_endpoint svc_0
+add_edge via path_doc_stream_0_via_endpoint svc_0.rpc_0
+
+add_edge from homotopy_doc_stream_0 doc_stream_0
+add_edge to homotopy_doc_stream_0 svc_0
+add_edge lhs homotopy_doc_stream_0 path_doc_stream_0_direct
+add_edge rhs homotopy_doc_stream_0 path_doc_stream_0_via_endpoint
+
+# Also record this as an entity-level equivalence (dashed in `viz`).
+add_equiv path_doc_stream_0_direct path_doc_stream_0_via_endpoint HomotopicPath
+
+# Visualize around the newly ingested doc (shows mutation + witness structure).
+viz build/continuous_ingest_round1.dot format dot plane data focus_name doc_stream_0 hops 2 max_nodes 320
+viz build/continuous_ingest_round1.html format html plane data focus_name doc_stream_0 hops 2 max_nodes 320
+
+# ----------------------------------------------------------------------------
+# Ingest tick 2: another doc arrives; we add an approximate “candidate mapping”
+# edge (not a proof!) between two columns across services.
+# ----------------------------------------------------------------------------
+
+add_entity Doc doc_stream_1 kind=incident
+add_edge mentionsService doc_stream_1 svc_1 confidence 0.60
+add_edge mentionsTable doc_stream_1 svc_1.table confidence 0.60
+
+# Approximate / evidence-plane mapping (kept explicit as an edge with confidence).
+add_edge suggestsSameColumn svc_1.table.col_0 svc_0.table.col_0 confidence 0.55 match_kind=token_similarity
+
+viz build/continuous_ingest_round2.dot format dot plane data focus_name svc_1 hops 3 max_nodes 360
+viz build/continuous_ingest_round2.html format html plane data focus_name svc_1 hops 3 max_nodes 360
+
+# Sanity queries.
+q select ?svc where name("doc_stream_0") -mentionsService-> ?svc limit 10
+q select ?h where ?h is Homotopy, ?h -from-> name("doc_stream_0") limit 10
+
+export_axi build/continuous_ingest_export_v1.axi
+

@@ -1,0 +1,15 @@
+@prefix ex: <http://example.org/ns#> .
+@prefix schema: <http://schema.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# A tiny data graph. Bob's age is intentionally ill-typed (string instead of integer),
+# which is useful for future SHACL validation experiments.
+
+ex:Alice a schema:Person ;
+  schema:name "Alice"^^xsd:string ;
+  schema:age 32 .
+
+ex:Bob a schema:Person ;
+  schema:name "Bob" ;
+  schema:age "unknown"^^xsd:string .
+

@@ -1,0 +1,11 @@
+[package]
+name = "axiograph-ingest-sql"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "SQL schema discovery for Axiograph"
+
+[dependencies]
+anyhow.workspace = true
+sqlparser.workspace = true

@@ -1,0 +1,67 @@
+# Axiograph REPL script: import canonical `.axi` HoTT-style module (SupplyChainHoTT)
+#
+# This example encodes 1-morphisms (flows) and 2-morphisms (route equivalences)
+# as first-class objects. Importing it into PathDB should preserve that higher-
+# kind structure for traversal and querying.
+#
+# Run (from repo root):
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/supply_chain_hott_axi_demo.repl
+#
+# Or (from repo root, installed binary):
+#   axiograph repl --script examples/repl_scripts/supply_chain_hott_axi_demo.repl
+
+import_axi examples/manufacturing/SupplyChainHoTT.axi
+
+# Inspect imported schema/theory metadata (meta-plane).
+schema SupplyChain
+
+# Schema-directed validation: check that imported fact nodes (reified tuples)
+# are well-typed w.r.t. the imported `.axi` schema declarations.
+validate_axi
+
+stats
+
+# Follow the supply chain graph via derived endpoint edges on the n-ary Flow relation.
+q select ?to where name("RawMetal_A") -Flow-> ?to limit 10
+
+# Subtyping should work for type constraints: Supplier/Factory/Warehouse/Customer <: Node.
+q select ?n where ?n : Node limit 10
+
+# Many relation tuples are also indexed as generic morphisms (1-cells).
+q select ?m where ?m : Morphism, ?m -from-> name("RawMetal_A") limit 10
+
+# Route equivalences are treated as generic homotopies (2-cells).
+q select ?h where ?h : Homotopy limit 10
+
+# Typecheck + show elaborated query (meta-plane-driven).
+#
+# This inserts implied `?x : Type` atoms for tuple nodes + field values and shows inferred types
+# (including subtyping closure, e.g. `Supplier <: Node`).
+q --elaborate select ?s ?cap where SupplierProvides(supplier=?s, cap=?cap) limit 5
+
+# Traverse route equivalence directly (derived edge uses `route1/route2`).
+q select ?r2 where name("Route_Via_SupplierA") -RouteEquivalence-> ?r2 limit 10
+
+# Proof-relevant structure remains queryable: RouteEquivalence tuples have a `proof` field.
+q select ?p where ?eq : RouteEquivalence, ?eq -proof-> ?p limit 10
+
+# FactIndex demos (fast fact-atom filtering + optional key pruning).
+#
+# Fact atoms and `axi_relation` filters are accelerated by PathDB's FactIndex:
+# - the executor avoids repeated attribute-column scans for `axi_relation="BOM"`.
+q select ?f where ?f.axi_relation = "BOM" limit 10
+
+# The schema declares `constraint key BOM(product, component)`. When all key fields
+# are bound to constants, AxQL uses a key lookup to aggressively prune candidates.
+q --typecheck select ?qty where BOM(product=Widget, component=Body, qty=?qty) limit 10
+q select ?qty where BOM(product=Widget, component=Body, qty=?qty) limit 10
+q select ?bom ?qty where ?bom = BOM(product=Widget, component=Body, qty=?qty) limit 10
+
+# Partial key: still benefits from FactIndex, but won't use key pruning.
+q select ?component where BOM(product=Widget, component=?component) limit 10
+
+# Typed overlay: visualize a neighborhood with meta-plane-as-type-layer annotations.
+viz build/supply_chain_hott_rawmetal_typed.html format html plane both focus_name RawMetal_A hops 2 max_nodes 260 typed_overlay
+
+export_axi build/supply_chain_hott_export_v1.axi
+save build/supply_chain_hott.axpd
