@@ -1337,6 +1337,14 @@ enum AcceptedCommands {
         /// Optional message (for human audit trail).
         #[arg(long)]
         message: Option<String>,
+
+        /// Print phase timings (useful for profiling large overlay commits).
+        #[arg(long)]
+        timings: bool,
+
+        /// Write phase timings JSON to this path.
+        #[arg(long)]
+        timings_json: Option<PathBuf>,
     },
 
     /// Compute and commit snapshot-scoped embeddings into the PathDB WAL (extension layer).
@@ -1403,6 +1411,22 @@ enum AcceptedCommands {
         /// Output `.axpd` file.
         #[arg(short, long)]
         out: PathBuf,
+
+        /// Print phase timings (useful for profiling large checkouts).
+        #[arg(long)]
+        timings: bool,
+
+        /// Write phase timings JSON to this path.
+        #[arg(long)]
+        timings_json: Option<PathBuf>,
+
+        /// Force a full rebuild (ignore any stored `.axpd` checkpoint).
+        ///
+        /// This is useful to:
+        /// - profile the rebuild hot-path (apply ops + build indexes), and
+        /// - sanity-check determinism vs checkpoints.
+        #[arg(long)]
+        rebuild: bool,
     },
 
     /// Show accepted-plane + PathDB WAL snapshot status (HEADs, counts).
@@ -2110,18 +2134,24 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             chunks,
             proposals,
             message,
+            timings,
+            timings_json,
         } => {
             if chunks.is_empty() && proposals.is_empty() {
                 return Err(anyhow!(
                     "pathdb-commit requires at least one --chunks <file.json> or --proposals <file.json>"
                 ));
             }
-            let result = pathdb_wal::commit_pathdb_snapshot_with_overlays(
+            let result = pathdb_wal::commit_pathdb_snapshot_with_overlays_with_options(
                 &dir,
                 &accepted_snapshot,
                 &chunks,
                 &proposals,
                 message.as_deref(),
+                pathdb_wal::PathdbCommitOptions {
+                    timings,
+                    timings_json,
+                },
             )?;
             eprintln!(
                 "{} committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
@@ -2141,8 +2171,24 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             );
             println!("{}", result.snapshot_id);
         }
-        AcceptedCommands::PathdbBuild { dir, snapshot, out } => {
-            pathdb_wal::build_pathdb_from_pathdb_snapshot(&dir, &snapshot, &out)?;
+        AcceptedCommands::PathdbBuild {
+            dir,
+            snapshot,
+            out,
+            timings,
+            timings_json,
+            rebuild,
+        } => {
+            pathdb_wal::build_pathdb_from_pathdb_snapshot_with_options(
+                &dir,
+                &snapshot,
+                &out,
+                pathdb_wal::PathdbBuildOptions {
+                    timings,
+                    timings_json,
+                    rebuild,
+                },
+            )?;
             eprintln!("{} {}", "wrote".green().bold(), out.display().to_string().bold());
         }
         AcceptedCommands::PathdbEmbed {

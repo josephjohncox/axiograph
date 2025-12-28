@@ -104,7 +104,7 @@ pub enum PerfCommands {
     /// This is intended to approximate “real model” structure better than a
     /// uniform random graph.
     Scenario {
-        /// Scenario name (try: proto_api | enterprise_large_api | economic_flows | machinist_learning | schema_evolution | social_network | supply_chain)
+        /// Scenario name (try: proto_api | proto_api_business | enterprise_large_api | economic_flows | machinist_learning | schema_evolution | social_network | supply_chain)
         #[arg(long, default_value = "proto_api")]
         scenario: String,
 

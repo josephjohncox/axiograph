@@ -31,6 +31,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
@@ -115,6 +116,53 @@ pub struct PathDbCommitResult {
     pub ops_added: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PathdbCommitOptions {
+    pub timings: bool,
+    pub timings_json: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PathdbBuildOptions {
+    pub timings: bool,
+    pub timings_json: Option<PathBuf>,
+    /// Ignore checkpoints and force a rebuild from accepted + ops.
+    pub rebuild: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PhaseTimingV1 {
+    name: String,
+    millis: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PathdbOperationTimingsV1 {
+    version: String,
+    operation: String,
+    snapshot_id: Option<String>,
+    accepted_snapshot_id: Option<String>,
+    used_checkpoint: Option<bool>,
+    phases: Vec<PhaseTimingV1>,
+    notes: Vec<String>,
+}
+
+fn write_timings_json(path: &Path, timings: &PathdbOperationTimingsV1) -> Result<()> {
+    let json = serde_json::to_string_pretty(timings)?;
+    fs::write(path, json)?;
+    Ok(())
+}
+
+fn print_timings(t: &PathdbOperationTimingsV1) {
+    eprintln!("-- timings ({})", t.operation);
+    for p in &t.phases {
+        eprintln!("  {:28} {:>8} ms", p.name, p.millis);
+    }
+    for n in &t.notes {
+        eprintln!("  note: {n}");
+    }
+}
+
 /// Initialize the PathDB WAL directory layout under an accepted-plane directory.
 ///
 /// This is idempotent and safe to run even if the directory already exists.
@@ -154,16 +202,68 @@ pub fn commit_pathdb_snapshot_with_overlays(
     proposals: &[PathBuf],
     message: Option<&str>,
 ) -> Result<PathDbCommitResult> {
+    commit_pathdb_snapshot_with_overlays_with_options(
+        accepted_dir,
+        accepted_snapshot_id_or_latest,
+        chunks,
+        proposals,
+        message,
+        PathdbCommitOptions::default(),
+    )
+}
+
+pub fn commit_pathdb_snapshot_with_overlays_with_options(
+    accepted_dir: &Path,
+    accepted_snapshot_id_or_latest: &str,
+    chunks: &[PathBuf],
+    proposals: &[PathBuf],
+    message: Option<&str>,
+    options: PathdbCommitOptions,
+) -> Result<PathDbCommitResult> {
     ensure_layout(accepted_dir)?;
 
+    let mut timings = if options.timings || options.timings_json.is_some() {
+        Some(PathdbOperationTimingsV1 {
+            version: "pathdb_timings_v1".to_string(),
+            operation: "pathdb_commit".to_string(),
+            snapshot_id: None,
+            accepted_snapshot_id: None,
+            used_checkpoint: None,
+            phases: Vec::new(),
+            notes: Vec::new(),
+        })
+    } else {
+        None
+    };
+
+    let phase_start = Instant::now();
     let accepted_snapshot_id =
         resolve_accepted_snapshot_id(accepted_dir, accepted_snapshot_id_or_latest)?;
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "resolve_accepted_snapshot".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+        t.accepted_snapshot_id = Some(accepted_snapshot_id.clone());
+    }
 
+    let phase_start = Instant::now();
     let previous_snapshot_id = read_pathdb_head(accepted_dir)?;
     let previous_snapshot = match previous_snapshot_id.as_deref() {
         Some(prev) => Some(read_pathdb_snapshot(accepted_dir, prev)?),
         None => None,
     };
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "load_previous_snapshot".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+        if let Some(prev_id) = previous_snapshot_id.as_deref() {
+            t.notes.push(format!("previous_snapshot_id={prev_id}"));
+        } else {
+            t.notes.push("previous_snapshot_id=(none)".to_string());
+        }
+    }
 
     let existing_ops: Vec<PathDbWalOpV1> = previous_snapshot
         .as_ref()
@@ -173,9 +273,12 @@ pub fn commit_pathdb_snapshot_with_overlays(
     // Fast path: if we have a previous checkpoint with the same accepted base,
     // load it and only apply *new* ops. Otherwise, rebuild from accepted and
     // replay existing ops first.
+    let phase_start = Instant::now();
+    let mut base_used_checkpoint = false;
     let mut db = if let Some(prev) = previous_snapshot.as_ref() {
         if prev.accepted_snapshot_id == accepted_snapshot_id {
             if let Some(db) = try_load_checkpoint(accepted_dir, &prev.snapshot_id)? {
+                base_used_checkpoint = true;
                 db
             } else {
                 rebuild_from_accepted_and_ops(accepted_dir, &accepted_snapshot_id, &existing_ops)?
@@ -187,16 +290,58 @@ pub fn commit_pathdb_snapshot_with_overlays(
         rebuild_from_accepted_and_ops(accepted_dir, &accepted_snapshot_id, &[])?
         // base only
     };
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "load_or_rebuild_base".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+        t.used_checkpoint = Some(base_used_checkpoint);
+        if base_used_checkpoint {
+            t.notes.push("base_load=checkpoint".to_string());
+        } else {
+            t.notes.push("base_load=rebuild".to_string());
+        }
+    }
 
     let mut new_ops: Vec<PathDbWalOpV1> = Vec::new();
     for p in chunks {
+        let phase_start = Instant::now();
         let op = store_chunks_blob(accepted_dir, p)?;
+        if let Some(t) = timings.as_mut() {
+            t.phases.push(PhaseTimingV1 {
+                name: "store_chunks_blob".to_string(),
+                millis: phase_start.elapsed().as_millis(),
+            });
+        }
+
+        let phase_start = Instant::now();
         apply_op(&mut db, accepted_dir, &op)?;
+        if let Some(t) = timings.as_mut() {
+            t.phases.push(PhaseTimingV1 {
+                name: "apply_chunks_op".to_string(),
+                millis: phase_start.elapsed().as_millis(),
+            });
+        }
         new_ops.push(op);
     }
     for p in proposals {
+        let phase_start = Instant::now();
         let op = store_proposals_blob(accepted_dir, p)?;
+        if let Some(t) = timings.as_mut() {
+            t.phases.push(PhaseTimingV1 {
+                name: "store_proposals_blob".to_string(),
+                millis: phase_start.elapsed().as_millis(),
+            });
+        }
+
+        let phase_start = Instant::now();
         apply_op(&mut db, accepted_dir, &op)?;
+        if let Some(t) = timings.as_mut() {
+            t.phases.push(PhaseTimingV1 {
+                name: "apply_proposals_op".to_string(),
+                millis: phase_start.elapsed().as_millis(),
+            });
+        }
         new_ops.push(op);
     }
 
@@ -204,7 +349,14 @@ pub fn commit_pathdb_snapshot_with_overlays(
     ops_total.extend(new_ops.clone());
 
     // Build/update indexes after all ops.
+    let phase_start = Instant::now();
     db.build_indexes();
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "build_indexes".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+    }
 
     let snapshot_id = pathdb_snapshot_id_v1(
         previous_snapshot_id.as_deref(),
@@ -221,8 +373,27 @@ pub fn commit_pathdb_snapshot_with_overlays(
     };
 
     write_pathdb_snapshot(accepted_dir, &snapshot)?;
+    if let Some(t) = timings.as_mut() {
+        t.snapshot_id = Some(snapshot_id.clone());
+    }
+
+    let phase_start = Instant::now();
     write_checkpoint_if_missing(accepted_dir, &snapshot_id, &db.to_bytes()?)?;
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "write_checkpoint".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+    }
+
+    let phase_start = Instant::now();
     write_pathdb_head(accepted_dir, &snapshot_id)?;
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "write_head".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+    }
 
     let ops_added = new_ops.len();
 
@@ -237,6 +408,17 @@ pub fn commit_pathdb_snapshot_with_overlays(
         message: message.map(|s| s.to_string()),
     };
     append_event(accepted_dir, &event)?;
+
+    if let Some(mut t) = timings {
+        t.notes.push(format!("ops_added={ops_added}"));
+        t.notes.push(format!("ops_total={}", snapshot.ops.len()));
+        if options.timings {
+            print_timings(&t);
+        }
+        if let Some(path) = options.timings_json.as_ref() {
+            write_timings_json(path, &t)?;
+        }
+    }
 
     Ok(PathDbCommitResult {
         snapshot_id,
@@ -337,24 +519,160 @@ pub fn build_pathdb_from_pathdb_snapshot(
     snapshot_id_or_latest: &str,
     out_axpd: &Path,
 ) -> Result<()> {
+    build_pathdb_from_pathdb_snapshot_with_options(
+        accepted_dir,
+        snapshot_id_or_latest,
+        out_axpd,
+        PathdbBuildOptions::default(),
+    )
+}
+
+pub fn build_pathdb_from_pathdb_snapshot_with_options(
+    accepted_dir: &Path,
+    snapshot_id_or_latest: &str,
+    out_axpd: &Path,
+    options: PathdbBuildOptions,
+) -> Result<()> {
     ensure_layout(accepted_dir)?;
 
+    let mut timings = if options.timings || options.timings_json.is_some() {
+        Some(PathdbOperationTimingsV1 {
+            version: "pathdb_timings_v1".to_string(),
+            operation: "pathdb_build".to_string(),
+            snapshot_id: None,
+            accepted_snapshot_id: None,
+            used_checkpoint: None,
+            phases: Vec::new(),
+            notes: Vec::new(),
+        })
+    } else {
+        None
+    };
+
+    let phase_start = Instant::now();
     let snapshot_id = resolve_pathdb_snapshot_id(accepted_dir, snapshot_id_or_latest)?;
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "resolve_pathdb_snapshot".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+        t.snapshot_id = Some(snapshot_id.clone());
+    }
 
     // Fast path: if we have a checkpoint for this snapshot, just copy it out.
     let checkpoint = checkpoint_path(accepted_dir, &snapshot_id);
-    if checkpoint.exists() {
-        fs::copy(&checkpoint, out_axpd)?;
+    if checkpoint.exists() && !options.rebuild {
+        let phase_start = Instant::now();
+        let size = checkpoint.metadata().ok().map(|m| m.len());
+
+        // Prefer hard-links (fast "checkout") when possible; fall back to a
+        // physical copy across filesystems.
+        if out_axpd.exists() {
+            let _ = fs::remove_file(out_axpd);
+        }
+        let mut used_hardlink = false;
+        match fs::hard_link(&checkpoint, out_axpd) {
+            Ok(()) => {
+                used_hardlink = true;
+            }
+            Err(_) => {
+                fs::copy(&checkpoint, out_axpd)?;
+            }
+        }
+
+        if let Some(t) = timings.as_mut() {
+            t.used_checkpoint = Some(true);
+            t.phases.push(PhaseTimingV1 {
+                name: "materialize_checkpoint".to_string(),
+                millis: phase_start.elapsed().as_millis(),
+            });
+            if let Some(sz) = size {
+                t.notes.push(format!("checkpoint_bytes={sz}"));
+            }
+            t.notes.push(format!(
+                "checkpoint_materialize_mode={}",
+                if used_hardlink { "hardlink" } else { "copy" }
+            ));
+        }
+
+        if let Some(t) = timings.as_ref() {
+            if options.timings {
+                print_timings(t);
+            }
+            if let Some(path) = options.timings_json.as_ref() {
+                write_timings_json(path, t)?;
+            }
+        }
         return Ok(());
     }
 
+    if let Some(t) = timings.as_mut() {
+        t.used_checkpoint = Some(false);
+        if checkpoint.exists() && options.rebuild {
+            t.notes.push("rebuild=true (ignored checkpoint)".to_string());
+        }
+    }
+
+    let phase_start = Instant::now();
     let snapshot = read_pathdb_snapshot(accepted_dir, &snapshot_id)?;
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "read_snapshot_manifest".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+        t.accepted_snapshot_id = Some(snapshot.accepted_snapshot_id.clone());
+        t.notes.push(format!("ops_total={}", snapshot.ops.len()));
+    }
+
+    let phase_start = Instant::now();
     let mut db = build_base_from_accepted(accepted_dir, &snapshot.accepted_snapshot_id)?;
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "build_base_from_accepted".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+    }
+
+    let phase_start = Instant::now();
     for op in &snapshot.ops {
         apply_op(&mut db, accepted_dir, op)?;
     }
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "apply_ops".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+    }
+
+    let phase_start = Instant::now();
     db.build_indexes();
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "build_indexes".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+    }
+
+    let phase_start = Instant::now();
     fs::write(out_axpd, db.to_bytes()?)?;
+    if let Some(t) = timings.as_mut() {
+        t.phases.push(PhaseTimingV1 {
+            name: "write_axpd".to_string(),
+            millis: phase_start.elapsed().as_millis(),
+        });
+        if let Ok(m) = out_axpd.metadata() {
+            t.notes.push(format!("out_bytes={}", m.len()));
+        }
+    }
+
+    if let Some(t) = timings.as_ref() {
+        if options.timings {
+            print_timings(t);
+        }
+        if let Some(path) = options.timings_json.as_ref() {
+            write_timings_json(path, t)?;
+        }
+    }
     Ok(())
 }
 

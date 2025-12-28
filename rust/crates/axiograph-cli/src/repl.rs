@@ -709,7 +709,7 @@ fn print_help() {
                                  Generate a synthetic graph and build indexes
   gen scenario <name> [scale] [index_depth] [seed]
                                  Generate a scenario graph (typed shapes + homotopies)
-                                 Scenarios: enterprise | enterprise_large_api | economic_flows | machinist_learning | schema_evolution | proto_api | social_network | supply_chain
+                                 Scenarios: enterprise | enterprise_large_api | economic_flows | machinist_learning | schema_evolution | proto_api | proto_api_business | social_network | supply_chain
   gen <name> [scale] [index_depth] [seed]
                                  Shorthand for `gen scenario <name> ...`
   build_indexes                  Build PathDB indexes for the current DB

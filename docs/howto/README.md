@@ -9,3 +9,4 @@ How-to guides are task-oriented (“I want to do X”).
 - `docs/howto/KNOWLEDGE_INGESTION.md`
 - `docs/howto/INGEST_PROTO.md`
 - `docs/howto/LLM_QUERY_INTEGRATION.md`
+- `docs/howto/PERFORMANCE_PROFILING.md`

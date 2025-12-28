@@ -43,6 +43,7 @@ If you only read one thing, read the “book”:
 - `docs/howto/KNOWLEDGE_INGESTION.md` — ingest pipelines (repo/docs/sql/json/proto/web) → proposals → candidates → accept
 - `docs/howto/INGEST_PROTO.md` — proto/gRPC ingestion (Buf) details + examples
 - `docs/howto/LLM_QUERY_INTEGRATION.md` — NL-ish query integration + REPL workflows
+- `docs/howto/PERFORMANCE_PROFILING.md` — phase timings + flamegraphs (PathDB/WAL hot paths)
 
 ---
 

@@ -211,7 +211,12 @@ pub(crate) fn build_scenario_pathdb_ingest(
         "schema_evolution" | "schemaevolution" | "schema" | "evolution" => {
             build_schema_evolution_scenario(scale, index_depth, seed)
         }
-        "proto_api" | "protoapi" | "proto" | "api" => build_proto_api_scenario(scale, index_depth, seed),
+        "proto_api" | "protoapi" | "proto" | "api" => {
+            build_proto_api_scenario(scale, index_depth, seed)
+        }
+        "proto_api_business" | "proto_business" | "business_proto" | "enterprise_proto" => {
+            build_proto_api_business_scenario(scale, index_depth, seed)
+        }
         "social_network" | "socialnetwork" | "social" => {
             build_social_network_scenario(scale, index_depth, seed)
         }
@@ -219,7 +224,7 @@ pub(crate) fn build_scenario_pathdb_ingest(
             build_supply_chain_scenario(scale, index_depth, seed)
         }
         other => Err(anyhow!(
-            "unknown scenario `{other}` (try: enterprise | economic_flows | machinist_learning | schema_evolution | proto_api | social_network | supply_chain)"
+            "unknown scenario `{other}` (try: enterprise | enterprise_large_api | proto_api | proto_api_business | economic_flows | machinist_learning | schema_evolution | social_network | supply_chain)"
         )),
     }
 }
@@ -2061,6 +2066,791 @@ fn build_proto_api_scenario(
     })
 }
 
+fn build_proto_api_business_scenario(
+    scale: usize,
+    index_depth: usize,
+    seed: u64,
+) -> Result<SyntheticScenarioIngest> {
+    if scale == 0 {
+        return Err(anyhow!("scale must be > 0"));
+    }
+
+    // A proto/gRPC API fleet in a (somewhat) realistic microservice/business context.
+    //
+    // Why this scenario exists (vs `proto_api`)
+    // -----------------------------------------
+    // `proto_api` is designed to align with the proto ingestion fixture and to keep
+    // names stable for tests (`acme.svc0.v1.Service0`, etc).
+    //
+    // For demos/tutorials/viz, it’s useful to have:
+    // - human-recognizable service names (orders/payments/shipping/...),
+    // - a richer cross-service call graph,
+    // - DocChunks for *dozens* of services so LLM grounding has citations.
+
+    struct ProtoFieldSpec {
+        message_id: u32,
+        field_id: u32,
+        field_type_message: Option<u32>,
+    }
+
+    struct ProtoRpcSpec {
+        rpc_id: u32,
+        rpc_fqn: String,
+        request_message_id: u32,
+        response_message_id: u32,
+        http_endpoint_id: u32,
+        method_name: String,
+        http_method: String,
+        http_path: String,
+    }
+
+    struct ServiceBundle {
+        domain: String,
+        package_id: u32,
+        file_id: u32,
+        service_id: u32,
+        workflow_id: u32,
+        doc_id: u32,
+        resource_fqn: String,
+        resource_message_id: u32,
+        message_ids: Vec<u32>,
+        field_specs: Vec<ProtoFieldSpec>,
+        rpcs: Vec<ProtoRpcSpec>,
+        // Doc → RPC homotopy.
+        doc_direct_path_id: u32,
+        doc_via_http_path_id: u32,
+        doc_homotopy_id: u32,
+        // Order homotopy (heuristic vs observed).
+        order_suggested_path_id: u32,
+        order_observed_path_id: u32,
+        order_homotopy_id: u32,
+    }
+
+    #[derive(Clone)]
+    struct BusinessServiceSpec {
+        domain: &'static str,
+        service_name: &'static str,
+        resource_name: &'static str,
+        dependencies: &'static [&'static str],
+    }
+
+    // A minimal set of “business-shaped” services. If `scale` is bigger than
+    // this list, we fall back to `acme.svcN.v1.ServiceN`-like names.
+    let business: Vec<BusinessServiceSpec> = vec![
+        BusinessServiceSpec {
+            domain: "auth",
+            service_name: "AuthService",
+            resource_name: "Session",
+            dependencies: &["users"],
+        },
+        BusinessServiceSpec {
+            domain: "users",
+            service_name: "UserService",
+            resource_name: "User",
+            dependencies: &[],
+        },
+        BusinessServiceSpec {
+            domain: "catalog",
+            service_name: "CatalogService",
+            resource_name: "Product",
+            dependencies: &[],
+        },
+        BusinessServiceSpec {
+            domain: "pricing",
+            service_name: "PricingService",
+            resource_name: "PriceQuote",
+            dependencies: &["catalog"],
+        },
+        BusinessServiceSpec {
+            domain: "inventory",
+            service_name: "InventoryService",
+            resource_name: "StockReservation",
+            dependencies: &["catalog"],
+        },
+        BusinessServiceSpec {
+            domain: "orders",
+            service_name: "OrderService",
+            resource_name: "Order",
+            dependencies: &["users", "catalog", "pricing", "inventory", "payments", "shipping"],
+        },
+        BusinessServiceSpec {
+            domain: "payments",
+            service_name: "PaymentService",
+            resource_name: "Payment",
+            dependencies: &["fraud", "ledger"],
+        },
+        BusinessServiceSpec {
+            domain: "fraud",
+            service_name: "FraudService",
+            resource_name: "RiskAssessment",
+            dependencies: &["users"],
+        },
+        BusinessServiceSpec {
+            domain: "ledger",
+            service_name: "LedgerService",
+            resource_name: "LedgerEntry",
+            dependencies: &[],
+        },
+        BusinessServiceSpec {
+            domain: "shipping",
+            service_name: "ShippingService",
+            resource_name: "Shipment",
+            dependencies: &["inventory", "notifications"],
+        },
+        BusinessServiceSpec {
+            domain: "notifications",
+            service_name: "NotificationService",
+            resource_name: "Notification",
+            dependencies: &[],
+        },
+        BusinessServiceSpec {
+            domain: "fulfillment",
+            service_name: "FulfillmentService",
+            resource_name: "FulfillmentTask",
+            dependencies: &["inventory", "shipping", "notifications"],
+        },
+        BusinessServiceSpec {
+            domain: "returns",
+            service_name: "ReturnsService",
+            resource_name: "Return",
+            dependencies: &["orders", "payments", "shipping", "notifications"],
+        },
+        BusinessServiceSpec {
+            domain: "support",
+            service_name: "SupportService",
+            resource_name: "Ticket",
+            dependencies: &["users"],
+        },
+        BusinessServiceSpec {
+            domain: "analytics",
+            service_name: "AnalyticsService",
+            resource_name: "Event",
+            dependencies: &[],
+        },
+    ];
+
+    let mut deps_by_domain: HashMap<&'static str, &'static [&'static str]> = HashMap::new();
+    for s in &business {
+        deps_by_domain.insert(s.domain, s.dependencies);
+    }
+
+    let mut builder = ScenarioBuilder::new(seed, index_depth)?;
+
+    let start = Instant::now();
+
+    let mut bundles: Vec<ServiceBundle> = Vec::with_capacity(scale);
+
+    for i in 0..scale {
+        let domain: String;
+        let service_name: String;
+        let resource_name: String;
+
+        if let Some(spec) = business.get(i) {
+            domain = spec.domain.to_string();
+            service_name = spec.service_name.to_string();
+            resource_name = spec.resource_name.to_string();
+        } else {
+            domain = format!("svc{i}");
+            service_name = format!("Service{i}");
+            resource_name = "Widget".to_string();
+        }
+
+        let package_name = format!("acme.{domain}.v1");
+        let file_name = format!("acme/{domain}/v1/{domain}.proto");
+        let service_fqn = format!("{package_name}.{service_name}");
+
+        let package_id = builder.add_named_entity("ProtoPackage", package_name.clone(), Vec::new());
+        let file_id = builder.add_named_entity(
+            "ProtoFile",
+            file_name.clone(),
+            vec![
+                ("package".to_string(), package_name.clone()),
+                ("syntax".to_string(), "proto3".to_string()),
+            ],
+        );
+        let service_id = builder.add_named_entity(
+            "ProtoService",
+            service_fqn.clone(),
+            vec![
+                ("domain".to_string(), domain.clone()),
+                ("package".to_string(), package_name.clone()),
+                ("file".to_string(), file_name.clone()),
+                ("fqn".to_string(), service_fqn.clone()),
+            ],
+        );
+
+        // Resource message and a few request/response messages.
+        let resource_fqn = format!("{package_name}.{resource_name}");
+        let resource_message_id = builder.add_named_entity(
+            "ProtoMessage",
+            resource_fqn.clone(),
+            vec![
+                ("package".to_string(), package_name.clone()),
+                ("file".to_string(), file_name.clone()),
+                ("fqn".to_string(), resource_fqn.clone()),
+            ],
+        );
+
+        // RPC set: CRUD-ish defaults, with a couple of domain-specific additions
+        // for realism (payments/orders/shipping).
+        let mut rpc_method_names: Vec<String> = Vec::new();
+
+        if domain == "payments" {
+            rpc_method_names.extend([
+                "AuthorizePayment",
+                "CapturePayment",
+                "RefundPayment",
+                "GetPayment",
+            ].into_iter().map(|s| s.to_string()));
+        } else if domain == "orders" {
+            rpc_method_names.extend([
+                "CreateOrder",
+                "GetOrder",
+                "CancelOrder",
+                "ListOrders",
+            ].into_iter().map(|s| s.to_string()));
+        } else if domain == "shipping" {
+            rpc_method_names.extend([
+                "CreateShipment",
+                "TrackShipment",
+                "GetQuote",
+                "CancelShipment",
+            ].into_iter().map(|s| s.to_string()));
+        } else {
+            rpc_method_names.extend([
+                format!("Create{resource_name}"),
+                format!("Get{resource_name}"),
+                format!("Delete{resource_name}"),
+                format!("List{resource_name}s"),
+            ]);
+        }
+
+        // Messages: request/response per RPC.
+        let mut message_ids: Vec<u32> = Vec::new();
+        message_ids.push(resource_message_id);
+
+        let mut named_message_ids: HashMap<String, u32> = HashMap::new();
+        named_message_ids.insert(resource_name.clone(), resource_message_id);
+
+        for method in &rpc_method_names {
+            for suffix in ["Request", "Response"] {
+                let msg_name = format!("{method}{suffix}");
+                let fqn = format!("{package_name}.{msg_name}");
+                let id = builder.add_named_entity(
+                    "ProtoMessage",
+                    fqn.clone(),
+                    vec![
+                        ("package".to_string(), package_name.clone()),
+                        ("file".to_string(), file_name.clone()),
+                        ("fqn".to_string(), fqn.clone()),
+                    ],
+                );
+                message_ids.push(id);
+                named_message_ids.insert(msg_name, id);
+            }
+        }
+
+        // Fields: give every resource an `id` and `status`, and every response a
+        // typed `resource` payload.
+        let mut field_specs: Vec<ProtoFieldSpec> = Vec::new();
+
+        let resource_id_field = builder.add_named_entity(
+            "ProtoField",
+            format!("{resource_fqn}.id"),
+            vec![
+                ("message_fqn".to_string(), resource_fqn.clone()),
+                ("field_name".to_string(), "id".to_string()),
+                ("number".to_string(), "1".to_string()),
+                ("type".to_string(), "TYPE_STRING".to_string()),
+            ],
+        );
+        field_specs.push(ProtoFieldSpec {
+            message_id: resource_message_id,
+            field_id: resource_id_field,
+            field_type_message: None,
+        });
+
+        let resource_status_field = builder.add_named_entity(
+            "ProtoField",
+            format!("{resource_fqn}.status"),
+            vec![
+                ("message_fqn".to_string(), resource_fqn.clone()),
+                ("field_name".to_string(), "status".to_string()),
+                ("number".to_string(), "2".to_string()),
+                ("type".to_string(), "TYPE_STRING".to_string()),
+            ],
+        );
+        field_specs.push(ProtoFieldSpec {
+            message_id: resource_message_id,
+            field_id: resource_status_field,
+            field_type_message: None,
+        });
+
+        for method in &rpc_method_names {
+            let req_name = format!("{method}Request");
+            let resp_name = format!("{method}Response");
+            let req_id = *named_message_ids.get(&req_name).expect("request message exists");
+            let req_field = builder.add_named_entity(
+                "ProtoField",
+                format!("{package_name}.{req_name}.id"),
+                vec![
+                    (
+                        "message_fqn".to_string(),
+                        format!("{package_name}.{req_name}"),
+                    ),
+                    ("field_name".to_string(), "id".to_string()),
+                    ("number".to_string(), "1".to_string()),
+                    ("type".to_string(), "TYPE_STRING".to_string()),
+                ],
+            );
+            field_specs.push(ProtoFieldSpec {
+                message_id: req_id,
+                field_id: req_field,
+                field_type_message: None,
+            });
+
+            let resp_id = *named_message_ids
+                .get(&resp_name)
+                .expect("response message exists");
+            let resp_field = builder.add_named_entity(
+                "ProtoField",
+                format!("{package_name}.{resp_name}.resource"),
+                vec![
+                    (
+                        "message_fqn".to_string(),
+                        format!("{package_name}.{resp_name}"),
+                    ),
+                    ("field_name".to_string(), "resource".to_string()),
+                    ("number".to_string(), "1".to_string()),
+                    ("type".to_string(), "TYPE_MESSAGE".to_string()),
+                    ("type_name".to_string(), resource_fqn.clone()),
+                ],
+            );
+            field_specs.push(ProtoFieldSpec {
+                message_id: resp_id,
+                field_id: resp_field,
+                field_type_message: Some(resource_message_id),
+            });
+        }
+
+        // RPCs + HTTP endpoints.
+        let mut rpcs: Vec<ProtoRpcSpec> = Vec::new();
+        for method_name in &rpc_method_names {
+            let rpc_fqn = format!("{service_fqn}.{method_name}");
+            let request_fqn = format!("{package_name}.{method_name}Request");
+            let response_fqn = format!("{package_name}.{method_name}Response");
+
+            let http_method = if method_name.starts_with("Get") || method_name.starts_with("List") || method_name == "TrackShipment" || method_name == "GetQuote" {
+                "GET"
+            } else if method_name.starts_with("Delete") || method_name.starts_with("Cancel") {
+                "DELETE"
+            } else if method_name.starts_with("Update") {
+                "PATCH"
+            } else {
+                "POST"
+            };
+
+            let resource_path = domain.clone();
+            let resource_plural = resource_name.to_ascii_lowercase() + "s";
+
+            let http_path = if method_name.starts_with("List") || method_name == "GetQuote" {
+                format!("/v1/{resource_path}/{resource_plural}")
+            } else if method_name.starts_with("Get") || method_name == "TrackShipment" {
+                format!("/v1/{resource_path}/{resource_plural}/{{id}}")
+            } else if method_name == "CapturePayment" {
+                "/v1/payments/{id}:capture".to_string()
+            } else if method_name == "RefundPayment" {
+                "/v1/payments/{id}:refund".to_string()
+            } else if method_name.starts_with("Cancel") {
+                format!("/v1/{resource_path}/{resource_plural}/{{id}}:cancel")
+            } else {
+                format!("/v1/{resource_path}/{resource_plural}")
+            };
+
+            let rpc_id = builder.add_named_entity(
+                "ProtoRpc",
+                rpc_fqn.clone(),
+                vec![
+                    ("domain".to_string(), domain.clone()),
+                    ("package".to_string(), package_name.clone()),
+                    ("file".to_string(), file_name.clone()),
+                    ("service_fqn".to_string(), service_fqn.clone()),
+                    ("rpc_fqn".to_string(), rpc_fqn.clone()),
+                    ("method_name".to_string(), method_name.to_string()),
+                    ("input_type".to_string(), request_fqn.clone()),
+                    ("output_type".to_string(), response_fqn.clone()),
+                    ("http_method".to_string(), http_method.to_string()),
+                    ("http_path".to_string(), http_path.clone()),
+                ],
+            );
+
+            let endpoint_key = format!("{http_method} {http_path}");
+            let http_endpoint_id = builder.add_named_entity(
+                "HttpEndpoint",
+                endpoint_key.clone(),
+                vec![
+                    ("method".to_string(), http_method.to_string()),
+                    ("path".to_string(), http_path.clone()),
+                ],
+            );
+
+            let request_message_id = *named_message_ids
+                .get(&format!("{method_name}Request"))
+                .expect("request message exists");
+            let response_message_id = *named_message_ids
+                .get(&format!("{method_name}Response"))
+                .expect("response message exists");
+
+            rpcs.push(ProtoRpcSpec {
+                rpc_id,
+                rpc_fqn,
+                request_message_id,
+                response_message_id,
+                http_endpoint_id,
+                method_name: method_name.to_string(),
+                http_method: http_method.to_string(),
+                http_path,
+            });
+        }
+
+        // Tacit workflow grouping.
+        let workflow_id = builder.add_named_entity(
+            "ApiWorkflow",
+            format!("{resource_name}Lifecycle_{domain}"),
+            vec![
+                ("domain".to_string(), domain.clone()),
+                ("resource_fqn".to_string(), resource_fqn.clone()),
+            ],
+        );
+
+        // A doc node that mentions both the rpc and its HTTP endpoint.
+        let doc_id = builder.add_named_entity(
+            "Doc",
+            format!("doc_{domain}_api"),
+            vec![
+                ("kind".to_string(), "api_docs".to_string()),
+                ("domain".to_string(), domain.clone()),
+                ("about_service".to_string(), service_fqn.clone()),
+            ],
+        );
+
+        // Homotopy: doc → rpc (direct) vs doc → http endpoint → rpc.
+        let doc_direct_path_id = builder.add_named_entity(
+            "PathWitness",
+            format!("path_doc_{domain}_direct"),
+            vec![("repr".to_string(), "mentions_rpc".to_string())],
+        );
+        let doc_via_http_path_id = builder.add_named_entity(
+            "PathWitness",
+            format!("path_doc_{domain}_via_http"),
+            vec![(
+                "repr".to_string(),
+                "mentions_http_endpoint/proto_http_endpoint_of_rpc".to_string(),
+            )],
+        );
+        let doc_homotopy_id = builder.add_named_entity(
+            "Homotopy",
+            format!("homotopy_doc_{domain}"),
+            vec![(
+                "repr".to_string(),
+                "mentions_rpc ~ mentions_http_endpoint/proto_http_endpoint_of_rpc".to_string(),
+            )],
+        );
+
+        // Homotopy: heuristic ordering vs observed ordering.
+        let order_suggested_path_id = builder.add_named_entity(
+            "PathWitness",
+            format!("path_Create_to_Get_suggested_{domain}"),
+            vec![("repr".to_string(), "workflow_suggests_order".to_string())],
+        );
+        let order_observed_path_id = builder.add_named_entity(
+            "PathWitness",
+            format!("path_Create_to_Get_observed_{domain}"),
+            vec![("repr".to_string(), "observed_next".to_string())],
+        );
+        let order_homotopy_id = builder.add_named_entity(
+            "Homotopy",
+            format!("homotopy_Create_to_Get_{domain}"),
+            vec![("repr".to_string(), "workflow_suggests_order ~ observed_next".to_string())],
+        );
+
+        bundles.push(ServiceBundle {
+            domain,
+            package_id,
+            file_id,
+            service_id,
+            workflow_id,
+            doc_id,
+            resource_fqn,
+            resource_message_id,
+            message_ids,
+            field_specs,
+            rpcs,
+            doc_direct_path_id,
+            doc_via_http_path_id,
+            doc_homotopy_id,
+            order_suggested_path_id,
+            order_observed_path_id,
+            order_homotopy_id,
+        });
+    }
+
+    let entity_time = start.elapsed();
+
+    let start = Instant::now();
+
+    let mut domain_to_service: HashMap<String, u32> = HashMap::new();
+    for b in &bundles {
+        domain_to_service.insert(b.domain.clone(), b.service_id);
+    }
+
+    for (i, bundle) in bundles.iter().enumerate() {
+        // file/package/service structure
+        builder.rel(
+            "proto_file_in_package",
+            bundle.file_id,
+            bundle.package_id,
+            0.98,
+        );
+        builder.rel(
+            "proto_file_declares_service",
+            bundle.file_id,
+            bundle.service_id,
+            0.98,
+        );
+
+        // file → messages
+        for &m in &bundle.message_ids {
+            builder.rel("proto_file_declares_message", bundle.file_id, m, 0.98);
+        }
+
+        // message → fields
+        for field in &bundle.field_specs {
+            builder.rel("proto_message_has_field", field.message_id, field.field_id, 0.98);
+            if let Some(type_msg) = field.field_type_message {
+                builder.rel("proto_field_type_message", field.field_id, type_msg, 0.98);
+            }
+        }
+
+        // workflow
+        builder.rel(
+            "proto_service_has_workflow",
+            bundle.service_id,
+            bundle.workflow_id,
+            0.60,
+        );
+
+        for rpc in &bundle.rpcs {
+            builder.rel("proto_service_has_rpc", bundle.service_id, rpc.rpc_id, 0.98);
+            builder.rel("proto_rpc_request", rpc.rpc_id, rpc.request_message_id, 0.98);
+            builder.rel("proto_rpc_response", rpc.rpc_id, rpc.response_message_id, 0.98);
+            builder.rel("proto_rpc_http_endpoint", rpc.rpc_id, rpc.http_endpoint_id, 0.98);
+            builder.rel("proto_http_endpoint_of_rpc", rpc.http_endpoint_id, rpc.rpc_id, 0.98);
+
+            // include in workflow (tacit)
+            builder.rel("workflow_includes_rpc", bundle.workflow_id, rpc.rpc_id, 0.60);
+        }
+
+        // Pick a deterministic “primary” rpc for doc mentions:
+        // prefer Get*, otherwise fall back to the first.
+        let primary_rpc = bundle
+            .rpcs
+            .iter()
+            .find(|r| r.method_name.starts_with("Get"))
+            .or_else(|| bundle.rpcs.first())
+            .expect("at least one rpc exists");
+
+        builder.rel("mentions_rpc", bundle.doc_id, primary_rpc.rpc_id, 0.85);
+        builder.rel(
+            "mentions_http_endpoint",
+            bundle.doc_id,
+            primary_rpc.http_endpoint_id,
+            0.85,
+        );
+
+        // Heuristic order: Create* -> Get* (when present).
+        let create_rpc = bundle.rpcs.iter().find(|r| r.method_name.starts_with("Create"));
+        let get_rpc = bundle.rpcs.iter().find(|r| r.method_name.starts_with("Get"));
+        if let (Some(create), Some(get)) = (create_rpc, get_rpc) {
+            builder.rel("workflow_suggests_order", create.rpc_id, get.rpc_id, 0.55);
+            builder.rel("observed_next", create.rpc_id, get.rpc_id, 0.70);
+
+            builder.rel("from", bundle.order_suggested_path_id, create.rpc_id, 1.0);
+            builder.rel("to", bundle.order_suggested_path_id, get.rpc_id, 1.0);
+
+            builder.rel("from", bundle.order_observed_path_id, create.rpc_id, 1.0);
+            builder.rel("to", bundle.order_observed_path_id, get.rpc_id, 1.0);
+
+            builder.rel("from", bundle.order_homotopy_id, create.rpc_id, 1.0);
+            builder.rel("to", bundle.order_homotopy_id, get.rpc_id, 1.0);
+            builder.rel("lhs", bundle.order_homotopy_id, bundle.order_suggested_path_id, 1.0);
+            builder.rel("rhs", bundle.order_homotopy_id, bundle.order_observed_path_id, 1.0);
+            builder.equiv(
+                bundle.order_suggested_path_id,
+                bundle.order_observed_path_id,
+                "HomotopicPath",
+            );
+        }
+
+        // Doc homotopy (direct mention vs via http endpoint).
+        builder.rel("from", bundle.doc_direct_path_id, bundle.doc_id, 1.0);
+        builder.rel("to", bundle.doc_direct_path_id, primary_rpc.rpc_id, 1.0);
+
+        builder.rel("from", bundle.doc_via_http_path_id, bundle.doc_id, 1.0);
+        builder.rel("to", bundle.doc_via_http_path_id, primary_rpc.rpc_id, 1.0);
+        builder.rel("via", bundle.doc_via_http_path_id, primary_rpc.http_endpoint_id, 1.0);
+
+        builder.rel("from", bundle.doc_homotopy_id, bundle.doc_id, 1.0);
+        builder.rel("to", bundle.doc_homotopy_id, primary_rpc.rpc_id, 1.0);
+        builder.rel("lhs", bundle.doc_homotopy_id, bundle.doc_direct_path_id, 1.0);
+        builder.rel("rhs", bundle.doc_homotopy_id, bundle.doc_via_http_path_id, 1.0);
+        builder.equiv(
+            bundle.doc_direct_path_id,
+            bundle.doc_via_http_path_id,
+            "HomotopicPath",
+        );
+
+        // Cross-service “calls” edges: use domain dependency hints when present,
+        // otherwise fall back to a simple ring (keeps graph connected).
+        if let Some(deps) = deps_by_domain.get(bundle.domain.as_str()) {
+            for &dep in *deps {
+                if let Some(&dst) = domain_to_service.get(dep) {
+                    builder.rel("calls", bundle.service_id, dst, 0.75);
+                }
+            }
+        } else if !bundles.is_empty() {
+            let next = (i + 1) % bundles.len();
+            builder.rel("calls", bundle.service_id, bundles[next].service_id, 0.60);
+        }
+    }
+
+    let relation_time = start.elapsed();
+
+    let example_commands = vec![
+        "q select ?svc where ?svc is ProtoService limit 20".to_string(),
+        "q select ?rpc where name(\"acme.orders.v1.OrderService\") -proto_service_has_rpc-> ?rpc limit 20"
+            .to_string(),
+        "q select ?dst where name(\"acme.orders.v1.OrderService\") -calls-> ?dst limit 20".to_string(),
+        "q select ?ep where name(\"acme.payments.v1.PaymentService.AuthorizePayment\") -proto_rpc_http_endpoint-> ?ep limit 10"
+            .to_string(),
+        "q select ?rpc where name(\"doc_orders_api\") -mentions_rpc-> ?rpc limit 10".to_string(),
+        "q select ?rpc where name(\"doc_orders_api\") -mentions_http_endpoint/proto_http_endpoint_of_rpc-> ?rpc max_hops 3 limit 10"
+            .to_string(),
+        "q select ?h where ?h is Homotopy, ?h -from-> name(\"doc_orders_api\") limit 10".to_string(),
+    ];
+
+    // DocChunks for grounding + exploration. Cap so perf runs don’t accidentally
+    // generate hundreds of thousands of chunks.
+    let mut extra_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
+    let doc_id = scenario_doc_id("proto_api_business");
+    let chunk_cap = scale.max(1).min(64);
+    for svc_i in 0..chunk_cap {
+        let b = &bundles[svc_i];
+
+        let service_fqn = builder
+            .db
+            .get_entity(b.service_id)
+            .and_then(|v| v.attrs.get("name").cloned())
+            .unwrap_or_else(|| "<unknown>".to_string());
+
+        let rpc_fqns = b
+            .rpcs
+            .iter()
+            .map(|r| r.rpc_fqn.clone())
+            .collect::<Vec<_>>();
+
+        extra_chunks.push(axiograph_ingest_docs::Chunk {
+            chunk_id: format!("doc_proto_business_service_{svc_i}"),
+            document_id: doc_id.clone(),
+            page: None,
+            span_id: format!("proto_business_service_{svc_i}"),
+            text: format!(
+                "Business proto service: {service_fqn}\nDomain: {}\nResource: {}\nRPCs: {}",
+                b.domain,
+                b.resource_fqn,
+                rpc_fqns.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            bbox: None,
+            metadata: HashMap::from([
+                ("kind".to_string(), "proto_service".to_string()),
+                ("domain".to_string(), b.domain.clone()),
+                ("about_type".to_string(), "ProtoService".to_string()),
+                ("about_name".to_string(), service_fqn.clone()),
+            ]),
+        });
+
+        for (rpc_i, rpc) in b.rpcs.iter().take(12).enumerate() {
+            extra_chunks.push(axiograph_ingest_docs::Chunk {
+                chunk_id: format!("doc_proto_business_rpc_{svc_i}_{rpc_i}"),
+                document_id: doc_id.clone(),
+                page: None,
+                span_id: format!("proto_business_rpc_{svc_i}_{rpc_i}"),
+                text: format!(
+                    "Business proto RPC: {}\nHTTP: {} {}\n\nThis is a synthetic enterprise-style API surface used for proto visualizer demos.",
+                    rpc.rpc_fqn, rpc.http_method, rpc.http_path
+                ),
+                bbox: None,
+                metadata: HashMap::from([
+                    ("kind".to_string(), "proto_rpc".to_string()),
+                    ("domain".to_string(), b.domain.clone()),
+                    ("about_type".to_string(), "ProtoRpc".to_string()),
+                    ("about_name".to_string(), rpc.rpc_fqn.clone()),
+                ]),
+            });
+        }
+    }
+
+    // A narrative chunk for a “checkout” cross-service workflow, so the explorer
+    // has something human-readable to ground questions in.
+    extra_chunks.push(axiograph_ingest_docs::Chunk {
+        chunk_id: "doc_proto_business_checkout_0".to_string(),
+        document_id: doc_id.clone(),
+        page: None,
+        span_id: "checkout_0".to_string(),
+        text: "Checkout workflow (synthetic): OrderService.CreateOrder typically consults PricingService, reserves stock via InventoryService, authorizes payment via PaymentService (which may call FraudService and record to LedgerService), and finally requests shipment via ShippingService; NotificationService emits user-visible updates.\n\nThis is a demo narrative chunk; it is not ground truth.".to_string(),
+        bbox: None,
+        metadata: HashMap::from([
+            ("kind".to_string(), "workflow_narrative".to_string()),
+            ("about_type".to_string(), "ApiWorkflow".to_string()),
+            ("about_name".to_string(), "CheckoutWorkflow".to_string()),
+        ]),
+    });
+
+    import_scenario_docchunks(
+        &mut builder,
+        "proto_api_business",
+        "Enterprise proto fleet: dozens of ProtoServices + RPCs + HTTP endpoints + workflows, with doc/homotopy artifacts for grounded ontology/viz demos.",
+        &[
+            ("ProtoService", "acme.orders.v1.OrderService"),
+            ("ProtoRpc", "acme.orders.v1.OrderService.CreateOrder"),
+            ("Doc", "doc_orders_api"),
+        ],
+        extra_chunks,
+    )?;
+
+    let ScenarioBuilder {
+        db,
+        entity_type_names,
+        relation_type_names,
+        ..
+    } = builder;
+    let mut entity_type_names: Vec<String> = entity_type_names.into_iter().collect();
+    entity_type_names.sort();
+    let mut relation_type_names: Vec<String> = relation_type_names.into_iter().collect();
+    relation_type_names.sort();
+
+    Ok(SyntheticScenarioIngest {
+        scenario_name: "proto_api_business".to_string(),
+        description: "Enterprise proto fleet: dozens of ProtoServices + RPCs + HTTP endpoints + workflows, with doc/homotopy artifacts for grounded ontology/viz demos.".to_string(),
+        entity_type_names,
+        relation_type_names,
+        db,
+        entity_time,
+        relation_time,
+        example_commands,
+    })
+}
+
 fn build_social_network_scenario(
     scale: usize,
     index_depth: usize,
@@ -2674,6 +3464,31 @@ mod scenario_tests {
         assert!(
             !mentioned.is_empty(),
             "doc should mention at least one rpc directly"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn proto_api_business_scenario_has_expected_types_and_paths() -> Result<()> {
+        let scenario = build_scenario_pathdb_ingest("proto_api_business", 8, 3, 1)?;
+        let db = &scenario.db;
+
+        assert!(db.find_by_type("ProtoService").is_some());
+        assert!(db.find_by_type("ProtoRpc").is_some());
+        assert!(db.find_by_type("HttpEndpoint").is_some());
+        assert!(db.find_by_type("ApiWorkflow").is_some());
+        assert!(db.find_by_type("Homotopy").is_some());
+
+        let orders = id_by_name(db, "acme.orders.v1.OrderService").expect("OrderService exists");
+        let rpcs = db.follow_path(orders, &["proto_service_has_rpc"]);
+        assert!(!rpcs.is_empty(), "OrderService should have some rpcs");
+
+        let doc = id_by_name(db, "doc_orders_api").expect("orders doc exists");
+        let mentioned = db.follow_path(doc, &["mentions_rpc"]);
+        assert!(
+            !mentioned.is_empty(),
+            "orders doc should mention at least one rpc directly"
         );
 
         Ok(())
