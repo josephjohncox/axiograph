@@ -90,6 +90,30 @@ a.link:hover { text-decoration: underline; }
 
 <div id="tab_explore" class="filters tabpanel active">
   <div class="row"><strong style="font-size:13px;">Explore</strong> <span class="muted">(shift-click 2 nodes to highlight a path)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <span class="muted">layout:</span>
+    <select id="layout_algo">
+      <option value="radial">radial</option>
+      <option value="grid">grid (BFS)</option>
+      <option value="type_columns">type columns</option>
+      <option value="random">random</option>
+    </select>
+    <select id="layout_center">
+      <option value="focus">center: focus</option>
+      <option value="selected">center: selected</option>
+    </select>
+    <button id="layout_refresh" class="btn" type="button" title="Recompute layout positions">refresh</button>
+    <button id="layout_fit" class="btn" type="button" title="Fit view to visible nodes">fit</button>
+    <button id="layout_reset_view" class="btn" type="button" title="Reset pan/zoom">reset view</button>
+  </div>
+  <details id="nav_help" style="margin-top:8px;">
+    <summary class="muted">? navigation tips</summary>
+    <div class="muted" style="margin-top:6px; line-height:1.45;">
+      <div><code>click</code> node to inspect • <code>shift+click</code> two nodes to highlight a path</div>
+      <div><code>Alt+drag</code> pan • <code>scroll</code> zoom • <code>r</code> refresh layout • <code>f</code> fit • <code>0</code> reset view</div>
+      <div><code>Esc</code> clear path • <code>/</code> focus search</div>
+    </div>
+  </details>
   <div class="row" style="margin-top:8px;"><span class="muted">planes:</span>
     <label><input type="checkbox" id="show_plane_accepted" checked/>accepted</label>
     <label><input type="checkbox" id="show_plane_evidence" checked/>evidence</label>
@@ -295,6 +319,12 @@ let selectedId = null;
 const show_plane_accepted = document.getElementById("show_plane_accepted");
 const show_plane_evidence = document.getElementById("show_plane_evidence");
 const show_plane_data = document.getElementById("show_plane_data");
+const layoutAlgoEl = document.getElementById("layout_algo");
+const layoutCenterEl = document.getElementById("layout_center");
+const layoutRefreshBtn = document.getElementById("layout_refresh");
+const layoutFitBtn = document.getElementById("layout_fit");
+const layoutResetViewBtn = document.getElementById("layout_reset_view");
+const navHelpEl = document.getElementById("nav_help");
 const contextFilterEl = document.getElementById("context_filter");
 const llmQuestionEl = document.getElementById("llm_question");
 const llmAutoCommitEl = document.getElementById("llm_auto_commit");
@@ -381,6 +411,10 @@ const ui = {
   draftOverlay: null,
   draftSelected: new Set(),
   reviewActionStatus: "",
+  layoutAlgo: "radial",
+  layoutCenter: "focus",
+  layoutSeed: 0,
+  layoutBounds: null,
 };
 
 // Sidebar tabs (keep the UI scannable as tooling grows).
@@ -421,6 +455,41 @@ function initTabs() {
   setActiveTab(initial);
 }
 initTabs();
+
+// Persisted layout selection (graph view).
+function loadLayoutPrefs() {
+  try {
+    const a = localStorage.getItem("axiograph_viz_layout_algo");
+    const c = localStorage.getItem("axiograph_viz_layout_center");
+    if (a) ui.layoutAlgo = a;
+    if (c) ui.layoutCenter = c;
+  } catch (_e) {}
+  if (layoutAlgoEl) layoutAlgoEl.value = ui.layoutAlgo || "radial";
+  if (layoutCenterEl) layoutCenterEl.value = ui.layoutCenter || "focus";
+}
+
+function saveLayoutPrefs() {
+  try {
+    localStorage.setItem("axiograph_viz_layout_algo", ui.layoutAlgo || "radial");
+    localStorage.setItem("axiograph_viz_layout_center", ui.layoutCenter || "focus");
+  } catch (_e) {}
+}
+
+loadLayoutPrefs();
+if (layoutAlgoEl) layoutAlgoEl.addEventListener("change", () => {
+  ui.layoutAlgo = String(layoutAlgoEl.value || "radial");
+  saveLayoutPrefs();
+  rerender();
+});
+if (layoutCenterEl) layoutCenterEl.addEventListener("change", () => {
+  ui.layoutCenter = String(layoutCenterEl.value || "focus");
+  saveLayoutPrefs();
+  rerender();
+});
+if (layoutRefreshBtn) layoutRefreshBtn.addEventListener("click", () => {
+  ui.layoutSeed = (Number(ui.layoutSeed || 0) + 1) >>> 0;
+  rerender();
+});
 
 // Context scoping (worlds) UI:
 // - tuple-like nodes are reified facts/morphisms/homotopies
@@ -1533,28 +1602,31 @@ function escapeHtml(s) {
 searchEl.addEventListener("input", rerender);
 renderNodeList("");
 
-function bfsDepths(startIds) {
+function bfsDepths(startIds, edgeIdxs) {
   const depth = new Map();
   const q = [];
   for (const sid of startIds) {
     depth.set(sid, 0);
     q.push(sid);
   }
+  const adj = new Map(); // node -> [neighbor...]
+  function addAdj(a, b) {
+    if (!adj.has(a)) adj.set(a, []);
+    adj.get(a).push(b);
+  }
+  for (const idx of edgeIdxs) {
+    const e = graph.edges[idx];
+    addAdj(e.source, e.target);
+    addAdj(e.target, e.source);
+  }
   while (q.length) {
     const cur = q.shift();
     const d = depth.get(cur) || 0;
-    for (const e of graph.edges) {
-      if (e.source !== cur) continue;
-      if (!depth.has(e.target)) {
-        depth.set(e.target, d + 1);
-        q.push(e.target);
-      }
-    }
-    for (const e of graph.edges) {
-      if (e.target !== cur) continue;
-      if (!depth.has(e.source)) {
-        depth.set(e.source, d + 1);
-        q.push(e.source);
+    const nexts = adj.get(cur) || [];
+    for (const nx of nexts) {
+      if (!depth.has(nx)) {
+        depth.set(nx, d + 1);
+        q.push(nx);
       }
     }
   }
@@ -1565,20 +1637,124 @@ function renderGraph(selectedId) {
   const focus = (graph.summary && graph.summary.focus_ids && graph.summary.focus_ids.length)
     ? graph.summary.focus_ids
     : (graph.nodes.length ? [graph.nodes[0].id] : []);
-  if (!focus.length) return;
+  const anchor = (ui.layoutCenter === "selected" && selectedId != null) ? [selectedId] : focus;
+  if (!anchor.length) return;
 
-  const depth = bfsDepths(focus);
-  const maxDepth = Math.max(...Array.from(depth.values()), 0);
-  const rings = [];
-  for (let d = 0; d <= maxDepth; d++) rings.push([]);
-  for (const n of graph.nodes) {
-    const d = depth.has(n.id) ? depth.get(n.id) : (maxDepth + 1);
-    if (!rings[d]) rings[d] = [];
-    rings[d].push(n);
+  const visibleIdxs = visibleEdgeIdxsAll();
+  const algo = ui.layoutAlgo || "radial";
+
+  // Layout is purely a UI view of the currently visible graph; it is not part
+  // of the trusted kernel.
+  let pos = new Map(); // id -> {x,y,d}
+  let W = 1000, H = 800;
+
+  if (algo === "type_columns") {
+    const groups = new Map(); // type -> [nodes]
+    for (const n of graph.nodes) {
+      if (!isNodeVisible(n)) continue;
+      const key = String(n.entity_type || "Entity");
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(n);
+    }
+    const types = Array.from(groups.keys()).sort((a,b) => a.localeCompare(b));
+    for (const t of types) groups.get(t).sort((a,b) => a.id - b.id);
+
+    const margin = 80;
+    const colW = 220;
+    const rowH = 70;
+    const maxRows = Math.max(1, ...types.map(t => groups.get(t).length));
+    W = Math.max(1000, margin * 2 + types.length * colW);
+    H = Math.max(800, margin * 2 + maxRows * rowH);
+    for (let ci = 0; ci < types.length; ci++) {
+      const t = types[ci];
+      const ns = groups.get(t);
+      for (let ri = 0; ri < ns.length; ri++) {
+        const x = margin + ci * colW + colW / 2;
+        const y = margin + ri * rowH + rowH / 2;
+        pos.set(ns[ri].id, { x, y, d: 0 });
+      }
+    }
+  } else if (algo === "random") {
+    // Deterministic PRNG based on layoutSeed + node id (no Math.random, so
+    // refresh is reproducible).
+    const seed = (Number(ui.layoutSeed || 0) ^ 0x9e3779b9) >>> 0;
+    function rnd32(x) {
+      // xorshift32
+      let v = (x ^ seed) >>> 0;
+      v ^= v << 13; v >>>= 0;
+      v ^= v >>> 17; v >>>= 0;
+      v ^= v << 5; v >>>= 0;
+      return v >>> 0;
+    }
+    const margin = 80;
+    W = 1000; H = 800;
+    for (const n of graph.nodes) {
+      if (!isNodeVisible(n)) continue;
+      const r1 = rnd32(n.id * 2654435761);
+      const r2 = rnd32(n.id * 1597334677 + 1013904223);
+      const x = margin + (r1 / 0xffffffff) * (W - 2 * margin);
+      const y = margin + (r2 / 0xffffffff) * (H - 2 * margin);
+      pos.set(n.id, { x, y, d: 0 });
+    }
+  } else {
+    // BFS-based layouts: compute depths from the selected anchor.
+    const depth = bfsDepths(anchor, visibleIdxs);
+    const maxDepth = Math.max(...Array.from(depth.values()), 0);
+    const rings = [];
+    for (let d = 0; d <= maxDepth; d++) rings.push([]);
+    for (const n of graph.nodes) {
+      if (!isNodeVisible(n)) continue;
+      const d = depth.has(n.id) ? depth.get(n.id) : (maxDepth + 1);
+      if (!rings[d]) rings[d] = [];
+      rings[d].push(n);
+    }
+    for (const ring of rings) ring.sort((a,b) => a.id - b.id);
+
+    const margin = 80;
+
+    if (algo === "grid") {
+      const layerW = 90;
+      const layerH = 90;
+      const maxLayer = Math.max(1, ...rings.map(r => r ? r.length : 0));
+      W = Math.max(1000, margin * 2 + maxLayer * layerW);
+      H = Math.max(800, margin * 2 + rings.length * layerH);
+      for (let d = 0; d < rings.length; d++) {
+        const ring = rings[d];
+        if (!ring || !ring.length) continue;
+        const count = ring.length;
+        const usableW = W - 2 * margin;
+        const span = Math.max(0, (count - 1) * layerW);
+        const x0 = margin + Math.max(0, (usableW - span) / 2);
+        for (let i = 0; i < count; i++) {
+          const x = x0 + i * layerW;
+          const y = margin + d * layerH + layerH / 2;
+          pos.set(ring[i].id, { x, y, d });
+        }
+      }
+    } else {
+      // Default: radial.
+      W = 1000; H = 800;
+      const cx = W / 2, cy = H / 2;
+      const ringStep = 120;
+      const baseRadius = 40;
+
+      for (let d = 0; d < rings.length; d++) {
+        const ring = rings[d];
+        if (!ring || !ring.length) continue;
+        const radius = baseRadius + d * ringStep;
+        const count = ring.length;
+        const offset = (Number(ui.layoutSeed || 0) + d * 97) % Math.max(1, count);
+        for (let i = 0; i < count; i++) {
+          const j = (i + offset) % count;
+          const ang = (2 * Math.PI * j) / count - Math.PI / 2;
+          const x = cx + radius * Math.cos(ang);
+          const y = cy + radius * Math.sin(ang);
+          pos.set(ring[i].id, { x, y, d });
+        }
+      }
+    }
   }
-  for (const ring of rings) ring.sort((a,b) => a.id - b.id);
 
-  const W = 1000, H = 800;
   // Preserve any user pan/zoom state (viewBox is managed by handlers below).
   if (!svg.getAttribute("viewBox")) svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.innerHTML = "";
@@ -1591,26 +1767,24 @@ function renderGraph(selectedId) {
   `;
   svg.appendChild(defs);
 
-  const cx = W / 2, cy = H / 2;
-  const ringStep = 120;
-  const baseRadius = 40;
-
-  const pos = new Map();
-  for (let d = 0; d < rings.length; d++) {
-    const ring = rings[d];
-    if (!ring || !ring.length) continue;
-    const radius = baseRadius + d * ringStep;
-    const count = ring.length;
-    for (let i = 0; i < count; i++) {
-      const ang = (2 * Math.PI * i) / count - Math.PI / 2;
-      const x = cx + radius * Math.cos(ang);
-      const y = cy + radius * Math.sin(ang);
-      pos.set(ring[i].id, { x, y, d });
-    }
+  // Bounds for “fit” and other view helpers.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of graph.nodes) {
+    if (!isNodeVisible(n)) continue;
+    const p = pos.get(n.id);
+    if (!p) continue;
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  if (Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY)) {
+    ui.layoutBounds = { minX, minY, maxX, maxY, W, H };
+  } else {
+    ui.layoutBounds = { minX: 0, minY: 0, maxX: W, maxY: H, W, H };
   }
 
   const maxDrawEdges = 2200;
-  const visibleIdxs = visibleEdgeIdxsAll();
   const pathEdgeSet = new Set(ui.pathEdgeIdxs || []);
   let drawEdgeIdxs = visibleIdxs.slice();
   if (drawEdgeIdxs.length > maxDrawEdges) {
@@ -3478,6 +3652,66 @@ window.addEventListener("mousemove", (ev) => {
 });
 
 window.addEventListener("mouseup", () => { panning = false; panStart = null; });
+
+function fitViewToLayoutBounds() {
+  if (!ui.layoutBounds) return;
+  const pad = 90;
+  view.x = ui.layoutBounds.minX - pad;
+  view.y = ui.layoutBounds.minY - pad;
+  view.w = Math.max(200, (ui.layoutBounds.maxX - ui.layoutBounds.minX) + pad * 2);
+  view.h = Math.max(200, (ui.layoutBounds.maxY - ui.layoutBounds.minY) + pad * 2);
+  setViewBox();
+}
+
+function resetViewToDefault() {
+  const w = (ui.layoutBounds && ui.layoutBounds.W) ? ui.layoutBounds.W : 1000;
+  const h = (ui.layoutBounds && ui.layoutBounds.H) ? ui.layoutBounds.H : 800;
+  view.x = 0;
+  view.y = 0;
+  view.w = w;
+  view.h = h;
+  setViewBox();
+}
+
+if (layoutFitBtn) layoutFitBtn.addEventListener("click", fitViewToLayoutBounds);
+if (layoutResetViewBtn) layoutResetViewBtn.addEventListener("click", resetViewToDefault);
+
+// Keyboard shortcuts (avoid interfering with typing in inputs).
+window.addEventListener("keydown", (ev) => {
+  const tag = (ev.target && ev.target.tagName) ? String(ev.target.tagName).toLowerCase() : "";
+  if (tag === "input" || tag === "textarea" || ev.isComposing) return;
+
+  if (ev.key === "/" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    if (searchEl) searchEl.focus();
+    ev.preventDefault();
+    return;
+  }
+  if (ev.key === "?" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    if (navHelpEl) navHelpEl.open = !navHelpEl.open;
+    ev.preventDefault();
+    return;
+  }
+  if ((ev.key === "r" || ev.key === "R") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    ui.layoutSeed = (Number(ui.layoutSeed || 0) + 1) >>> 0;
+    rerender();
+    ev.preventDefault();
+    return;
+  }
+  if ((ev.key === "f" || ev.key === "F") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    fitViewToLayoutBounds();
+    ev.preventDefault();
+    return;
+  }
+  if (ev.key === "0" && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    resetViewToDefault();
+    ev.preventDefault();
+    return;
+  }
+  if (ev.key === "Escape") {
+    clearPath();
+    rerender();
+  }
+});
 
 </script>
 </body>

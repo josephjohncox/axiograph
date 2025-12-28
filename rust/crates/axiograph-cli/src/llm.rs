@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use roaring::RoaringBitmap;
 
@@ -37,6 +37,7 @@ const ATTR_OVERLAY_CONSTRAINTS: &str = "axi_overlay_constraints";
 
 pub(crate) const AXIOGRAPH_LLM_TIMEOUT_SECS_ENV: &str = "AXIOGRAPH_LLM_TIMEOUT_SECS";
 pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS";
+pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_CAP_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS_CAP";
 pub(crate) const AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV: &str = "AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS";
 pub(crate) const AXIOGRAPH_LLM_REASONING_EFFORT_ENV: &str = "AXIOGRAPH_LLM_REASONING_EFFORT";
 pub(crate) const AXIOGRAPH_LLM_CHAT_MAX_MESSAGES_ENV: &str = "AXIOGRAPH_LLM_CHAT_MAX_MESSAGES";
@@ -76,6 +77,10 @@ const DEFAULT_LLM_TIMEOUT_SECS: u64 = 120;
 //
 // Note: this bound is on *tool calls executed*, not model turns.
 const DEFAULT_LLM_MAX_STEPS: usize = 12;
+// Hard cap to avoid runaway loops (especially with paid APIs). Increase via
+// `AXIOGRAPH_LLM_MAX_STEPS_CAP` when you intentionally want longer multi-step
+// tool use (e.g. ontology engineering workflows).
+const DEFAULT_LLM_MAX_STEPS_CAP: usize = 64;
 const DEFAULT_LLM_MAX_OUTPUT_TOKENS: u32 = 1200;
 const DEFAULT_LLM_CHAT_MAX_MESSAGES: usize = 24;
 const DEFAULT_LLM_PROMPT_MAX_TRANSCRIPT_ITEMS: usize = 12;
@@ -116,6 +121,21 @@ pub(crate) fn llm_default_max_steps() -> Result<usize> {
             "failed to read {AXIOGRAPH_LLM_MAX_STEPS_ENV}: {e}"
         )),
     }
+}
+
+/// Resolve a safety cap for `ToolLoopOptions.max_steps`.
+///
+/// This is a hard upper bound on *tool calls executed*.
+///
+/// - The user-facing limit is `AXIOGRAPH_LLM_MAX_STEPS` (or `--steps N` in the REPL).
+/// - This cap exists to prevent accidental runaway loops.
+pub(crate) fn llm_max_steps_cap() -> Result<usize> {
+    llm_env_usize(
+        AXIOGRAPH_LLM_MAX_STEPS_CAP_ENV,
+        DEFAULT_LLM_MAX_STEPS_CAP,
+        1,
+        10_000,
+    )
 }
 
 pub(crate) fn llm_chat_max_messages() -> Result<usize> {
@@ -2817,7 +2837,7 @@ pub(crate) struct ToolLoopOptions {
 impl Default for ToolLoopOptions {
     fn default() -> Self {
         Self {
-            max_steps: 6,
+            max_steps: DEFAULT_LLM_MAX_STEPS,
             max_rows: 25,
             max_doc_chunks: 6,
             max_doc_chars: 420,
@@ -2831,6 +2851,18 @@ pub(crate) struct ToolLoopOutcome {
     pub final_answer: ToolLoopFinalV1,
     #[serde(default)]
     pub artifacts: ToolLoopArtifactsV1,
+}
+
+/// Optional access to a snapshot store for tool-loop helpers like:
+/// - listing snapshots,
+/// - diffing two snapshots.
+///
+/// This is only available in db-server mode when running from a store-backed
+/// directory (`axiograph db serve --dir ...`).
+#[derive(Debug, Clone)]
+pub(crate) struct ToolLoopStoreContext {
+    pub dir: PathBuf,
+    pub default_layer: String, // "accepted" | "pathdb"
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3238,6 +3270,7 @@ pub(crate) fn run_tool_loop_with_meta(
     meta: Option<&MetaPlaneIndex>,
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
+    store: Option<&ToolLoopStoreContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
@@ -3248,7 +3281,7 @@ pub(crate) fn run_tool_loop_with_meta(
         Some(m) => SchemaContextV1::from_db_with_meta(db, m),
         None => SchemaContextV1::from_db(db),
     };
-    let tools = tool_loop_tools_schema();
+    let tools = tool_loop_tools_schema(store);
 
     let mut transcript: Vec<ToolLoopTranscriptItemV1> = Vec::new();
     // RAG-like flow (backend-owned): prefetch a compact overview + semantic-ish
@@ -3536,6 +3569,7 @@ pub(crate) fn run_tool_loop_with_meta(
                 meta,
                 default_contexts,
                 snapshot_key,
+                store,
                 embeddings,
                 ollama_embed_host,
                 query_cache,
@@ -3922,10 +3956,10 @@ fn is_trivial_model_answer(answer: &str) -> bool {
     }
 }
 
-fn tool_loop_tools_schema() -> Vec<ToolSpecV1> {
+fn tool_loop_tools_schema(store: Option<&ToolLoopStoreContext>) -> Vec<ToolSpecV1> {
     let query_ir_v1_schema = crate::query_ir::query_ir_v1_json_schema();
 
-    vec![
+    let mut out = vec![
         ToolSpecV1 {
             name: "db_summary".to_string(),
             description: "Summarize what is in the current snapshot (types/relations/contexts/evidence presence). Good first step for overview questions like “explain the facts”.".to_string(),
@@ -4187,7 +4221,52 @@ fn tool_loop_tools_schema() -> Vec<ToolSpecV1> {
                 }
             }),
         },
-    ]
+    ];
+
+    if let Some(store) = store {
+        let default_layer = store.default_layer.trim().to_ascii_lowercase();
+        let layer_hint = if default_layer == "accepted" {
+            "accepted"
+        } else if default_layer == "pathdb" {
+            "pathdb"
+        } else {
+            "pathdb"
+        };
+
+        out.push(ToolSpecV1 {
+            name: "snapshots_list".to_string(),
+            description: format!(
+                "List snapshots available in the server's snapshot store (accepted plane and/or PathDB WAL). Useful when the user references short snapshot ids (e.g. \"80e4\") or asks for history.\n\nDefault layer for this server: {layer_hint}."
+            ),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "layer": { "type": "string", "enum": ["accepted", "pathdb"] },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500 }
+                }
+            }),
+        });
+
+        out.push(ToolSpecV1 {
+            name: "snapshot_diff".to_string(),
+            description: format!(
+                "Diff two snapshots in the server store. Accepts full ids (e.g. fnv1a64:...) or short prefixes (e.g. \"80e4\") or \"head\".\n\nDefault layer for this server: {layer_hint}."
+            ),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "required": ["snapshot_a", "snapshot_b"],
+                "properties": {
+                    "snapshot_a": { "type": "string" },
+                    "snapshot_b": { "type": "string" },
+                    "layer": { "type": "string", "enum": ["accepted", "pathdb"] },
+                    "axi_relation": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                }
+            }),
+        });
+    }
+
+    out
 }
 
 fn execute_tool_call(
@@ -4195,6 +4274,7 @@ fn execute_tool_call(
     meta: Option<&MetaPlaneIndex>,
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
+    store: Option<&ToolLoopStoreContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
@@ -4243,8 +4323,437 @@ fn execute_tool_call(
         "draft_axi_from_proposals" => tool_draft_axi_from_proposals(&call.args),
         "propose_relation_proposals" => tool_propose_relation_proposals(db, default_contexts, &call.args),
         "propose_relations_proposals" => tool_propose_relations_proposals(db, default_contexts, &call.args),
+        "snapshots_list" => tool_snapshots_list(store, &call.args),
+        "snapshot_diff" => tool_snapshot_diff(store, &call.args),
         other => Err(anyhow!("unknown tool `{other}`")),
     }
+}
+
+fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::Value) -> Result<serde_json::Value> {
+    let Some(store) = store else {
+        return Err(anyhow!(
+            "snapshots_list requires a store-backed server (`axiograph db serve --dir ...`)"
+        ));
+    };
+
+    #[derive(Deserialize)]
+    struct Args {
+        #[serde(default)]
+        layer: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    }
+    let a: Args =
+        serde_json::from_value(args.clone()).map_err(|e| anyhow!("snapshots_list: invalid args: {e}"))?;
+
+    let mut want_layer = a
+        .layer
+        .unwrap_or_else(|| store.default_layer.clone())
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(want_layer.as_str(), "accepted" | "pathdb") {
+        return Err(anyhow!(
+            "snapshots_list: unknown layer `{}` (expected accepted|pathdb)",
+            want_layer
+        ));
+    }
+    let limit = a.limit.unwrap_or(50).clamp(1, 500);
+
+    fn read_latest_messages(path: &std::path::Path) -> BTreeMap<String, String> {
+        let mut out: BTreeMap<String, String> = BTreeMap::new();
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return out;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(ev) = serde_json::from_str::<crate::accepted_plane::AcceptedPlaneEventV1>(line) {
+                if let Some(msg) = ev.message {
+                    out.insert(ev.snapshot_id, msg);
+                }
+                continue;
+            }
+            if let Ok(ev) = serde_json::from_str::<crate::pathdb_wal::PathDbWalEventV1>(line) {
+                if let Some(msg) = ev.message {
+                    out.insert(ev.snapshot_id, msg);
+                }
+                continue;
+            }
+        }
+        out
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    struct SnapshotEntryV1 {
+        snapshot_id: String,
+        previous_snapshot_id: Option<String>,
+        created_at_unix_secs: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        accepted_snapshot_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        modules_count: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ops_count: Option<usize>,
+    }
+
+    let mut entries: Vec<SnapshotEntryV1> = Vec::new();
+    if want_layer == "accepted" {
+        let snapshots_dir = store.dir.join("snapshots");
+        let messages = read_latest_messages(&store.dir.join("accepted_plane.log.jsonl"));
+        let rd = std::fs::read_dir(&snapshots_dir).map_err(|e| {
+            anyhow!(
+                "snapshots_list: failed to read accepted snapshots dir `{}`: {e}",
+                snapshots_dir.display()
+            )
+        })?;
+        for entry in rd {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(snap) = serde_json::from_str::<crate::accepted_plane::AcceptedPlaneSnapshotV1>(&text) else {
+                continue;
+            };
+            entries.push(SnapshotEntryV1 {
+                snapshot_id: snap.snapshot_id.clone(),
+                previous_snapshot_id: snap.previous_snapshot_id.clone(),
+                created_at_unix_secs: snap.created_at_unix_secs,
+                message: messages.get(&snap.snapshot_id).cloned(),
+                accepted_snapshot_id: None,
+                modules_count: Some(snap.modules.len()),
+                ops_count: None,
+            });
+        }
+    } else {
+        let wal_dir = store.dir.join("pathdb");
+        let snapshots_dir = wal_dir.join("snapshots");
+        let messages = read_latest_messages(&wal_dir.join("pathdb_wal.log.jsonl"));
+        let rd = std::fs::read_dir(&snapshots_dir).map_err(|e| {
+            anyhow!(
+                "snapshots_list: failed to read pathdb snapshots dir `{}`: {e}",
+                snapshots_dir.display()
+            )
+        })?;
+        for entry in rd {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(snap) = serde_json::from_str::<crate::pathdb_wal::PathDbSnapshotV1>(&text) else {
+                continue;
+            };
+            entries.push(SnapshotEntryV1 {
+                snapshot_id: snap.snapshot_id.clone(),
+                previous_snapshot_id: snap.previous_snapshot_id.clone(),
+                created_at_unix_secs: snap.created_at_unix_secs,
+                message: messages.get(&snap.snapshot_id).cloned(),
+                accepted_snapshot_id: Some(snap.accepted_snapshot_id.clone()),
+                modules_count: None,
+                ops_count: Some(snap.ops.len()),
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| b.created_at_unix_secs.cmp(&a.created_at_unix_secs));
+    if entries.len() > limit {
+        entries.truncate(limit);
+    }
+
+    Ok(serde_json::json!({
+        "version": "axiograph_tool_snapshots_list_v1",
+        "layer": want_layer,
+        "count": entries.len(),
+        "snapshots": entries,
+    }))
+}
+
+fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::Value) -> Result<serde_json::Value> {
+    let Some(store) = store else {
+        return Err(anyhow!(
+            "snapshot_diff requires a store-backed server (`axiograph db serve --dir ...`)"
+        ));
+    };
+
+    #[derive(Deserialize)]
+    struct Args {
+        snapshot_a: String,
+        snapshot_b: String,
+        #[serde(default)]
+        layer: Option<String>,
+        #[serde(default)]
+        axi_relation: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    }
+    let a: Args =
+        serde_json::from_value(args.clone()).map_err(|e| anyhow!("snapshot_diff: invalid args: {e}"))?;
+
+    let mut layer = a
+        .layer
+        .unwrap_or_else(|| store.default_layer.clone())
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(layer.as_str(), "accepted" | "pathdb") {
+        return Err(anyhow!(
+            "snapshot_diff: unknown layer `{}` (expected accepted|pathdb)",
+            layer
+        ));
+    }
+
+    let rel_filter = a.axi_relation.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let limit = a.limit.unwrap_or(20).clamp(1, 200);
+
+    fn write_temp_path(ext: &str) -> Result<PathBuf> {
+        let mut base = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pid = std::process::id();
+        for i in 0..50u32 {
+            base.push(format!("axiograph_{pid}_{nanos}_{i}.{ext}"));
+            if !base.exists() {
+                return Ok(base);
+            }
+            base.pop();
+        }
+        Err(anyhow!("failed to allocate temp file name"))
+    }
+
+    struct LoadedStoreSnapshot {
+        snapshot_id: String,
+        accepted_snapshot_id: Option<String>,
+        pathdb_snapshot_id: Option<String>,
+        db: PathDB,
+    }
+
+    fn load_store_snapshot(dir: &std::path::Path, layer: &str, snapshot: &str) -> Result<LoadedStoreSnapshot> {
+        match layer {
+            "accepted" => {
+                let id = crate::accepted_plane::resolve_snapshot_id_for_cli(dir, snapshot)?;
+                let tmp = write_temp_path("axpd")?;
+                crate::accepted_plane::build_pathdb_from_snapshot(dir, &id, &tmp)?;
+                let bytes = std::fs::read(&tmp)?;
+                let _ = std::fs::remove_file(&tmp);
+                let db = PathDB::from_bytes(&bytes)?;
+                Ok(LoadedStoreSnapshot {
+                    snapshot_id: id.clone(),
+                    accepted_snapshot_id: Some(id),
+                    pathdb_snapshot_id: None,
+                    db,
+                })
+            }
+            "pathdb" => {
+                let snap = crate::pathdb_wal::read_pathdb_snapshot_for_cli(dir, snapshot)?;
+                let pathdb_id = snap.snapshot_id.clone();
+                let accepted_id = snap.accepted_snapshot_id.clone();
+                let tmp = write_temp_path("axpd")?;
+                crate::pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, &pathdb_id, &tmp)?;
+                let bytes = std::fs::read(&tmp)?;
+                let _ = std::fs::remove_file(&tmp);
+                let db = PathDB::from_bytes(&bytes)?;
+                Ok(LoadedStoreSnapshot {
+                    snapshot_id: pathdb_id.clone(),
+                    accepted_snapshot_id: Some(accepted_id),
+                    pathdb_snapshot_id: Some(pathdb_id),
+                    db,
+                })
+            }
+            other => Err(anyhow!("snapshot_diff: unknown layer `{other}`")),
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct FactInfo {
+        axi_relation: String,
+        entity_id: u32,
+        name: Option<String>,
+        axi_fact_id: String,
+    }
+
+    fn collect_fact_index(db: &PathDB, rel_filter: Option<&str>) -> Result<std::collections::HashMap<String, FactInfo>> {
+        let mut out: std::collections::HashMap<String, FactInfo> = std::collections::HashMap::new();
+        let n = db.entities.len() as u32;
+        for id in 0..n {
+            let Some(view) = db.get_entity(id) else { continue };
+            let Some(fact_id) = view.attrs.get(axiograph_pathdb::axi_meta::ATTR_AXI_FACT_ID) else { continue };
+            let Some(rel) = view.attrs.get(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION) else { continue };
+            if let Some(want) = rel_filter {
+                if rel != want {
+                    continue;
+                }
+            }
+            out.insert(
+                fact_id.clone(),
+                FactInfo {
+                    axi_relation: rel.clone(),
+                    entity_id: id,
+                    name: view.attrs.get("name").cloned(),
+                    axi_fact_id: fact_id.clone(),
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    fn fact_preview(db: &PathDB, info: &FactInfo) -> serde_json::Value {
+        let view = db.get_entity(info.entity_id);
+        let mut outgoing = Vec::new();
+        for rel in db.relations.outgoing_any(info.entity_id) {
+            let rel_name = db
+                .interner
+                .lookup(rel.rel_type)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let target = db.get_entity(rel.target);
+            let target_name = target.as_ref().and_then(|v| v.attrs.get("name").cloned());
+            let target_type = target.as_ref().map(|v| v.entity_type.clone());
+            outgoing.push(serde_json::json!({
+                "rel": rel_name,
+                "to": {
+                    "id": rel.target,
+                    "type": target_type,
+                    "name": target_name,
+                },
+                "confidence": rel.confidence,
+            }));
+        }
+        outgoing.sort_by(|a, b| {
+            a.get("rel")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .cmp(b.get("rel").and_then(|x| x.as_str()).unwrap_or(""))
+        });
+
+        serde_json::json!({
+            "axi_fact_id": info.axi_fact_id,
+            "axi_relation": info.axi_relation,
+            "name": info.name,
+            "entity_id": info.entity_id,
+            "outgoing": outgoing,
+            "attrs": view.map(|v| v.attrs),
+        })
+    }
+
+    let a_loaded = load_store_snapshot(&store.dir, &layer, &a.snapshot_a)?;
+    let b_loaded = load_store_snapshot(&store.dir, &layer, &a.snapshot_b)?;
+
+    let a_facts = collect_fact_index(&a_loaded.db, rel_filter)?;
+    let b_facts = collect_fact_index(&b_loaded.db, rel_filter)?;
+
+    let mut added: Vec<String> = Vec::new();
+    for k in b_facts.keys() {
+        if !a_facts.contains_key(k) {
+            added.push(k.clone());
+        }
+    }
+    let mut removed: Vec<String> = Vec::new();
+    for k in a_facts.keys() {
+        if !b_facts.contains_key(k) {
+            removed.push(k.clone());
+        }
+    }
+    added.sort();
+    removed.sort();
+
+    // Relation-level diffs.
+    #[derive(Default, Clone, Copy)]
+    struct C {
+        a: u64,
+        b: u64,
+        added: u64,
+        removed: u64,
+    }
+    let mut by_rel: BTreeMap<String, C> = BTreeMap::new();
+    for info in a_facts.values() {
+        by_rel.entry(info.axi_relation.clone()).or_default().a += 1;
+    }
+    for info in b_facts.values() {
+        by_rel.entry(info.axi_relation.clone()).or_default().b += 1;
+    }
+    for fid in &added {
+        if let Some(info) = b_facts.get(fid) {
+            by_rel.entry(info.axi_relation.clone()).or_default().added += 1;
+        }
+    }
+    for fid in &removed {
+        if let Some(info) = a_facts.get(fid) {
+            by_rel.entry(info.axi_relation.clone()).or_default().removed += 1;
+        }
+    }
+
+    #[derive(Serialize)]
+    struct ByRelRow {
+        axi_relation: String,
+        a: u64,
+        b: u64,
+        added: u64,
+        removed: u64,
+    }
+    let mut by_rel_rows: Vec<ByRelRow> = by_rel
+        .into_iter()
+        .map(|(k, v)| ByRelRow {
+            axi_relation: k,
+            a: v.a,
+            b: v.b,
+            added: v.added,
+            removed: v.removed,
+        })
+        .collect();
+    by_rel_rows.sort_by(|x, y| (y.added + y.removed).cmp(&(x.added + x.removed)));
+    if by_rel_rows.len() > 40 {
+        by_rel_rows.truncate(40);
+    }
+
+    let examples_added: Vec<serde_json::Value> = added
+        .iter()
+        .take(limit)
+        .filter_map(|fid| b_facts.get(fid).map(|info| fact_preview(&b_loaded.db, info)))
+        .collect();
+    let examples_removed: Vec<serde_json::Value> = removed
+        .iter()
+        .take(limit)
+        .filter_map(|fid| a_facts.get(fid).map(|info| fact_preview(&a_loaded.db, info)))
+        .collect();
+
+    Ok(serde_json::json!({
+        "version": "axiograph_tool_snapshot_diff_v1",
+        "layer": layer,
+        "axi_relation_filter": rel_filter,
+        "a": {
+            "snapshot_id": a_loaded.snapshot_id,
+            "accepted_snapshot_id": a_loaded.accepted_snapshot_id,
+            "pathdb_snapshot_id": a_loaded.pathdb_snapshot_id,
+            "facts": a_facts.len(),
+        },
+        "b": {
+            "snapshot_id": b_loaded.snapshot_id,
+            "accepted_snapshot_id": b_loaded.accepted_snapshot_id,
+            "pathdb_snapshot_id": b_loaded.pathdb_snapshot_id,
+            "facts": b_facts.len(),
+        },
+        "diff": {
+            "added": added.len(),
+            "removed": removed.len(),
+        },
+        "by_relation": by_rel_rows,
+        "examples": {
+            "added": examples_added,
+            "removed": examples_removed,
+        }
+    }))
 }
 
 fn tool_lookup_entity(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::Value> {
@@ -7177,6 +7686,7 @@ Rules:
 - For broad/overview questions (e.g. “explain the facts”, “what is in the snapshot”), start with `db_summary`.
 - For fuzzy/semantic lookup (“what does this mean”, “find related”, “where is X mentioned”), use `semantic_search` and then follow up with `describe_entity` / `axql_run`.
 - For doc evidence, use `fts_chunks` or `semantic_search` and then `docchunk_get` to fetch a specific chunk body.
+- If the user asks to compare snapshots (“A vs B”, “what changed between snapshots”), use `snapshots_list` to resolve ids if needed, then use `snapshot_diff` (do not claim you lack a diff tool if it is available).
 - For explicit *witness* artifacts (type-theory-ish structure):
   - `PathWitness` nodes encode a derivation/path (typically via edges `from`/`to` plus attrs like `repr`).
   - `Homotopy` nodes encode “two derivations / two paths with the same meaning” (often `from`/`to` plus `lhs`/`rhs` pointing at `PathWitness` nodes).

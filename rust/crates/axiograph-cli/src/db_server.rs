@@ -1645,6 +1645,7 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
     let verify_queries = req.verify_queries || req.require_verified_queries;
     let certify_queries = req.certify_queries || verify_queries || require_query_certs;
     let include_anchor = req.include_anchor;
+    let max_steps_cap = crate::llm::llm_max_steps_cap()?;
 
     let state2 = state.clone();
     let (mut outcome, accepted_snapshot_id, query_certs, anchor_axi) = tokio::task::spawn_blocking(move || {
@@ -1719,7 +1720,7 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
 
         let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
         let opts = ToolLoopOptions {
-            max_steps: max_steps.clamp(1, 20),
+            max_steps: max_steps.clamp(1, max_steps_cap),
             max_rows: max_rows.clamp(1, 200),
             ..Default::default()
         };
@@ -1730,12 +1731,21 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
             _ => None,
         };
 
+        let store_ctx = match &state2.config.source {
+            SnapshotSource::Store { dir, layer, .. } => Some(crate::llm::ToolLoopStoreContext {
+                dir: dir.to_path_buf(),
+                default_layer: layer.to_string(),
+            }),
+            _ => None,
+        };
+
         let outcome = crate::llm::run_tool_loop_with_meta(
             &state2.config.llm,
             &db,
             meta.as_ref(),
             &contexts,
             &snapshot_key,
+            store_ctx.as_ref(),
             embeddings.as_deref(),
             embed_host,
             &mut query_cache,
