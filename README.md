@@ -12,6 +12,31 @@ Axiograph is built around “untrusted engine, trusted checker”:
 
 > A verified certificate proves *derivability from the declared inputs* (and invariants about the runtime), not that the inputs are “true”. Inputs can still be wrong.
 
+## Why this system?
+
+Axiograph is built to make knowledge work more like software:
+versioned inputs, reproducible outputs, and checkable derivations when the stakes are high.
+It’s designed for long-lived, evolving knowledge bases where schemas, sources, and optimizers will change over time.
+
+Most knowledge systems either:
+
+- **scale but become a black box** (hard to debug, hard to audit, hard to trust), or
+- **are rigorous but hard to ship** (too slow/fragile to operate on real data and evolving schemas).
+
+When something changes (data sources, schemas, heuristics, optimizers), you can still answer:
+“why did the system say this?” and “is this derivation valid for these inputs?”
+
+Practically, it supports a graph-grounded ingestion/discovery loop that can **graduate into a typed ontology**
+with **proof-carrying** (certificate-backed) results for high-value queries.
+
+What it enables in practice:
+
+- **Meaningful + maintainable:** `.axi` is a typed, readable, versioned meaning plane (schema/theory/instances), so the ontology is not “whatever the importer emitted”.
+- **Fast at scale:** `.axpd`/PathDB is a derived, indexed runtime format for ingestion, querying, and visualization (and can be rebuilt from canonical inputs).
+- **Auditable by construction:** Rust is allowed to be “clever” (search, rewriting, optimization), but it can be required to emit certificates; Lean checks certificates against semantics.
+- **Debuggable “why”:** the WAL/evidence plane carries DocChunks + provenance links + contexts/worlds; answers can cite evidence and you can time-travel snapshots.
+- **Assisted exploration (optional):** integrations can drive tool calls and produce typed query IR that is validated/elaborated against the meta-plane before execution, with deterministic retrieval available offline.
+
 ## Architecture
 
 ```
