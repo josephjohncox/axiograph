@@ -5194,8 +5194,76 @@ fn mock_tool_loop_step(
     transcript: &[ToolLoopTranscriptItemV1],
     options: ToolLoopOptions,
 ) -> Result<ToolLoopModelResponseV1> {
+    let has_proposed = transcript.iter().any(|s| {
+        s.tool == "propose_relation_proposals" || s.tool == "propose_relations_proposals"
+    });
+    if has_proposed {
+        return Ok(ToolLoopModelResponseV1 {
+            tool_call: None,
+            final_answer: Some(ToolLoopFinalV1 {
+                answer: "Generated a proposals overlay (mock mode). Review it in the UI/REPL, then commit it to apply changes."
+                    .to_string(),
+                citations: Vec::new(),
+                queries: Vec::new(),
+                notes: vec!["note: mock LLM backend".to_string()],
+            }),
+            error: None,
+        });
+    }
+
     let has_ran_query = transcript.iter().any(|s| s.tool == "axql_run");
     if !has_ran_query {
+        fn parse_add_parent_relation(question: &str) -> Option<(String, String)> {
+            let q = question.trim();
+            let q_lc = q.to_ascii_lowercase();
+            if !q_lc.starts_with("add ") {
+                return None;
+            }
+
+            // Best-effort: if the utterance looks like “X is a child/son/daughter of Y”,
+            // interpret it as Parent(child=X, parent=Y).
+            let looks_like_child_of = q_lc.contains(" child ") || q_lc.contains(" son ") || q_lc.contains(" daughter ");
+            let has_of = q_lc.split_whitespace().any(|t| t == "of");
+            if !looks_like_child_of || !has_of {
+                return None;
+            }
+
+            let tokens: Vec<&str> = q.split_whitespace().collect();
+            if tokens.len() < 4 {
+                return None;
+            }
+            let child = tokens.get(1)?.trim().trim_matches(|c: char| !c.is_alphanumeric());
+            if child.is_empty() {
+                return None;
+            }
+            let of_pos = tokens.iter().rposition(|t| t.eq_ignore_ascii_case("of"))?;
+            let parent = tokens.get(of_pos + 1)?.trim().trim_matches(|c: char| !c.is_alphanumeric());
+            if parent.is_empty() {
+                return None;
+            }
+            Some((child.to_string(), parent.to_string()))
+        }
+
+        if let Some((child, parent)) = parse_add_parent_relation(question) {
+            return Ok(ToolLoopModelResponseV1 {
+                tool_call: Some(ToolCallV1 {
+                    name: "propose_relation_proposals".to_string(),
+                    args: serde_json::json!({
+                        "rel_type": "Parent",
+                        "source_name": child,
+                        "target_name": parent,
+                        // Prefer a concrete context when present in the demo snapshots.
+                        "context": "FamilyTree",
+                        "confidence": 0.9,
+                        "evidence_text": question.trim(),
+                        "evidence_locator": "llm_mock",
+                    }),
+                }),
+                final_answer: None,
+                error: None,
+            });
+        }
+
         // Deterministic: use the same NLQ templates as `ask` and then run.
         let tokens: Vec<String> = question.split_whitespace().map(|s| s.to_string()).collect();
         let q = crate::nlq::parse_ask_query(&tokens)?;
@@ -5298,6 +5366,23 @@ fn ollama_tool_loop_step(
     options: ToolLoopOptions,
 ) -> Result<ToolLoopModelResponseV1> {
     let grounding = render_doc_grounding(db, question, options.max_doc_chunks, options.max_doc_chars);
+    let db_summary = if transcript.is_empty() {
+        tool_db_summary(
+            db,
+            &serde_json::json!({
+                "max_types": 10,
+                "max_relations": 10,
+                "max_relation_samples": 2
+            }),
+        )
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .map(|text| truncate_preview(&text, 2_000))
+        .map(|text| format!("Snapshot summary (deterministic; untrusted):\n{text}\n"))
+        .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let name_samples = render_entity_name_samples(db, schema);
 
     let rag_preview = if transcript.is_empty() {
@@ -5393,6 +5478,8 @@ Return JSON only (no markdown)."#;
 
 {rag_preview}
 
+{db_summary}
+
 {name_samples}
 
 Schema context (types/relations are only hints; validate via tools):
@@ -5420,6 +5507,7 @@ Return ONLY the JSON object."#,
         relation_constraints = relation_constraints_text,
         contexts = contexts_text,
         times = times_text,
+        db_summary = db_summary,
         tools_json = serde_json::to_string(tools).unwrap_or_else(|_| "[]".to_string()),
         transcript_json = serde_json::to_string(transcript).unwrap_or_else(|_| "[]".to_string()),
     );

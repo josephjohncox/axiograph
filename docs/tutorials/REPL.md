@@ -555,7 +555,9 @@ When you have ingested evidence into the snapshot (e.g. repo/docs/proto ingestio
 use `open` to jump to the underlying text.
 
 ```text
-axiograph> open chunk doc_proto_api_0 --max_chars 800
+axiograph> open chunk doc_proto_api_overview_0 --max_chars 800
+axiograph> open chunk doc_proto_service_0 --max_chars 800
+axiograph> open chunk doc_proto_rpc_0_1 --max_chars 800
 axiograph> open doc Document_0 --max_chunks 10
 axiograph> open evidence some_entity
 ```

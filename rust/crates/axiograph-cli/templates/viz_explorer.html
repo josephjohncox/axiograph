@@ -2508,12 +2508,26 @@ async function llmAgentAsk() {
   try {
     const params = new URLSearchParams(window.location.search || "");
     const snapshot = params.get("snapshot");
+    const wantsAutoCommit = llmAutoCommitEl && llmAutoCommitEl.checked;
+    const token = (addAdminTokenEl && addAdminTokenEl.value || "").trim();
+
     const body = { question: q, contexts, history: historyToSend };
     if (snapshot) body.snapshot = snapshot;
+    if (wantsAutoCommit) {
+      body.auto_commit = true;
+      if (addMessageEl && String(addMessageEl.value || "").trim()) {
+        body.commit_message = String(addMessageEl.value || "").trim();
+      } else {
+        body.commit_message = `llm: ${q}`;
+      }
+    }
+
+    const headers = { "content-type": "application/json" };
+    if (token) headers["authorization"] = `Bearer ${token}`;
 
     const resp = await fetch("/llm/agent", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(body)
     });
     const data = await resp.json();
@@ -2541,17 +2555,19 @@ async function llmAgentAsk() {
     }
     const didPrefill = prefillAddFromToolLoop(outcome);
     if (didPrefill) {
-      const wantsAutoCommit = llmAutoCommitEl && llmAutoCommitEl.checked;
-      const token = (addAdminTokenEl && addAdminTokenEl.value || "").trim();
       if (wantsAutoCommit) {
-        if (!token) {
-          appendLlmMessage("assistant", "Auto-commit is enabled but no admin token is set. Paste it in the Add tab, then retry.");
+        const c = data && data.commit ? data.commit : null;
+        if (c && c.ok && c.snapshot_id) {
+          appendLlmMessage("assistant", `Committed WAL snapshot ${c.snapshot_id}. Reloading…`);
+          const p = new URLSearchParams(window.location.search || "");
+          p.set("snapshot", c.snapshot_id);
+          window.location.search = p.toString();
+          return;
+        }
+        if (c && c.error) {
+          appendLlmMessage("assistant", `Auto-commit failed: ${c.error}`);
         } else {
-          if (addMessageEl && !String(addMessageEl.value || "").trim()) {
-            addMessageEl.value = `llm: ${q}`;
-          }
-          appendLlmMessage("assistant", "Auto-committing validated overlay…");
-          await commitGeneratedOverlay();
+          appendLlmMessage("assistant", "Auto-commit did not apply any changes (no generated overlay).");
         }
       } else {
         appendLlmMessage("assistant", "Review the generated overlay in the Add tab, then click commit to apply it (requires master/admin token).");

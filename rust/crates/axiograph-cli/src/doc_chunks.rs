@@ -196,6 +196,23 @@ fn push_search_text_part(out: &mut String, part: &str) {
 }
 
 fn chunk_target(chunk: &Chunk) -> Option<(String, String)> {
+    // Generic extension hook: allow any importer (including synthetic scenario
+    // generators) to declare a canonical "about" target without baking type
+    // heuristics into the loader.
+    //
+    // Example:
+    //   metadata: { "about_type": "Person", "about_name": "Alice_0" }
+    if let (Some(about_type), Some(about_name)) = (
+        chunk.metadata.get("about_type"),
+        chunk.metadata.get("about_name"),
+    ) {
+        let about_type = about_type.trim();
+        let about_name = about_name.trim();
+        if !about_type.is_empty() && !about_name.is_empty() {
+            return Some((about_type.to_string(), about_name.to_string()));
+        }
+    }
+
     let kind = chunk.metadata.get("kind")?.to_ascii_lowercase();
     let expected_type = match kind.as_str() {
         "proto_message" => "ProtoMessage",
@@ -277,5 +294,40 @@ mod tests {
         // even if the raw chunk text doesn't mention it.
         let hits = db.entities_with_attr_fts("search_text", "Service0.GetWidget");
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn chunk_import_links_generic_about_target() {
+        let mut db = PathDB::new();
+        let alice = db.add_entity("Person", vec![("name", "Alice_0")]);
+
+        let chunk = Chunk {
+            chunk_id: "chunk_about_alice".to_string(),
+            document_id: "doc_synthetic.md".to_string(),
+            page: None,
+            span_id: "s0".to_string(),
+            text: "Alice is a synthetic person in this scenario.".to_string(),
+            bbox: None,
+            metadata: HashMap::from([
+                ("kind".to_string(), "demo_note".to_string()),
+                ("about_type".to_string(), "Person".to_string()),
+                ("about_name".to_string(), "Alice_0".to_string()),
+            ]),
+        };
+
+        let _summary = import_chunks_into_pathdb(&mut db, &[chunk]).expect("import chunks");
+        db.build_indexes();
+
+        // Find the DocChunk id we just imported, then confirm it links to Alice.
+        let Some(doc_chunks) = db.find_by_type("DocChunk") else {
+            panic!("expected DocChunk type");
+        };
+        let chunk_id = doc_chunks.iter().next().expect("at least one DocChunk");
+
+        let about = db.follow_path(chunk_id, &["doc_chunk_about"]);
+        assert!(
+            about.contains(alice),
+            "DocChunk should link to target entity via doc_chunk_about"
+        );
     }
 }

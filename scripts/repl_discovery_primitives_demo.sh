@@ -48,7 +48,9 @@ echo "-- Non-interactive REPL session"
   --cmd "neigh Alice --plane both --hops 3 --format html --out $OUT_DIR/family_alice.html --max_nodes 260" \
   --cmd "gen proto_api 2 3 1" \
   --cmd "describe acme.svc0.v1.Service0 --out 10 --in 10 --attrs 24" \
-  --cmd "open chunk doc_proto_api_0 --max_chars 800" \
+  --cmd "open chunk doc_proto_api_overview_0 --max_chars 800" \
+  --cmd "open chunk doc_proto_service_0 --max_chars 800" \
+  --cmd "open chunk doc_proto_rpc_0_1 --max_chars 800" \
   --cmd "neigh acme.svc0.v1.Service0 --plane data --hops 2 --format html --out $OUT_DIR/proto_api_service0.html --max_nodes 340" \
   --cmd "neigh doc_proto_api_0 --plane data --hops 2 --format html --out $OUT_DIR/proto_api_doc0.html --max_nodes 380"
 
@@ -58,4 +60,3 @@ echo "Open:"
 echo "  $OUT_DIR/family_alice.html"
 echo "  $OUT_DIR/proto_api_service0.html"
 echo "  $OUT_DIR/proto_api_doc0.html"
-

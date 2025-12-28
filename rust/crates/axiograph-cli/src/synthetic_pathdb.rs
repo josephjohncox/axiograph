@@ -10,6 +10,75 @@ use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+fn scenario_doc_id(scenario_name: &str) -> String {
+    format!("synthetic/{scenario_name}.md")
+}
+
+fn record_scenario_docchunk_edge_types(builder: &mut ScenarioBuilder) {
+    for ty in ["Document", "DocChunk"] {
+        builder.entity_type_names.insert(ty.to_string());
+    }
+    for rel in [
+        "document_has_chunk",
+        "chunk_in_document",
+        "doc_chunk_about",
+        "has_doc_chunk",
+    ] {
+        builder.relation_type_names.insert(rel.to_string());
+    }
+}
+
+fn import_scenario_docchunks(
+    builder: &mut ScenarioBuilder,
+    scenario_name: &str,
+    description: &str,
+    key_entities: &[(&str, &str)],
+    mut extra_chunks: Vec<axiograph_ingest_docs::Chunk>,
+) -> Result<()> {
+    let document_id = scenario_doc_id(scenario_name);
+
+    let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
+    chunks.push(axiograph_ingest_docs::Chunk {
+        chunk_id: format!("doc_{scenario_name}_overview_0"),
+        document_id: document_id.clone(),
+        page: None,
+        span_id: "overview".to_string(),
+        text: format!(
+            "Scenario: {scenario_name}\n\n{description}\n\nThis is a synthetic graph used for demos and REPL exploration. It is not external ground truth; treat it as a structured test fixture.",
+        ),
+        bbox: None,
+        metadata: HashMap::from([
+            ("kind".to_string(), "scenario_overview".to_string()),
+            ("scenario".to_string(), scenario_name.to_string()),
+        ]),
+    });
+
+    for (i, (about_type, about_name)) in key_entities.iter().enumerate() {
+        chunks.push(axiograph_ingest_docs::Chunk {
+            chunk_id: format!("doc_{scenario_name}_key_{i}"),
+            document_id: document_id.clone(),
+            page: None,
+            span_id: format!("key_{i}"),
+            text: format!(
+                "Key entity (synthetic): {about_type} \"{about_name}\".\n\nUse `describe` / `q` / `viz` to explore its neighborhood. This DocChunk exists to enable grounded demos (citations + open-source pointers)."
+            ),
+            bbox: None,
+            metadata: HashMap::from([
+                ("kind".to_string(), "scenario_key_entity".to_string()),
+                ("scenario".to_string(), scenario_name.to_string()),
+                ("about_type".to_string(), about_type.to_string()),
+                ("about_name".to_string(), about_name.to_string()),
+            ]),
+        });
+    }
+
+    chunks.append(&mut extra_chunks);
+
+    let _summary = crate::doc_chunks::import_chunks_into_pathdb(&mut builder.db, &chunks)?;
+    record_scenario_docchunk_edge_types(builder);
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct XorShift64 {
     state: u64,
@@ -561,6 +630,17 @@ fn build_enterprise_scenario_named(
 
     let relation_time = start.elapsed();
 
+    // Add a small evidence layer so REPL/LLM demos have DocChunks to cite and open
+    // even when the user only ran `gen scenario ...` (no external docs imported).
+    let key_service = service_name_for_index(0);
+    import_scenario_docchunks(
+        &mut b,
+        scenario_name,
+        description,
+        &[("Service", key_service.as_str()), ("Person", "person_0_0"), ("Doc", "doc_0_0")],
+        Vec::new(),
+    )?;
+
     let ScenarioBuilder {
         db,
         entity_type_names,
@@ -823,6 +903,14 @@ fn build_economic_flows_scenario(
             .to_string(),
     ];
 
+    import_scenario_docchunks(
+        &mut b,
+        "economic_flows",
+        "Economic flows: households/firms/bank/government + flow algebra (inverse/compose) + explicit homotopy for path-equivalence of transactions.",
+        &[("Household", "household_0"), ("Bank", "bank_0")],
+        Vec::new(),
+    )?;
+
     let ScenarioBuilder {
         db,
         entity_type_names,
@@ -1059,6 +1147,14 @@ fn build_machinist_learning_scenario(
         "q select ?h where ?h is Homotopy, ?h -from-> name(\"op_0\") limit 10".to_string(),
     ];
 
+    import_scenario_docchunks(
+        &mut b,
+        "machinist_learning",
+        "Machinist learning: materials/tools/operations + concepts + safety guidelines, with explicit homotopy between alternative derivations (direct guardrail vs via concept chain).",
+        &[("MachiningOperation", "op_0"), ("Concept", "ChatterVibration")],
+        Vec::new(),
+    )?;
+
     let ScenarioBuilder {
         db,
         entity_type_names,
@@ -1267,6 +1363,14 @@ fn build_schema_evolution_scenario(
     ];
 
     let _ = catalogs;
+
+    import_scenario_docchunks(
+        &mut b,
+        "schema_evolution",
+        "Schema evolution: schemas/migrations/schema-equivalences + explicit homotopy for migration composition (commuting diagram).",
+        &[("Schema", "ProductV1_0"), ("Migration", "AddCategories_0")],
+        Vec::new(),
+    )?;
 
     let ScenarioBuilder {
         db,
@@ -1855,6 +1959,85 @@ fn build_proto_api_scenario(
         "q select ?dst where name(\"acme.svc0.v1.Service0\") -calls-> ?dst limit 10".to_string(),
     ];
 
+    // Provide DocChunks that link to the generated proto surface so the LLM can
+    // cite and users can `open chunk ...` in the REPL/HTML explorer.
+    let mut extra_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
+    let doc_id = scenario_doc_id("proto_api");
+    for svc_i in 0..scale.max(1).min(8) {
+        let service_fqn = format!("acme.svc{svc_i}.v1.Service{svc_i}");
+        let rpc_fqns = ["CreateWidget", "GetWidget", "DeleteWidget"]
+            .into_iter()
+            .map(|m| format!("{service_fqn}.{m}"))
+            .collect::<Vec<_>>();
+
+        extra_chunks.push(axiograph_ingest_docs::Chunk {
+            chunk_id: format!("doc_proto_service_{svc_i}"),
+            document_id: doc_id.clone(),
+            page: None,
+            span_id: format!("proto_service_{svc_i}"),
+            text: format!(
+                "Proto service: {service_fqn}\nRPCs: {}",
+                rpc_fqns.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+            ),
+            bbox: None,
+            metadata: HashMap::from([
+                ("kind".to_string(), "proto_service".to_string()),
+                ("fqn".to_string(), service_fqn.clone()),
+                ("about_type".to_string(), "ProtoService".to_string()),
+                ("about_name".to_string(), service_fqn.clone()),
+            ]),
+        });
+
+        for (rpc_i, rpc_fqn) in rpc_fqns.iter().take(8).enumerate() {
+            let rpc_id = builder.ids_by_name.get(rpc_fqn).copied();
+            let (http_method, http_path) = rpc_id
+                .and_then(|id| builder.db.get_entity(id))
+                .map(|view| {
+                    let method = view
+                        .attrs
+                        .get("http_method")
+                        .cloned()
+                        .unwrap_or_else(|| "?".to_string());
+                    let path = view
+                        .attrs
+                        .get("http_path")
+                        .cloned()
+                        .unwrap_or_else(|| "?".to_string());
+                    (method, path)
+                })
+                .unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+
+            extra_chunks.push(axiograph_ingest_docs::Chunk {
+                chunk_id: format!("doc_proto_rpc_{svc_i}_{rpc_i}"),
+                document_id: doc_id.clone(),
+                page: None,
+                span_id: format!("proto_rpc_{svc_i}_{rpc_i}"),
+                text: format!(
+                    "Proto RPC: {rpc_fqn}\nHTTP: {http_method} {http_path}\n\nThis is a synthetic API surface used for ontology engineering demos."
+                ),
+                bbox: None,
+                metadata: HashMap::from([
+                    ("kind".to_string(), "proto_rpc".to_string()),
+                    ("fqn".to_string(), rpc_fqn.clone()),
+                    ("about_type".to_string(), "ProtoRpc".to_string()),
+                    ("about_name".to_string(), rpc_fqn.clone()),
+                ]),
+            });
+        }
+    }
+
+    import_scenario_docchunks(
+        &mut builder,
+        "proto_api",
+        "Proto/gRPC API surface: ProtoPackage/ProtoFile/ProtoService/ProtoRpc/ProtoMessage/ProtoField + HttpEndpoint + ApiWorkflow, with explicit homotopies for doc-identification paths and ordering.",
+        &[
+            ("ProtoService", "acme.svc0.v1.Service0"),
+            ("ProtoRpc", "acme.svc0.v1.Service0.GetWidget"),
+            ("Doc", "doc_proto_api_0"),
+        ],
+        extra_chunks,
+    )?;
+
     let ScenarioBuilder {
         db,
         entity_type_names,
@@ -2193,6 +2376,14 @@ fn build_social_network_scenario(
             .to_string(),
     ];
 
+    import_scenario_docchunks(
+        &mut builder,
+        "social_network",
+        "Social network: Person/Organization/Community + RelationType/RelTransformation + relationship paths, trust paths, and explicit HistoryEquivalence/Homotopy artifacts.",
+        &[("Person", "Alice_0"), ("Person", "Bob_0"), ("Community", "BookClub_0")],
+        Vec::new(),
+    )?;
+
     let ScenarioBuilder {
         db,
         entity_type_names,
@@ -2333,6 +2524,14 @@ fn build_supply_chain_scenario(
         "q select ?h where ?h is Homotopy, ?h -from-> name(\"supplier_0\") limit 10".to_string(),
         "q select ?m where name(\"supplier_0\") -suppliesMaterial-> ?m limit 10".to_string(),
     ];
+
+    import_scenario_docchunks(
+        &mut builder,
+        "supply_chain",
+        "Supply chain: Supplier/Warehouse/Factory/Customer + route alternatives with explicit homotopy (path independence) and SupplierEquiv substitutions.",
+        &[("Supplier", "supplier_0"), ("Factory", "factory_0")],
+        Vec::new(),
+    )?;
 
     let ScenarioBuilder {
         db,

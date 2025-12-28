@@ -81,6 +81,55 @@ fn http_post_json(addr: &str, path: &str, body: &serde_json::Value) -> (u16, ser
     (status, json)
 }
 
+fn http_post_json_auth(
+    addr: &str,
+    path: &str,
+    body: &serde_json::Value,
+    auth_token: Option<&str>,
+) -> (u16, serde_json::Value) {
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .ok();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .ok();
+
+    let body_bytes = serde_json::to_vec(body).expect("serialize request");
+    let mut request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+        body_bytes.len()
+    );
+    if let Some(tok) = auth_token {
+        request.push_str(&format!("Authorization: Bearer {tok}\r\n"));
+    }
+    request.push_str("\r\n");
+
+    stream.write_all(request.as_bytes()).expect("write request");
+    stream.write_all(&body_bytes).expect("write body");
+    stream.flush().ok();
+
+    let mut response_bytes = Vec::new();
+    stream
+        .read_to_end(&mut response_bytes)
+        .expect("read response");
+    let response = String::from_utf8_lossy(&response_bytes);
+
+    let mut lines = response.lines();
+    let status_line = lines.next().unwrap_or("");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+
+    let (_, body_text) = response
+        .split_once("\r\n\r\n")
+        .unwrap_or(("", response.as_ref()));
+    let json: serde_json::Value = serde_json::from_str(body_text).expect("parse JSON response");
+    (status, json)
+}
+
 fn http_get_json(addr: &str, path_and_query: &str) -> (u16, serde_json::Value) {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream
@@ -470,5 +519,173 @@ fn db_serve_llm_agent_smoke() {
             .and_then(|v| v.as_array())
             .is_some_and(|a| !a.is_empty()),
         "expected llm/agent outcome.steps non-empty: {agent_json}"
+    );
+}
+
+#[test]
+fn db_serve_llm_agent_auto_commit_smoke() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "db_serve_llm_auto_commit");
+
+    let accepted_dir = run_dir.join("build/accepted_plane");
+    let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
+
+    // 1) Anchor accepted plane.
+    let status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("accept")
+        .arg("promote")
+        .arg(&input)
+        .arg("--dir")
+        .arg(&accepted_dir)
+        .arg("--message")
+        .arg("e2e: accept promote (llm auto-commit)")
+        .status()
+        .expect("run axiograph db accept promote");
+    assert!(
+        status.success(),
+        "accept promote failed (exit={})",
+        status.code().unwrap_or(-1)
+    );
+
+    // 2) Create the initial PathDB WAL HEAD snapshot so `--layer pathdb --snapshot head` can load.
+    let chunks_path = run_dir.join("build/init_chunks.json");
+    let init_chunks = serde_json::json!([{
+        "chunk_id": "init_chunk_0",
+        "document_id": "init",
+        "page": null,
+        "span_id": "span0",
+        "text": "init wal snapshot",
+        "bbox": null,
+        "metadata": {}
+    }]);
+    fs::write(
+        &chunks_path,
+        serde_json::to_string_pretty(&init_chunks).expect("serialize init chunks"),
+    )
+    .expect("write init_chunks.json");
+
+    let status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("accept")
+        .arg("pathdb-commit")
+        .arg("--dir")
+        .arg(&accepted_dir)
+        .arg("--accepted-snapshot")
+        .arg("latest")
+        .arg("--chunks")
+        .arg(&chunks_path)
+        .arg("--message")
+        .arg("e2e: init wal head")
+        .status()
+        .expect("run axiograph db accept pathdb-commit");
+    assert!(
+        status.success(),
+        "accept pathdb-commit failed (exit={})",
+        status.code().unwrap_or(-1)
+    );
+
+    // 3) Start store-backed server in master mode with the mock LLM backend enabled.
+    let ready_file = run_dir.join("build/ready.json");
+    let token = "e2e_admin_token";
+    let child = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("serve")
+        .arg("--dir")
+        .arg(&accepted_dir)
+        .arg("--layer")
+        .arg("pathdb")
+        .arg("--snapshot")
+        .arg("head")
+        .arg("--listen")
+        .arg("127.0.0.1:0")
+        .arg("--ready-file")
+        .arg(&ready_file)
+        .arg("--role")
+        .arg("master")
+        .arg("--admin-token")
+        .arg(token)
+        .arg("--llm-mock")
+        .spawn()
+        .expect("spawn db serve (store-backed)");
+    let _guard = ChildGuard { child };
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ready_file.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(ready_file.exists(), "server did not write ready file");
+
+    let ready_text = fs::read_to_string(&ready_file).expect("read ready file");
+    let ready_json: serde_json::Value = serde_json::from_str(&ready_text).expect("parse ready json");
+    let addr = ready_json["addr"]
+        .as_str()
+        .expect("ready.addr is string");
+
+    // 4) Auto-commit is admin-gated.
+    let (unauth_status, unauth_json) = http_post_json(
+        addr,
+        "/llm/agent",
+        &serde_json::json!({
+            "question": "add Jamison who is a son of Bob",
+            "auto_commit": true,
+            "max_steps": 3,
+            "max_rows": 5
+        }),
+    );
+    assert_eq!(
+        unauth_status, 401,
+        "expected 401 for auto_commit without auth, got {unauth_status}: {unauth_json}"
+    );
+
+    let (auth_status, auth_json) = http_post_json_auth(
+        addr,
+        "/llm/agent",
+        &serde_json::json!({
+            "question": "add Jamison who is a son of Bob",
+            "auto_commit": true,
+            "max_steps": 3,
+            "max_rows": 5
+        }),
+        Some(token),
+    );
+    assert_eq!(
+        auth_status, 200,
+        "expected 200, got {auth_status}: {auth_json}"
+    );
+    assert!(
+        auth_json
+            .pointer("/commit/ok")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        "expected commit.ok=true: {auth_json}"
+    );
+    let committed_snapshot = auth_json
+        .pointer("/commit/snapshot_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        !committed_snapshot.is_empty(),
+        "expected commit.snapshot_id: {auth_json}"
+    );
+
+    // 5) Query should observe the new snapshot after auto-commit.
+    let (q_status, q_json) = http_post_json(
+        addr,
+        "/query",
+        &serde_json::json!({
+            "query": "select ?p where name(\"Jamison\") -Parent-> ?p limit 10",
+            "lang": "axql"
+        }),
+    );
+    assert_eq!(q_status, 200, "expected 200, got {q_status}: {q_json}");
+    let rows = q_json["rows"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !rows.is_empty(),
+        "expected at least one Parent edge from Jamison after auto-commit: {q_json}"
     );
 }

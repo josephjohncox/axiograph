@@ -532,13 +532,33 @@ async fn handle_request(
             }
         }
         (Method::POST, "/llm/agent") => {
+            let auth_header = req
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
             let body = req
                 .into_body()
                 .collect()
                 .await?
                 .to_bytes()
                 .to_vec();
-            match handle_llm_agent(&state, &body).await {
+
+            let parsed: LlmAgentRequestV1 = match serde_json::from_slice(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(json_error(
+                        StatusCode::BAD_REQUEST,
+                        &format!("failed to parse llm/agent request JSON: {e}"),
+                    ));
+                }
+            };
+            if parsed.auto_commit {
+                if let Err(resp) = require_admin_auth_header(auth_header.as_deref(), state.as_ref()) {
+                    return Ok(resp);
+                }
+            }
+            match handle_llm_agent(&state, parsed).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
@@ -671,6 +691,39 @@ fn require_admin(req: &Request<Incoming>, state: &ServerState) -> Result<(), Res
     };
 
     let Some(header) = req.headers().get(AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+        return Err(json_error(
+            StatusCode::UNAUTHORIZED,
+            "missing Authorization: Bearer <token>",
+        ));
+    };
+
+    let token = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
+        .unwrap_or("");
+    if token != expected {
+        return Err(json_error(StatusCode::UNAUTHORIZED, "invalid admin token"));
+    }
+
+    Ok(())
+}
+
+fn require_admin_auth_header(
+    auth_header: Option<&str>,
+    state: &ServerState,
+) -> Result<(), Response<Full<Bytes>>> {
+    if state.config.role != ServerRole::Master {
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "admin endpoints require --role master",
+        ));
+    }
+
+    let Some(expected) = state.config.admin_token.as_deref() else {
+        return Ok(());
+    };
+
+    let Some(header) = auth_header else {
         return Err(json_error(
             StatusCode::UNAUTHORIZED,
             "missing Authorization: Bearer <token>",
@@ -944,6 +997,21 @@ struct LlmAgentRequestV1 {
     max_steps: Option<usize>,
     #[serde(default)]
     max_rows: Option<usize>,
+    /// If set, and the tool loop produced a validated proposals overlay, auto-commit it to the PathDB WAL.
+    ///
+    /// This requires:
+    /// - `db serve --role master`
+    /// - and (if configured) `Authorization: Bearer <token>`.
+    #[serde(default)]
+    auto_commit: bool,
+    /// Optional accepted-plane snapshot id override for WAL commits.
+    ///
+    /// Default is the accepted snapshot backing the currently loaded PathDB snapshot.
+    #[serde(default)]
+    accepted_snapshot: Option<String>,
+    /// Optional message to attach to the WAL commit (audit log).
+    #[serde(default)]
+    commit_message: Option<String>,
     /// Optional snapshot id override when running in store-backed mode.
     #[serde(default)]
     snapshot: Option<String>,
@@ -1419,10 +1487,21 @@ async fn handle_llm_to_query(
     .map_err(|e| anyhow!("llm/to_query task join failed: {e}"))?
 }
 
-async fn handle_llm_agent(state: &Arc<ServerState>, body: &[u8]) -> Result<serde_json::Value> {
-    let req: LlmAgentRequestV1 =
-        serde_json::from_slice(body).map_err(|e| anyhow!("failed to parse llm/agent request JSON: {e}"))?;
+#[derive(Debug, Clone, Serialize)]
+struct LlmAgentCommitResultV1 {
+    attempted: bool,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accepted_snapshot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ops_added: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
 
+async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> Result<serde_json::Value> {
     if matches!(state.config.llm.backend, LlmBackend::Disabled) {
         return Err(anyhow!(
             "LLM is disabled for this server. Start with: `axiograph db serve ... --llm-ollama --llm-model <model>` (or `--llm-mock`)"
@@ -1430,6 +1509,7 @@ async fn handle_llm_agent(state: &Arc<ServerState>, body: &[u8]) -> Result<serde
     }
 
     let question = req.question.clone();
+    let question_for_prompt = question.clone();
     let history = req.history.clone();
     let snapshot_override = req.snapshot.clone();
     let max_steps = match req.max_steps {
@@ -1438,34 +1518,40 @@ async fn handle_llm_agent(state: &Arc<ServerState>, body: &[u8]) -> Result<serde
     };
     let max_rows = req.max_rows.unwrap_or(25);
     let contexts_raw = req.contexts.clone();
+    let auto_commit = req.auto_commit;
+    let accepted_snapshot_override = req.accepted_snapshot.clone();
+    let commit_message = req.commit_message.clone();
 
-    let state = state.clone();
-    tokio::task::spawn_blocking(move || {
-        let (db, meta, embeddings, snapshot_key) = if let Some(snapshot) = snapshot_override.as_deref() {
-            let SnapshotSource::Store { dir, layer, .. } = &state.config.source else {
-                return Err(anyhow!(
-                    "llm snapshot override requires a store-backed server (`--dir ...`)"
-                ));
+    let state2 = state.clone();
+    let (outcome, accepted_snapshot_id) = tokio::task::spawn_blocking(move || {
+        let (db, meta, embeddings, snapshot_key, accepted_snapshot_id) =
+            if let Some(snapshot) = snapshot_override.as_deref() {
+                let SnapshotSource::Store { dir, layer, .. } = &state2.config.source else {
+                    return Err(anyhow!(
+                        "llm snapshot override requires a store-backed server (`--dir ...`)"
+                    ));
+                };
+                let loaded = load_from_store(dir, layer, snapshot)?;
+                (
+                    loaded.db,
+                    loaded.meta,
+                    loaded.embeddings,
+                    loaded.snapshot_key,
+                    loaded.accepted_snapshot_id,
+                )
+            } else {
+                let loaded = state2
+                    .loaded
+                    .read()
+                    .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
+                (
+                    loaded.db.clone(),
+                    loaded.meta.clone(),
+                    loaded.embeddings.clone(),
+                    loaded.snapshot_key.clone(),
+                    loaded.accepted_snapshot_id.clone(),
+                )
             };
-            let loaded = load_from_store(dir, layer, snapshot)?;
-            (
-                loaded.db,
-                loaded.meta,
-                loaded.embeddings,
-                loaded.snapshot_key,
-            )
-        } else {
-            let loaded = state
-                .loaded
-                .read()
-                .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
-            (
-                loaded.db.clone(),
-                loaded.meta.clone(),
-                loaded.embeddings.clone(),
-                loaded.snapshot_key.clone(),
-            )
-        };
 
         let mut contexts: Vec<crate::axql::AxqlContextSpec> = Vec::new();
         for c in contexts_raw {
@@ -1502,9 +1588,9 @@ async fn handle_llm_agent(state: &Arc<ServerState>, body: &[u8]) -> Result<serde
             }
             full_question.push('\n');
             full_question.push_str("Current question:\n");
-            full_question.push_str(&question);
+            full_question.push_str(&question_for_prompt);
         } else {
-            full_question = question.clone();
+            full_question = question_for_prompt.clone();
         }
 
         let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
@@ -1514,14 +1600,14 @@ async fn handle_llm_agent(state: &Arc<ServerState>, body: &[u8]) -> Result<serde
             ..Default::default()
         };
 
-        let embed_host = match &state.config.llm.backend {
+        let embed_host = match &state2.config.llm.backend {
             #[cfg(feature = "llm-ollama")]
             LlmBackend::Ollama { host } => Some(host.as_str()),
             _ => None,
         };
 
         let outcome = crate::llm::run_tool_loop_with_meta(
-            &state.config.llm,
+            &state2.config.llm,
             &db,
             meta.as_ref(),
             &contexts,
@@ -1533,13 +1619,127 @@ async fn handle_llm_agent(state: &Arc<ServerState>, body: &[u8]) -> Result<serde
             opts,
         )?;
 
-        Ok::<_, anyhow::Error>(serde_json::json!({
-            "version": "axiograph_db_server_llm_agent_v1",
-            "outcome": outcome
-        }))
+        Ok::<_, anyhow::Error>((outcome, accepted_snapshot_id))
     })
     .await
-    .map_err(|e| anyhow!("llm/agent task join failed: {e}"))?
+    .map_err(|e| anyhow!("llm/agent task join failed: {e}"))??;
+
+    let mut commit: Option<LlmAgentCommitResultV1> = None;
+    if auto_commit {
+        commit = Some(LlmAgentCommitResultV1 {
+            attempted: false,
+            ok: false,
+            snapshot_id: None,
+            accepted_snapshot_id: None,
+            ops_added: None,
+            error: None,
+        });
+
+        #[derive(Debug, Clone, Deserialize)]
+        struct OverlayV1 {
+            proposals_json: axiograph_ingest_docs::ProposalsFileV1,
+            #[serde(default)]
+            chunks: Vec<axiograph_ingest_docs::Chunk>,
+            #[serde(default)]
+            validation: Option<serde_json::Value>,
+        }
+
+        let Some(overlay_json) = outcome.artifacts.generated_overlay.clone() else {
+            if let Some(c) = commit.as_mut() {
+                c.error = Some("no generated overlay to commit".to_string());
+            }
+            let v = serde_json::json!({
+                "version": "axiograph_db_server_llm_agent_v1",
+                "outcome": outcome,
+                "commit": commit,
+            });
+            return Ok(v);
+        };
+
+        let overlay: OverlayV1 = match serde_json::from_value(overlay_json) {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(c) = commit.as_mut() {
+                    c.attempted = true;
+                    c.error = Some(format!("failed to parse generated overlay: {e}"));
+                }
+                return Ok(serde_json::json!({
+                    "version": "axiograph_db_server_llm_agent_v1",
+                    "outcome": outcome,
+                    "commit": commit,
+                }));
+            }
+        };
+
+        let overlay_ok = overlay
+            .validation
+            .as_ref()
+            .and_then(|v| v.get("ok"))
+            .and_then(|v| v.as_bool());
+        if overlay_ok == Some(false) {
+            if let Some(c) = commit.as_mut() {
+                c.attempted = true;
+                c.error = Some("refusing to auto-commit: overlay validation failed".to_string());
+            }
+            return Ok(serde_json::json!({
+                "version": "axiograph_db_server_llm_agent_v1",
+                "outcome": outcome,
+                "commit": commit,
+            }));
+        }
+
+        let message = commit_message
+            .as_deref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                let q = question.trim();
+                if q.is_empty() {
+                    None
+                } else {
+                    Some(format!("llm: {q}"))
+                }
+            });
+
+        let commit_req = PathdbCommitRequestV1 {
+            accepted_snapshot: accepted_snapshot_override
+                .clone()
+                .or_else(|| accepted_snapshot_id.clone()),
+            chunks: overlay.chunks,
+            proposals: Some(overlay.proposals_json),
+            validate: Some(overlay_ok != Some(true)),
+            quality: None,
+            quality_plane: None,
+            message,
+        };
+
+        match handle_pathdb_commit_req(state, commit_req).await {
+            Ok(res) => {
+                if let Some(c) = commit.as_mut() {
+                    c.attempted = true;
+                    c.ok = true;
+                    c.snapshot_id = Some(res.snapshot_id.clone());
+                    c.accepted_snapshot_id = Some(res.accepted_snapshot_id.clone());
+                    c.ops_added = Some(res.ops_added);
+                }
+            }
+            Err(e) => {
+                if let Some(c) = commit.as_mut() {
+                    c.attempted = true;
+                    c.error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    let mut out = serde_json::json!({
+        "version": "axiograph_db_server_llm_agent_v1",
+        "outcome": outcome,
+    });
+    if auto_commit {
+        out["commit"] = serde_json::to_value(commit).unwrap_or(serde_json::Value::Null);
+    }
+    Ok(out)
 }
 
 async fn handle_entity_describe_get(
@@ -1970,6 +2170,13 @@ async fn handle_pathdb_commit(
 ) -> Result<PathdbCommitResponseV1> {
     let req: PathdbCommitRequestV1 = serde_json::from_slice(body)
         .map_err(|e| anyhow!("failed to parse pathdb-commit request JSON: {e}"))?;
+    handle_pathdb_commit_req(state, req).await
+}
+
+async fn handle_pathdb_commit_req(
+    state: &Arc<ServerState>,
+    req: PathdbCommitRequestV1,
+) -> Result<PathdbCommitResponseV1> {
     if req.chunks.is_empty() && req.proposals.is_none() {
         return Err(anyhow!("must provide non-empty `chunks` or `proposals`"));
     }
