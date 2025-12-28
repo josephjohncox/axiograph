@@ -47,6 +47,17 @@ input[type="search"] { width: 100%; padding: 8px 10px; font-size: 14px; }
 .llmmsg.user .role { color: #2b7fff; }
 .llmmsg.assistant .role { color: #8a5a00; }
 .llmmsg .text { white-space: pre-wrap; font-size: 12px; color: #222; }
+.proplist { border: 1px solid #eee; border-radius: 10px; background: #fff; overflow: hidden; }
+.proprow { padding: 8px 10px; border-bottom: 1px solid #eee; display: flex; gap: 10px; align-items: flex-start; }
+.proprow:last-child { border-bottom: none; }
+.proprow .main { flex: 1; min-width: 0; }
+.proprow .line { font-size: 12px; color: #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proprow .sub { margin-top: 4px; font-size: 12px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proprow details { margin-top: 6px; }
+.proprow summary { cursor: pointer; user-select: none; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #eee; background: #fafafa; font-size: 11px; color: #444; margin-left: 6px; }
+.chip.ok { border-color: #b7f0c0; background: #f3fff5; color: #1b5e20; }
+.chip.bad { border-color: #ffd2d2; background: #fff5f5; color: #8a0000; }
 .detailtabs { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin: 6px 0 12px 0; }
 .detailtabbtn { padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 13px; }
 .detailtabbtn:hover { border-color: #bbb; }
@@ -73,6 +84,7 @@ a.link:hover { text-decoration: underline; }
   <button class="tabbtn active" data-tab="explore" type="button">explore</button>
   <button class="tabbtn" data-tab="query" type="button">query</button>
   <button class="tabbtn" data-tab="llm" type="button">llm</button>
+  <button class="tabbtn" data-tab="review" type="button">review</button>
   <button class="tabbtn" data-tab="add" type="button">add</button>
 </div>
 
@@ -170,6 +182,36 @@ a.link:hover { text-decoration: underline; }
   <details style="margin-top:8px;"><summary class="muted">llm debug</summary><pre id="llm_debug" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
 </div>
 
+<div id="tab_review" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">Review</strong> <span class="muted">(draft overlay → WAL → accepted)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <input id="review_filter" type="search" placeholder="Filter proposals… (name, type, rel, id)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="review_select_all" class="btn" type="button">select all</button>
+    <button id="review_select_none" class="btn" type="button">select none</button>
+    <button id="review_clear" class="btn" type="button">clear draft</button>
+    <span id="review_status" class="muted"></span>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input id="review_message" type="search" placeholder="commit/promote message (optional)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input id="review_admin_token" type="password" placeholder="admin token (optional; required for commit/promote)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="review_commit" class="btn" type="button">commit selected (WAL)</button>
+    <button id="review_draft_axi" class="btn" type="button">draft .axi</button>
+    <button id="review_promote_axi" class="btn" type="button">promote</button>
+  </div>
+  <div id="review_list" class="proplist" style="margin-top:10px;"></div>
+  <details style="margin-top:10px;"><summary class="muted">validation</summary><pre id="review_validation" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:10px;"><summary class="muted">draft axi text</summary><textarea id="review_axi_text" rows="10" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="draft .axi text will appear here (editable before promotion)"></textarea></details>
+  <details style="margin-top:10px;"><summary class="muted">commit response</summary><pre id="review_commit_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:10px;"><summary class="muted">promote response</summary><pre id="review_promote_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:10px;"><summary class="muted">raw draft overlay</summary><pre id="review_overlay_raw" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+
 <div id="tab_add" class="filters tabpanel">
   <div class="row"><strong style="font-size:13px;">Add Data</strong> <span class="muted">(WAL overlay → new snapshot)</span></div>
   <div class="row" style="margin-top:8px;">
@@ -203,10 +245,10 @@ a.link:hover { text-decoration: underline; }
     </label>
   </div>
   <div class="row" style="margin-top:8px;">
-    <input id="add_message" type="search" placeholder="commit message (optional)"/>
+    <input id="add_message" type="search" placeholder="commit message (optional; synced with Review tab)"/>
   </div>
   <div class="row" style="margin-top:8px;">
-    <input id="add_admin_token" type="password" placeholder="admin token (optional; for commit)"/>
+    <input id="add_admin_token" type="password" placeholder="admin token (optional; synced with Review tab)"/>
   </div>
   <div class="row" style="margin-top:8px;">
     <button id="add_generate" class="btn">generate</button>
@@ -297,6 +339,23 @@ const addPromoteStatusEl = document.getElementById("add_promote_status");
 const addAxiTextEl = document.getElementById("add_axi_text");
 const addPromoteOutputEl = document.getElementById("add_promote_output");
 
+const reviewFilterEl = document.getElementById("review_filter");
+const reviewSelectAllBtn = document.getElementById("review_select_all");
+const reviewSelectNoneBtn = document.getElementById("review_select_none");
+const reviewClearBtn = document.getElementById("review_clear");
+const reviewStatusEl = document.getElementById("review_status");
+const reviewMessageEl = document.getElementById("review_message");
+const reviewAdminTokenEl = document.getElementById("review_admin_token");
+const reviewCommitBtn = document.getElementById("review_commit");
+const reviewDraftAxiBtn = document.getElementById("review_draft_axi");
+const reviewPromoteAxiBtn = document.getElementById("review_promote_axi");
+const reviewListEl = document.getElementById("review_list");
+const reviewValidationEl = document.getElementById("review_validation");
+const reviewAxiTextEl = document.getElementById("review_axi_text");
+const reviewCommitOutputEl = document.getElementById("review_commit_output");
+const reviewPromoteOutputEl = document.getElementById("review_promote_output");
+const reviewOverlayRawEl = document.getElementById("review_overlay_raw");
+
 const show_entity = document.getElementById("show_entity");
 const show_fact = document.getElementById("show_fact");
 const show_morphism = document.getElementById("show_morphism");
@@ -319,7 +378,9 @@ const ui = {
   pathEdgeIdxs: [],
   pathMessage: "",
   highlightIds: new Set(),
-  addLastGenerated: null,
+  draftOverlay: null,
+  draftSelected: new Set(),
+  reviewActionStatus: "",
 };
 
 // Sidebar tabs (keep the UI scannable as tooling grows).
@@ -328,6 +389,7 @@ const tabPanels = {
   explore: document.getElementById("tab_explore"),
   query: document.getElementById("tab_query"),
   llm: document.getElementById("tab_llm"),
+  review: document.getElementById("tab_review"),
   add: document.getElementById("tab_add"),
 };
 
@@ -1685,6 +1747,35 @@ function setAddStatus(msg) {
   addStatusEl.textContent = msg || "";
 }
 
+function setReviewStatusHtml(html) {
+  if (!reviewStatusEl) return;
+  reviewStatusEl.innerHTML = html || "";
+}
+
+function setReviewValidation(obj) {
+  if (!reviewValidationEl) return;
+  if (obj === null || obj === undefined) reviewValidationEl.textContent = "";
+  else reviewValidationEl.textContent = (typeof obj === "string") ? obj : JSON.stringify(obj, null, 2);
+}
+
+function setReviewOverlayRaw(obj) {
+  if (!reviewOverlayRawEl) return;
+  if (obj === null || obj === undefined) reviewOverlayRawEl.textContent = "";
+  else reviewOverlayRawEl.textContent = (typeof obj === "string") ? obj : JSON.stringify(obj, null, 2);
+}
+
+function setReviewCommitOutput(obj) {
+  if (!reviewCommitOutputEl) return;
+  if (obj === null || obj === undefined) reviewCommitOutputEl.textContent = "";
+  else reviewCommitOutputEl.textContent = (typeof obj === "string") ? obj : JSON.stringify(obj, null, 2);
+}
+
+function setReviewPromoteOutput(obj) {
+  if (!reviewPromoteOutputEl) return;
+  if (obj === null || obj === undefined) reviewPromoteOutputEl.textContent = "";
+  else reviewPromoteOutputEl.textContent = (typeof obj === "string") ? obj : JSON.stringify(obj, null, 2);
+}
+
 function setAddOutput(obj) {
   if (!addOutputEl) return;
   if (obj === null || obj === undefined) addOutputEl.textContent = "";
@@ -1713,23 +1804,355 @@ function isServerMode() {
   return proto === "http:" || proto === "https:";
 }
 
+function draftOverlayStorageKey() {
+  // Persist draft overlay per *accepted snapshot* when available (stable across WAL
+  // commits), falling back to the current snapshot param.
+  const host = (window.location && window.location.host) ? window.location.host : "offline";
+  let key = "";
+  try {
+    const accepted = (localStorage.getItem("axiograph_server_accepted_snapshot_id") || "").trim();
+    if (accepted) key = accepted;
+  } catch (_e) {}
+  if (!key) {
+    const params = new URLSearchParams(window.location.search || "");
+    key = (params.get("snapshot") || "").trim();
+  }
+  if (!key) key = "default";
+  return `axiograph_draft_overlay_v1:${host}:${key}`;
+}
+
+let draftOverlayKey = draftOverlayStorageKey();
+
+function loadDraftOverlayForKey(key) {
+  try {
+    const raw = localStorage.getItem(key) || "";
+    if (!raw.trim()) return null;
+    const v = JSON.parse(raw);
+    if (!v || typeof v !== "object") return null;
+    if (!v.proposals_json) return null;
+    return v;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function saveDraftOverlay() {
+  try {
+    if (!ui.draftOverlay) {
+      localStorage.removeItem(draftOverlayKey);
+      return;
+    }
+    localStorage.setItem(draftOverlayKey, JSON.stringify(ui.draftOverlay));
+  } catch (_e) {}
+}
+
+function clearDraftOverlay() {
+  ui.draftOverlay = null;
+  ui.draftSelected = new Set();
+  saveDraftOverlay();
+  setReviewCommitOutput(null);
+  setReviewPromoteOutput(null);
+  renderDraftOverlayReview();
+}
+
+function setDraftOverlay(overlay, opts) {
+  const r = overlay || null;
+  if (!r || !r.proposals_json) return false;
+
+  ui.draftOverlay = r;
+  const props = (r.proposals_json && Array.isArray(r.proposals_json.proposals))
+    ? r.proposals_json.proposals : [];
+  ui.draftSelected = new Set(props.map(p => String(p && p.proposal_id || "")).filter(Boolean));
+
+  saveDraftOverlay();
+  renderDraftOverlayReview();
+
+  // Keep the raw JSON visible in the "Add" tab (debug), but make the Review tab
+  // the primary workflow surface.
+  setAddOutput(r);
+  setAddCommitOutput(null);
+  setReviewCommitOutput(null);
+  setReviewPromoteOutput(null);
+  setAddPromoteOutput(null);
+  setAddPromoteStatus("");
+  if (addAxiTextEl) addAxiTextEl.value = "";
+  if (reviewAxiTextEl) reviewAxiTextEl.value = "";
+
+  const notePrefix = (opts && opts.notePrefix) ? String(opts.notePrefix) : "draft overlay ready";
+  const ok = r.validation && r.validation.ok === true;
+  const bad = r.validation && r.validation.ok === false;
+  if (bad) setAddStatus(`${notePrefix} (validation failed; review before commit)`);
+  else if (ok) setAddStatus(`${notePrefix} (validated; review before commit)`);
+  else setAddStatus(`${notePrefix} (review before commit)`);
+
+  setActiveTab("review");
+  return true;
+}
+
+function currentDraftFiltered() {
+  const r = ui.draftOverlay;
+  if (!r || !r.proposals_json || !Array.isArray(r.proposals_json.proposals)) return null;
+  const selected = ui.draftSelected || new Set();
+  const file = JSON.parse(JSON.stringify(r.proposals_json));
+  file.proposals = file.proposals.filter(p => selected.has(String(p && p.proposal_id || "")));
+
+  // Filter chunks to those referenced by selected proposals (keep all if none).
+  let chunks = Array.isArray(r.chunks) ? r.chunks : [];
+  const needed = new Set();
+  for (const p of file.proposals) {
+    const evs = Array.isArray(p && p.evidence) ? p.evidence : [];
+    for (const ev of evs) {
+      const cid = ev && ev.chunk_id ? String(ev.chunk_id) : "";
+      if (cid) needed.add(cid);
+    }
+  }
+  if (needed.size && chunks.length) {
+    chunks = chunks.filter(c => c && needed.has(String(c.chunk_id || "")));
+  }
+
+  return { proposals_json: file, chunks };
+}
+
+function renderDraftOverlayReview() {
+  if (!reviewListEl) return;
+
+  reviewListEl.innerHTML = "";
+
+  const r = ui.draftOverlay;
+  if (!r || !r.proposals_json) {
+    setReviewStatusHtml("<span class=\"muted\">(no draft overlay)</span>");
+    setReviewOverlayRaw("");
+    setReviewValidation("");
+    if (reviewAxiTextEl) reviewAxiTextEl.value = "";
+    reviewListEl.innerHTML = `<div class="proprow"><div class="main"><div class="muted">No draft overlay. Generate one in <strong>add</strong> or via <strong>llm</strong>, then review/commit here.</div></div></div>`;
+    return;
+  }
+
+  const props = (r.proposals_json && Array.isArray(r.proposals_json.proposals))
+    ? r.proposals_json.proposals : [];
+  const selected = ui.draftSelected || new Set();
+
+  const ok = r.validation && r.validation.ok === true;
+  const bad = r.validation && r.validation.ok === false;
+  const chip = ok
+    ? `<span class="chip ok">validated</span>`
+    : bad
+      ? `<span class="chip bad">invalid</span>`
+      : `<span class="chip">unvalidated</span>`;
+
+  function escapeHtml(text) {
+    return String(text || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function setSelectionStatus() {
+    const action = ui.reviewActionStatus ? ` <span class="muted">— ${escapeHtml(ui.reviewActionStatus)}</span>` : "";
+    setReviewStatusHtml(`${selected.size}/${props.length} selected ${chip}${action}`);
+  }
+
+  setSelectionStatus();
+
+  setReviewOverlayRaw(r);
+  setReviewValidation(r.validation || "");
+
+  const filter = (reviewFilterEl && reviewFilterEl.value) ? String(reviewFilterEl.value).trim().toLowerCase() : "";
+
+  function proposalLine(p) {
+    const kind = String(p && p.kind || "");
+    const conf = (p && p.confidence != null) ? Number(p.confidence) : null;
+    const confText = (conf != null && Number.isFinite(conf)) ? ` conf=${conf.toFixed(2)}` : "";
+    if (kind.toLowerCase() === "entity") {
+      const ty = p.entity_type || "Entity";
+      const name = p.name || "";
+      return `Entity ${ty} "${name}"${confText}`;
+    }
+    if (kind.toLowerCase() === "relation") {
+      const rt = p.rel_type || "Relation";
+      const src = p.source || "?";
+      const dst = p.target || "?";
+      return `Relation ${rt}(${src} -> ${dst})${confText}`;
+    }
+    return `${kind || "Proposal"}${confText}`;
+  }
+
+  function proposalMatches(p) {
+    if (!filter) return true;
+    const parts = [];
+    for (const k of ["kind","proposal_id","schema_hint","entity_type","name","entity_id","rel_type","relation_id","source","target"]) {
+      if (p && p[k] != null) parts.push(String(p[k]));
+    }
+    const evs = Array.isArray(p && p.evidence) ? p.evidence : [];
+    for (const ev of evs.slice(0, 4)) {
+      if (ev && ev.chunk_id) parts.push(String(ev.chunk_id));
+      if (ev && ev.locator) parts.push(String(ev.locator));
+    }
+    return parts.join(" ").toLowerCase().includes(filter);
+  }
+
+  const filtered = props.filter(proposalMatches);
+  if (!filtered.length) {
+    reviewListEl.innerHTML = `<div class="proprow"><div class="main"><div class="muted">No proposals match the current filter.</div></div></div>`;
+    return;
+  }
+
+  const maxRows = 250;
+  const toShow = filtered.slice(0, maxRows);
+
+  for (const p of toShow) {
+    const pid = String(p && p.proposal_id || "");
+    const row = document.createElement("div");
+    row.className = "proprow";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = pid ? selected.has(pid) : false;
+    cb.addEventListener("change", () => {
+      if (!pid) return;
+      if (cb.checked) selected.add(pid);
+      else selected.delete(pid);
+      ui.draftSelected = selected;
+      setSelectionStatus();
+    });
+
+    const main = document.createElement("div");
+    main.className = "main";
+
+    const line = document.createElement("div");
+    line.className = "line";
+    line.textContent = proposalLine(p);
+
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    const evs = Array.isArray(p && p.evidence) ? p.evidence : [];
+    const evCount = evs.length;
+    sub.textContent = `proposal_id=${pid || "?"}${evCount ? ` evidence=${evCount}` : ""}`;
+
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.className = "muted";
+    sum.textContent = "details";
+    const pre = document.createElement("pre");
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.maxHeight = "220px";
+    pre.style.overflow = "auto";
+    pre.style.margin = "8px 0 0 0";
+    pre.textContent = JSON.stringify(p, null, 2);
+    det.appendChild(sum);
+    det.appendChild(pre);
+
+    // Evidence quick-open buttons.
+    if (evs.length) {
+      const citeBox = document.createElement("div");
+      citeBox.className = "muted";
+      citeBox.style.marginTop = "6px";
+      citeBox.textContent = "evidence:";
+      for (const ev of evs.slice(0, 6)) {
+        const cid = ev && ev.chunk_id ? String(ev.chunk_id) : "";
+        if (!cid) continue;
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "btn";
+        openBtn.style.padding = "2px 8px";
+        openBtn.style.marginLeft = "6px";
+        openBtn.textContent = cid;
+        openBtn.title = "Open DocChunk";
+        openBtn.addEventListener("click", () => openDocChunk(cid));
+        citeBox.appendChild(openBtn);
+      }
+      main.appendChild(citeBox);
+    }
+
+    main.appendChild(line);
+    main.appendChild(sub);
+    main.appendChild(det);
+    row.appendChild(cb);
+    row.appendChild(main);
+    reviewListEl.appendChild(row);
+  }
+
+  if (filtered.length > maxRows) {
+    const more = document.createElement("div");
+    more.className = "proprow";
+    more.innerHTML = `<div class="main"><div class="muted">Showing ${maxRows} of ${filtered.length} matching proposals. Narrow the filter to review more precisely.</div></div>`;
+    reviewListEl.appendChild(more);
+  }
+}
+
+// Restore any persisted draft overlay (durable across reload).
+ui.draftOverlay = loadDraftOverlayForKey(draftOverlayKey);
+if (ui.draftOverlay && ui.draftOverlay.proposals_json && Array.isArray(ui.draftOverlay.proposals_json.proposals)) {
+  ui.draftSelected = new Set(ui.draftOverlay.proposals_json.proposals.map(p => String(p && p.proposal_id || "")).filter(Boolean));
+}
+renderDraftOverlayReview();
+
 function loadAdminToken() {
   try {
     const v = localStorage.getItem("axiograph_admin_token") || "";
     if (addAdminTokenEl && !addAdminTokenEl.value) addAdminTokenEl.value = v;
+    if (reviewAdminTokenEl && !reviewAdminTokenEl.value) reviewAdminTokenEl.value = v;
   } catch (_e) {}
 }
 
 function saveAdminToken() {
   try {
-    if (!addAdminTokenEl) return;
-    const v = (addAdminTokenEl.value || "").trim();
+    const src = (reviewAdminTokenEl && reviewAdminTokenEl.value)
+      ? reviewAdminTokenEl
+      : addAdminTokenEl;
+    if (!src) return;
+    const v = (src.value || "").trim();
     localStorage.setItem("axiograph_admin_token", v);
+    if (addAdminTokenEl && addAdminTokenEl.value !== v) addAdminTokenEl.value = v;
+    if (reviewAdminTokenEl && reviewAdminTokenEl.value !== v) reviewAdminTokenEl.value = v;
   } catch (_e) {}
 }
 
 loadAdminToken();
 if (addAdminTokenEl) addAdminTokenEl.addEventListener("change", saveAdminToken);
+if (reviewAdminTokenEl) reviewAdminTokenEl.addEventListener("change", saveAdminToken);
+
+function loadCommitMessage() {
+  try {
+    const v = localStorage.getItem("axiograph_commit_message") || "";
+    if (addMessageEl && !addMessageEl.value) addMessageEl.value = v;
+    if (reviewMessageEl && !reviewMessageEl.value) reviewMessageEl.value = v;
+  } catch (_e) {}
+}
+
+function saveCommitMessage() {
+  try {
+    const src = (reviewMessageEl && reviewMessageEl.value)
+      ? reviewMessageEl
+      : addMessageEl;
+    if (!src) return;
+    const v = (src.value || "").trim();
+    localStorage.setItem("axiograph_commit_message", v);
+    if (addMessageEl && addMessageEl.value !== v) addMessageEl.value = v;
+    if (reviewMessageEl && reviewMessageEl.value !== v) reviewMessageEl.value = v;
+  } catch (_e) {}
+}
+
+loadCommitMessage();
+if (addMessageEl) addMessageEl.addEventListener("change", saveCommitMessage);
+if (reviewMessageEl) reviewMessageEl.addEventListener("change", saveCommitMessage);
+
+if (reviewFilterEl) reviewFilterEl.addEventListener("input", renderDraftOverlayReview);
+if (reviewSelectAllBtn) reviewSelectAllBtn.addEventListener("click", () => {
+  if (!ui.draftOverlay || !ui.draftOverlay.proposals_json || !Array.isArray(ui.draftOverlay.proposals_json.proposals)) return;
+  ui.draftSelected = new Set(ui.draftOverlay.proposals_json.proposals.map(p => String(p && p.proposal_id || "")).filter(Boolean));
+  renderDraftOverlayReview();
+});
+if (reviewSelectNoneBtn) reviewSelectNoneBtn.addEventListener("click", () => {
+  ui.draftSelected = new Set();
+  renderDraftOverlayReview();
+});
+if (reviewClearBtn) reviewClearBtn.addEventListener("click", clearDraftOverlay);
+if (reviewCommitBtn) reviewCommitBtn.addEventListener("click", commitGeneratedOverlay);
+if (reviewDraftAxiBtn) reviewDraftAxiBtn.addEventListener("click", draftAxiFromGeneratedOverlay);
+if (reviewPromoteAxiBtn) reviewPromoteAxiBtn.addEventListener("click", promoteDraftAxiText);
 
 function currentContextNameFromFilter() {
   if (!contextFilterEl) return null;
@@ -1755,207 +2178,28 @@ updateAddConfidenceLabel();
 
 function prefillAddFromToolLoop(outcome) {
   if (!outcome) return false;
+
+  // Preferred: use the backend-extracted artifact (stable, merged, UI-friendly).
+  const artifact = outcome
+    && outcome.artifacts
+    && outcome.artifacts.generated_overlay
+    ? outcome.artifacts.generated_overlay
+    : null;
+  if (artifact && artifact.proposals_json) {
+    return setDraftOverlay(artifact, { notePrefix: "generated from LLM" });
+  }
+
+  // Fallback: scan the transcript for proposal generation tool outputs.
   const steps = Array.isArray(outcome.steps) ? outcome.steps : [];
-
-  function applyGeneratedOverlay(generated, opts) {
-    const r = generated || null;
-    if (!r || !r.proposals_json) return false;
-
-    ui.addLastGenerated = r;
-    setAddOutput(r);
-    setAddCommitOutput(null);
-    const notePrefix = (opts && opts.notePrefix) ? String(opts.notePrefix) : "generated from LLM";
-    if (r.validation && r.validation.ok === false) {
-      setAddStatus(`${notePrefix} (validation failed; fix before commit)`);
-    } else if (r.validation && r.validation.ok === true) {
-      setAddStatus(`${notePrefix} (validated; review then commit)`);
-    } else {
-      setAddStatus(`${notePrefix} (review then commit)`);
-    }
-
-    const summary = r.summary || {};
-    const relType = (opts && opts.relType) ? opts.relType : (summary.rel_type || null);
-    if (addRelTypeEl && relType) addRelTypeEl.value = String(relType);
-
-    const sourceNames = (opts && Array.isArray(opts.sourceNames)) ? opts.sourceNames : null;
-    const targetNames = (opts && Array.isArray(opts.targetNames)) ? opts.targetNames : null;
-
-    if (addSourceNameEl) {
-      if (sourceNames && sourceNames.length) addSourceNameEl.value = sourceNames.join("\n");
-      else if (Array.isArray(summary.source_names)) addSourceNameEl.value = summary.source_names.join("\n");
-      else if (summary.source_name) addSourceNameEl.value = summary.source_name;
-    }
-    if (addTargetNameEl) {
-      if (targetNames && targetNames.length) addTargetNameEl.value = targetNames.join("\n");
-      else if (Array.isArray(summary.target_names)) addTargetNameEl.value = summary.target_names.join("\n");
-      else if (summary.target_name) addTargetNameEl.value = summary.target_name;
-    }
-
-    const pairing = (opts && opts.pairing) ? String(opts.pairing) : null;
-    if (addPairingEl && pairing) addPairingEl.value = pairing;
-
-    const ctx = (opts && opts.context) ? opts.context : (summary.context || null);
-    if (addContextEl && ctx) addContextEl.value = String(ctx);
-
-    const confidence = (opts && opts.confidence != null) ? opts.confidence : summary.confidence;
-    if (addConfidenceEl && confidence != null) {
-      const c = Number(confidence);
-      if (Number.isFinite(c)) {
-        addConfidenceEl.value = String(c);
-        updateAddConfidenceLabel();
-      }
-    }
-
-    if (addEvidenceTextEl && Array.isArray(r.chunks) && r.chunks.length) {
-      const t = (r.chunks[0] && r.chunks[0].text) ? String(r.chunks[0].text) : "";
-      if (t.trim()) addEvidenceTextEl.value = t;
-    }
-
-    setActiveTab("add");
-    return true;
-  }
-
-  function mergeGeneratedOverlays(generatedList) {
-    if (!Array.isArray(generatedList) || !generatedList.length) return null;
-
-    const base = generatedList.find(x => x && x.proposals_json) || null;
-    if (!base) return null;
-
-    const merged = {
-      proposals_json: JSON.parse(JSON.stringify(base.proposals_json)),
-      chunks: [],
-      summary: {},
-      validation: null,
-    };
-
-    const proposalSeen = new Set();
-    const outProposals = [];
-    for (const g of generatedList) {
-      const pj = g && g.proposals_json ? g.proposals_json : null;
-      const props = pj && Array.isArray(pj.proposals) ? pj.proposals : [];
-      for (const p of props) {
-        const id = (p && typeof p.proposal_id === "string" && p.proposal_id) ? p.proposal_id : JSON.stringify(p);
-        if (proposalSeen.has(id)) continue;
-        proposalSeen.add(id);
-        outProposals.push(p);
-      }
-    }
-    if (merged.proposals_json && typeof merged.proposals_json === "object") {
-      merged.proposals_json.proposals = outProposals;
-    }
-
-    const chunkSeen = new Set();
-    const outChunks = [];
-    for (const g of generatedList) {
-      const chunks = (g && Array.isArray(g.chunks)) ? g.chunks : [];
-      for (const c of chunks) {
-        const id = (c && typeof c.chunk_id === "string" && c.chunk_id) ? c.chunk_id : JSON.stringify(c);
-        if (chunkSeen.has(id)) continue;
-        chunkSeen.add(id);
-        outChunks.push(c);
-      }
-    }
-    merged.chunks = outChunks;
-
-    const validations = generatedList
-      .map(g => (g && g.validation) ? g.validation : null)
-      .filter(v => v && typeof v.ok === "boolean");
-    if (validations.length) {
-      const anyFalse = validations.some(v => v.ok === false);
-      const allTrue = validations.length === generatedList.length && validations.every(v => v.ok === true);
-      if (anyFalse) merged.validation = { ok: false, note: "merged validations: at least one failed", validations };
-      else if (allTrue) merged.validation = { ok: true, note: "merged validations: all ok", validations };
-      else merged.validation = null;
-    }
-
-    // Prefer the most recent summary as a UX hint (not trusted).
-    for (let i = generatedList.length - 1; i >= 0; i--) {
-      const s = generatedList[i] && generatedList[i].summary ? generatedList[i].summary : null;
-      if (s && typeof s === "object") {
-        merged.summary = s;
-        break;
-      }
-    }
-
-    return merged;
-  }
-
-  // Prefer backend-extracted artifacts (stable) over interpreting the transcript (brittle).
-  try {
-    if (outcome && outcome.artifacts && outcome.artifacts.generated_overlay) {
-      return applyGeneratedOverlay(outcome.artifacts.generated_overlay, { notePrefix: "generated from LLM" });
-    }
-  } catch (_e) {}
-
-  // Prefer the batch tool (it avoids “last step wins” when users ask for many facts).
   for (let i = steps.length - 1; i >= 0; i--) {
     const s = steps[i];
-    if (!s || s.tool !== "propose_relations_proposals") continue;
+    if (!s) continue;
+    if (s.tool !== "propose_relation_proposals" && s.tool !== "propose_relations_proposals") continue;
     const r = s.result || null;
     if (!r || !r.proposals_json) continue;
-    const a = s.args || {};
-    const srcs = Array.isArray(a.source_names) ? a.source_names.map(String) : [];
-    const tgts = Array.isArray(a.target_names) ? a.target_names.map(String) : [];
-    const pairing = (a.pairing != null) ? String(a.pairing) : null;
-    const ctx = (a.context != null) ? String(a.context) : null;
-    const rel = (a.rel_type != null) ? String(a.rel_type) : null;
-    const conf = (a.confidence != null) ? Number(a.confidence) : null;
-    return applyGeneratedOverlay(r, {
-      notePrefix: "generated from LLM (batch)",
-      relType: rel,
-      sourceNames: srcs,
-      targetNames: tgts,
-      pairing: pairing,
-      context: ctx,
-      confidence: conf,
-    });
+    return setDraftOverlay(r, { notePrefix: "generated from LLM (fallback)" });
   }
 
-  // Next: merge multiple single-pair proposal generations if present.
-  const singleGenerated = [];
-  const singleSources = [];
-  const singleTargets = [];
-  let relTypeHint = null;
-  let contextHint = null;
-  let confidenceHint = null;
-  for (const s of steps) {
-    if (!s || s.tool !== "propose_relation_proposals") continue;
-    const r = s.result || null;
-    if (!r || !r.proposals_json) continue;
-    singleGenerated.push(r);
-
-    const summary = r.summary || {};
-    if (!relTypeHint && summary.rel_type) relTypeHint = String(summary.rel_type);
-    if (!contextHint && summary.context) contextHint = String(summary.context);
-    if (confidenceHint == null && summary.confidence != null) {
-      const c = Number(summary.confidence);
-      if (Number.isFinite(c)) confidenceHint = c;
-    }
-
-    const src = summary.source_name || (s.args && s.args.source_name) || null;
-    const dst = summary.target_name || (s.args && s.args.target_name) || null;
-    if (src && !singleSources.includes(String(src))) singleSources.push(String(src));
-    if (dst && !singleTargets.includes(String(dst))) singleTargets.push(String(dst));
-  }
-  if (singleGenerated.length > 1) {
-    const merged = mergeGeneratedOverlays(singleGenerated);
-    return applyGeneratedOverlay(merged, {
-      notePrefix: `generated from LLM (merged ${singleGenerated.length} overlays)`,
-      relType: relTypeHint,
-      sourceNames: singleSources,
-      targetNames: singleTargets,
-      context: contextHint,
-      confidence: confidenceHint,
-    });
-  }
-
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const s = steps[i];
-    if (!s || s.tool !== "propose_relation_proposals") continue;
-    const r = s.result || null;
-    if (!r || !r.proposals_json) continue;
-    return applyGeneratedOverlay(r, null);
-  }
   return false;
 }
 
@@ -1981,7 +2225,10 @@ async function generateRelationProposals() {
   setAddStatus("");
   setAddOutput(null);
   setAddCommitOutput(null);
-  ui.addLastGenerated = null;
+  setReviewCommitOutput(null);
+  setReviewPromoteOutput(null);
+  ui.reviewActionStatus = "";
+  clearDraftOverlay();
 
   if (!isServerMode()) {
     setAddStatus("requires server mode (`axiograph db serve`)");
@@ -2041,19 +2288,23 @@ async function generateRelationProposals() {
       body: JSON.stringify(req),
     });
     const data = await resp.json();
-    setAddOutput(data);
     if (!resp.ok) {
       setAddStatus(`error (${resp.status})`);
+      setAddOutput(data);
       return;
     }
-    ui.addLastGenerated = data;
+    setDraftOverlay(data, { notePrefix: "generated" });
     if (data && data.validation && data.validation.ok === false) {
       const te = (data.validation.axi_typecheck && Array.isArray(data.validation.axi_typecheck.errors))
         ? data.validation.axi_typecheck.errors.length : 0;
       const qe = (data.validation.quality_delta && data.validation.quality_delta.summary)
         ? Number(data.validation.quality_delta.summary.error_count || 0) : 0;
+      ui.reviewActionStatus = "validation failed";
+      renderDraftOverlayReview();
       setAddStatus(`validation failed (typecheck_errors=${te} quality_errors=${qe})`);
     } else if (data && data.validation && data.validation.ok === true) {
+      ui.reviewActionStatus = "validated";
+      renderDraftOverlayReview();
       setAddStatus("ok (validated)");
     } else {
       setAddStatus("ok");
@@ -2067,21 +2318,27 @@ async function generateRelationProposals() {
 async function commitGeneratedOverlay() {
   setAddStatus("");
   setAddCommitOutput(null);
+  setReviewCommitOutput(null);
+  ui.reviewActionStatus = "";
+  renderDraftOverlayReview();
 
   if (!isServerMode()) {
     setAddStatus("requires server mode (`axiograph db serve`)");
     return;
   }
-  if (!ui.addLastGenerated || !ui.addLastGenerated.proposals_json) {
-    setAddStatus("generate proposals first");
+  const draft = currentDraftFiltered();
+  if (!draft || !draft.proposals_json || !Array.isArray(draft.proposals_json.proposals) || !draft.proposals_json.proposals.length) {
+    setAddStatus("no draft overlay selected (generate proposals first)");
     return;
   }
-  if (ui.addLastGenerated.validation && ui.addLastGenerated.validation.ok === false) {
+  if (ui.draftOverlay && ui.draftOverlay.validation && ui.draftOverlay.validation.ok === false) {
     setAddStatus("refusing to commit: validation failed (fix proposals first)");
+    ui.reviewActionStatus = "refusing to commit: invalid";
+    renderDraftOverlayReview();
     return;
   }
 
-  const message = (addMessageEl && addMessageEl.value || "").trim();
+  const message = (reviewMessageEl && reviewMessageEl.value || addMessageEl && addMessageEl.value || "").trim();
 
   let acceptedSnapshot = null;
   try {
@@ -2093,6 +2350,8 @@ async function commitGeneratedOverlay() {
       }
       if (status && status.role && String(status.role).toLowerCase() !== "master") {
         setAddStatus("commit requires master server (role != master)");
+        ui.reviewActionStatus = "commit blocked (role != master)";
+        renderDraftOverlayReview();
         return;
       }
     }
@@ -2100,17 +2359,19 @@ async function commitGeneratedOverlay() {
 
   const req = {
     accepted_snapshot: acceptedSnapshot,
-    chunks: Array.isArray(ui.addLastGenerated.chunks) ? ui.addLastGenerated.chunks : [],
-    proposals: ui.addLastGenerated.proposals_json,
+    chunks: Array.isArray(draft.chunks) ? draft.chunks : [],
+    proposals: draft.proposals_json,
     message: message || null,
   };
 
   const headers = { "content-type": "application/json" };
-  const token = (addAdminTokenEl && addAdminTokenEl.value || "").trim();
+  const token = (reviewAdminTokenEl && reviewAdminTokenEl.value || addAdminTokenEl && addAdminTokenEl.value || "").trim();
   if (token) headers["authorization"] = `Bearer ${token}`;
 
   try {
     setAddStatus("committing…");
+    ui.reviewActionStatus = "committing…";
+    renderDraftOverlayReview();
     const resp = await fetch("/admin/accept/pathdb-commit", {
       method: "POST",
       headers,
@@ -2118,13 +2379,19 @@ async function commitGeneratedOverlay() {
     });
     const data = await resp.json();
     setAddCommitOutput(data);
+    setReviewCommitOutput(data);
     if (!resp.ok) {
       setAddStatus(`error (${resp.status})`);
+      ui.reviewActionStatus = `commit error (${resp.status})`;
+      renderDraftOverlayReview();
       return;
     }
     setAddStatus("ok");
+    ui.reviewActionStatus = "committed";
+    renderDraftOverlayReview();
 
     if (data && data.snapshot_id) {
+      clearDraftOverlay();
       const p = new URLSearchParams(window.location.search || "");
       p.set("snapshot", data.snapshot_id);
       window.location.search = p.toString();
@@ -2132,6 +2399,9 @@ async function commitGeneratedOverlay() {
   } catch (e) {
     setAddStatus("error");
     setAddCommitOutput(String(e));
+    setReviewCommitOutput(String(e));
+    ui.reviewActionStatus = "commit error";
+    renderDraftOverlayReview();
   }
 }
 
@@ -2142,20 +2412,28 @@ async function draftAxiFromGeneratedOverlay() {
   setAddPromoteStatus("");
   setAddPromoteOutput(null);
   if (addAxiTextEl) addAxiTextEl.value = "";
+  if (reviewAxiTextEl) reviewAxiTextEl.value = "";
+  ui.reviewActionStatus = "";
+  renderDraftOverlayReview();
 
   if (!isServerMode()) {
     setAddPromoteStatus("requires server mode (`axiograph db serve`)");
     return;
   }
-  if (!ui.addLastGenerated || !ui.addLastGenerated.proposals_json) {
-    setAddPromoteStatus("generate proposals first");
+  const draft = currentDraftFiltered();
+  if (!draft || !draft.proposals_json || !Array.isArray(draft.proposals_json.proposals) || !draft.proposals_json.proposals.length) {
+    setAddPromoteStatus("no draft overlay selected (generate proposals first)");
+    ui.reviewActionStatus = "no draft overlay";
+    renderDraftOverlayReview();
     return;
   }
 
   try {
     setAddPromoteStatus("drafting…");
+    ui.reviewActionStatus = "drafting .axi…";
+    renderDraftOverlayReview();
     const req = {
-      proposals: ui.addLastGenerated.proposals_json,
+      proposals: draft.proposals_json,
       infer_constraints: true,
     };
     const resp = await fetch("/discover/draft-axi", {
@@ -2165,36 +2443,60 @@ async function draftAxiFromGeneratedOverlay() {
     });
     const data = await resp.json();
     setAddPromoteOutput(data);
+    setReviewPromoteOutput(data);
     if (!resp.ok) {
       setAddPromoteStatus(`error (${resp.status})`);
+      ui.reviewActionStatus = `draft error (${resp.status})`;
+      renderDraftOverlayReview();
       return;
     }
     if (addAxiTextEl && data && typeof data.axi_text === "string") {
       addAxiTextEl.value = data.axi_text;
     }
+    if (reviewAxiTextEl && data && typeof data.axi_text === "string") {
+      reviewAxiTextEl.value = data.axi_text;
+    }
     setAddPromoteStatus("ok");
+    ui.reviewActionStatus = "drafted .axi";
+    renderDraftOverlayReview();
   } catch (e) {
     setAddPromoteStatus("error");
     setAddPromoteOutput(String(e));
+    setReviewPromoteOutput(String(e));
+    ui.reviewActionStatus = "draft error";
+    renderDraftOverlayReview();
   }
 }
 
 async function promoteDraftAxiText() {
   setAddPromoteStatus("");
   setAddPromoteOutput(null);
+  setReviewPromoteOutput(null);
+  ui.reviewActionStatus = "";
+  renderDraftOverlayReview();
 
   if (!isServerMode()) {
     setAddPromoteStatus("requires server mode (`axiograph db serve`)");
-    return;
-  }
-  if (!addAxiTextEl || !String(addAxiTextEl.value || "").trim()) {
-    setAddPromoteStatus("draft .axi text is empty (click 'draft .axi' or paste)");
+    ui.reviewActionStatus = "requires server mode";
+    renderDraftOverlayReview();
     return;
   }
 
-  const token = (addAdminTokenEl && addAdminTokenEl.value || "").trim();
+  const axiText = (reviewAxiTextEl && String(reviewAxiTextEl.value || "").trim())
+    ? String(reviewAxiTextEl.value || "")
+    : (addAxiTextEl ? String(addAxiTextEl.value || "") : "");
+  if (!String(axiText || "").trim()) {
+    setAddPromoteStatus("draft .axi text is empty (click 'draft .axi' or paste)");
+    ui.reviewActionStatus = "promote blocked: empty .axi";
+    renderDraftOverlayReview();
+    return;
+  }
+
+  const token = (reviewAdminTokenEl && reviewAdminTokenEl.value || addAdminTokenEl && addAdminTokenEl.value || "").trim();
   if (!token) {
     setAddPromoteStatus("promote requires admin token");
+    ui.reviewActionStatus = "promote blocked: missing token";
+    renderDraftOverlayReview();
     return;
   }
 
@@ -2205,14 +2507,16 @@ async function promoteDraftAxiText() {
       const status = await statusResp.json();
       if (status && status.role && String(status.role).toLowerCase() !== "master") {
         setAddPromoteStatus("promote requires master server (role != master)");
+        ui.reviewActionStatus = "promote blocked (role != master)";
+        renderDraftOverlayReview();
         return;
       }
     }
   } catch (_e) {}
 
-  const message = (addMessageEl && addMessageEl.value || "").trim();
+  const message = (reviewMessageEl && reviewMessageEl.value || addMessageEl && addMessageEl.value || "").trim();
   const req = {
-    axi_text: String(addAxiTextEl.value || ""),
+    axi_text: String(axiText || ""),
     message: message || null,
     quality: "fast",
   };
@@ -2221,6 +2525,8 @@ async function promoteDraftAxiText() {
 
   try {
     setAddPromoteStatus("promoting…");
+    ui.reviewActionStatus = "promoting…";
+    renderDraftOverlayReview();
     const resp = await fetch("/admin/accept/promote", {
       method: "POST",
       headers,
@@ -2228,17 +2534,25 @@ async function promoteDraftAxiText() {
     });
     const data = await resp.json();
     setAddPromoteOutput(data);
+    setReviewPromoteOutput(data);
     if (!resp.ok) {
       setAddPromoteStatus(`error (${resp.status})`);
+      ui.reviewActionStatus = `promote error (${resp.status})`;
+      renderDraftOverlayReview();
       return;
     }
     setAddPromoteStatus("ok");
+    ui.reviewActionStatus = "promoted";
+    renderDraftOverlayReview();
     // NOTE: If the server is currently serving the accepted plane (accepted/head),
     // it will auto-reload. If serving pathdb/head, you'll still need to build/commit
     // a new PathDB snapshot derived from the new accepted snapshot.
   } catch (e) {
     setAddPromoteStatus("error");
     setAddPromoteOutput(String(e));
+    setReviewPromoteOutput(String(e));
+    ui.reviewActionStatus = "promote error";
+    renderDraftOverlayReview();
   }
 }
 
@@ -3014,6 +3328,26 @@ async function initServerControls() {
         }
         llmHistoryKey = nextKey;
         renderLlmChat();
+      }
+    } catch (_e) {}
+    // Same for draft overlays (review/commit workflow).
+    try {
+      const nextKey = draftOverlayStorageKey();
+      if (nextKey && nextKey !== draftOverlayKey) {
+        const nextOverlay = loadDraftOverlayForKey(nextKey);
+        if (nextOverlay && nextOverlay.proposals_json) {
+          ui.draftOverlay = nextOverlay;
+          if (Array.isArray(nextOverlay.proposals_json.proposals)) {
+            ui.draftSelected = new Set(nextOverlay.proposals_json.proposals.map(p => String(p && p.proposal_id || "")).filter(Boolean));
+          } else {
+            ui.draftSelected = new Set();
+          }
+        } else if (ui.draftOverlay) {
+          localStorage.setItem(nextKey, JSON.stringify(ui.draftOverlay));
+        }
+        draftOverlayKey = nextKey;
+        saveDraftOverlay();
+        renderDraftOverlayReview();
       }
     } catch (_e) {}
     if (status && status.llm && llmStatusEl) {
