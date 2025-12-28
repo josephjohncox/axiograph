@@ -3,6 +3,7 @@ import Axiograph.Certificate.Format
 import Axiograph.Axi.PathDBExportV1
 import Axiograph.Axi.ConstraintsCheck
 import Axiograph.Axi.TypeCheck
+import Axiograph.Util.Fnv1a
 import Mathlib.Computability.RegularExpressions
 
 namespace Axiograph
@@ -372,6 +373,374 @@ def verifyQueryResultProofV2Anchored
     (proof : QueryResultProofV2) : Except String QueryResultV2 := do
   for row in proof.rows do
     verifyQueryRowV2Anchored relationInfo entityType entityAttribute proof.query row
+  pure { rowCount := proof.rows.size, truncated := proof.truncated }
+
+/-!
+## `.axi`-anchored query checking (v3, name-based)
+
+`query_result_v3` removes the dependency on `PathDBExportV1` snapshot tables by
+anchoring reachability witnesses directly to canonical `.axi` tuple facts via
+`axi_fact_id`.
+
+This checker:
+
+* builds a small index over the anchored `.axi` module (objects + tuples),
+* validates each witness step against the corresponding tuple's fields, and
+* checks RPQ label matching via `Mathlib.Computability.RegularExpressions`.
+-/
+
+open Axiograph.Axi.SchemaV1
+
+structure TupleFactInfoV3 where
+  schemaName : String
+  instanceName : String
+  relationName : String
+  fields : Std.HashMap String String
+  deriving Repr
+
+structure ObjectInfoV3 where
+  schemaName : String
+  instanceName : String
+  objectType : String
+  deriving Repr
+
+structure AxiQueryIndexV3 where
+  moduleName : String
+  schemas : Std.HashMap String SchemaV1Schema
+  tupleFacts : Std.HashMap String TupleFactInfoV3
+  objects : Std.HashMap String ObjectInfoV3
+  deriving Repr
+
+def factIdPrefixV1 : String := Axiograph.Util.Fnv1a.factIdPrefix
+
+def stripFactPrefixV1 (s : String) : Option String :=
+  if s.startsWith factIdPrefixV1 then
+    some (s.drop factIdPrefixV1.length)
+  else
+    none
+
+def schemaMapV3 (m : Axiograph.Axi.AxiV1.AxiV1Module) : Std.HashMap String SchemaV1Schema :=
+  Id.run do
+    let mut out : Std.HashMap String SchemaV1Schema := {}
+    for s in m.schemas do
+      out := out.insert s.name s
+    out
+
+def findRelationDecl (schema : SchemaV1Schema) (relationName : String) : Except String RelationDeclV1 := do
+  let some rel := schema.relations.find? (fun r => r.name == relationName)
+    | throw s!"unknown relation `{relationName}` in schema `{schema.name}`"
+  pure rel
+
+def tupleEntityTypeName (schema : SchemaV1Schema) (relationName : String) : String :=
+  if schema.objects.contains relationName then
+    relationName ++ "Fact"
+  else
+    relationName
+
+def deriveBinaryEndpointsV3 (decl : RelationDeclV1) (fields : Std.HashMap String String) :
+    Option (String × String) :=
+  -- Mirrors `rust/crates/axiograph-pathdb/src/axi_module_import.rs::derive_binary_endpoints`.
+  if decl.fields.size == 2 then
+    let f0 := decl.fields[0]!.field
+    let f1 := decl.fields[1]!.field
+    match fields.get? f0, fields.get? f1 with
+    | some a, some b => some (a, b)
+    | _, _ => none
+  else
+    let primary : Array String :=
+      decl.fields
+        |>.map (fun f => f.field)
+        |>.filter (fun f => f != "ctx" && f != "time")
+    if primary.size == 2 then
+      match fields.get? primary[0]!, fields.get? primary[1]! with
+      | some a, some b => some (a, b)
+      | _, _ => none
+    else
+      let pairs : List (String × String) :=
+        [ ("lhs", "rhs")
+        , ("route1", "route2")
+        , ("path1", "path2")
+        , ("rel1", "rel2")
+        , ("i1", "i2")
+        , ("s1", "s2")
+        , ("left", "right")
+        , ("child", "parent")
+        , ("from", "to")
+        , ("source", "target")
+        , ("src", "dst")
+        ]
+      pairs.findSome? (fun (src, dst) =>
+        match fields.get? src, fields.get? dst with
+        | some a, some b => some (a, b)
+        | _, _ => none)
+
+def buildAxiQueryIndexV3 (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String AxiQueryIndexV3 := do
+  let schemas := schemaMapV3 m
+  let mut objects : Std.HashMap String ObjectInfoV3 := {}
+  let mut tupleFacts : Std.HashMap String TupleFactInfoV3 := {}
+
+  for inst in m.instances do
+    let some schema := schemas.get? inst.schema
+      | throw s!"instance `{inst.name}` references unknown schema `{inst.schema}`"
+
+    for a in inst.assignments do
+      -- Object assignment: `T = {x, y, ...}`
+      -- Relation assignment: `R = {(field=v, ...), ...}`
+      for item in a.value.items do
+        match item with
+        | .ident name =>
+            if schema.objects.contains a.name then
+              match objects.get? name with
+              | none =>
+                  objects :=
+                    objects.insert name { schemaName := schema.name, instanceName := inst.name, objectType := a.name }
+              | some prev =>
+                  if prev.objectType != a.name || prev.schemaName != schema.name || prev.instanceName != inst.name then
+                    throw s!"ambiguous object name `{name}` across assignments (expected unique names for query_result_v3)"
+                  else
+                    pure ()
+            else
+              -- Not an object assignment in this schema; ignore (fail-closed behavior for non-canonical inputs).
+              pure ()
+        | .tuple fieldPairs =>
+            let relDecl ← findRelationDecl schema a.name
+            let mut fm : Std.HashMap String String := {}
+            for (k, v) in fieldPairs do
+              if fm.contains k then
+                throw s!"duplicate field `{k}` in `{a.name}` tuple (instance `{inst.name}`)"
+              fm := fm.insert k v
+            -- Ensure all declared fields are present (fail-closed).
+            for f in relDecl.fields do
+              if !(fm.contains f.field) then
+                throw s!"missing field `{f.field}` in `{a.name}` tuple (instance `{inst.name}`)"
+            -- Canonicalize in schema-declared field order.
+            let mut ordered : Array (String × String) := #[]
+            for f in relDecl.fields do
+              let some v := fm.get? f.field
+                | throw s!"internal error: missing field `{f.field}` after presence check"
+              ordered := ordered.push (f.field, v)
+            let factId :=
+              Axiograph.Util.Fnv1a.axiFactIdV1 m.moduleName schema.name inst.name a.name ordered
+            tupleFacts := tupleFacts.insert factId { schemaName := schema.name, instanceName := inst.name, relationName := a.name, fields := fm }
+
+  pure { moduleName := m.moduleName, schemas, tupleFacts, objects }
+
+def resolveTermV3 (bindings : Std.HashMap String String) : QueryTermV3 → Except String String
+  | .const entity => pure entity
+  | .var name =>
+      match bindings.get? name with
+      | some entity => pure entity
+      | none => throw s!"missing binding for variable `{name}`"
+
+def toRegularExpressionV3 : QueryRegexV3 → RegularExpression String
+  | .epsilon => (1 : RegularExpression String)
+  | .rel rel => RegularExpression.char rel
+  | .seq parts =>
+      parts.foldl (fun acc p => acc * toRegularExpressionV3 p) (1 : RegularExpression String)
+  | .alt parts =>
+      parts.foldl (fun acc p => acc + toRegularExpressionV3 p) (0 : RegularExpression String)
+  | .star inner =>
+      RegularExpression.star (toRegularExpressionV3 inner)
+  | .plus inner =>
+      let re := toRegularExpressionV3 inner
+      re * RegularExpression.star re
+  | .opt inner =>
+      (1 : RegularExpression String) + toRegularExpressionV3 inner
+
+def reachabilityRelLabelsV3 : ReachabilityProofV3 → List String
+  | .reflexive _ => []
+  | .step _ rel _ _ _ rest => rel :: reachabilityRelLabelsV3 rest
+
+partial def ensureReachabilityMinConfidenceV3
+    (proof : ReachabilityProofV3)
+    (minConfidence : Prob.VProb) : Except String Unit := do
+  match proof with
+  | .reflexive _ => pure ()
+  | .step _ _ _ relConfidence _ rest => do
+      if Prob.toNat relConfidence < Prob.toNat minConfidence then
+        throw s!"reachability step below min_confidence_fp: got {Prob.toNat relConfidence}, expected ≥ {Prob.toNat minConfidence}"
+      ensureReachabilityMinConfidenceV3 rest minConfidence
+
+structure ReachabilityResultV3 where
+  start : String
+  end_ : String
+  pathLen : Nat
+  confidence : Prob.VProb
+  deriving Repr
+
+partial def verifyReachabilityProofV3Anchored
+    (index : AxiQueryIndexV3)
+    (proof : ReachabilityProofV3) : Except String ReachabilityResultV3 := do
+  match proof with
+  | .reflexive entity =>
+      pure { start := entity, end_ := entity, pathLen := 0, confidence := Prob.vOne }
+  | .step src rel dst relConfidence axiFactId rest => do
+      if Prob.toNat relConfidence != Prob.toNat Prob.vOne then
+        throw s!"reachability_v3: confidence mismatch (expected 1.0, got {Prob.toNat relConfidence})"
+      let some tuple := index.tupleFacts.get? axiFactId
+        | throw s!"reachability_v3: unknown axi_fact_id `{axiFactId}`"
+
+      let fieldRel := if rel == "axi_fact_in_context" then "ctx" else rel
+
+      if src == axiFactId then
+        -- Tuple-field edge: `factId -field-> value`
+        let some v := tuple.fields.get? fieldRel
+          | throw s!"reachability_v3: tuple `{axiFactId}` has no field `{fieldRel}`"
+        if v != dst then
+          throw s!"reachability_v3: field edge mismatch for `{axiFactId}`.{fieldRel}: expected `{v}`, got `{dst}`"
+      else
+        -- Derived binary edge: `src -Relation-> dst`
+        if tuple.relationName != rel then
+          throw s!"reachability_v3: relation mismatch for `{axiFactId}`: expected `{tuple.relationName}`, got `{rel}`"
+        let some schema := index.schemas.get? tuple.schemaName
+          | throw s!"reachability_v3: missing schema `{tuple.schemaName}` (internal index error)"
+        let relDecl ← findRelationDecl schema tuple.relationName
+        let some (expectedSrc, expectedDst) := deriveBinaryEndpointsV3 relDecl tuple.fields
+          | throw s!"reachability_v3: relation `{tuple.relationName}` has no canonical binary projection"
+        if expectedSrc != src || expectedDst != dst then
+          throw s!"reachability_v3: binary endpoints mismatch for `{axiFactId}`: expected ({expectedSrc},{expectedDst}), got ({src},{dst})"
+
+      let restRes ← verifyReachabilityProofV3Anchored index rest
+      if restRes.start != dst then
+        throw s!"invalid proof chain: expected rest.start = {dst}, got {restRes.start}"
+      pure {
+        start := src
+        end_ := restRes.end_
+        pathLen := restRes.pathLen + 1
+        confidence := Prob.vMult relConfidence restRes.confidence
+      }
+
+def derivedAttrV3 (index : AxiQueryIndexV3) (entity : String) (key : String) :
+    Except String (Option String) := do
+  if entity.startsWith factIdPrefixV1 then
+    let some tuple := index.tupleFacts.get? entity
+      | throw s!"unknown tuple fact id `{entity}`"
+    match key with
+    | "name" =>
+        let some hex := stripFactPrefixV1 entity
+          | throw "internal error: fact prefix mismatch"
+        pure (some (tuple.relationName ++ "_fact_" ++ hex))
+    | "axi_fact_id" => pure (some entity)
+    | "axi_module" => pure (some index.moduleName)
+    | "axi_schema" => pure (some tuple.schemaName)
+    | "axi_instance" => pure (some tuple.instanceName)
+    | "axi_relation" => pure (some tuple.relationName)
+    | _ => pure none
+  else
+    let some obj := index.objects.get? entity
+      | throw s!"unknown object/entity name `{entity}`"
+    match key with
+    | "name" => pure (some entity)
+    | "axi_module" => pure (some index.moduleName)
+    | "axi_schema" => pure (some obj.schemaName)
+    | "axi_instance" => pure (some obj.instanceName)
+    | _ => pure none
+
+structure QueryResultV3 where
+  rowCount : Nat
+  truncated : Bool
+  deriving Repr
+
+def verifyQueryRowV3Anchored
+    (index : AxiQueryIndexV3)
+    (query : QueryV3)
+    (row : QueryRowV3) : Except String Unit := do
+  let mut bindings : Std.HashMap String String := {}
+  for b in row.bindings do
+    if bindings.contains b.var then
+      throw s!"duplicate binding for variable `{b.var}`"
+    bindings := bindings.insert b.var b.entity
+
+  let mut chosen : Option (Array QueryAtomV3) := none
+  let mut idx : Nat := 0
+  for atoms in query.disjuncts do
+    if idx == row.disjunct then
+      chosen := some atoms
+    idx := idx + 1
+
+  let some atoms := chosen
+    | throw s!"disjunct out of bounds: {row.disjunct} (have {query.disjuncts.size})"
+
+  if row.witnesses.size != atoms.size then
+    throw s!"witness count mismatch: expected {atoms.size}, got {row.witnesses.size}"
+
+  for (atom, witness) in Array.zip atoms row.witnesses do
+    match atom, witness with
+    | .type term typeName, .type entity typeName' => do
+        if typeName != typeName' then
+          throw s!"type witness mismatch: expected type_name={typeName}, got {typeName'}"
+        let entity' ← resolveTermV3 bindings term
+        if entity != entity' then
+          throw s!"type witness mismatch: expected entity={entity'}, got {entity}"
+
+        if entity.startsWith factIdPrefixV1 then
+          let some tuple := index.tupleFacts.get? entity
+            | throw s!"unknown tuple fact id `{entity}`"
+          let some schema := index.schemas.get? tuple.schemaName
+            | throw s!"missing schema `{tuple.schemaName}` (internal index error)"
+          let expectedType := tupleEntityTypeName schema tuple.relationName
+          if expectedType != typeName then
+            throw s!"tuple type mismatch for `{entity}`: expected `{expectedType}`, got `{typeName}`"
+        else
+          let some obj := index.objects.get? entity
+            | throw s!"unknown object/entity name `{entity}`"
+          if obj.objectType != typeName then
+            throw s!"object type mismatch for `{entity}`: expected `{typeName}`, got `{obj.objectType}`"
+
+    | .attrEq term key value, .attrEq entity key' value' => do
+        if key != key' || value != value' then
+          throw s!"attr witness mismatch: expected (key={key}, value={value}), got (key={key'}, value={value'})"
+        let entity' ← resolveTermV3 bindings term
+        if entity != entity' then
+          throw s!"attr witness mismatch: expected entity={entity'}, got {entity}"
+        let actual? ← derivedAttrV3 index entity key
+        match actual? with
+        | none => throw s!"unknown/unsupported derived attribute `{key}` for entity `{entity}`"
+        | some actual =>
+            if actual != value then
+              throw s!"derived attribute mismatch for `{entity}`.{key}: expected `{value}`, got `{actual}`"
+
+    | .path left regex right, .path proof => do
+        let src ← resolveTermV3 bindings left
+        let dst ← resolveTermV3 bindings right
+
+        let res ← verifyReachabilityProofV3Anchored index proof
+        if res.start != src then
+          throw s!"path witness start mismatch: expected {src}, got {res.start}"
+        if res.end_ != dst then
+          throw s!"path witness end mismatch: expected {dst}, got {res.end_}"
+
+        match query.maxHops? with
+        | none => pure ()
+        | some maxHops =>
+            if res.pathLen > maxHops then
+              throw s!"path witness exceeds max_hops={maxHops} (got len={res.pathLen})"
+
+        match query.minConfidence? with
+        | none => pure ()
+        | some minConf => ensureReachabilityMinConfidenceV3 proof minConf
+
+        let labels := reachabilityRelLabelsV3 proof
+        if labels.length != res.pathLen then
+          throw s!"internal error: labels length {labels.length} != pathLen {res.pathLen}"
+
+        let re := toRegularExpressionV3 regex
+        if !(labels ∈ re.matches') then
+          throw s!"path witness labels do not match RPQ (labels={labels})"
+
+    | _, _ =>
+        throw "atom/witness kind mismatch"
+
+def verifyQueryResultProofV3Anchored
+    (digestV1 : String)
+    (module : Axiograph.Axi.AxiV1.AxiV1Module)
+    (proof : QueryResultProofV3) : Except String QueryResultV3 := do
+  let index ← buildAxiQueryIndexV3 module
+  for row in proof.rows do
+    verifyQueryRowV3Anchored index proof.query row
+  -- Optional: verify elaboration rewrite derivations, if present.
+  for rw in proof.elaborationRewrites do
+    let _ ← RewriteDerivation.verifyRewriteDerivationProofV3Anchored digestV1 module rw
   pure { rowCount := proof.rows.size, truncated := proof.truncated }
 
 end Query
@@ -1187,6 +1556,7 @@ inductive CertificateResult where
   | axiConstraintsOkV1 (res : AxiConstraintsOkProofV1)
   | queryResultV1 (res : Query.QueryResultV1)
   | queryResultV2 (res : Query.QueryResultV2)
+  | queryResultV3 (res : Query.QueryResultV3)
   | normalizePathV2 (res : PathNormalization.NormalizePathResultV2)
   | rewriteDerivationV2 (res : RewriteDerivation.RewriteDerivationResultV2)
   | rewriteDerivationV3 (res : RewriteDerivation.RewriteDerivationResultV3)
@@ -1212,6 +1582,8 @@ def verifyCertificate : Certificate → Except String CertificateResult
       throw "query_result_v1 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
   | .queryResultV2 _ =>
       throw "query_result_v2 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
+  | .queryResultV3 _ =>
+      throw "query_result_v3 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
   | .normalizePathV2 proof => do
       let res ← PathNormalization.verifyNormalizePathProofV2 proof
       pure (.normalizePathV2 res)

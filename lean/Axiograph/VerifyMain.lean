@@ -91,6 +91,11 @@ def verifyCertificateJson
         | throw "query_result_v2 requires a `PathDBExportV1` anchor (missing snapshot tables)"
       let res ← Query.verifyQueryResultProofV2Anchored snap.relationInfo snap.entityType snap.entityAttribute proof
       pure (.queryResultV2 res)
+  | some anchor, .queryResultV3 proof =>
+      let some ctx := anchors.get? anchor.axiDigestV1
+        | throw s!"missing `.axi` anchor context for digest `{anchor.axiDigestV1}`"
+      let res ← Query.verifyQueryResultProofV3Anchored ctx.digestV1 ctx.module proof
+      pure (.queryResultV3 res)
   | some anchor, .rewriteDerivationV3 proof =>
       let some ctx := anchors.get? anchor.axiDigestV1
         | throw s!"missing `.axi` anchor context for digest `{anchor.axiDigestV1}`"
@@ -125,6 +130,8 @@ def printResult (res : CertificateResult) : IO Unit := do
       IO.println s!"ok: query_result rows={r.rowCount} truncated={r.truncated}"
   | .queryResultV2 r =>
       IO.println s!"ok: query_result_v2 rows={r.rowCount} truncated={r.truncated}"
+  | .queryResultV3 r =>
+      IO.println s!"ok: query_result_v3 rows={r.rowCount} truncated={r.truncated}"
   | .normalizePathV2 r =>
       IO.println s!"ok: normalized path start={r.start} end={r.end_}"
   | .rewriteDerivationV2 r =>

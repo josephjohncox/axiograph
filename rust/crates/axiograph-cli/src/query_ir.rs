@@ -296,6 +296,157 @@ fn default_query_ir_v1_version() -> u32 {
 }
 
 impl QueryIrV1 {
+    /// Convert an AxQL query into the typed JSON IR.
+    ///
+    /// This is primarily used to keep the LLM/tooling pipeline “typed” even if
+    /// a backend returns (or a user supplies) AxQL text.
+    ///
+    /// Notes:
+    /// - The conversion is best-effort but should preserve semantics for the
+    ///   AxQL core atoms supported by `QueryIrV1`.
+    /// - We use the compact IR forms where possible (e.g. bare `"Alice"` for
+    ///   `name("Alice")`), but retain explicit `{"kind":"entity",...}` for
+    ///   non-name lookups.
+    pub fn from_axql_query(query: &AxqlQuery) -> Self {
+        fn term_ir(term: &AxqlTerm) -> QueryTermIrV1 {
+            match term {
+                AxqlTerm::Var(v) => QueryTermIrV1::Simple(v.clone()),
+                AxqlTerm::Const(id) => QueryTermIrV1::Id(*id),
+                AxqlTerm::Wildcard => QueryTermIrV1::Simple("_".to_string()),
+                AxqlTerm::Lookup { key, value } => {
+                    if key == "name" {
+                        QueryTermIrV1::Simple(value.clone())
+                    } else {
+                        QueryTermIrV1::Obj(QueryTermObjIrV1::Entity {
+                            key: key.clone(),
+                            value: value.clone(),
+                        })
+                    }
+                }
+            }
+        }
+
+        fn atom_ir(atom: &AxqlAtom) -> QueryAtomIrV1 {
+            match atom {
+                AxqlAtom::Type { term, type_name } => QueryAtomIrV1::Type {
+                    term: term_ir(term),
+                    type_name: type_name.clone(),
+                },
+                AxqlAtom::Edge { left, path, right } => QueryAtomIrV1::Edge {
+                    left: term_ir(left),
+                    path: render_path_expr(path),
+                    right: term_ir(right),
+                },
+                AxqlAtom::AttrEq { term, key, value } => QueryAtomIrV1::AttrEq {
+                    term: term_ir(term),
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                AxqlAtom::AttrContains { term, key, needle } => QueryAtomIrV1::AttrContains {
+                    term: term_ir(term),
+                    key: key.clone(),
+                    needle: needle.clone(),
+                },
+                AxqlAtom::AttrFts { term, key, query } => QueryAtomIrV1::AttrFts {
+                    term: term_ir(term),
+                    key: key.clone(),
+                    query: query.clone(),
+                },
+                AxqlAtom::AttrFuzzy {
+                    term,
+                    key,
+                    needle,
+                    max_dist,
+                } => QueryAtomIrV1::AttrFuzzy {
+                    term: term_ir(term),
+                    key: key.clone(),
+                    needle: needle.clone(),
+                    max_dist: *max_dist,
+                },
+                AxqlAtom::Fact {
+                    fact,
+                    relation,
+                    fields,
+                } => {
+                    let fact = fact.as_ref().map(term_ir);
+
+                    let mut out_fields: BTreeMap<String, QueryTermIrV1> = BTreeMap::new();
+                    for (k, v) in fields {
+                        out_fields.insert(k.clone(), term_ir(v));
+                    }
+
+                    QueryAtomIrV1::Fact {
+                        fact,
+                        relation: relation.clone(),
+                        fields: out_fields,
+                    }
+                }
+                AxqlAtom::HasOut { term, rels } => QueryAtomIrV1::HasOut {
+                    term: term_ir(term),
+                    rels: rels.clone(),
+                },
+                AxqlAtom::Attrs { term, pairs } => {
+                    let mut out_pairs: BTreeMap<String, String> = BTreeMap::new();
+                    for (k, v) in pairs {
+                        out_pairs.insert(k.clone(), v.clone());
+                    }
+                    QueryAtomIrV1::Attrs {
+                        term: term_ir(term),
+                        pairs: out_pairs,
+                    }
+                }
+                AxqlAtom::Shape {
+                    term,
+                    type_name,
+                    rels,
+                    attrs,
+                } => {
+                    let mut out_attrs: BTreeMap<String, String> = BTreeMap::new();
+                    for (k, v) in attrs {
+                        out_attrs.insert(k.clone(), v.clone());
+                    }
+                    QueryAtomIrV1::Shape {
+                        term: term_ir(term),
+                        type_name: type_name.clone(),
+                        rels: rels.clone(),
+                        attrs: out_attrs,
+                    }
+                }
+            }
+        }
+
+        fn ctx_ir(ctx: &AxqlContextSpec) -> QueryContextIrV1 {
+            match ctx {
+                AxqlContextSpec::EntityId(id) => QueryContextIrV1::EntityId(*id),
+                AxqlContextSpec::Name(name) => QueryContextIrV1::Name(name.clone()),
+            }
+        }
+
+        let mut disjuncts_ir: Vec<Vec<QueryAtomIrV1>> = Vec::new();
+        for d in &query.disjuncts {
+            disjuncts_ir.push(d.iter().map(atom_ir).collect());
+        }
+
+        let contexts = query.contexts.iter().map(ctx_ir).collect::<Vec<_>>();
+
+        let (where_atoms, disjuncts) = if disjuncts_ir.len() <= 1 {
+            (Some(disjuncts_ir.into_iter().next().unwrap_or_default()), None)
+        } else {
+            (None, Some(disjuncts_ir))
+        };
+
+        QueryIrV1 {
+            version: QUERY_IR_V1_VERSION,
+            select_vars: query.select_vars.clone(),
+            where_atoms,
+            disjuncts,
+            limit: Some(query.limit),
+            max_hops: query.max_hops,
+            min_confidence: query.min_confidence,
+            contexts,
+        }
+    }
+
     pub fn to_axql_query(&self) -> Result<AxqlQuery> {
         if self.version != QUERY_IR_V1_VERSION {
             return Err(anyhow!(
@@ -875,6 +1026,19 @@ mod tests {
                 value: "Alice".to_string()
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_from_axql_roundtrips_basic() -> Result<()> {
+        let axql = r#"select ?x where ?x : Node, attr(?x, "name", "a") limit 10"#;
+        let parsed = crate::axql::parse_axql_query(axql)?;
+        let ir = QueryIrV1::from_axql_query(&parsed);
+        let back = ir.to_axql_query()?;
+        assert_eq!(back.select_vars, vec!["?x"]);
+        assert_eq!(back.limit, 10);
+        assert_eq!(back.disjuncts.len(), 1);
+        assert_eq!(back.disjuncts[0].len(), 2);
         Ok(())
     }
 }

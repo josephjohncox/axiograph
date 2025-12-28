@@ -142,3 +142,8 @@ latex.out/
 .bin/
 
 bin/
+
+# Local direnv overrides
+.envrc.local
+*.envrc
+!.envrc

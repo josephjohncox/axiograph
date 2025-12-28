@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
-# Some transitive dependencies require a Cargo version that understands the Rust 2024 edition.
-ARG RUST_IMAGE=rust:slim-bookworm
+# Some transitive dependencies use the Rust 2024 edition, so we need a Cargo
+# new enough to parse `edition = "2024"` in dependency manifests.
+#
+# Pin to a known-good toolchain (overrideable via `--build-arg RUST_IMAGE=...`).
+ARG RUST_IMAGE=rust:1.86-slim-bookworm
 
 FROM ${RUST_IMAGE} AS builder
 

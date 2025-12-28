@@ -1047,7 +1047,12 @@ impl<'a> InstanceImportContext<'a> {
 
             if let Some(schema_meta) = self.schema_meta.as_ref() {
                 if let Some(&rel_decl) = schema_meta.relations.get(relation_name) {
-                    self.add_edge_if_missing(META_REL_FACT_OF, tuple_entity_id, rel_decl)?;
+                    self.add_edge_if_missing_with_attrs(
+                        META_REL_FACT_OF,
+                        tuple_entity_id,
+                        rel_decl,
+                        vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                    )?;
                 }
             }
 
@@ -1062,9 +1067,12 @@ impl<'a> InstanceImportContext<'a> {
                 values_by_field.insert(f.field.clone(), value_entity_id);
 
                 // Field edge: tuple -field-> value
-                self.db
-                    .add_relation(&f.field, tuple_entity_id, value_entity_id, 1.0, vec![]);
-                self.summary.relations_added += 1;
+                self.add_edge_if_missing_with_attrs(
+                    &f.field,
+                    tuple_entity_id,
+                    value_entity_id,
+                    vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                )?;
             }
 
             // Optional context/world scoping (recommended).
@@ -1083,7 +1091,12 @@ impl<'a> InstanceImportContext<'a> {
             // This derived edge is a *runtime index affordance*; certificate scoping
             // remains anchored to canonical `.axi` digests (see `docs/reference/CERTIFICATES.md`).
             if let Some(&ctx_id) = values_by_field.get("ctx") {
-                self.add_edge_if_missing(REL_AXI_FACT_IN_CONTEXT, tuple_entity_id, ctx_id)?;
+                self.add_edge_if_missing_with_attrs(
+                    REL_AXI_FACT_IN_CONTEXT,
+                    tuple_entity_id,
+                    ctx_id,
+                    vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                )?;
             }
 
             // Treat certain “equivalence” relations as homotopy witnesses so
@@ -1092,8 +1105,18 @@ impl<'a> InstanceImportContext<'a> {
             let homotopy_sides = derive_homotopy_sides(relation_name, &values_by_field);
             if let Some((lhs, rhs)) = homotopy_sides {
                 self.mark_virtual_type(tuple_entity_id, "Homotopy");
-                self.add_edge_if_missing("lhs", tuple_entity_id, lhs)?;
-                self.add_edge_if_missing("rhs", tuple_entity_id, rhs)?;
+                self.add_edge_if_missing_with_attrs(
+                    "lhs",
+                    tuple_entity_id,
+                    lhs,
+                    vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                )?;
+                self.add_edge_if_missing_with_attrs(
+                    "rhs",
+                    tuple_entity_id,
+                    rhs,
+                    vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                )?;
             }
 
             // Treat many relation-tuples as “morphisms with attributes”.
@@ -1102,17 +1125,32 @@ impl<'a> InstanceImportContext<'a> {
             if homotopy_sides.is_none() {
                 if let Some((from, to)) = derive_morphism_endpoints(&decl, &values_by_field) {
                     self.mark_virtual_type(tuple_entity_id, "Morphism");
-                    self.add_edge_if_missing("from", tuple_entity_id, from)?;
-                    self.add_edge_if_missing("to", tuple_entity_id, to)?;
+                    self.add_edge_if_missing_with_attrs(
+                        "from",
+                        tuple_entity_id,
+                        from,
+                        vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                    )?;
+                    self.add_edge_if_missing_with_attrs(
+                        "to",
+                        tuple_entity_id,
+                        to,
+                        vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                    )?;
                 }
             }
 
             // Derived binary edge (convenience traversal).
             if let Some((src, dst)) = derive_binary_endpoints(&decl, &values_by_field) {
                 let rel_type_id = self.db.interner.intern(relation_name);
-                if !self.db.relations.has_edge(src, rel_type_id, dst) {
-                    self.db.add_relation(relation_name, src, dst, 1.0, vec![]);
-                    self.summary.relations_added += 1;
+                let existed = self.db.relations.has_edge(src, rel_type_id, dst);
+                self.add_edge_if_missing_with_attrs(
+                    relation_name,
+                    src,
+                    dst,
+                    vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],
+                )?;
+                if !existed {
                     self.summary.derived_edges_added += 1;
                 }
             }
@@ -1131,12 +1169,29 @@ impl<'a> InstanceImportContext<'a> {
             .insert(entity_id);
     }
 
-    fn add_edge_if_missing(&mut self, rel: &str, source: u32, target: u32) -> Result<()> {
+    fn add_edge_if_missing_with_attrs(
+        &mut self,
+        rel: &str,
+        source: u32,
+        target: u32,
+        attrs: Vec<(&str, &str)>,
+    ) -> Result<()> {
         let rel_id = self.db.interner.intern(rel);
-        if self.db.relations.has_edge(source, rel_id, target) {
+        if let Some(existing) = self.db.relations.edge_relation_id(source, rel_id, target) {
+            let Some(rel_mut) = self.db.relations.relations.get_mut(existing as usize) else {
+                return Err(anyhow!("internal error: missing relation {existing}"));
+            };
+            for (k, v) in attrs {
+                let k_id = self.db.interner.intern(k);
+                let v_id = self.db.interner.intern(v);
+                if !rel_mut.attrs.iter().any(|(kk, vv)| *kk == k_id && *vv == v_id) {
+                    rel_mut.attrs.push((k_id, v_id));
+                }
+            }
             return Ok(());
         }
-        self.db.add_relation(rel, source, target, 1.0, vec![]);
+
+        self.db.add_relation(rel, source, target, 1.0, attrs);
         self.summary.relations_added += 1;
         Ok(())
     }
@@ -1146,10 +1201,27 @@ fn derive_binary_endpoints(
     decl: &RelationDeclV1,
     values_by_field: &HashMap<String, u32>,
 ) -> Option<(u32, u32)> {
-    // If it is already binary, use the declared field order.
-    if decl.fields.len() == 2 {
-        let a = values_by_field.get(&decl.fields[0].field)?;
-        let b = values_by_field.get(&decl.fields[1].field)?;
+    // Canonical derived edge rule (for convenience traversal + certificates):
+    //
+    // 1) If the relation is "primary binary" after dropping context/time metadata,
+    //    derive a single edge in schema-declared order.
+    //
+    // 2) Otherwise, fall back to a small, *explicit* set of conventional endpoint
+    //    field pairs (from/to, lhs/rhs, path1/path2, ...).
+    //
+    // This is intentionally deterministic: the Lean checker can re-run the same
+    // endpoint selection when validating `.axi`-anchored query certificates.
+
+    let primary_fields: Vec<&str> = decl
+        .fields
+        .iter()
+        .map(|f| f.field.as_str())
+        .filter(|f| *f != "ctx" && *f != "time")
+        .collect();
+
+    if primary_fields.len() == 2 {
+        let a = values_by_field.get(primary_fields[0])?;
+        let b = values_by_field.get(primary_fields[1])?;
         return Some((*a, *b));
     }
 

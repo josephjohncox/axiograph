@@ -144,6 +144,9 @@ Deliver a **proof-carrying knowledge backend** where every high-value inference 
 - [x] DB server can optionally verify certificates server-side:
   - verifier discovery: `--verify-bin`, `AXIOGRAPH_VERIFY_BIN`, `bin/axiograph_verify`, repo dev fallback,
   - exposed in `/status.certificates.*`.
+- [x] DB server can enforce a “fail closed” certificate gate for high-value answers:
+  - `/llm/agent` supports `require_query_certs` / `require_verified_queries`,
+  - `/viz` LLM tab exposes “require verified query certificates (fail closed)”.
 - [x] DB server demos (scripts): `scripts/db_server_api_demo.sh`, `scripts/db_server_distributed_demo.sh`, `scripts/db_server_live_viz_demo.sh`.
 - [ ] Rust emits v2 certificates for reachability + confidence (aligned with Lean `VProb`).
 - [ ] Rust emits certificates for normalization and reconciliation from the real runtime (untrusted engine, trusted Lean checker).
@@ -264,11 +267,11 @@ These items are “best practices” backed by the related work list in Appendix
   - `diff ctx ...` (context/world diffs),
   - `neigh ...` (REPL-driven viz export).
 - [x] Add `q --explain` plan output (join order + candidate domains + FactIndex hints).
-- [x] Add a typed JSON query IR for tooling/LLMs (`query_ir_v1`) that compiles into the same AxQL core (REPL `llm ask` prefers this; AxQL remains a fallback).
+- [x] Add a typed JSON query IR for tooling/LLMs (`query_ir_v1`) that compiles into the same AxQL core (REPL `llm query` prints this; the LLM tool-loop emits it; raw AxQL is fallback only).
 - [x] Add first-class disjunction (`or`) in AxQL with a certifiable subset:
   - execution: UCQ semantics (union of conjunctive branches),
   - certificates: `query_result_v2` (Lean checks each row against the chosen branch).
-- [ ] Next: add a “tool loop” typed IR (lookup + elaborate + run + propose) so LLMs do not output raw AxQL/IR directly.
+- [x] Add an LLM “tool loop” (lookup + elaborate + run + propose) so `llm ask`/`llm answer` are multi-step and models don’t emit raw AxQL by default.
 
 **Ontology exploration / visualization (tooling)**
 - [ ] Extend the self-contained HTML explorer (`axiograph tools viz --format html`) with ontology-explorer-style ergonomics:

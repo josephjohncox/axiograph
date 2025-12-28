@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Physics discovery demo (Ollama): ingest docs → proposals → LLM grounded augmentation → draft `.axi` → gate → PathDB → viz.
+# Physics discovery demo: ingest docs → proposals → LLM grounded augmentation → draft `.axi` → gate → PathDB → viz.
 #
 # This showcases:
 # - evidence-plane ingestion from small physics notes
@@ -14,36 +14,51 @@ set -euo pipefail
 #   ./scripts/physics_discovery_ollama_grounded_demo.sh
 #
 # Requirements:
-# - `ollama` installed and running (`ollama serve` or the Ollama app)
-# - model available (the script will try to `ollama pull` if missing)
+# - If `LLM_BACKEND=ollama`: `ollama` installed + running (`ollama serve`), and the model available.
+# - If `LLM_BACKEND=openai`: `OPENAI_API_KEY` set.
+# - If `LLM_BACKEND=anthropic`: `ANTHROPIC_API_KEY` set.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/build/physics_discovery_ollama_demo"
 mkdir -p "$OUT_DIR"
 
-MODEL="${MODEL:-nemotron-3-nano}"
+LLM_BACKEND="${LLM_BACKEND:-ollama}"
+LLM_MODEL="${LLM_MODEL:-${MODEL:-nemotron-3-nano}}"
 export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 
-echo "== Axiograph physics discovery demo (Ollama) =="
+echo "== Axiograph physics discovery demo =="
 echo "root:  $ROOT_DIR"
 echo "out:   $OUT_DIR"
-echo "model: $MODEL"
-echo "ollama_host: $OLLAMA_HOST"
-
-if ! command -v ollama >/dev/null 2>&1; then
-  echo "error: ollama not found. Install it from https://ollama.com and retry." >&2
-  exit 1
+echo "llm_backend: $LLM_BACKEND"
+echo "llm_model:   $LLM_MODEL"
+if [ "$LLM_BACKEND" = "ollama" ]; then
+  echo "ollama_host: $OLLAMA_HOST"
 fi
 
-if ! ollama list >/dev/null 2>&1; then
-  echo "error: Ollama server not reachable. Start it with: ollama serve" >&2
-  exit 1
-fi
-
-if ! ollama show "$MODEL" >/dev/null 2>&1; then
-  echo "-- pulling model: $MODEL"
-  ollama pull "$MODEL"
+DISCOVER_LLM_FLAGS=()
+if [ "$LLM_BACKEND" = "ollama" ]; then
+  if ! command -v ollama >/dev/null 2>&1; then
+    echo "error: ollama not found. Install it from https://ollama.com and retry." >&2
+    exit 1
+  fi
+  if ! ollama list >/dev/null 2>&1; then
+    echo "error: Ollama server not reachable. Start it with: ollama serve" >&2
+    exit 1
+  fi
+  if ! ollama show "$LLM_MODEL" >/dev/null 2>&1; then
+    echo "-- pulling model: $LLM_MODEL"
+    ollama pull "$LLM_MODEL"
+  fi
+  DISCOVER_LLM_FLAGS+=(--llm-ollama --llm-ollama-host "$OLLAMA_HOST" --llm-model "$LLM_MODEL")
+elif [ "$LLM_BACKEND" = "openai" ]; then
+  : "${OPENAI_API_KEY:?error: set OPENAI_API_KEY when LLM_BACKEND=openai}"
+  DISCOVER_LLM_FLAGS+=(--llm-openai --llm-model "$LLM_MODEL")
+elif [ "$LLM_BACKEND" = "anthropic" ]; then
+  : "${ANTHROPIC_API_KEY:?error: set ANTHROPIC_API_KEY when LLM_BACKEND=anthropic}"
+  DISCOVER_LLM_FLAGS+=(--llm-anthropic --llm-model "$LLM_MODEL")
+else
+  echo "warn: unknown LLM_BACKEND=$LLM_BACKEND; running without LLM"
 fi
 
 echo ""
@@ -94,9 +109,7 @@ echo "-- B) LLM grounded augmentation: add proposals + (optional) routing hints"
   --out "$OUT_DIR/proposals.aug.json" \
   --trace "$OUT_DIR/proposals.aug.trace.json" \
   --chunks "$OUT_DIR/chunks.json" \
-  --llm-ollama \
-  --llm-ollama-host "$OLLAMA_HOST" \
-  --llm-model "$MODEL" \
+  "${DISCOVER_LLM_FLAGS[@]}" \
   --llm-add-proposals
 
 echo ""
@@ -109,9 +122,7 @@ DRAFT_AXI="$OUT_DIR/PhysicsDiscovered.llm_draft.axi"
   --schema PhysicsDiscovered \
   --instance PhysicsDiscoveredInstance \
   --infer-constraints \
-  --llm-ollama \
-  --llm-ollama-host "$OLLAMA_HOST" \
-  --llm-model "$MODEL"
+  "${DISCOVER_LLM_FLAGS[@]}"
 
 echo ""
 echo "-- D) promotion gate (candidate -> accepted) + snapshot outputs"

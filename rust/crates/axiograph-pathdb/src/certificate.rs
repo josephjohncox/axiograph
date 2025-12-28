@@ -328,6 +328,10 @@ pub enum CertificatePayloadV2 {
     QueryResultV2 {
         proof: QueryResultProofV2,
     },
+    #[serde(rename = "query_result_v3")]
+    QueryResultV3 {
+        proof: QueryResultProofV3,
+    },
     #[serde(rename = "delta_f_v1")]
     DeltaFMigrationV1 {
         proof: DeltaFMigrationProofV1,
@@ -412,6 +416,14 @@ impl CertificateV2 {
             version: CERTIFICATE_VERSION_V2,
             anchor: None,
             payload: CertificatePayloadV2::QueryResultV2 { proof },
+        }
+    }
+
+    pub fn query_result_v3(proof: QueryResultProofV3) -> Self {
+        Self {
+            version: CERTIFICATE_VERSION_V2,
+            anchor: None,
+            payload: CertificatePayloadV2::QueryResultV3 { proof },
         }
     }
 
@@ -1114,6 +1126,134 @@ pub struct QueryResultProofV2 {
     pub query: QueryV2,
     pub rows: Vec<QueryRowV2>,
     pub truncated: bool,
+}
+
+// =============================================================================
+// Query result certificates (v3): `.axi`-anchored, name-based
+// =============================================================================
+
+/// Certified query term (v3): name-based (canonical `.axi` anchoring).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum QueryTermV3 {
+    Var { name: String },
+    /// Constant entity identifier (stable within the anchored `.axi` meaning-plane).
+    ///
+    /// For `.axi`-anchored certificates we treat entity IDs as:
+    /// - object element names (e.g. `"Alice"`), or
+    /// - tuple fact ids (`"factfnv1a64:..."`) when referring to fact nodes.
+    Const { entity: String },
+}
+
+/// Regular-path query (RPQ) expression over relation labels (v3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum QueryRegexV3 {
+    Epsilon,
+    Rel { rel: String },
+    Seq { parts: Vec<QueryRegexV3> },
+    Alt { parts: Vec<QueryRegexV3> },
+    Star { inner: Box<QueryRegexV3> },
+    Plus { inner: Box<QueryRegexV3> },
+    Opt { inner: Box<QueryRegexV3> },
+}
+
+/// Query atom in the certified core query IR (v3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum QueryAtomV3 {
+    Type {
+        term: QueryTermV3,
+        type_name: String,
+    },
+    AttrEq {
+        term: QueryTermV3,
+        key: String,
+        value: String,
+    },
+    Path {
+        left: QueryTermV3,
+        regex: QueryRegexV3,
+        right: QueryTermV3,
+    },
+}
+
+/// Certified query IR (v3): union-of-conjunctive queries (UCQ).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueryV3 {
+    pub select_vars: Vec<String>,
+    pub disjuncts: Vec<Vec<QueryAtomV3>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_hops: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_confidence_fp: Option<FixedPointProbability>,
+}
+
+/// A single variable binding in a query result row (v3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueryBindingV3 {
+    pub var: String,
+    pub entity: String,
+}
+
+/// Reachability witness (v3): name-based, `.axi`-anchored.
+///
+/// Each step carries an `axi_fact_id` that lets the trusted checker validate
+/// the step against the anchored canonical `.axi` inputs (no PathDBExport tables).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReachabilityProofV3 {
+    Reflexive {
+        entity: String,
+    },
+    Step {
+        from: String,
+        rel: String,
+        to: String,
+        rel_confidence_fp: FixedPointProbability,
+        axi_fact_id: String,
+        rest: Box<ReachabilityProofV3>,
+    },
+}
+
+/// Witness for a single query atom under a given binding (v3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum QueryAtomWitnessV3 {
+    Type {
+        entity: String,
+        type_name: String,
+    },
+    AttrEq {
+        entity: String,
+        key: String,
+        value: String,
+    },
+    Path {
+        proof: ReachabilityProofV3,
+    },
+}
+
+/// One certified query result row for a disjunctive query (v3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueryRowV3 {
+    pub disjunct: u32,
+    pub bindings: Vec<QueryBindingV3>,
+    pub witnesses: Vec<QueryAtomWitnessV3>,
+}
+
+/// Certified query result set (v3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueryResultProofV3 {
+    pub query: QueryV3,
+    pub rows: Vec<QueryRowV3>,
+    pub truncated: bool,
+    /// Optional rewrite-derivation witnesses for query elaboration.
+    ///
+    /// These are intended to justify semantics-preserving path canonicalization
+    /// steps (e.g. `.axi` rewrite rules applied during elaboration).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elaboration_rewrites: Vec<RewriteDerivationProofV3>,
 }
 
 #[cfg(test)]

@@ -299,11 +299,13 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
 
     if (args.llm_mock as usize)
         + (args.llm_ollama as usize)
+        + (args.llm_openai as usize)
+        + (args.llm_anthropic as usize)
         + (args.llm_plugin.is_some() as usize)
         > 1
     {
         return Err(anyhow!(
-            "db serve: choose at most one LLM backend: `--llm-mock`, `--llm-ollama`, or `--llm-plugin ...`"
+            "db serve: choose at most one LLM backend: `--llm-mock`, `--llm-ollama`, `--llm-openai`, `--llm-anthropic`, or `--llm-plugin ...`"
         ));
     }
 
@@ -328,6 +330,80 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
         {
             return Err(anyhow!(
                 "db serve: ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+            ));
+        }
+    } else if args.llm_openai {
+        #[cfg(feature = "llm-openai")]
+        {
+            let key =
+                std::env::var(crate::llm::OPENAI_API_KEY_ENV).unwrap_or_default();
+            if key.trim().is_empty() {
+                return Err(anyhow!(
+                    "db serve: openai backend requires {}",
+                    crate::llm::OPENAI_API_KEY_ENV
+                ));
+            }
+            llm.backend = LlmBackend::OpenAI {
+                base_url: args
+                    .llm_openai_base_url
+                    .clone()
+                    .unwrap_or_else(crate::llm::default_openai_base_url),
+            };
+            let model = args.llm_model.clone().or_else(|| {
+                let env =
+                    std::env::var(crate::llm::OPENAI_MODEL_ENV).unwrap_or_default();
+                let env = env.trim().to_string();
+                if env.is_empty() { None } else { Some(env) }
+            });
+            let model = model.ok_or_else(|| {
+                anyhow!(
+                    "db serve: `--llm-openai` requires `--llm-model <model>` (or set {})",
+                    crate::llm::OPENAI_MODEL_ENV
+                )
+            })?;
+            llm.model = Some(model);
+        }
+        #[cfg(not(feature = "llm-openai"))]
+        {
+            return Err(anyhow!(
+                "db serve: openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+            ));
+        }
+    } else if args.llm_anthropic {
+        #[cfg(feature = "llm-anthropic")]
+        {
+            let key =
+                std::env::var(crate::llm::ANTHROPIC_API_KEY_ENV).unwrap_or_default();
+            if key.trim().is_empty() {
+                return Err(anyhow!(
+                    "db serve: anthropic backend requires {}",
+                    crate::llm::ANTHROPIC_API_KEY_ENV
+                ));
+            }
+            llm.backend = LlmBackend::Anthropic {
+                base_url: args
+                    .llm_anthropic_base_url
+                    .clone()
+                    .unwrap_or_else(crate::llm::default_anthropic_base_url),
+            };
+            let model = args.llm_model.clone().or_else(|| {
+                let env =
+                    std::env::var(crate::llm::ANTHROPIC_MODEL_ENV).unwrap_or_default();
+                let env = env.trim().to_string();
+                if env.is_empty() { None } else { Some(env) }
+            });
+            let model = model.ok_or_else(|| {
+                anyhow!(
+                    "db serve: `--llm-anthropic` requires `--llm-model <model>` (or set {})",
+                    crate::llm::ANTHROPIC_MODEL_ENV
+                )
+            })?;
+            llm.model = Some(model);
+        }
+        #[cfg(not(feature = "llm-anthropic"))]
+        {
+            return Err(anyhow!(
+                "db serve: anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
             ));
         }
     } else if let Some(plugin) = args.llm_plugin.as_ref() {
@@ -751,6 +827,10 @@ fn status_payload(state: &ServerState) -> Result<serde_json::Value> {
         LlmBackend::Mock => "mock".to_string(),
         #[cfg(feature = "llm-ollama")]
         LlmBackend::Ollama { host } => format!("ollama({host})"),
+        #[cfg(feature = "llm-openai")]
+        LlmBackend::OpenAI { base_url } => format!("openai({base_url})"),
+        #[cfg(feature = "llm-anthropic")]
+        LlmBackend::Anthropic { base_url } => format!("anthropic({base_url})"),
         LlmBackend::Command { program, .. } => format!("command({})", program.display()),
     };
     let verifier_bin = resolve_verifier_bin(&state.config);
@@ -1012,6 +1092,29 @@ struct LlmAgentRequestV1 {
     /// Optional message to attach to the WAL commit (audit log).
     #[serde(default)]
     commit_message: Option<String>,
+    /// Emit Lean-checkable certificates for `axql_run` steps executed by the tool-loop (best-effort).
+    #[serde(default)]
+    certify_queries: bool,
+    /// Verify emitted query certificates using the Lean checker (`axiograph_verify`) (best-effort).
+    ///
+    /// This implies `certify_queries=true`.
+    #[serde(default)]
+    verify_queries: bool,
+    /// Require that every executed `axql_run` step is accompanied by a certificate.
+    ///
+    /// If this is true and any query certificate fails to emit, the server will
+    /// **refuse** to return an un-gated answer (it will attach a gate report and
+    /// overwrite the final answer with a refusal message).
+    #[serde(default)]
+    require_query_certs: bool,
+    /// Require that every emitted query certificate is verified by Lean.
+    ///
+    /// This implies `verify_queries=true` and `certify_queries=true`.
+    #[serde(default)]
+    require_verified_queries: bool,
+    /// Include the snapshot anchor `.axi` in the response (can be large).
+    #[serde(default)]
+    include_anchor: bool,
     /// Optional snapshot id override when running in store-backed mode.
     #[serde(default)]
     snapshot: Option<String>,
@@ -1472,10 +1575,27 @@ async fn handle_llm_to_query(
 
         let generated = state.config.llm.generate_query(&db, &question)?;
         Ok::<_, anyhow::Error>(match generated {
-            GeneratedQuery::Axql(axql) => serde_json::json!({
-                "version": "axiograph_db_server_llm_to_query_v1",
-                "axql": axql
-            }),
+            GeneratedQuery::Axql(axql) => {
+                // Prefer returning a typed IR even if the backend returned AxQL.
+                // This keeps downstream tooling/LLMs on the stable JSON form and
+                // avoids fragile parsing by clients.
+                match crate::axql::parse_axql_query(&axql) {
+                    Ok(parsed) => {
+                        let ir = crate::query_ir::QueryIrV1::from_axql_query(&parsed);
+                        let axql_text = ir.to_axql_text()?;
+                        serde_json::json!({
+                            "version": "axiograph_db_server_llm_to_query_v1",
+                            "query_ir_v1": ir,
+                            "axql": axql_text
+                        })
+                    }
+                    Err(_) => serde_json::json!({
+                        "version": "axiograph_db_server_llm_to_query_v1",
+                        "axql": axql,
+                        "notes": ["note: failed to parse AxQL into query_ir_v1; returning raw AxQL only"]
+                    }),
+                }
+            }
             GeneratedQuery::QueryIrV1(ir) => serde_json::json!({
                 "version": "axiograph_db_server_llm_to_query_v1",
                 "query_ir_v1": ir,
@@ -1521,9 +1641,13 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
     let auto_commit = req.auto_commit;
     let accepted_snapshot_override = req.accepted_snapshot.clone();
     let commit_message = req.commit_message.clone();
+    let require_query_certs = req.require_query_certs || req.require_verified_queries;
+    let verify_queries = req.verify_queries || req.require_verified_queries;
+    let certify_queries = req.certify_queries || verify_queries || require_query_certs;
+    let include_anchor = req.include_anchor;
 
     let state2 = state.clone();
-    let (outcome, accepted_snapshot_id) = tokio::task::spawn_blocking(move || {
+    let (mut outcome, accepted_snapshot_id, query_certs, anchor_axi) = tokio::task::spawn_blocking(move || {
         let (db, meta, embeddings, snapshot_key, accepted_snapshot_id) =
             if let Some(snapshot) = snapshot_override.as_deref() {
                 let SnapshotSource::Store { dir, layer, .. } = &state2.config.source else {
@@ -1575,8 +1699,8 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
             full_question.push_str("Conversation so far (untrusted; use tools to verify):\n");
 
             // Keep prompts bounded (local models can be sensitive to long inputs).
-            let max_msgs = 12usize;
-            let start = history.len().saturating_sub(max_msgs);
+            let max_msgs = crate::llm::llm_chat_max_messages()?;
+            let start = history.len().saturating_sub(max_msgs.max(1));
             for m in history.iter().skip(start) {
                 let role = m.role.trim();
                 let role = if role.is_empty() { "unknown" } else { role };
@@ -1619,10 +1743,165 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
             opts,
         )?;
 
-        Ok::<_, anyhow::Error>((outcome, accepted_snapshot_id))
+        // Optional: certify (and optionally verify) queries executed by the tool loop.
+        let mut query_certs: Option<Vec<serde_json::Value>> = None;
+        let mut anchor_axi: Option<serde_json::Value> = None;
+        if certify_queries {
+            let want_verify = verify_queries;
+            let (digest, axi) = export_pathdb_anchor_axi(&db)?;
+            if include_anchor {
+                anchor_axi = Some(serde_json::json!({
+                    "anchor_digest": digest.clone(),
+                    "anchor_axi": axi.clone(),
+                }));
+            }
+
+            let mut out: Vec<serde_json::Value> = Vec::new();
+            for (i, step) in outcome.steps.iter().enumerate() {
+                if step.tool != "axql_run" {
+                    continue;
+                }
+                let q = step
+                    .result
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if q.trim().is_empty() {
+                    continue;
+                }
+
+                match crate::axql::parse_axql_query(&q)
+                    .and_then(|parsed| crate::axql::certify_axql_query_with_meta(&db, &parsed, meta.as_ref()))
+                {
+                    Ok(cert) => {
+                        let cert = cert.with_anchor(axiograph_pathdb::certificate::AxiAnchorV1 {
+                            axi_digest_v1: digest.clone(),
+                        });
+                        let cert_json = serde_json::to_value(&cert).unwrap_or(serde_json::Value::Null);
+
+                        let (verified, verify_out, verify_err) = if want_verify {
+                            let cert_text = serde_json::to_string_pretty(&cert)?;
+                            match verify_certificate_with_lean(&state2.config, &axi, &cert_text) {
+                                Ok((ok, out_text)) => (Some(ok), Some(out_text), None),
+                                Err(e) => (Some(false), None, Some(e.to_string())),
+                            }
+                        } else {
+                            (None, None, None)
+                        };
+
+                        out.push(serde_json::json!({
+                            "step_index": i,
+                            "query": q,
+                            "certificate": cert_json,
+                            "certificate_verified": verified,
+                            "certificate_verify_output": verify_out,
+                            "certificate_verify_error": verify_err,
+                        }));
+                    }
+                    Err(e) => {
+                        out.push(serde_json::json!({
+                            "step_index": i,
+                            "query": q,
+                            "error": e.to_string(),
+                        }));
+                    }
+                }
+            }
+            query_certs = Some(out);
+        }
+
+        Ok::<_, anyhow::Error>((outcome, accepted_snapshot_id, query_certs, anchor_axi))
     })
     .await
     .map_err(|e| anyhow!("llm/agent task join failed: {e}"))??;
+
+    let mut gate: Option<serde_json::Value> = None;
+    if require_query_certs {
+        let ran_any_query = outcome.steps.iter().any(|s| s.tool == "axql_run");
+        let mut failures: Vec<String> = Vec::new();
+
+        if ran_any_query {
+            if query_certs.is_none() {
+                failures.push("no query_certificates emitted".to_string());
+                gate = Some(serde_json::json!({
+                    "ok": false,
+                    "require_query_certs": true,
+                    "require_verified_queries": req.require_verified_queries,
+                    "ran_any_query": ran_any_query,
+                    "failures": failures,
+                }));
+                // Refuse to return an un-gated answer.
+                outcome.final_answer.answer = "Refusing to answer: certificate gate failed (enable certify+verify and ensure `axiograph_verify` is available).".to_string();
+                outcome.final_answer.citations.clear();
+                outcome.final_answer.queries.clear();
+                outcome.final_answer.notes.push("gate: require_query_certs".to_string());
+                if req.require_verified_queries {
+                    outcome
+                        .final_answer
+                        .notes
+                        .push("gate: require_verified_queries".to_string());
+                }
+                // Continue: still allow auto-commit of overlays, and return debug info.
+                // (The caller may still want the tool-loop transcript/artifacts.)
+            }
+
+            if let Some(certs) = query_certs.as_ref() {
+                for c in certs {
+                    if let Some(err) = c.get("error").and_then(|v| v.as_str()) {
+                        failures.push(format!("query cert error: {err}"));
+                        continue;
+                    }
+                    if req.require_verified_queries {
+                        match c.get("certificate_verified").and_then(|v| v.as_bool()) {
+                            Some(true) => {}
+                            Some(false) => {
+                                if let Some(e) =
+                                    c.get("certificate_verify_error").and_then(|v| v.as_str())
+                                {
+                                    failures.push(format!("query cert verify error: {e}"));
+                                } else {
+                                    failures.push("query cert not verified".to_string());
+                                }
+                            }
+                            None => failures.push("query cert missing verification status".to_string()),
+                        }
+                    }
+                }
+
+                let ok = failures.is_empty();
+                gate = Some(serde_json::json!({
+                    "ok": ok,
+                    "require_query_certs": true,
+                    "require_verified_queries": req.require_verified_queries,
+                    "ran_any_query": ran_any_query,
+                    "failures": failures,
+                }));
+
+                if !ok {
+                    outcome.final_answer.answer = "Refusing to answer: certificate gate failed (enable certify+verify and ensure `axiograph_verify` is available).".to_string();
+                    outcome.final_answer.citations.clear();
+                    outcome.final_answer.queries.clear();
+                    outcome.final_answer.notes.push("gate: require_query_certs".to_string());
+                    if req.require_verified_queries {
+                        outcome
+                            .final_answer
+                            .notes
+                            .push("gate: require_verified_queries".to_string());
+                    }
+                }
+            }
+        } else {
+            // No certified queries were executed; treat the gate as vacuously satisfied.
+            gate = Some(serde_json::json!({
+                "ok": true,
+                "require_query_certs": true,
+                "require_verified_queries": req.require_verified_queries,
+                "ran_any_query": ran_any_query,
+                "failures": [],
+            }));
+        }
+    }
 
     let mut commit: Option<LlmAgentCommitResultV1> = None;
     if auto_commit {
@@ -1736,6 +2015,15 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
         "version": "axiograph_db_server_llm_agent_v1",
         "outcome": outcome,
     });
+    if let Some(g) = gate {
+        out["gate"] = g;
+    }
+    if let Some(certs) = query_certs {
+        out["query_certificates"] = serde_json::to_value(certs).unwrap_or(serde_json::Value::Null);
+    }
+    if let Some(anchor) = anchor_axi {
+        out["anchor"] = anchor;
+    }
     if auto_commit {
         out["commit"] = serde_json::to_value(commit).unwrap_or(serde_json::Value::Null);
     }

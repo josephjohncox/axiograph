@@ -573,7 +573,7 @@ struct DbServeArgs {
     /// and/or structured queries; Rust executes them against the loaded snapshot.
     /// Trusted correctness remains certificate-checking in Lean.
     ///
-    /// Choose at most one backend: `--llm-mock`, `--llm-ollama`, or `--llm-plugin ...`.
+    /// Choose at most one backend: `--llm-mock`, `--llm-ollama`, `--llm-openai`, `--llm-anthropic`, or `--llm-plugin ...`.
     #[arg(long)]
     llm_mock: bool,
 
@@ -592,6 +592,22 @@ struct DbServeArgs {
     /// Optional Ollama host override (defaults to `OLLAMA_HOST` or `http://127.0.0.1:11434`).
     #[arg(long)]
     llm_ollama_host: Option<String>,
+
+    /// Use the built-in OpenAI backend (networked).
+    #[arg(long)]
+    llm_openai: bool,
+
+    /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
+    #[arg(long)]
+    llm_openai_base_url: Option<String>,
+
+    /// Use the built-in Anthropic backend (networked).
+    #[arg(long)]
+    llm_anthropic: bool,
+
+    /// Optional Anthropic base URL override (defaults to `ANTHROPIC_BASE_URL` or `https://api.anthropic.com`).
+    #[arg(long)]
+    llm_anthropic_base_url: Option<String>,
 
     /// Optional model name for the plugin, or for Ollama (required when `--llm-ollama` is set).
     #[arg(long)]
@@ -1059,6 +1075,18 @@ enum DiscoverCommands {
         /// Optional Ollama host override (defaults to `OLLAMA_HOST` or `http://127.0.0.1:11434`).
         #[arg(long)]
         llm_ollama_host: Option<String>,
+        /// Use the built-in OpenAI backend (networked).
+        #[arg(long)]
+        llm_openai: bool,
+        /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
+        #[arg(long)]
+        llm_openai_base_url: Option<String>,
+        /// Use the built-in Anthropic backend (networked).
+        #[arg(long)]
+        llm_anthropic: bool,
+        /// Optional Anthropic base URL override (defaults to `ANTHROPIC_BASE_URL` or `https://api.anthropic.com`).
+        #[arg(long)]
+        llm_anthropic_base_url: Option<String>,
         /// Optional model name for the plugin.
         #[arg(long)]
         llm_model: Option<String>,
@@ -1140,6 +1168,18 @@ enum DiscoverCommands {
         /// Optional Ollama host override (defaults to `OLLAMA_HOST` or `http://127.0.0.1:11434`).
         #[arg(long)]
         llm_ollama_host: Option<String>,
+        /// Use the built-in OpenAI backend (networked) to suggest additional structure (untrusted).
+        #[arg(long)]
+        llm_openai: bool,
+        /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
+        #[arg(long)]
+        llm_openai_base_url: Option<String>,
+        /// Use the built-in Anthropic backend (networked) to suggest additional structure (untrusted).
+        #[arg(long)]
+        llm_anthropic: bool,
+        /// Optional Anthropic base URL override (defaults to `ANTHROPIC_BASE_URL` or `https://api.anthropic.com`).
+        #[arg(long)]
+        llm_anthropic_base_url: Option<String>,
 
         /// Optional model name for Ollama (required when `--llm-ollama` is set).
         #[arg(long)]
@@ -1306,7 +1346,7 @@ enum AcceptedCommands {
     ///
     /// Intended usage:
     /// 1) `axiograph db accept pathdb-commit ... --chunks <chunks.json>`
-    /// 2) `axiograph db accept pathdb-embed --snapshot head --target docchunks --ollama-model nomic-embed-text`
+    /// 2) `axiograph db accept pathdb-embed --snapshot head --target docchunks --embed-backend ollama --embed-model nomic-embed-text`
     PathdbEmbed {
         /// Accepted-plane directory.
         #[arg(long, default_value = "build/accepted_plane")]
@@ -1317,12 +1357,27 @@ enum AcceptedCommands {
         /// What to embed: `docchunks`, `entities`, or `both`.
         #[arg(long, default_value = "docchunks")]
         target: String,
+        /// Which embedding backend to use: `ollama` or `openai`.
+        ///
+        /// Notes:
+        /// - Anthropic does not provide embeddings; use `openai` or rely on deterministic retrieval.
+        #[arg(long, default_value = "ollama")]
+        embed_backend: String,
         /// Optional Ollama host override (defaults to `OLLAMA_HOST` or `http://127.0.0.1:11434`).
         #[arg(long)]
         ollama_host: Option<String>,
-        /// Ollama embedding model name (e.g. `nomic-embed-text`).
+        /// Embedding model name (backend-dependent).
+        ///
+        /// Common values:
+        /// - Ollama: `nomic-embed-text`
+        /// - OpenAI: `text-embedding-3-small` / `text-embedding-3-large`
+        ///
+        /// Back-compat: `--ollama-model` is accepted as an alias for `--embed-model`.
+        #[arg(long, alias = "ollama-model")]
+        embed_model: Option<String>,
+        /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
         #[arg(long)]
-        ollama_model: String,
+        openai_base_url: Option<String>,
         /// Max number of items to embed (safety valve).
         #[arg(long, default_value_t = 25_000)]
         max_items: usize,
@@ -1698,6 +1753,10 @@ fn main() -> Result<()> {
                 llm_plugin_arg,
                 llm_ollama,
                 llm_ollama_host,
+                llm_openai,
+                llm_openai_base_url,
+                llm_anthropic,
+                llm_anthropic_base_url,
                 llm_model,
                 llm_timeout_secs,
                 llm_add_proposals,
@@ -1716,6 +1775,10 @@ fn main() -> Result<()> {
                     &llm_plugin_arg,
                     llm_ollama,
                     llm_ollama_host.as_deref(),
+                    llm_openai,
+                    llm_openai_base_url.as_deref(),
+                    llm_anthropic,
+                    llm_anthropic_base_url.as_deref(),
                     llm_model.as_deref(),
                     llm_timeout_secs,
                     llm_add_proposals,
@@ -1737,6 +1800,10 @@ fn main() -> Result<()> {
                 infer_constraints,
                 llm_ollama,
                 llm_ollama_host,
+                llm_openai,
+                llm_openai_base_url,
+                llm_anthropic,
+                llm_anthropic_base_url,
                 llm_model,
                 llm_timeout_secs,
             } => {
@@ -1753,33 +1820,94 @@ fn main() -> Result<()> {
                 let base_draft =
                     crate::schema_discovery::draft_axi_module_from_proposals(&file, &options)?;
 
-                let suggestions = if llm_ollama {
-                    #[cfg(feature = "llm-ollama")]
-                    {
-                        let model = llm_model.as_deref().ok_or_else(|| {
-                            anyhow!("missing `--llm-model` (example: --llm-model nemotron-3-nano)")
-                        })?;
-                        let host = llm_ollama_host
-                            .as_deref()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(crate::llm::default_ollama_host);
-                        let timeout = crate::llm::llm_timeout(llm_timeout_secs)?;
-                        Some(ollama_suggest_schema_structure(
-                            &host,
-                            model,
-                            &base_draft,
-                            &options.schema_name,
-                            timeout,
-                        )?)
+                let llm_selected =
+                    (llm_ollama as usize) + (llm_openai as usize) + (llm_anthropic as usize);
+                if llm_selected > 1 {
+                    return Err(anyhow!(
+                        "choose at most one LLM integration: either `--llm-ollama`, `--llm-openai`, or `--llm-anthropic`"
+                    ));
+                }
+
+                let suggestions = {
+                    let timeout = crate::llm::llm_timeout(llm_timeout_secs)?;
+                    if llm_ollama {
+                        #[cfg(feature = "llm-ollama")]
+                        {
+                            let model = llm_model.as_deref().ok_or_else(|| {
+                                anyhow!("missing `--llm-model` (example: --llm-model nemotron-3-nano)")
+                            })?;
+                            let host = llm_ollama_host
+                                .as_deref()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(crate::llm::default_ollama_host);
+                            Some(ollama_suggest_schema_structure(
+                                &host,
+                                model,
+                                &base_draft,
+                                &options.schema_name,
+                                timeout,
+                            )?)
+                        }
+                        #[cfg(not(feature = "llm-ollama"))]
+                        {
+                            let _ = timeout;
+                            return Err(anyhow!(
+                                "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+                            ));
+                        }
+                    } else if llm_openai {
+                        #[cfg(feature = "llm-openai")]
+                        {
+                            let model = llm_model.as_deref().ok_or_else(|| {
+                                anyhow!("missing `--llm-model` (example: --llm-model gpt-4o-mini)")
+                            })?;
+                            let base_url = llm_openai_base_url
+                                .as_deref()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(crate::llm::default_openai_base_url);
+                            Some(openai_suggest_schema_structure(
+                                &base_url,
+                                model,
+                                &base_draft,
+                                &options.schema_name,
+                                timeout,
+                            )?)
+                        }
+                        #[cfg(not(feature = "llm-openai"))]
+                        {
+                            let _ = timeout;
+                            return Err(anyhow!(
+                                "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+                            ));
+                        }
+                    } else if llm_anthropic {
+                        #[cfg(feature = "llm-anthropic")]
+                        {
+                            let model = llm_model.as_deref().ok_or_else(|| {
+                                anyhow!("missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)")
+                            })?;
+                            let base_url = llm_anthropic_base_url
+                                .as_deref()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(crate::llm::default_anthropic_base_url);
+                            Some(anthropic_suggest_schema_structure(
+                                &base_url,
+                                model,
+                                &base_draft,
+                                &options.schema_name,
+                                timeout,
+                            )?)
+                        }
+                        #[cfg(not(feature = "llm-anthropic"))]
+                        {
+                            let _ = timeout;
+                            return Err(anyhow!(
+                                "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
+                            ));
+                        }
+                    } else {
+                        None
                     }
-                    #[cfg(not(feature = "llm-ollama"))]
-                    {
-                        return Err(anyhow!(
-                            "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
-                        ));
-                    }
-                } else {
-                    None
                 };
 
                 let draft =
@@ -2021,8 +2149,10 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             dir,
             snapshot,
             target,
+            embed_backend,
             ollama_host,
-            ollama_model,
+            embed_model,
+            openai_base_url,
             max_items,
             batch_size,
             timeout_secs,
@@ -2032,8 +2162,10 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
                 &dir,
                 &snapshot,
                 &target,
+                embed_backend.as_str(),
                 ollama_host.as_deref(),
-                &ollama_model,
+                embed_model.as_deref(),
+                openai_base_url.as_deref(),
                 max_items,
                 batch_size,
                 timeout_secs,
@@ -2602,8 +2734,10 @@ fn cmd_accept_pathdb_embed(
     dir: &PathBuf,
     base_snapshot: &str,
     target: &str,
+    embed_backend: &str,
     ollama_host: Option<&str>,
-    ollama_model: &str,
+    embed_model: Option<&str>,
+    openai_base_url: Option<&str>,
     max_items: usize,
     batch_size: usize,
     timeout_secs: Option<u64>,
@@ -2619,296 +2753,395 @@ fn cmd_accept_pathdb_embed(
         ));
     }
 
-    #[cfg(not(feature = "llm-ollama"))]
-    {
-        let _ = (
-            dir,
-            base_snapshot,
-            target,
-            ollama_host,
-            ollama_model,
-            max_items,
-            batch_size,
-            timeout_secs,
-            message,
-        );
-        return Err(anyhow!(
-            "this build of axiograph was compiled without `llm-ollama`; rebuild with default features"
-        ));
+    let embed_backend = embed_backend.trim().to_ascii_lowercase();
+    let embed_model = embed_model.map(|s| s.trim()).filter(|s| !s.is_empty());
+    let embed_model = match (embed_backend.as_str(), embed_model) {
+        ("ollama", Some(m)) => m.to_string(),
+        ("ollama", None) => "nomic-embed-text".to_string(),
+        ("openai", Some(m)) => m.to_string(),
+        ("openai", None) => "text-embedding-3-small".to_string(),
+        ("anthropic", _) => {
+            return Err(anyhow!(
+                "anthropic does not provide embeddings; use `--embed-backend openai` or rely on deterministic retrieval"
+            ));
+        }
+        _ => {
+            return Err(anyhow!(
+                "invalid --embed-backend `{}` (expected ollama|openai)",
+                embed_backend
+            ))
+        }
+    };
+
+    use crate::embeddings::{
+        EmbeddingItemV1, EmbeddingKeyV1, EmbeddingTargetKindV1, EmbeddingsFileV1,
+        EMBEDDINGS_FILE_VERSION_V1,
+    };
+
+    let base = pathdb_wal::read_pathdb_snapshot_for_cli(dir, base_snapshot)?;
+
+    let checkpoint = dir
+        .join("pathdb")
+        .join("checkpoints")
+        .join(format!("{}.axpd", snapshot_id_filename(&base.snapshot_id)));
+    let bytes = if checkpoint.exists() {
+        fs::read(&checkpoint)?
+    } else {
+        // Rare path: no checkpoint present; rebuild into a temp `.axpd` file.
+        fs::create_dir_all(dir.join("pathdb").join("tmp"))?;
+        let tmp = dir.join("pathdb").join("tmp").join("embed_tmp.axpd");
+        pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, &base.snapshot_id, &tmp)?;
+        let bytes = fs::read(&tmp)?;
+        let _ = fs::remove_file(&tmp);
+        bytes
+    };
+
+    let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
+
+    let timeout = crate::llm::llm_timeout(timeout_secs)?;
+
+    #[allow(unused_variables)]
+    let resolved_ollama_host: Option<String> = if embed_backend == "ollama" {
+        #[cfg(feature = "llm-ollama")]
+        {
+            Some(
+                ollama_host
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(crate::llm::default_ollama_host),
+            )
+        }
+        #[cfg(not(feature = "llm-ollama"))]
+        {
+            None
+        }
+    } else {
+        None
+    };
+
+    #[allow(unused_variables)]
+    let resolved_openai_base_url: Option<String> = if embed_backend == "openai" {
+        #[cfg(feature = "llm-openai")]
+        {
+            Some(
+                openai_base_url
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(crate::llm::default_openai_base_url),
+            )
+        }
+        #[cfg(not(feature = "llm-openai"))]
+        {
+            None
+        }
+    } else {
+        None
+    };
+
+    fn db_attr(db: &axiograph_pathdb::PathDB, id: u32, key: &str) -> Option<String> {
+        let view = db.get_entity(id)?;
+        view.attrs.get(key).cloned()
     }
 
-    #[cfg(feature = "llm-ollama")]
-    {
-        use crate::embeddings::{
-            EmbeddingItemV1, EmbeddingKeyV1, EmbeddingTargetKindV1, EmbeddingsFileV1,
-            EMBEDDINGS_FILE_VERSION_V1,
-        };
-
-        let base = pathdb_wal::read_pathdb_snapshot_for_cli(dir, base_snapshot)?;
-
-        let checkpoint = dir
-            .join("pathdb")
-            .join("checkpoints")
-            .join(format!("{}.axpd", snapshot_id_filename(&base.snapshot_id)));
-        let bytes = if checkpoint.exists() {
-            fs::read(&checkpoint)?
-        } else {
-            // Rare path: no checkpoint present; rebuild into a temp `.axpd` file.
-            fs::create_dir_all(dir.join("pathdb").join("tmp"))?;
-            let tmp = dir.join("pathdb").join("tmp").join("embed_tmp.axpd");
-            pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, &base.snapshot_id, &tmp)?;
-            let bytes = fs::read(&tmp)?;
-            let _ = fs::remove_file(&tmp);
-            bytes
-        };
-
-        let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-
-        let host = ollama_host
-            .map(|s| s.to_string())
-            .unwrap_or_else(crate::llm::default_ollama_host);
-        let timeout = crate::llm::llm_timeout(timeout_secs)?;
-
-        fn db_attr(db: &axiograph_pathdb::PathDB, id: u32, key: &str) -> Option<String> {
-            let view = db.get_entity(id)?;
-            view.attrs.get(key).cloned()
+    fn truncate_chars(s: &str, max_chars: usize) -> String {
+        if max_chars == 0 {
+            return String::new();
         }
-
-        fn truncate_chars(s: &str, max_chars: usize) -> String {
-            if max_chars == 0 {
-                return String::new();
-            }
-            if s.chars().count() <= max_chars {
-                return s.to_string();
-            }
-            let mut out = String::new();
-            out.extend(s.chars().take(max_chars));
-            out.push('…');
-            out
+        if s.chars().count() <= max_chars {
+            return s.to_string();
         }
+        let mut out = String::new();
+        out.extend(s.chars().take(max_chars));
+        out.push('…');
+        out
+    }
 
-        fn embed_batches(
-            host: &str,
-            model: &str,
-            texts: &[String],
-            batch_size: usize,
-            timeout: Option<Duration>,
-        ) -> Result<Vec<Vec<f32>>> {
-            if texts.is_empty() {
-                return Ok(Vec::new());
-            }
-            let bs = batch_size.clamp(1, 256);
-            let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-            for chunk in texts.chunks(bs) {
-                let e = crate::llm::ollama_embed_texts_with_timeout(host, model, chunk, timeout)?;
-                out.extend(e);
-            }
-            Ok(out)
+    #[allow(clippy::needless_return)]
+    fn embed_batches(
+        embed_backend: &str,
+        embed_model: &str,
+        ollama_host: Option<&str>,
+        openai_base_url: Option<&str>,
+        texts: &[String],
+        batch_size: usize,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
         }
-
-        let mut blobs: Vec<Vec<u8>> = Vec::new();
-
-        if want_docchunks {
-            let Some(chunks) = db.find_by_type("DocChunk") else {
-                return Err(anyhow!(
-                    "no DocChunk loaded in this snapshot; import chunks first, then embed (try: `axiograph db accept pathdb-commit --chunks <chunks.json> ...`)"
-                ));
-            };
-
-            let mut keys: Vec<EmbeddingKeyV1> = Vec::new();
-            let mut texts: Vec<String> = Vec::new();
-            let mut digests: Vec<String> = Vec::new();
-
-            for id in chunks.iter().take(max_items) {
-                let chunk_id = db_attr(&db, id, "chunk_id").unwrap_or_else(|| id.to_string());
-                let text = db_attr(&db, id, "text").unwrap_or_default();
-                let search_text = db_attr(&db, id, "search_text").unwrap_or_default();
-                let mut combined = String::new();
-                combined.push_str(&text);
-                if !search_text.trim().is_empty() {
-                    combined.push('\n');
-                    combined.push_str(&search_text);
-                }
-                let combined = truncate_chars(&combined, 2500);
-                if combined.trim().is_empty() {
-                    continue;
-                }
-                let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(combined.as_bytes());
-                digests.push(digest);
-                keys.push(EmbeddingKeyV1::DocChunk { chunk_id });
-                texts.push(combined);
-            }
-
-            if keys.is_empty() {
-                return Err(anyhow!("no docchunk text found to embed"));
-            }
-
-            eprintln!(
-                "{} embedding docchunks (n={}) via ollama model={}",
-                "info:".yellow().bold(),
-                keys.len(),
-                ollama_model
-            );
-            let vectors = embed_batches(&host, ollama_model, &texts, batch_size, timeout)?;
-            if vectors.len() != keys.len() {
-                return Err(anyhow!(
-                    "ollama embed returned {} vectors for {} inputs",
-                    vectors.len(),
-                    keys.len()
-                ));
-            }
-            let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
-            if dim == 0 {
-                return Err(anyhow!("ollama embed returned empty vectors"));
-            }
-
-            let items = keys
-                .into_iter()
-                .zip(vectors)
-                .zip(digests)
-                .map(|((key, vector), text_digest)| EmbeddingItemV1 {
-                    key,
-                    vector,
-                    text_digest: Some(text_digest),
-                })
-                .collect::<Vec<_>>();
-
-            let file = EmbeddingsFileV1 {
-                version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
-                created_at_unix_secs: now_unix_secs(),
-                backend: "ollama".to_string(),
-                model: ollama_model.to_string(),
-                dim,
-                target: EmbeddingTargetKindV1::DocChunks,
-                items,
-                metadata: std::collections::HashMap::from([
-                    ("base_pathdb_snapshot".to_string(), base.snapshot_id.clone()),
-                    (
-                        "base_accepted_snapshot".to_string(),
-                        base.accepted_snapshot_id.clone(),
-                    ),
-                ]),
-            };
-            blobs.push(crate::embeddings::encode_embeddings_file_v1(&file)?);
-        }
-
-        if want_entities {
-            let mut keys: Vec<EmbeddingKeyV1> = Vec::new();
-            let mut texts: Vec<String> = Vec::new();
-            let mut digests: Vec<String> = Vec::new();
-
-            for id in 0..(db.entities.len() as u32) {
-                let Some(view) = db.get_entity(id) else { continue };
-                if view.entity_type == "DocChunk"
-                    || view.entity_type == "Document"
-                    || view.entity_type.starts_with("AxiMeta")
-                {
-                    continue;
-                }
-                let Some(name) = view.attrs.get("name").cloned() else {
-                    continue;
-                };
-
-                let mut text = String::new();
-                text.push_str(&view.entity_type);
-                text.push(' ');
-                text.push_str(&name);
-                for k in ["search_text", "description", "comment", "iri"] {
-                    if let Some(v) = view.attrs.get(k) {
-                        if !v.trim().is_empty() {
-                            text.push(' ');
-                            text.push_str(v);
-                        }
+        let bs = batch_size.clamp(1, 256);
+        let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(bs) {
+            match embed_backend {
+                "ollama" => {
+                    #[cfg(feature = "llm-ollama")]
+                    {
+                        let host = ollama_host.unwrap_or("http://127.0.0.1:11434");
+                        let e = crate::llm::ollama_embed_texts_with_timeout(
+                            host,
+                            embed_model,
+                            chunk,
+                            timeout,
+                        )?;
+                        out.extend(e);
+                    }
+                    #[cfg(not(feature = "llm-ollama"))]
+                    {
+                        let _ = (ollama_host, embed_model, chunk, timeout);
+                        return Err(anyhow!(
+                            "ollama embeddings not available (compiled without `llm-ollama`)"
+                        ));
                     }
                 }
-
-                let text = truncate_chars(&text, 1500);
-                if text.trim().is_empty() {
-                    continue;
+                "openai" => {
+                    #[cfg(feature = "llm-openai")]
+                    {
+                        let base_url = openai_base_url.unwrap_or("https://api.openai.com");
+                        let e = crate::llm::openai_embed_texts_with_timeout(
+                            base_url,
+                            embed_model,
+                            chunk,
+                            timeout,
+                        )?;
+                        out.extend(e);
+                    }
+                    #[cfg(not(feature = "llm-openai"))]
+                    {
+                        let _ = (openai_base_url, embed_model, chunk, timeout);
+                        return Err(anyhow!(
+                            "openai embeddings not available (compiled without `llm-openai`)"
+                        ));
+                    }
                 }
-
-                let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(text.as_bytes());
-                digests.push(digest);
-                keys.push(EmbeddingKeyV1::Entity {
-                    entity_type: view.entity_type.to_string(),
-                    name,
-                });
-                texts.push(text);
-
-                if keys.len() >= max_items {
-                    break;
+                _ => {
+                    return Err(anyhow!(
+                        "invalid embed backend `{}` (expected ollama|openai)",
+                        embed_backend
+                    ))
                 }
             }
+        }
+        Ok(out)
+    }
 
-            if keys.is_empty() {
-                return Err(anyhow!("no entities found to embed (no `name` attrs?)"));
+    let mut blobs: Vec<Vec<u8>> = Vec::new();
+
+    if want_docchunks {
+        let Some(chunks) = db.find_by_type("DocChunk") else {
+            return Err(anyhow!(
+                "no DocChunk loaded in this snapshot; import chunks first, then embed (try: `axiograph db accept pathdb-commit --chunks <chunks.json> ...`)"
+            ));
+        };
+
+        let mut keys: Vec<EmbeddingKeyV1> = Vec::new();
+        let mut texts: Vec<String> = Vec::new();
+        let mut digests: Vec<String> = Vec::new();
+
+        for id in chunks.iter().take(max_items) {
+            let chunk_id = db_attr(&db, id, "chunk_id").unwrap_or_else(|| id.to_string());
+            let text = db_attr(&db, id, "text").unwrap_or_default();
+            let search_text = db_attr(&db, id, "search_text").unwrap_or_default();
+            let mut combined = String::new();
+            combined.push_str(&text);
+            if !search_text.trim().is_empty() {
+                combined.push('\n');
+                combined.push_str(&search_text);
             }
-
-            eprintln!(
-                "{} embedding entities (n={}) via ollama model={}",
-                "info:".yellow().bold(),
-                keys.len(),
-                ollama_model
-            );
-            let vectors = embed_batches(&host, ollama_model, &texts, batch_size, timeout)?;
-            if vectors.len() != keys.len() {
-                return Err(anyhow!(
-                    "ollama embed returned {} vectors for {} inputs",
-                    vectors.len(),
-                    keys.len()
-                ));
+            let combined = truncate_chars(&combined, 2500);
+            if combined.trim().is_empty() {
+                continue;
             }
-            let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
-            if dim == 0 {
-                return Err(anyhow!("ollama embed returned empty vectors"));
-            }
-
-            let items = keys
-                .into_iter()
-                .zip(vectors)
-                .zip(digests)
-                .map(|((key, vector), text_digest)| EmbeddingItemV1 {
-                    key,
-                    vector,
-                    text_digest: Some(text_digest),
-                })
-                .collect::<Vec<_>>();
-
-            let file = EmbeddingsFileV1 {
-                version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
-                created_at_unix_secs: now_unix_secs(),
-                backend: "ollama".to_string(),
-                model: ollama_model.to_string(),
-                dim,
-                target: EmbeddingTargetKindV1::Entities,
-                items,
-                metadata: std::collections::HashMap::from([
-                    ("base_pathdb_snapshot".to_string(), base.snapshot_id.clone()),
-                    (
-                        "base_accepted_snapshot".to_string(),
-                        base.accepted_snapshot_id.clone(),
-                    ),
-                ]),
-            };
-            blobs.push(crate::embeddings::encode_embeddings_file_v1(&file)?);
+            let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(combined.as_bytes());
+            digests.push(digest);
+            keys.push(EmbeddingKeyV1::DocChunk { chunk_id });
+            texts.push(combined);
         }
 
-        let result = pathdb_wal::commit_pathdb_snapshot_with_embedding_bytes(
-            dir,
-            &base.snapshot_id,
-            &blobs,
-            message,
-        )?;
+        if keys.is_empty() {
+            return Err(anyhow!("no docchunk text found to embed"));
+        }
+
         eprintln!(
-            "{} committed embeddings ops={} base_pathdb_snapshot={} → pathdb_snapshot={}",
-            "ok".green().bold(),
-            result.ops_added,
-            short_snapshot_id(&base.snapshot_id),
-            short_snapshot_id(&result.snapshot_id)
+            "{} embedding docchunks (n={}) via {} model={}",
+            "info:".yellow().bold(),
+            keys.len(),
+            embed_backend,
+            embed_model
         );
-        println!("{}", result.snapshot_id);
-        Ok(())
+    let vectors = embed_batches(
+            &embed_backend,
+            &embed_model,
+            resolved_ollama_host.as_deref(),
+            resolved_openai_base_url.as_deref(),
+            &texts,
+            batch_size,
+            timeout,
+        )?;
+        if vectors.len() != keys.len() {
+            return Err(anyhow!(
+                "embed returned {} vectors for {} inputs",
+                vectors.len(),
+                keys.len()
+            ));
+        }
+        let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
+        if dim == 0 {
+            return Err(anyhow!("embed returned empty vectors"));
+        }
+
+        let items = keys
+            .into_iter()
+            .zip(vectors)
+            .zip(digests)
+            .map(|((key, vector), text_digest)| EmbeddingItemV1 {
+                key,
+                vector,
+                text_digest: Some(text_digest),
+            })
+            .collect::<Vec<_>>();
+
+        let file = EmbeddingsFileV1 {
+            version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
+            created_at_unix_secs: now_unix_secs(),
+            backend: embed_backend.to_string(),
+            model: embed_model.to_string(),
+            dim,
+            target: EmbeddingTargetKindV1::DocChunks,
+            items,
+            metadata: std::collections::HashMap::from([
+                ("base_pathdb_snapshot".to_string(), base.snapshot_id.clone()),
+                (
+                    "base_accepted_snapshot".to_string(),
+                    base.accepted_snapshot_id.clone(),
+                ),
+            ]),
+        };
+        blobs.push(crate::embeddings::encode_embeddings_file_v1(&file)?);
     }
+
+    if want_entities {
+        let mut keys: Vec<EmbeddingKeyV1> = Vec::new();
+        let mut texts: Vec<String> = Vec::new();
+        let mut digests: Vec<String> = Vec::new();
+
+        for id in 0..(db.entities.len() as u32) {
+            let Some(view) = db.get_entity(id) else { continue };
+            if view.entity_type == "DocChunk"
+                || view.entity_type == "Document"
+                || view.entity_type.starts_with("AxiMeta")
+            {
+                continue;
+            }
+            let Some(name) = view.attrs.get("name").cloned() else {
+                continue;
+            };
+
+            let mut text = String::new();
+            text.push_str(&view.entity_type);
+            text.push(' ');
+            text.push_str(&name);
+            for k in ["search_text", "description", "comment", "iri"] {
+                if let Some(v) = view.attrs.get(k) {
+                    if !v.trim().is_empty() {
+                        text.push(' ');
+                        text.push_str(v);
+                    }
+                }
+            }
+
+            let text = truncate_chars(&text, 1500);
+            if text.trim().is_empty() {
+                continue;
+            }
+
+            let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(text.as_bytes());
+            digests.push(digest);
+            keys.push(EmbeddingKeyV1::Entity {
+                entity_type: view.entity_type.to_string(),
+                name,
+            });
+            texts.push(text);
+
+            if keys.len() >= max_items {
+                break;
+            }
+        }
+
+        if keys.is_empty() {
+            return Err(anyhow!("no entities found to embed (no `name` attrs?)"));
+        }
+
+        eprintln!(
+            "{} embedding entities (n={}) via {} model={}",
+            "info:".yellow().bold(),
+            keys.len(),
+            embed_backend,
+            embed_model
+        );
+    let vectors = embed_batches(
+            &embed_backend,
+            &embed_model,
+            resolved_ollama_host.as_deref(),
+            resolved_openai_base_url.as_deref(),
+            &texts,
+            batch_size,
+            timeout,
+        )?;
+        if vectors.len() != keys.len() {
+            return Err(anyhow!(
+                "embed returned {} vectors for {} inputs",
+                vectors.len(),
+                keys.len()
+            ));
+        }
+        let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
+        if dim == 0 {
+            return Err(anyhow!("embed returned empty vectors"));
+        }
+
+        let items = keys
+            .into_iter()
+            .zip(vectors)
+            .zip(digests)
+            .map(|((key, vector), text_digest)| EmbeddingItemV1 {
+                key,
+                vector,
+                text_digest: Some(text_digest),
+            })
+            .collect::<Vec<_>>();
+
+        let file = EmbeddingsFileV1 {
+            version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
+            created_at_unix_secs: now_unix_secs(),
+            backend: embed_backend.to_string(),
+            model: embed_model.to_string(),
+            dim,
+            target: EmbeddingTargetKindV1::Entities,
+            items,
+            metadata: std::collections::HashMap::from([
+                ("base_pathdb_snapshot".to_string(), base.snapshot_id.clone()),
+                (
+                    "base_accepted_snapshot".to_string(),
+                    base.accepted_snapshot_id.clone(),
+                ),
+            ]),
+        };
+        blobs.push(crate::embeddings::encode_embeddings_file_v1(&file)?);
+    }
+
+    let result = pathdb_wal::commit_pathdb_snapshot_with_embedding_bytes(
+        dir,
+        &base.snapshot_id,
+        &blobs,
+        message,
+    )?;
+    eprintln!(
+        "{} committed embeddings ops={} base_pathdb_snapshot={} → pathdb_snapshot={}",
+        "ok".green().bold(),
+        result.ops_added,
+        short_snapshot_id(&base.snapshot_id),
+        short_snapshot_id(&result.snapshot_id)
+    );
+    println!("{}", result.snapshot_id);
+    Ok(())
 }
 
 fn cmd_query_cert(
@@ -2932,36 +3165,33 @@ fn cmd_query_cert(
                 && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
         });
 
-    let (db, anchor_digest) = if is_snapshot {
+    let (db, anchor_digest, is_pathdb_export_anchor) = if is_snapshot {
         (
             axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?,
             digest,
+            true,
         )
     } else {
-        let Some(anchor_path) = anchor_out else {
-            return Err(anyhow::anyhow!(
-                "input is a canonical `.axi` module; pass `--anchor-out <path.axi>` so this command can write a `PathDBExportV1` snapshot anchor for verification"
-            ));
-        };
-
         let mut db = axiograph_pathdb::PathDB::new();
         let _summary =
             axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
                 &mut db, &m,
             )?;
         db.build_indexes();
+        if let Some(anchor_path) = anchor_out {
+            // Optional convenience export for debugging / legacy workflows.
+            // Certificates are still anchored to the canonical `.axi` digest.
+            let anchor_text = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
+            let anchor_digest = axiograph_dsl::digest::axi_digest_v1(&anchor_text);
+            fs::write(anchor_path, anchor_text)?;
+            eprintln!(
+                "wrote derived PathDBExportV1 export {} (digest={})",
+                anchor_path.display(),
+                anchor_digest
+            );
+        }
 
-        let anchor_text = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
-        let anchor_digest = axiograph_dsl::digest::axi_digest_v1(&anchor_text);
-
-        fs::write(anchor_path, anchor_text)?;
-        eprintln!(
-            "wrote derived PathDBExportV1 anchor {} (digest={})",
-            anchor_path.display(),
-            anchor_digest
-        );
-
-        (db, anchor_digest)
+        (db, digest, false)
     };
     let query = match lang {
         "axql" => crate::axql::parse_axql_query(query_text)?,
@@ -2973,11 +3203,15 @@ fn cmd_query_cert(
         }
     };
 
-    let cert = crate::axql::certify_axql_query(&db, &query)?.with_anchor(
-        axiograph_pathdb::certificate::AxiAnchorV1 {
-            axi_digest_v1: anchor_digest,
-        },
-    );
+    let cert = if is_pathdb_export_anchor {
+        crate::axql::certify_axql_query(&db, &query)?
+    } else {
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        crate::axql::certify_axql_query_v3_with_meta(&db, &query, Some(&meta))?
+    }
+    .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1 {
+        axi_digest_v1: anchor_digest,
+    });
 
     let json = serde_json::to_string_pretty(&cert)?;
     match out {
@@ -4127,14 +4361,13 @@ fn cmd_pathdb_import_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
                 && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
         });
 
-    let db = if is_snapshot {
+    let mut db = if is_snapshot {
         axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?
     } else {
         let mut db = axiograph_pathdb::PathDB::new();
         let summary = axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
             &mut db, &m,
         )?;
-        db.build_indexes();
         println!(
             "  {} imported module={} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
             "→".cyan(),
@@ -4150,6 +4383,14 @@ fn cmd_pathdb_import_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
         );
         db
     };
+
+    // Grounding always has evidence: embed the `.axi` module text as an untrusted
+    // DocChunk so LLM/UIs can cite and open it even when no external docs exist.
+    let digest = axiograph_dsl::digest::axi_digest_v1(&text);
+    let module_chunk = crate::doc_chunks::chunk_from_axi_module_text(&m.module_name, &digest, &text);
+    let _ = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &[module_chunk]);
+
+    db.build_indexes();
     let bytes = db.to_bytes()?;
     fs::write(out, bytes)?;
 
@@ -4554,9 +4795,9 @@ fn run_llm_plugin(
         .map_err(|e| anyhow!("llm plugin returned invalid JSON: {e}"))
 }
 
-#[cfg(feature = "llm-ollama")]
-fn ollama_augment_proposals(
-    host: &str,
+fn llm_augment_proposals(
+    llm_backend: &str,
+    endpoint: &str,
     model: &str,
     proposals: &axiograph_ingest_docs::ProposalsFileV1,
     evidence_chunks: Option<&std::collections::BTreeMap<String, String>>,
@@ -4784,19 +5025,72 @@ Do NOT add proposals in this mode.
 Max new proposals budget (ignored here): {max_new_proposals}"#
         );
 
-        let content = crate::llm::ollama_chat_with_timeout(
-            host,
-            model,
-            &user,
-            Some(system),
-            Some(serde_json::json!("json")),
-            timeout,
-        )?;
+        let content = match llm_backend {
+            "ollama" => {
+                #[cfg(feature = "llm-ollama")]
+                {
+                    crate::llm::ollama_chat_with_timeout(
+                        endpoint,
+                        model,
+                        &user,
+                        Some(system),
+                        Some(serde_json::json!("json")),
+                        timeout,
+                    )?
+                }
+                #[cfg(not(feature = "llm-ollama"))]
+                {
+                    return Err(anyhow!(
+                        "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+                    ));
+                }
+            }
+            "openai" => {
+                #[cfg(feature = "llm-openai")]
+                {
+                    crate::llm::openai_chat_with_timeout(
+                        endpoint,
+                        model,
+                        &user,
+                        Some(system),
+                        Some(serde_json::json!("json")),
+                        timeout,
+                    )?
+                }
+                #[cfg(not(feature = "llm-openai"))]
+                {
+                    return Err(anyhow!(
+                        "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+                    ));
+                }
+            }
+            "anthropic" => {
+                #[cfg(feature = "llm-anthropic")]
+                {
+                    crate::llm::anthropic_chat_with_timeout(
+                        endpoint,
+                        model,
+                        &user,
+                        Some(system),
+                        timeout,
+                    )?
+                }
+                #[cfg(not(feature = "llm-anthropic"))]
+                {
+                    return Err(anyhow!(
+                        "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
+                    ));
+                }
+            }
+            other => {
+                return Err(anyhow!("unsupported llm backend `{}` for augment-proposals", other));
+            }
+        };
 
         return crate::llm::parse_llm_json_object::<AugmentPluginResponseV1>(&content).map_err(
             |e| {
                 anyhow!(
-                    "ollama returned invalid JSON ({e}). content preview: {}",
+                    "{llm_backend} returned invalid JSON ({e}). content preview: {}",
                     content.chars().take(400).collect::<String>()
                 )
             },
@@ -4938,18 +5232,71 @@ Return ONE JSON object with keys:
 If you have no good suggestions, return empty arrays."#
     );
 
-    let content = crate::llm::ollama_chat_with_timeout(
-        host,
-        model,
-        &user,
-        Some(system),
-        Some(serde_json::json!("json")),
-        timeout,
-    )?;
+    let content = match llm_backend {
+        "ollama" => {
+            #[cfg(feature = "llm-ollama")]
+            {
+                crate::llm::ollama_chat_with_timeout(
+                    endpoint,
+                    model,
+                    &user,
+                    Some(system),
+                    Some(serde_json::json!("json")),
+                    timeout,
+                )?
+            }
+            #[cfg(not(feature = "llm-ollama"))]
+            {
+                return Err(anyhow!(
+                    "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+                ));
+            }
+        }
+        "openai" => {
+            #[cfg(feature = "llm-openai")]
+            {
+                crate::llm::openai_chat_with_timeout(
+                    endpoint,
+                    model,
+                    &user,
+                    Some(system),
+                    Some(serde_json::json!("json")),
+                    timeout,
+                )?
+            }
+            #[cfg(not(feature = "llm-openai"))]
+            {
+                return Err(anyhow!(
+                    "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+                ));
+            }
+        }
+        "anthropic" => {
+            #[cfg(feature = "llm-anthropic")]
+            {
+                crate::llm::anthropic_chat_with_timeout(
+                    endpoint,
+                    model,
+                    &user,
+                    Some(system),
+                    timeout,
+                )?
+            }
+            #[cfg(not(feature = "llm-anthropic"))]
+            {
+                return Err(anyhow!(
+                    "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
+                ));
+            }
+        }
+        other => {
+            return Err(anyhow!("unsupported llm backend `{}` for augment-proposals", other));
+        }
+    };
     let parsed: LlmAugmentResponseV1 =
         crate::llm::parse_llm_json_object(&content).map_err(|e| {
             anyhow!(
-                "ollama returned invalid JSON ({e}). content preview: {}",
+                "{llm_backend} returned invalid JSON ({e}). content preview: {}",
                 content.chars().take(400).collect::<String>()
             )
         })?;
@@ -5004,10 +5351,7 @@ If you have no good suggestions, return empty arrays."#
         let entity_id = llm_entity_id(entity_type, name);
         let confidence = clamp01(ent.confidence.unwrap_or(0.55));
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert(
-            "derived_from".to_string(),
-            "ollama_augment_proposals_v1".to_string(),
-        );
+        metadata.insert("derived_from".to_string(), format!("{llm_backend}_augment_proposals_v1"));
         metadata.insert("llm_model".to_string(), model.to_string());
 
         let schema_hint = ent
@@ -5070,10 +5414,7 @@ If you have no good suggestions, return empty arrays."#
         let relation_id = llm_relation_id(rel_type, &source, &target);
         let confidence = clamp01(rel.confidence.unwrap_or(0.55));
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert(
-            "derived_from".to_string(),
-            "ollama_augment_proposals_v1".to_string(),
-        );
+        metadata.insert("derived_from".to_string(), format!("{llm_backend}_augment_proposals_v1"));
         metadata.insert("llm_model".to_string(), model.to_string());
 
         let schema_hint = rel
@@ -5115,9 +5456,9 @@ If you have no good suggestions, return empty arrays."#
     })
 }
 
-#[cfg(feature = "llm-ollama")]
-fn ollama_suggest_schema_structure(
-    host: &str,
+fn llm_suggest_schema_structure(
+    llm_backend: &str,
+    endpoint: &str,
     model: &str,
     base_draft_axi: &str,
     schema_name: &str,
@@ -5273,24 +5614,74 @@ Return a single JSON object with keys:
 If you have no good suggestions, return empty arrays."#
     );
 
-    let content = crate::llm::ollama_chat_with_timeout(
-        host,
-        model,
-        &user,
-        Some(system),
-        Some(serde_json::json!("json")),
-        timeout,
-    )?;
+    let content = match llm_backend {
+        "ollama" => {
+            #[cfg(feature = "llm-ollama")]
+            {
+                crate::llm::ollama_chat_with_timeout(
+                    endpoint,
+                    model,
+                    &user,
+                    Some(system),
+                    Some(serde_json::json!("json")),
+                    timeout,
+                )?
+            }
+            #[cfg(not(feature = "llm-ollama"))]
+            {
+                return Err(anyhow!(
+                    "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+                ));
+            }
+        }
+        "openai" => {
+            #[cfg(feature = "llm-openai")]
+            {
+                crate::llm::openai_chat_with_timeout(
+                    endpoint,
+                    model,
+                    &user,
+                    Some(system),
+                    Some(serde_json::json!("json")),
+                    timeout,
+                )?
+            }
+            #[cfg(not(feature = "llm-openai"))]
+            {
+                return Err(anyhow!(
+                    "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+                ));
+            }
+        }
+        "anthropic" => {
+            #[cfg(feature = "llm-anthropic")]
+            {
+                crate::llm::anthropic_chat_with_timeout(endpoint, model, &user, Some(system), timeout)?
+            }
+            #[cfg(not(feature = "llm-anthropic"))]
+            {
+                return Err(anyhow!(
+                    "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
+                ));
+            }
+        }
+        other => {
+            return Err(anyhow!(
+                "unsupported llm backend `{}` for draft-module structure suggestions",
+                other
+            ));
+        }
+    };
     let parsed: LlmStructureResponseV1 =
         crate::llm::parse_llm_json_object(&content).map_err(|e| {
             anyhow!(
-                "ollama returned invalid JSON ({e}). content preview: {}",
+                "{llm_backend} returned invalid JSON ({e}). content preview: {}",
                 content.chars().take(400).collect::<String>()
             )
         })?;
 
     if let Some(err) = parsed.error {
-        return Err(anyhow!("ollama: {err}"));
+        return Err(anyhow!("{llm_backend}: {err}"));
     }
 
     if !parsed.notes.is_empty() {
@@ -5322,6 +5713,46 @@ If you have no good suggestions, return empty arrays."#
     Ok(out)
 }
 
+#[cfg(feature = "llm-ollama")]
+fn ollama_suggest_schema_structure(
+    host: &str,
+    model: &str,
+    base_draft_axi: &str,
+    schema_name: &str,
+    timeout: Option<Duration>,
+) -> Result<crate::schema_discovery::DraftAxiModuleSuggestions> {
+    llm_suggest_schema_structure("ollama", host, model, base_draft_axi, schema_name, timeout)
+}
+
+#[cfg(feature = "llm-openai")]
+fn openai_suggest_schema_structure(
+    base_url: &str,
+    model: &str,
+    base_draft_axi: &str,
+    schema_name: &str,
+    timeout: Option<Duration>,
+) -> Result<crate::schema_discovery::DraftAxiModuleSuggestions> {
+    llm_suggest_schema_structure("openai", base_url, model, base_draft_axi, schema_name, timeout)
+}
+
+#[cfg(feature = "llm-anthropic")]
+fn anthropic_suggest_schema_structure(
+    base_url: &str,
+    model: &str,
+    base_draft_axi: &str,
+    schema_name: &str,
+    timeout: Option<Duration>,
+) -> Result<crate::schema_discovery::DraftAxiModuleSuggestions> {
+    llm_suggest_schema_structure(
+        "anthropic",
+        base_url,
+        model,
+        base_draft_axi,
+        schema_name,
+        timeout,
+    )
+}
+
 fn proposal_id(p: &axiograph_ingest_docs::ProposalV1) -> &str {
     match p {
         axiograph_ingest_docs::ProposalV1::Entity { meta, .. } => meta.proposal_id.as_str(),
@@ -5347,6 +5778,10 @@ fn cmd_discover_augment_proposals(
     llm_plugin_args: &[String],
     llm_ollama: bool,
     llm_ollama_host: Option<&str>,
+    llm_openai: bool,
+    llm_openai_base_url: Option<&str>,
+    llm_anthropic: bool,
+    llm_anthropic_base_url: Option<&str>,
     llm_model: Option<&str>,
     llm_timeout_secs: Option<u64>,
     llm_add_proposals: bool,
@@ -5376,16 +5811,20 @@ fn cmd_discover_augment_proposals(
             .as_secs()
     );
 
-    if llm_ollama && llm_plugin.is_some() {
+    let llm_selected = (llm_plugin.is_some() as usize)
+        + (llm_ollama as usize)
+        + (llm_openai as usize)
+        + (llm_anthropic as usize);
+    if llm_selected > 1 {
         return Err(anyhow!(
-            "choose at most one LLM integration: either `--llm-plugin ...` or `--llm-ollama`"
+            "choose at most one LLM integration: either `--llm-plugin ...`, `--llm-ollama`, `--llm-openai`, or `--llm-anthropic`"
         ));
     }
 
     let (mut augmented, mut trace) =
         axiograph_ingest_docs::augment_proposals_v1(&proposals, trace_id, generated_at, &options)?;
 
-    let llm_enabled = llm_plugin.is_some() || llm_ollama;
+    let llm_enabled = llm_selected > 0;
     let evidence_chunks = if llm_enabled {
         if let Some(chunks_path) = chunks_path {
             let chunks_text = fs::read_to_string(chunks_path)?;
@@ -5463,7 +5902,8 @@ fn cmd_discover_augment_proposals(
                 let host = llm_ollama_host
                     .map(|s| s.to_string())
                     .unwrap_or_else(crate::llm::default_ollama_host);
-                ollama_augment_proposals(
+                llm_augment_proposals(
+                    "ollama",
                     &host,
                     model,
                     &augmented,
@@ -5478,6 +5918,60 @@ fn cmd_discover_augment_proposals(
             {
                 return Err(anyhow!(
                     "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+                ));
+            }
+        } else if llm_openai {
+            #[cfg(feature = "llm-openai")]
+            {
+                let model = llm_model.ok_or_else(|| {
+                    anyhow!("missing `--llm-model` (example: --llm-model gpt-4o-mini)")
+                })?;
+                let base_url = llm_openai_base_url
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(crate::llm::default_openai_base_url);
+                llm_augment_proposals(
+                    "openai",
+                    &base_url,
+                    model,
+                    &augmented,
+                    evidence_chunks.as_ref(),
+                    llm_add_proposals,
+                    options.overwrite_schema_hints,
+                    options.max_new_proposals,
+                    timeout,
+                )?
+            }
+            #[cfg(not(feature = "llm-openai"))]
+            {
+                return Err(anyhow!(
+                    "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+                ));
+            }
+        } else if llm_anthropic {
+            #[cfg(feature = "llm-anthropic")]
+            {
+                let model = llm_model.ok_or_else(|| {
+                    anyhow!("missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)")
+                })?;
+                let base_url = llm_anthropic_base_url
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(crate::llm::default_anthropic_base_url);
+                llm_augment_proposals(
+                    "anthropic",
+                    &base_url,
+                    model,
+                    &augmented,
+                    evidence_chunks.as_ref(),
+                    llm_add_proposals,
+                    options.overwrite_schema_hints,
+                    options.max_new_proposals,
+                    timeout,
+                )?
+            }
+            #[cfg(not(feature = "llm-anthropic"))]
+            {
+                return Err(anyhow!(
+                    "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
                 ));
             }
         } else {

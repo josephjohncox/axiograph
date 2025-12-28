@@ -928,6 +928,7 @@ fn build_base_from_accepted(
     let snapshot = read_accepted_snapshot(accepted_dir, accepted_snapshot_id)?;
     let mut db = axiograph_pathdb::PathDB::new();
 
+    let mut module_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     for (module_name, module_ref) in &snapshot.modules {
         let path = accepted_dir.join(&module_ref.stored_path);
         let text = fs::read_to_string(&path).map_err(|e| {
@@ -952,8 +953,15 @@ fn build_base_from_accepted(
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
             &mut db, &module,
         )?;
+
+        module_chunks.push(crate::doc_chunks::chunk_from_axi_module_text(
+            module_name,
+            &digest,
+            &text,
+        ));
     }
 
+    let _ = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &module_chunks);
     Ok(db)
 }
 

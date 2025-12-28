@@ -4,16 +4,15 @@
 # ============================================================================
 #
 # This script runs comprehensive E2E tests for the entire Axiograph system:
-# 1. Rust crate tests (PathDB, LLM Sync, Storage)
-# 2. FFI integration tests 
-# 3. Idris type-checking (if available)
-# 4. Full pipeline demo
+# 1. Rust build + unit/integration tests
+# 2. Lean checker + certificate verification (when `lake` is installed)
+# 3. Rust↔Lean parser parity and core end-to-end semantics checks
 #
 # Usage:
 #   ./scripts/e2e_test.sh           # Run all tests
 #   ./scripts/e2e_test.sh --quick   # Run quick tests only
-#   ./scripts/e2e_test.sh --rust    # Rust tests only
-#   ./scripts/e2e_test.sh --idris   # Idris tests only
+#   ./scripts/e2e_test.sh --rust    # Rust only
+#   ./scripts/e2e_test.sh --lean    # Lean-only verification suite (requires `lake`)
 
 set -e
 
@@ -35,7 +34,7 @@ SKIPPED=0
 # Parse args
 QUICK=false
 RUST_ONLY=false
-IDRIS_ONLY=false
+LEAN_ONLY=false
 
 for arg in "$@"; do
     case $arg in
@@ -45,8 +44,8 @@ for arg in "$@"; do
         --rust)
             RUST_ONLY=true
             ;;
-        --idris)
-            IDRIS_ONLY=true
+        --lean)
+            LEAN_ONLY=true
             ;;
     esac
 done
@@ -110,112 +109,81 @@ echo "Quick mode: $QUICK"
 echo ""
 
 # ============================================================================
-# Step 1: Rust Build
+# Step 1: Rust Build (via Makefile)
 # ============================================================================
 
-if [ "$IDRIS_ONLY" = false ]; then
+if [ "$LEAN_ONLY" = false ]; then
     print_header "Step 1: Rust Build"
-    
-    cd "$PROJECT_ROOT/rust"
-    
+    cd "$PROJECT_ROOT"
+
     if [ "$QUICK" = true ]; then
-        run_test "Rust build (debug)" "cargo build"
+        run_test "Rust build (debug)" "make rust-debug"
     else
-        run_test "Rust build (release)" "cargo build --release"
+        run_test "Rust build (release)" "make rust"
+        run_test "Install CLI binaries" "make binaries"
     fi
 fi
 
 # ============================================================================
-# Step 2: Rust Unit Tests
+# Step 2: Rust Tests
 # ============================================================================
 
-if [ "$IDRIS_ONLY" = false ]; then
-    print_header "Step 2: Rust Unit Tests"
-    
-    cd "$PROJECT_ROOT/rust"
-    
-    run_test "axiograph-pathdb tests" "cargo test -p axiograph-pathdb --no-fail-fast" || true
-    run_test "axiograph-dsl tests" "cargo test -p axiograph-dsl --no-fail-fast" || true
-    run_test "axiograph-storage tests" "cargo test -p axiograph-storage --no-fail-fast" || true
-    
-    if [ "$QUICK" = false ]; then
-        run_test "axiograph-llm-sync tests" "cargo test -p axiograph-llm-sync --no-fail-fast" || true
-        run_test "axiograph-compiler tests" "cargo test -p axiograph-compiler --no-fail-fast" || true
-    fi
-fi
+if [ "$LEAN_ONLY" = false ]; then
+    print_header "Step 2: Rust Tests"
+    cd "$PROJECT_ROOT"
 
-# ============================================================================
-# Step 3: FFI Library Build
-# ============================================================================
-
-if [ "$IDRIS_ONLY" = false ]; then
-    print_header "Step 3: FFI Library Build"
-    
-    cd "$PROJECT_ROOT/rust"
-    
     if [ "$QUICK" = true ]; then
-        run_test "FFI library build" "cargo build -p axiograph-ffi"
+        run_test "Rust semantics tests (axiograph-pathdb)" "make rust-test-semantics" || true
     else
-        run_test "FFI library build (release)" "cargo build -p axiograph-ffi --release"
+        run_test "Rust tests (workspace)" "make rust-test" || true
     fi
 fi
 
 # ============================================================================
-# Step 4: FFI Integration Tests
-# ============================================================================
-
-if [ "$IDRIS_ONLY" = false ]; then
-    print_header "Step 4: FFI Integration Tests"
-    
-    cd "$PROJECT_ROOT/rust"
-    
-    # Run FFI tests (they link against the FFI library)
-    run_test "FFI integration tests" "cargo test --test ffi_integration_tests --no-fail-fast" || true
-fi
-
-# ============================================================================
-# Step 5: Idris Type Checking
+# Step 3: Lean + Semantics Verification
 # ============================================================================
 
 if [ "$RUST_ONLY" = false ]; then
-    print_header "Step 5: Idris Type Checking"
-    
-    if command -v idris2 &> /dev/null; then
-        cd "$PROJECT_ROOT/idris"
-        
-        print_test "Idris type-check (may take a while with --total)"
-        
-        # First try quick check without --total
-        if timeout 60 idris2 --check axiograph.ipkg 2>&1 | head -30; then
-            print_pass "Idris type-check"
+    print_header "Step 3: Lean + Semantics Verification"
+    cd "$PROJECT_ROOT"
+
+    if command -v lake &> /dev/null; then
+        if [ "$QUICK" = true ]; then
+            run_test "Lean certificate fixtures" "make verify-lean-certificates" || true
         else
-            # Check might have timed out or failed
-            if [ $? -eq 124 ]; then
-                print_skip "Idris type-check (timeout - complex dependent types)"
-            else
-                print_fail "Idris type-check"
-            fi
+            run_test "Semantics suite (Rust+Lean)" "make verify-semantics" || true
         fi
     else
-        print_skip "Idris type-check (idris2 not installed)"
+        print_skip "Lean verification (lake not installed)"
     fi
 fi
 
 # ============================================================================
-# Step 6: E2E Demo
+# Step 4: E2E Demo (optional)
 # ============================================================================
 
-if [ "$IDRIS_ONLY" = false ] && [ "$QUICK" = false ]; then
-    print_header "Step 6: End-to-End Demo"
-    
-    cd "$PROJECT_ROOT/rust"
-    
-    # Run the e2e demo example
-    if cargo run --release --example e2e_demo 2>&1 | head -50; then
-        print_pass "E2E demo"
-    else
-        print_fail "E2E demo"
-    fi
+if [ "$LEAN_ONLY" = false ] && [ "$QUICK" = false ]; then
+    print_header "Step 4: End-to-End Demo"
+    cd "$PROJECT_ROOT"
+    run_test "E2E demo (examples/run_demo.sh)" "make demo" || true
+fi
+
+# ============================================================================
+# Summary
+# ============================================================================
+
+echo ""
+echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║                        SUMMARY                               ║${NC}"
+echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "Passed:  ${GREEN}${PASSED}${NC}"
+echo -e "Failed:  ${RED}${FAILED}${NC}"
+echo -e "Skipped: ${YELLOW}${SKIPPED}${NC}"
+echo ""
+
+if [ "$FAILED" -ne 0 ]; then
+    exit 1
 fi
 
 # ============================================================================
@@ -268,4 +236,3 @@ else
     echo -e "${GREEN}All tests passed!${NC}"
     exit 0
 fi
-

@@ -579,6 +579,14 @@ fn accepted_plane_promote_and_build_pathdb_smoke() {
         !db.entities.is_empty(),
         "expected non-empty PathDB entities after rebuild"
     );
+
+    // Grounding always has evidence: accepted-plane builds embed `.axi` module
+    // source as DocChunks so LLM/UI flows can cite and open it.
+    let has_chunks = db
+        .find_by_type("DocChunk")
+        .map(|bm| !bm.is_empty())
+        .unwrap_or(false);
+    assert!(has_chunks, "expected at least one DocChunk in accepted build");
 }
 
 #[test]
@@ -681,14 +689,21 @@ fn accepted_plane_pathdb_wal_commit_and_build_smoke() {
     let bytes = fs::read(&out_axpd).expect("read pathdb wal axpd");
     let db = axiograph_pathdb::PathDB::from_bytes(&bytes).expect("parse pathdb wal axpd");
 
-    let has_chunks = db
-        .find_by_type("DocChunk")
-        .map(|bm| !bm.is_empty())
-        .unwrap_or(false);
-    assert!(
-        has_chunks,
-        "expected at least one DocChunk after wal commit"
-    );
+    let chunk_id_key = db
+        .interner
+        .id_of("chunk_id")
+        .expect("chunk_id attr key id");
+    let want = db.interner.id_of("chunk0").expect("chunk0 value id");
+    let mut found = false;
+    if let Some(chunks) = db.find_by_type("DocChunk") {
+        for id in chunks.iter() {
+            if db.entities.get_attr(id, chunk_id_key) == Some(want) {
+                found = true;
+                break;
+            }
+        }
+    }
+    assert!(found, "expected committed DocChunk chunk_id=chunk0 after wal commit");
 }
 
 #[test]
@@ -1247,6 +1262,58 @@ fn querycert_anchor_snapshot_export_smoke() {
             );
         }
         other => panic!("expected query_result_v1 certificate, got {other:?}"),
+    }
+}
+
+#[test]
+fn querycert_canonical_axi_v3_smoke() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+
+    let run_dir = unique_run_dir(&repo_root, "querycert_canonical_v3");
+
+    let input = repo_root.join("examples/manufacturing/SupplyChainHoTT.axi");
+    let cert_path = run_dir.join("build/canonical_query_cert_v3.json");
+
+    let query = "select ?to where name(\"RawMetal_A\") -Flow-> ?to limit 10";
+
+    let status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("cert")
+        .arg("query")
+        .arg(&input)
+        .arg("--lang")
+        .arg("axql")
+        .arg(query)
+        .arg("--out")
+        .arg(&cert_path)
+        .status()
+        .expect("run axiograph cert query (canonical .axi)");
+    assert!(
+        status.success(),
+        "querycert on canonical module failed (exit={})",
+        status.code().unwrap_or(-1)
+    );
+
+    let cert_text = fs::read_to_string(&cert_path).expect("read query cert json");
+    let cert: CertificateV2 = serde_json::from_str(&cert_text).expect("parse query cert json");
+
+    assert_eq!(cert.version, 2);
+    let anchor = cert.anchor.expect("expected anchor");
+    assert!(
+        anchor.axi_digest_v1.starts_with("fnv1a64:"),
+        "unexpected digest format: {}",
+        anchor.axi_digest_v1
+    );
+
+    match cert.payload {
+        CertificatePayloadV2::QueryResultV3 { proof } => {
+            assert!(
+                !proof.rows.is_empty(),
+                "expected non-empty rows for canonical module query"
+            );
+        }
+        other => panic!("expected query_result_v3 certificate, got {other:?}"),
     }
 }
 

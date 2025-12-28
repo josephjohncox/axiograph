@@ -193,7 +193,7 @@ Rust → Lean end-to-end checks:
 - axi constraints gate: `make verify-lean-e2e-axi-constraints-ok-v1`
 - query results (anchored): `make verify-lean-e2e-query-result-v1`
 - query results (anchored, disjunction): `make verify-lean-e2e-query-result-v2`
-- query results (from canonical module): `make verify-lean-e2e-query-result-module-v1`
+- query results (from canonical module): `make verify-lean-e2e-query-result-module-v3`
 - v2 resolution: `make verify-lean-e2e-resolution-v2`
 - v2 normalize_path: `make verify-lean-e2e-normalize-path-v2`
 - v3 rewrite_derivation (axi rules): `make verify-lean-e2e-rewrite-derivation-v3`

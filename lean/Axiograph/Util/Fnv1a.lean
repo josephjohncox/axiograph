@@ -28,6 +28,7 @@ namespace Axiograph.Util
 namespace Fnv1a
 
 def digestPrefix : String := "fnv1a64:"
+def factIdPrefix : String := "factfnv1a64:"
 
 def offsetBasis : UInt64 := 0xcbf29ce484222325
 def prime : UInt64 := 0x00000100000001b3
@@ -57,6 +58,47 @@ def toHexFixed16 (h : UInt64) : String :=
 def digestTextV1 (text : String) : String :=
   let h := hashBytes text.toUTF8
   digestPrefix ++ toHexFixed16 h
+
+/-!
+## Stable fact ids (`axi_fact_id_v1`)
+
+For `.axi`-anchored certificates we also need a stable identifier for individual
+*tuples/facts* inside an instance.
+
+Rust computes this in `axiograph-dsl/src/digest.rs::axi_fact_id_v1`. We keep the
+Lean implementation structurally aligned so certificates can be checked against
+canonical `.axi` inputs without depending on PathDB-internal numeric IDs.
+-/
+
+def hashString (h : UInt64) (s : String) : UInt64 :=
+  Id.run do
+    let mut h := h
+    for b in s.toUTF8 do
+      h := (h ^^^ (UInt64.ofNat b.toNat)) * prime
+    return h
+
+def axiFactIdV1
+    (moduleName schemaName instanceName relationName : String)
+    (fieldsInDeclOrder : Array (String × String)) : String :=
+  Id.run do
+    let mut h : UInt64 := offsetBasis
+    h := hashString h "module="
+    h := hashString h moduleName
+    h := hashString h "|schema="
+    h := hashString h schemaName
+    h := hashString h "|instance="
+    h := hashString h instanceName
+    h := hashString h "|relation="
+    h := hashString h relationName
+    h := hashString h "|fields="
+
+    for (field, value) in fieldsInDeclOrder do
+      h := hashString h field
+      h := hashString h "="
+      h := hashString h value
+      h := hashString h ";"
+
+    factIdPrefix ++ toHexFixed16 h
 
 end Fnv1a
 

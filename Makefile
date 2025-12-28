@@ -27,7 +27,7 @@
 	verify-lean-e2e-axi-constraints-ok-v1 \
 	verify-lean-e2e-query-result-v1 \
 	verify-lean-e2e-query-result-v2 \
-	verify-lean-e2e-query-result-module-v1 \
+	verify-lean-e2e-query-result-module-v3 \
 	verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1 \
 	verify-lean-certificates verify-lean-e2e-suite \
 	rust-test-semantics verify-semantics test-semantics \
@@ -326,15 +326,18 @@ verify-lean-e2e-query-result-v2: dirs
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
 
-verify-lean-e2e-query-result-module-v1: dirs
-	@echo "━━━ Rust → Lean certificate check (query_result_v1 from canonical module) ━━━"
+verify-lean-e2e-query-result-module-v3: dirs
+	@echo "━━━ Rust → Lean certificate check (query_result_v3 anchored to canonical .axi) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/manufacturing/SupplyChainHoTT.axi --lang axql 'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' --anchor-out ../$(BUILD_DIR)/supply_chain_hott_anchor_export_v1.axi > ../$(BUILD_DIR)/query_result_from_module_v1.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/supply_chain_hott_anchor_export_v1.axi ../$(BUILD_DIR)/query_result_from_module_v1.json ) && \
-		echo "✓ Rust → Lean certificate verified (query_result_v1 from module)"; \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/manufacturing/SupplyChainHoTT.axi --lang axql 'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' --anchor-out ../$(BUILD_DIR)/supply_chain_hott_anchor_export_v1.axi > ../$(BUILD_DIR)/query_result_from_module_v3.json ) && \
+		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/manufacturing/SupplyChainHoTT.axi ../$(BUILD_DIR)/query_result_from_module_v3.json ) && \
+		echo "✓ Rust → Lean certificate verified (query_result_v3 from module)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
+
+# Back-compat alias (the cert is now `.axi`-anchored, so it's v3).
+verify-lean-e2e-query-result-module-v1: verify-lean-e2e-query-result-module-v3
 
 verify-lean-e2e-axi-well-typed-v1: dirs
 	@echo "━━━ Rust → Lean certificate check (axi_well_typed_v1) ━━━"
@@ -426,7 +429,7 @@ verify-lean-e2e-delta-f-v1: dirs
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
 
-verify-lean-e2e-suite: verify-lean-e2e verify-lean-e2e-v2 verify-lean-e2e-v2-anchored verify-lean-e2e-axi-well-typed-v1 verify-lean-e2e-axi-constraints-ok-v1 verify-lean-e2e-query-result-v1 verify-lean-e2e-query-result-v2 verify-lean-e2e-query-result-module-v1 verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-rewrite-derivation-v3 verify-lean-e2e-ontology-rewrites-v3 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1
+verify-lean-e2e-suite: verify-lean-e2e verify-lean-e2e-v2 verify-lean-e2e-v2-anchored verify-lean-e2e-axi-well-typed-v1 verify-lean-e2e-axi-constraints-ok-v1 verify-lean-e2e-query-result-v1 verify-lean-e2e-query-result-v2 verify-lean-e2e-query-result-module-v3 verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-rewrite-derivation-v3 verify-lean-e2e-ontology-rewrites-v3 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1
 
 # ============================================================================
 # Binaries

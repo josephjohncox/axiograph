@@ -15,12 +15,19 @@ set -euo pipefail
 #     LLM_BACKEND=mock ./scripts/db_server_llm_viz_demo.sh
 # - Local models via Ollama (requires `ollama serve`):
 #     LLM_BACKEND=ollama LLM_MODEL=nemotron-3-nano ./scripts/db_server_llm_viz_demo.sh
+# - Networked (OpenAI):
+#     LLM_BACKEND=openai LLM_MODEL=gpt-4o-mini OPENAI_API_KEY=... ./scripts/db_server_llm_viz_demo.sh
+# - Networked (Anthropic):
+#     LLM_BACKEND=anthropic LLM_MODEL=claude-3-5-sonnet-20241022 ANTHROPIC_API_KEY=... ./scripts/db_server_llm_viz_demo.sh
 #
 # Notes:
-# - By default (when `LLM_BACKEND=ollama`), this script also commits snapshot-scoped
-#   DocChunk embeddings into the PathDB WAL (using `nomic-embed-text`), so the
-#   explorer can demo hybrid retrieval (`semantic_search`).
-#   Disable with: `EMBED_ENABLED=0`.
+# - This script always has deterministic token-hash retrieval (built into PathDB).
+# - Optionally, it can also commit snapshot-scoped *model embeddings* into the WAL
+#   for hybrid retrieval (`semantic_search`), via `axiograph db accept pathdb-embed`.
+#   Configure with:
+#     - `EMBED_ENABLED=0` to disable
+#     - `EMBED_BACKEND=ollama|openai` (defaults: ollama when `LLM_BACKEND=ollama`, openai when `LLM_BACKEND=openai`)
+#     - `EMBED_MODEL=...` (defaults: `nomic-embed-text` for ollama, `text-embedding-3-small` for openai)
 # - By default, if `KEEP_RUNNING=1`, this script skips the sample LLM HTTP call
 #   (so the server stays up even if the model is slow / being pulled).
 #   Override with: `RUN_SAMPLES=1`.
@@ -115,7 +122,22 @@ EOF
 fi
 
 EMBED_ENABLED="${EMBED_ENABLED:-1}"
-EMBED_OLLAMA_MODEL="${EMBED_OLLAMA_MODEL:-nomic-embed-text}"
+EMBED_BACKEND="${EMBED_BACKEND:-}"
+if [ -z "$EMBED_BACKEND" ]; then
+  if [ "$LLM_BACKEND" = "ollama" ] || [ "$LLM_BACKEND" = "openai" ]; then
+    EMBED_BACKEND="$LLM_BACKEND"
+  fi
+fi
+
+EMBED_MODEL="${EMBED_MODEL:-}"
+if [ -z "$EMBED_MODEL" ]; then
+  if [ "$EMBED_BACKEND" = "ollama" ]; then
+    EMBED_MODEL="${EMBED_OLLAMA_MODEL:-nomic-embed-text}"
+  elif [ "$EMBED_BACKEND" = "openai" ]; then
+    EMBED_MODEL="${EMBED_OPENAI_MODEL:-text-embedding-3-small}"
+  fi
+fi
+
 EMBED_TARGET="${EMBED_TARGET:-}"
 if [ -z "$EMBED_TARGET" ]; then
   if [ "$INCLUDE_DOCCHUNKS" = "1" ]; then
@@ -125,16 +147,19 @@ if [ -z "$EMBED_TARGET" ]; then
   fi
 fi
 
-if [ "$EMBED_ENABLED" = "1" ] && [ "$LLM_BACKEND" = "ollama" ]; then
+if [ "$EMBED_ENABLED" = "1" ] && [ -n "${EMBED_BACKEND:-}" ]; then
   echo ""
-  echo "-- A3) Compute snapshot-scoped embeddings (PathDB WAL) (model=$EMBED_OLLAMA_MODEL target=$EMBED_TARGET)"
-  echo "note: make sure the embedding model is available: ollama pull $EMBED_OLLAMA_MODEL"
+  echo "-- A3) Compute snapshot-scoped embeddings (PathDB WAL) (backend=$EMBED_BACKEND model=$EMBED_MODEL target=$EMBED_TARGET)"
+  if [ "$EMBED_BACKEND" = "ollama" ]; then
+    echo "note: make sure the embedding model is available: ollama pull $EMBED_MODEL"
+  fi
   set +e
   "$AXIOGRAPH" db accept pathdb-embed \
       --dir "$PLANE_DIR" \
       --snapshot head \
       --target "$EMBED_TARGET" \
-      --ollama-model "$EMBED_OLLAMA_MODEL" \
+      --embed-backend "$EMBED_BACKEND" \
+      --embed-model "$EMBED_MODEL" \
       --message "demo: snapshot-scoped embeddings ($EMBED_TARGET)" \
       >"$OUT_DIR/embed_snapshot_id.txt" 2>"$OUT_DIR/embed.log"
   if [ $? -ne 0 ]; then
@@ -170,6 +195,18 @@ if [ "$LLM_BACKEND" = "ollama" ]; then
   fi
   echo "note: make sure the model is available: ollama pull $LLM_MODEL"
   LLM_FLAGS+=(--llm-ollama --llm-model "$LLM_MODEL")
+elif [ "$LLM_BACKEND" = "openai" ]; then
+  if [ -z "$LLM_MODEL" ]; then
+    echo "error: set LLM_MODEL when LLM_BACKEND=openai (example: gpt-4o-mini)"
+    exit 2
+  fi
+  LLM_FLAGS+=(--llm-openai --llm-model "$LLM_MODEL")
+elif [ "$LLM_BACKEND" = "anthropic" ]; then
+  if [ -z "$LLM_MODEL" ]; then
+    echo "error: set LLM_MODEL when LLM_BACKEND=anthropic (example: claude-3-5-sonnet-20241022)"
+    exit 2
+  fi
+  LLM_FLAGS+=(--llm-anthropic --llm-model "$LLM_MODEL")
 else
   LLM_FLAGS+=(--llm-mock)
 fi

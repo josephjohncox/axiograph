@@ -493,12 +493,18 @@ axiograph> llm use mock
 axiograph> llm ask find Node named b
 ```
 
+Single-shot query generation (no tool loop):
+
+```text
+axiograph> llm query find Node named b
+```
+
 Built-in Ollama backend (local models via Ollama):
 
 ```text
 axiograph> llm use ollama nemotron-3-nano
 axiograph> llm ask find Node named b
-axiograph> llm agent what RPCs does acme.svc0.v1.Service0 have?
+axiograph> llm ask what RPCs does acme.svc0.v1.Service0 have?
 ```
 
 Full demo script (non-interactive, uses Ollama + `nemotron-3-nano` by default):

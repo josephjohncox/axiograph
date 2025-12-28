@@ -142,6 +142,24 @@ a.link:hover { text-decoration: underline; }
     </label>
   </div>
   <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="llm_certify" type="checkbox"/>
+      certify executed query steps (best-effort)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="llm_verify" type="checkbox"/>
+      verify query certificates (Lean) (best-effort)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="llm_require_verified" type="checkbox"/>
+      require verified query certificates (fail closed)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
     <button id="llm_ask" class="btn">ask</button>
     <button id="llm_to_query" class="btn">to query</button>
     <button id="llm_clear" class="btn">clear chat</button>
@@ -238,6 +256,9 @@ const show_plane_data = document.getElementById("show_plane_data");
 const contextFilterEl = document.getElementById("context_filter");
 const llmQuestionEl = document.getElementById("llm_question");
 const llmAutoCommitEl = document.getElementById("llm_auto_commit");
+const llmCertifyEl = document.getElementById("llm_certify");
+const llmVerifyEl = document.getElementById("llm_verify");
+const llmRequireVerifiedEl = document.getElementById("llm_require_verified");
 const llmAskBtn = document.getElementById("llm_ask");
 const llmToQueryBtn = document.getElementById("llm_to_query");
 const llmClearBtn = document.getElementById("llm_clear");
@@ -2230,15 +2251,33 @@ function setLlmStatus(text) {
 }
 
 function llmHistoryStorageKey() {
-  // Snapshot changes are a URL param; we want the conversation to survive
-  // reloads/time-travel within the same server.
+  // Persist chat per *accepted snapshot* when available (stable across WAL
+  // commits), falling back to the current snapshot param. This keeps
+  // conversation context durable across “add → commit → reload”.
   const host = (window.location && window.location.host) ? window.location.host : "offline";
-  return `axiograph_llm_history_v1:${host}`;
+  let key = "";
+  try {
+    const accepted = (localStorage.getItem("axiograph_server_accepted_snapshot_id") || "").trim();
+    if (accepted) key = accepted;
+  } catch (_e) {}
+  if (!key) {
+    const params = new URLSearchParams(window.location.search || "");
+    key = (params.get("snapshot") || "").trim();
+  }
+  if (!key) key = "default";
+  return `axiograph_llm_history_v2:${host}:${key}`;
 }
 
-function loadLlmHistory() {
+let llmHistoryKey = llmHistoryStorageKey();
+
+function loadLlmHistoryForKey(key) {
   try {
-    const raw = localStorage.getItem(llmHistoryStorageKey()) || "";
+    let raw = localStorage.getItem(key) || "";
+    // Backward-compat migration from v1 (host-scoped) history.
+    if (!raw.trim()) {
+      const host = (window.location && window.location.host) ? window.location.host : "offline";
+      raw = localStorage.getItem(`axiograph_llm_history_v1:${host}`) || "";
+    }
     if (!raw.trim()) return [];
     const v = JSON.parse(raw);
     if (!Array.isArray(v)) return [];
@@ -2246,6 +2285,7 @@ function loadLlmHistory() {
       .map(m => ({
         role: String(m && m.role || ""),
         content: String(m && m.content || ""),
+        public_rationale: String(m && m.public_rationale || ""),
         citations: Array.isArray(m && m.citations) ? m.citations.map(x => String(x)) : [],
         queries: Array.isArray(m && m.queries) ? m.queries.map(x => String(x)) : [],
         notes: Array.isArray(m && m.notes) ? m.notes.map(x => String(x)) : []
@@ -2258,11 +2298,11 @@ function loadLlmHistory() {
 
 function saveLlmHistory() {
   try {
-    localStorage.setItem(llmHistoryStorageKey(), JSON.stringify(llmHistory));
+    localStorage.setItem(llmHistoryKey, JSON.stringify(llmHistory));
   } catch (_e) {}
 }
 
-let llmHistory = loadLlmHistory(); // {role, content}
+let llmHistory = loadLlmHistoryForKey(llmHistoryKey); // {role, content}
 
 function setLlmCitations(obj) {
   if (!llmCitationsEl) return;
@@ -2337,6 +2377,24 @@ function renderLlmChat() {
     box.appendChild(role);
     box.appendChild(text);
 
+    const rationale = (m && typeof m.public_rationale === "string") ? m.public_rationale.trim() : "";
+    if (rationale) {
+      const det = document.createElement("details");
+      det.style.marginTop = "6px";
+      const sum = document.createElement("summary");
+      sum.className = "muted";
+      sum.textContent = "rationale";
+      const pre = document.createElement("pre");
+      pre.style.whiteSpace = "pre-wrap";
+      pre.style.maxHeight = "160px";
+      pre.style.overflow = "auto";
+      pre.style.margin = "6px 0 0 0";
+      pre.textContent = rationale;
+      det.appendChild(sum);
+      det.appendChild(pre);
+      box.appendChild(det);
+    }
+
     const citations = Array.isArray(m.citations) ? m.citations.filter(Boolean) : [];
     if (citations.length) {
       const citeBox = document.createElement("div");
@@ -2391,6 +2449,7 @@ function appendLlmMessage(role, content, extras) {
   llmHistory.push({
     role,
     content: String(content || ""),
+    public_rationale: String(e.public_rationale || ""),
     citations: Array.isArray(e.citations) ? e.citations.map(x => String(x)) : [],
     queries: Array.isArray(e.queries) ? e.queries.map(x => String(x)) : [],
     notes: Array.isArray(e.notes) ? e.notes.map(x => String(x)) : []
@@ -2424,6 +2483,55 @@ function saveLlmAutoCommit() {
 
 loadLlmAutoCommit();
 if (llmAutoCommitEl) llmAutoCommitEl.addEventListener("change", saveLlmAutoCommit);
+
+function loadLlmCertify() {
+  try {
+    const v = localStorage.getItem("axiograph_llm_certify") || "";
+    if (llmCertifyEl) llmCertifyEl.checked = (v === "1" || v === "true" || v === "yes" || v === "on");
+  } catch (_e) {}
+}
+
+function saveLlmCertify() {
+  try {
+    if (!llmCertifyEl) return;
+    localStorage.setItem("axiograph_llm_certify", llmCertifyEl.checked ? "1" : "0");
+  } catch (_e) {}
+}
+
+function loadLlmVerify() {
+  try {
+    const v = localStorage.getItem("axiograph_llm_verify") || "";
+    if (llmVerifyEl) llmVerifyEl.checked = (v === "1" || v === "true" || v === "yes" || v === "on");
+  } catch (_e) {}
+}
+
+function saveLlmVerify() {
+  try {
+    if (!llmVerifyEl) return;
+    localStorage.setItem("axiograph_llm_verify", llmVerifyEl.checked ? "1" : "0");
+  } catch (_e) {}
+}
+
+function loadLlmRequireVerified() {
+  try {
+    const v = localStorage.getItem("axiograph_llm_require_verified") || "";
+    if (llmRequireVerifiedEl) llmRequireVerifiedEl.checked = (v === "1" || v === "true" || v === "yes" || v === "on");
+  } catch (_e) {}
+}
+
+function saveLlmRequireVerified() {
+  try {
+    if (!llmRequireVerifiedEl) return;
+    localStorage.setItem("axiograph_llm_require_verified", llmRequireVerifiedEl.checked ? "1" : "0");
+  } catch (_e) {}
+}
+
+loadLlmCertify();
+loadLlmVerify();
+loadLlmRequireVerified();
+if (llmCertifyEl) llmCertifyEl.addEventListener("change", saveLlmCertify);
+if (llmVerifyEl) llmVerifyEl.addEventListener("change", saveLlmVerify);
+if (llmRequireVerifiedEl) llmRequireVerifiedEl.addEventListener("change", saveLlmRequireVerified);
 
 function setLlmDebug(obj) {
   if (!llmDebugEl) return;
@@ -2492,7 +2600,7 @@ async function llmAgentAsk() {
 
   // Send a bounded amount of prior conversation as context (assistant text is
   // untrusted; the tool-loop should validate via tools).
-  const historyToSend = llmHistory.slice(-12).map(m => ({
+  const historyToSend = llmHistory.slice(-40).map(m => ({
     role: String(m && m.role || ""),
     content: String(m && m.content || "")
   }));
@@ -2513,6 +2621,16 @@ async function llmAgentAsk() {
 
     const body = { question: q, contexts, history: historyToSend };
     if (snapshot) body.snapshot = snapshot;
+    if (llmCertifyEl && llmCertifyEl.checked) body.certify_queries = true;
+    if (llmVerifyEl && llmVerifyEl.checked) {
+      body.verify_queries = true;
+      body.certify_queries = true;
+    }
+    if (llmRequireVerifiedEl && llmRequireVerifiedEl.checked) {
+      body.require_verified_queries = true;
+      body.verify_queries = true;
+      body.certify_queries = true;
+    }
     if (wantsAutoCommit) {
       body.auto_commit = true;
       if (addMessageEl && String(addMessageEl.value || "").trim()) {
@@ -2545,6 +2663,7 @@ async function llmAgentAsk() {
         "assistant",
         outcome.final_answer.answer,
         {
+          public_rationale: outcome.final_answer.public_rationale || "",
           citations: outcome.final_answer.citations || [],
           queries: outcome.final_answer.queries || [],
           notes: outcome.final_answer.notes || []
@@ -2878,6 +2997,25 @@ async function initServerControls() {
     if (!statusResp.ok || !snapsResp.ok) return;
     const status = await statusResp.json();
     const snaps = await snapsResp.json();
+    try {
+      const accepted = status && status.snapshot && status.snapshot.accepted_snapshot_id ? String(status.snapshot.accepted_snapshot_id) : "";
+      if (accepted) localStorage.setItem("axiograph_server_accepted_snapshot_id", accepted);
+    } catch (_e) {}
+    // If the accepted snapshot id became available, migrate chat history keys so
+    // conversations don't "disappear" on the next reload.
+    try {
+      const nextKey = llmHistoryStorageKey();
+      if (nextKey && nextKey !== llmHistoryKey) {
+        const nextHistory = loadLlmHistoryForKey(nextKey);
+        if (nextHistory.length) {
+          llmHistory = nextHistory;
+        } else if (llmHistory.length) {
+          localStorage.setItem(nextKey, JSON.stringify(llmHistory));
+        }
+        llmHistoryKey = nextKey;
+        renderLlmChat();
+      }
+    } catch (_e) {}
     if (status && status.llm && llmStatusEl) {
       if (status.llm.enabled) setLlmStatus(`ready (${status.llm.backend})`);
       else setLlmStatus("disabled");

@@ -264,6 +264,7 @@ pub fn build_pathdb_from_snapshot(
 
     let mut db = axiograph_pathdb::PathDB::new();
 
+    let mut module_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     for (module_name, module_ref) in &snapshot.modules {
         let path = accepted_dir.join(&module_ref.stored_path);
         let text = fs::read_to_string(&path).map_err(|e| {
@@ -288,8 +289,17 @@ pub fn build_pathdb_from_snapshot(
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
             &mut db, &module,
         )?;
+
+        // Grounding always has evidence: embed the canonical `.axi` module text
+        // as an untrusted DocChunk so LLM/UI workflows can cite and open it.
+        module_chunks.push(crate::doc_chunks::chunk_from_axi_module_text(
+            module_name,
+            &digest,
+            &text,
+        ));
     }
 
+    let _ = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &module_chunks);
     db.build_indexes();
     fs::write(out_axpd, db.to_bytes()?)?;
     Ok(())

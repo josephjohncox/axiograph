@@ -233,16 +233,31 @@ Shape (sketch):
 
 End-to-end:
 - `make verify-lean-e2e-query-result-v1`
-- `make verify-lean-e2e-query-result-module-v1` (runs `axiograph cert query` over a canonical `.axi` module, writing a derived `PathDBExportV1` anchor via `--anchor-out`)
 
-CLI usage (canonical module → derived anchor snapshot → certificate):
+### v2: query_result_v3 (axi-anchored query results)
+
+`query_result_v3` removes the dependency on `PathDBExportV1` snapshot tables by
+anchoring directly to a canonical `.axi` module:
+
+- the certificate anchor is `axi_digest_v1` of the canonical module
+- witnesses reference edges by their stable `axi_fact_id` (derived from the
+  canonical tuple fact), rather than `relation_id` in a snapshot export
+
+This keeps `.axi` as the canonical truth and avoids “DB export semantics drift”
+in the checker.
+
+End-to-end:
+- `make verify-lean-e2e-query-result-module-v3`
+
+CLI usage (canonical module → certificate; optional `--anchor-out` only for debugging):
 
 ```bash
 axiograph cert query examples/manufacturing/SupplyChainHoTT.axi \
   --lang axql \
-  --anchor-out build/supply_chain_anchor_export_v1.axi \
   'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' \
-  --out build/supply_chain_query_cert.json
+  --out build/supply_chain_query_cert_v3.json
+
+make verify-lean-cert AXI=examples/manufacturing/SupplyChainHoTT.axi CERT=build/supply_chain_query_cert_v3.json
 ```
 
 ### v2: query_result_v2 (certified disjunction / UCQs)

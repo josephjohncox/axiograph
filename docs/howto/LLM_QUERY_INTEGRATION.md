@@ -372,7 +372,8 @@ The LLM never hallucinates structure—it can only query what exists in the type
 The `axiograph` REPL can run:
 
 - **Deterministic NL templates**: `ask …` → AxQL
-- **LLM-assisted** (pluggable): `llm ask …` / `llm answer …`
+- **LLM-assisted single-shot query generation**: `llm query …` → `query_ir_v1` (preferred) or AxQL (fallback)
+- **LLM-assisted tool loop (RAG-like, multi-step)**: `llm ask …` / `llm answer …` (calls tools, elaborates/runs queries, proposes overlays)
 
 The LLM layer is intentionally “untrusted”: it produces candidate queries; the
 engine executes them (and later: can produce certificates for Lean checking).

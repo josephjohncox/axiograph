@@ -3675,7 +3675,7 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
         "use" => {
             if args.len() < 2 {
                 return Err(anyhow!(
-                    "usage: llm use mock | llm use command <exe> [args...] | llm use ollama [model]"
+                    "usage: llm use mock | llm use command <exe> [args...] | llm use ollama [model] | llm use openai [model] | llm use anthropic [model]"
                 ));
             }
             match args[1].to_ascii_lowercase().as_str() {
@@ -3703,6 +3703,53 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                         ))
                     }
                 }
+                "openai" => {
+                    #[cfg(feature = "llm-openai")]
+                    {
+                        state.llm.backend = crate::llm::LlmBackend::OpenAI {
+                            base_url: crate::llm::default_openai_base_url(),
+                        };
+                        if args.len() > 2 {
+                            state.llm.model = Some(args[2..].join(" "));
+                        } else {
+                            let env = std::env::var(crate::llm::OPENAI_MODEL_ENV).unwrap_or_default();
+                            let env = env.trim().to_string();
+                            state.llm.model = if env.is_empty() { None } else { Some(env) };
+                        }
+                        println!("ok: {}", state.llm.status_line());
+                        Ok(())
+                    }
+                    #[cfg(not(feature = "llm-openai"))]
+                    {
+                        Err(anyhow!(
+                            "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+                        ))
+                    }
+                }
+                "anthropic" => {
+                    #[cfg(feature = "llm-anthropic")]
+                    {
+                        state.llm.backend = crate::llm::LlmBackend::Anthropic {
+                            base_url: crate::llm::default_anthropic_base_url(),
+                        };
+                        if args.len() > 2 {
+                            state.llm.model = Some(args[2..].join(" "));
+                        } else {
+                            let env =
+                                std::env::var(crate::llm::ANTHROPIC_MODEL_ENV).unwrap_or_default();
+                            let env = env.trim().to_string();
+                            state.llm.model = if env.is_empty() { None } else { Some(env) };
+                        }
+                        println!("ok: {}", state.llm.status_line());
+                        Ok(())
+                    }
+                    #[cfg(not(feature = "llm-anthropic"))]
+                    {
+                        Err(anyhow!(
+                            "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
+                        ))
+                    }
+                }
                 "command" => {
                     if args.len() < 3 {
                         return Err(anyhow!("usage: llm use command <exe> [args...]"));
@@ -3715,15 +3762,13 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                     Ok(())
                 }
                 other => Err(anyhow!(
-                    "unknown llm backend `{other}` (try `mock`, `ollama`, or `command`)"
+                    "unknown llm backend `{other}` (try `mock`, `ollama`, `openai`, `anthropic`, or `command`)"
                 )),
             }
         }
-        "ask" | "query" | "answer" => {
+        "query" => {
             if args.len() < 2 {
-                return Err(anyhow!(
-                    "usage: llm ask <question...> | llm answer <question...>"
-                ));
+                return Err(anyhow!("usage: llm query <question...>"));
             }
             let question = args[1..].join(" ");
             let db = require_db(state)?;
@@ -3734,27 +3779,103 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                 crate::llm::GeneratedQuery::QueryIrV1(ir) => {
                     println!(
                         "query_ir_v1:\n{}",
-                        serde_json::to_string_pretty(ir).unwrap_or_else(|_| "<unprintable>".to_string())
+                        serde_json::to_string_pretty(ir)
+                            .unwrap_or_else(|_| "<unprintable>".to_string())
                     );
                     println!("axql: {}", ir.to_axql_text()?);
                 }
             }
 
-            let exec_result =
-                crate::llm::execute_generated_query_with_meta(db, &generated, state.meta.as_ref())?;
-            print_llm_execution_result(db, &exec_result);
+            Ok(())
+        }
+        "ask" | "answer" => {
+            if args.len() < 2 {
+                return Err(anyhow!(
+                    "usage: llm ask [--steps N] [--rows N] <question...> | llm answer [--steps N] [--rows N] <question...>"
+                ));
+            }
 
-            if args[0].eq_ignore_ascii_case("answer") {
-                if let Some(answer) =
-                    state
-                        .llm
-                        .summarize_answer(db, &question, &generated, &exec_result)?
-                {
-                    println!("\nanswer:\n{answer}");
-                } else {
-                    println!(
-                        "\n(note: backend did not return a summary; use `llm use ollama ...` or `llm use command ...` to enable)"
-                    );
+            let mut steps: usize = crate::llm::llm_default_max_steps()?;
+            let mut rows: usize = 25;
+
+            let mut idx = 1usize;
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--steps" => {
+                        if idx + 1 >= args.len() {
+                            return Err(anyhow!("llm {}: missing value for --steps", args[0]));
+                        }
+                        steps = args[idx + 1].parse()?;
+                        idx += 2;
+                    }
+                    "--rows" => {
+                        if idx + 1 >= args.len() {
+                            return Err(anyhow!("llm {}: missing value for --rows", args[0]));
+                        }
+                        rows = args[idx + 1].parse()?;
+                        idx += 2;
+                    }
+                    _ => break,
+                }
+            }
+
+            if idx >= args.len() {
+                return Err(anyhow!(
+                    "usage: llm ask [--steps N] [--rows N] <question...> | llm answer [--steps N] [--rows N] <question...>"
+                ));
+            }
+
+            let question = args[idx..].join(" ");
+            let opts = crate::llm::ToolLoopOptions {
+                max_steps: steps,
+                max_rows: rows,
+                ..Default::default()
+            };
+            let contexts = state.contexts.clone();
+            let snapshot_key = state.snapshot_key.clone();
+
+            let db = state
+                .db
+                .take()
+                .ok_or_else(|| anyhow!("no database loaded (use `load`, `import_axi`, or `gen`)"))?;
+
+            let outcome = crate::llm::run_tool_loop_with_meta(
+                &state.llm,
+                &db,
+                state.meta.as_ref(),
+                &contexts,
+                &snapshot_key,
+                None,
+                None,
+                &mut state.query_cache,
+                &question,
+                opts,
+            )?;
+
+            state.db = Some(db);
+
+            println!("\nanswer:\n{}", outcome.final_answer.answer);
+            if let Some(rationale) = outcome.final_answer.public_rationale.as_deref() {
+                if !rationale.trim().is_empty() {
+                    println!("\nrationale:\n{rationale}");
+                }
+            }
+            if !outcome.final_answer.citations.is_empty() {
+                println!("\ncitations:");
+                for c in &outcome.final_answer.citations {
+                    println!("  - {c}");
+                }
+            }
+            if !outcome.final_answer.queries.is_empty() {
+                println!("\nqueries:");
+                for q in &outcome.final_answer.queries {
+                    println!("  - {q}");
+                }
+            }
+            if !outcome.final_answer.notes.is_empty() {
+                println!("\nnotes:");
+                for n in &outcome.final_answer.notes {
+                    println!("  - {n}");
                 }
             }
 
@@ -3846,6 +3967,11 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
             }
 
             println!("\nanswer:\n{}", outcome.final_answer.answer);
+            if let Some(rationale) = outcome.final_answer.public_rationale.as_deref() {
+                if !rationale.trim().is_empty() {
+                    println!("\nrationale:\n{rationale}");
+                }
+            }
             if !outcome.final_answer.citations.is_empty() {
                 println!("\ncitations:");
                 for c in &outcome.final_answer.citations {
@@ -3868,39 +3994,8 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
             Ok(())
         }
         other => Err(anyhow!(
-            "unknown llm subcommand `{other}` (try: status, use, model, ask, answer, agent)"
+            "unknown llm subcommand `{other}` (try: status, use, model, ask, answer, query, agent)"
         )),
-    }
-}
-
-fn print_llm_execution_result(db: &axiograph_pathdb::PathDB, result: &crate::llm::ExecutionResult) {
-    match result {
-        crate::llm::ExecutionResult::Axql(r) => {
-            let vars = if r.selected_vars.is_empty() {
-                "(no selected vars)".to_string()
-            } else {
-                r.selected_vars.join(" ")
-            };
-            println!("vars: {vars}");
-            println!("rows: {}", r.rows.len());
-            for (i, row) in r.rows.iter().enumerate() {
-                println!("row {i}:");
-                for v in &r.selected_vars {
-                    let Some(id) = row.get(v).copied() else {
-                        continue;
-                    };
-                    println!("  {} = {}", v, describe_entity(db, id));
-                }
-                if r.selected_vars.is_empty() {
-                    for (k, id) in row {
-                        println!("  {} = {}", k, describe_entity(db, *id));
-                    }
-                }
-            }
-            if r.truncated {
-                println!("(truncated by limit)");
-            }
-        }
     }
 }
 

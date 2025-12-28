@@ -42,6 +42,8 @@ htmd.workspace = true
 robotstxt.workspace = true
 
 [features]
-default = ["repl-rustyline", "llm-ollama"]
+default = ["repl-rustyline", "llm-ollama", "llm-openai", "llm-anthropic"]
 repl-rustyline = ["dep:rustyline"]
 llm-ollama = ["dep:reqwest"]
+llm-openai = ["dep:reqwest"]
+llm-anthropic = ["dep:reqwest"]

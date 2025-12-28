@@ -59,7 +59,24 @@ pub struct SchemaIndex {
     /// These come from `AxiMetaConstraint` nodes linked under:
     /// `schema -> axi_schema_has_theory -> axi_theory_has_constraint`.
     pub constraints_by_relation: HashMap<String, Vec<ConstraintDecl>>,
+    /// First-class rewrite rules declared in theories attached to this schema.
+    ///
+    /// These come from `AxiMetaRewriteRule` nodes linked under:
+    /// `schema -> axi_schema_has_theory -> axi_theory_has_rewrite_rule`.
+    pub rewrite_rules_by_theory: HashMap<String, Vec<RewriteRuleDecl>>,
     pub supertypes_of: HashMap<String, HashSet<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RewriteRuleDecl {
+    pub rule_entity: u32,
+    pub theory_name: String,
+    pub name: String,
+    pub orientation: String,
+    pub vars: Vec<String>,
+    pub lhs: String,
+    pub rhs: String,
+    pub index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,10 +217,14 @@ impl MetaPlaneIndex {
 
             // Constraints (from theories attached to this schema).
             let mut constraints_by_relation: HashMap<String, Vec<ConstraintDecl>> = HashMap::new();
+            let mut rewrite_rules_by_theory: HashMap<String, Vec<RewriteRuleDecl>> = HashMap::new();
             for theory_id in db
                 .follow_one(schema_entity, META_REL_SCHEMA_HAS_THEORY)
                 .iter()
             {
+                let theory_name = entity_attr_string(db, theory_id, META_ATTR_NAME)
+                    .unwrap_or_else(|| format!("theory_{theory_id}"));
+
                 for cid in db
                     .follow_one(theory_id, META_REL_THEORY_HAS_CONSTRAINT)
                     .iter()
@@ -264,6 +285,45 @@ impl MetaPlaneIndex {
                         constraints_by_relation.entry(key).or_default().push(decl);
                     }
                 }
+
+                // Rewrite rules (first-class, certificate-addressable semantics).
+                for rid in db
+                    .follow_one(theory_id, META_REL_THEORY_HAS_REWRITE_RULE)
+                    .iter()
+                {
+                    let Some(name) = entity_attr_string(db, rid, META_ATTR_NAME) else {
+                        continue;
+                    };
+                    let orientation = entity_attr_string(db, rid, ATTR_REWRITE_RULE_ORIENTATION)
+                        .unwrap_or_else(|| "forward".to_string());
+                    let vars_text =
+                        entity_attr_string(db, rid, ATTR_REWRITE_RULE_VARS).unwrap_or_default();
+                    let vars = vars_text
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>();
+                    let lhs = entity_attr_string(db, rid, ATTR_REWRITE_RULE_LHS).unwrap_or_default();
+                    let rhs = entity_attr_string(db, rid, ATTR_REWRITE_RULE_RHS).unwrap_or_default();
+                    let index = entity_attr_string(db, rid, ATTR_REWRITE_RULE_INDEX)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(usize::MAX);
+
+                    rewrite_rules_by_theory
+                        .entry(theory_name.clone())
+                        .or_default()
+                        .push(RewriteRuleDecl {
+                            rule_entity: rid,
+                            theory_name: theory_name.clone(),
+                            name,
+                            orientation,
+                            vars,
+                            lhs,
+                            rhs,
+                            index,
+                        });
+                }
             }
 
             let supertypes_of = compute_supertypes_closure(&object_types, &subtype_decls);
@@ -277,6 +337,7 @@ impl MetaPlaneIndex {
                     subtype_decls,
                     relation_decls,
                     constraints_by_relation,
+                    rewrite_rules_by_theory,
                     supertypes_of,
                 },
             );

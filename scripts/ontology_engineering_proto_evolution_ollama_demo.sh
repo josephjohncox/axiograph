@@ -19,7 +19,9 @@ set -euo pipefail
 #
 # Requirements:
 # - `buf` installed (used by `axiograph ingest proto ingest`)
-# - `ollama` installed and running (`ollama serve` or the app)
+# - If `LLM_BACKEND=ollama`: `ollama` installed + running (`ollama serve`), and the model available.
+# - If `LLM_BACKEND=openai`: `OPENAI_API_KEY` set.
+# - If `LLM_BACKEND=anthropic`: `ANTHROPIC_API_KEY` set.
 # - Lean/lake optional (promotion gate will run if available)
 #
 # Optional:
@@ -30,23 +32,17 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/build/ontology_engineering_proto_evolution_ollama_demo"
 PROTO_ROOT="$OUT_DIR/proto_workspace"
 
-MODEL="${MODEL:-nemotron-3-nano}"
+LLM_BACKEND="${LLM_BACKEND:-ollama}"
+LLM_MODEL="${LLM_MODEL:-${MODEL:-nemotron-3-nano}}"
 export OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 
-echo "== Axiograph ontology engineering (Proto evolution, Ollama) demo =="
+echo "== Axiograph ontology engineering (Proto evolution) demo =="
 echo "root:  $ROOT_DIR"
 echo "out:   $OUT_DIR"
-echo "model: $MODEL"
-echo "ollama_host: $OLLAMA_HOST"
-
-if ! command -v ollama >/dev/null 2>&1; then
-  echo "error: ollama not found. Install it from https://ollama.com and retry." >&2
-  exit 1
-fi
-
-if ! ollama list >/dev/null 2>&1; then
-  echo "error: Ollama server not reachable. Start it with: ollama serve" >&2
-  exit 1
+echo "llm_backend: $LLM_BACKEND"
+echo "llm_model:   $LLM_MODEL"
+if [ "$LLM_BACKEND" = "ollama" ]; then
+  echo "ollama_host: $OLLAMA_HOST"
 fi
 
 if ! command -v buf >/dev/null 2>&1; then
@@ -54,9 +50,29 @@ if ! command -v buf >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! ollama show "$MODEL" >/dev/null 2>&1; then
-  echo "-- pulling model: $MODEL"
-  ollama pull "$MODEL"
+DISCOVER_LLM_FLAGS=()
+if [ "$LLM_BACKEND" = "ollama" ]; then
+  if ! command -v ollama >/dev/null 2>&1; then
+    echo "error: ollama not found. Install it from https://ollama.com and retry." >&2
+    exit 1
+  fi
+  if ! ollama list >/dev/null 2>&1; then
+    echo "error: Ollama server not reachable. Start it with: ollama serve" >&2
+    exit 1
+  fi
+  if ! ollama show "$LLM_MODEL" >/dev/null 2>&1; then
+    echo "-- pulling model: $LLM_MODEL"
+    ollama pull "$LLM_MODEL"
+  fi
+  DISCOVER_LLM_FLAGS+=(--llm-ollama --llm-ollama-host "$OLLAMA_HOST" --llm-model "$LLM_MODEL")
+elif [ "$LLM_BACKEND" = "openai" ]; then
+  : "${OPENAI_API_KEY:?error: set OPENAI_API_KEY when LLM_BACKEND=openai}"
+  DISCOVER_LLM_FLAGS+=(--llm-openai --llm-model "$LLM_MODEL")
+elif [ "$LLM_BACKEND" = "anthropic" ]; then
+  : "${ANTHROPIC_API_KEY:?error: set ANTHROPIC_API_KEY when LLM_BACKEND=anthropic}"
+  DISCOVER_LLM_FLAGS+=(--llm-anthropic --llm-model "$LLM_MODEL")
+else
+  echo "warn: unknown LLM_BACKEND=$LLM_BACKEND; running without LLM"
 fi
 
 rm -rf "$OUT_DIR"
@@ -120,9 +136,7 @@ run_tick() {
     --out "$aug" \
     --trace "$aug_trace" \
     --chunks "$chunks" \
-    --llm-ollama \
-    --llm-ollama-host "$OLLAMA_HOST" \
-    --llm-model "$MODEL" \
+    "${DISCOVER_LLM_FLAGS[@]}" \
     --llm-add-proposals \
     --overwrite-schema-hints
 
@@ -135,9 +149,7 @@ run_tick() {
     --schema "$schema" \
     --instance "$instance" \
     --infer-constraints \
-    --llm-ollama \
-    --llm-ollama-host "$OLLAMA_HOST" \
-    --llm-model "$MODEL"
+    "${DISCOVER_LLM_FLAGS[@]}"
 
   echo ""
   echo "-- tick $tick: validate drafted module parses + typechecks (AST-level)"

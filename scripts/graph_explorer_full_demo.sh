@@ -11,14 +11,22 @@ set -euo pipefail
 # Run from repo root:
 #   ./scripts/graph_explorer_full_demo.sh
 #
-# Optional (requires `ollama serve`):
-#   LLM_BACKEND=ollama LLM_MODEL=gemma3 KEEP_RUNNING=1 ./scripts/graph_explorer_full_demo.sh
+# Optional:
+# - Local models via Ollama (requires `ollama serve`):
+#     LLM_BACKEND=ollama LLM_MODEL=gemma3 KEEP_RUNNING=1 ./scripts/graph_explorer_full_demo.sh
+# - Networked (OpenAI):
+#     LLM_BACKEND=openai LLM_MODEL=gpt-4o-mini OPENAI_API_KEY=... KEEP_RUNNING=1 ./scripts/graph_explorer_full_demo.sh
+# - Networked (Anthropic):
+#     LLM_BACKEND=anthropic LLM_MODEL=claude-3-5-sonnet-20241022 ANTHROPIC_API_KEY=... KEEP_RUNNING=1 ./scripts/graph_explorer_full_demo.sh
 #
 # Notes:
-# - By default (when `LLM_BACKEND=ollama`), this script also commits snapshot-scoped
-#   DocChunk embeddings into the PathDB WAL (using `nomic-embed-text`) so the
-#   explorer can demo hybrid retrieval (`semantic_search`).
-#   Disable with: `EMBED_ENABLED=0`.
+# - Deterministic token-hash retrieval is always available (built into PathDB).
+# - Optionally, you can commit snapshot-scoped *model embeddings* into the WAL
+#   for hybrid retrieval (`semantic_search`), via `axiograph db accept pathdb-embed`.
+#   Configure with:
+#     - `EMBED_ENABLED=0` to disable
+#     - `EMBED_BACKEND=ollama|openai` (defaults: ollama when `LLM_BACKEND=ollama`, openai when `LLM_BACKEND=openai`)
+#     - `EMBED_MODEL=...` (defaults: `nomic-embed-text` for ollama, `text-embedding-3-small` for openai)
 # - By default, this starts the server on an ephemeral port and prints a `/viz` URL.
 # - The explorer UI includes:
 #     - plane toggles (accepted/evidence/data),
@@ -301,17 +309,35 @@ echo "-- D) Commit overlays into the PathDB WAL (one per accepted tick)"
 "$AXIOGRAPH" db accept pathdb-commit --dir "$PLANE_DIR" --accepted-snapshot "$SNAP2" --chunks "$CHUNKS" --message "demo: tick2 (replay overlays on new base)" >/dev/null
 
 EMBED_ENABLED="${EMBED_ENABLED:-1}"
-EMBED_OLLAMA_MODEL="${EMBED_OLLAMA_MODEL:-nomic-embed-text}"
-if [ "$EMBED_ENABLED" = "1" ] && [ "$LLM_BACKEND" = "ollama" ]; then
+EMBED_BACKEND="${EMBED_BACKEND:-}"
+if [ -z "$EMBED_BACKEND" ]; then
+  if [ "$LLM_BACKEND" = "ollama" ] || [ "$LLM_BACKEND" = "openai" ]; then
+    EMBED_BACKEND="$LLM_BACKEND"
+  fi
+fi
+
+EMBED_MODEL="${EMBED_MODEL:-}"
+if [ -z "$EMBED_MODEL" ]; then
+  if [ "$EMBED_BACKEND" = "ollama" ]; then
+    EMBED_MODEL="${EMBED_OLLAMA_MODEL:-nomic-embed-text}"
+  elif [ "$EMBED_BACKEND" = "openai" ]; then
+    EMBED_MODEL="${EMBED_OPENAI_MODEL:-text-embedding-3-small}"
+  fi
+fi
+
+if [ "$EMBED_ENABLED" = "1" ] && [ -n "${EMBED_BACKEND:-}" ]; then
   echo ""
-  echo "-- D2) Compute snapshot-scoped DocChunk embeddings (PathDB WAL) (model=$EMBED_OLLAMA_MODEL)"
-  echo "note: make sure the embedding model is available: ollama pull $EMBED_OLLAMA_MODEL"
+  echo "-- D2) Compute snapshot-scoped DocChunk embeddings (PathDB WAL) (backend=$EMBED_BACKEND model=$EMBED_MODEL)"
+  if [ "$EMBED_BACKEND" = "ollama" ]; then
+    echo "note: make sure the embedding model is available: ollama pull $EMBED_MODEL"
+  fi
   set +e
   "$AXIOGRAPH" db accept pathdb-embed \
       --dir "$PLANE_DIR" \
       --snapshot head \
       --target docchunks \
-      --ollama-model "$EMBED_OLLAMA_MODEL" \
+      --embed-backend "$EMBED_BACKEND" \
+      --embed-model "$EMBED_MODEL" \
       --message "demo: snapshot-scoped embeddings (docchunks)" \
       >"$OUT_DIR/embed_snapshot_id.txt" 2>"$OUT_DIR/embed.log"
   if [ $? -ne 0 ]; then
@@ -339,6 +365,18 @@ if [ "$LLM_BACKEND" = "ollama" ]; then
   fi
   echo "note: requires: ollama serve  (and: ollama pull $LLM_MODEL)"
   LLM_FLAGS+=(--llm-ollama --llm-model "$LLM_MODEL")
+elif [ "$LLM_BACKEND" = "openai" ]; then
+  if [ -z "$LLM_MODEL" ]; then
+    echo "error: set LLM_MODEL when LLM_BACKEND=openai (example: gpt-4o-mini)"
+    exit 2
+  fi
+  LLM_FLAGS+=(--llm-openai --llm-model "$LLM_MODEL")
+elif [ "$LLM_BACKEND" = "anthropic" ]; then
+  if [ -z "$LLM_MODEL" ]; then
+    echo "error: set LLM_MODEL when LLM_BACKEND=anthropic (example: claude-3-5-sonnet-20241022)"
+    exit 2
+  fi
+  LLM_FLAGS+=(--llm-anthropic --llm-model "$LLM_MODEL")
 else
   LLM_FLAGS+=(--llm-mock)
 fi

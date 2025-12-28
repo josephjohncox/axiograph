@@ -41,7 +41,9 @@ use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axiograph_dsl::schema_v1::{parse_path_expr_v3, PathExprV3};
-use axiograph_pathdb::axi_meta::{ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, REL_AXI_FACT_IN_CONTEXT};
+use axiograph_pathdb::axi_meta::{
+    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, REL_AXI_FACT_IN_CONTEXT,
+};
 use axiograph_pathdb::axi_meta::{
     ATTR_REWRITE_RULE_LHS, ATTR_REWRITE_RULE_ORIENTATION, ATTR_REWRITE_RULE_RHS,
     ATTR_REWRITE_RULE_VARS, META_TYPE_REWRITE_RULE,
@@ -51,7 +53,10 @@ use axiograph_pathdb::certificate::{
     CertificatePayloadV2, CertificateV2, FixedPointProbability, QueryAtomV1, QueryAtomWitnessV1,
     QueryBindingV1, QueryRegexV1, QueryResultProofV1, QueryResultProofV2, QueryRowV1, QueryRowV2,
     QueryTermV1, QueryV1, QueryV2, ReachabilityProofV2,
+    QueryAtomV3, QueryAtomWitnessV3, QueryBindingV3, QueryRegexV3, QueryResultProofV3, QueryRowV3,
+    QueryTermV3, QueryV3,
 };
+use axiograph_pathdb::witness;
 
 /// A context/world selector for query scoping.
 ///
@@ -528,6 +533,14 @@ impl TypecheckedLoweredQuery {
     ) -> Result<CertificateV2> {
         self.lowered.certify(db, meta)
     }
+
+    fn certify_v3(
+        self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&MetaPlaneIndex>,
+    ) -> Result<CertificateV2> {
+        self.lowered.certify_v3(db, meta)
+    }
 }
 
 /// A typechecked AxQL query expression: either a single conjunctive query, or a
@@ -995,6 +1008,32 @@ pub fn certify_axql_query_with_meta(
     TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?.certify(db, meta, query.limit)
 }
 
+/// Emit a `query_result_v3` certificate (name-based, `.axi`-anchored) with an
+/// optional precomputed meta-plane index.
+///
+/// This format is intended to make certificates verifiable against canonical
+/// `.axi` inputs without requiring a `PathDBExportV1` snapshot export as an
+/// anchor.
+pub fn certify_axql_query_v3_with_meta(
+    db: &axiograph_pathdb::PathDB,
+    query: &AxqlQuery,
+    meta: Option<&MetaPlaneIndex>,
+) -> Result<CertificateV2> {
+    if query.contexts.len() > 1 {
+        return Err(anyhow!(
+            "cannot certify multi-context scoping yet; use a single `in <context>`"
+        ));
+    }
+
+    let expr = TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?;
+    match expr {
+        TypecheckedAxqlQueryExpr::Conjunction(q) => q.certify_v3(db, meta),
+        TypecheckedAxqlQueryExpr::Disjunction(disjuncts) => {
+            certify_disjunctive_query_v3(db, disjuncts, meta, query.limit)
+        }
+    }
+}
+
 fn certify_disjunctive_query(
     db: &axiograph_pathdb::PathDB,
     disjuncts: Vec<TypecheckedLoweredQuery>,
@@ -1092,6 +1131,105 @@ fn certify_disjunctive_query(
         query,
         rows,
         truncated,
+    }))
+}
+
+fn certify_disjunctive_query_v3(
+    db: &axiograph_pathdb::PathDB,
+    disjuncts: Vec<TypecheckedLoweredQuery>,
+    meta: Option<&MetaPlaneIndex>,
+    limit: usize,
+) -> Result<CertificateV2> {
+    if disjuncts.is_empty() {
+        return Err(anyhow!("AxQL query must have at least one disjunct"));
+    }
+
+    // For a UCQ (union of conjunctive queries), the natural “implicit select”
+    // semantics is: return only variables common to all branches.
+    let mut select_vars = disjuncts
+        .first()
+        .map(|d| d.lowered.select_vars.clone())
+        .unwrap_or_default();
+    for d in &disjuncts[1..] {
+        let set: HashSet<&str> = d.lowered.select_vars.iter().map(|s| s.as_str()).collect();
+        select_vars.retain(|v| set.contains(v.as_str()));
+    }
+
+    let mut query_disjuncts: Vec<Vec<QueryAtomV3>> = Vec::with_capacity(disjuncts.len());
+    let mut max_hops: Option<u32> = None;
+    let mut min_confidence_fp: Option<FixedPointProbability> = None;
+    for (i, d) in disjuncts.iter().enumerate() {
+        let q = d.lowered.to_query_ir_v3_disjunct(db)?;
+        if i == 0 {
+            max_hops = d.lowered.max_hops;
+            min_confidence_fp = d
+                .lowered
+                .min_confidence
+                .map(fixed_prob_from_confidence);
+        } else {
+            if d.lowered.max_hops != max_hops {
+                return Err(anyhow!(
+                    "internal error: disjunct max_hops mismatch (expected {max_hops:?}, got {:?})",
+                    d.lowered.max_hops
+                ));
+            }
+            if d.lowered.min_confidence.map(fixed_prob_from_confidence) != min_confidence_fp {
+                return Err(anyhow!(
+                    "internal error: disjunct min_confidence mismatch (expected {min_confidence_fp:?}, got {:?})",
+                    d.lowered.min_confidence.map(fixed_prob_from_confidence)
+                ));
+            }
+        }
+        query_disjuncts.push(q);
+    }
+
+    let query = QueryV3 {
+        select_vars,
+        disjuncts: query_disjuncts,
+        max_hops,
+        min_confidence_fp,
+    };
+
+    let mut rows: Vec<QueryRowV3> = Vec::new();
+    let mut truncated = rows.len() >= limit;
+
+    for (i, mut d) in disjuncts.into_iter().enumerate() {
+        if rows.len() >= limit {
+            truncated = true;
+            break;
+        }
+
+        let remaining = limit - rows.len();
+        d.lowered.limit = remaining;
+
+        let cert = d.lowered.certify_v3(db, meta)?;
+        let proof = match cert.payload {
+            CertificatePayloadV2::QueryResultV3 { proof } => proof,
+            other => {
+                return Err(anyhow!(
+                    "internal error: expected query_result_v3 from conjunctive certifier, got {other:?}"
+                ))
+            }
+        };
+
+        for row in proof.rows {
+            if rows.len() >= limit {
+                truncated = true;
+                break;
+            }
+            rows.push(QueryRowV3 {
+                disjunct: u32::try_from(i).unwrap_or(u32::MAX),
+                bindings: row.bindings,
+                witnesses: row.witnesses,
+            });
+        }
+    }
+
+    Ok(CertificateV2::query_result_v3(QueryResultProofV3 {
+        query,
+        rows,
+        truncated,
+        elaboration_rewrites: Vec::new(),
     }))
 }
 
@@ -3148,6 +3286,73 @@ impl LoweredQuery {
         Ok(CertificateV2::query_result_v1(proof))
     }
 
+    fn certify_v3(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&MetaPlaneIndex>,
+    ) -> Result<CertificateV2> {
+        let mut rpq = RpqContext::new(db, &self.rpqs, self.max_hops, self.min_confidence)?;
+
+        let disjunct_atoms = self.to_query_ir_v3_disjunct(db)?;
+        let query = QueryV3 {
+            select_vars: self.select_vars.clone(),
+            disjuncts: vec![disjunct_atoms],
+            max_hops: self.max_hops,
+            min_confidence_fp: self.min_confidence.map(fixed_prob_from_confidence),
+        };
+
+        let mut rows: Vec<QueryRowV3> = Vec::new();
+
+        let truncated = if self.vars.is_empty() {
+            // Boolean query: either 0 or 1 row, with no bindings.
+            if let Some(witnesses) = self.witnesses_for_assignment_v3(db, &[], &mut rpq)? {
+                rows.push(QueryRowV3 {
+                    disjunct: 0,
+                    bindings: Vec::new(),
+                    witnesses,
+                });
+            }
+            false
+        } else {
+            let (assignments, truncated) = self.execute_assignments(db, &mut rpq, meta)?;
+            for assignment in assignments {
+                let bindings = self
+                    .vars
+                    .iter()
+                    .zip(assignment.iter().copied())
+                    .map(|(var, entity)| {
+                        Ok(QueryBindingV3 {
+                            var: var.clone(),
+                            entity: witness::stable_entity_id_v1(db, entity)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                let Some(witnesses) =
+                    self.witnesses_for_assignment_v3(db, &assignment, &mut rpq)?
+                else {
+                    return Err(anyhow!(
+                        "internal error: assignment from search does not satisfy constraints"
+                    ));
+                };
+                rows.push(QueryRowV3 {
+                    disjunct: 0,
+                    bindings,
+                    witnesses,
+                });
+            }
+            truncated
+        };
+
+        let proof = QueryResultProofV3 {
+            query,
+            rows,
+            truncated,
+            elaboration_rewrites: Vec::new(),
+        };
+        Ok(CertificateV2::query_result_v3(proof))
+    }
+
     fn to_query_ir(&self, db: &axiograph_pathdb::PathDB) -> Result<QueryV1> {
         let atoms = self
             .atoms
@@ -3238,6 +3443,91 @@ impl LoweredQuery {
                 name: self.vars[*v].clone(),
             },
             LoweredTerm::Const(entity) => QueryTermV1::Const { entity: *entity },
+        }
+    }
+
+    fn to_query_ir_v3_disjunct(&self, db: &axiograph_pathdb::PathDB) -> Result<Vec<QueryAtomV3>> {
+        self.atoms
+            .iter()
+            .map(|a| self.atom_to_query_ir_v3(db, a))
+            .collect::<Result<Vec<_>>>()
+    }
+
+    fn term_to_query_ir_v3(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        term: &LoweredTerm,
+    ) -> Result<QueryTermV3> {
+        Ok(match term {
+            LoweredTerm::Var(v) => QueryTermV3::Var {
+                name: self.vars.get(*v).cloned().unwrap_or_else(|| format!("?v{v}")),
+            },
+            LoweredTerm::Const(entity) => QueryTermV3::Const {
+                entity: witness::stable_entity_id_v1(db, *entity)?,
+            },
+        })
+    }
+
+    fn regex_to_query_ir_v3(&self, regex: &AxqlRegex) -> QueryRegexV3 {
+        match regex {
+            AxqlRegex::Epsilon => QueryRegexV3::Epsilon,
+            AxqlRegex::Rel(r) => QueryRegexV3::Rel { rel: r.clone() },
+            AxqlRegex::Seq(parts) => QueryRegexV3::Seq {
+                parts: parts.iter().map(|p| self.regex_to_query_ir_v3(p)).collect(),
+            },
+            AxqlRegex::Alt(parts) => QueryRegexV3::Alt {
+                parts: parts.iter().map(|p| self.regex_to_query_ir_v3(p)).collect(),
+            },
+            AxqlRegex::Star(inner) => QueryRegexV3::Star {
+                inner: Box::new(self.regex_to_query_ir_v3(inner)),
+            },
+            AxqlRegex::Plus(inner) => QueryRegexV3::Plus {
+                inner: Box::new(self.regex_to_query_ir_v3(inner)),
+            },
+            AxqlRegex::Opt(inner) => QueryRegexV3::Opt {
+                inner: Box::new(self.regex_to_query_ir_v3(inner)),
+            },
+        }
+    }
+
+    fn atom_to_query_ir_v3(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        atom: &LoweredAtom,
+    ) -> Result<QueryAtomV3> {
+        match atom {
+            LoweredAtom::Type { term, type_name } => Ok(QueryAtomV3::Type {
+                term: self.term_to_query_ir_v3(db, term)?,
+                type_name: type_name.clone(),
+            }),
+            LoweredAtom::AttrEq { term, key, value } => Ok(QueryAtomV3::AttrEq {
+                term: self.term_to_query_ir_v3(db, term)?,
+                key: key.clone(),
+                value: value.clone(),
+            }),
+            LoweredAtom::Edge { left, rel, right } => Ok(QueryAtomV3::Path {
+                left: self.term_to_query_ir_v3(db, left)?,
+                regex: QueryRegexV3::Rel { rel: rel.clone() },
+                right: self.term_to_query_ir_v3(db, right)?,
+            }),
+            LoweredAtom::Rpq {
+                left,
+                rpq_id,
+                right,
+            } => {
+                let regex = self
+                    .rpqs
+                    .get(*rpq_id)
+                    .ok_or_else(|| anyhow!("invalid rpq_id {rpq_id}"))?;
+                Ok(QueryAtomV3::Path {
+                    left: self.term_to_query_ir_v3(db, left)?,
+                    regex: self.regex_to_query_ir_v3(regex),
+                    right: self.term_to_query_ir_v3(db, right)?,
+                })
+            }
+            other => Err(anyhow!(
+                "cannot certify atom {other:?} in query_result_v3 (not in certified core)"
+            )),
         }
     }
 
@@ -3617,6 +3907,108 @@ impl LoweredQuery {
                     .into_inner_in_db(db)
                     .map_err(|e| anyhow!(e))?;
                     QueryAtomWitnessV1::Path { proof }
+                }
+            };
+
+            witnesses.push(wit);
+        }
+
+        Ok(Some(witnesses))
+    }
+
+    fn witnesses_for_assignment_v3(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        assignment: &[u32],
+        rpq: &mut RpqContext,
+    ) -> Result<Option<Vec<QueryAtomWitnessV3>>> {
+        let mut witnesses: Vec<QueryAtomWitnessV3> = Vec::with_capacity(self.atoms.len());
+
+        for atom in &self.atoms {
+            let wit = match atom {
+                LoweredAtom::Type { term, type_name } => {
+                    let entity = resolve_term_assigned(term, assignment);
+                    let expected = db.interner.id_of(type_name).ok_or_else(|| {
+                        anyhow!("unknown type `{type_name}` (missing from interner)")
+                    })?;
+                    let actual = db.entities.get_type(entity).ok_or_else(|| {
+                        anyhow!("entity {entity} is missing a type (expected `{type_name}`)")
+                    })?;
+                    if actual != expected {
+                        return Ok(None);
+                    }
+                    QueryAtomWitnessV3::Type {
+                        entity: witness::stable_entity_id_v1(db, entity)?,
+                        type_name: type_name.clone(),
+                    }
+                }
+                LoweredAtom::AttrEq { term, key, value } => {
+                    let entity = resolve_term_assigned(term, assignment);
+                    let key_id = db.interner.id_of(key).ok_or_else(|| {
+                        anyhow!("unknown attribute key `{key}` (missing from interner)")
+                    })?;
+                    let value_id = db.interner.id_of(value).ok_or_else(|| {
+                        anyhow!("unknown attribute value `{value}` (missing from interner)")
+                    })?;
+                    if db.entities.get_attr(entity, key_id) != Some(value_id) {
+                        return Ok(None);
+                    }
+                    QueryAtomWitnessV3::AttrEq {
+                        entity: witness::stable_entity_id_v1(db, entity)?,
+                        key: key.clone(),
+                        value: value.clone(),
+                    }
+                }
+                LoweredAtom::AttrContains { .. } => {
+                    return Err(anyhow!(
+                        "cannot certify `contains(...)` atoms (approximate querying is not in the certified core)"
+                    ))
+                }
+                LoweredAtom::AttrFts { .. } => {
+                    return Err(anyhow!(
+                        "cannot certify `fts(...)` atoms (approximate querying is not in the certified core)"
+                    ))
+                }
+                LoweredAtom::AttrFuzzy { .. } => {
+                    return Err(anyhow!(
+                        "cannot certify `fuzzy(...)` atoms (approximate querying is not in the certified core)"
+                    ))
+                }
+                LoweredAtom::Edge { left, rel, right } => {
+                    let src = resolve_term_assigned(left, assignment);
+                    let dst = resolve_term_assigned(right, assignment);
+                    let rel_type_id = db.interner.id_of(rel).ok_or_else(|| {
+                        anyhow!("unknown relation `{rel}` (missing from interner)")
+                    })?;
+                    let relation_id = match self.min_confidence {
+                        None => db.relations.edge_relation_id(src, rel_type_id, dst),
+                        Some(min) => db
+                            .relations
+                            .edge_relation_id_with_min_confidence(src, rel_type_id, dst, min),
+                    };
+                    let Some(relation_id) = relation_id else {
+                        return Ok(None);
+                    };
+                    let proof =
+                        witness::reachability_proof_v3_from_relation_ids(db, src, &[relation_id])?
+                            .into_inner_in_db(db)
+                            .map_err(|e| anyhow!(e))?;
+                    QueryAtomWitnessV3::Path { proof }
+                }
+                LoweredAtom::Rpq {
+                    left,
+                    rpq_id,
+                    right,
+                } => {
+                    let src = resolve_term_assigned(left, assignment);
+                    let dst = resolve_term_assigned(right, assignment);
+                    let Some(rel_ids) = rpq.witness_relation_ids(db, *rpq_id, src, dst)? else {
+                        return Ok(None);
+                    };
+                    let proof = witness::reachability_proof_v3_from_relation_ids(db, src, &rel_ids)?
+                        .into_inner_in_db(db)
+                        .map_err(|e| anyhow!(e))?;
+                    QueryAtomWitnessV3::Path { proof }
                 }
             };
 

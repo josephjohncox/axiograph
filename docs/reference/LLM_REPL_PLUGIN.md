@@ -9,7 +9,9 @@ The Axiograph REPL (and some CLI discovery workflows) support an optional
 There are two related protocols:
 
 - `axiograph_llm_plugin_v2`: translate questions → structured query (`query_ir_v1` preferred; AxQL fallback) and (optionally) summarize results.
+  - Used by REPL `llm query ...` and some CLI workflows (e.g. discovery augmentation).
 - `axiograph_llm_plugin_v3`: a **tool-loop step** protocol for agentic workflows (LLM calls tools; Rust executes; LLM answers).
+  - Used by REPL `llm ask ...` / `llm answer ...` (and `llm agent ...` for verbose debugging).
 
 1. an LLM proposes a **structured** query (AxQL)
 2. Rust executes the proposed query against the loaded snapshot
@@ -56,11 +58,14 @@ The REPL calls Ollama's native HTTP API at `OLLAMA_HOST` (default:
 llm status
 llm use mock
 llm use ollama [model]
+llm use openai [model]
+llm use anthropic [model]
 llm use command <exe> [args...]
 llm model <model_name>
-llm ask <question...>
-llm answer <question...>
-llm agent <question...>
+llm query <question...>
+llm ask [--steps N] [--rows N] <question...>
+llm answer [--steps N] [--rows N] <question...>
+llm agent [--steps N] [--rows N] <question...>
 ```
 
 See `docs/tutorials/REPL.md` for a walkthrough.
@@ -200,7 +205,7 @@ If `error` is present, the REPL treats the request as failed.
 
 ## Tool loop (v3)
 
-The REPL’s `llm agent ...` command uses a tool loop:
+The REPL’s `llm ask ...` / `llm answer ...` (and `llm agent ...` for verbose output) use a tool loop:
 
 1. the model proposes a tool call (e.g. `axql_run`, `fts_chunks`, `viz_render`)
 2. Rust executes the tool against the loaded snapshot
@@ -251,12 +256,27 @@ Note: Axiograph may also include **backend-prefetched** retrieval steps in the `
 }
 ```
 
+### Response: tool calls (batched)
+
+To reduce round-trips, a plugin/model may also return a batch of tool calls to
+execute sequentially:
+
+```json
+{
+  "tool_calls": [
+    { "name": "lookup_relation", "args": { "relation": "Parent" } },
+    { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where": [ ... ] }, "limit": 25 } }
+  ]
+}
+```
+
 ### Response: final answer
 
 ```json
 {
   "final_answer": {
     "answer": "…",
+    "public_rationale": "…",
     "citations": ["DocChunk#128", "doc_proto_api_0"],
     "queries": ["select ..."],
     "notes": ["..."]

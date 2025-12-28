@@ -18,6 +18,7 @@ use anyhow::Result;
 
 use axiograph_ingest_docs::Chunk;
 use axiograph_pathdb::axi_meta::META_ATTR_NAME;
+use axiograph_pathdb::axi_meta::META_TYPE_MODULE;
 use axiograph_pathdb::PathDB;
 
 #[derive(Debug, Default, Clone)]
@@ -152,6 +153,42 @@ pub fn import_chunks_into_pathdb(db: &mut PathDB, chunks: &[Chunk]) -> Result<Im
     }
 
     Ok(summary)
+}
+
+/// Build a DocChunk that embeds the canonical `.axi` module text as untrusted evidence.
+///
+/// Motivation:
+/// - "Grounding always has evidence": even when the only available source is the
+///   canonical `.axi` itself, the snapshot should contain at least one DocChunk
+///   so the LLM/UI can cite and open it.
+/// - We link the chunk to the meta-plane `AxiMetaModule` node (when present) so
+///   the viz UI can navigate between "meaning plane" and "evidence plane".
+pub fn chunk_from_axi_module_text(module_name: &str, module_digest: &str, text: &str) -> Chunk {
+    let module_name = module_name.trim();
+    let module_digest = module_digest.trim();
+
+    // Keep identifiers stable and reasonably URL-friendly.
+    let module_id = crate::schema_discovery::sanitize_axi_ident(module_name);
+    let digest_id = module_digest.replace(':', "_");
+
+    let mut metadata: HashMap<String, String> = HashMap::new();
+    metadata.insert("kind".to_string(), "axi_module".to_string());
+    metadata.insert("axi_module".to_string(), module_name.to_string());
+    if !module_digest.is_empty() {
+        metadata.insert("axi_digest_v1".to_string(), module_digest.to_string());
+    }
+    metadata.insert("about_type".to_string(), META_TYPE_MODULE.to_string());
+    metadata.insert("about_name".to_string(), module_name.to_string());
+
+    Chunk {
+        chunk_id: format!("axi_module_{module_id}_{digest_id}"),
+        document_id: format!("axi_module:{module_id}"),
+        page: None,
+        span_id: "axi_module_text".to_string(),
+        text: text.to_string(),
+        bbox: None,
+        metadata,
+    }
 }
 
 fn build_chunk_search_text(chunk: &Chunk) -> String {

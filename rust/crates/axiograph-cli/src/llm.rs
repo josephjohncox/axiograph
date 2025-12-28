@@ -16,7 +16,6 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "llm-ollama")]
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
@@ -31,8 +30,17 @@ use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::PathDB;
 use crate::query_ir::QueryIrV1;
 
+// Common attribute keys (shared with viz overlays).
+const ATTR_AXI_RELATION: &str = "axi_relation";
+const ATTR_OVERLAY_RELATION_SIGNATURE: &str = "axi_overlay_relation_signature";
+const ATTR_OVERLAY_CONSTRAINTS: &str = "axi_overlay_constraints";
+
 pub(crate) const AXIOGRAPH_LLM_TIMEOUT_SECS_ENV: &str = "AXIOGRAPH_LLM_TIMEOUT_SECS";
 pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS";
+pub(crate) const AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV: &str = "AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS";
+pub(crate) const AXIOGRAPH_LLM_REASONING_EFFORT_ENV: &str = "AXIOGRAPH_LLM_REASONING_EFFORT";
+pub(crate) const AXIOGRAPH_LLM_CHAT_MAX_MESSAGES_ENV: &str = "AXIOGRAPH_LLM_CHAT_MAX_MESSAGES";
+pub(crate) const AXIOGRAPH_LLM_JSON_REPAIR_ENV: &str = "AXIOGRAPH_LLM_JSON_REPAIR";
 pub(crate) const AXIOGRAPH_LLM_PROMPT_MAX_TRANSCRIPT_ITEMS_ENV: &str =
     "AXIOGRAPH_LLM_PROMPT_MAX_TRANSCRIPT_ITEMS";
 pub(crate) const AXIOGRAPH_LLM_PROMPT_MAX_JSON_STRING_CHARS_ENV: &str =
@@ -50,10 +58,26 @@ pub(crate) const AXIOGRAPH_LLM_PREFETCH_LOOKUP_RELATIONS_ENV: &str =
     "AXIOGRAPH_LLM_PREFETCH_LOOKUP_RELATIONS";
 pub(crate) const AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES_ENV: &str = "AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES";
 
+// External LLM provider env vars (recommended configuration path).
+pub(crate) const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
+pub(crate) const OPENAI_BASE_URL_ENV: &str = "OPENAI_BASE_URL";
+pub(crate) const OPENAI_MODEL_ENV: &str = "OPENAI_MODEL";
+pub(crate) const ANTHROPIC_API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+pub(crate) const ANTHROPIC_BASE_URL_ENV: &str = "ANTHROPIC_BASE_URL";
+pub(crate) const ANTHROPIC_MODEL_ENV: &str = "ANTHROPIC_MODEL";
+pub(crate) const ANTHROPIC_VERSION_ENV: &str = "ANTHROPIC_VERSION";
+
 // Default chosen to keep REPL and discovery workflows responsive while allowing
 // local models to take a bit of time.
 const DEFAULT_LLM_TIMEOUT_SECS: u64 = 120;
-const DEFAULT_LLM_MAX_STEPS: usize = 6;
+// Default is deliberately a little generous: the tool-loop is the primary UX
+// path for `llm ask` / `llm answer`, and multi-step workflows (lookup → query
+// → propose) are common.
+//
+// Note: this bound is on *tool calls executed*, not model turns.
+const DEFAULT_LLM_MAX_STEPS: usize = 12;
+const DEFAULT_LLM_MAX_OUTPUT_TOKENS: u32 = 1200;
+const DEFAULT_LLM_CHAT_MAX_MESSAGES: usize = 24;
 const DEFAULT_LLM_PROMPT_MAX_TRANSCRIPT_ITEMS: usize = 12;
 const DEFAULT_LLM_PROMPT_MAX_JSON_STRING_CHARS: usize = 520;
 const DEFAULT_LLM_PROMPT_MAX_JSON_ARRAY_LEN: usize = 64;
@@ -63,6 +87,10 @@ const DEFAULT_LLM_PREFETCH_DESCRIBE_ENTITIES: usize = 2;
 const DEFAULT_LLM_PREFETCH_DOCCHUNKS: usize = 1;
 const DEFAULT_LLM_PREFETCH_LOOKUP_RELATIONS: usize = 1;
 const DEFAULT_LLM_PREFETCH_LOOKUP_TYPES: usize = 1;
+
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
+const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Resolve the default maximum number of LLM tool-loop steps.
 ///
@@ -88,6 +116,88 @@ pub(crate) fn llm_default_max_steps() -> Result<usize> {
             "failed to read {AXIOGRAPH_LLM_MAX_STEPS_ENV}: {e}"
         )),
     }
+}
+
+pub(crate) fn llm_chat_max_messages() -> Result<usize> {
+    llm_env_usize(
+        AXIOGRAPH_LLM_CHAT_MAX_MESSAGES_ENV,
+        DEFAULT_LLM_CHAT_MAX_MESSAGES,
+        1,
+        200,
+    )
+}
+
+pub(crate) fn llm_max_output_tokens() -> Result<u32> {
+    match std::env::var(AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV) {
+        Ok(v) => {
+            let v = v.trim();
+            if v.is_empty() {
+                return Ok(DEFAULT_LLM_MAX_OUTPUT_TOKENS);
+            }
+            let parsed = v.parse::<u32>().map_err(|_| {
+                anyhow!(
+                    "invalid {AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV}={v:?} (expected integer tokens, e.g. 1200)"
+                )
+            })?;
+            if parsed == 0 {
+                Ok(DEFAULT_LLM_MAX_OUTPUT_TOKENS)
+            } else {
+                Ok(parsed.min(32_000))
+            }
+        }
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_LLM_MAX_OUTPUT_TOKENS),
+        Err(e) => Err(anyhow!(
+            "failed to read {AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV}: {e}"
+        )),
+    }
+}
+
+pub(crate) fn llm_reasoning_effort() -> Result<Option<String>> {
+    match std::env::var(AXIOGRAPH_LLM_REASONING_EFFORT_ENV) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            if v.is_empty() || v == "0" || v == "false" || v == "none" {
+                return Ok(None);
+            }
+            match v.as_str() {
+                "low" | "medium" | "high" => Ok(Some(v)),
+                _ => Err(anyhow!(
+                    "invalid {AXIOGRAPH_LLM_REASONING_EFFORT_ENV}={v:?} (expected low|medium|high|none)"
+                )),
+            }
+        }
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(e) => Err(anyhow!(
+            "failed to read {AXIOGRAPH_LLM_REASONING_EFFORT_ENV}: {e}"
+        )),
+    }
+}
+
+fn llm_json_repair_enabled() -> bool {
+    match std::env::var(AXIOGRAPH_LLM_JSON_REPAIR_ENV) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !(v.is_empty() || v == "0" || v == "false" || v == "no" || v == "off")
+        }
+        Err(std::env::VarError::NotPresent) => true,
+        Err(_) => true,
+    }
+}
+
+fn render_json_repair_prompt(user_prompt: &str, invalid_response: &str) -> String {
+    let preview = truncate_preview(invalid_response, 2_000);
+    format!(
+        r#"{user_prompt}
+
+---
+Your previous response was NOT valid JSON and could not be parsed.
+Return ONLY a valid JSON object matching the required tool-loop schema.
+Do NOT include markdown or any non-JSON text.
+
+Invalid response (truncated):
+{preview}
+"#
+    )
 }
 
 fn llm_env_usize(name: &str, default: usize, min: usize, max: usize) -> Result<usize> {
@@ -288,6 +398,25 @@ pub enum LlmBackend {
     Ollama {
         host: String,
     },
+    /// OpenAI API (networked).
+    ///
+    /// Configuration is read from env vars (recommended):
+    /// - `OPENAI_API_KEY` (required)
+    /// - `OPENAI_BASE_URL` (optional; default `https://api.openai.com`)
+    #[cfg(feature = "llm-openai")]
+    OpenAI {
+        base_url: String,
+    },
+    /// Anthropic API (networked).
+    ///
+    /// Configuration is read from env vars (recommended):
+    /// - `ANTHROPIC_API_KEY` (required)
+    /// - `ANTHROPIC_BASE_URL` (optional; default `https://api.anthropic.com`)
+    /// - `ANTHROPIC_VERSION` (optional; default `2023-06-01`)
+    #[cfg(feature = "llm-anthropic")]
+    Anthropic {
+        base_url: String,
+    },
     /// External command plugin that speaks `axiograph_llm_plugin_v1` over
     /// stdin/stdout JSON.
     Command {
@@ -321,6 +450,10 @@ impl LlmState {
             LlmBackend::Mock => "mock".to_string(),
             #[cfg(feature = "llm-ollama")]
             LlmBackend::Ollama { host } => format!("ollama({host})"),
+            #[cfg(feature = "llm-openai")]
+            LlmBackend::OpenAI { base_url } => format!("openai({base_url})"),
+            #[cfg(feature = "llm-anthropic")]
+            LlmBackend::Anthropic { base_url } => format!("anthropic({base_url})"),
             LlmBackend::Command { program, .. } => format!("command({})", program.display()),
         };
         let model = self.model.as_deref().unwrap_or("(none)");
@@ -344,6 +477,24 @@ impl LlmState {
                     ));
                 };
                 ollama_generate_query(host, model, db, question)
+            }
+            #[cfg(feature = "llm-openai")]
+            LlmBackend::OpenAI { base_url } => {
+                let Some(model) = self.model.as_deref() else {
+                    return Err(anyhow!(
+                        "no model selected (use `llm model <openai_model>` or set {OPENAI_MODEL_ENV})"
+                    ));
+                };
+                openai_generate_query(base_url, model, db, question)
+            }
+            #[cfg(feature = "llm-anthropic")]
+            LlmBackend::Anthropic { base_url } => {
+                let Some(model) = self.model.as_deref() else {
+                    return Err(anyhow!(
+                        "no model selected (use `llm model <anthropic_model>` or set {ANTHROPIC_MODEL_ENV})"
+                    ));
+                };
+                anthropic_generate_query(base_url, model, db, question)
             }
             LlmBackend::Command { program, args } => {
                 let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
@@ -414,6 +565,28 @@ impl LlmState {
                     host, model, db, question, query, result,
                 )?))
             }
+            #[cfg(feature = "llm-openai")]
+            LlmBackend::OpenAI { base_url } => {
+                let Some(model) = self.model.as_deref() else {
+                    return Ok(Some(format!(
+                        "no model selected (use `llm model <openai_model>` or set {OPENAI_MODEL_ENV})"
+                    )));
+                };
+                Ok(Some(openai_summarize_answer(
+                    base_url, model, db, question, query, result,
+                )?))
+            }
+            #[cfg(feature = "llm-anthropic")]
+            LlmBackend::Anthropic { base_url } => {
+                let Some(model) = self.model.as_deref() else {
+                    return Ok(Some(format!(
+                        "no model selected (use `llm model <anthropic_model>` or set {ANTHROPIC_MODEL_ENV})"
+                    )));
+                };
+                Ok(Some(anthropic_summarize_answer(
+                    base_url, model, db, question, query, result,
+                )?))
+            }
             _ => Ok(None),
         }
     }
@@ -421,7 +594,17 @@ impl LlmState {
 
 fn normalize_generated_query(q: GeneratedQuery) -> GeneratedQuery {
     match q {
-        GeneratedQuery::Axql(text) => GeneratedQuery::Axql(normalize_axql_candidate(&text)),
+        GeneratedQuery::Axql(text) => {
+            let normalized = normalize_axql_candidate(&text);
+            // Keep the LLM/tooling boundary typed when possible: if the AxQL
+            // parses, convert it into QueryIrV1 so downstream components can
+            // consume a stable JSON form.
+            if let Ok(parsed) = crate::axql::parse_axql_query(&normalized) {
+                GeneratedQuery::QueryIrV1(QueryIrV1::from_axql_query(&parsed))
+            } else {
+                GeneratedQuery::Axql(normalized)
+            }
+        }
         GeneratedQuery::QueryIrV1(ir) => GeneratedQuery::QueryIrV1(ir),
     }
 }
@@ -788,6 +971,40 @@ pub fn default_ollama_host() -> String {
     )
 }
 
+#[cfg(any(feature = "llm-openai", feature = "llm-anthropic"))]
+fn normalize_http_base_url(base_url: &str, default: &str) -> String {
+    let mut host = base_url.trim().to_string();
+    if host.is_empty() {
+        host = default.to_string();
+    }
+    if !host.starts_with("http://") && !host.starts_with("https://") {
+        host = format!("https://{host}");
+    }
+    host.trim_end_matches('/').to_string()
+}
+
+#[cfg(feature = "llm-openai")]
+pub fn default_openai_base_url() -> String {
+    normalize_http_base_url(
+        &std::env::var(OPENAI_BASE_URL_ENV).unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string()),
+        DEFAULT_OPENAI_BASE_URL,
+    )
+}
+
+#[cfg(feature = "llm-anthropic")]
+pub fn default_anthropic_base_url() -> String {
+    normalize_http_base_url(
+        &std::env::var(ANTHROPIC_BASE_URL_ENV)
+            .unwrap_or_else(|_| DEFAULT_ANTHROPIC_BASE_URL.to_string()),
+        DEFAULT_ANTHROPIC_BASE_URL,
+    )
+}
+
+#[cfg(feature = "llm-anthropic")]
+pub fn default_anthropic_version() -> String {
+    std::env::var(ANTHROPIC_VERSION_ENV).unwrap_or_else(|_| DEFAULT_ANTHROPIC_VERSION.to_string())
+}
+
 // =============================================================================
 // Ollama backend
 // =============================================================================
@@ -840,6 +1057,17 @@ Do not wrap in markdown or code fences."#;
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let rewrite_rules_text = if schema.rewrite_rules.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema
+            .rewrite_rules
+            .iter()
+            .take(40)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let contexts_text = if schema.contexts.is_empty() {
         "(none)".to_string()
     } else {
@@ -867,6 +1095,8 @@ Schema context:
 {relation_signatures}
 - Relation constraints (meta-plane):
 {relation_constraints}
+- Rewrite rules (meta-plane; first-class ontology semantics):
+{rewrite_rules}
 - Contexts present (data plane): {contexts}
 - Times present (data plane): {times}
 
@@ -897,6 +1127,7 @@ Return ONLY the JSON object."#,
         relations = compact_join_list(&schema.relations, 80, 2400),
         relation_signatures = relation_sigs_text,
         relation_constraints = relation_constraints_text,
+        rewrite_rules = rewrite_rules_text,
         contexts = truncate_preview(&contexts_text, 800),
         times = truncate_preview(&times_text, 800),
     );
@@ -920,7 +1151,310 @@ Return ONLY the JSON object."#,
     Err(anyhow!("ollama returned no `query_ir_v1` or `axql`"))
 }
 
-#[cfg(feature = "llm-ollama")]
+#[cfg(feature = "llm-openai")]
+fn openai_generate_query(
+    base_url: &str,
+    model: &str,
+    db: &PathDB,
+    question: &str,
+) -> Result<GeneratedQuery> {
+    let api_key = openai_api_key()?;
+
+    let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
+    let schema = SchemaContextV1::from_db_with_meta(db, &meta);
+    let grounding = render_doc_grounding(db, question, 6, 420);
+    let name_samples = render_entity_name_samples(db, &schema);
+
+    let system = r#"You translate user questions into structured Axiograph queries.
+
+You MUST return a single JSON object with one of these shapes:
+- { "query_ir_v1": { ... } }
+- { "axql": "<AxQL query>" }   (fallback; only if you cannot produce query_ir_v1)
+- { "error": "<error message>" }
+
+Do not wrap in markdown or code fences."#;
+
+    let schemas_text = if schema.schemas.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema.schemas.join(", ")
+    };
+    let relation_sigs_text = if schema.relation_signatures.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema
+            .relation_signatures
+            .iter()
+            .take(40)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let relation_constraints_text = if schema.relation_constraints.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema
+            .relation_constraints
+            .iter()
+            .take(40)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let rewrite_rules_text = if schema.rewrite_rules.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema
+            .rewrite_rules
+            .iter()
+            .take(40)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let contexts_text = if schema.contexts.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema.contexts.join(", ")
+    };
+    let times_text = if schema.times.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema.times.join(", ")
+    };
+
+    let user = format!(
+        r#"Question:
+{question}
+
+{grounding}
+
+{name_samples}
+
+Schema context:
+- Schemas: {schemas}
+- Types: {types}
+- Relations: {relations}
+- Relation signatures (meta-plane):
+{relation_signatures}
+- Relation constraints (meta-plane):
+{relation_constraints}
+- Rewrite rules (meta-plane; first-class ontology semantics):
+{rewrite_rules}
+- Contexts present (data plane): {contexts}
+- Times present (data plane): {times}
+
+Query IR (preferred):
+- Use `query_ir_v1` with fields:
+  - version: 1
+  - select: ["?x", ...]   (or omit for implicit select)
+  - where: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
+  - limit: N (optional)
+  - max_hops: N (optional)
+  - min_confidence: 0..1 (optional)
+
+Atoms (examples):
+- type:      {{"kind":"type","term":"?x","type":"ProtoService"}}
+- edge:      {{"kind":"edge","left":"?svc","path":"proto_service_has_rpc","right":"?rpc"}}
+- attr_eq:   {{"kind":"attr_eq","term":"?x","key":"name","value":"Alice"}}
+
+Terms:
+- variable:  "?x"
+- name ref:  "acme.svc0.v1.Service0"   (means name("acme.svc0.v1.Service0"))
+- wildcard:  "_"
+
+AxQL is accepted as a fallback (same semantics), but prefer `query_ir_v1`.
+
+Return ONLY the JSON object."#,
+        schemas = schemas_text,
+        types = compact_join_list(&schema.types, 60, 1800),
+        relations = compact_join_list(&schema.relations, 80, 2400),
+        relation_signatures = relation_sigs_text,
+        relation_constraints = relation_constraints_text,
+        rewrite_rules = rewrite_rules_text,
+        contexts = truncate_preview(&contexts_text, 800),
+        times = truncate_preview(&times_text, 800),
+    );
+
+    let query_ir_v1_schema = crate::query_ir::query_ir_v1_json_schema();
+    let response_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "query_ir_v1": query_ir_v1_schema,
+            "axql": { "type": "string" },
+            "error": { "type": "string" }
+        },
+        "oneOf": [
+            { "required": ["query_ir_v1"] },
+            { "required": ["axql"] },
+            { "required": ["error"] }
+        ]
+    });
+    let text_format = json!({
+        "type": "json_schema",
+        "name": "axiograph_query_translation_v1",
+        "strict": true,
+        "schema": response_schema
+    });
+
+    let content = openai_responses(base_url, &api_key, model, &user, Some(system), Some(text_format))?;
+    let parsed: PluginResponseV1 = parse_llm_json_object(&content)?;
+
+    if let Some(err) = parsed.error {
+        return Err(anyhow!("openai: {err}"));
+    }
+    if let Some(ir) = parsed.query_ir_v1 {
+        return Ok(GeneratedQuery::QueryIrV1(ir));
+    }
+    if let Some(axql) = parsed.axql {
+        return Ok(GeneratedQuery::Axql(axql));
+    }
+
+    Err(anyhow!("openai returned no `query_ir_v1` or `axql`"))
+}
+
+#[cfg(feature = "llm-anthropic")]
+fn anthropic_generate_query(
+    base_url: &str,
+    model: &str,
+    db: &PathDB,
+    question: &str,
+) -> Result<GeneratedQuery> {
+    let api_key = anthropic_api_key()?;
+
+    let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
+    let schema = SchemaContextV1::from_db_with_meta(db, &meta);
+    let grounding = render_doc_grounding(db, question, 6, 420);
+    let name_samples = render_entity_name_samples(db, &schema);
+
+    let system = r#"You translate user questions into structured Axiograph queries.
+
+You MUST return a single JSON object with one of these shapes:
+- { "query_ir_v1": { ... } }
+- { "axql": "<AxQL query>" }   (fallback; only if you cannot produce query_ir_v1)
+- { "error": "<error message>" }
+
+Do not wrap in markdown or code fences."#;
+
+    let schemas_text = if schema.schemas.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema.schemas.join(", ")
+    };
+    let relation_sigs_text = if schema.relation_signatures.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema
+            .relation_signatures
+            .iter()
+            .take(40)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let relation_constraints_text = if schema.relation_constraints.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema
+            .relation_constraints
+            .iter()
+            .take(40)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let rewrite_rules_text = if schema.rewrite_rules.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema
+            .rewrite_rules
+            .iter()
+            .take(40)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let contexts_text = if schema.contexts.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema.contexts.join(", ")
+    };
+    let times_text = if schema.times.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema.times.join(", ")
+    };
+
+    let user = format!(
+        r#"Question:
+{question}
+
+{grounding}
+
+{name_samples}
+
+Schema context:
+- Schemas: {schemas}
+- Types: {types}
+- Relations: {relations}
+- Relation signatures (meta-plane):
+{relation_signatures}
+- Relation constraints (meta-plane):
+{relation_constraints}
+- Rewrite rules (meta-plane; first-class ontology semantics):
+{rewrite_rules}
+- Contexts present (data plane): {contexts}
+- Times present (data plane): {times}
+
+Query IR (preferred):
+- Use `query_ir_v1` with fields:
+  - version: 1
+  - select: ["?x", ...]   (or omit for implicit select)
+  - where: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
+  - limit: N (optional)
+  - max_hops: N (optional)
+  - min_confidence: 0..1 (optional)
+
+Atoms (examples):
+- type:      {{"kind":"type","term":"?x","type":"ProtoService"}}
+- edge:      {{"kind":"edge","left":"?svc","path":"proto_service_has_rpc","right":"?rpc"}}
+- attr_eq:   {{"kind":"attr_eq","term":"?x","key":"name","value":"Alice"}}
+
+Terms:
+- variable:  "?x"
+- name ref:  "acme.svc0.v1.Service0"   (means name("acme.svc0.v1.Service0"))
+- wildcard:  "_"
+
+AxQL is accepted as a fallback (same semantics), but prefer `query_ir_v1`.
+
+Return ONLY the JSON object."#,
+        schemas = schemas_text,
+        types = compact_join_list(&schema.types, 60, 1800),
+        relations = compact_join_list(&schema.relations, 80, 2400),
+        relation_signatures = relation_sigs_text,
+        relation_constraints = relation_constraints_text,
+        rewrite_rules = rewrite_rules_text,
+        contexts = truncate_preview(&contexts_text, 800),
+        times = truncate_preview(&times_text, 800),
+    );
+
+    let content = anthropic_messages(base_url, &api_key, model, &user, Some(system))?;
+    let parsed: PluginResponseV1 = parse_llm_json_object(&content)?;
+
+    if let Some(err) = parsed.error {
+        return Err(anyhow!("anthropic: {err}"));
+    }
+    if let Some(ir) = parsed.query_ir_v1 {
+        return Ok(GeneratedQuery::QueryIrV1(ir));
+    }
+    if let Some(axql) = parsed.axql {
+        return Ok(GeneratedQuery::Axql(axql));
+    }
+
+    Err(anyhow!("anthropic returned no `query_ir_v1` or `axql`"))
+}
+
 fn render_doc_grounding(
     db: &PathDB,
     question: &str,
@@ -942,7 +1476,6 @@ fn render_doc_grounding(
     out.trim_end().to_string()
 }
 
-#[cfg(feature = "llm-ollama")]
 fn render_entity_name_samples(db: &PathDB, schema: &SchemaContextV1) -> String {
     // Keep the list short: it exists primarily to help the model choose
     // identifiers that exist in the current snapshot.
@@ -1018,7 +1551,6 @@ fn render_entity_name_samples(db: &PathDB, schema: &SchemaContextV1) -> String {
     out.trim_end().to_string()
 }
 
-#[cfg(feature = "llm-ollama")]
 fn render_quasi_rag_preview(
     db: &PathDB,
     question: &str,
@@ -1295,6 +1827,145 @@ Return JSON only: {"answer": "..."}."#;
     }
 }
 
+#[cfg(feature = "llm-openai")]
+fn openai_summarize_answer(
+    base_url: &str,
+    model: &str,
+    db: &PathDB,
+    question: &str,
+    query: &GeneratedQuery,
+    result: &ExecutionResult,
+) -> Result<String> {
+    let api_key = openai_api_key()?;
+
+    let mut preview = result.to_plugin_results(db);
+    if preview.rows.len() > 40 {
+        preview.rows.truncate(40);
+        preview.truncated = true;
+    }
+
+    let user = format!(
+        r#"Question:
+{question}
+
+Query:
+{query_json}
+
+Results (preview):
+{results_json}
+
+Return a single JSON object with an "answer" field.
+
+Write a concise answer grounded ONLY in the results. If the results are empty, say you don't know."#,
+        query_json = match query {
+            GeneratedQuery::Axql(q) => format!("AxQL: {q}"),
+            GeneratedQuery::QueryIrV1(ir) => format!(
+                "query_ir_v1 (compiled): {}",
+                ir.to_axql_text()
+                    .unwrap_or_else(|_| "<invalid query_ir_v1>".to_string())
+            ),
+        },
+        results_json =
+            serde_json::to_string_pretty(&preview).unwrap_or_else(|_| "<unprintable>".to_string()),
+    );
+
+    let system = r#"You answer questions about an Axiograph snapshot using ONLY the provided query results.
+Do not invent entities or relationships that are not in the results.
+Be concise.
+Return JSON only: {"answer": "..."}."#;
+
+    #[derive(Deserialize)]
+    struct AnswerPayload {
+        answer: String,
+    }
+
+    let text_format = json!({
+        "type": "json_schema",
+        "name": "axiograph_answer_summary_v1",
+        "strict": true,
+        "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "answer": { "type": "string" }
+            },
+            "required": ["answer"]
+        }
+    });
+
+    let content = openai_responses(
+        base_url,
+        &api_key,
+        model,
+        &user,
+        Some(system),
+        Some(text_format),
+    )?;
+    match parse_llm_json_object::<AnswerPayload>(&content) {
+        Ok(payload) => Ok(payload.answer),
+        Err(_) => Ok(content.trim().to_string()),
+    }
+}
+
+#[cfg(feature = "llm-anthropic")]
+fn anthropic_summarize_answer(
+    base_url: &str,
+    model: &str,
+    db: &PathDB,
+    question: &str,
+    query: &GeneratedQuery,
+    result: &ExecutionResult,
+) -> Result<String> {
+    let api_key = anthropic_api_key()?;
+
+    let mut preview = result.to_plugin_results(db);
+    if preview.rows.len() > 40 {
+        preview.rows.truncate(40);
+        preview.truncated = true;
+    }
+
+    let user = format!(
+        r#"Question:
+{question}
+
+Query:
+{query_json}
+
+Results (preview):
+{results_json}
+
+Return a single JSON object with an "answer" field.
+
+Write a concise answer grounded ONLY in the results. If the results are empty, say you don't know."#,
+        query_json = match query {
+            GeneratedQuery::Axql(q) => format!("AxQL: {q}"),
+            GeneratedQuery::QueryIrV1(ir) => format!(
+                "query_ir_v1 (compiled): {}",
+                ir.to_axql_text()
+                    .unwrap_or_else(|_| "<invalid query_ir_v1>".to_string())
+            ),
+        },
+        results_json =
+            serde_json::to_string_pretty(&preview).unwrap_or_else(|_| "<unprintable>".to_string()),
+    );
+
+    let system = r#"You answer questions about an Axiograph snapshot using ONLY the provided query results.
+Do not invent entities or relationships that are not in the results.
+Be concise.
+Return JSON only: {"answer": "..."}."#;
+
+    #[derive(Deserialize)]
+    struct AnswerPayload {
+        answer: String,
+    }
+
+    let content = anthropic_messages(base_url, &api_key, model, &user, Some(system))?;
+    match parse_llm_json_object::<AnswerPayload>(&content) {
+        Ok(payload) => Ok(payload.answer),
+        Err(_) => Ok(content.trim().to_string()),
+    }
+}
+
 #[cfg(feature = "llm-ollama")]
 pub(crate) fn ollama_chat(
     host: &str,
@@ -1394,6 +2065,400 @@ pub(crate) fn ollama_chat_with_timeout(
         .json()
         .map_err(|e| anyhow!("ollama returned invalid JSON: {e}"))?;
     Ok(out.message.content)
+}
+
+// =============================================================================
+// OpenAI backend (Responses API)
+// =============================================================================
+
+#[cfg(feature = "llm-openai")]
+fn openai_api_key() -> Result<String> {
+    let key = std::env::var(OPENAI_API_KEY_ENV).unwrap_or_default();
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err(anyhow!(
+            "OpenAI backend requires {OPENAI_API_KEY_ENV} (set it in your env; do not hardcode secrets in scripts)"
+        ));
+    }
+    Ok(key)
+}
+
+#[cfg(feature = "llm-openai")]
+fn openai_extract_output_text(v: &serde_json::Value) -> Option<String> {
+    let mut out = String::new();
+    let output = v.get("output")?.as_array()?;
+    for item in output {
+        // The Responses API emits many item types; we only care about "message".
+        let kind = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if kind != "message" {
+            continue;
+        }
+        let content = item.get("content").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+        for c in content {
+            let ckind = c.get("type").and_then(|x| x.as_str()).unwrap_or("");
+            if ckind != "output_text" {
+                continue;
+            }
+            if let Some(t) = c.get("text").and_then(|x| x.as_str()) {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(t);
+            }
+        }
+    }
+    let trimmed = out.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+#[cfg(feature = "llm-openai")]
+fn openai_responses_with_timeout(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    user: &str,
+    system: Option<&str>,
+    text_format: Option<serde_json::Value>,
+    timeout: Option<Duration>,
+) -> Result<String> {
+    let base_url = normalize_http_base_url(base_url, DEFAULT_OPENAI_BASE_URL);
+    let url = format!("{base_url}/v1/responses");
+
+    let max_output_tokens = llm_max_output_tokens()?;
+    let reasoning_effort = llm_reasoning_effort()?;
+
+    let mut body = json!({
+        "model": model,
+        "input": user,
+        "max_output_tokens": max_output_tokens
+    });
+    if let Some(system) = system {
+        body["instructions"] = json!(system);
+    }
+    if let Some(effort) = reasoning_effort {
+        body["reasoning"] = json!({ "effort": effort });
+    }
+    let has_format = text_format.is_some();
+    if let Some(fmt) = text_format {
+        body["text"] = json!({
+            "format": fmt
+        });
+    }
+
+    let mut builder = reqwest::blocking::Client::builder();
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+    let client = builder
+        .build()
+        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
+
+    let send = |payload: &serde_json::Value| -> Result<reqwest::blocking::Response> {
+        client
+            .post(&url)
+            .bearer_auth(api_key)
+            .json(payload)
+            .send()
+            .map_err(|e| anyhow!("failed to reach OpenAI at {url}: {e}"))
+    };
+
+    let mut resp = send(&body)?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+
+        fn openai_error_param(text: &str) -> Option<String> {
+            let v: serde_json::Value = serde_json::from_str(text).ok()?;
+            v.get("error")?
+                .get("param")?
+                .as_str()
+                .map(|s| s.to_string())
+        }
+
+        // Compatibility fallbacks: different OpenAI model families do not all
+        // accept the same optional parameters.
+        //
+        // We retry once with a reduced request for a few common incompatibilities:
+        // - `text.format` (structured output schema)
+        // - `temperature` (some models are fixed-deterministic / not sampling)
+        let mut retry = false;
+        let mut body2 = body.clone();
+
+        // If the model/endpoint rejects `text.format`, retry once without structured output.
+        if has_format
+            && (text.contains("text.format")
+                || text.contains("json_schema")
+                || text.contains("format"))
+        {
+            if let Some(obj) = body2.as_object_mut() {
+                obj.remove("text");
+                retry = true;
+            }
+        }
+
+        // If the model rejects `temperature`, retry once without it.
+        let err_param = openai_error_param(&text);
+        if err_param.as_deref() == Some("temperature")
+            || (text.contains("Unsupported parameter") && text.contains("temperature"))
+        {
+            if let Some(obj) = body2.as_object_mut() {
+                obj.remove("temperature");
+                retry = true;
+            }
+        }
+
+        if retry {
+            resp = send(&body2)?;
+            if !resp.status().is_success() {
+                let status2 = resp.status();
+                let text2 = resp.text().unwrap_or_default();
+                return Err(anyhow!("openai http error {status2}: {text2}"));
+            }
+        } else {
+            return Err(anyhow!("openai http error {status}: {text}"));
+        }
+    }
+
+    let v: serde_json::Value = resp
+        .json()
+        .map_err(|e| anyhow!("openai returned invalid JSON: {e}"))?;
+    if let Some(text) = openai_extract_output_text(&v) {
+        return Ok(text);
+    }
+
+    Err(anyhow!(
+        "openai: no output_text in response (unexpected response shape)"
+    ))
+}
+
+#[cfg(feature = "llm-openai")]
+fn openai_responses(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    user: &str,
+    system: Option<&str>,
+    text_format: Option<serde_json::Value>,
+) -> Result<String> {
+    let timeout = llm_timeout(None)?;
+    openai_responses_with_timeout(base_url, api_key, model, user, system, text_format, timeout)
+}
+
+#[cfg(feature = "llm-openai")]
+pub(crate) fn openai_chat_with_timeout(
+    base_url: &str,
+    model: &str,
+    user: &str,
+    system: Option<&str>,
+    text_format: Option<serde_json::Value>,
+    timeout: Option<Duration>,
+) -> Result<String> {
+    let key = openai_api_key()?;
+    openai_responses_with_timeout(base_url, &key, model, user, system, text_format, timeout)
+}
+
+/// Compute embeddings for a batch of texts using the OpenAI embeddings endpoint.
+#[cfg(feature = "llm-openai")]
+pub(crate) fn openai_embed_texts_with_timeout(
+    base_url: &str,
+    model: &str,
+    texts: &[String],
+    timeout: Option<Duration>,
+) -> Result<Vec<Vec<f32>>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let api_key = openai_api_key()?;
+    let base_url = normalize_http_base_url(base_url, DEFAULT_OPENAI_BASE_URL);
+    let url = format!("{base_url}/v1/embeddings");
+
+    #[derive(Debug, Deserialize)]
+    struct EmbeddingsResponse {
+        data: Vec<EmbeddingsRow>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct EmbeddingsRow {
+        embedding: Vec<f32>,
+        index: usize,
+    }
+
+    let mut builder = reqwest::blocking::Client::builder();
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+    let client = builder
+        .build()
+        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
+
+    let body = json!({
+        "model": model,
+        "input": texts,
+        "encoding_format": "float"
+    });
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(&api_key)
+        .json(&body)
+        .send()
+        .map_err(|e| anyhow!("failed to reach OpenAI at {url}: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        return Err(anyhow!("openai http error {status}: {text}"));
+    }
+
+    let parsed: EmbeddingsResponse = resp
+        .json()
+        .map_err(|e| anyhow!("openai embeddings returned invalid JSON: {e}"))?;
+
+    if parsed.data.len() != texts.len() {
+        return Err(anyhow!(
+            "openai embeddings returned {} vectors for {} inputs",
+            parsed.data.len(),
+            texts.len()
+        ));
+    }
+
+    let mut out = vec![Vec::<f32>::new(); texts.len()];
+    for row in parsed.data {
+        if row.index >= out.len() {
+            continue;
+        }
+        out[row.index] = row.embedding;
+    }
+    if out.iter().any(|v| v.is_empty()) {
+        return Err(anyhow!("openai embeddings returned empty vector(s)"));
+    }
+    Ok(out)
+}
+
+// =============================================================================
+// Anthropic backend (Messages API)
+// =============================================================================
+
+#[cfg(feature = "llm-anthropic")]
+fn anthropic_api_key() -> Result<String> {
+    let key = std::env::var(ANTHROPIC_API_KEY_ENV).unwrap_or_default();
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err(anyhow!(
+            "Anthropic backend requires {ANTHROPIC_API_KEY_ENV} (set it in your env; do not hardcode secrets in scripts)"
+        ));
+    }
+    Ok(key)
+}
+
+#[cfg(feature = "llm-anthropic")]
+fn anthropic_extract_output_text(v: &serde_json::Value) -> Option<String> {
+    let mut out = String::new();
+    let blocks = v.get("content")?.as_array()?;
+    for b in blocks {
+        let kind = b.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if kind != "text" {
+            continue;
+        }
+        if let Some(t) = b.get("text").and_then(|x| x.as_str()) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(t);
+        }
+    }
+    let trimmed = out.trim().to_string();
+    if trimmed.is_empty() { None } else { Some(trimmed) }
+}
+
+#[cfg(feature = "llm-anthropic")]
+fn anthropic_messages_with_timeout(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    user: &str,
+    system: Option<&str>,
+    timeout: Option<Duration>,
+) -> Result<String> {
+    let base_url = normalize_http_base_url(base_url, DEFAULT_ANTHROPIC_BASE_URL);
+    let url = format!("{base_url}/v1/messages");
+    let version = default_anthropic_version();
+
+    let max_tokens = llm_max_output_tokens()?;
+
+    let mut body = json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "messages": [
+            { "role": "user", "content": user }
+        ]
+    });
+    if let Some(system) = system {
+        body["system"] = json!(system);
+    }
+
+    let mut builder = reqwest::blocking::Client::builder();
+    if let Some(timeout) = timeout {
+        builder = builder.timeout(timeout);
+    }
+    let client = builder
+        .build()
+        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
+
+    let resp = client
+        .post(&url)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", version)
+        .json(&body)
+        .send()
+        .map_err(|e| anyhow!("failed to reach Anthropic at {url}: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        return Err(anyhow!("anthropic http error {status}: {text}"));
+    }
+
+    let v: serde_json::Value = resp
+        .json()
+        .map_err(|e| anyhow!("anthropic returned invalid JSON: {e}"))?;
+    if let Some(text) = anthropic_extract_output_text(&v) {
+        return Ok(text);
+    }
+
+    Err(anyhow!(
+        "anthropic: no text blocks in response (unexpected response shape)"
+    ))
+}
+
+#[cfg(feature = "llm-anthropic")]
+fn anthropic_messages(
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    user: &str,
+    system: Option<&str>,
+) -> Result<String> {
+    let timeout = llm_timeout(None)?;
+    anthropic_messages_with_timeout(base_url, api_key, model, user, system, timeout)
+}
+
+#[cfg(feature = "llm-anthropic")]
+pub(crate) fn anthropic_chat_with_timeout(
+    base_url: &str,
+    model: &str,
+    user: &str,
+    system: Option<&str>,
+    timeout: Option<Duration>,
+) -> Result<String> {
+    let key = anthropic_api_key()?;
+    anthropic_messages_with_timeout(base_url, &key, model, user, system, timeout)
 }
 
 /// Compute embeddings for a batch of texts using Ollama.
@@ -1511,14 +2576,59 @@ pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) ->
         return Ok(v);
     }
 
-    // Best-effort: extract the first JSON object substring.
+    // Best-effort: extract the first *complete* JSON object substring.
+    //
+    // Some models wrap JSON in prose/markdown or accidentally emit trailing content.
+    // Using brace balancing (outside strings) is more robust than rfind('}'), which
+    // can select an inner brace and produce "EOF while parsing an object".
     let Some(start) = trimmed.find('{') else {
         return Err(anyhow!("LLM did not return JSON (no '{{' found)"));
     };
-    let Some(end) = trimmed.rfind('}') else {
-        return Err(anyhow!("LLM did not return JSON (no '}}' found)"));
+
+    let mut depth: i64 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut end: Option<usize> = None;
+
+    for (idx, ch) in trimmed.char_indices().skip(start) {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            match ch {
+                '\\' => escape = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(idx);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let candidate = if let Some(end) = end {
+        &trimmed[start..=end]
+    } else {
+        // Fall back to the last brace we can find (may still fail, but gives a
+        // useful error message).
+        let Some(end) = trimmed.rfind('}') else {
+            return Err(anyhow!("LLM did not return JSON (no '}}' found)"));
+        };
+        &trimmed[start..=end]
     };
-    let candidate = &trimmed[start..=end];
+
     serde_json::from_str(candidate).map_err(|e| anyhow!("LLM returned invalid JSON: {e}"))
 }
 
@@ -1764,6 +2874,12 @@ pub(crate) struct ToolCallV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ToolLoopFinalV1 {
     pub answer: String,
+    /// Public (non-private) rationale for why these tools/queries were used.
+    ///
+    /// This must NOT contain chain-of-thought. Keep it short and operational:
+    /// e.g. “looked up Alice, described neighbors, ran Parent/Grandparent queries”.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_rationale: Option<String>,
     #[serde(default)]
     pub citations: Vec<String>,
     #[serde(default)]
@@ -1783,6 +2899,8 @@ pub(crate) struct ToolLoopTranscriptItemV1 {
 struct ToolLoopModelResponseV1 {
     #[serde(default)]
     tool_call: Option<ToolCallV1>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolCallV1>>,
     #[serde(default)]
     final_answer: Option<ToolLoopFinalV1>,
     #[serde(default)]
@@ -2347,7 +3465,8 @@ pub(crate) fn run_tool_loop_with_meta(
         }
     }
 
-    for _step in 0..options.max_steps.max(1) {
+    let mut remaining_steps = options.max_steps.max(1);
+    while remaining_steps > 0 {
         let resp = llm.tool_loop_step(
             db,
             question,
@@ -2389,7 +3508,11 @@ pub(crate) fn run_tool_loop_with_meta(
             return Ok(finalize_tool_loop_outcome(transcript, model_final));
         }
 
-        let Some(tool_call) = resp.tool_call else {
+        let tool_calls: Vec<ToolCallV1> = if let Some(calls) = resp.tool_calls {
+            calls
+        } else if let Some(call) = resp.tool_call {
+            vec![call]
+        } else {
             // Model returned neither a tool call nor a final answer.
             // Some local models will respond with `{}` in JSON mode.
             // Instead of hard-failing, stop and summarize deterministically.
@@ -2403,27 +3526,34 @@ pub(crate) fn run_tool_loop_with_meta(
             return Ok(finalize_tool_loop_outcome(transcript, final_answer));
         };
 
-        let result = execute_tool_call(
-            db,
-            meta,
-            default_contexts,
-            snapshot_key,
-            embeddings,
-            ollama_embed_host,
-            query_cache,
-            &tool_call,
-            options,
-        );
 
-        let item = ToolLoopTranscriptItemV1 {
-            tool: tool_call.name.clone(),
-            args: tool_call.args.clone(),
-            result: match result {
-                Ok(v) => v,
-                Err(e) => serde_json::json!({ "error": e.to_string() }),
-            },
-        };
-        transcript.push(item);
+        for tool_call in tool_calls {
+            if remaining_steps == 0 {
+                break;
+            }
+            let result = execute_tool_call(
+                db,
+                meta,
+                default_contexts,
+                snapshot_key,
+                embeddings,
+                ollama_embed_host,
+                query_cache,
+                &tool_call,
+                options,
+            );
+
+            let item = ToolLoopTranscriptItemV1 {
+                tool: tool_call.name.clone(),
+                args: tool_call.args.clone(),
+                result: match result {
+                    Ok(v) => v,
+                    Err(e) => serde_json::json!({ "error": e.to_string() }),
+                },
+            };
+            transcript.push(item);
+            remaining_steps = remaining_steps.saturating_sub(1);
+        }
     }
 
     // Robust fallback:
@@ -2489,6 +3619,7 @@ fn fallback_tool_loop_final_answer(
 
             return ToolLoopFinalV1 {
                 answer: lines.join("\n"),
+                public_rationale: None,
                 citations: Vec::new(),
                 queries,
                 notes,
@@ -2498,6 +3629,7 @@ fn fallback_tool_loop_final_answer(
         if let Some(err) = item.result.get("error").and_then(|v| v.as_str()) {
             return ToolLoopFinalV1 {
                 answer: format!("Tool error: {err}"),
+                public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
                 notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
@@ -2514,6 +3646,7 @@ fn fallback_tool_loop_final_answer(
         if let Some(err) = item.result.get("error").and_then(|v| v.as_str()) {
             return ToolLoopFinalV1 {
                 answer: format!("Tool error: {err}"),
+                public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
                 notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
@@ -2584,6 +3717,7 @@ fn fallback_tool_loop_final_answer(
 
         return ToolLoopFinalV1 {
             answer: lines.join("\n"),
+            public_rationale: None,
             citations: Vec::new(),
             queries: Vec::new(),
             notes: vec![
@@ -2602,6 +3736,7 @@ fn fallback_tool_loop_final_answer(
         if let Some(err) = item.result.get("error").and_then(|v| v.as_str()) {
             return ToolLoopFinalV1 {
                 answer: format!("Tool error: {err}"),
+                public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
                 notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
@@ -2659,6 +3794,7 @@ fn fallback_tool_loop_final_answer(
 
         return ToolLoopFinalV1 {
             answer: lines.join("\n"),
+            public_rationale: None,
             citations: Vec::new(),
             queries: Vec::new(),
             notes: vec![
@@ -2677,6 +3813,7 @@ fn fallback_tool_loop_final_answer(
         if let Some(err) = item.result.get("error").and_then(|v| v.as_str()) {
             return ToolLoopFinalV1 {
                 answer: format!("Tool error: {err}"),
+                public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
                 notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
@@ -2758,6 +3895,7 @@ fn fallback_tool_loop_final_answer(
 
         return ToolLoopFinalV1 {
             answer: lines.join("\n"),
+            public_rationale: None,
             citations: Vec::new(),
             queries: Vec::new(),
             notes: vec![
@@ -2770,6 +3908,7 @@ fn fallback_tool_loop_final_answer(
     // If we never even ran a query/tool that yields a summary, produce a minimal, honest response.
     ToolLoopFinalV1 {
         answer: "No results (LLM did not produce a final answer).".to_string(),
+        public_rationale: None,
         citations: Vec::new(),
         queries: Vec::new(),
         notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
@@ -2863,6 +4002,19 @@ fn tool_loop_tools_schema() -> Vec<ToolSpecV1> {
                 "properties": {
                     "relation": { "type": "string" },
                     "schema": { "type": "string" }
+                }
+            }),
+        },
+        ToolSpecV1 {
+            name: "lookup_rewrite_rule".to_string(),
+            description: "Inspect first-class `.axi` rewrite rules (meta-plane). Useful for ontology semantics and reconciliation/normalization explanations.".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "schema": { "type": "string" },
+                    "theory": { "type": "string" },
+                    "rule": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
                 }
             }),
         },
@@ -3065,6 +4217,7 @@ fn execute_tool_call(
         "describe_entity" => describe_entity_v1(db, &call.args),
         "lookup_type" => tool_lookup_type(db, meta, &call.args),
         "lookup_relation" => tool_lookup_relation(meta, &call.args),
+        "lookup_rewrite_rule" => tool_lookup_rewrite_rule(meta, &call.args),
         "fts_chunks" => tool_fts_chunks(db, &call.args, options),
         "docchunk_get" => tool_docchunk_get(db, &call.args, options),
         "axql_elaborate" => tool_axql_elaborate(
@@ -3259,9 +4412,7 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     let a: Args =
         serde_json::from_value(args.clone()).map_err(|e| anyhow!("describe_entity: invalid args: {e}"))?;
 
-    let entity_id = if let Some(id) = a.id {
-        id
-    } else if let Some(name) = a.name.as_deref() {
+    fn resolve_entity_id_by_name(db: &PathDB, name: &str, want_type: Option<&str>) -> Result<u32> {
         let name = name.trim();
         if name.is_empty() {
             return Err(anyhow!("describe_entity: name must be non-empty"));
@@ -3269,32 +4420,75 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         let Some(key_id) = db.interner.id_of("name") else {
             return Err(anyhow!("describe_entity: db has no `name` attribute"));
         };
-        let Some(value_id) = db.interner.id_of(name) else {
-            return Err(anyhow!("describe_entity: no entity named `{name}`"));
-        };
-        let ids = db.entities.entities_with_attr_value(key_id, value_id);
-        if ids.is_empty() {
+
+        fn matches_type_hint(db: &PathDB, entity_id: u32, want_type: Option<&str>) -> bool {
+            let Some(want) = want_type else {
+                return true;
+            };
+            let Some(view) = db.get_entity(entity_id) else {
+                return false;
+            };
+            if view.entity_type == want {
+                return true;
+            }
+            db.find_by_type(want)
+                .map(|bm| bm.contains(entity_id))
+                .unwrap_or(false)
+        }
+
+        // Fast path: exact match.
+        if let Some(value_id) = db.interner.id_of(name) {
+            let ids = db.entities.entities_with_attr_value(key_id, value_id);
+            for id in ids.iter() {
+                if matches_type_hint(db, id, want_type) {
+                    return Ok(id);
+                }
+            }
+        }
+
+        // Robust fallback: fts/fuzzy by name so "alice" can still resolve to "Alice".
+        let mut candidates = db.entities_with_attr_fts("name", name);
+        if candidates.is_empty() {
+            candidates = db.entities_with_attr_fts_any("name", name);
+        }
+        if candidates.is_empty() {
+            candidates = db.entities_with_attr_fuzzy("name", name, 2);
+        }
+        if candidates.is_empty() {
             return Err(anyhow!("describe_entity: no entity named `{name}`"));
         }
-        let mut picked: Option<u32> = None;
-        for id in ids.iter() {
+
+        let needle_lc = name.to_ascii_lowercase();
+        // Pass 1: prefer case-insensitive exact matches.
+        for id in candidates.iter() {
+            if !matches_type_hint(db, id, want_type) {
+                continue;
+            }
             let Some(view) = db.get_entity(id) else {
                 continue;
             };
-            if let Some(want) = a.type_name.as_deref() {
-                if view.entity_type != want
-                    && !db
-                        .find_by_type(want)
-                        .map(|bm| bm.contains(id))
-                        .unwrap_or(false)
-                {
-                    continue;
-                }
+            let Some(entity_name) = view.attrs.get("name") else {
+                continue;
+            };
+            if entity_name.to_ascii_lowercase() == needle_lc {
+                return Ok(id);
             }
-            picked = Some(id);
-            break;
         }
-        picked.ok_or_else(|| anyhow!("describe_entity: no match after type filter"))?
+        // Pass 2: accept the first candidate after type filtering.
+        for id in candidates.iter() {
+            if matches_type_hint(db, id, want_type) {
+                return Ok(id);
+            }
+        }
+
+        Err(anyhow!("describe_entity: no match after type filter"))
+    }
+
+    let entity_id = if let Some(id) = a.id {
+        id
+    } else if let Some(name) = a.name.as_deref() {
+        let want_type = a.type_name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+        resolve_entity_id_by_name(db, name, want_type)?
     } else {
         return Err(anyhow!("describe_entity: expected `id` or `name`"));
     };
@@ -3307,6 +4501,19 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     let max_rel_types = a.max_rel_types.unwrap_or(12).clamp(1, 50);
     let out_limit = a.out_limit.unwrap_or(6).min(50);
     let in_limit = a.in_limit.unwrap_or(6).min(50);
+
+    fn has_virtual_type(db: &PathDB, entity_id: u32, type_name: &str) -> bool {
+        db.interner
+            .id_of(type_name)
+            .and_then(|tid| db.entities.by_type(tid))
+            .map(|bm| bm.contains(entity_id))
+            .unwrap_or(false)
+    }
+
+    let is_fact = view.attrs.contains_key(ATTR_AXI_RELATION);
+    let is_path_witness = has_virtual_type(db, entity_id, "PathWitness");
+    let is_homotopy = has_virtual_type(db, entity_id, "Homotopy");
+    let is_morphism = has_virtual_type(db, entity_id, "Morphism");
 
     let mut attrs: BTreeMap<String, String> = BTreeMap::new();
     let mut keys: Vec<String> = view.attrs.keys().cloned().collect();
@@ -3333,6 +4540,18 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
                 "kind": ty
             }));
         }
+    }
+
+    fn entity_label(e: &EntityViewV1) -> String {
+        if let Some(name) = &e.name {
+            if !name.trim().is_empty() {
+                return name.clone();
+            }
+        }
+        if let Some(ty) = &e.entity_type {
+            return format!("{ty}#{}", e.id);
+        }
+        format!("#{}", e.id)
     }
 
     fn group(
@@ -3375,20 +4594,275 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         out
     }
 
+    let outgoing_raw = db.relations.outgoing_any(entity_id);
+    let incoming_raw = db.relations.incoming_any(entity_id);
+
     let outgoing = group(
         db,
-        db.relations.outgoing_any(entity_id),
+        outgoing_raw.clone(),
         max_rel_types,
         out_limit,
         "out",
     );
     let incoming = group(
         db,
-        db.relations.incoming_any(entity_id),
+        incoming_raw.clone(),
         max_rel_types,
         in_limit,
         "in",
     );
+
+    fn parse_signature_field_order(signature: &str) -> Vec<String> {
+        let Some(l) = signature.find('(') else {
+            return Vec::new();
+        };
+        let Some(r) = signature.rfind(')') else {
+            return Vec::new();
+        };
+        if r <= l + 1 {
+            return Vec::new();
+        }
+        let inside = &signature[l + 1..r];
+        let mut fields: Vec<String> = Vec::new();
+        for part in inside.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let name = part
+                .split(':')
+                .next()
+                .unwrap_or(part)
+                .split_whitespace()
+                .next()
+                .unwrap_or(part)
+                .trim();
+            if !name.is_empty() {
+                fields.push(name.to_string());
+            }
+        }
+        fields
+    }
+
+    // A compact semantic summary to help LLMs interpret dependent-typed artifacts
+    // (fact nodes, path witnesses, homotopies, morphisms) without relying on UI-only
+    // rendering logic.
+    let summary = {
+        let mut kind = "entity";
+        if is_homotopy {
+            kind = "homotopy";
+        } else if is_morphism {
+            kind = "morphism";
+        } else if is_path_witness {
+            kind = "path_witness";
+        } else if is_fact {
+            kind = "fact";
+        }
+
+        let axi_relation = view.attrs.get(ATTR_AXI_RELATION).cloned();
+        let signature = view
+            .attrs
+            .get(ATTR_OVERLAY_RELATION_SIGNATURE)
+            .cloned();
+        let constraints = view.attrs.get(ATTR_OVERLAY_CONSTRAINTS).cloned();
+
+        let pretty = match kind {
+            "fact" => {
+                let rel_name = axi_relation.clone().unwrap_or_else(|| view.entity_type.clone());
+
+                // Collect outgoing edges as "fields".
+                let mut field_values: BTreeMap<String, Vec<EntityViewV1>> = BTreeMap::new();
+                for r in outgoing_raw.iter() {
+                    let field = db
+                        .interner
+                        .lookup(r.rel_type)
+                        .unwrap_or_else(|| "?".to_string());
+                    field_values
+                        .entry(field)
+                        .or_default()
+                        .push(EntityViewV1::from_id(db, r.target));
+                }
+
+                let mut parts: Vec<String> = Vec::new();
+                let mut used: HashSet<String> = HashSet::new();
+
+                let mut order = signature
+                    .as_deref()
+                    .map(parse_signature_field_order)
+                    .unwrap_or_default();
+                // Heuristic: prefer endpoint-ish fields earlier if the signature was absent.
+                if order.is_empty() {
+                    order = vec![
+                        "from".to_string(),
+                        "to".to_string(),
+                        "source".to_string(),
+                        "target".to_string(),
+                        "child".to_string(),
+                        "parent".to_string(),
+                        "lhs".to_string(),
+                        "rhs".to_string(),
+                        "ctx".to_string(),
+                        "time".to_string(),
+                    ];
+                }
+
+                let skip = ["axi_fact_of"];
+                for f in &order {
+                    if skip.iter().any(|s| s == f) {
+                        continue;
+                    }
+                    let Some(vals) = field_values.get(f) else {
+                        continue;
+                    };
+                    if vals.is_empty() {
+                        continue;
+                    }
+                    parts.push(format!("{f}={}", entity_label(&vals[0])));
+                    used.insert(f.clone());
+                }
+
+                // Add remaining fields in deterministic order.
+                for (f, vals) in &field_values {
+                    if used.contains(f) {
+                        continue;
+                    }
+                    if skip.iter().any(|s| s == f) {
+                        continue;
+                    }
+                    // Avoid noisy duplication when both `ctx` and `axi_fact_in_context` exist.
+                    if f == "axi_fact_in_context" && field_values.contains_key("ctx") {
+                        continue;
+                    }
+                    if vals.is_empty() {
+                        continue;
+                    }
+                    parts.push(format!("{f}={}", entity_label(&vals[0])));
+                }
+
+                if parts.is_empty() {
+                    rel_name
+                } else {
+                    format!("{rel_name}({})", parts.join(", "))
+                }
+            }
+            "path_witness" => {
+                let from = db
+                    .follow_one(entity_id, "from")
+                    .iter()
+                    .next()
+                    .map(|id| EntityViewV1::from_id(db, id));
+                let to = db
+                    .follow_one(entity_id, "to")
+                    .iter()
+                    .next()
+                    .map(|id| EntityViewV1::from_id(db, id));
+                let repr = view.attrs.get("repr").cloned().unwrap_or_default();
+                match (from, to) {
+                    (Some(from), Some(to)) => {
+                        if repr.trim().is_empty() {
+                            format!("PathWitness(from={}, to={})", entity_label(&from), entity_label(&to))
+                        } else {
+                            format!(
+                                "PathWitness(from={}, to={}, repr={:?})",
+                                entity_label(&from),
+                                entity_label(&to),
+                                repr
+                            )
+                        }
+                    }
+                    _ => "PathWitness".to_string(),
+                }
+            }
+            "homotopy" => {
+                let from = db
+                    .follow_one(entity_id, "from")
+                    .iter()
+                    .next()
+                    .map(|id| EntityViewV1::from_id(db, id));
+                let to = db
+                    .follow_one(entity_id, "to")
+                    .iter()
+                    .next()
+                    .map(|id| EntityViewV1::from_id(db, id));
+                let lhs = db
+                    .follow_one(entity_id, "lhs")
+                    .iter()
+                    .next()
+                    .map(|id| EntityViewV1::from_id(db, id));
+                let rhs = db
+                    .follow_one(entity_id, "rhs")
+                    .iter()
+                    .next()
+                    .map(|id| EntityViewV1::from_id(db, id));
+                let repr = view.attrs.get("repr").cloned().unwrap_or_default();
+
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(from) = &from {
+                    parts.push(format!("from={}", entity_label(from)));
+                }
+                if let Some(to) = &to {
+                    parts.push(format!("to={}", entity_label(to)));
+                }
+                if let Some(lhs) = &lhs {
+                    parts.push(format!("lhs={}", entity_label(lhs)));
+                }
+                if let Some(rhs) = &rhs {
+                    parts.push(format!("rhs={}", entity_label(rhs)));
+                }
+                if !repr.trim().is_empty() {
+                    parts.push(format!("repr={repr:?}"));
+                }
+                if parts.is_empty() {
+                    "Homotopy".to_string()
+                } else {
+                    format!("Homotopy({})", parts.join(", "))
+                }
+            }
+            "morphism" => {
+                let from = db
+                    .follow_one(entity_id, "from")
+                    .iter()
+                    .next()
+                    .map(|id| EntityViewV1::from_id(db, id));
+                let to = db
+                    .follow_one(entity_id, "to")
+                    .iter()
+                    .next()
+                    .map(|id| EntityViewV1::from_id(db, id));
+                let rel = axi_relation.clone().unwrap_or_else(|| view.entity_type.clone());
+                match (from, to) {
+                    (Some(from), Some(to)) => format!(
+                        "Morphism({rel}: {} -> {})",
+                        entity_label(&from),
+                        entity_label(&to)
+                    ),
+                    _ => "Morphism".to_string(),
+                }
+            }
+            _ => view.entity_type.clone(),
+        };
+
+        let mut types: Vec<String> = Vec::new();
+        types.push(view.entity_type.clone());
+        if is_path_witness && !types.iter().any(|t| t == "PathWitness") {
+            types.push("PathWitness".to_string());
+        }
+        if is_homotopy && !types.iter().any(|t| t == "Homotopy") {
+            types.push("Homotopy".to_string());
+        }
+        if is_morphism && !types.iter().any(|t| t == "Morphism") {
+            types.push("Morphism".to_string());
+        }
+
+        serde_json::json!({
+            "kind": kind,
+            "pretty": pretty,
+            "types": types,
+            "axi_relation": axi_relation,
+            "relation_signature": signature,
+            "relation_constraints": constraints,
+        })
+    };
 
     // Convenience for UI highlighting: include the entity + all sampled neighbors.
     let mut highlight_ids: BTreeSet<u32> = BTreeSet::new();
@@ -3409,6 +4883,7 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
             "entity_type": view.entity_type,
             "name": view.attrs.get("name").cloned(),
         },
+        "summary": summary,
         "attrs": attrs,
         "contexts": contexts,
         "equivalences": equivalences,
@@ -3615,6 +5090,113 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
     }))
 }
 
+fn tool_lookup_rewrite_rule(
+    meta: Option<&MetaPlaneIndex>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    #[derive(Deserialize)]
+    struct Args {
+        #[serde(default)]
+        schema: Option<String>,
+        #[serde(default)]
+        theory: Option<String>,
+        #[serde(default)]
+        rule: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    }
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("lookup_rewrite_rule: invalid args: {e}"))?;
+
+    let schema_filter = a.schema.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let theory_filter = a.theory.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let rule_filter = a.rule.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let limit = a.limit.unwrap_or(20).clamp(1, 50);
+
+    let Some(meta) = meta else {
+        return Err(anyhow!(
+            "lookup_rewrite_rule: meta-plane not available in this snapshot (no canonical `.axi` schema imported)"
+        ));
+    };
+
+    let mut matches: Vec<(String, String, usize, String, serde_json::Value)> = Vec::new();
+
+    fn eq_ci(a: &str, b: &str) -> bool {
+        a.eq_ignore_ascii_case(b)
+    }
+
+    for (schema_name, schema) in &meta.schemas {
+        if let Some(s) = schema_filter {
+            if !eq_ci(schema_name, s) {
+                continue;
+            }
+        }
+        for (theory_name, rules) in &schema.rewrite_rules_by_theory {
+            if let Some(t) = theory_filter {
+                if !eq_ci(theory_name, t) {
+                    continue;
+                }
+            }
+            for r in rules {
+                if let Some(want) = rule_filter {
+                    if !eq_ci(&r.name, want) {
+                        continue;
+                    }
+                }
+                matches.push((
+                    schema_name.clone(),
+                    theory_name.clone(),
+                    r.index,
+                    r.name.clone(),
+                    serde_json::json!({
+                        "schema": schema_name,
+                        "theory": theory_name,
+                        "rule": r.name,
+                        "orientation": r.orientation,
+                        "vars": r.vars,
+                        "lhs": r.lhs,
+                        "rhs": r.rhs,
+                    }),
+                ));
+            }
+        }
+    }
+
+    matches.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
+    });
+
+    let total = matches.len();
+    let matches = matches
+        .into_iter()
+        .take(limit)
+        .map(|(_s, _t, _i, _n, v)| v)
+        .collect::<Vec<_>>();
+
+    let match_kind = if rule_filter.is_some() {
+        match total {
+            0 => "none",
+            1 => "resolved",
+            _ => "ambiguous",
+        }
+    } else {
+        "list"
+    };
+
+    Ok(serde_json::json!({
+        "match_kind": match_kind,
+        "schema_filter": schema_filter,
+        "theory_filter": theory_filter,
+        "rule_filter": rule_filter,
+        "total_matches": total,
+        "matches": matches,
+        "note": if total > limit { "truncated; narrow filters or increase limit" } else { "" },
+    }))
+}
+
 fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::Value> {
     #[derive(Deserialize)]
     struct Args {
@@ -3701,6 +5283,33 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
         let samples = type_samples.get(tid).cloned().unwrap_or_default();
         types_ranked.push((*count, type_name, samples));
     }
+
+    // Include a few important "virtual types" (witness artifacts) that may be
+    // present in the type index even when they are not the entity's base type.
+    //
+    // This helps the LLM notice dependent-type-ish structure during `db_summary`
+    // without needing a follow-up tool call.
+    for virtual_type in ["PathWitness", "Homotopy", "Morphism"] {
+        if types_ranked.iter().any(|(_, ty, _)| ty == virtual_type) {
+            continue;
+        }
+        let Some(bm) = db.find_by_type(virtual_type) else {
+            continue;
+        };
+        if bm.is_empty() {
+            continue;
+        }
+        let mut samples: Vec<String> = Vec::new();
+        for id in bm.iter().take(6) {
+            if let Some(name) = db_entity_attr_string(db, id, "name") {
+                samples.push(name);
+            } else {
+                samples.push(format!("#{id}"));
+            }
+        }
+        types_ranked.push((bm.len() as usize, virtual_type.to_string(), samples));
+    }
+
     types_ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     let types_out = types_ranked
         .into_iter()
@@ -4092,129 +5701,253 @@ fn tool_semantic_search(
         }
     }
 
-    // Optional: Ollama embedding retrieval (requires snapshot-scoped embeddings + an Ollama host).
+    // Optional: model embedding retrieval (requires snapshot-scoped embeddings).
     let mut embed_entity_scores: Vec<(f32, u32)> = Vec::new();
     let mut embed_chunk_scores: Vec<(f32, u32)> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
 
-    if let (Some(idx), Some(host)) = (embeddings, ollama_embed_host) {
-        #[cfg(feature = "llm-ollama")]
-        {
-            fn normalize_vec(v: &mut [f32]) {
-                let mut norm2 = 0.0f32;
-                for x in v.iter() {
-                    norm2 += x * x;
-                }
-                if norm2 <= 0.0 {
-                    return;
-                }
-                let inv = 1.0f32 / norm2.sqrt();
-                for x in v.iter_mut() {
-                    *x *= inv;
-                }
+    if let Some(idx) = embeddings {
+        fn normalize_vec(v: &mut [f32]) {
+            let mut norm2 = 0.0f32;
+            for x in v.iter() {
+                norm2 += x * x;
             }
-
-            fn dot_vec(a: &[f32], b: &[f32]) -> f32 {
-                let mut s = 0.0f32;
-                let n = a.len().min(b.len());
-                for i in 0..n {
-                    s += a[i] * b[i];
-                }
-                s
+            if norm2 <= 0.0 {
+                return;
             }
-
-            let timeout = llm_timeout(None)?;
-
-            // Entities.
-            if let Some(t) = idx.entities.as_ref() {
-                if t.backend == "ollama" {
-                    let q = vec![query.to_string()];
-                    match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
-                        Ok(mut qv) if qv.len() == 1 => {
-                            let mut qv = qv.remove(0);
-                            normalize_vec(&mut qv);
-                            if qv.len() == t.dim {
-                                for row in &t.rows {
-                                    embed_entity_scores.push((dot_vec(&qv, &row.vector), row.id));
-                                }
-                                embed_entity_scores.sort_by(|(sa, ia), (sb, ib)| {
-                                    sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                                });
-                                embed_entity_scores.truncate(entity_limit);
-                                notes.push(format!(
-                                    "ollama_embeddings: entities={} model={}",
-                                    t.rows.len(),
-                                    t.model
-                                ));
-                            } else {
-                                notes.push(format!(
-                                    "ollama_embeddings skipped: query dim {} != stored dim {} (entities)",
-                                    qv.len(),
-                                    t.dim
-                                ));
-                            }
-                        }
-                        Ok(_) => notes.push("ollama_embeddings skipped: unexpected embeddings response shape".to_string()),
-                        Err(e) => notes.push(format!("ollama_embeddings skipped: {e}")),
-                    }
-                } else {
-                    notes.push(format!(
-                        "ollama_embeddings skipped: backend {} (entities)",
-                        t.backend
-                    ));
-                }
-            }
-
-            // DocChunks.
-            if let Some(t) = idx.docchunks.as_ref() {
-                if t.backend == "ollama" {
-                    let q = vec![query.to_string()];
-                    match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
-                        Ok(mut qv) if qv.len() == 1 => {
-                            let mut qv = qv.remove(0);
-                            normalize_vec(&mut qv);
-                            if qv.len() == t.dim {
-                                for row in &t.rows {
-                                    embed_chunk_scores.push((dot_vec(&qv, &row.vector), row.id));
-                                }
-                                embed_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
-                                    sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                                });
-                                embed_chunk_scores.truncate(chunk_limit);
-                                notes.push(format!(
-                                    "ollama_embeddings: docchunks={} model={}",
-                                    t.rows.len(),
-                                    t.model
-                                ));
-                            } else {
-                                notes.push(format!(
-                                    "ollama_embeddings skipped: query dim {} != stored dim {} (docchunks)",
-                                    qv.len(),
-                                    t.dim
-                                ));
-                            }
-                        }
-                        Ok(_) => notes.push("ollama_embeddings skipped: unexpected embeddings response shape".to_string()),
-                        Err(e) => notes.push(format!("ollama_embeddings skipped: {e}")),
-                    }
-                } else {
-                    notes.push(format!(
-                        "ollama_embeddings skipped: backend {} (docchunks)",
-                        t.backend
-                    ));
-                }
+            let inv = 1.0f32 / norm2.sqrt();
+            for x in v.iter_mut() {
+                *x *= inv;
             }
         }
-        #[cfg(not(feature = "llm-ollama"))]
-        {
-            let _ = (idx, host);
-            notes.push("ollama_embeddings unavailable (compiled without `llm-ollama`)".to_string());
+
+        fn dot_vec(a: &[f32], b: &[f32]) -> f32 {
+            let mut s = 0.0f32;
+            let n = a.len().min(b.len());
+            for i in 0..n {
+                s += a[i] * b[i];
+            }
+            s
         }
-    } else if embeddings.is_some() && ollama_embed_host.is_none() {
-        notes.push("ollama_embeddings unavailable (no ollama host configured for this tool-loop)".to_string());
+
+        let timeout = llm_timeout(None)?;
+
+        // Entities.
+        if let Some(t) = idx.entities.as_ref() {
+            match t.backend.as_str() {
+                "ollama" => {
+                    if let Some(host) = ollama_embed_host {
+                        #[cfg(feature = "llm-ollama")]
+                        {
+                            let q = vec![query.to_string()];
+                            match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
+                                Ok(mut qv) if qv.len() == 1 => {
+                                    let mut qv = qv.remove(0);
+                                    normalize_vec(&mut qv);
+                                    if qv.len() == t.dim {
+                                        for row in &t.rows {
+                                            embed_entity_scores
+                                                .push((dot_vec(&qv, &row.vector), row.id));
+                                        }
+                                        embed_entity_scores.sort_by(|(sa, ia), (sb, ib)| {
+                                            sb.total_cmp(sa).then_with(|| ia.cmp(ib))
+                                        });
+                                        embed_entity_scores.truncate(entity_limit);
+                                        notes.push(format!(
+                                            "embeddings: backend=ollama target=entities n={} model={}",
+                                            t.rows.len(),
+                                            t.model
+                                        ));
+                                    } else {
+                                        notes.push(format!(
+                                            "embeddings skipped: query dim {} != stored dim {} (entities)",
+                                            qv.len(),
+                                            t.dim
+                                        ));
+                                    }
+                                }
+                                Ok(_) => notes.push(
+                                    "embeddings skipped: unexpected embeddings response shape (entities)"
+                                        .to_string(),
+                                ),
+                                Err(e) => notes.push(format!("embeddings skipped: {e}")),
+                            }
+                        }
+                        #[cfg(not(feature = "llm-ollama"))]
+                        {
+                            let _ = host;
+                            notes.push(
+                                "embeddings unavailable (compiled without `llm-ollama`)".to_string(),
+                            );
+                        }
+                    } else {
+                        notes.push(
+                            "embeddings skipped: ollama host not configured for this tool-loop"
+                                .to_string(),
+                        );
+                    }
+                }
+                "openai" => {
+                    #[cfg(feature = "llm-openai")]
+                    {
+                        let base_url = default_openai_base_url();
+                        let q = vec![query.to_string()];
+                        match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
+                            Ok(mut qv) if qv.len() == 1 => {
+                                let mut qv = qv.remove(0);
+                                normalize_vec(&mut qv);
+                                if qv.len() == t.dim {
+                                    for row in &t.rows {
+                                        embed_entity_scores
+                                            .push((dot_vec(&qv, &row.vector), row.id));
+                                    }
+                                    embed_entity_scores.sort_by(|(sa, ia), (sb, ib)| {
+                                        sb.total_cmp(sa).then_with(|| ia.cmp(ib))
+                                    });
+                                    embed_entity_scores.truncate(entity_limit);
+                                    notes.push(format!(
+                                        "embeddings: backend=openai target=entities n={} model={}",
+                                        t.rows.len(),
+                                        t.model
+                                    ));
+                                } else {
+                                    notes.push(format!(
+                                        "embeddings skipped: query dim {} != stored dim {} (entities)",
+                                        qv.len(),
+                                        t.dim
+                                    ));
+                                }
+                            }
+                            Ok(_) => notes.push(
+                                "embeddings skipped: unexpected embeddings response shape (entities)"
+                                    .to_string(),
+                            ),
+                            Err(e) => notes.push(format!("embeddings skipped: {e}")),
+                        }
+                    }
+                    #[cfg(not(feature = "llm-openai"))]
+                    {
+                        notes.push(
+                            "embeddings unavailable (compiled without `llm-openai`)".to_string(),
+                        );
+                    }
+                }
+                other => notes.push(format!(
+                    "embeddings skipped: backend {} (entities)",
+                    other
+                )),
+            }
+        }
+
+        // DocChunks.
+        if let Some(t) = idx.docchunks.as_ref() {
+            match t.backend.as_str() {
+                "ollama" => {
+                    if let Some(host) = ollama_embed_host {
+                        #[cfg(feature = "llm-ollama")]
+                        {
+                            let q = vec![query.to_string()];
+                            match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
+                                Ok(mut qv) if qv.len() == 1 => {
+                                    let mut qv = qv.remove(0);
+                                    normalize_vec(&mut qv);
+                                    if qv.len() == t.dim {
+                                        for row in &t.rows {
+                                            embed_chunk_scores
+                                                .push((dot_vec(&qv, &row.vector), row.id));
+                                        }
+                                        embed_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
+                                            sb.total_cmp(sa).then_with(|| ia.cmp(ib))
+                                        });
+                                        embed_chunk_scores.truncate(chunk_limit);
+                                        notes.push(format!(
+                                            "embeddings: backend=ollama target=docchunks n={} model={}",
+                                            t.rows.len(),
+                                            t.model
+                                        ));
+                                    } else {
+                                        notes.push(format!(
+                                            "embeddings skipped: query dim {} != stored dim {} (docchunks)",
+                                            qv.len(),
+                                            t.dim
+                                        ));
+                                    }
+                                }
+                                Ok(_) => notes.push(
+                                    "embeddings skipped: unexpected embeddings response shape (docchunks)"
+                                        .to_string(),
+                                ),
+                                Err(e) => notes.push(format!("embeddings skipped: {e}")),
+                            }
+                        }
+                        #[cfg(not(feature = "llm-ollama"))]
+                        {
+                            let _ = host;
+                            notes.push(
+                                "embeddings unavailable (compiled without `llm-ollama`)".to_string(),
+                            );
+                        }
+                    } else {
+                        notes.push(
+                            "embeddings skipped: ollama host not configured for this tool-loop"
+                                .to_string(),
+                        );
+                    }
+                }
+                "openai" => {
+                    #[cfg(feature = "llm-openai")]
+                    {
+                        let base_url = default_openai_base_url();
+                        let q = vec![query.to_string()];
+                        match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
+                            Ok(mut qv) if qv.len() == 1 => {
+                                let mut qv = qv.remove(0);
+                                normalize_vec(&mut qv);
+                                if qv.len() == t.dim {
+                                    for row in &t.rows {
+                                        embed_chunk_scores
+                                            .push((dot_vec(&qv, &row.vector), row.id));
+                                    }
+                                    embed_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
+                                        sb.total_cmp(sa).then_with(|| ia.cmp(ib))
+                                    });
+                                    embed_chunk_scores.truncate(chunk_limit);
+                                    notes.push(format!(
+                                        "embeddings: backend=openai target=docchunks n={} model={}",
+                                        t.rows.len(),
+                                        t.model
+                                    ));
+                                } else {
+                                    notes.push(format!(
+                                        "embeddings skipped: query dim {} != stored dim {} (docchunks)",
+                                        qv.len(),
+                                        t.dim
+                                    ));
+                                }
+                            }
+                            Ok(_) => notes.push(
+                                "embeddings skipped: unexpected embeddings response shape (docchunks)"
+                                    .to_string(),
+                            ),
+                            Err(e) => notes.push(format!("embeddings skipped: {e}")),
+                        }
+                    }
+                    #[cfg(not(feature = "llm-openai"))]
+                    {
+                        notes.push(
+                            "embeddings unavailable (compiled without `llm-openai`)".to_string(),
+                        );
+                    }
+                }
+                other => notes.push(format!(
+                    "embeddings skipped: backend {} (docchunks)",
+                    other
+                )),
+            }
+        }
     }
 
-    // Merge entity hits (token-hash + optional ollama embeddings) by taking the best similarity per id.
+    // Merge entity hits (token-hash + optional embeddings) by taking the best similarity per id.
     let mut entity_scores: std::collections::HashMap<u32, (Option<f32>, Option<f32>)> =
         std::collections::HashMap::new();
     for (sim, id) in det_entity_scores {
@@ -4501,7 +6234,24 @@ fn tool_axql_run(
     let cap = options.max_rows.clamp(1, 200);
     query.limit = query.limit.min(cap).max(1);
 
-    let result = crate::axql::execute_axql_query_cached(db, &query, meta, snapshot_key, query_cache)?;
+    // Always run the full prepare pipeline (meta-plane typecheck/elaboration +
+    // plan) so the REPL/UI can show what was inferred and how the engine ran.
+    let key = crate::axql::axql_query_cache_key(snapshot_key, &query);
+    let prepared = if let Some(p) = query_cache.get_mut(&key) {
+        p
+    } else {
+        let p = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
+        query_cache.insert(key.clone(), p);
+        query_cache.get_mut(&key).expect("query cache insert")
+    };
+
+    let elaborated = prepared.elaborated_query_text();
+    let report = prepared.elaboration_report().clone();
+    let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
+    let notes = report.notes.clone();
+    let plan = prepared.explain_plan_lines();
+
+    let result = prepared.execute(db)?;
     let mut preview = PluginResultsV1::from_axql_result(db, &result);
     if preview.rows.len() > cap {
         preview.rows.truncate(cap);
@@ -4510,6 +6260,10 @@ fn tool_axql_run(
 
     Ok(serde_json::json!({
         "query": crate::nlq::render_axql_query(&query),
+        "elaborated": elaborated,
+        "inferred_types": inferred_types,
+        "notes": notes,
+        "plan": plan,
         "results": preview
     }))
 }
@@ -5166,6 +6920,50 @@ impl LlmState {
                     options,
                 )
             }
+            #[cfg(feature = "llm-openai")]
+            LlmBackend::OpenAI { base_url } => {
+                let Some(model) = self.model.as_deref() else {
+                    return Err(anyhow!(
+                        "no model selected (use `llm model <openai_model>` or set {OPENAI_MODEL_ENV})"
+                    ));
+                };
+                let transcript_for_llm = compact_tool_loop_transcript_for_llm(transcript)?;
+                openai_tool_loop_step(
+                    base_url,
+                    model,
+                    db,
+                    question,
+                    schema,
+                    tools,
+                    &transcript_for_llm,
+                    snapshot_key,
+                    embeddings,
+                    ollama_embed_host,
+                    options,
+                )
+            }
+            #[cfg(feature = "llm-anthropic")]
+            LlmBackend::Anthropic { base_url } => {
+                let Some(model) = self.model.as_deref() else {
+                    return Err(anyhow!(
+                        "no model selected (use `llm model <anthropic_model>` or set {ANTHROPIC_MODEL_ENV})"
+                    ));
+                };
+                let transcript_for_llm = compact_tool_loop_transcript_for_llm(transcript)?;
+                anthropic_tool_loop_step(
+                    base_url,
+                    model,
+                    db,
+                    question,
+                    schema,
+                    tools,
+                    &transcript_for_llm,
+                    snapshot_key,
+                    embeddings,
+                    ollama_embed_host,
+                    options,
+                )
+            }
             LlmBackend::Command { program, args } => {
                 let transcript_for_llm = compact_tool_loop_transcript_for_llm(transcript)?;
                 let request = PluginRequestV2 {
@@ -5200,9 +6998,11 @@ fn mock_tool_loop_step(
     if has_proposed {
         return Ok(ToolLoopModelResponseV1 {
             tool_call: None,
+            tool_calls: None,
             final_answer: Some(ToolLoopFinalV1 {
                 answer: "Generated a proposals overlay (mock mode). Review it in the UI/REPL, then commit it to apply changes."
                     .to_string(),
+                public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
                 notes: vec!["note: mock LLM backend".to_string()],
@@ -5259,6 +7059,7 @@ fn mock_tool_loop_step(
                         "evidence_locator": "llm_mock",
                     }),
                 }),
+                tool_calls: None,
                 final_answer: None,
                 error: None,
             });
@@ -5267,15 +7068,16 @@ fn mock_tool_loop_step(
         // Deterministic: use the same NLQ templates as `ask` and then run.
         let tokens: Vec<String> = question.split_whitespace().map(|s| s.to_string()).collect();
         let q = crate::nlq::parse_ask_query(&tokens)?;
-        let axql = crate::nlq::render_axql_query(&q);
+        let ir = QueryIrV1::from_axql_query(&q);
         return Ok(ToolLoopModelResponseV1 {
             tool_call: Some(ToolCallV1 {
                 name: "axql_run".to_string(),
                 args: serde_json::json!({
-                    "axql": axql,
+                    "query_ir_v1": ir,
                     "limit": options.max_rows
                 }),
             }),
+            tool_calls: None,
             final_answer: None,
             error: None,
         });
@@ -5327,8 +7129,10 @@ fn mock_tool_loop_step(
 
             return Ok(ToolLoopModelResponseV1 {
                 tool_call: None,
+                tool_calls: None,
                 final_answer: Some(ToolLoopFinalV1 {
                     answer: lines.join("\n"),
+                    public_rationale: None,
                     citations: Vec::new(),
                     queries: Vec::new(),
                     notes,
@@ -5341,8 +7145,10 @@ fn mock_tool_loop_step(
     // Default: stop.
     Ok(ToolLoopModelResponseV1 {
         tool_call: None,
+        tool_calls: None,
         final_answer: Some(ToolLoopFinalV1 {
             answer: "Done.".to_string(),
+            public_rationale: None,
             citations: Vec::new(),
             queries: Vec::new(),
             notes: vec![format!("snapshot entities={}", db.entities.len())],
@@ -5351,10 +7157,52 @@ fn mock_tool_loop_step(
     })
 }
 
-#[cfg(feature = "llm-ollama")]
-fn ollama_tool_loop_step(
-    host: &str,
-    model: &str,
+const TOOL_LOOP_SYSTEM_PROMPT: &str = r#"You are an agent that answers questions by calling tools against an Axiograph snapshot.
+
+You MUST return a single JSON object with one of these shapes:
+- { "tool_call": { "name": "<tool>", "args": { ... } } }
+- { "tool_calls": [{ "name": "<tool>", "args": { ... } }, ...] }
+- { "final_answer": { "answer": "...", "public_rationale": "...", "citations": [...], "queries": [...], "notes": [...] } }
+- { "error": "<error message>" }
+
+Examples:
+- {"tool_call":{"name":"describe_entity","args":{"name":"Alice","max_rel_types":12,"out_limit":6,"in_limit":6}}}
+- {"tool_calls":[{"name":"lookup_relation","args":{"relation":"Parent"}},{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select":["?x"],"where":[{"kind":"edge","left":"name(\"Alice\")","rel":"Parent","right":"?x"}],"limit":10}}}]}
+- {"final_answer":{"answer":"Alice is connected to Bob via Parent(...)","public_rationale":"looked up Alice, inspected neighbors, and ran a small AxQL query","citations":[],"queries":[],"notes":[]}}
+
+Rules:
+- Prefer tools over guessing. Do NOT invent entity ids/types/relations.
+- Keep tool args small and use conservative limits.
+- Tool outputs in the transcript may be truncated or omitted for compactness; if you need more detail, call tools again.
+- For broad/overview questions (e.g. “explain the facts”, “what is in the snapshot”), start with `db_summary`.
+- For fuzzy/semantic lookup (“what does this mean”, “find related”, “where is X mentioned”), use `semantic_search` and then follow up with `describe_entity` / `axql_run`.
+- For doc evidence, use `fts_chunks` or `semantic_search` and then `docchunk_get` to fetch a specific chunk body.
+- For explicit *witness* artifacts (type-theory-ish structure):
+  - `PathWitness` nodes encode a derivation/path (typically via edges `from`/`to` plus attrs like `repr`).
+  - `Homotopy` nodes encode “two derivations / two paths with the same meaning” (often `from`/`to` plus `lhs`/`rhs` pointing at `PathWitness` nodes).
+  Use these when the user asks about equivalence, commuting diagrams, “why”, or alternative derivations.
+- For schema mappings / migrations, look for `Morphism` nodes (usually `from`/`to`) and related homotopies (commuting diagrams).
+- For AxQL execution, prefer the typed JSON IR:
+  - When calling `axql_elaborate` or `axql_run`, pass `query_ir_v1` (NOT raw `axql` text).
+  - If you generated a query, call `axql_elaborate` first to validate it and to see inferred types, then call `axql_run`.
+- For requests that would *change* the graph (add/update facts/relationships), do NOT claim the DB changed. Instead, use `propose_relation_proposals` to generate a reviewable `proposals.json` overlay.
+- Use `propose_relations_proposals` when the user asks for multiple pairs (e.g. “Jamison is a child of Alice and Bob”).
+- If the user asks to add multiple *different* relationship types in one request (e.g. Parent + Spouse), make multiple proposal tool calls (one per `rel_type`) and then summarize what you proposed.
+- If you are proposing a symmetric relation (e.g. Spouse) and the snapshot stores explicit symmetric facts, propose both directions unless the user asked for only one direction.
+- If you are unsure how a relation is typed, or which fields are endpoints, use `lookup_relation` first.
+- When generating relation proposals, be careful about *direction*:
+  - `propose_relation_proposals` maps `source_name` → the relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` → (`to`/`target`/`parent`/`rhs`).
+  - If the user’s phrasing is inverse (“Bob is a parent of Jamison”), set `source_field`/`target_field` explicitly (e.g. `source_field="parent"`, `target_field="child"` for `Parent(child,parent)`), or use an alias like `parent_of`.
+- When interpreting a “fact node” (an entity with attr `axi_relation`), treat it as a *typed record* with field edges (e.g. `Parent(child=..., parent=..., ctx=..., time=...)`). Use `lookup_relation` (meta-plane signature + constraints) when unsure about endpoints or required fields.
+- If the user wants canonical `.axi` output for a set of proposals, call `draft_axi_from_proposals` (deterministic draft; still untrusted until promoted and checked).
+- If `DocChunk` evidence exists and you used it (via `semantic_search` / `fts_chunks` / `docchunk_get`), cite the `chunk_id` in `citations`.
+- If no DocChunks are loaded, it is OK to answer from graph structure (AxQL + entity/edge inspection); note that you have no external doc evidence to cite.
+- If the question is ambiguous, return a `final_answer` that asks 1 clarifying question rather than guessing.
+- If you include `public_rationale`, keep it short and operational. Do NOT include private chain-of-thought.
+
+Return JSON only (no markdown)."#;
+
+fn render_tool_loop_user_prompt(
     db: &PathDB,
     question: &str,
     schema: &SchemaContextV1,
@@ -5364,7 +7212,7 @@ fn ollama_tool_loop_step(
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     options: ToolLoopOptions,
-) -> Result<ToolLoopModelResponseV1> {
+) -> Result<String> {
     let grounding = render_doc_grounding(db, question, options.max_doc_chunks, options.max_doc_chars);
     let db_summary = if transcript.is_empty() {
         tool_db_summary(
@@ -5425,6 +7273,17 @@ fn ollama_tool_loop_step(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let rewrite_rules_text = if schema.rewrite_rules.is_empty() {
+        "(none)".to_string()
+    } else {
+        schema
+            .rewrite_rules
+            .iter()
+            .take(40)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let contexts_text = if schema.contexts.is_empty() {
         "(none)".to_string()
     } else {
@@ -5436,41 +7295,7 @@ fn ollama_tool_loop_step(
         schema.times.join(", ")
     };
 
-let system = r#"You are an agent that answers questions by calling tools against an Axiograph snapshot.
-
-You MUST return a single JSON object with one of these shapes:
-- { "tool_call": { "name": "<tool>", "args": { ... } } }
-- { "final_answer": { "answer": "...", "citations": [...], "queries": [...], "notes": [...] } }
-- { "error": "<error message>" }
-
-Examples:
-- {"tool_call":{"name":"describe_entity","args":{"name":"Alice","max_rel_types":12,"out_limit":6,"in_limit":6}}}
-- {"final_answer":{"answer":"Alice is connected to Bob via Parent(...)","citations":[],"queries":[],"notes":[]}}
-
-Rules:
-- Prefer tools over guessing. Do NOT invent entity ids/types/relations.
-- Keep tool args small and use conservative limits.
-- Tool outputs in the transcript may be truncated or omitted for compactness; if you need more detail, call tools again.
-- For broad/overview questions (e.g. “explain the facts”, “what is in the snapshot”), start with `db_summary`.
-- For fuzzy/semantic lookup (“what does this mean”, “find related”, “where is X mentioned”), use `semantic_search` and then follow up with `describe_entity` / `axql_run`.
-- For doc evidence, use `fts_chunks` or `semantic_search` and then `docchunk_get` to fetch a specific chunk body.
-- For AxQL execution, prefer the typed JSON IR:
-  - When calling `axql_elaborate` or `axql_run`, pass `query_ir_v1` (NOT raw `axql` text).
-  - If you generated a query, call `axql_elaborate` first to validate it and to see inferred types, then call `axql_run`.
-- For requests that would *change* the graph (add/update facts/relationships), do NOT claim the DB changed. Instead, use `propose_relation_proposals` to generate a reviewable `proposals.json` overlay.
-- Use `propose_relations_proposals` when the user asks for multiple pairs (e.g. “Jamison is a child of Alice and Bob”).
-- If you are unsure how a relation is typed, or which fields are endpoints, use `lookup_relation` first.
-- When generating relation proposals, be careful about *direction*:
-  - `propose_relation_proposals` maps `source_name` → the relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` → (`to`/`target`/`parent`/`rhs`).
-  - If the user’s phrasing is inverse (“Bob is a parent of Jamison”), set `source_field`/`target_field` explicitly (e.g. `source_field="parent"`, `target_field="child"` for `Parent(child,parent)`), or use an alias like `parent_of`.
-- If the user wants canonical `.axi` output for a set of proposals, call `draft_axi_from_proposals` (deterministic draft; still untrusted until promoted and checked).
-- If `DocChunk` evidence exists and you used it (via `semantic_search` / `fts_chunks` / `docchunk_get`), cite the `chunk_id` in `citations`.
-- If no DocChunks are loaded, it is OK to answer from graph structure (AxQL + entity/edge inspection); note that you have no external doc evidence to cite.
-- If the question is ambiguous, return a `final_answer` that asks 1 clarifying question rather than guessing.
-
-Return JSON only (no markdown)."#;
-
-    let user = format!(
+    Ok(format!(
         r#"Question:
 {question}
 
@@ -5490,6 +7315,8 @@ Schema context (types/relations are only hints; validate via tools):
 {relation_signatures}
 - Relation constraints (meta-plane):
 {relation_constraints}
+- Rewrite rules (meta-plane; first-class ontology semantics):
+{rewrite_rules}
 - Contexts present (data plane): {contexts}
 - Times present (data plane): {times}
 
@@ -5505,23 +7332,312 @@ Return ONLY the JSON object."#,
         relations = compact_join_list(&schema.relations, 80, 2400),
         relation_signatures = relation_sigs_text,
         relation_constraints = relation_constraints_text,
+        rewrite_rules = rewrite_rules_text,
         contexts = contexts_text,
         times = times_text,
         db_summary = db_summary,
         tools_json = serde_json::to_string(tools).unwrap_or_else(|_| "[]".to_string()),
         transcript_json = serde_json::to_string(transcript).unwrap_or_else(|_| "[]".to_string()),
-    );
+    ))
+}
 
-    let content = ollama_chat(host, model, &user, Some(system), Some(serde_json::json!("json")))?;
-    parse_ollama_tool_loop_response(&content, options)
+#[cfg(feature = "llm-ollama")]
+fn ollama_tool_loop_step(
+    host: &str,
+    model: &str,
+    db: &PathDB,
+    question: &str,
+    schema: &SchemaContextV1,
+    tools: &[ToolSpecV1],
+    transcript: &[ToolLoopTranscriptItemV1],
+    snapshot_key: &str,
+    embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
+    ollama_embed_host: Option<&str>,
+    options: ToolLoopOptions,
+) -> Result<ToolLoopModelResponseV1> {
+    let user = render_tool_loop_user_prompt(
+        db,
+        question,
+        schema,
+        tools,
+        transcript,
+        snapshot_key,
+        embeddings,
+        ollama_embed_host,
+        options,
+    )?;
+    let content = ollama_chat(
+        host,
+        model,
+        &user,
+        Some(TOOL_LOOP_SYSTEM_PROMPT),
+        Some(serde_json::json!("json")),
+    )?;
+    match parse_tool_loop_response_json(&content, options) {
+        Ok(resp) => Ok(resp),
+        Err(parse_err) => {
+            if !llm_json_repair_enabled() {
+                return Ok(ToolLoopModelResponseV1 {
+                    tool_call: None,
+                    tool_calls: None,
+                    final_answer: Some(fallback_tool_loop_final_answer(
+                        db,
+                        question,
+                        transcript,
+                        options,
+                        &format!("llm returned invalid JSON: {parse_err}"),
+                    )),
+                    error: None,
+                });
+            }
+
+            let repair_user = render_json_repair_prompt(&user, &content);
+            let repaired = ollama_chat(
+                host,
+                model,
+                &repair_user,
+                Some(TOOL_LOOP_SYSTEM_PROMPT),
+                Some(serde_json::json!("json")),
+            )?;
+            match parse_tool_loop_response_json(&repaired, options) {
+                Ok(resp) => Ok(resp),
+                Err(repair_err) => Ok(ToolLoopModelResponseV1 {
+                    tool_call: None,
+                    tool_calls: None,
+                    final_answer: Some(fallback_tool_loop_final_answer(
+                        db,
+                        question,
+                        transcript,
+                        options,
+                        &format!(
+                            "llm returned invalid JSON (parse_err={parse_err}; repair_err={repair_err})"
+                        ),
+                    )),
+                    error: None,
+                }),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "llm-openai")]
+fn openai_tool_loop_step(
+    base_url: &str,
+    model: &str,
+    db: &PathDB,
+    question: &str,
+    schema: &SchemaContextV1,
+    tools: &[ToolSpecV1],
+    transcript: &[ToolLoopTranscriptItemV1],
+    snapshot_key: &str,
+    embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
+    ollama_embed_host: Option<&str>,
+    options: ToolLoopOptions,
+) -> Result<ToolLoopModelResponseV1> {
+    let api_key = openai_api_key()?;
+    let user = render_tool_loop_user_prompt(
+        db,
+        question,
+        schema,
+        tools,
+        transcript,
+        snapshot_key,
+        embeddings,
+        ollama_embed_host,
+        options,
+    )?;
+
+    let tool_call_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "name": { "type": "string" },
+            "args": { "type": "object" }
+        },
+        "required": ["name"]
+    });
+    let tool_calls_schema = json!({
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 8,
+        "items": tool_call_schema.clone()
+    });
+    let final_answer_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "answer": { "type": "string" },
+            "public_rationale": { "type": "string" },
+            "citations": { "type": "array", "items": { "type": "string" } },
+            "queries": { "type": "array", "items": { "type": "string" } },
+            "notes": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["answer"]
+    });
+    let response_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "tool_call": tool_call_schema,
+            "tool_calls": tool_calls_schema,
+            "final_answer": final_answer_schema,
+            "error": { "type": "string" }
+        },
+        "oneOf": [
+            { "required": ["tool_call"] },
+            { "required": ["tool_calls"] },
+            { "required": ["final_answer"] },
+            { "required": ["error"] }
+        ]
+    });
+    let text_format = json!({
+        "type": "json_schema",
+        "name": "axiograph_tool_loop_v1",
+        "strict": true,
+        "schema": response_schema
+    });
+
+    let content = openai_responses(
+        base_url,
+        &api_key,
+        model,
+        &user,
+        Some(TOOL_LOOP_SYSTEM_PROMPT),
+        Some(text_format.clone()),
+    )?;
+    match parse_tool_loop_response_json(&content, options) {
+        Ok(resp) => Ok(resp),
+        Err(parse_err) => {
+            if !llm_json_repair_enabled() {
+                return Ok(ToolLoopModelResponseV1 {
+                    tool_call: None,
+                    tool_calls: None,
+                    final_answer: Some(fallback_tool_loop_final_answer(
+                        db,
+                        question,
+                        transcript,
+                        options,
+                        &format!("llm returned invalid JSON: {parse_err}"),
+                    )),
+                    error: None,
+                });
+            }
+
+            let repair_user = render_json_repair_prompt(&user, &content);
+            let repaired = openai_responses(
+                base_url,
+                &api_key,
+                model,
+                &repair_user,
+                Some(TOOL_LOOP_SYSTEM_PROMPT),
+                Some(text_format),
+            )?;
+            match parse_tool_loop_response_json(&repaired, options) {
+                Ok(resp) => Ok(resp),
+                Err(repair_err) => Ok(ToolLoopModelResponseV1 {
+                    tool_call: None,
+                    tool_calls: None,
+                    final_answer: Some(fallback_tool_loop_final_answer(
+                        db,
+                        question,
+                        transcript,
+                        options,
+                        &format!(
+                            "llm returned invalid JSON (parse_err={parse_err}; repair_err={repair_err})"
+                        ),
+                    )),
+                    error: None,
+                }),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "llm-anthropic")]
+fn anthropic_tool_loop_step(
+    base_url: &str,
+    model: &str,
+    db: &PathDB,
+    question: &str,
+    schema: &SchemaContextV1,
+    tools: &[ToolSpecV1],
+    transcript: &[ToolLoopTranscriptItemV1],
+    snapshot_key: &str,
+    embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
+    ollama_embed_host: Option<&str>,
+    options: ToolLoopOptions,
+) -> Result<ToolLoopModelResponseV1> {
+    let api_key = anthropic_api_key()?;
+    let user = render_tool_loop_user_prompt(
+        db,
+        question,
+        schema,
+        tools,
+        transcript,
+        snapshot_key,
+        embeddings,
+        ollama_embed_host,
+        options,
+    )?;
+    let content = anthropic_messages(
+        base_url,
+        &api_key,
+        model,
+        &user,
+        Some(TOOL_LOOP_SYSTEM_PROMPT),
+    )?;
+    match parse_tool_loop_response_json(&content, options) {
+        Ok(resp) => Ok(resp),
+        Err(parse_err) => {
+            if !llm_json_repair_enabled() {
+                return Ok(ToolLoopModelResponseV1 {
+                    tool_call: None,
+                    tool_calls: None,
+                    final_answer: Some(fallback_tool_loop_final_answer(
+                        db,
+                        question,
+                        transcript,
+                        options,
+                        &format!("llm returned invalid JSON: {parse_err}"),
+                    )),
+                    error: None,
+                });
+            }
+
+            let repair_user = render_json_repair_prompt(&user, &content);
+            let repaired = anthropic_messages(
+                base_url,
+                &api_key,
+                model,
+                &repair_user,
+                Some(TOOL_LOOP_SYSTEM_PROMPT),
+            )?;
+            match parse_tool_loop_response_json(&repaired, options) {
+                Ok(resp) => Ok(resp),
+                Err(repair_err) => Ok(ToolLoopModelResponseV1 {
+                    tool_call: None,
+                    tool_calls: None,
+                    final_answer: Some(fallback_tool_loop_final_answer(
+                        db,
+                        question,
+                        transcript,
+                        options,
+                        &format!(
+                            "llm returned invalid JSON (parse_err={parse_err}; repair_err={repair_err})"
+                        ),
+                    )),
+                    error: None,
+                }),
+            }
+        }
+    }
 }
 
 // =============================================================================
 // Plugin protocol (stdin/stdout JSON)
 // =============================================================================
 
-#[cfg(feature = "llm-ollama")]
-fn parse_ollama_tool_loop_response(
+fn parse_tool_loop_response_json(
     content: &str,
     options: ToolLoopOptions,
 ) -> Result<ToolLoopModelResponseV1> {
@@ -5539,6 +7655,7 @@ fn parse_ollama_tool_loop_response(
     if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
         return Ok(ToolLoopModelResponseV1 {
             tool_call: None,
+            tool_calls: None,
             final_answer: None,
             error: Some(err.to_string()),
         });
@@ -5548,6 +7665,7 @@ fn parse_ollama_tool_loop_response(
         if let Ok(final_answer) = serde_json::from_value::<ToolLoopFinalV1>(final_v.clone()) {
             return Ok(ToolLoopModelResponseV1 {
                 tool_call: None,
+                tool_calls: None,
                 final_answer: Some(final_answer),
                 error: None,
             });
@@ -5559,6 +7677,7 @@ fn parse_ollama_tool_loop_response(
         if let Ok(final_answer) = serde_json::from_value::<ToolLoopFinalV1>(v.clone()) {
             return Ok(ToolLoopModelResponseV1 {
                 tool_call: None,
+                tool_calls: None,
                 final_answer: Some(final_answer),
                 error: None,
             });
@@ -5566,8 +7685,10 @@ fn parse_ollama_tool_loop_response(
         if let Some(answer) = v.get("answer").and_then(|x| x.as_str()) {
             return Ok(ToolLoopModelResponseV1 {
                 tool_call: None,
+                tool_calls: None,
                 final_answer: Some(ToolLoopFinalV1 {
                     answer: answer.to_string(),
+                    public_rationale: None,
                     citations: Vec::new(),
                     queries: Vec::new(),
                     notes: vec!["note: model returned top-level `answer`".to_string()],
@@ -5577,11 +7698,101 @@ fn parse_ollama_tool_loop_response(
         }
     }
 
+    fn maybe_convert_axql_args_to_query_ir(args: &mut serde_json::Value) {
+        let Some(obj) = args.as_object_mut() else {
+            return;
+        };
+        if obj.contains_key("query_ir_v1") {
+            // Canonicalize: if the model provided both, prefer the typed form.
+            obj.remove("axql");
+            return;
+        }
+        let Some(axql) = obj.get("axql").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let normalized = normalize_axql_candidate(axql);
+        if let Ok(parsed) = crate::axql::parse_axql_query(&normalized) {
+            let ir = QueryIrV1::from_axql_query(&parsed);
+            if let Ok(ir_json) = serde_json::to_value(&ir) {
+                obj.insert("query_ir_v1".to_string(), ir_json);
+                // Keep the tool-loop canonically typed: once we have `query_ir_v1`,
+                // drop raw AxQL to avoid “two sources of truth” in transcripts.
+                obj.remove("axql");
+            }
+        } else {
+            // Still normalize in-place to apply our "common mistakes" rewrites.
+            obj.insert("axql".to_string(), serde_json::Value::String(normalized));
+        }
+    }
+
+    fn parse_one_tool_call(
+        call_v: &serde_json::Value,
+        options: ToolLoopOptions,
+    ) -> Result<Option<ToolCallV1>> {
+        // Primary form: { "name": "...", "args": {...} }
+        if let Ok(mut call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
+            if call.name == "axql_run" || call.name == "axql_elaborate" {
+                maybe_convert_axql_args_to_query_ir(&mut call.args);
+            }
+            return Ok(Some(call));
+        }
+
+        // Common variant: { "tool": "...", "args": {...} }
+        let Some(name) = call_v
+            .get("name")
+            .or_else(|| call_v.get("tool"))
+            .and_then(|x| x.as_str())
+        else {
+            return Ok(None);
+        };
+        let mut args = call_v
+            .get("args")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if name == "axql_run" || name == "axql_elaborate" {
+            maybe_convert_axql_args_to_query_ir(&mut args);
+        }
+        if name == "axql_run" {
+            // Ensure we always apply the tool-loop row limit safety valve.
+            if let Some(obj) = args.as_object_mut() {
+                obj.entry("limit".to_string())
+                    .or_insert_with(|| serde_json::json!(options.max_rows.clamp(1, 200)));
+            }
+        }
+        Ok(Some(ToolCallV1 {
+            name: name.to_string(),
+            args,
+        }))
+    }
+
+    // Batched tool calls: {"tool_calls":[{...}, ...]}
+    if let Some(calls_v) = v.get("tool_calls").and_then(|x| x.as_array()) {
+        let mut calls: Vec<ToolCallV1> = Vec::new();
+        for c in calls_v {
+            if let Some(call) = parse_one_tool_call(c, options)? {
+                calls.push(call);
+            }
+        }
+        if !calls.is_empty() {
+            return Ok(ToolLoopModelResponseV1 {
+                tool_call: None,
+                tool_calls: Some(calls),
+                final_answer: None,
+                error: None,
+            });
+        }
+    }
+
     // Primary wrapper shape.
     if let Some(call_v) = v.get("tool_call") {
         if let Ok(call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
+            let mut call = call;
+            if call.name == "axql_run" || call.name == "axql_elaborate" {
+                maybe_convert_axql_args_to_query_ir(&mut call.args);
+            }
             return Ok(ToolLoopModelResponseV1 {
                 tool_call: Some(call),
+                tool_calls: None,
                 final_answer: None,
                 error: None,
             });
@@ -5592,12 +7803,16 @@ fn parse_ollama_tool_loop_response(
             .or_else(|| call_v.get("tool"))
             .and_then(|x| x.as_str())
         {
-            let args = call_v.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+            let mut args = call_v.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+            if name == "axql_run" || name == "axql_elaborate" {
+                maybe_convert_axql_args_to_query_ir(&mut args);
+            }
             return Ok(ToolLoopModelResponseV1 {
                 tool_call: Some(ToolCallV1 {
                     name: name.to_string(),
                     args,
                 }),
+                tool_calls: None,
                 final_answer: None,
                 error: None,
             });
@@ -5610,12 +7825,16 @@ fn parse_ollama_tool_loop_response(
         .or_else(|| v.get("tool"))
         .and_then(|x| x.as_str())
     {
-        let args = v.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        let mut args = v.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        if name == "axql_run" || name == "axql_elaborate" {
+            maybe_convert_axql_args_to_query_ir(&mut args);
+        }
         return Ok(ToolLoopModelResponseV1 {
             tool_call: Some(ToolCallV1 {
                 name: name.to_string(),
                 args,
             }),
+            tool_calls: None,
             final_answer: None,
             error: None,
         });
@@ -5624,21 +7843,26 @@ fn parse_ollama_tool_loop_response(
     // Fallback: treat an `axql`/`query_ir_v1` payload as an `axql_run` tool call.
     if v.get("axql").is_some() || v.get("query_ir_v1").is_some() {
         let mut args = serde_json::Map::new();
-        if let Some(axql) = v.get("axql").cloned() {
-            args.insert("axql".to_string(), axql);
+        if let Some(axql) = v.get("axql").and_then(|x| x.as_str()) {
+            args.insert("axql".to_string(), serde_json::Value::String(axql.to_string()));
         }
         if let Some(ir) = v.get("query_ir_v1").cloned() {
             args.insert("query_ir_v1".to_string(), ir);
         }
-        args.insert(
-            "limit".to_string(),
-            serde_json::json!(options.max_rows.clamp(1, 200)),
-        );
+        let mut args_v = serde_json::Value::Object(args);
+        maybe_convert_axql_args_to_query_ir(&mut args_v);
+        if let Some(obj) = args_v.as_object_mut() {
+            obj.insert(
+                "limit".to_string(),
+                serde_json::json!(options.max_rows.clamp(1, 200)),
+            );
+        }
         return Ok(ToolLoopModelResponseV1 {
             tool_call: Some(ToolCallV1 {
                 name: "axql_run".to_string(),
-                args: serde_json::Value::Object(args),
+                args: args_v,
             }),
+            tool_calls: None,
             final_answer: None,
             error: None,
         });
@@ -5648,6 +7872,7 @@ fn parse_ollama_tool_loop_response(
     // deterministic summary based on the tool transcript so far.
     Ok(ToolLoopModelResponseV1 {
         tool_call: None,
+        tool_calls: None,
         final_answer: None,
         error: None,
     })
@@ -5715,6 +7940,9 @@ struct SchemaContextV1 {
     /// Theory constraint summaries (keys/functionals/etc) from the meta-plane.
     #[serde(default)]
     relation_constraints: Vec<String>,
+    /// Rewrite rule summaries (first-class, `.axi`-anchored) from the meta-plane.
+    #[serde(default)]
+    rewrite_rules: Vec<String>,
     /// Sampled context/world names present in the data plane.
     #[serde(default)]
     contexts: Vec<String>,
@@ -5782,6 +8010,10 @@ impl SchemaContextV1 {
             "World",
             "DocChunk",
             "Document",
+            // Type-theory-ish runtime artifacts (explicit witnesses).
+            "PathWitness",
+            "Homotopy",
+            "Morphism",
             "ProtoService",
             "ProtoRpc",
             "ProtoMessage",
@@ -5806,6 +8038,7 @@ impl SchemaContextV1 {
             schemas: Vec::new(),
             relation_signatures: Vec::new(),
             relation_constraints: Vec::new(),
+            rewrite_rules: Vec::new(),
             contexts,
             times,
         }
@@ -5903,6 +8136,30 @@ impl SchemaContextV1 {
 
         out.relation_signatures = sigs.into_iter().take(80).collect();
         out.relation_constraints = constraint_lines.into_iter().take(80).collect();
+
+        let mut rule_lines: Vec<(usize, String)> = Vec::new();
+        for (schema_name, schema) in &meta.schemas {
+            for (theory_name, rules) in &schema.rewrite_rules_by_theory {
+                for r in rules {
+                    let vars = if r.vars.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" vars={}", r.vars.join(", "))
+                    };
+                    let line = format!(
+                        "{schema_name}.{theory_name}.{} ({}){vars}: {} -> {}",
+                        r.name, r.orientation, r.lhs, r.rhs
+                    );
+                    rule_lines.push((r.index, line));
+                }
+            }
+        }
+        rule_lines.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        out.rewrite_rules = rule_lines
+            .into_iter()
+            .take(80)
+            .map(|(_idx, line)| line)
+            .collect();
         out
     }
 }
