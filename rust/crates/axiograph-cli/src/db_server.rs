@@ -473,6 +473,10 @@ async fn handle_request(
             Ok(v) => json_response(StatusCode::OK, &v),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
         },
+        (Method::GET, "/docchunk/get") => match handle_docchunk_get(&state, req.uri().query()).await {
+            Ok(v) => json_response(StatusCode::OK, &v),
+            Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+        },
         (Method::GET, "/contexts") => match handle_contexts_get(&state).await {
             Ok(v) => json_response(StatusCode::OK, &v),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
@@ -1582,6 +1586,51 @@ async fn handle_entity_describe_get(
     })
     .await
     .map_err(|e| anyhow!("entity/describe task join failed: {e}"))?
+}
+
+async fn handle_docchunk_get(state: &Arc<ServerState>, query: Option<&str>) -> Result<serde_json::Value> {
+    let p = parse_query_params(query);
+
+    let id = p.get("id").and_then(|s| s.parse::<u32>().ok());
+    let chunk_id = p
+        .get("chunk_id")
+        .or_else(|| p.get("chunkId"))
+        .cloned();
+    let max_chars = p.get("max_chars").and_then(|s| s.parse::<usize>().ok());
+    let snapshot_override = p.get("snapshot").cloned();
+
+    let args = serde_json::json!({
+        "id": id,
+        "chunk_id": chunk_id,
+        "max_chars": max_chars,
+    });
+
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let db = if let Some(snapshot) = snapshot_override.as_deref() {
+            let SnapshotSource::Store { dir, layer, .. } = &state.config.source else {
+                return Err(anyhow!(
+                    "docchunk/get snapshot override requires a store-backed server (`--dir ...`)"
+                ));
+            };
+            let loaded = load_from_store(dir, layer, snapshot)?;
+            loaded.db
+        } else {
+            let loaded = state
+                .loaded
+                .read()
+                .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
+            loaded.db.clone()
+        };
+
+        let result = crate::llm::docchunk_get_v1(db.as_ref(), &args)?;
+        Ok::<_, anyhow::Error>(serde_json::json!({
+            "version": "axiograph_docchunk_get_v1",
+            "result": result,
+        }))
+    })
+    .await
+    .map_err(|e| anyhow!("docchunk/get task join failed: {e}"))?
 }
 
 async fn handle_contexts_get(state: &Arc<ServerState>) -> Result<serde_json::Value> {

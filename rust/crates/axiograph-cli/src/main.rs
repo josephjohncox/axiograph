@@ -3196,9 +3196,53 @@ fn sanitize_id_component(s: &str) -> String {
 
 fn proposals_from_sql_schema(
     sql_schema: &axiograph_ingest_sql::SqlSchema,
+    evidence_locator: Option<String>,
+    chunks: &[axiograph_ingest_docs::Chunk],
 ) -> Vec<axiograph_ingest_docs::ProposalV1> {
-    use axiograph_ingest_docs::{ProposalMetaV1, ProposalV1};
+    use axiograph_ingest_docs::{EvidencePointer, ProposalMetaV1, ProposalV1};
     use std::collections::HashMap;
+
+    fn evidence_for_keywords(
+        chunks: &[axiograph_ingest_docs::Chunk],
+        locator: Option<&String>,
+        keywords: &[&str],
+    ) -> Vec<EvidencePointer> {
+        if chunks.is_empty() {
+            return Vec::new();
+        }
+        let keywords: Vec<String> = keywords
+            .iter()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if keywords.is_empty() {
+            return Vec::new();
+        }
+
+        let mut best: Option<&axiograph_ingest_docs::Chunk> = None;
+        for c in chunks {
+            let text = c.text.to_ascii_lowercase();
+            if keywords.iter().all(|k| text.contains(k)) {
+                best = Some(c);
+                break;
+            }
+        }
+        if best.is_none() {
+            let first = &keywords[0];
+            best = chunks
+                .iter()
+                .find(|c| c.text.to_ascii_lowercase().contains(first));
+        }
+        let Some(best) = best else {
+            return Vec::new();
+        };
+
+        vec![EvidencePointer {
+            chunk_id: best.chunk_id.clone(),
+            locator: locator.cloned(),
+            span_id: Some(best.span_id.clone()),
+        }]
+    }
 
     let mut out: Vec<ProposalV1> = Vec::new();
 
@@ -3211,11 +3255,17 @@ fn proposals_from_sql_schema(
             attrs.insert("primary_key".to_string(), table.primary_key.join(", "));
         }
 
+        let evidence = evidence_for_keywords(
+            chunks,
+            evidence_locator.as_ref(),
+            &[&table.name, "create table"],
+        );
+
         out.push(ProposalV1::Entity {
             meta: ProposalMetaV1 {
                 proposal_id: table_id.clone(),
                 confidence: 0.98,
-                evidence: Vec::new(),
+                evidence: evidence.clone(),
                 public_rationale: "Parsed table from SQL DDL.".to_string(),
                 metadata: HashMap::new(),
                 schema_hint: Some("sql".to_string()),
@@ -3244,7 +3294,11 @@ fn proposals_from_sql_schema(
                 meta: ProposalMetaV1 {
                     proposal_id: col_id.clone(),
                     confidence: 0.98,
-                    evidence: Vec::new(),
+                    evidence: evidence_for_keywords(
+                        chunks,
+                        evidence_locator.as_ref(),
+                        &[&table.name, &col.name],
+                    ),
                     public_rationale: "Parsed column from SQL DDL.".to_string(),
                     metadata: HashMap::new(),
                     schema_hint: Some("sql".to_string()),
@@ -3266,7 +3320,7 @@ fn proposals_from_sql_schema(
                 meta: ProposalMetaV1 {
                     proposal_id: rel_id.clone(),
                     confidence: 0.98,
-                    evidence: Vec::new(),
+                    evidence: evidence.clone(),
                     public_rationale: "Derived HasColumn from parsed SQL DDL.".to_string(),
                     metadata: HashMap::new(),
                     schema_hint: Some("sql".to_string()),
@@ -3297,7 +3351,11 @@ fn proposals_from_sql_schema(
             meta: ProposalMetaV1 {
                 proposal_id: rel_id.clone(),
                 confidence: 0.98,
-                evidence: Vec::new(),
+                evidence: evidence_for_keywords(
+                    chunks,
+                    evidence_locator.as_ref(),
+                    &[&fk.from_table, &fk.to_table, "foreign key"],
+                ),
                 public_rationale: "Parsed foreign key from SQL DDL.".to_string(),
                 metadata: HashMap::new(),
                 schema_hint: Some("sql".to_string()),
@@ -3325,7 +3383,11 @@ fn proposals_from_sql_schema(
             meta: ProposalMetaV1 {
                 proposal_id: uq_id.clone(),
                 confidence: 0.98,
-                evidence: Vec::new(),
+                evidence: evidence_for_keywords(
+                    chunks,
+                    evidence_locator.as_ref(),
+                    &[&uq.table, "unique"],
+                ),
                 public_rationale: "Parsed unique key from SQL DDL.".to_string(),
                 metadata: HashMap::new(),
                 schema_hint: Some("sql".to_string()),
@@ -3352,10 +3414,43 @@ fn json_field_type_to_string(ft: &axiograph_ingest_json::JsonFieldType) -> Strin
 
 fn proposals_from_json_schema(
     schema: &axiograph_ingest_json::JsonSchema,
+    evidence_locator: Option<String>,
+    chunks: &[axiograph_ingest_docs::Chunk],
 ) -> Vec<axiograph_ingest_docs::ProposalV1> {
-    use axiograph_ingest_docs::{ProposalMetaV1, ProposalV1};
+    use axiograph_ingest_docs::{EvidencePointer, ProposalMetaV1, ProposalV1};
     use axiograph_ingest_json::{JsonType, JsonType as JT};
     use std::collections::HashMap;
+
+    fn evidence_for_field(
+        chunks: &[axiograph_ingest_docs::Chunk],
+        locator: Option<&String>,
+        field_name: &str,
+    ) -> Vec<EvidencePointer> {
+        if chunks.is_empty() {
+            return Vec::new();
+        }
+        let field_name = field_name.trim();
+        if field_name.is_empty() {
+            return Vec::new();
+        }
+        let needle = format!("\"{}\"", field_name.to_ascii_lowercase());
+        let mut best: Option<&axiograph_ingest_docs::Chunk> = None;
+        for c in chunks {
+            let text = c.text.to_ascii_lowercase();
+            if text.contains(&needle) || text.contains(&field_name.to_ascii_lowercase()) {
+                best = Some(c);
+                break;
+            }
+        }
+        let Some(best) = best.or_else(|| chunks.first()) else {
+            return Vec::new();
+        };
+        vec![EvidencePointer {
+            chunk_id: best.chunk_id.clone(),
+            locator: locator.cloned(),
+            span_id: Some(best.span_id.clone()),
+        }]
+    }
 
     let mut out: Vec<ProposalV1> = Vec::new();
 
@@ -3387,7 +3482,16 @@ fn proposals_from_json_schema(
             meta: ProposalMetaV1 {
                 proposal_id: type_id.clone(),
                 confidence: 0.85,
-                evidence: Vec::new(),
+                evidence: chunks
+                    .first()
+                    .map(|c| {
+                        vec![EvidencePointer {
+                            chunk_id: c.chunk_id.clone(),
+                            locator: evidence_locator.clone(),
+                            span_id: Some(c.span_id.clone()),
+                        }]
+                    })
+                    .unwrap_or_default(),
                 public_rationale: "Inferred JSON type from sample payload.".to_string(),
                 metadata: HashMap::new(),
                 schema_hint: Some("json".to_string()),
@@ -3429,7 +3533,7 @@ fn proposals_from_json_schema(
                 meta: ProposalMetaV1 {
                     proposal_id: field_id.clone(),
                     confidence: 0.85,
-                    evidence: Vec::new(),
+                    evidence: evidence_for_field(chunks, evidence_locator.as_ref(), &field_name),
                     public_rationale: "Inferred JSON field from sample payload.".to_string(),
                     metadata: HashMap::new(),
                     schema_hint: Some("json".to_string()),
@@ -3450,7 +3554,7 @@ fn proposals_from_json_schema(
                 meta: ProposalMetaV1 {
                     proposal_id: rel_id.clone(),
                     confidence: 0.85,
-                    evidence: Vec::new(),
+                    evidence: evidence_for_field(chunks, evidence_locator.as_ref(), &field_name),
                     public_rationale: "Derived HasField from inferred JSON schema.".to_string(),
                     metadata: HashMap::new(),
                     schema_hint: Some("json".to_string()),
@@ -3480,7 +3584,7 @@ fn proposals_from_json_schema(
                     meta: ProposalMetaV1 {
                         proposal_id: rel_id.clone(),
                         confidence: 0.75,
-                        evidence: Vec::new(),
+                        evidence: evidence_for_field(chunks, evidence_locator.as_ref(), &field_name),
                         public_rationale: "Heuristic: field type matches another inferred object."
                             .to_string(),
                         metadata: HashMap::new(),
@@ -3513,28 +3617,6 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
         .unwrap_or_default()
         .as_secs()
         .to_string();
-
-    let proposals = proposals_from_sql_schema(&sql_schema);
-    let file = axiograph_ingest_docs::ProposalsFileV1 {
-        version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
-        generated_at,
-        source: axiograph_ingest_docs::ProposalSourceV1 {
-            source_type: "sql".to_string(),
-            locator: input.to_string_lossy().to_string(),
-        },
-        schema_hint: Some("sql".to_string()),
-        proposals,
-    };
-
-    let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
-    println!("  {} {}", "→".cyan(), out.display());
-    println!(
-        "  {} {} tables, {} foreign keys",
-        "→".yellow(),
-        sql_schema.tables.len(),
-        sql_schema.foreign_keys.len()
-    );
 
     // Also emit DocChunks for RAG grounding (default: alongside the proposals output).
     let chunks_out = chunks_path
@@ -3569,6 +3651,29 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
         "→".cyan(),
         chunks_out.display(),
         chunks.len()
+    );
+
+    let proposals = proposals_from_sql_schema(&sql_schema, Some(locator.clone()), &chunks);
+    let file = axiograph_ingest_docs::ProposalsFileV1 {
+        version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
+        generated_at,
+        source: axiograph_ingest_docs::ProposalSourceV1 {
+            source_type: "sql".to_string(),
+            locator,
+        },
+        schema_hint: Some("sql".to_string()),
+        proposals,
+    };
+
+    let json = serde_json::to_string_pretty(&file)?;
+    fs::create_dir_all(out.parent().unwrap_or(std::path::Path::new(".")))?;
+    fs::write(out, &json)?;
+    println!("  {} {}", "→".cyan(), out.display());
+    println!(
+        "  {} {} tables, {} foreign keys",
+        "→".yellow(),
+        sql_schema.tables.len(),
+        sql_schema.foreign_keys.len()
     );
 
     Ok(())
@@ -3777,21 +3882,6 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
         .as_secs()
         .to_string();
 
-    let proposals = proposals_from_json_schema(&schema);
-    let file = axiograph_ingest_docs::ProposalsFileV1 {
-        version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
-        generated_at,
-        source: axiograph_ingest_docs::ProposalSourceV1 {
-            source_type: "json".to_string(),
-            locator: input.to_string_lossy().to_string(),
-        },
-        schema_hint: Some("json".to_string()),
-        proposals,
-    };
-    let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
-    println!("  {} {}", "→".cyan(), out.display());
-
     // Also emit DocChunks for RAG grounding (default: alongside the proposals output).
     let chunks_out = chunks_path
         .cloned()
@@ -3844,6 +3934,22 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
         chunks_out.display(),
         chunks.len()
     );
+
+    let proposals = proposals_from_json_schema(&schema, Some(locator.clone()), &chunks);
+    let file = axiograph_ingest_docs::ProposalsFileV1 {
+        version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
+        generated_at,
+        source: axiograph_ingest_docs::ProposalSourceV1 {
+            source_type: "json".to_string(),
+            locator,
+        },
+        schema_hint: Some("json".to_string()),
+        proposals,
+    };
+    let json = serde_json::to_string_pretty(&file)?;
+    fs::create_dir_all(out.parent().unwrap_or(std::path::Path::new(".")))?;
+    fs::write(out, &json)?;
+    println!("  {} {}", "→".cyan(), out.display());
 
     Ok(())
 }
@@ -5609,13 +5715,11 @@ fn cmd_ingest_dir(
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                if let Ok(sql_schema) = axiograph_ingest_sql::parse_sql_ddl(&text) {
-                    all_proposals.extend(proposals_from_sql_schema(&sql_schema));
-                }
-
-                // Evidence chunk(s) for grounding.
                 let doc_id = rel_path.to_string_lossy().to_string();
                 let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
+
+                // Evidence chunk(s) for grounding + provenance pointers.
+                let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
                 for (i, stmt) in text.split(';').enumerate() {
                     let stmt = stmt.trim();
                     if stmt.is_empty() {
@@ -5624,7 +5728,7 @@ fn cmd_ingest_dir(
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("kind".to_string(), "sql_ddl".to_string());
                     metadata.insert("source_path".to_string(), doc_id.clone());
-                    all_chunks.push(axiograph_ingest_docs::Chunk {
+                    chunks.push(axiograph_ingest_docs::Chunk {
                         chunk_id: format!("sql_{doc_digest}_{i}"),
                         document_id: doc_id.clone(),
                         page: None,
@@ -5634,6 +5738,15 @@ fn cmd_ingest_dir(
                         metadata,
                     });
                 }
+                all_chunks.extend(chunks.clone());
+
+                if let Ok(sql_schema) = axiograph_ingest_sql::parse_sql_ddl(&text) {
+                    all_proposals.extend(proposals_from_sql_schema(
+                        &sql_schema,
+                        Some(doc_id.clone()),
+                        &chunks,
+                    ));
+                }
             }
             "json" => {
                 let text = match fs::read_to_string(path) {
@@ -5642,19 +5755,19 @@ fn cmd_ingest_dir(
                 };
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                     let schema = axiograph_ingest_json::infer_schema(&value, "Root");
-                    all_proposals.extend(proposals_from_json_schema(&schema));
-
-                    // Evidence chunks for grounding.
                     let doc_id = rel_path.to_string_lossy().to_string();
                     let doc_digest =
                         axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
                     let pretty = serde_json::to_string_pretty(&value).unwrap_or(text.clone());
                     let parts = chunk_by_lines(&pretty, 2_500);
+
+                    // Evidence chunks for grounding + provenance pointers.
+                    let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
                     for (i, part) in parts.into_iter().enumerate() {
                         let mut metadata = std::collections::HashMap::new();
                         metadata.insert("kind".to_string(), "json".to_string());
                         metadata.insert("source_path".to_string(), doc_id.clone());
-                        all_chunks.push(axiograph_ingest_docs::Chunk {
+                        chunks.push(axiograph_ingest_docs::Chunk {
                             chunk_id: format!("json_{doc_digest}_{i}"),
                             document_id: doc_id.clone(),
                             page: None,
@@ -5664,6 +5777,12 @@ fn cmd_ingest_dir(
                             metadata,
                         });
                     }
+                    all_chunks.extend(chunks.clone());
+                    all_proposals.extend(proposals_from_json_schema(
+                        &schema,
+                        Some(doc_id.clone()),
+                        &chunks,
+                    ));
                 }
             }
             "nt" | "ntriples" | "ttl" | "turtle" | "nq" | "nquads" | "trig" | "rdf" | "owl"

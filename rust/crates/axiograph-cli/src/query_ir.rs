@@ -13,11 +13,241 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::BTreeMap;
 
 use crate::axql::{parse_axql_path_expr, AxqlAtom, AxqlContextSpec, AxqlQuery, AxqlTerm};
 
 pub const QUERY_IR_V1_VERSION: u32 = 1;
+
+/// JSON schema for `QueryIrV1` (for tooling/LLMs).
+///
+/// This is intentionally hand-written and conservative:
+/// - it documents the IR shape in a machine-readable way,
+/// - it is used by the LLM tool-loop to strongly bias models toward producing
+///   `query_ir_v1` rather than brittle AxQL text,
+/// - it is **not** a compatibility promise yet (v1 is an internal bridge).
+pub fn query_ir_v1_json_schema() -> serde_json::Value {
+    // Notes on schema design:
+    //
+    // - We include both the canonical field names (`select_vars`, `where_atoms`) and the
+    //   user-friendly aliases (`select`, `where`) because serde accepts both.
+    // - For terms/contexts we allow the compact string/integer forms, but models should
+    //   prefer the explicit object forms to avoid ambiguity.
+    //
+    // The schema is embedded inside the LLM tool definitions; it is not used for
+    // untrusted runtime validation (we still parse with serde + do semantic checks).
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "version": { "type": "integer", "const": QUERY_IR_V1_VERSION },
+            "select": { "type": "array", "items": { "type": "string" } },
+            "select_vars": { "type": "array", "items": { "type": "string" } },
+            "where": { "type": "array", "items": { "$ref": "#/$defs/query_atom" } },
+            "where_atoms": { "type": "array", "items": { "$ref": "#/$defs/query_atom" } },
+            "disjuncts": {
+                "type": "array",
+                "items": { "type": "array", "items": { "$ref": "#/$defs/query_atom" } }
+            },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+            "max_hops": { "type": "integer", "minimum": 0, "maximum": 1000 },
+            "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+            "contexts": { "type": "array", "items": { "$ref": "#/$defs/query_context" } }
+        },
+        "required": ["version"],
+        "oneOf": [
+            { "required": ["where"] },
+            { "required": ["where_atoms"] },
+            { "required": ["disjuncts"] }
+        ],
+        "$defs": {
+            "query_term": {
+                "description": "A query term. Preferred object forms: {kind:var|name|entity|wildcard}. Compact forms: string (\"?x\" or \"Alice\" or \"_\") or integer id.",
+                "oneOf": [
+                    { "type": "string" },
+                    { "type": "integer", "minimum": 0 },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind"],
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "kind": { "const": "var" },
+                                    "name": { "type": "string" }
+                                },
+                                "required": ["kind", "name"]
+                            },
+                            {
+                                "properties": {
+                                    "kind": { "const": "name" },
+                                    "value": { "type": "string" }
+                                },
+                                "required": ["kind", "value"]
+                            },
+                            {
+                                "properties": {
+                                    "kind": { "const": "entity" },
+                                    "key": { "type": "string" },
+                                    "value": { "type": "string" }
+                                },
+                                "required": ["kind", "key", "value"]
+                            },
+                            {
+                                "properties": { "kind": { "const": "wildcard" } },
+                                "required": ["kind"]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "query_context": {
+                "description": "Context/world selector for scoping fact-node matches.",
+                "oneOf": [
+                    { "type": "string" },
+                    { "type": "integer", "minimum": 0 },
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind"],
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "kind": { "const": "name" },
+                                    "name": { "type": "string" }
+                                },
+                                "required": ["kind", "name"]
+                            },
+                            {
+                                "properties": {
+                                    "kind": { "const": "entity_id" },
+                                    "id": { "type": "integer", "minimum": 0 }
+                                },
+                                "required": ["kind", "id"]
+                            }
+                        ]
+                    }
+                ]
+            },
+            "query_atom": {
+                "type": "object",
+                "required": ["kind"],
+                "oneOf": [
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "type" },
+                            "term": { "$ref": "#/$defs/query_term" },
+                            "type": { "type": "string" },
+                            "ty": { "type": "string" },
+                            "type_name": { "type": "string" }
+                        },
+                        "required": ["kind", "term"],
+                        "anyOf": [
+                            { "required": ["type"] },
+                            { "required": ["ty"] },
+                            { "required": ["type_name"] }
+                        ]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "edge" },
+                            "left": { "$ref": "#/$defs/query_term" },
+                            "path": { "type": "string" },
+                            "right": { "$ref": "#/$defs/query_term" }
+                        },
+                        "required": ["kind", "left", "path", "right"]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "attr_eq" },
+                            "term": { "$ref": "#/$defs/query_term" },
+                            "key": { "type": "string" },
+                            "value": { "type": "string" }
+                        },
+                        "required": ["kind", "term", "key", "value"]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "attr_contains" },
+                            "term": { "$ref": "#/$defs/query_term" },
+                            "key": { "type": "string" },
+                            "needle": { "type": "string" }
+                        },
+                        "required": ["kind", "term", "key", "needle"]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "attr_fts" },
+                            "term": { "$ref": "#/$defs/query_term" },
+                            "key": { "type": "string" },
+                            "query": { "type": "string" }
+                        },
+                        "required": ["kind", "term", "key", "query"]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "attr_fuzzy" },
+                            "term": { "$ref": "#/$defs/query_term" },
+                            "key": { "type": "string" },
+                            "needle": { "type": "string" },
+                            "max_dist": { "type": "integer", "minimum": 0, "maximum": 16 }
+                        },
+                        "required": ["kind", "term", "key", "needle", "max_dist"]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "fact" },
+                            "fact": { "$ref": "#/$defs/query_term" },
+                            "relation": { "type": "string" },
+                            "fields": {
+                                "type": "object",
+                                "additionalProperties": { "$ref": "#/$defs/query_term" }
+                            }
+                        },
+                        "required": ["kind", "relation", "fields"]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "has_out" },
+                            "term": { "$ref": "#/$defs/query_term" },
+                            "rels": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "required": ["kind", "term", "rels"]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "attrs" },
+                            "term": { "$ref": "#/$defs/query_term" },
+                            "pairs": { "type": "object", "additionalProperties": { "type": "string" } }
+                        },
+                        "required": ["kind", "term", "pairs"]
+                    },
+                    {
+                        "additionalProperties": false,
+                        "properties": {
+                            "kind": { "const": "shape" },
+                            "term": { "$ref": "#/$defs/query_term" },
+                            "type_name": { "type": "string" },
+                            "rels": { "type": "array", "items": { "type": "string" } },
+                            "attrs": { "type": "object", "additionalProperties": { "type": "string" } }
+                        },
+                        "required": ["kind", "term"]
+                    }
+                ]
+            }
+        }
+    })
+}
 
 /// A JSON query IR that compiles into AxQL.
 ///

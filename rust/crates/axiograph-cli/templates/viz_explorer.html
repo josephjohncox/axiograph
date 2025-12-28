@@ -148,6 +148,7 @@ a.link:hover { text-decoration: underline; }
     <span id="llm_status" class="muted"></span>
   </div>
   <div id="llm_chat" class="llmchat" style="margin-top:8px;"></div>
+  <details style="margin-top:8px;"><summary class="muted">citations / opened chunk</summary><pre id="llm_citations" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
   <details style="margin-top:8px;"><summary class="muted">llm debug</summary><pre id="llm_debug" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
 </div>
 
@@ -242,6 +243,7 @@ const llmToQueryBtn = document.getElementById("llm_to_query");
 const llmClearBtn = document.getElementById("llm_clear");
 const llmStatusEl = document.getElementById("llm_status");
 const llmChatEl = document.getElementById("llm_chat");
+const llmCitationsEl = document.getElementById("llm_citations");
 const llmDebugEl = document.getElementById("llm_debug");
 
 const axqlQueryEl = document.getElementById("axql_query");
@@ -2241,7 +2243,13 @@ function loadLlmHistory() {
     const v = JSON.parse(raw);
     if (!Array.isArray(v)) return [];
     return v
-      .map(m => ({ role: String(m && m.role || ""), content: String(m && m.content || "") }))
+      .map(m => ({
+        role: String(m && m.role || ""),
+        content: String(m && m.content || ""),
+        citations: Array.isArray(m && m.citations) ? m.citations.map(x => String(x)) : [],
+        queries: Array.isArray(m && m.queries) ? m.queries.map(x => String(x)) : [],
+        notes: Array.isArray(m && m.notes) ? m.notes.map(x => String(x)) : []
+      }))
       .filter(m => m.role && m.content);
   } catch (_e) {
     return [];
@@ -2255,6 +2263,57 @@ function saveLlmHistory() {
 }
 
 let llmHistory = loadLlmHistory(); // {role, content}
+
+function setLlmCitations(obj) {
+  if (!llmCitationsEl) return;
+  if (obj == null) {
+    llmCitationsEl.textContent = "";
+    return;
+  }
+  try {
+    if (typeof obj === "string") llmCitationsEl.textContent = obj;
+    else llmCitationsEl.textContent = JSON.stringify(obj, null, 2);
+  } catch {
+    llmCitationsEl.textContent = String(obj);
+  }
+}
+
+async function openDocChunk(chunkId) {
+  const proto = window.location && window.location.protocol;
+  if (!(proto === "http:" || proto === "https:")) {
+    setLlmCitations("DocChunk lookup requires server mode (open via `axiograph db serve`).");
+    return;
+  }
+
+  const chunk_id = String(chunkId || "").trim();
+  if (!chunk_id) return;
+  setLlmCitations(`loading ${chunk_id}…`);
+
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    const snapshot = params.get("snapshot");
+    const q = new URLSearchParams();
+    q.set("chunk_id", chunk_id);
+    q.set("max_chars", "4000");
+    if (snapshot) q.set("snapshot", snapshot);
+
+    const resp = await fetch(`/docchunk/get?${q.toString()}`);
+    const data = await resp.json();
+    if (!resp.ok) {
+      setLlmCitations(data);
+      return;
+    }
+    setLlmCitations(data);
+
+    const id = data && data.result && typeof data.result.id === "number" ? data.result.id : null;
+    if (typeof id === "number") {
+      ui.highlightIds = new Set([id]);
+      rerender();
+    }
+  } catch (e) {
+    setLlmCitations(String(e));
+  }
+}
 
 function renderLlmChat() {
   if (!llmChatEl) return;
@@ -2277,13 +2336,65 @@ function renderLlmChat() {
     text.textContent = String(m.content || "");
     box.appendChild(role);
     box.appendChild(text);
+
+    const citations = Array.isArray(m.citations) ? m.citations.filter(Boolean) : [];
+    if (citations.length) {
+      const citeBox = document.createElement("div");
+      citeBox.className = "muted";
+      citeBox.style.marginTop = "6px";
+      citeBox.textContent = `citations (${citations.length}): `;
+      for (const c of citations.slice(0, 8)) {
+        const chunkId = String(c);
+        const openBtn = document.createElement("button");
+        openBtn.type = "button";
+        openBtn.className = "btn";
+        openBtn.style.padding = "2px 8px";
+        openBtn.style.marginLeft = "6px";
+        openBtn.textContent = chunkId;
+        openBtn.title = "Open DocChunk";
+        openBtn.addEventListener("click", () => openDocChunk(chunkId));
+        citeBox.appendChild(openBtn);
+      }
+      if (citations.length > 8) {
+        const more = document.createElement("span");
+        more.className = "muted";
+        more.textContent = ` +${citations.length - 8} more`;
+        citeBox.appendChild(more);
+      }
+      box.appendChild(citeBox);
+    }
+
+    const queries = Array.isArray(m.queries) ? m.queries.filter(Boolean) : [];
+    if (queries.length) {
+      const det = document.createElement("details");
+      det.style.marginTop = "6px";
+      const sum = document.createElement("summary");
+      sum.className = "muted";
+      sum.textContent = `queries (${queries.length})`;
+      const pre = document.createElement("pre");
+      pre.style.whiteSpace = "pre-wrap";
+      pre.style.maxHeight = "200px";
+      pre.style.overflow = "auto";
+      pre.style.margin = "6px 0 0 0";
+      pre.textContent = queries.join("\n");
+      det.appendChild(sum);
+      det.appendChild(pre);
+      box.appendChild(det);
+    }
     llmChatEl.appendChild(box);
   }
   llmChatEl.scrollTop = llmChatEl.scrollHeight;
 }
 
-function appendLlmMessage(role, content) {
-  llmHistory.push({ role, content: String(content || "") });
+function appendLlmMessage(role, content, extras) {
+  const e = extras && typeof extras === "object" ? extras : {};
+  llmHistory.push({
+    role,
+    content: String(content || ""),
+    citations: Array.isArray(e.citations) ? e.citations.map(x => String(x)) : [],
+    queries: Array.isArray(e.queries) ? e.queries.map(x => String(x)) : [],
+    notes: Array.isArray(e.notes) ? e.notes.map(x => String(x)) : []
+  });
   if (llmHistory.length > 40) llmHistory.splice(0, llmHistory.length - 40);
   // Keep localStorage bounded too (models sometimes emit long answers).
   for (const m of llmHistory) {
@@ -2381,10 +2492,14 @@ async function llmAgentAsk() {
 
   // Send a bounded amount of prior conversation as context (assistant text is
   // untrusted; the tool-loop should validate via tools).
-  const historyToSend = llmHistory.slice(-12);
+  const historyToSend = llmHistory.slice(-12).map(m => ({
+    role: String(m && m.role || ""),
+    content: String(m && m.content || "")
+  }));
   appendLlmMessage("user", q);
   setLlmStatus("asking…");
   setLlmDebug(null);
+  setLlmCitations(null);
 
     const ctx = selectedContextFilter();
     const contexts = [];
@@ -2412,7 +2527,15 @@ async function llmAgentAsk() {
     setLlmDebug(data);
     const outcome = data && data.outcome ? data.outcome : null;
     if (outcome && outcome.final_answer && outcome.final_answer.answer) {
-      appendLlmMessage("assistant", outcome.final_answer.answer);
+      appendLlmMessage(
+        "assistant",
+        outcome.final_answer.answer,
+        {
+          citations: outcome.final_answer.citations || [],
+          queries: outcome.final_answer.queries || [],
+          notes: outcome.final_answer.notes || []
+        }
+      );
     } else {
       appendLlmMessage("assistant", "No answer.");
     }
@@ -2501,6 +2624,7 @@ if (llmClearBtn) llmClearBtn.addEventListener("click", () => {
   saveLlmHistory();
   renderLlmChat();
   setLlmDebug(null);
+  setLlmCitations(null);
   clearHighlights();
   rerender();
 });

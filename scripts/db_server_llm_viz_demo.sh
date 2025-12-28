@@ -151,6 +151,7 @@ fi
 echo ""
 echo "-- B) Start server (ephemeral port) with LLM enabled"
 READY="$OUT_DIR/ready.json"
+ADMIN_TOKEN="${ADMIN_TOKEN:-demo-admin-token}"
 LLM_HTTP_TIMEOUT_SECS="${LLM_HTTP_TIMEOUT_SECS:-240}"
 RUN_SAMPLES="${RUN_SAMPLES:-}"
 if [ -z "$RUN_SAMPLES" ]; then
@@ -178,6 +179,7 @@ fi
   --layer "$([ "$INCLUDE_DOCCHUNKS" = "1" ] && echo pathdb || echo accepted)" \
   --snapshot head \
   --listen 127.0.0.1:0 \
+  --admin-token "$ADMIN_TOKEN" \
   --ready-file "$READY" \
   "${LLM_FLAGS[@]}" \
   >"$OUT_DIR/server.log" 2>&1 &
@@ -204,6 +206,7 @@ PY
 ADDR="$(cat "$OUT_DIR/addr.txt")"
 
 echo "server: http://$ADDR"
+echo "admin token (paste into the Add/LLM tabs to commit overlays): $ADMIN_TOKEN"
 echo ""
 echo "Open this in a browser (LLM panel is in the sidebar):"
 echo "  http://$ADDR/viz?focus_name=Alice&plane=both&typed_overlay=true&hops=3&max_nodes=420"

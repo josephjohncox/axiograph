@@ -2028,14 +2028,90 @@ fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) 
 /// This is designed to avoid brittle “LLM outputs raw AxQL text”.
 fn finalize_tool_loop_outcome(
     steps: Vec<ToolLoopTranscriptItemV1>,
-    final_answer: ToolLoopFinalV1,
+    mut final_answer: ToolLoopFinalV1,
 ) -> ToolLoopOutcome {
+    tool_loop_enrich_final_answer(&steps, &mut final_answer);
     let artifacts = tool_loop_extract_artifacts(&steps);
     ToolLoopOutcome {
         steps,
         final_answer,
         artifacts,
     }
+}
+
+fn tool_loop_enrich_final_answer(steps: &[ToolLoopTranscriptItemV1], final_answer: &mut ToolLoopFinalV1) {
+    fn push_unique(out: &mut Vec<String>, seen: &mut HashSet<String>, s: String) {
+        let s = s.trim().to_string();
+        if s.is_empty() {
+            return;
+        }
+        if seen.insert(s.to_ascii_lowercase()) {
+            out.push(s);
+        }
+    }
+
+    let mut citations_out: Vec<String> = Vec::new();
+    let mut citations_seen: HashSet<String> = HashSet::new();
+    for c in &final_answer.citations {
+        push_unique(&mut citations_out, &mut citations_seen, c.clone());
+    }
+
+    let mut queries_out: Vec<String> = Vec::new();
+    let mut queries_seen: HashSet<String> = HashSet::new();
+    for q in &final_answer.queries {
+        push_unique(&mut queries_out, &mut queries_seen, q.clone());
+    }
+
+    // Auto-collect citations from evidence tools so frontends always have stable
+    // provenance handles to render/open (even if the model forgets to include them).
+    for step in steps {
+        match step.tool.as_str() {
+            "docchunk_get" => {
+                if let Some(cid) = step.result.get("chunk_id").and_then(|v| v.as_str()) {
+                    push_unique(&mut citations_out, &mut citations_seen, cid.to_string());
+                }
+            }
+            "fts_chunks" => {
+                if let Some(hits) = step.result.get("hits").and_then(|v| v.as_array()) {
+                    for h in hits.iter().take(12) {
+                        if let Some(cid) = h.get("chunk_id").and_then(|v| v.as_str()) {
+                            push_unique(&mut citations_out, &mut citations_seen, cid.to_string());
+                        }
+                    }
+                }
+            }
+            "semantic_search" => {
+                if let Some(hits) = step.result.get("chunk_hits").and_then(|v| v.as_array()) {
+                    for h in hits.iter().take(12) {
+                        if let Some(cid) = h.get("chunk_id").and_then(|v| v.as_str()) {
+                            push_unique(&mut citations_out, &mut citations_seen, cid.to_string());
+                        }
+                    }
+                }
+            }
+            "propose_relation_proposals" | "propose_relations_proposals" => {
+                if let Some(chunks) = step.result.get("chunks").and_then(|v| v.as_array()) {
+                    for c in chunks.iter().take(12) {
+                        if let Some(cid) = c.get("chunk_id").and_then(|v| v.as_str()) {
+                            push_unique(&mut citations_out, &mut citations_seen, cid.to_string());
+                        }
+                    }
+                }
+            }
+            "axql_run" => {
+                if let Some(q) = step.result.get("query").and_then(|v| v.as_str()) {
+                    push_unique(&mut queries_out, &mut queries_seen, q.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Keep payloads bounded; the UI can still inspect the full transcript.
+    citations_out.truncate(24);
+    queries_out.truncate(24);
+    final_answer.citations = citations_out;
+    final_answer.queries = queries_out;
 }
 
 pub(crate) fn run_tool_loop_with_meta(
@@ -2708,6 +2784,8 @@ fn is_trivial_model_answer(answer: &str) -> bool {
 }
 
 fn tool_loop_tools_schema() -> Vec<ToolSpecV1> {
+    let query_ir_v1_schema = crate::query_ir::query_ir_v1_json_schema();
+
     vec![
         ToolSpecV1 {
             name: "db_summary".to_string(),
@@ -2815,26 +2893,36 @@ fn tool_loop_tools_schema() -> Vec<ToolSpecV1> {
         ToolSpecV1 {
             name: "axql_elaborate".to_string(),
             description: "Typecheck/elaborate an AxQL query using the meta-plane, returning the elaborated query + inferred types + plan.".to_string(),
-            args_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "axql": { "type": "string" },
-                    "query_ir_v1": { "type": "object" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                }
-            }),
+            args_schema: {
+                let mut schema = serde_json::json!({
+                    "type": "object",
+                    "required": ["query_ir_v1"],
+                    "properties": {
+                        "query_ir_v1": query_ir_v1_schema.clone(),
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    }
+                });
+                // Backward-compatible escape hatch for older models; prefer query_ir_v1.
+                schema["properties"]["axql"] = serde_json::json!({ "type": "string" });
+                schema
+            },
         },
         ToolSpecV1 {
             name: "axql_run".to_string(),
             description: "Run an AxQL query (or query_ir_v1) over the snapshot (uncertified, unless you later emit a certificate).".to_string(),
-            args_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "axql": { "type": "string" },
-                    "query_ir_v1": { "type": "object" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                }
-            }),
+            args_schema: {
+                let mut schema = serde_json::json!({
+                    "type": "object",
+                    "required": ["query_ir_v1"],
+                    "properties": {
+                        "query_ir_v1": query_ir_v1_schema.clone(),
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    }
+                });
+                // Backward-compatible escape hatch for older models; prefer query_ir_v1.
+                schema["properties"]["axql"] = serde_json::json!({ "type": "string" });
+                schema
+            },
         },
         ToolSpecV1 {
             name: "viz_render".to_string(),
@@ -3328,6 +3416,10 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         "incoming": incoming,
         "highlight_ids": highlight_ids.into_iter().collect::<Vec<_>>(),
     }))
+}
+
+pub(crate) fn docchunk_get_v1(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::Value> {
+    tool_docchunk_get(db, args, ToolLoopOptions::default())
 }
 
 fn tool_lookup_type(
@@ -5277,6 +5369,9 @@ Rules:
 - For broad/overview questions (e.g. “explain the facts”, “what is in the snapshot”), start with `db_summary`.
 - For fuzzy/semantic lookup (“what does this mean”, “find related”, “where is X mentioned”), use `semantic_search` and then follow up with `describe_entity` / `axql_run`.
 - For doc evidence, use `fts_chunks` or `semantic_search` and then `docchunk_get` to fetch a specific chunk body.
+- For AxQL execution, prefer the typed JSON IR:
+  - When calling `axql_elaborate` or `axql_run`, pass `query_ir_v1` (NOT raw `axql` text).
+  - If you generated a query, call `axql_elaborate` first to validate it and to see inferred types, then call `axql_run`.
 - For requests that would *change* the graph (add/update facts/relationships), do NOT claim the DB changed. Instead, use `propose_relation_proposals` to generate a reviewable `proposals.json` overlay.
 - Use `propose_relations_proposals` when the user asks for multiple pairs (e.g. “Jamison is a child of Alice and Bob”).
 - If you are unsure how a relation is typed, or which fields are endpoints, use `lookup_relation` first.
@@ -5284,7 +5379,7 @@ Rules:
   - `propose_relation_proposals` maps `source_name` → the relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` → (`to`/`target`/`parent`/`rhs`).
   - If the user’s phrasing is inverse (“Bob is a parent of Jamison”), set `source_field`/`target_field` explicitly (e.g. `source_field="parent"`, `target_field="child"` for `Parent(child,parent)`), or use an alias like `parent_of`.
 - If the user wants canonical `.axi` output for a set of proposals, call `draft_axi_from_proposals` (deterministic draft; still untrusted until promoted and checked).
-- If `DocChunk` evidence exists and you used it (via `fts_chunks`), cite it in `citations`.
+- If `DocChunk` evidence exists and you used it (via `semantic_search` / `fts_chunks` / `docchunk_get`), cite the `chunk_id` in `citations`.
 - If no DocChunks are loaded, it is OK to answer from graph structure (AxQL + entity/edge inspection); note that you have no external doc evidence to cite.
 - If the question is ambiguous, return a `final_answer` that asks 1 clarifying question rather than guessing.
 
