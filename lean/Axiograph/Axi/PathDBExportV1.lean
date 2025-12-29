@@ -32,6 +32,7 @@ def prefixEntity : String := "Entity_"
 def prefixRelation : String := "Relation_"
 def prefixStringId : String := "StringId_"
 def prefixF32Hex : String := "F32Hex_"
+def prefixStrUtf8Hex : String := "StrUtf8Hex_"
 
 structure RelationInfoRow where
   relTypeId : Nat
@@ -85,6 +86,24 @@ def parseHexNat (hex : String) : Except String Nat := do
       | throw s!"invalid hex digit `{c}` in `{hex}`"
     acc := (acc * 16) + v
   pure acc
+
+def decodeHexPairsToChars : List Char → Except String (List Char)
+  | [] => pure []
+  | [a] => throw s!"expected an even number of hex digits, got trailing `{a}`"
+  | a :: b :: rest => do
+      let some hi := hexDigitValue? a
+        | throw s!"invalid hex digit `{a}`"
+      let some lo := hexDigitValue? b
+        | throw s!"invalid hex digit `{b}`"
+      let byte : Nat := (hi * 16) + lo
+      let restChars ← decodeHexPairsToChars rest
+      pure (Char.ofNat byte :: restChars)
+
+def strUtf8HexTokenToString (token : String) : Except String String := do
+  let some hex := stripPrefix? token prefixStrUtf8Hex
+    | throw s!"expected token prefix `{prefixStrUtf8Hex}`, got `{token}`"
+  let chars ← decodeHexPairsToChars hex.toList
+  pure (String.mk chars)
 
 def pow2 (n : Nat) : Nat := Nat.pow 2 n
 
@@ -270,5 +289,28 @@ def extractEntityAttribute (m : SchemaV1Module) : Except String (Std.HashMap (Na
     entityAttr := entityAttr.insert k valueId
 
   pure entityAttr
+
+def extractInternedString (m : SchemaV1Module) : Except String (Std.HashMap Nat String) := do
+  let inst ← findInstance m
+  let a ← findAssignment inst "interned_string"
+
+  let mut out : Std.HashMap Nat String := {}
+  for item in a.value.items do
+    let fields ← requireTuple item
+
+    let some idTok := tupleField? fields "interned_id"
+      | throw "interned_string tuple missing field `interned_id`"
+    let some valueTok := tupleField? fields "value"
+      | throw "interned_string tuple missing field `value`"
+
+    let id ← parseNatToken prefixStringId idTok
+    let value ← strUtf8HexTokenToString valueTok
+
+    if out.contains id then
+      throw s!"duplicate interned_string row for `{prefixStringId}{id}`"
+
+    out := out.insert id value
+
+  pure out
 
 end Axiograph.Axi.PathDBExportV1

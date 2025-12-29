@@ -6760,7 +6760,7 @@ fn tool_axql_run(
     let notes = report.notes.clone();
     let plan = prepared.explain_plan_lines();
 
-    let result = prepared.execute(db)?;
+    let result = prepared.execute(db, meta)?;
     let mut preview = PluginResultsV1::from_axql_result(db, &result);
     if preview.rows.len() > cap {
         preview.rows.truncate(cap);

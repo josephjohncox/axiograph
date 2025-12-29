@@ -3253,7 +3253,7 @@ fn cmd_query_cert(
         crate::axql::certify_axql_query(&db, &query)?
     } else {
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
-        crate::axql::certify_axql_query_v3_with_meta(&db, &query, Some(&meta))?
+        crate::axql::certify_axql_query_v3_with_meta(&db, &query, Some(&meta), &anchor_digest)?
     }
     .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1 {
         axi_digest_v1: anchor_digest,

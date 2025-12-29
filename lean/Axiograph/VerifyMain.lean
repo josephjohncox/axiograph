@@ -23,6 +23,8 @@ structure SnapshotContext where
   entityType : Std.HashMap Nat Nat
   /-- Attribute facts extracted from `entity_attribute` ((entity id, key id) → value id). -/
   entityAttribute : Std.HashMap (Nat × Nat) Nat
+  /-- Interned strings extracted from `interned_string` (string id → decoded UTF-8). -/
+  internedString : Std.HashMap Nat String
   deriving Repr
 
 structure AnchorContext where
@@ -49,7 +51,11 @@ def loadAxiV1Anchor (path : System.FilePath) : IO (Except String AnchorContext) 
             | .ok entityType =>
                 match Axiograph.Axi.PathDBExportV1.extractEntityAttribute m with
                 | .error _ => none
-                | .ok entityAttribute => some { relationInfo := relInfo, entityType, entityAttribute }
+                | .ok entityAttribute =>
+                    match Axiograph.Axi.PathDBExportV1.extractInternedString m with
+                    | .error _ => none
+                    | .ok internedString =>
+                        some { relationInfo := relInfo, entityType, entityAttribute, internedString }
       pure <| .ok { digestV1 := digest, module := m, snapshot? := snapshot? }
 
 def verifyCertificateJson
@@ -82,14 +88,14 @@ def verifyCertificateJson
         | throw s!"missing `.axi` anchor context for digest `{anchor.axiDigestV1}`"
       let some snap := ctx.snapshot?
         | throw "query_result_v1 requires a `PathDBExportV1` anchor (missing snapshot tables)"
-      let res ← Query.verifyQueryResultProofV1Anchored snap.relationInfo snap.entityType snap.entityAttribute proof
+      let res ← Query.verifyQueryResultProofV1Anchored snap.relationInfo snap.entityType snap.entityAttribute snap.internedString proof
       pure (.queryResultV1 res)
   | some anchor, .queryResultV2 proof =>
       let some ctx := anchors.get? anchor.axiDigestV1
         | throw s!"missing `.axi` anchor context for digest `{anchor.axiDigestV1}`"
       let some snap := ctx.snapshot?
         | throw "query_result_v2 requires a `PathDBExportV1` anchor (missing snapshot tables)"
-      let res ← Query.verifyQueryResultProofV2Anchored snap.relationInfo snap.entityType snap.entityAttribute proof
+      let res ← Query.verifyQueryResultProofV2Anchored snap.relationInfo snap.entityType snap.entityAttribute snap.internedString proof
       pure (.queryResultV2 res)
   | some anchor, .queryResultV3 proof =>
       let some ctx := anchors.get? anchor.axiDigestV1

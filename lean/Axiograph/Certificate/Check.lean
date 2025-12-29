@@ -186,6 +186,71 @@ def toRegularExpression : QueryRegexV1 → RegularExpression Nat
   | .opt inner =>
       (1 : RegularExpression Nat) + toRegularExpression inner
 
+/-!
+### Subtyping in anchored snapshots
+
+When the anchor snapshot contains the meta-plane, Rust interprets type atoms as:
+
+`?x : T`  means  “x has type T **or any subtype of T**”.
+
+This matches typical query semantics (asking for `Agent` should include `Firm`,
+`Household`, …). For legacy snapshot-anchored certificates we recover the
+subtyping relation from meta-plane edges (`axi_subtype_of`) when present.
+
+If no meta-plane subtype edges exist in the snapshot, we fall back to **exact**
+type matching (subtype = supertype).
+-/
+
+structure SubtypeIndexV1 where
+  /-- Subtyping adjacency (sub → immediate supertypes). -/
+  supertypesOf : Std.HashMap Nat (Array Nat) := {}
+  deriving Repr
+
+def findInternedId? (internedString : Std.HashMap Nat String) (needle : String) : Option Nat :=
+  Id.run do
+    for (k, v) in internedString.toList do
+      if v == needle then
+        return some k
+    return none
+
+def buildSubtypeIndexV1
+    (relationInfo : Std.HashMap Nat RelationInfoRow)
+    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
+    (internedString : Std.HashMap Nat String) : SubtypeIndexV1 :=
+  match findInternedId? internedString "axi_subtype_of",
+        findInternedId? internedString "name" with
+  | some subtypeRelTypeId, some nameKeyId =>
+      Id.run do
+        let mut out : Std.HashMap Nat (Array Nat) := {}
+        for (_, row) in relationInfo.toList do
+          if row.relTypeId == subtypeRelTypeId then
+            match entityAttribute.get? (row.source, nameKeyId),
+                  entityAttribute.get? (row.target, nameKeyId) with
+            | some subNameId, some supNameId =>
+                let current := out.getD subNameId #[]
+                out := out.insert subNameId (current.push supNameId)
+            | _, _ => pure ()
+        pure { supertypesOf := out }
+  | _, _ => {}
+
+def isSubtypeV1Fuel (idx : SubtypeIndexV1) (fuel : Nat) (subType superType : Nat) (seen : Std.HashSet Nat) : Bool :=
+  match fuel with
+  | 0 => false
+  | fuel + 1 =>
+      if subType == superType then
+        true
+      else if seen.contains subType then
+        false
+      else
+        let seen := seen.insert subType
+        match idx.supertypesOf.get? subType with
+        | none => false
+        | some sups =>
+            sups.any (fun next => isSubtypeV1Fuel idx fuel next superType seen)
+
+def isSubtypeV1 (idx : SubtypeIndexV1) (subType superType : Nat) : Bool :=
+  isSubtypeV1Fuel idx (idx.supertypesOf.size + 1) subType superType {}
+
 def reachabilityRelTypes : ReachabilityProofV2 → List Nat
   | .reflexive _ => []
   | .step _ relType _ _ _ rest => relType :: reachabilityRelTypes rest
@@ -204,6 +269,7 @@ def verifyQueryRowV1Anchored
     (relationInfo : Std.HashMap Nat RelationInfoRow)
     (entityType : Std.HashMap Nat Nat)
     (entityAttribute : Std.HashMap (Nat × Nat) Nat)
+    (subtypes : SubtypeIndexV1)
     (query : QueryV1)
     (row : QueryRowV1) : Except String Unit := do
   -- Build a binding map and reject duplicates (fail-closed).
@@ -226,8 +292,8 @@ def verifyQueryRowV1Anchored
           throw s!"type witness mismatch: expected entity={entity'}, got {entity}"
         let some actual := entityType.get? entity
           | throw s!"missing entity_type fact for entity {entity}"
-        if actual != typeId then
-          throw s!"entity_type mismatch for entity {entity}: expected type_id={typeId}, got {actual}"
+        if !isSubtypeV1 subtypes actual typeId then
+          throw s!"entity_type mismatch for entity {entity}: expected type_id={typeId} (allowing subtypes), got {actual}"
 
     | .attrEq term keyId valueId, .attrEq entity keyId' valueId' => do
         if keyId != keyId' || valueId != valueId' then
@@ -275,9 +341,11 @@ def verifyQueryResultProofV1Anchored
     (relationInfo : Std.HashMap Nat RelationInfoRow)
     (entityType : Std.HashMap Nat Nat)
     (entityAttribute : Std.HashMap (Nat × Nat) Nat)
+    (internedString : Std.HashMap Nat String)
     (proof : QueryResultProofV1) : Except String QueryResultV1 := do
+  let subtypes := buildSubtypeIndexV1 relationInfo entityAttribute internedString
   for row in proof.rows do
-    verifyQueryRowV1Anchored relationInfo entityType entityAttribute proof.query row
+    verifyQueryRowV1Anchored relationInfo entityType entityAttribute subtypes proof.query row
   pure { rowCount := proof.rows.size, truncated := proof.truncated }
 
 structure QueryResultV2 where
@@ -289,6 +357,7 @@ def verifyQueryRowV2Anchored
     (relationInfo : Std.HashMap Nat RelationInfoRow)
     (entityType : Std.HashMap Nat Nat)
     (entityAttribute : Std.HashMap (Nat × Nat) Nat)
+    (subtypes : SubtypeIndexV1)
     (query : QueryV2)
     (row : QueryRowV2) : Except String Unit := do
   -- Build a binding map and reject duplicates (fail-closed).
@@ -321,8 +390,8 @@ def verifyQueryRowV2Anchored
           throw s!"type witness mismatch: expected entity={entity'}, got {entity}"
         let some actual := entityType.get? entity
           | throw s!"missing entity_type fact for entity {entity}"
-        if actual != typeId then
-          throw s!"entity_type mismatch for entity {entity}: expected type_id={typeId}, got {actual}"
+        if !isSubtypeV1 subtypes actual typeId then
+          throw s!"entity_type mismatch for entity {entity}: expected type_id={typeId} (allowing subtypes), got {actual}"
 
     | .attrEq term keyId valueId, .attrEq entity keyId' valueId' => do
         if keyId != keyId' || valueId != valueId' then
@@ -370,9 +439,11 @@ def verifyQueryResultProofV2Anchored
     (relationInfo : Std.HashMap Nat RelationInfoRow)
     (entityType : Std.HashMap Nat Nat)
     (entityAttribute : Std.HashMap (Nat × Nat) Nat)
+    (internedString : Std.HashMap Nat String)
     (proof : QueryResultProofV2) : Except String QueryResultV2 := do
+  let subtypes := buildSubtypeIndexV1 relationInfo entityAttribute internedString
   for row in proof.rows do
-    verifyQueryRowV2Anchored relationInfo entityType entityAttribute proof.query row
+    verifyQueryRowV2Anchored relationInfo entityType entityAttribute subtypes proof.query row
   pure { rowCount := proof.rows.size, truncated := proof.truncated }
 
 /-!
@@ -436,6 +507,38 @@ def tupleEntityTypeName (schema : SchemaV1Schema) (relationName : String) : Stri
     relationName ++ "Fact"
   else
     relationName
+
+/-!
+## Subtyping (schema-level)
+
+When checking `query_result_v3` certificates, Rust treats a type atom `?x : T`
+as satisfied when `?x` has type `U` and `U <: T` in the schema’s subtyping
+closure (not only when `U = T`).
+
+This helper mirrors that behavior so Lean accepts witnesses that rely on
+subtyping.
+-/
+
+def isSubtypeInSchemaFuel
+    (schema : SchemaV1Schema)
+    (fuel : Nat)
+    (subType : String)
+    (superType : String)
+    (seen : Std.HashSet String) : Bool :=
+  match fuel with
+  | 0 => false
+  | fuel + 1 =>
+      if subType == superType then
+        true
+      else if seen.contains subType then
+        false
+      else
+        let seen := seen.insert subType
+        schema.subtypes.any (fun st =>
+          st.sub == subType && isSubtypeInSchemaFuel schema fuel st.sup superType seen)
+
+def isSubtypeInSchema (schema : SchemaV1Schema) (subType superType : String) : Bool :=
+  isSubtypeInSchemaFuel schema (schema.objects.size + 1) subType superType {}
 
 def deriveBinaryEndpointsV3 (decl : RelationDeclV1) (fields : Std.HashMap String String) :
     Option (String × String) :=
@@ -679,13 +782,15 @@ def verifyQueryRowV3Anchored
           let some schema := index.schemas.get? tuple.schemaName
             | throw s!"missing schema `{tuple.schemaName}` (internal index error)"
           let expectedType := tupleEntityTypeName schema tuple.relationName
-          if expectedType != typeName then
-            throw s!"tuple type mismatch for `{entity}`: expected `{expectedType}`, got `{typeName}`"
+          if !isSubtypeInSchema schema expectedType typeName then
+            throw s!"tuple type mismatch for `{entity}`: expected `{typeName}` (allowing subtypes), got `{expectedType}`"
         else
           let some obj := index.objects.get? entity
             | throw s!"unknown object/entity name `{entity}`"
-          if obj.objectType != typeName then
-            throw s!"object type mismatch for `{entity}`: expected `{typeName}`, got `{obj.objectType}`"
+          let some schema := index.schemas.get? obj.schemaName
+            | throw s!"missing schema `{obj.schemaName}` (internal index error)"
+          if !isSubtypeInSchema schema obj.objectType typeName then
+            throw s!"object type mismatch for `{entity}`: expected `{typeName}` (allowing subtypes), got `{obj.objectType}`"
 
     | .attrEq term key value, .attrEq entity key' value' => do
         if key != key' || value != value' then

@@ -1348,7 +1348,7 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
         let elaborated_query = show_elaboration.then(|| prepared.elaborated_query_text());
         let elaboration = show_elaboration.then(|| prepared.elaboration_report().clone());
         let plan = show_elaboration.then(|| prepared.explain_plan_lines());
-        let res = prepared.execute(&db)?;
+        let res = prepared.execute(&db, meta.as_ref())?;
         let elapsed_ms = start.elapsed().as_millis();
 
         let vars = res.selected_vars.clone();

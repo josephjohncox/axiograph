@@ -46,7 +46,7 @@ use axiograph_pathdb::axi_meta::{
 };
 use axiograph_pathdb::axi_meta::{
     ATTR_REWRITE_RULE_LHS, ATTR_REWRITE_RULE_ORIENTATION, ATTR_REWRITE_RULE_RHS,
-    ATTR_REWRITE_RULE_VARS, META_TYPE_REWRITE_RULE,
+    ATTR_REWRITE_RULE_VARS, META_ATTR_ID, META_TYPE_REWRITE_RULE,
 };
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::certificate::{
@@ -54,7 +54,7 @@ use axiograph_pathdb::certificate::{
     QueryBindingV1, QueryRegexV1, QueryResultProofV1, QueryResultProofV2, QueryRowV1, QueryRowV2,
     QueryTermV1, QueryV1, QueryV2, ReachabilityProofV2,
     QueryAtomV3, QueryAtomWitnessV3, QueryBindingV3, QueryRegexV3, QueryResultProofV3, QueryRowV3,
-    QueryTermV3, QueryV3,
+    QueryTermV3, QueryV3, PathRewriteStepV3, RewriteDerivationProofV3,
 };
 use axiograph_pathdb::witness;
 
@@ -436,14 +436,14 @@ pub(crate) fn execute_axql_query_cached(
 ) -> Result<AxqlResult> {
     let key = axql_query_cache_key(snapshot_key, query);
     if let Some(prepared) = cache.get_mut(&key) {
-        return prepared.execute(db);
+        return prepared.execute(db, meta);
     }
     let prepared = prepare_axql_query_with_meta(db, query, meta)?;
     cache.insert(key.clone(), prepared);
     cache
         .get_mut(&key)
         .expect("query cache insert")
-        .execute(db)
+        .execute(db, meta)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -452,6 +452,20 @@ pub(crate) struct AxqlElaborationReport {
     pub inferred_types: BTreeMap<String, Vec<String>>,
     /// Additional notes (e.g., ambiguity) that are helpful to show in a REPL.
     pub notes: Vec<String>,
+    /// Optional elaboration rewrite witnesses (e.g. `.axi` path canonicalization).
+    pub elaboration_rewrites: Vec<AxqlElaborationRewriteStepV1>,
+}
+
+/// One recorded rewrite application during AxQL elaboration.
+///
+/// This is intended to justify “rewrite-normalized” query atoms in a way that
+/// Lean can independently check against the anchored `.axi` rewrite rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AxqlElaborationRewriteStepV1 {
+    pub theory_name: String,
+    pub rule_name: String,
+    pub input: PathExprV3,
+    pub output: PathExprV3,
 }
 
 /// A compiled AxQL query for repeated execution against a single snapshot.
@@ -538,8 +552,10 @@ impl TypecheckedLoweredQuery {
         self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&MetaPlaneIndex>,
+        axi_digest_v1: &str,
     ) -> Result<CertificateV2> {
-        self.lowered.certify_v3(db, meta)
+        self.lowered
+            .certify_v3(db, meta, axi_digest_v1, &self.elaboration)
     }
 }
 
@@ -604,6 +620,9 @@ impl TypecheckedAxqlQueryExpr {
                             .extend(tys.iter().cloned());
                     }
                     merged.notes.extend(p.elaboration.notes.iter().cloned());
+                    merged
+                        .elaboration_rewrites
+                        .extend(p.elaboration.elaboration_rewrites.iter().cloned());
                     prepared.push(p);
                 }
 
@@ -670,9 +689,13 @@ impl TypecheckedAxqlQueryExpr {
 }
 
 impl PreparedAxqlQuery {
-    pub(crate) fn execute(&mut self, db: &axiograph_pathdb::PathDB) -> Result<AxqlResult> {
+    pub(crate) fn execute(
+        &mut self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&MetaPlaneIndex>,
+    ) -> Result<AxqlResult> {
         if self.lowered.vars.is_empty() {
-            let ok = self.lowered.check_grounded(db, &mut self.rpq, None)?;
+            let ok = self.lowered.check_grounded(db, &mut self.rpq, meta)?;
             let rows = if ok { vec![BTreeMap::new()] } else { vec![] };
             return Ok(AxqlResult {
                 selected_vars: Vec::new(),
@@ -683,7 +706,7 @@ impl PreparedAxqlQuery {
 
         if let Some(result) = self
             .lowered
-            .fast_single_path_query(db, &mut self.rpq, None)?
+            .fast_single_path_query(db, &mut self.rpq, meta)?
         {
             return Ok(result);
         }
@@ -702,6 +725,7 @@ impl PreparedAxqlQuery {
             &mut rows,
             &mut truncated,
             &mut self.rpq,
+            meta,
         )?;
 
         Ok(AxqlResult {
@@ -884,10 +908,14 @@ impl PreparedAxqlQuery {
 }
 
 impl PreparedAxqlQueryExpr {
-    pub(crate) fn execute(&mut self, db: &axiograph_pathdb::PathDB) -> Result<AxqlResult> {
+    pub(crate) fn execute(
+        &mut self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&MetaPlaneIndex>,
+    ) -> Result<AxqlResult> {
         match self {
-            PreparedAxqlQueryExpr::Conjunction(q) => q.execute(db),
-            PreparedAxqlQueryExpr::Disjunction(q) => q.execute(db),
+            PreparedAxqlQueryExpr::Conjunction(q) => q.execute(db, meta),
+            PreparedAxqlQueryExpr::Disjunction(q) => q.execute(db, meta),
         }
     }
 
@@ -923,7 +951,11 @@ impl PreparedAxqlQueryExpr {
 }
 
 impl PreparedAxqlDisjunction {
-    fn execute(&mut self, db: &axiograph_pathdb::PathDB) -> Result<AxqlResult> {
+    fn execute(
+        &mut self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&MetaPlaneIndex>,
+    ) -> Result<AxqlResult> {
         let mut rows: Vec<BTreeMap<String, u32>> = Vec::new();
         let mut truncated = false;
 
@@ -932,7 +964,7 @@ impl PreparedAxqlDisjunction {
                 truncated = true;
                 break;
             }
-            let result = disjunct.execute(db)?;
+            let result = disjunct.execute(db, meta)?;
             for row in result.rows {
                 if rows.len() >= self.limit {
                     truncated = true;
@@ -991,7 +1023,7 @@ pub fn execute_axql_query_with_meta(
     meta: Option<&MetaPlaneIndex>,
 ) -> Result<AxqlResult> {
     let mut prepared = prepare_axql_query_with_meta(db, query, meta)?;
-    prepared.execute(db)
+    prepared.execute(db, meta)
 }
 
 /// Emit a `query_result_v1` certificate with an optional precomputed meta-plane index.
@@ -1018,6 +1050,7 @@ pub fn certify_axql_query_v3_with_meta(
     db: &axiograph_pathdb::PathDB,
     query: &AxqlQuery,
     meta: Option<&MetaPlaneIndex>,
+    axi_digest_v1: &str,
 ) -> Result<CertificateV2> {
     if query.contexts.len() > 1 {
         return Err(anyhow!(
@@ -1027,9 +1060,9 @@ pub fn certify_axql_query_v3_with_meta(
 
     let expr = TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?;
     match expr {
-        TypecheckedAxqlQueryExpr::Conjunction(q) => q.certify_v3(db, meta),
+        TypecheckedAxqlQueryExpr::Conjunction(q) => q.certify_v3(db, meta, axi_digest_v1),
         TypecheckedAxqlQueryExpr::Disjunction(disjuncts) => {
-            certify_disjunctive_query_v3(db, disjuncts, meta, query.limit)
+            certify_disjunctive_query_v3(db, disjuncts, meta, query.limit, axi_digest_v1)
         }
     }
 }
@@ -1139,6 +1172,7 @@ fn certify_disjunctive_query_v3(
     disjuncts: Vec<TypecheckedLoweredQuery>,
     meta: Option<&MetaPlaneIndex>,
     limit: usize,
+    axi_digest_v1: &str,
 ) -> Result<CertificateV2> {
     if disjuncts.is_empty() {
         return Err(anyhow!("AxQL query must have at least one disjunct"));
@@ -1192,6 +1226,7 @@ fn certify_disjunctive_query_v3(
 
     let mut rows: Vec<QueryRowV3> = Vec::new();
     let mut truncated = rows.len() >= limit;
+    let mut elaboration_rewrites: Vec<RewriteDerivationProofV3> = Vec::new();
 
     for (i, mut d) in disjuncts.into_iter().enumerate() {
         if rows.len() >= limit {
@@ -1202,7 +1237,7 @@ fn certify_disjunctive_query_v3(
         let remaining = limit - rows.len();
         d.lowered.limit = remaining;
 
-        let cert = d.lowered.certify_v3(db, meta)?;
+        let cert = d.lowered.certify_v3(db, meta, axi_digest_v1, &d.elaboration)?;
         let proof = match cert.payload {
             CertificatePayloadV2::QueryResultV3 { proof } => proof,
             other => {
@@ -1212,6 +1247,7 @@ fn certify_disjunctive_query_v3(
             }
         };
 
+        elaboration_rewrites.extend(proof.elaboration_rewrites.iter().cloned());
         for row in proof.rows {
             if rows.len() >= limit {
                 truncated = true;
@@ -1229,7 +1265,7 @@ fn certify_disjunctive_query_v3(
         query,
         rows,
         truncated,
-        elaboration_rewrites: Vec::new(),
+        elaboration_rewrites,
     }))
 }
 
@@ -2382,10 +2418,33 @@ fn simple_chain(regex: &AxqlRegex) -> Option<Vec<String>> {
 
 #[derive(Debug, Clone)]
 struct ChainRewriteRule {
+    /// Canonicalization direction (`from` -> `to`), chosen deterministically by
+    /// `chain_key` ordering.
     from: Vec<String>,
     to: Vec<String>,
+
+    /// Optional endpoint typing guards inferred from `.axi` rewrite rule vars.
+    ///
+    /// These are used during elaboration so we only apply rewrite rules when the
+    /// query endpoints are consistent with the rule’s declared endpoint types.
     start_type: Option<String>,
     end_type: Option<String>,
+
+    /// `.axi` rule identity (for certificates): `axi:<digest>:<theory>:<rule>`.
+    theory_name: String,
+    rule_name: String,
+
+    /// Endpoint variable names from the rule patterns (used for deterministic
+    /// substitution when emitting elaboration rewrite proofs).
+    start_var: String,
+    end_var: String,
+
+    /// Path-expression templates (name-based) for the canonicalization direction.
+    ///
+    /// These are the parsed `.axi` rewrite rule LHS/RHS, reordered so that
+    /// `from_expr` corresponds to `from` and `to_expr` corresponds to `to`.
+    from_expr: PathExprV3,
+    to_expr: PathExprV3,
 }
 
 fn chain_key(chain: &[String]) -> (usize, String) {
@@ -2458,6 +2517,25 @@ fn collect_chain_rewrite_rules(
             continue;
         }
 
+        let (theory_name, rule_name) = match view.attrs.get(META_ATTR_ID) {
+            Some(meta_id) => {
+                let mut parts = meta_id.split(':');
+                let Some(prefix) = parts.next() else { continue };
+                if prefix != "axi_meta_rewrite_rule" {
+                    continue;
+                }
+                // Format: axi_meta_rewrite_rule:<module>:<theory>:<rule>
+                let Some(_module_name) = parts.next() else { continue };
+                let Some(theory_name) = parts.next() else { continue };
+                let Some(rule_name) = parts.next() else { continue };
+                if parts.next().is_some() {
+                    continue;
+                }
+                (theory_name.to_string(), rule_name.to_string())
+            }
+            None => continue,
+        };
+
         let lhs_text = view
             .attrs
             .get(ATTR_REWRITE_RULE_LHS)
@@ -2493,11 +2571,18 @@ fn collect_chain_rewrite_rules(
             continue;
         }
 
-        let (start_var, end_var) = match path_expr_v3_endpoints(&lhs_expr)
-            .or_else(|| path_expr_v3_endpoints(&rhs_expr))
-        {
-            Some(ep) => ep,
-            None => continue,
+        let (start_var, end_var) = match (
+            path_expr_v3_endpoints(&lhs_expr),
+            path_expr_v3_endpoints(&rhs_expr),
+        ) {
+            (Some(lhs_ep), Some(rhs_ep)) => {
+                if lhs_ep != rhs_ep {
+                    continue;
+                }
+                lhs_ep
+            }
+            (Some(ep), None) | (None, Some(ep)) => ep,
+            (None, None) => continue,
         };
 
         let vars_text = view
@@ -2515,10 +2600,10 @@ fn collect_chain_rewrite_rules(
             continue;
         }
 
-        let (from, to) = if lhs_key > rhs_key {
-            (lhs_chain, rhs_chain)
+        let (from, to, from_expr, to_expr) = if lhs_key > rhs_key {
+            (lhs_chain, rhs_chain, lhs_expr, rhs_expr)
         } else {
-            (rhs_chain, lhs_chain)
+            (rhs_chain, lhs_chain, rhs_expr, lhs_expr)
         };
 
         rules.push(ChainRewriteRule {
@@ -2526,6 +2611,12 @@ fn collect_chain_rewrite_rules(
             to,
             start_type,
             end_type,
+            theory_name,
+            rule_name,
+            start_var,
+            end_var,
+            from_expr,
+            to_expr,
         });
     }
 
@@ -2579,16 +2670,85 @@ fn term_satisfies_type(
     }
 }
 
-fn apply_chain_rewrites(
+fn term_name_for_elaboration_rewrite_expr(
+    db: &axiograph_pathdb::PathDB,
+    term: &LoweredTerm,
+    vars: &[String],
+) -> String {
+    match term {
+        LoweredTerm::Var(idx) => vars.get(*idx).cloned().unwrap_or_else(|| format!("?v{idx}")),
+        LoweredTerm::Const(id) => witness::stable_entity_id_v1(db, *id).unwrap_or_else(|_| {
+            // Fallback for non-.axi anchored graphs (these rewrites are optional).
+            id.to_string()
+        }),
+    }
+}
+
+fn substitute_rewrite_endpoints_v3(
+    expr: &PathExprV3,
+    start_var: &str,
+    start_value: &str,
+    end_var: &str,
+    end_value: &str,
+) -> PathExprV3 {
+    let subst_entity = |e: &str| -> String {
+        if e == start_var {
+            start_value.to_string()
+        } else if e == end_var {
+            end_value.to_string()
+        } else {
+            e.to_string()
+        }
+    };
+
+    match expr {
+        PathExprV3::Var { name } => PathExprV3::Var { name: name.clone() },
+        PathExprV3::Reflexive { entity } => PathExprV3::Reflexive {
+            entity: subst_entity(entity),
+        },
+        PathExprV3::Step { from, rel, to } => PathExprV3::Step {
+            from: subst_entity(from),
+            rel: rel.clone(),
+            to: subst_entity(to),
+        },
+        PathExprV3::Trans { left, right } => PathExprV3::Trans {
+            left: Box::new(substitute_rewrite_endpoints_v3(
+                left,
+                start_var,
+                start_value,
+                end_var,
+                end_value,
+            )),
+            right: Box::new(substitute_rewrite_endpoints_v3(
+                right,
+                start_var,
+                start_value,
+                end_var,
+                end_value,
+            )),
+        },
+        PathExprV3::Inv { path } => PathExprV3::Inv {
+            path: Box::new(substitute_rewrite_endpoints_v3(
+                path,
+                start_var,
+                start_value,
+                end_var,
+                end_value,
+            )),
+        },
+    }
+}
+
+fn apply_chain_rewrites<'a>(
     chain: &[String],
-    rules: &[ChainRewriteRule],
+    rules: &'a [ChainRewriteRule],
     left: &LoweredTerm,
     right: &LoweredTerm,
     vars: &[String],
     inferred: &BTreeMap<String, Vec<String>>,
     db: &axiograph_pathdb::PathDB,
     meta: Option<&MetaPlaneIndex>,
-) -> Option<Vec<String>> {
+) -> Option<&'a ChainRewriteRule> {
     for rule in rules {
         if chain != rule.from {
             continue;
@@ -2599,7 +2759,7 @@ fn apply_chain_rewrites(
         if !term_satisfies_type(db, meta, right, &rule.end_type, vars, inferred) {
             continue;
         }
-        return Some(rule.to.clone());
+        return Some(rule);
     }
     None
 }
@@ -3091,6 +3251,185 @@ impl LoweredQuery {
             }
         }
 
+        // Edge/RPQ endpoint inference:
+        // If the meta-plane declares a relation signature, infer the endpoint types for:
+        // - binary edge atoms (`?x -Rel-> ?y`), and
+        // - simple RPQ chains (`?x -Rel0/Rel1-> ?y`).
+        //
+        // This improves:
+        // - join planning (smaller domains),
+        // - rewrite-rule applicability (typed gating), and
+        // - UX (better inferred-types output in REPL/UI).
+        let derive_endpoints_field_types =
+            |decl: &axiograph_pathdb::axi_semantics::RelationDecl| -> Option<(String, String)> {
+            // Mirror the PathDB importer’s deterministic endpoint selection
+            // (`axi_module_import::derive_binary_endpoints`), but at the meta level.
+            let mut primary: Vec<&axiograph_pathdb::axi_semantics::FieldDecl> = decl
+                .fields
+                .iter()
+                .filter(|f| f.field_name != "ctx" && f.field_name != "time")
+                .collect();
+            primary.sort_by_key(|f| f.field_index);
+
+            if primary.len() == 2 {
+                let src: &axiograph_pathdb::axi_semantics::FieldDecl = primary[0];
+                let dst: &axiograph_pathdb::axi_semantics::FieldDecl = primary[1];
+                return Some((src.field_type.clone(), dst.field_type.clone()));
+            }
+
+            for (src, dst) in [
+                ("lhs", "rhs"),
+                ("route1", "route2"),
+                ("path1", "path2"),
+                ("rel1", "rel2"),
+                ("i1", "i2"),
+                ("s1", "s2"),
+                ("left", "right"),
+                ("child", "parent"),
+                ("from", "to"),
+                ("source", "target"),
+                ("src", "dst"),
+            ] {
+                let a = decl.fields.iter().find(|f| f.field_name == src);
+                let b = decl.fields.iter().find(|f| f.field_name == dst);
+                if let (Some(a), Some(b)) = (a, b) {
+                    return Some((a.field_type.clone(), b.field_type.clone()));
+                }
+            }
+            None
+        };
+
+        let mut edge_rel_ambiguity: HashSet<String> = HashSet::new();
+
+        let mut apply_implied_types =
+            |term: &LoweredTerm, implied: Vec<String>| -> Result<()> {
+                for ty in implied {
+                    if existing_types.insert((term.clone(), ty.clone())) {
+                        extra_atoms.push(LoweredAtom::Type {
+                            term: term.clone(),
+                            type_name: ty.clone(),
+                        });
+                        if let LoweredTerm::Var(var_id) = term {
+                            if let Some(var_name) = self.vars.get(*var_id).cloned() {
+                                report.inferred_types.entry(var_name).or_default().push(ty);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            };
+
+        // Helper: resolve implied endpoint types for a single relation name.
+        let mut relation_endpoints_implied_types =
+            |relation_name: &str| -> Result<Option<(Vec<String>, Vec<String>)>> {
+            let candidate_schemas: Vec<&str> = if let Some(sole) = sole_schema_name {
+                vec![sole]
+            } else {
+                schemas_by_relation
+                    .get(relation_name)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            if candidate_schemas.is_empty() {
+                return Ok(None);
+            }
+            if candidate_schemas.len() > 1 {
+                // We avoid guessing a schema here; edge atoms don’t currently
+                // have an explicit schema qualifier.
+                edge_rel_ambiguity.insert(relation_name.to_string());
+                return Ok(None);
+            }
+
+            let schema_name = candidate_schemas[0];
+            let Some(schema) = meta.schemas.get(schema_name) else {
+                return Ok(None);
+            };
+            let Some(rel_decl) = schema.relation_decls.get(relation_name) else {
+                return Ok(None);
+            };
+            let Some((src_field_type, dst_field_type)) =
+                derive_endpoints_field_types(rel_decl)
+            else {
+                return Ok(None);
+            };
+
+            let Some(src_type) =
+                canonical_entity_type_for_axi_type(schema, &src_field_type)
+            else {
+                return Ok(None);
+            };
+            let Some(dst_type) =
+                canonical_entity_type_for_axi_type(schema, &dst_field_type)
+            else {
+                return Ok(None);
+            };
+
+            let mut src_implied: Vec<String> = Vec::new();
+            if let Some(supers) = schema.supertypes_of.get(&src_type) {
+                src_implied.extend(supers.iter().cloned());
+            } else {
+                src_implied.push(src_type.clone());
+            }
+            src_implied.sort();
+            src_implied.dedup();
+
+            let mut dst_implied: Vec<String> = Vec::new();
+            if let Some(supers) = schema.supertypes_of.get(&dst_type) {
+                dst_implied.extend(supers.iter().cloned());
+            } else {
+                dst_implied.push(dst_type.clone());
+            }
+            dst_implied.sort();
+            dst_implied.dedup();
+
+            Ok(Some((src_implied, dst_implied)))
+        };
+
+        for atom in &self.atoms {
+            match atom {
+                LoweredAtom::Edge { left, rel, right } => {
+                    if let Some((src, dst)) = relation_endpoints_implied_types(rel)? {
+                        apply_implied_types(left, src)?;
+                        apply_implied_types(right, dst)?;
+                    }
+                }
+                LoweredAtom::Rpq { left, rpq_id, right } => {
+                    let Some(regex) = self.rpqs.get(*rpq_id) else {
+                        return Err(anyhow!("invalid rpq_id {rpq_id}"));
+                    };
+                    if let Some(chain) = simple_chain(regex) {
+                        if let (Some(first), Some(last)) = (chain.first(), chain.last()) {
+                            // For a chain `r0/r1/.../rn`, infer:
+                            // - `left` from the source endpoint type of `r0`
+                            // - `right` from the destination endpoint type of `rn`
+                            //
+                            // We do not currently infer intermediate types for the hidden join vars.
+                            if let Some((src0, _dst0)) =
+                                relation_endpoints_implied_types(first)?
+                            {
+                                apply_implied_types(left, src0)?;
+                            }
+                            if let Some((_srcn, dstn)) =
+                                relation_endpoints_implied_types(last)?
+                            {
+                                apply_implied_types(right, dstn)?;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !edge_rel_ambiguity.is_empty() {
+            let mut rels = edge_rel_ambiguity.into_iter().collect::<Vec<_>>();
+            rels.sort();
+            report.notes.push(format!(
+                "note: did not infer endpoint types for ambiguous edge relations: {}",
+                rels.join(", ")
+            ));
+        }
+
         // Stable inferred-types ordering for display.
         for types in report.inferred_types.values_mut() {
             types.sort();
@@ -3142,9 +3481,13 @@ impl LoweredQuery {
         for atom in self.atoms.drain(..) {
             match atom {
                 LoweredAtom::Edge { left, rel, right } => {
+                    let left_name =
+                        term_name_for_elaboration_rewrite_expr(db, &left, &self.vars);
+                    let right_name =
+                        term_name_for_elaboration_rewrite_expr(db, &right, &self.vars);
                     let mut chain = vec![rel];
                     for _ in 0..16 {
-                        if let Some(next) = apply_chain_rewrites(
+                        if let Some(rule) = apply_chain_rewrites(
                             &chain,
                             &rules,
                             &left,
@@ -3154,7 +3497,25 @@ impl LoweredQuery {
                             db,
                             Some(meta),
                         ) {
-                            chain = next;
+                            report.elaboration_rewrites.push(AxqlElaborationRewriteStepV1 {
+                                theory_name: rule.theory_name.clone(),
+                                rule_name: rule.rule_name.clone(),
+                                input: substitute_rewrite_endpoints_v3(
+                                    &rule.from_expr,
+                                    &rule.start_var,
+                                    &left_name,
+                                    &rule.end_var,
+                                    &right_name,
+                                ),
+                                output: substitute_rewrite_endpoints_v3(
+                                    &rule.to_expr,
+                                    &rule.start_var,
+                                    &left_name,
+                                    &rule.end_var,
+                                    &right_name,
+                                ),
+                            });
+                            chain = rule.to.clone();
                             rewrites += 1;
                         } else {
                             break;
@@ -3175,12 +3536,16 @@ impl LoweredQuery {
                     }
                 }
                 LoweredAtom::Rpq { left, rpq_id, right } => {
+                    let left_name =
+                        term_name_for_elaboration_rewrite_expr(db, &left, &self.vars);
+                    let right_name =
+                        term_name_for_elaboration_rewrite_expr(db, &right, &self.vars);
                     let Some(regex) = old_rpqs.get(rpq_id).cloned() else {
                         return Err(anyhow!("invalid rpq_id {rpq_id}"));
                     };
                     if let Some(mut chain) = simple_chain(&regex) {
                         for _ in 0..16 {
-                            if let Some(next) = apply_chain_rewrites(
+                            if let Some(rule) = apply_chain_rewrites(
                                 &chain,
                                 &rules,
                                 &left,
@@ -3190,7 +3555,25 @@ impl LoweredQuery {
                                 db,
                                 Some(meta),
                             ) {
-                                chain = next;
+                                report.elaboration_rewrites.push(AxqlElaborationRewriteStepV1 {
+                                    theory_name: rule.theory_name.clone(),
+                                    rule_name: rule.rule_name.clone(),
+                                    input: substitute_rewrite_endpoints_v3(
+                                        &rule.from_expr,
+                                        &rule.start_var,
+                                        &left_name,
+                                        &rule.end_var,
+                                        &right_name,
+                                    ),
+                                    output: substitute_rewrite_endpoints_v3(
+                                        &rule.to_expr,
+                                        &rule.start_var,
+                                        &left_name,
+                                        &rule.end_var,
+                                        &right_name,
+                                    ),
+                                });
+                                chain = rule.to.clone();
                                 rewrites += 1;
                             } else {
                                 break;
@@ -3244,7 +3627,7 @@ impl LoweredQuery {
 
         let truncated = if self.vars.is_empty() {
             // Boolean query: either 0 or 1 row, with no bindings.
-            if let Some(witnesses) = self.witnesses_for_assignment(db, &[], &mut rpq)? {
+            if let Some(witnesses) = self.witnesses_for_assignment(db, &[], &mut rpq, meta)? {
                 rows.push(QueryRowV1 {
                     bindings: Vec::new(),
                     witnesses,
@@ -3264,7 +3647,8 @@ impl LoweredQuery {
                     })
                     .collect::<Vec<_>>();
 
-                let Some(witnesses) = self.witnesses_for_assignment(db, &assignment, &mut rpq)?
+                let Some(witnesses) =
+                    self.witnesses_for_assignment(db, &assignment, &mut rpq, meta)?
                 else {
                     return Err(anyhow!(
                         "internal error: assignment from search does not satisfy constraints"
@@ -3290,6 +3674,8 @@ impl LoweredQuery {
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&MetaPlaneIndex>,
+        axi_digest_v1: &str,
+        elaboration: &AxqlElaborationReport,
     ) -> Result<CertificateV2> {
         let mut rpq = RpqContext::new(db, &self.rpqs, self.max_hops, self.min_confidence)?;
 
@@ -3305,7 +3691,9 @@ impl LoweredQuery {
 
         let truncated = if self.vars.is_empty() {
             // Boolean query: either 0 or 1 row, with no bindings.
-            if let Some(witnesses) = self.witnesses_for_assignment_v3(db, &[], &mut rpq)? {
+            if let Some(witnesses) =
+                self.witnesses_for_assignment_v3(db, &[], &mut rpq, meta)?
+            {
                 rows.push(QueryRowV3 {
                     disjunct: 0,
                     bindings: Vec::new(),
@@ -3329,7 +3717,7 @@ impl LoweredQuery {
                     .collect::<Result<Vec<_>>>()?;
 
                 let Some(witnesses) =
-                    self.witnesses_for_assignment_v3(db, &assignment, &mut rpq)?
+                    self.witnesses_for_assignment_v3(db, &assignment, &mut rpq, meta)?
                 else {
                     return Err(anyhow!(
                         "internal error: assignment from search does not satisfy constraints"
@@ -3348,7 +3736,21 @@ impl LoweredQuery {
             query,
             rows,
             truncated,
-            elaboration_rewrites: Vec::new(),
+            elaboration_rewrites: elaboration
+                .elaboration_rewrites
+                .iter()
+                .map(|step| RewriteDerivationProofV3 {
+                    input: step.input.clone(),
+                    output: step.output.clone(),
+                    derivation: vec![PathRewriteStepV3 {
+                        pos: Vec::new(),
+                        rule_ref: format!(
+                            "axi:{}:{}:{}",
+                            axi_digest_v1, step.theory_name, step.rule_name
+                        ),
+                    }],
+                })
+                .collect(),
         };
         Ok(CertificateV2::query_result_v3(proof))
     }
@@ -3739,6 +4141,7 @@ impl LoweredQuery {
             &mut assignments,
             &mut truncated,
             rpq,
+            meta,
         )?;
 
         Ok((assignments, truncated))
@@ -3755,6 +4158,7 @@ impl LoweredQuery {
         out: &mut Vec<Vec<u32>>,
         truncated: &mut bool,
         rpq: &mut RpqContext,
+        meta: Option<&MetaPlaneIndex>,
     ) -> Result<()> {
         if out.len() >= self.limit {
             *truncated = true;
@@ -3780,7 +4184,7 @@ impl LoweredQuery {
         for value in candidates[var].iter() {
             assigned[var] = Some(value);
 
-            if self.partial_check(db, candidates, assigned, rpq, atom_order)? {
+            if self.partial_check(db, candidates, assigned, rpq, atom_order, meta)? {
                 self.search_assignments(
                     db,
                     candidates,
@@ -3791,6 +4195,7 @@ impl LoweredQuery {
                     out,
                     truncated,
                     rpq,
+                    meta,
                 )?;
                 if *truncated {
                     assigned[var] = None;
@@ -3809,6 +4214,7 @@ impl LoweredQuery {
         db: &axiograph_pathdb::PathDB,
         assignment: &[u32],
         rpq: &mut RpqContext,
+        meta: Option<&MetaPlaneIndex>,
     ) -> Result<Option<Vec<QueryAtomWitnessV1>>> {
         let mut witnesses: Vec<QueryAtomWitnessV1> = Vec::with_capacity(self.atoms.len());
 
@@ -3819,10 +4225,8 @@ impl LoweredQuery {
                     let expected = db.interner.id_of(type_name).ok_or_else(|| {
                         anyhow!("unknown type `{type_name}` (missing from interner)")
                     })?;
-                    let actual = db.entities.get_type(entity).ok_or_else(|| {
-                        anyhow!("entity {entity} is missing a type (expected `{type_name}`)")
-                    })?;
-                    if actual != expected {
+                    let bitmap = type_bitmap_including_subtypes(db, type_name, meta);
+                    if !bitmap.contains(entity) {
                         return Ok(None);
                     }
                     QueryAtomWitnessV1::Type {
@@ -3921,6 +4325,7 @@ impl LoweredQuery {
         db: &axiograph_pathdb::PathDB,
         assignment: &[u32],
         rpq: &mut RpqContext,
+        meta: Option<&MetaPlaneIndex>,
     ) -> Result<Option<Vec<QueryAtomWitnessV3>>> {
         let mut witnesses: Vec<QueryAtomWitnessV3> = Vec::with_capacity(self.atoms.len());
 
@@ -3928,13 +4333,11 @@ impl LoweredQuery {
             let wit = match atom {
                 LoweredAtom::Type { term, type_name } => {
                     let entity = resolve_term_assigned(term, assignment);
-                    let expected = db.interner.id_of(type_name).ok_or_else(|| {
-                        anyhow!("unknown type `{type_name}` (missing from interner)")
-                    })?;
-                    let actual = db.entities.get_type(entity).ok_or_else(|| {
-                        anyhow!("entity {entity} is missing a type (expected `{type_name}`)")
-                    })?;
-                    if actual != expected {
+                    if db.interner.id_of(type_name).is_none() {
+                        return Err(anyhow!("unknown type `{type_name}` (missing from interner)"));
+                    }
+                    let bitmap = type_bitmap_including_subtypes(db, type_name, meta);
+                    if !bitmap.contains(entity) {
                         return Ok(None);
                     }
                     QueryAtomWitnessV3::Type {
@@ -4254,7 +4657,8 @@ impl LoweredQuery {
             match atom {
                 LoweredAtom::Type { term, type_name } => match term {
                     LoweredTerm::Const(id) => {
-                        if !entity_is_type(db, *id, type_name)? {
+                        let bitmap = type_bitmap_including_subtypes(db, type_name, meta);
+                        if !bitmap.contains(*id) {
                             return Ok(Some(AxqlResult {
                                 selected_vars: self.select_vars.clone(),
                                 rows: Vec::new(),
@@ -4404,6 +4808,7 @@ impl LoweredQuery {
             &mut rows,
             &mut truncated,
             &mut rpq,
+            meta,
         )?;
 
         Ok(AxqlResult {
@@ -4973,6 +5378,7 @@ impl LoweredQuery {
         rows: &mut Vec<BTreeMap<String, u32>>,
         truncated: &mut bool,
         rpq: &mut RpqContext,
+        meta: Option<&MetaPlaneIndex>,
     ) -> Result<()> {
         if rows.len() >= self.limit {
             *truncated = true;
@@ -4995,7 +5401,7 @@ impl LoweredQuery {
         for value in candidates[var].iter() {
             assigned[var] = Some(value);
 
-            if self.partial_check(db, candidates, assigned, rpq, atom_order)? {
+            if self.partial_check(db, candidates, assigned, rpq, atom_order, meta)? {
                 self.search(
                     db,
                     candidates,
@@ -5006,6 +5412,7 @@ impl LoweredQuery {
                     rows,
                     truncated,
                     rpq,
+                    meta,
                 )?;
                 if *truncated {
                     assigned[var] = None;
@@ -5026,13 +5433,15 @@ impl LoweredQuery {
         assigned: &[Option<u32>],
         rpq: &mut RpqContext,
         atom_order: &[usize],
+        meta: Option<&MetaPlaneIndex>,
     ) -> Result<bool> {
         for &atom_idx in atom_order {
             let atom = &self.atoms[atom_idx];
             match atom {
                 LoweredAtom::Type { term, type_name } => {
                     if let Some(id) = resolve_term(term, assigned) {
-                        if !entity_is_type(db, id, type_name)? {
+                        let bitmap = type_bitmap_including_subtypes(db, type_name, meta);
+                        if !bitmap.contains(id) {
                             return Ok(false);
                         }
                     }

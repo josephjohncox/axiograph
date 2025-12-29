@@ -3263,7 +3263,7 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
                 return Ok(());
             }
         }
-        prepared.execute(db)?
+        prepared.execute(db, meta)?
     } else {
         let prepared = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
         state.query_cache.insert(key.clone(), prepared);
@@ -3294,7 +3294,7 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
                 return Ok(());
             }
         }
-        prepared.execute(db)?
+        prepared.execute(db, meta)?
     };
     let dt = start.elapsed();
     println!(
@@ -3550,7 +3550,7 @@ fn cmd_sqlish(state: &mut ReplState, args: &[String]) -> Result<()> {
     let key = crate::axql::axql_query_cache_key(&state.snapshot_key, &query);
 
     let result = if let Some(prepared) = state.query_cache.get_mut(&key) {
-        prepared.execute(db)?
+        prepared.execute(db, meta)?
     } else {
         let prepared = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
         state.query_cache.insert(key.clone(), prepared);
@@ -3558,7 +3558,7 @@ fn cmd_sqlish(state: &mut ReplState, args: &[String]) -> Result<()> {
             .query_cache
             .get_mut(&key)
             .expect("query cache insert")
-            .execute(db)?
+            .execute(db, meta)?
     };
 
     let vars = if result.selected_vars.is_empty() {
@@ -3610,7 +3610,7 @@ fn cmd_ask(state: &mut ReplState, args: &[String]) -> Result<()> {
     let key = crate::axql::axql_query_cache_key(&state.snapshot_key, &query);
 
     let result = if let Some(prepared) = state.query_cache.get_mut(&key) {
-        prepared.execute(db)?
+        prepared.execute(db, meta)?
     } else {
         let prepared = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
         state.query_cache.insert(key.clone(), prepared);
@@ -3618,7 +3618,7 @@ fn cmd_ask(state: &mut ReplState, args: &[String]) -> Result<()> {
             .query_cache
             .get_mut(&key)
             .expect("query cache insert")
-            .execute(db)?
+            .execute(db, meta)?
     };
 
     let vars = if result.selected_vars.is_empty() {
