@@ -1510,7 +1510,8 @@ async fn handle_reachability_cert(
             req.start,
             &req.relation_ids,
         )?
-        .into_inner();
+        .into_inner_in_db(&db)
+        .map_err(|e| anyhow!(e))?;
 
         let cert = axiograph_pathdb::certificate::CertificateV2::reachability(proof).with_anchor(
             axiograph_pathdb::certificate::AxiAnchorV1 {

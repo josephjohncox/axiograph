@@ -57,6 +57,7 @@ use axiograph_pathdb::certificate::{
     QueryTermV3, QueryV3, PathRewriteStepV3, RewriteDerivationProofV3,
 };
 use axiograph_pathdb::witness;
+use axiograph_pathdb::{DbToken, DbTokenMismatch};
 
 /// A context/world selector for query scoping.
 ///
@@ -475,6 +476,7 @@ pub(crate) struct AxqlElaborationRewriteStepV1 {
 /// - the initial candidate bitmaps + join order,
 /// - and the compiled RPQ automata (plus per-source reachability cache).
 pub(crate) struct PreparedAxqlQuery {
+    db_token: DbToken,
     lowered: LoweredQuery,
     plan: QueryPlan,
     rpq: RpqContext,
@@ -482,7 +484,11 @@ pub(crate) struct PreparedAxqlQuery {
 }
 
 /// A compiled AxQL query that may contain disjunction (OR).
-pub(crate) enum PreparedAxqlQueryExpr {
+pub(crate) struct PreparedAxqlQueryExpr {
+    inner: PreparedAxqlQueryExprInner,
+}
+
+enum PreparedAxqlQueryExprInner {
     Conjunction(PreparedAxqlQuery),
     Disjunction(PreparedAxqlDisjunction),
 }
@@ -513,7 +519,38 @@ impl TypecheckedLoweredQuery {
     ) -> Result<Self> {
         let mut lowered = lower_query_disjunct(query, disjunct)?;
         let mut elaboration = lowered.typecheck_and_elaborate(db, meta)?;
-        lowered.canonicalize_paths(db, meta, &mut elaboration)?;
+
+        // Fixpoint: alternately apply `.axi` rewrite canonicalization and infer
+        // endpoint types for the rewritten path atoms (which can unlock more
+        // type-guarded rewrites).
+        let mut rewrite_steps: usize = 0;
+        let mut inferred_endpoint_types: usize = 0;
+        for _ in 0..4 {
+            let rewrites = lowered.canonicalize_paths(db, meta, &mut elaboration)?;
+            rewrite_steps += rewrites;
+
+            let inferred = if let Some(meta) = meta {
+                lowered.infer_endpoint_types_for_paths(db, meta, &mut elaboration)?
+            } else {
+                0
+            };
+            inferred_endpoint_types += inferred;
+
+            if rewrites == 0 && inferred == 0 {
+                break;
+            }
+        }
+
+        if rewrite_steps > 0 {
+            elaboration.notes.push(format!(
+                "canonicalized path expressions via `.axi` rewrite rules ({rewrite_steps} rewrite step(s))"
+            ));
+        }
+        if inferred_endpoint_types > 0 {
+            elaboration.notes.push(format!(
+                "after rewrite canonicalization: inferred {inferred_endpoint_types} additional endpoint type atom(s)"
+            ));
+        }
         Ok(Self {
             lowered,
             elaboration,
@@ -533,6 +570,7 @@ impl TypecheckedLoweredQuery {
         )?;
         let plan = self.lowered.plan(db, &mut rpq, meta)?;
         Ok(PreparedAxqlQuery {
+            db_token: db.db_token(),
             lowered: self.lowered,
             plan,
             rpq,
@@ -601,7 +639,9 @@ impl TypecheckedAxqlQueryExpr {
     ) -> Result<PreparedAxqlQueryExpr> {
         match self {
             TypecheckedAxqlQueryExpr::Conjunction(q) => {
-                Ok(PreparedAxqlQueryExpr::Conjunction(q.prepare(db, meta)?))
+                Ok(PreparedAxqlQueryExpr {
+                    inner: PreparedAxqlQueryExprInner::Conjunction(q.prepare(db, meta)?),
+                })
             }
             TypecheckedAxqlQueryExpr::Disjunction(disjuncts) => {
                 let mut prepared: Vec<PreparedAxqlQuery> = Vec::with_capacity(disjuncts.len());
@@ -661,14 +701,14 @@ impl TypecheckedAxqlQueryExpr {
                 merged.notes.sort();
                 merged.notes.dedup();
 
-                Ok(PreparedAxqlQueryExpr::Disjunction(
-                    PreparedAxqlDisjunction {
+                Ok(PreparedAxqlQueryExpr {
+                    inner: PreparedAxqlQueryExprInner::Disjunction(PreparedAxqlDisjunction {
                         disjuncts: prepared,
                         elaboration: merged,
                         select_vars,
                         limit,
-                    },
-                ))
+                    }),
+                })
             }
         }
     }
@@ -694,6 +734,14 @@ impl PreparedAxqlQuery {
         db: &axiograph_pathdb::PathDB,
         meta: Option<&MetaPlaneIndex>,
     ) -> Result<AxqlResult> {
+        let actual = db.db_token();
+        if self.db_token != actual {
+            return Err(anyhow!(DbTokenMismatch {
+                expected: self.db_token,
+                actual,
+            }));
+        }
+
         if self.lowered.vars.is_empty() {
             let ok = self.lowered.check_grounded(db, &mut self.rpq, meta)?;
             let rows = if ok { vec![BTreeMap::new()] } else { vec![] };
@@ -913,31 +961,31 @@ impl PreparedAxqlQueryExpr {
         db: &axiograph_pathdb::PathDB,
         meta: Option<&MetaPlaneIndex>,
     ) -> Result<AxqlResult> {
-        match self {
-            PreparedAxqlQueryExpr::Conjunction(q) => q.execute(db, meta),
-            PreparedAxqlQueryExpr::Disjunction(q) => q.execute(db, meta),
+        match &mut self.inner {
+            PreparedAxqlQueryExprInner::Conjunction(q) => q.execute(db, meta),
+            PreparedAxqlQueryExprInner::Disjunction(q) => q.execute(db, meta),
         }
     }
 
     pub(crate) fn elaborated_query_text(&self) -> String {
-        match self {
-            PreparedAxqlQueryExpr::Conjunction(q) => q.elaborated_query_text(),
-            PreparedAxqlQueryExpr::Disjunction(q) => q.elaborated_query_text(),
+        match &self.inner {
+            PreparedAxqlQueryExprInner::Conjunction(q) => q.elaborated_query_text(),
+            PreparedAxqlQueryExprInner::Disjunction(q) => q.elaborated_query_text(),
         }
     }
 
     pub(crate) fn elaboration_report(&self) -> &AxqlElaborationReport {
-        match self {
-            PreparedAxqlQueryExpr::Conjunction(q) => q.elaboration_report(),
-            PreparedAxqlQueryExpr::Disjunction(q) => &q.elaboration,
+        match &self.inner {
+            PreparedAxqlQueryExprInner::Conjunction(q) => q.elaboration_report(),
+            PreparedAxqlQueryExprInner::Disjunction(q) => &q.elaboration,
         }
     }
 
     /// Human-readable plan/debug output for `q --explain`.
     pub(crate) fn explain_plan_lines(&self) -> Vec<String> {
-        match self {
-            PreparedAxqlQueryExpr::Conjunction(q) => q.explain_plan_lines(None),
-            PreparedAxqlQueryExpr::Disjunction(q) => {
+        match &self.inner {
+            PreparedAxqlQueryExprInner::Conjunction(q) => q.explain_plan_lines(None),
+            PreparedAxqlQueryExprInner::Disjunction(q) => {
                 let mut out: Vec<String> = Vec::new();
                 out.push(format!("disjunction: {} branch(es)", q.disjuncts.len()));
                 for (i, d) in q.disjuncts.iter().enumerate() {
@@ -3251,55 +3299,99 @@ impl LoweredQuery {
             }
         }
 
-        // Edge/RPQ endpoint inference:
-        // If the meta-plane declares a relation signature, infer the endpoint types for:
-        // - binary edge atoms (`?x -Rel-> ?y`), and
-        // - simple RPQ chains (`?x -Rel0/Rel1-> ?y`).
-        //
-        // This improves:
-        // - join planning (smaller domains),
-        // - rewrite-rule applicability (typed gating), and
-        // - UX (better inferred-types output in REPL/UI).
-        let derive_endpoints_field_types =
-            |decl: &axiograph_pathdb::axi_semantics::RelationDecl| -> Option<(String, String)> {
-            // Mirror the PathDB importer’s deterministic endpoint selection
-            // (`axi_module_import::derive_binary_endpoints`), but at the meta level.
-            let mut primary: Vec<&axiograph_pathdb::axi_semantics::FieldDecl> = decl
-                .fields
-                .iter()
-                .filter(|f| f.field_name != "ctx" && f.field_name != "time")
-                .collect();
-            primary.sort_by_key(|f| f.field_index);
+        self.atoms.extend(extra_atoms);
+        self.infer_endpoint_types_for_paths(db, meta, &mut report)?;
 
-            if primary.len() == 2 {
-                let src: &axiograph_pathdb::axi_semantics::FieldDecl = primary[0];
-                let dst: &axiograph_pathdb::axi_semantics::FieldDecl = primary[1];
-                return Some((src.field_type.clone(), dst.field_type.clone()));
-            }
+        // Stable inferred-types ordering for display.
+        for types in report.inferred_types.values_mut() {
+            types.sort();
+            types.dedup();
+        }
+        Ok(report)
+    }
 
-            for (src, dst) in [
-                ("lhs", "rhs"),
-                ("route1", "route2"),
-                ("path1", "path2"),
-                ("rel1", "rel2"),
-                ("i1", "i2"),
-                ("s1", "s2"),
-                ("left", "right"),
-                ("child", "parent"),
-                ("from", "to"),
-                ("source", "target"),
-                ("src", "dst"),
-            ] {
-                let a = decl.fields.iter().find(|f| f.field_name == src);
-                let b = decl.fields.iter().find(|f| f.field_name == dst);
-                if let (Some(a), Some(b)) = (a, b) {
-                    return Some((a.field_type.clone(), b.field_type.clone()));
-                }
+    /// Infer endpoint typing constraints for edge/RPQ atoms from the meta-plane
+    /// relation signatures.
+    ///
+    /// This is intentionally an *elaboration* pass (not a proof pass): it makes
+    /// implied typing assumptions explicit as additional `?x : T` atoms.
+    fn infer_endpoint_types_for_paths(
+        &mut self,
+        _db: &axiograph_pathdb::PathDB,
+        meta: &MetaPlaneIndex,
+        report: &mut AxqlElaborationReport,
+    ) -> Result<usize> {
+        if meta.schemas.is_empty() {
+            return Ok(0);
+        }
+
+        // relation_name -> candidate schemas containing it
+        let mut schemas_by_relation: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (schema_name, schema) in &meta.schemas {
+            for rel in schema.relation_decls.keys() {
+                schemas_by_relation
+                    .entry(rel.as_str())
+                    .or_default()
+                    .push(schema_name.as_str());
             }
+        }
+
+        let sole_schema_name = if meta.schemas.len() == 1 {
+            meta.schemas.keys().next().map(|s| s.as_str())
+        } else {
             None
         };
 
+        // Mirror the PathDB importer’s deterministic endpoint selection
+        // (`axi_module_import::derive_binary_endpoints`), but at the meta level.
+        let derive_endpoints_field_types =
+            |decl: &axiograph_pathdb::axi_semantics::RelationDecl| -> Option<(String, String)> {
+                let mut primary: Vec<&axiograph_pathdb::axi_semantics::FieldDecl> = decl
+                    .fields
+                    .iter()
+                    .filter(|f| f.field_name != "ctx" && f.field_name != "time")
+                    .collect();
+                primary.sort_by_key(|f| f.field_index);
+
+                if primary.len() == 2 {
+                    let src: &axiograph_pathdb::axi_semantics::FieldDecl = primary[0];
+                    let dst: &axiograph_pathdb::axi_semantics::FieldDecl = primary[1];
+                    return Some((src.field_type.clone(), dst.field_type.clone()));
+                }
+
+                for (src, dst) in [
+                    ("lhs", "rhs"),
+                    ("route1", "route2"),
+                    ("path1", "path2"),
+                    ("rel1", "rel2"),
+                    ("i1", "i2"),
+                    ("s1", "s2"),
+                    ("left", "right"),
+                    ("child", "parent"),
+                    ("from", "to"),
+                    ("source", "target"),
+                    ("src", "dst"),
+                ] {
+                    let a = decl.fields.iter().find(|f| f.field_name == src);
+                    let b = decl.fields.iter().find(|f| f.field_name == dst);
+                    if let (Some(a), Some(b)) = (a, b) {
+                        return Some((a.field_type.clone(), b.field_type.clone()));
+                    }
+                }
+                None
+            };
+
+        // Existing type constraints (to avoid duplicates).
+        let mut existing_types: HashSet<(LoweredTerm, String)> = HashSet::new();
+        for atom in &self.atoms {
+            if let LoweredAtom::Type { term, type_name } = atom {
+                existing_types.insert((term.clone(), type_name.clone()));
+            }
+        }
+
         let mut edge_rel_ambiguity: HashSet<String> = HashSet::new();
+        let mut extra_atoms: Vec<LoweredAtom> = Vec::new();
+        let mut inferred_atoms: usize = 0;
 
         let mut apply_implied_types =
             |term: &LoweredTerm, implied: Vec<String>| -> Result<()> {
@@ -3309,6 +3401,7 @@ impl LoweredQuery {
                             term: term.clone(),
                             type_name: ty.clone(),
                         });
+                        inferred_atoms += 1;
                         if let LoweredTerm::Var(var_id) = term {
                             if let Some(var_name) = self.vars.get(*var_id).cloned() {
                                 report.inferred_types.entry(var_name).or_default().push(ty);
@@ -3322,68 +3415,68 @@ impl LoweredQuery {
         // Helper: resolve implied endpoint types for a single relation name.
         let mut relation_endpoints_implied_types =
             |relation_name: &str| -> Result<Option<(Vec<String>, Vec<String>)>> {
-            let candidate_schemas: Vec<&str> = if let Some(sole) = sole_schema_name {
-                vec![sole]
-            } else {
-                schemas_by_relation
-                    .get(relation_name)
-                    .cloned()
-                    .unwrap_or_default()
-            };
-            if candidate_schemas.is_empty() {
-                return Ok(None);
-            }
-            if candidate_schemas.len() > 1 {
-                // We avoid guessing a schema here; edge atoms don’t currently
-                // have an explicit schema qualifier.
-                edge_rel_ambiguity.insert(relation_name.to_string());
-                return Ok(None);
-            }
+                let candidate_schemas: Vec<&str> = if let Some(sole) = sole_schema_name {
+                    vec![sole]
+                } else {
+                    schemas_by_relation
+                        .get(relation_name)
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                if candidate_schemas.is_empty() {
+                    return Ok(None);
+                }
+                if candidate_schemas.len() > 1 {
+                    // We avoid guessing a schema here; edge atoms don’t currently
+                    // have an explicit schema qualifier.
+                    edge_rel_ambiguity.insert(relation_name.to_string());
+                    return Ok(None);
+                }
 
-            let schema_name = candidate_schemas[0];
-            let Some(schema) = meta.schemas.get(schema_name) else {
-                return Ok(None);
-            };
-            let Some(rel_decl) = schema.relation_decls.get(relation_name) else {
-                return Ok(None);
-            };
-            let Some((src_field_type, dst_field_type)) =
-                derive_endpoints_field_types(rel_decl)
-            else {
-                return Ok(None);
-            };
+                let schema_name = candidate_schemas[0];
+                let Some(schema) = meta.schemas.get(schema_name) else {
+                    return Ok(None);
+                };
+                let Some(rel_decl) = schema.relation_decls.get(relation_name) else {
+                    return Ok(None);
+                };
+                let Some((src_field_type, dst_field_type)) =
+                    derive_endpoints_field_types(rel_decl)
+                else {
+                    return Ok(None);
+                };
 
-            let Some(src_type) =
-                canonical_entity_type_for_axi_type(schema, &src_field_type)
-            else {
-                return Ok(None);
+                let Some(src_type) =
+                    canonical_entity_type_for_axi_type(schema, &src_field_type)
+                else {
+                    return Ok(None);
+                };
+                let Some(dst_type) =
+                    canonical_entity_type_for_axi_type(schema, &dst_field_type)
+                else {
+                    return Ok(None);
+                };
+
+                let mut src_implied: Vec<String> = Vec::new();
+                if let Some(supers) = schema.supertypes_of.get(&src_type) {
+                    src_implied.extend(supers.iter().cloned());
+                } else {
+                    src_implied.push(src_type.clone());
+                }
+                src_implied.sort();
+                src_implied.dedup();
+
+                let mut dst_implied: Vec<String> = Vec::new();
+                if let Some(supers) = schema.supertypes_of.get(&dst_type) {
+                    dst_implied.extend(supers.iter().cloned());
+                } else {
+                    dst_implied.push(dst_type.clone());
+                }
+                dst_implied.sort();
+                dst_implied.dedup();
+
+                Ok(Some((src_implied, dst_implied)))
             };
-            let Some(dst_type) =
-                canonical_entity_type_for_axi_type(schema, &dst_field_type)
-            else {
-                return Ok(None);
-            };
-
-            let mut src_implied: Vec<String> = Vec::new();
-            if let Some(supers) = schema.supertypes_of.get(&src_type) {
-                src_implied.extend(supers.iter().cloned());
-            } else {
-                src_implied.push(src_type.clone());
-            }
-            src_implied.sort();
-            src_implied.dedup();
-
-            let mut dst_implied: Vec<String> = Vec::new();
-            if let Some(supers) = schema.supertypes_of.get(&dst_type) {
-                dst_implied.extend(supers.iter().cloned());
-            } else {
-                dst_implied.push(dst_type.clone());
-            }
-            dst_implied.sort();
-            dst_implied.dedup();
-
-            Ok(Some((src_implied, dst_implied)))
-        };
 
         for atom in &self.atoms {
             match atom {
@@ -3424,20 +3517,17 @@ impl LoweredQuery {
         if !edge_rel_ambiguity.is_empty() {
             let mut rels = edge_rel_ambiguity.into_iter().collect::<Vec<_>>();
             rels.sort();
-            report.notes.push(format!(
+            let note = format!(
                 "note: did not infer endpoint types for ambiguous edge relations: {}",
                 rels.join(", ")
-            ));
-        }
-
-        // Stable inferred-types ordering for display.
-        for types in report.inferred_types.values_mut() {
-            types.sort();
-            types.dedup();
+            );
+            if !report.notes.iter().any(|n| n == &note) {
+                report.notes.push(note);
+            }
         }
 
         self.atoms.extend(extra_atoms);
-        Ok(report)
+        Ok(inferred_atoms)
     }
 
     fn canonicalize_paths(
@@ -3445,17 +3535,17 @@ impl LoweredQuery {
         db: &axiograph_pathdb::PathDB,
         meta: Option<&MetaPlaneIndex>,
         report: &mut AxqlElaborationReport,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let Some(meta) = meta else {
-            return Ok(());
+            return Ok(0);
         };
         if meta.schemas.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         let rules = collect_chain_rewrite_rules(db);
         if rules.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         let old_rpqs = self.rpqs.clone();
@@ -3603,16 +3693,7 @@ impl LoweredQuery {
 
         self.atoms = new_atoms;
         self.rpqs = new_rpqs;
-
-        if rewrites > 0 {
-            report
-                .notes
-                .push(format!(
-                    "canonicalized {rewrites} path atom(s) via `.axi` rewrite rules"
-                ));
-        }
-
-        Ok(())
+        Ok(rewrites)
     }
 
     fn certify(
@@ -6630,6 +6711,76 @@ instance DemoInst of Demo:
             .unwrap_or_default();
         assert!(inferred.contains(&"Supplier".to_string()));
         assert!(inferred.contains(&"Node".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn axql_elaboration_rewrite_inference_fixpoint_enables_type_guarded_rewrite() -> Result<()> {
+        let mut db = axiograph_pathdb::PathDB::new();
+        let axi = r#"
+module RewriteInferenceFixpoint
+
+schema S1:
+  object Person
+  object Supplier
+  subtype Supplier < Person
+
+  relation ZRel(from: Person, to: Person)
+  relation YRel(from: Supplier, to: Supplier)
+  relation XRel(from: Supplier, to: Supplier)
+  relation Witness(from: Person, to: Person)
+
+schema S2:
+  object Person
+  relation ZRel(from: Person, to: Person)
+
+theory T on S1:
+  rewrite z_to_y:
+    orientation: bidirectional
+    vars: x: Person, y: Person
+    lhs: step(x, ZRel, y)
+    rhs: step(x, YRel, y)
+
+  rewrite y_to_x:
+    orientation: bidirectional
+    vars: x: Supplier, y: Supplier
+    lhs: step(x, YRel, y)
+    rhs: step(x, XRel, y)
+
+instance I1 of S1:
+  Person = {a, b}
+  Supplier = {a, b}
+  ZRel = {(from=a, to=b)}
+  YRel = {(from=a, to=b)}
+  XRel = {(from=a, to=b)}
+  Witness = {(from=a, to=b)}
+
+instance I2 of S2:
+  Person = {a, b}
+  ZRel = {(from=a, to=b)}
+"#;
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import fixpoint demo axi module");
+        db.build_indexes();
+
+        let meta = MetaPlaneIndex::from_db(&db)?;
+
+        // `ZRel` is ambiguous across schemas, so endpoint inference won't fire.
+        // `z_to_y` still applies because `Witness` implies `?x/?y : Person`.
+        // After rewriting to `YRel`, endpoint inference adds `Supplier`, enabling
+        // the second rewrite `y_to_x`.
+        let q = parse_axql_query(
+            r#"select ?x ?y where ?f = Witness(from=?x, to=?y), ?x -ZRel-> ?y limit 5"#,
+        )?;
+        let prepared = prepare_axql_query_with_meta(&db, &q, Some(&meta))?;
+        let report = prepared.elaboration_report();
+
+        let rule_names = report
+            .elaboration_rewrites
+            .iter()
+            .map(|s| s.rule_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(rule_names, vec!["z_to_y", "y_to_x"]);
         Ok(())
     }
 
