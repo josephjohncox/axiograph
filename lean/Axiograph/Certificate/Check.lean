@@ -138,6 +138,353 @@ def verifyResolutionProofV2 (proof : ResolutionProofV2) : Except String Resoluti
 
 end Resolution
 
+namespace RewriteDerivation
+
+/-!
+### v3 rewrite derivations (`rewrite_derivation_v3`)
+
+This is the `.axi`-anchored successor to `rewrite_derivation_v2`.
+
+Key differences from v2:
+
+* Expressions are **name-based** (`Axiograph.Axi.SchemaV1.PathExprV3`) rather than id-based.
+* Steps reference either:
+  - `builtin:<tag>` (groupoid normalization kernel), or
+  - `axi:<axi_digest_v1>:<theory>:<rule_name>` (rules declared in canonical `.axi`).
+
+The trusted checker replays the derivation step-by-step, resolving `axi:` rules
+against the anchored `.axi` module (provided to `axiograph_verify`).
+-/
+
+open Axiograph.Axi.SchemaV1
+
+structure RewriteDerivationResultV3 where
+  start : String
+  end_ : String
+  output : PathExprV3
+  deriving Repr
+
+structure MatchEnv where
+  pathSubst : Std.HashMap String PathExprV3 := {}
+  entitySubst : Std.HashMap String String := {}
+  deriving Repr
+
+def declaredVars (rule : RewriteRuleV1) : (Std.HashSet String × Std.HashSet String) :=
+  Id.run do
+    let mut entityVars : Std.HashSet String := {}
+    let mut pathVars : Std.HashSet String := {}
+    for v in rule.vars do
+      match v.ty with
+      | .object _ => entityVars := entityVars.insert v.name
+      | .path _ _ => pathVars := pathVars.insert v.name
+    pure (entityVars, pathVars)
+
+partial def endpointsV3 : PathExprV3 → Except String (String × String)
+  | .var name => throw s!"endpoints: unexpected path metavariable `{name}`"
+  | .reflexive entity => pure (entity, entity)
+  | .step src _rel dst => pure (src, dst)
+  | .trans left right => do
+      let (ls, le) ← endpointsV3 left
+      let (rs, re) ← endpointsV3 right
+      if le != rs then
+        throw s!"endpoints: trans mismatch (left ends at {le}, right starts at {rs})"
+      pure (ls, re)
+  | .inv path => do
+      let (s, e) ← endpointsV3 path
+      pure (e, s)
+
+def isAtomV3 (e : PathExprV3) : Bool :=
+  match e with
+  | .step .. => true
+  | .inv (.step ..) => true
+  | _ => false
+
+def atomsAreInverseV3 (left right : PathExprV3) : Bool :=
+  match left, right with
+  | .step a r b, .inv (.step a2 r2 b2) => a == a2 && r == r2 && b == b2
+  | .inv (.step a r b), .step a2 r2 b2 => a == a2 && r == r2 && b == b2
+  | _, _ => false
+
+def atomStartV3 (atom : PathExprV3) : Option String :=
+  match atom with
+  | .step src _ _ => some src
+  | .inv (.step _ _ dst) => some dst
+  | _ => none
+
+def applyBuiltinRuleV3 (rule : PathRewriteRuleV2) (expr : PathExprV3) : Except String PathExprV3 := do
+  match rule with
+  | .idLeft =>
+      match expr with
+      | .trans (.reflexive _) p => pure p
+      | _ => throw "id_left: expected `trans (reflexive _) p`"
+  | .idRight =>
+      match expr with
+      | .trans p (.reflexive _) => pure p
+      | _ => throw "id_right: expected `trans p (reflexive _)`"
+  | .assocRight =>
+      match expr with
+      | .trans (.trans p q) r => pure (.trans p (.trans q r))
+      | _ => throw "assoc_right: expected `trans (trans p q) r`"
+  | .invRefl =>
+      match expr with
+      | .inv (.reflexive a) => pure (.reflexive a)
+      | _ => throw "inv_refl: expected `inv (reflexive a)`"
+  | .invInv =>
+      match expr with
+      | .inv (.inv p) => pure p
+      | _ => throw "inv_inv: expected `inv (inv p)`"
+  | .invTrans =>
+      match expr with
+      | .inv (.trans p q) => pure (.trans (.inv q) (.inv p))
+      | _ => throw "inv_trans: expected `inv (trans p q)`"
+  | .cancelHead =>
+      match expr with
+      | .trans left right =>
+          match right with
+          | .trans middle rest =>
+              if isAtomV3 left && isAtomV3 middle && atomsAreInverseV3 left middle then
+                pure rest
+              else
+                throw "cancel_head: expected `trans atom (trans invAtom rest)` with matching inverse atoms"
+          | _ =>
+              if isAtomV3 left && isAtomV3 right && atomsAreInverseV3 left right then
+                match atomStartV3 left with
+                | some start => pure (.reflexive start)
+                | none => throw "cancel_head: internal error (expected atom start entity)"
+              else
+                throw "cancel_head: expected `trans atom (trans invAtom rest)` or `trans atom invAtom`"
+      | _ =>
+          throw "cancel_head: expected `trans atom (trans invAtom rest)` or `trans atom invAtom`"
+
+partial def applyAtBuiltinV3 (pos : List Nat) (rule : PathRewriteRuleV2) (expr : PathExprV3) :
+    Except String PathExprV3 := do
+  match pos, expr with
+  | [], _ => applyBuiltinRuleV3 rule expr
+  | 0 :: rest, .trans left right =>
+      pure (.trans (← applyAtBuiltinV3 rest rule left) right)
+  | 1 :: rest, .trans left right =>
+      pure (.trans left (← applyAtBuiltinV3 rest rule right))
+  | 2 :: rest, .inv path =>
+      pure (.inv (← applyAtBuiltinV3 rest rule path))
+  | head :: _, _ =>
+      throw s!"invalid rewrite position head: {head}"
+
+def matchEntity
+    (entityVars : Std.HashSet String)
+    (patternName : String)
+    (targetName : String)
+    (env : MatchEnv) : Except String MatchEnv := do
+  if entityVars.contains patternName then
+    match env.entitySubst.get? patternName with
+    | some bound =>
+        if bound == targetName then
+          pure env
+        else
+          throw s!"entity var `{patternName}` mismatch: expected `{bound}` got `{targetName}`"
+    | none =>
+        pure { env with entitySubst := env.entitySubst.insert patternName targetName }
+  else
+    if patternName == targetName then
+      pure env
+    else
+      throw s!"expected entity `{patternName}`, got `{targetName}`"
+
+partial def matchExpr
+    (entityVars : Std.HashSet String)
+    (pathVars : Std.HashSet String)
+    (pattern : PathExprV3)
+    (target : PathExprV3)
+    (env : MatchEnv) : Except String MatchEnv := do
+  match pattern with
+  | .var name =>
+      if !pathVars.contains name then
+        throw s!"unknown path metavariable `{name}` (declare it in `vars:` as `name: Path(x,y)`)"
+      match env.pathSubst.get? name with
+      | some bound =>
+          if bound == target then
+            pure env
+          else
+            throw s!"path var `{name}` mismatch"
+      | none =>
+          pure { env with pathSubst := env.pathSubst.insert name target }
+  | .reflexive a =>
+      match target with
+      | .reflexive b => matchEntity entityVars a b env
+      | _ => throw "match failure: expected reflexive"
+  | .step a rel b =>
+      match target with
+      | .step a2 rel2 b2 =>
+          if rel != rel2 then
+            throw s!"match failure: expected rel `{rel}`, got `{rel2}`"
+          let env ← matchEntity entityVars a a2 env
+          matchEntity entityVars b b2 env
+      | _ => throw "match failure: expected step"
+  | .trans p q =>
+      match target with
+      | .trans p2 q2 =>
+          let env ← matchExpr entityVars pathVars p p2 env
+          matchExpr entityVars pathVars q q2 env
+      | _ => throw "match failure: expected trans"
+  | .inv p =>
+      match target with
+      | .inv p2 => matchExpr entityVars pathVars p p2 env
+      | _ => throw "match failure: expected inv"
+
+partial def substExpr
+    (entityVars : Std.HashSet String)
+    (pathVars : Std.HashSet String)
+    (template : PathExprV3)
+    (env : MatchEnv) : Except String PathExprV3 := do
+  match template with
+  | .var name =>
+      if !pathVars.contains name then
+        throw s!"unknown path metavariable `{name}` (declare it in `vars:` as `name: Path(x,y)`)"
+      match env.pathSubst.get? name with
+      | some e => pure e
+      | none => throw s!"unbound path metavariable `{name}`"
+  | .reflexive a =>
+      if entityVars.contains a then
+        match env.entitySubst.get? a with
+        | some v => pure (.reflexive v)
+        | none => throw s!"unbound entity variable `{a}`"
+      else
+        pure (.reflexive a)
+  | .step a rel b =>
+      let a :=
+        if entityVars.contains a then
+          env.entitySubst.get? a |>.getD a
+        else
+          a
+      let b :=
+        if entityVars.contains b then
+          env.entitySubst.get? b |>.getD b
+        else
+          b
+      pure (.step a rel b)
+  | .trans p q =>
+      pure (.trans (← substExpr entityVars pathVars p env) (← substExpr entityVars pathVars q env))
+  | .inv p =>
+      pure (.inv (← substExpr entityVars pathVars p env))
+
+def applyAxiRuleOnce (rule : RewriteRuleV1) (expr : PathExprV3) : Except String PathExprV3 := do
+  let (entityVars, pathVars) := declaredVars rule
+
+  let tryDir (lhs rhs : PathExprV3) : Except String PathExprV3 := do
+    let env ← matchExpr entityVars pathVars lhs expr {}
+    let replaced ← substExpr entityVars pathVars rhs env
+    let (s1, e1) ← endpointsV3 expr
+    let (s2, e2) ← endpointsV3 replaced
+    if s1 != s2 || e1 != e2 then
+      throw s!"rewrite rule `{rule.name}` does not preserve endpoints"
+    pure replaced
+
+  match rule.orientation with
+  | .forward => tryDir rule.lhs rule.rhs
+  | .backward => tryDir rule.rhs rule.lhs
+  | .bidirectional =>
+      match (tryDir rule.lhs rule.rhs).toOption, (tryDir rule.rhs rule.lhs).toOption with
+      | some out, none => pure out
+      | none, some out => pure out
+      | none, none => throw s!"rewrite rule `{rule.name}` does not apply"
+      | some out1, some out2 =>
+          if out1 == out2 then
+            pure out1
+          else
+            throw s!"rewrite rule `{rule.name}` is ambiguous in bidirectional mode"
+
+partial def applyAtAxiRule (pos : List Nat) (rule : RewriteRuleV1) (expr : PathExprV3) :
+    Except String PathExprV3 := do
+  match pos, expr with
+  | [], _ => applyAxiRuleOnce rule expr
+  | 0 :: rest, .trans left right =>
+      pure (.trans (← applyAtAxiRule rest rule left) right)
+  | 1 :: rest, .trans left right =>
+      pure (.trans left (← applyAtAxiRule rest rule right))
+  | 2 :: rest, .inv path =>
+      pure (.inv (← applyAtAxiRule rest rule path))
+  | head :: _, _ =>
+      throw s!"invalid rewrite position head: {head}"
+
+def lookupAxiRule (m : Axiograph.Axi.AxiV1.AxiV1Module) (theoryName ruleName : String) :
+    Except String RewriteRuleV1 := do
+  let some theory := m.theories.find? (fun t => t.name == theoryName)
+    | throw s!"unknown theory `{theoryName}`"
+  let some rule := theory.rewriteRules.find? (fun r => r.name == ruleName)
+    | throw s!"unknown rewrite rule `{ruleName}` in theory `{theoryName}`"
+  pure rule
+
+def parseRuleRefV3 (ruleRef : String) :
+    Except String (Sum PathRewriteRuleV2 (String × String × String)) := do
+  if ruleRef.startsWith "builtin:" then
+    let tag := ruleRef.drop "builtin:".length |>.trim
+    pure (.inl (← PathRewriteRuleV2.parse tag))
+  else if ruleRef.startsWith "axi:" then
+    let parts := ruleRef.splitOn ":"
+    match parts with
+    | ["axi", "fnv1a64", hex, theoryName, ruleName] =>
+        let digest := s!"fnv1a64:{hex}"
+        pure (.inr (digest, theoryName, ruleName))
+    | _ =>
+        throw s!"invalid axi rule_ref: `{ruleRef}` (expected `axi:fnv1a64:<hex>:<theory>:<rule>`)"
+  else
+    throw s!"unknown rule_ref prefix (expected builtin: or axi:): `{ruleRef}`"
+
+partial def runDerivationV3Unanchored (input : PathExprV3) (steps : Array PathRewriteStepV3) :
+    Except String PathExprV3 := do
+  let mut current := input
+  for s in steps do
+    match (← parseRuleRefV3 s.ruleRef) with
+    | .inl builtinRule =>
+        current ← applyAtBuiltinV3 s.pos.toList builtinRule current
+    | .inr _axiRef =>
+        throw "rewrite_derivation_v3: axi: rules require an `.axi` anchor context"
+  pure current
+
+partial def runDerivationV3Anchored
+    (digestV1 : String)
+    (module : Axiograph.Axi.AxiV1.AxiV1Module)
+    (input : PathExprV3)
+    (steps : Array PathRewriteStepV3) :
+    Except String PathExprV3 := do
+  let mut current := input
+  for s in steps do
+    match (← parseRuleRefV3 s.ruleRef) with
+    | .inl builtinRule =>
+        current ← applyAtBuiltinV3 s.pos.toList builtinRule current
+    | .inr (d, theoryName, ruleName) =>
+        if d != digestV1 then
+          throw s!"rewrite_derivation_v3: rule digest mismatch (step references {d}, anchor is {digestV1})"
+        let rule ← lookupAxiRule module theoryName ruleName
+        current ← applyAtAxiRule s.pos.toList rule current
+  pure current
+
+def verifyRewriteDerivationProofV3 (proof : RewriteDerivationProofV3) :
+    Except String RewriteDerivationResultV3 := do
+  let (inputStart, inputEnd) ← endpointsV3 proof.input
+  let (outStart, outEnd) ← endpointsV3 proof.output
+  if inputStart != outStart || inputEnd != outEnd then
+    throw s!"rewrite_derivation_v3: endpoints mismatch: input=({inputStart},{inputEnd}) output=({outStart},{outEnd})"
+  let derived ← runDerivationV3Unanchored proof.input proof.derivation
+  if derived != proof.output then
+    throw "rewrite_derivation_v3: derivation does not produce the claimed output expression"
+  pure { start := inputStart, end_ := inputEnd, output := proof.output }
+
+def verifyRewriteDerivationProofV3Anchored
+    (digestV1 : String)
+    (module : Axiograph.Axi.AxiV1.AxiV1Module)
+    (proof : RewriteDerivationProofV3) :
+    Except String RewriteDerivationResultV3 := do
+  let (inputStart, inputEnd) ← endpointsV3 proof.input
+  let (outStart, outEnd) ← endpointsV3 proof.output
+  if inputStart != outStart || inputEnd != outEnd then
+    throw s!"rewrite_derivation_v3: endpoints mismatch: input=({inputStart},{inputEnd}) output=({outStart},{outEnd})"
+  let derived ← runDerivationV3Anchored digestV1 module proof.input proof.derivation
+  if derived != proof.output then
+    throw "rewrite_derivation_v3: derivation does not produce the claimed output expression"
+  pure { start := inputStart, end_ := inputEnd, output := proof.output }
+
+end RewriteDerivation
+
 namespace Query
 
 /-!
@@ -544,20 +891,26 @@ def deriveBinaryEndpointsV3 (decl : RelationDeclV1) (fields : Std.HashMap String
     Option (String × String) :=
   -- Mirrors `rust/crates/axiograph-pathdb/src/axi_module_import.rs::derive_binary_endpoints`.
   if decl.fields.size == 2 then
-    let f0 := decl.fields[0]!.field
-    let f1 := decl.fields[1]!.field
-    match fields.get? f0, fields.get? f1 with
-    | some a, some b => some (a, b)
-    | _, _ => none
+    match decl.fields.toList with
+    | [f0Decl, f1Decl] =>
+        let f0 := f0Decl.field
+        let f1 := f1Decl.field
+        match fields.get? f0, fields.get? f1 with
+        | some a, some b => some (a, b)
+        | _, _ => none
+    | _ => none
   else
     let primary : Array String :=
       decl.fields
         |>.map (fun f => f.field)
         |>.filter (fun f => f != "ctx" && f != "time")
     if primary.size == 2 then
-      match fields.get? primary[0]!, fields.get? primary[1]! with
-      | some a, some b => some (a, b)
-      | _, _ => none
+      match primary.toList with
+      | [f0, f1] =>
+          match fields.get? f0, fields.get? f1 with
+          | some a, some b => some (a, b)
+          | _, _ => none
+      | _ => none
     else
       let pairs : List (String × String) :=
         [ ("lhs", "rhs")
@@ -1163,349 +1516,6 @@ def verifyRewriteDerivationProofV2 (proof : RewriteDerivationProofV2) : Except S
                   .error "rewrite_derivation: derivation does not produce the claimed output expression"
                 else
                   .ok { start := inputStart, end_ := inputEnd, output := proof.output }
-
-/-!
-### v3 rewrite derivations (`rewrite_derivation_v3`)
-
-This is the `.axi`-anchored successor to `rewrite_derivation_v2`.
-
-Key differences from v2:
-
-* Expressions are **name-based** (`Axiograph.Axi.SchemaV1.PathExprV3`) rather than id-based.
-* Steps reference either:
-  - `builtin:<tag>` (groupoid normalization kernel), or
-  - `axi:<axi_digest_v1>:<theory>:<rule_name>` (rules declared in canonical `.axi`).
-
-The trusted checker replays the derivation step-by-step, resolving `axi:` rules
-against the anchored `.axi` module (provided to `axiograph_verify`).
--/
-
-open Axiograph.Axi.SchemaV1
-
-structure RewriteDerivationResultV3 where
-  start : String
-  end_ : String
-  output : PathExprV3
-  deriving Repr
-
-structure MatchEnv where
-  pathSubst : Std.HashMap String PathExprV3 := {}
-  entitySubst : Std.HashMap String String := {}
-  deriving Repr
-
-def declaredVars (rule : RewriteRuleV1) : (Std.HashSet String × Std.HashSet String) :=
-  Id.run do
-    let mut entityVars : Std.HashSet String := {}
-    let mut pathVars : Std.HashSet String := {}
-    for v in rule.vars do
-      match v.ty with
-      | .object _ => entityVars := entityVars.insert v.name
-      | .path _ _ => pathVars := pathVars.insert v.name
-    pure (entityVars, pathVars)
-
-partial def endpointsV3 : PathExprV3 → Except String (String × String)
-  | .var name => throw s!"endpoints: unexpected path metavariable `{name}`"
-  | .reflexive entity => pure (entity, entity)
-  | .step src _rel dst => pure (src, dst)
-  | .trans left right => do
-      let (ls, le) ← endpointsV3 left
-      let (rs, re) ← endpointsV3 right
-      if le != rs then
-        throw s!"endpoints: trans mismatch (left ends at {le}, right starts at {rs})"
-      pure (ls, re)
-  | .inv path => do
-      let (s, e) ← endpointsV3 path
-      pure (e, s)
-
-def isAtomV3 (e : PathExprV3) : Bool :=
-  match e with
-  | .step .. => true
-  | .inv (.step ..) => true
-  | _ => false
-
-def atomsAreInverseV3 (left right : PathExprV3) : Bool :=
-  match left, right with
-  | .step a r b, .inv (.step a2 r2 b2) => a == a2 && r == r2 && b == b2
-  | .inv (.step a r b), .step a2 r2 b2 => a == a2 && r == r2 && b == b2
-  | _, _ => false
-
-def atomStartV3 (atom : PathExprV3) : Option String :=
-  match atom with
-  | .step src _ _ => some src
-  | .inv (.step _ _ dst) => some dst
-  | _ => none
-
-def applyBuiltinRuleV3 (rule : PathRewriteRuleV2) (expr : PathExprV3) : Except String PathExprV3 := do
-  match rule with
-  | .idLeft =>
-      match expr with
-      | .trans (.reflexive _) p => pure p
-      | _ => throw "id_left: expected `trans (reflexive _) p`"
-  | .idRight =>
-      match expr with
-      | .trans p (.reflexive _) => pure p
-      | _ => throw "id_right: expected `trans p (reflexive _)`"
-  | .assocRight =>
-      match expr with
-      | .trans (.trans p q) r => pure (.trans p (.trans q r))
-      | _ => throw "assoc_right: expected `trans (trans p q) r`"
-  | .invRefl =>
-      match expr with
-      | .inv (.reflexive a) => pure (.reflexive a)
-      | _ => throw "inv_refl: expected `inv (reflexive a)`"
-  | .invInv =>
-      match expr with
-      | .inv (.inv p) => pure p
-      | _ => throw "inv_inv: expected `inv (inv p)`"
-  | .invTrans =>
-      match expr with
-      | .inv (.trans p q) => pure (.trans (.inv q) (.inv p))
-      | _ => throw "inv_trans: expected `inv (trans p q)`"
-  | .cancelHead =>
-      match expr with
-      | .trans left right =>
-          match right with
-          | .trans middle rest =>
-              if isAtomV3 left && isAtomV3 middle && atomsAreInverseV3 left middle then
-                pure rest
-              else
-                throw "cancel_head: expected `trans atom (trans invAtom rest)` with matching inverse atoms"
-          | _ =>
-              if isAtomV3 left && isAtomV3 right && atomsAreInverseV3 left right then
-                match atomStartV3 left with
-                | some start => pure (.reflexive start)
-                | none => throw "cancel_head: internal error (expected atom start entity)"
-              else
-                throw "cancel_head: expected `trans atom (trans invAtom rest)` or `trans atom invAtom`"
-      | _ =>
-          throw "cancel_head: expected `trans atom (trans invAtom rest)` or `trans atom invAtom`"
-
-partial def applyAtBuiltinV3 (pos : List Nat) (rule : PathRewriteRuleV2) (expr : PathExprV3) :
-    Except String PathExprV3 := do
-  match pos, expr with
-  | [], _ => applyBuiltinRuleV3 rule expr
-  | 0 :: rest, .trans left right =>
-      pure (.trans (← applyAtBuiltinV3 rest rule left) right)
-  | 1 :: rest, .trans left right =>
-      pure (.trans left (← applyAtBuiltinV3 rest rule right))
-  | 2 :: rest, .inv path =>
-      pure (.inv (← applyAtBuiltinV3 rest rule path))
-  | head :: _, _ =>
-      throw s!"invalid rewrite position head: {head}"
-
-def matchEntity
-    (entityVars : Std.HashSet String)
-    (patternName : String)
-    (targetName : String)
-    (env : MatchEnv) : Except String MatchEnv := do
-  if entityVars.contains patternName then
-    match env.entitySubst.get? patternName with
-    | some bound =>
-        if bound == targetName then
-          pure env
-        else
-          throw s!"entity var `{patternName}` mismatch: expected `{bound}` got `{targetName}`"
-    | none =>
-        pure { env with entitySubst := env.entitySubst.insert patternName targetName }
-  else
-    if patternName == targetName then
-      pure env
-    else
-      throw s!"expected entity `{patternName}`, got `{targetName}`"
-
-partial def matchExpr
-    (entityVars : Std.HashSet String)
-    (pathVars : Std.HashSet String)
-    (pattern : PathExprV3)
-    (target : PathExprV3)
-    (env : MatchEnv) : Except String MatchEnv := do
-  match pattern with
-  | .var name =>
-      if !pathVars.contains name then
-        throw s!"unknown path metavariable `{name}` (declare it in `vars:` as `name: Path(x,y)`)"
-      match env.pathSubst.get? name with
-      | some bound =>
-          if bound == target then
-            pure env
-          else
-            throw s!"path var `{name}` mismatch"
-      | none =>
-          pure { env with pathSubst := env.pathSubst.insert name target }
-  | .reflexive a =>
-      match target with
-      | .reflexive b => matchEntity entityVars a b env
-      | _ => throw "match failure: expected reflexive"
-  | .step a rel b =>
-      match target with
-      | .step a2 rel2 b2 =>
-          if rel != rel2 then
-            throw s!"match failure: expected rel `{rel}`, got `{rel2}`"
-          let env ← matchEntity entityVars a a2 env
-          matchEntity entityVars b b2 env
-      | _ => throw "match failure: expected step"
-  | .trans p q =>
-      match target with
-      | .trans p2 q2 =>
-          let env ← matchExpr entityVars pathVars p p2 env
-          matchExpr entityVars pathVars q q2 env
-      | _ => throw "match failure: expected trans"
-  | .inv p =>
-      match target with
-      | .inv p2 => matchExpr entityVars pathVars p p2 env
-      | _ => throw "match failure: expected inv"
-
-partial def substExpr
-    (entityVars : Std.HashSet String)
-    (pathVars : Std.HashSet String)
-    (template : PathExprV3)
-    (env : MatchEnv) : Except String PathExprV3 := do
-  match template with
-  | .var name =>
-      if !pathVars.contains name then
-        throw s!"unknown path metavariable `{name}` (declare it in `vars:` as `name: Path(x,y)`)"
-      match env.pathSubst.get? name with
-      | some e => pure e
-      | none => throw s!"unbound path metavariable `{name}`"
-  | .reflexive a =>
-      if entityVars.contains a then
-        match env.entitySubst.get? a with
-        | some v => pure (.reflexive v)
-        | none => throw s!"unbound entity variable `{a}`"
-      else
-        pure (.reflexive a)
-  | .step a rel b =>
-      let a :=
-        if entityVars.contains a then
-          env.entitySubst.get? a |>.getD a
-        else
-          a
-      let b :=
-        if entityVars.contains b then
-          env.entitySubst.get? b |>.getD b
-        else
-          b
-      pure (.step a rel b)
-  | .trans p q =>
-      pure (.trans (← substExpr entityVars pathVars p env) (← substExpr entityVars pathVars q env))
-  | .inv p =>
-      pure (.inv (← substExpr entityVars pathVars p env))
-
-def applyAxiRuleOnce (rule : RewriteRuleV1) (expr : PathExprV3) : Except String PathExprV3 := do
-  let (entityVars, pathVars) := declaredVars rule
-
-  let tryDir (lhs rhs : PathExprV3) : Except String PathExprV3 := do
-    let env ← matchExpr entityVars pathVars lhs expr {}
-    let replaced ← substExpr entityVars pathVars rhs env
-    let (s1, e1) ← endpointsV3 expr
-    let (s2, e2) ← endpointsV3 replaced
-    if s1 != s2 || e1 != e2 then
-      throw s!"rewrite rule `{rule.name}` does not preserve endpoints"
-    pure replaced
-
-  match rule.orientation with
-  | .forward => tryDir rule.lhs rule.rhs
-  | .backward => tryDir rule.rhs rule.lhs
-  | .bidirectional =>
-      match (tryDir rule.lhs rule.rhs).toOption, (tryDir rule.rhs rule.lhs).toOption with
-      | some out, none => pure out
-      | none, some out => pure out
-      | none, none => throw s!"rewrite rule `{rule.name}` does not apply"
-      | some out1, some out2 =>
-          if out1 == out2 then
-            pure out1
-          else
-            throw s!"rewrite rule `{rule.name}` is ambiguous in bidirectional mode"
-
-partial def applyAtAxiRule (pos : List Nat) (rule : RewriteRuleV1) (expr : PathExprV3) :
-    Except String PathExprV3 := do
-  match pos, expr with
-  | [], _ => applyAxiRuleOnce rule expr
-  | 0 :: rest, .trans left right =>
-      pure (.trans (← applyAtAxiRule rest rule left) right)
-  | 1 :: rest, .trans left right =>
-      pure (.trans left (← applyAtAxiRule rest rule right))
-  | 2 :: rest, .inv path =>
-      pure (.inv (← applyAtAxiRule rest rule path))
-  | head :: _, _ =>
-      throw s!"invalid rewrite position head: {head}"
-
-def lookupAxiRule (m : Axiograph.Axi.AxiV1.AxiV1Module) (theoryName ruleName : String) :
-    Except String RewriteRuleV1 := do
-  let some theory := m.theories.find? (fun t => t.name == theoryName)
-    | throw s!"unknown theory `{theoryName}`"
-  let some rule := theory.rewriteRules.find? (fun r => r.name == ruleName)
-    | throw s!"unknown rewrite rule `{ruleName}` in theory `{theoryName}`"
-  pure rule
-
-def parseRuleRefV3 (ruleRef : String) :
-    Except String (Sum PathRewriteRuleV2 (String × String × String)) := do
-  if ruleRef.startsWith "builtin:" then
-    let tag := ruleRef.drop "builtin:".length |>.trim
-    pure (.inl (← PathRewriteRuleV2.parse tag))
-  else if ruleRef.startsWith "axi:" then
-    let parts := ruleRef.splitOn ":"
-    match parts with
-    | ["axi", "fnv1a64", hex, theoryName, ruleName] =>
-        let digest := s!"fnv1a64:{hex}"
-        pure (.inr (digest, theoryName, ruleName))
-    | _ =>
-        throw s!"invalid axi rule_ref: `{ruleRef}` (expected `axi:fnv1a64:<hex>:<theory>:<rule>`)"
-  else
-    throw s!"unknown rule_ref prefix (expected builtin: or axi:): `{ruleRef}`"
-
-partial def runDerivationV3Unanchored (input : PathExprV3) (steps : Array PathRewriteStepV3) :
-    Except String PathExprV3 := do
-  let mut current := input
-  for s in steps do
-    match (← parseRuleRefV3 s.ruleRef) with
-    | .inl builtinRule =>
-        current ← applyAtBuiltinV3 s.pos.toList builtinRule current
-    | .inr _axiRef =>
-        throw "rewrite_derivation_v3: axi: rules require an `.axi` anchor context"
-  pure current
-
-partial def runDerivationV3Anchored
-    (digestV1 : String)
-    (module : Axiograph.Axi.AxiV1.AxiV1Module)
-    (input : PathExprV3)
-    (steps : Array PathRewriteStepV3) :
-    Except String PathExprV3 := do
-  let mut current := input
-  for s in steps do
-    match (← parseRuleRefV3 s.ruleRef) with
-    | .inl builtinRule =>
-        current ← applyAtBuiltinV3 s.pos.toList builtinRule current
-    | .inr (d, theoryName, ruleName) =>
-        if d != digestV1 then
-          throw s!"rewrite_derivation_v3: rule digest mismatch (step references {d}, anchor is {digestV1})"
-        let rule ← lookupAxiRule module theoryName ruleName
-        current ← applyAtAxiRule s.pos.toList rule current
-  pure current
-
-def verifyRewriteDerivationProofV3 (proof : RewriteDerivationProofV3) :
-    Except String RewriteDerivationResultV3 := do
-  let (inputStart, inputEnd) ← endpointsV3 proof.input
-  let (outStart, outEnd) ← endpointsV3 proof.output
-  if inputStart != outStart || inputEnd != outEnd then
-    throw s!"rewrite_derivation_v3: endpoints mismatch: input=({inputStart},{inputEnd}) output=({outStart},{outEnd})"
-  let derived ← runDerivationV3Unanchored proof.input proof.derivation
-  if derived != proof.output then
-    throw "rewrite_derivation_v3: derivation does not produce the claimed output expression"
-  pure { start := inputStart, end_ := inputEnd, output := proof.output }
-
-def verifyRewriteDerivationProofV3Anchored
-    (digestV1 : String)
-    (module : Axiograph.Axi.AxiV1.AxiV1Module)
-    (proof : RewriteDerivationProofV3) :
-    Except String RewriteDerivationResultV3 := do
-  let (inputStart, inputEnd) ← endpointsV3 proof.input
-  let (outStart, outEnd) ← endpointsV3 proof.output
-  if inputStart != outStart || inputEnd != outEnd then
-    throw s!"rewrite_derivation_v3: endpoints mismatch: input=({inputStart},{inputEnd}) output=({outStart},{outEnd})"
-  let derived ← runDerivationV3Anchored digestV1 module proof.input proof.derivation
-  if derived != proof.output then
-    throw "rewrite_derivation_v3: derivation does not produce the claimed output expression"
-  pure { start := inputStart, end_ := inputEnd, output := proof.output }
 
 end RewriteDerivation
 

@@ -15,7 +15,7 @@
 #   make test         - Run all tests
 #   make clean        - Clean build artifacts
 
-.PHONY: all all-exe rust lean lean-system-cc lean-exe verify-lean verify-lean-cert verify-lean-e2e verify-lean-v2 verify-lean-e2e-v2 \
+.PHONY: all all-exe rust lean lean-cache lean-system-cc lean-exe verify-lean verify-lean-cert verify-lean-e2e verify-lean-v2 verify-lean-e2e-v2 \
 	verify-lean-axi-schema-v1 \
 	verify-lean-axi-v1 \
 	verify-axi-parse-e2e \
@@ -125,7 +125,16 @@ rust-test-semantics:
 # Lean Build (additive, optional)
 # ============================================================================
 
-lean: dirs
+lean-cache: dirs
+	@echo "━━━ Updating Lean dependencies/cache ━━━"
+	@if command -v $(LAKE) >/dev/null 2>&1; then \
+		cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) update && $(LEAN_ENV) $(LAKE) exe cache get && echo "✓ Lean cache updated"; \
+	else \
+		echo "⚠️  lake (Lean) not found - skipping Lean cache update"; \
+		echo "   Install via elan: https://leanprover-community.github.io/get_started.html"; \
+	fi
+
+lean: dirs lean-cache
 	@echo "━━━ Building Lean checker ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && echo "✓ Lean build complete"; \
@@ -136,7 +145,7 @@ lean: dirs
 
 lean-system-cc: lean
 
-lean-exe: dirs
+lean-exe: dirs lean-cache
 	@echo "━━━ Building Lean checker executable (axiograph_verify) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		if [ "$(UNAME)" = "Darwin" ]; then \

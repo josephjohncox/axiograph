@@ -773,9 +773,12 @@ fn cmd_perf_indexes(
     // ---------------------------------------------------------------------
     let mut mutation_relations_added = 0usize;
     if mutations > 0 {
-        let cold_rel = relation_type_names[0].as_str();
         let cold_token = tokens[0];
         let mut_ids: Vec<u32> = {
+            let mut ids_by_rel: std::collections::HashMap<String, Vec<u32>> =
+                std::collections::HashMap::new();
+            let mut ids_by_schema_rel: std::collections::HashMap<(String, String), Vec<u32>> =
+                std::collections::HashMap::new();
             let mut ids = Vec::with_capacity(mutations);
             for i in 0..mutations {
                 let rel = &relation_type_names[i % rel_types];
@@ -793,16 +796,38 @@ fn cmd_perf_indexes(
                 db.add_relation(rel, source, id, 0.9, Vec::new());
                 mutation_relations_added += 1;
                 ids.push(id);
+                ids_by_rel
+                    .entry(rel.to_string())
+                    .or_default()
+                    .push(id);
+                ids_by_schema_rel
+                    .entry((schema.to_string(), rel.to_string()))
+                    .or_default()
+                    .push(id);
+            }
+            for (rel, ids_for_rel) in &ids_by_rel {
+                let hits = db.fact_nodes_by_axi_relation(rel);
+                for id in ids_for_rel {
+                    if !hits.contains(*id) {
+                        return Err(anyhow!(
+                            "mutation: fact index missing new entity {id} for rel {rel}"
+                        ));
+                    }
+                }
+            }
+            for ((schema, rel), ids_for_pair) in &ids_by_schema_rel {
+                let hits = db.fact_nodes_by_axi_schema_relation(schema, rel);
+                for id in ids_for_pair {
+                    if !hits.contains(*id) {
+                        return Err(anyhow!(
+                            "mutation: fact index missing new entity {id} for schema {schema} rel {rel}"
+                        ));
+                    }
+                }
             }
             ids
         };
 
-        let hits = db.fact_nodes_by_axi_relation(cold_rel);
-        for id in &mut_ids {
-            if !hits.contains(*id) {
-                return Err(anyhow!("mutation: fact index missing new entity {id}"));
-            }
-        }
         let hits = db.entities_with_attr_fts("name", cold_token);
         for id in &mut_ids {
             if !hits.contains(*id) {
