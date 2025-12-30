@@ -964,7 +964,7 @@ fn parse_rewrite_rule(rule_name: &str, lines: &[String]) -> Result<RewriteRuleV1
 
     let mut vars: Vec<RewriteVarDeclV1> = Vec::new();
     for line in vars_lines {
-        vars.extend(parse_rewrite_var_decl_list(&line)?);
+        vars.extend(parse_rewrite_var_decl_list_v1(&line)?);
     }
 
     let lhs_text = lhs_lines.join(" ");
@@ -999,7 +999,17 @@ fn parse_rewrite_orientation(s: &str) -> Result<RewriteOrientationV1, String> {
     }
 }
 
-fn parse_rewrite_var_decl_list(line: &str) -> Result<Vec<RewriteVarDeclV1>, String> {
+/// Parse a comma-separated list of rewrite-rule variable declarations.
+///
+/// Examples:
+/// - `x: Person, y: Person`
+/// - `x: Person, y: Person, p: Path(x,y)`
+/// - `p: Path(x, y)` (whitespace is flexible)
+///
+/// This parser is shared between:
+/// - the canonical `.axi` parser (schema/theory surface), and
+/// - meta-plane tooling that reads stored rewrite rules from PathDB.
+pub fn parse_rewrite_var_decl_list_v1(line: &str) -> Result<Vec<RewriteVarDeclV1>, String> {
     fn comma(input: &str) -> IResult<&str, ()> {
         let (input, _) = multispace0(input)?;
         let (input, _) = pchar(',')(input)?;

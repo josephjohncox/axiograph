@@ -8,6 +8,13 @@
 # - subtyping-aware type constraints (SmoothManifold includes Spacetime, PhaseSpace, ...)
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/physics_ontology_axi_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/physics_ontology_axi_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/physics_ontology_axi_demo.repl
 
 import_axi examples/physics/PhysicsOntology.axi
@@ -35,4 +42,3 @@ q select ?p where name("QuantumFieldTheoryConcept") -requires-> ?p limit 20
 
 export_axi build/physics_ontology_axi_export_v1.axi
 save build/physics_ontology_axi.axpd
-

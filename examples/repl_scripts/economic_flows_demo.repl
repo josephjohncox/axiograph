@@ -1,6 +1,13 @@
 # Axiograph REPL script: economic flows demo
 #
-# Run:
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/economic_flows_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/economic_flows_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/economic_flows_demo.repl
 
 gen economic_flows 3 3 1

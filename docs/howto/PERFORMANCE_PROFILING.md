@@ -1,6 +1,6 @@
 # Performance profiling
 
-This repo includes a few built-in ways to profile “where the time went”, without introducing new Rust dependencies.
+This repo includes a few built-in ways to profile “where the time went”. Phase timings are dependency-free; deeper CPU profiling is available behind an optional feature flag.
 
 ## Profile PathDB WAL checkout vs rebuild
 
@@ -55,9 +55,71 @@ This will:
 - run `pathdb-build --rebuild` to profile the slow path,
 - write `timings_*.json` into `build/profile_pathdb_wal_build/`.
 
-## Flamegraphs (optional)
+## Built-in sampling profiles (feature-gated)
 
-For deeper detail than phase timings, use a sampling profiler.
+For deeper detail than phase timings, you can enable the optional CPU profiler
+in the CLI and emit flamegraphs / pprof data / folded callstack dumps.
+
+Build with the profiling feature:
+
+```bash
+cd rust
+cargo build -p axiograph-cli --release --features profiling
+```
+
+Then run any command with `--profile`:
+
+```bash
+./target/release/axiograph \
+  --profile flamegraph \
+  --profile-out ../build/profiles/pathdb_build \
+  db accept pathdb-build --dir ../build/accepted_plane --snapshot head --out ../build/head.axpd --rebuild
+```
+
+Formats:
+
+- `--profile flamegraph` → `<out>.svg`
+- `--profile pprof` → `<out>.pb` (use `go tool pprof -top` for callstack time dumps)
+- `--profile folded` → `<out>.folded` (collapsed stacks)
+- `--profile all` → all of the above
+
+`--profile` with no value defaults to `flamegraph`.
+
+Live snapshots while running:
+
+- `--profile-interval <secs>` emits periodic snapshots.
+- `--profile-signal` emits a snapshot on `SIGUSR2` (Unix only).
+- `--profile-live-format <fmt>` controls snapshot format (default: `pprof`).
+
+Example (periodic snapshots every 10s):
+
+```bash
+./target/release/axiograph \
+  --profile all \
+  --profile-interval 10 \
+  --profile-out ../build/profiles/pathdb_build \
+  db accept pathdb-build --dir ../build/accepted_plane --snapshot head --out ../build/head.axpd --rebuild
+```
+
+Example (signal-triggered):
+
+```bash
+./target/release/axiograph \
+  --profile all \
+  --profile-signal \
+  --profile-out ../build/profiles/pathdb_build \
+  db accept pathdb-build --dir ../build/accepted_plane --snapshot head --out ../build/head.axpd --rebuild
+```
+
+Then from another terminal:
+
+```bash
+kill -USR2 <pid>
+```
+
+## Flamegraphs (optional, external tools)
+
+For deeper detail than phase timings, you can also use an external sampling profiler.
 
 ### Linux
 
@@ -73,4 +135,3 @@ cargo flamegraph -p axiograph-cli --bin axiograph --release -- \
 
 `cargo-flamegraph` may require additional privileges (sampling restrictions vary by macOS version).
 If it doesn’t work for you, use Instruments (Time Profiler) to attach to the `axiograph` process.
-

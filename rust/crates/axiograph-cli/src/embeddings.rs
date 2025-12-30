@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+use axiograph_pathdb::DbToken;
+
 pub const EMBEDDINGS_FILE_VERSION_V1: &str = "axiograph_embeddings_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +104,7 @@ pub struct ResolvedEmbeddingsTargetV1 {
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedEmbeddingsIndexV1 {
+    db_token: Option<DbToken>,
     pub docchunks: Option<ResolvedEmbeddingsTargetV1>,
     pub entities: Option<ResolvedEmbeddingsTargetV1>,
 }
@@ -121,6 +124,21 @@ fn normalize_in_place(v: &mut [f32]) {
 }
 
 impl ResolvedEmbeddingsIndexV1 {
+    pub fn assert_in_db(&self, db: &axiograph_pathdb::PathDB) -> Result<()> {
+        let Some(expected) = self.db_token else {
+            return Ok(());
+        };
+        let actual = db.db_token();
+        if expected != actual {
+            return Err(anyhow!(
+                "embeddings index is for db#{} but was used with db#{} (stale snapshot?)",
+                expected.raw(),
+                actual.raw()
+            ));
+        }
+        Ok(())
+    }
+
     /// Resolve one embeddings file against the currently loaded snapshot DB.
     ///
     /// This converts stable keys (chunk_id, (type,name)) into snapshot-local entity ids,
@@ -130,6 +148,19 @@ impl ResolvedEmbeddingsIndexV1 {
         db: &axiograph_pathdb::PathDB,
         file: EmbeddingsFileV1,
     ) -> Result<()> {
+        let token = db.db_token();
+        if let Some(existing) = self.db_token {
+            if existing != token {
+                return Err(anyhow!(
+                    "cannot resolve embeddings into existing index: db token mismatch (expected db#{}, got db#{})",
+                    existing.raw(),
+                    token.raw()
+                ));
+            }
+        } else {
+            self.db_token = Some(token);
+        }
+
         let dim = file.dim;
         if dim == 0 {
             return Err(anyhow!(
@@ -299,6 +330,7 @@ mod tests {
 
         let mut idx = ResolvedEmbeddingsIndexV1::default();
         idx.resolve_and_set(&db, file).expect("resolve");
+        idx.assert_in_db(&db).expect("token ok");
 
         let target = idx.docchunks.expect("docchunks target set");
         assert_eq!(target.backend, "ollama");
@@ -338,10 +370,46 @@ mod tests {
 
         let mut idx = ResolvedEmbeddingsIndexV1::default();
         idx.resolve_and_set(&db, file).expect("resolve");
+        idx.assert_in_db(&db).expect("token ok");
 
         let target = idx.entities.expect("entities target set");
         assert_eq!(target.rows.len(), 1);
         assert_eq!(target.rows[0].id, alice_id);
         assert_vec_approx_eq(&target.rows[0].vector, &[0.0, 1.0], 1e-4);
+    }
+
+    #[test]
+    fn embeddings_index_is_snapshot_scoped() {
+        let mut db1 = axiograph_pathdb::PathDB::new();
+        db1.add_entity("DocChunk", vec![("name", "doc_0"), ("chunk_id", "doc_0")]);
+        db1.build_indexes();
+
+        let file = EmbeddingsFileV1 {
+            version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
+            created_at_unix_secs: 1,
+            backend: "ollama".to_string(),
+            model: "nomic-embed-text".to_string(),
+            dim: 2,
+            target: EmbeddingTargetKindV1::DocChunks,
+            items: vec![EmbeddingItemV1 {
+                key: EmbeddingKeyV1::DocChunk {
+                    chunk_id: "doc_0".to_string(),
+                },
+                vector: vec![1.0, 0.0],
+                text_digest: None,
+            }],
+            metadata: HashMap::new(),
+        };
+
+        let mut idx = ResolvedEmbeddingsIndexV1::default();
+        idx.resolve_and_set(&db1, file).expect("resolve");
+        idx.assert_in_db(&db1).expect("token ok");
+
+        let db2 = axiograph_pathdb::PathDB::new();
+        let err = idx.assert_in_db(&db2).unwrap_err();
+        assert!(
+            err.to_string().contains("stale snapshot"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -5,10 +5,14 @@
 # - Canonical `axi_schema_v1` modules (schema/theory/instance)
 #
 # Run (from repo root):
-#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/physics_knowledge_demo.repl
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/physics_knowledge_demo.repl
 #
-# Or (from repo root, installed binary):
+# Or (if installed to PATH):
 #   axiograph repl --script examples/repl_scripts/physics_knowledge_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/physics_knowledge_demo.repl
 
 import_axi examples/machining/PhysicsKnowledge.axi
 

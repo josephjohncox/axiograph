@@ -27,10 +27,18 @@ echo "root: $PROJECT_ROOT"
 echo "run:  $RUN_DIR"
 
 echo ""
-echo "-- build Rust CLI"
-cd "$PROJECT_ROOT/rust"
-cargo build --release -p axiograph-cli
-AXIOGRAPH="$PROJECT_ROOT/rust/target/release/axiograph"
+echo "-- build binaries (via Makefile)"
+cd "$PROJECT_ROOT"
+make binaries
+
+AXIOGRAPH="$PROJECT_ROOT/bin/axiograph"
+if [ ! -x "$AXIOGRAPH" ]; then
+  AXIOGRAPH="$PROJECT_ROOT/bin/axiograph-cli"
+fi
+if [ ! -x "$AXIOGRAPH" ]; then
+  echo "error: expected executable at $PROJECT_ROOT/bin/axiograph or $PROJECT_ROOT/bin/axiograph-cli"
+  exit 2
+fi
 
 echo ""
 echo "-- validate canonical `.axi` input (Rust parser)"

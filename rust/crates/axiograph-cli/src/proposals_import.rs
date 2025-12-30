@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use axiograph_ingest_docs::{EvidencePointer, ProposalV1, ProposalsFileV1};
 use axiograph_pathdb::axi_meta::{
-    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, META_ATTR_NAME, META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT,
+    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, META_ATTR_NAME, REL_AXI_FACT_IN_CONTEXT,
 };
-use axiograph_pathdb::axi_semantics::{MetaPlaneIndex, RelationDecl, SchemaIndex};
+use axiograph_pathdb::axi_semantics::{MetaPlaneIndex, RelationDecl};
+use axiograph_pathdb::CheckedDbMut;
 use axiograph_pathdb::PathDB;
 
 use crate::relation_resolution::EndpointOrientation;
@@ -44,6 +45,17 @@ pub(crate) fn import_proposals_file_into_pathdb(
     summary.proposals_total = file.proposals.len();
 
     let meta_plane = MetaPlaneIndex::from_db(db).unwrap_or_default();
+    let mut relation_name_counts: HashMap<String, usize> = HashMap::new();
+    for schema in meta_plane.schemas.values() {
+        for rel in schema.relation_decls.keys() {
+            *relation_name_counts.entry(rel.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let now_secs: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
     // Represent the proposals file itself as a run node, so evidence-plane data
     // can be traced back to its source (cross-domain provenance).
@@ -70,11 +82,23 @@ pub(crate) fn import_proposals_file_into_pathdb(
             continue;
         }
 
+        let schema_hint = proposal_meta
+            .schema_hint
+            .as_deref()
+            .or(file.schema_hint.as_deref())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+
         let id = match find_entity_by_external_id(db, entity_id)? {
             Some(existing) => {
                 // Keep existing entity record, but mark the more specific type
                 // and enrich missing attributes.
                 db.mark_virtual_type(existing, entity_type)?;
+                if let Some(schema_name) = schema_hint {
+                    if meta_plane.schemas.contains_key(schema_name) && !entity_has_schema(db, existing, schema_name)? {
+                        upsert_if_missing(db, existing, ATTR_AXI_SCHEMA, schema_name)?;
+                    }
+                }
                 enrich_entity_from_proposal(
                     db,
                     existing,
@@ -89,9 +113,33 @@ pub(crate) fn import_proposals_file_into_pathdb(
             }
             None => {
                 let attrs = build_entity_attrs(proposal_meta, entity_id, name, attributes, description);
-                let attrs_ref = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-                let id = db.add_entity(entity_type, attrs_ref);
-                db.mark_virtual_type(id, "ProposalEntity")?;
+                let id = if let Some(schema_name) = schema_hint {
+                    if meta_plane
+                        .schemas
+                        .get(schema_name)
+                        .map(|s| s.object_types.contains(entity_type))
+                        .unwrap_or(false)
+                    {
+                        let mut checked = CheckedDbMut::new(db)?;
+                        let mut builder = checked.entity_builder(schema_name, entity_type)?;
+                        for (k, v) in &attrs {
+                            builder = builder.with_attr(k, v);
+                        }
+                        let id = builder.commit()?;
+                        checked.db_mut().mark_virtual_type(id, "ProposalEntity")?;
+                        id
+                    } else {
+                        let attrs_ref = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                        let id = db.add_entity(entity_type, attrs_ref);
+                        db.mark_virtual_type(id, "ProposalEntity")?;
+                        id
+                    }
+                } else {
+                    let attrs_ref = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                    let id = db.add_entity(entity_type, attrs_ref);
+                    db.mark_virtual_type(id, "ProposalEntity")?;
+                    id
+                };
                 summary.entities_added += 1;
                 id
             }
@@ -157,7 +205,7 @@ pub(crate) fn import_proposals_file_into_pathdb(
                 // Context/world scoping (recommended): `attributes.context` creates an
                 // `axi_fact_in_context` edge so queries can scope facts efficiently.
                 let context_id = if let Some(ctx) = attributes.get("context") {
-                    Some(get_or_create_context(db, ctx, &mut summary)?)
+                    Some(get_or_create_context(db, &meta_plane, None, ctx, &mut summary)?)
                 } else {
                     None
                 };
@@ -212,9 +260,32 @@ pub(crate) fn import_proposals_file_into_pathdb(
                 // This keeps AxQL ergonomic even when relations are reified into fact nodes.
                 let confidence = proposal_meta.confidence.clamp(0.0, 1.0) as f32;
                 if !rel_type.is_empty() {
-                    let rel_id = db.interner.intern(&rel_type);
+                    let derived_label = if let Some(hint) = schema_hint {
+                        let hint = hint.trim();
+                        if !hint.is_empty()
+                            && meta_plane.schemas.contains_key(hint)
+                            && meta_plane
+                                .schemas
+                                .get(hint)
+                                .map(|s| s.relation_decls.contains_key(rel_type.as_str()))
+                                .unwrap_or(false)
+                            && relation_name_counts
+                                .get(rel_type.as_str())
+                                .copied()
+                                .unwrap_or(0)
+                                > 1
+                        {
+                            format!("{hint}.{rel_type}")
+                        } else {
+                            rel_type.clone()
+                        }
+                    } else {
+                        rel_type.clone()
+                    };
+
+                    let rel_id = db.interner.intern(&derived_label);
                     if !db.relations.has_edge(src, rel_id, dst) {
-                        db.add_relation(&rel_type, src, dst, confidence, vec![]);
+                        db.add_relation(&derived_label, src, dst, confidence, vec![]);
                         summary.derived_edges_added += 1;
                     }
                 }
@@ -226,6 +297,12 @@ pub(crate) fn import_proposals_file_into_pathdb(
         let schema_name = resolved.schema_name.clone();
         let schema = resolved.schema;
         let rel_decl = resolved.rel_decl;
+
+        // We’re about to build a canonical schema-typed fact, so keep a checked DB
+        // handle around for:
+        // - schema-aware stub entity creation (typed by construction), and
+        // - typed fact-node construction via `TypedFactBuilder`.
+        let mut checked = CheckedDbMut::new(db)?;
 
         // Endpoints (schema-directed when possible). For "simple relation" overlays we
         // allow either:
@@ -243,8 +320,20 @@ pub(crate) fn import_proposals_file_into_pathdb(
             .find(|f| f.field_name == dst_field)
             .map(|f| f.field_type.as_str());
 
-        let src = resolve_or_stub_entity_with_type(db, &id_map, source_key, src_type_hint)?;
-        let dst = resolve_or_stub_entity_with_type(db, &id_map, target_key, dst_type_hint)?;
+        let src = resolve_or_stub_entity_with_type_in_schema(
+            &mut checked,
+            &id_map,
+            source_key,
+            src_type_hint,
+            &schema_name,
+        )?;
+        let dst = resolve_or_stub_entity_with_type_in_schema(
+            &mut checked,
+            &id_map,
+            target_key,
+            dst_type_hint,
+            &schema_name,
+        )?;
 
         // Context/world scoping (recommended): `attributes.context` creates an
         // `axi_fact_in_context` edge so queries can scope facts efficiently.
@@ -254,109 +343,162 @@ pub(crate) fn import_proposals_file_into_pathdb(
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
         let context_id = if let Some(ctx) = context_name {
-            Some(get_or_create_context(db, ctx, &mut summary)?)
+            Some(get_or_create_context(
+                checked.db_mut(),
+                &meta_plane,
+                Some(schema_name.as_str()),
+                ctx,
+                &mut summary,
+            )?)
         } else {
             None
         };
 
-        let tuple_entity_type = tuple_entity_type_name(schema, &rel_type);
+        let tuple_entity_type = schema.tuple_entity_type_name(&rel_type);
 
-        let fact_id =
-            match find_entity_by_external_id_and_type(db, relation_id, &tuple_entity_type)? {
+        let existing_fact_id =
+            find_entity_by_external_id_and_type(checked.db_mut(), relation_id, &tuple_entity_type)?;
+
+        // Precompute all required field values before we borrow `db` via the typed builder.
+        let confidence = proposal_meta.confidence.clamp(0.0, 1.0) as f32;
+        let mut field_values: HashMap<String, u32> = HashMap::new();
+        let src_field = src_field.as_str();
+        let dst_field = dst_field.as_str();
+
+        for f in &rel_decl.fields {
+            let field = f.field_name.as_str();
+            let value = if field == src_field {
+                src
+            } else if field == dst_field {
+                dst
+            } else if field == "ctx" {
+                match context_id {
+                    Some(id) => id,
+                    None => get_or_create_context(
+                        checked.db_mut(),
+                        &meta_plane,
+                        Some(schema_name.as_str()),
+                        "Observed",
+                        &mut summary,
+                    )?,
+                }
+            } else if field == "time" {
+                let time_name = attributes
+                    .get("time")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| format!("T{now_secs}"));
+                resolve_or_stub_entity_with_type_in_schema(
+                    &mut checked,
+                    &id_map,
+                    &time_name,
+                    Some(&f.field_type),
+                    &schema_name,
+                )?
+            } else if let Some(v) = attributes.get(field) {
+                let v = v.trim();
+                if v.is_empty() {
+                    return Err(anyhow!(
+                        "proposal relation `{relation_id}`: field `{field}` is present but empty"
+                    ));
+                }
+                resolve_or_stub_entity_with_type_in_schema(
+                    &mut checked,
+                    &id_map,
+                    v,
+                    Some(&f.field_type),
+                    &schema_name,
+                )?
+            } else {
+                return Err(anyhow!(
+                    "proposal relation `{relation_id}`: missing required field `{field}` for `{schema_name}.{}`",
+                    rel_decl.name
+                ));
+            };
+            field_values.insert(field.to_string(), value);
+        }
+
+        // Use the typed builder so fact nodes are well-formed by construction.
+        let mut builder = checked
+            .fact_builder(&schema_name, &rel_type)?
+            .with_edge_confidence(confidence);
+
+        // Attach proposal provenance attrs to the fact node. Do not overwrite `name`:
+        // keep the deterministic fact-node name derived from (schema, relation, fields).
+        let attrs = build_relation_fact_attrs(
+            proposal_meta,
+            relation_id,
+            &rel_type,
+            Some(schema_name.as_str()),
+            attributes,
+        );
+        for (k, v) in &attrs {
+            if k == META_ATTR_NAME {
+                continue;
+            }
+            builder = builder.with_attr(k, v);
+        }
+
+        for (field, value) in &field_values {
+            builder.set_field(field, *value)?;
+        }
+
+        let fact_id = match existing_fact_id {
             Some(existing) => {
-                // Enrich attrs if possible (best-effort).
-                enrich_relation_fact_from_proposal(
-                    db,
-                    existing,
-                    proposal_meta,
-                    &rel_type,
-                    attributes,
-                )?;
-                upsert_if_missing(db, existing, ATTR_AXI_SCHEMA, schema_name.as_str())?;
-                attach_evidence_attrs(db, existing, &proposal_meta.evidence)?;
-                summary.relation_facts_reused += 1;
-                existing
+                builder.commit_into_existing(existing)?
             }
             None => {
-                let attrs = build_relation_fact_attrs(
-                    proposal_meta,
-                    relation_id,
-                    &rel_type,
-                    Some(schema_name.as_str()),
-                    attributes,
-                );
-                let attrs_ref = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-                let id = db.add_entity(&tuple_entity_type, attrs_ref);
-                db.mark_virtual_type(id, "FactNode")?;
-                db.mark_virtual_type(id, "ProposalFact")?;
+                let id = builder.commit()?;
+                checked.db_mut().mark_virtual_type(id, "ProposalFact")?;
                 summary.relation_facts_added += 1;
                 id
             }
         };
 
+        let db = checked.db_mut();
+        if existing_fact_id.is_some() {
+            // Enrich attrs if possible (best-effort).
+            enrich_relation_fact_from_proposal(db, fact_id, proposal_meta, &rel_type, attributes)?;
+            upsert_if_missing(db, fact_id, ATTR_AXI_SCHEMA, schema_name.as_str())?;
+            attach_evidence_attrs(db, fact_id, &proposal_meta.evidence)?;
+            db.mark_virtual_type(fact_id, "ProposalFact")?;
+            summary.relation_facts_reused += 1;
+        }
         link_run_to_proposal(db, run_id, fact_id)?;
         summary.evidence_links_added += link_evidence(db, fact_id, &proposal_meta.evidence)?;
 
-        // Link fact node to its relation declaration (meta-plane).
-        add_edge_if_missing(db, META_REL_FACT_OF, fact_id, rel_decl.relation_entity, 1.0)?;
-
-        // Emit field edges (typed record view): field -> value
-        let confidence = proposal_meta.confidence.clamp(0.0, 1.0) as f32;
-        let src_field = src_field.as_str();
-        let dst_field = dst_field.as_str();
-        for f in &rel_decl.fields {
-            let field = f.field_name.as_str();
-            let value = if field == src_field {
-                Some(src)
-            } else if field == dst_field {
-                Some(dst)
-            } else if field == "ctx" {
-                context_id
-            } else if let Some(v) = attributes.get(field) {
-                let v = v.trim();
-                if v.is_empty() {
-                    None
-                } else {
-                    Some(resolve_or_stub_entity_with_type(
-                        db,
-                        &id_map,
-                        v,
-                        Some(&f.field_type),
-                    )?)
-                }
-            } else {
-                None
-            };
-
-            if let Some(value) = value {
-                add_edge_if_missing(db, field, fact_id, value, confidence)?;
-                // Derived uniform context edge for runtime scoping (query/viz/index affordance).
-                if field == "ctx" {
-                    add_edge_if_missing(db, REL_AXI_FACT_IN_CONTEXT, fact_id, value, confidence)?;
-                }
-            }
+        // Uniform context scoping: treat `attributes.ctx/context` as a request to
+        // scope the fact to a world/context, even if the relation signature does
+        // not include a `ctx` field. When a `ctx` field exists, the typed
+        // builder already maintains the `axi_fact_in_context` invariant; this is
+        // a best-effort "fill missing" for the general case.
+        if let Some(ctx_id) = context_id {
+            add_edge_if_missing(db, REL_AXI_FACT_IN_CONTEXT, fact_id, ctx_id, confidence)?;
         }
 
         // Derived traversal edge: source -rel_type-> target.
         // This keeps AxQL ergonomic even when relations are reified into fact nodes.
         if !rel_type.is_empty() {
-            let rel_id = db.interner.intern(&rel_type);
+            let derived_label = if relation_name_counts
+                .get(rel_type.as_str())
+                .copied()
+                .unwrap_or(0)
+                > 1
+            {
+                format!("{schema_name}.{rel_type}")
+            } else {
+                rel_type.clone()
+            };
+
+            let rel_id = db.interner.intern(&derived_label);
             if !db.relations.has_edge(src, rel_id, dst) {
-                db.add_relation(&rel_type, src, dst, confidence, vec![]);
+                db.add_relation(&derived_label, src, dst, confidence, vec![]);
                 summary.derived_edges_added += 1;
             }
         }
     }
 
     Ok(summary)
-}
-
-fn tuple_entity_type_name(schema: &SchemaIndex, rel_type: &str) -> String {
-    if schema.object_types.contains(rel_type) {
-        format!("{rel_type}Fact")
-    } else {
-        rel_type.to_string()
-    }
 }
 
 fn resolve_endpoint_fields(
@@ -426,6 +568,8 @@ fn get_or_create_proposal_run(
 
 fn get_or_create_context(
     db: &mut PathDB,
+    meta_plane: &MetaPlaneIndex,
+    schema_name: Option<&str>,
     ctx: &str,
     summary: &mut ImportProposalsSummary,
 ) -> Result<u32> {
@@ -433,6 +577,63 @@ fn get_or_create_context(
     if ctx.is_empty() {
         return Err(anyhow!("empty context id in proposal relation"));
     }
+
+    if let Some(schema_name) = schema_name.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        // Prefer linking to proposals-imported Context entities by external id.
+        if let Some(id) = find_entity_by_external_id_and_type(db, ctx, "Context")? {
+            match find_attr_string(db, id, ATTR_AXI_SCHEMA) {
+                Some(existing) if existing != schema_name => {}
+                Some(_) => return Ok(id),
+                None => {
+                    db.upsert_entity_attr(id, ATTR_AXI_SCHEMA, schema_name)?;
+                    return Ok(id);
+                }
+            }
+        }
+
+        // Prefer canonical `.axi` Context objects in this schema.
+        if let Some(id) = find_entity_by_name_case_robust_with_type_and_schema(
+            db,
+            ctx,
+            "Context",
+            schema_name,
+        )? {
+            return Ok(id);
+        }
+
+        // Otherwise, create an extension-layer Context entity in this schema.
+        let mut attrs: Vec<(String, String)> = Vec::new();
+        attrs.push((META_ATTR_NAME.to_string(), ctx.to_string()));
+        attrs.push(("external_id".to_string(), ctx.to_string()));
+        attrs.push((ATTR_AXI_SCHEMA.to_string(), schema_name.to_string()));
+
+        let can_typecheck = meta_plane
+            .schemas
+            .get(schema_name)
+            .map(|s| s.object_types.contains("Context"))
+            .unwrap_or(false);
+
+        let id = if can_typecheck {
+            let mut checked = CheckedDbMut::new(db)?;
+            let mut builder = checked.entity_builder(schema_name, "Context")?;
+            for (k, v) in &attrs {
+                builder = builder.with_attr(k, v);
+            }
+            let id = builder.commit()?;
+            checked.db_mut().mark_virtual_type(id, "ProposalContext")?;
+            id
+        } else {
+            let attrs_ref = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let id = db.add_entity("Context", attrs_ref);
+            db.mark_virtual_type(id, "ProposalContext")?;
+            id
+        };
+
+        summary.contexts_created += 1;
+        return Ok(id);
+    }
+
+    // Unscoped fallback:
     // Prefer linking to proposals-imported Context entities by external id.
     if let Some(id) = find_entity_by_external_id_and_type(db, ctx, "Context")? {
         return Ok(id);
@@ -679,40 +880,82 @@ fn resolve_or_stub_entity(db: &mut PathDB, id_map: &HashMap<String, u32>, key: &
     Ok(id)
 }
 
-fn resolve_or_stub_entity_with_type(
-    db: &mut PathDB,
+fn resolve_or_stub_entity_with_type_in_schema(
+    checked: &mut CheckedDbMut<'_>,
     id_map: &HashMap<String, u32>,
     key: &str,
     type_hint: Option<&str>,
+    schema_name: &str,
 ) -> Result<u32> {
+    let schema_name = schema_name.trim();
+    if schema_name.is_empty() {
+        return Err(anyhow!("empty schema name for schema-directed entity resolution"));
+    }
+
     let key = key.trim();
     if key.is_empty() {
         return Err(anyhow!("empty entity reference"));
     }
+
     if let Some(&id) = id_map.get(key) {
-        return Ok(id);
-    }
-    if let Some(ty) = type_hint.map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        if let Some(id) = find_entity_by_external_id_and_type(db, key, ty)? {
-            return Ok(id);
+        // Adopt schema scoping for proposal entities that were created without it.
+        if let Some(existing) = find_attr_string(checked.db(), id, ATTR_AXI_SCHEMA) {
+            if existing != schema_name {
+                return Err(anyhow!(
+                    "entity `{key}` resolved to entity {id} in schema `{existing}`, but schema `{schema_name}` is required"
+                ));
+            }
+        } else {
+            checked.db_mut().upsert_entity_attr(id, ATTR_AXI_SCHEMA, schema_name)?;
         }
-        if let Some(id) = find_entity_by_name_and_type(db, key, ty)? {
-            return Ok(id);
-        }
-        if let Some(id) = find_entity_by_name_case_robust_with_type(db, key, ty)? {
-            return Ok(id);
-        }
-
-        let mut attrs: Vec<(String, String)> = Vec::new();
-        attrs.push((META_ATTR_NAME.to_string(), key.to_string()));
-        attrs.push(("external_id".to_string(), key.to_string()));
-        let attrs_ref = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let id = db.add_entity(ty, attrs_ref);
-        db.mark_virtual_type(id, "ProposalStub")?;
         return Ok(id);
     }
 
-    resolve_or_stub_entity(db, id_map, key)
+    let Some(ty) = type_hint.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        // No type hint: fall back, but still prefer schema consistency when possible.
+        let id = resolve_or_stub_entity(checked.db_mut(), id_map, key)?;
+        if entity_has_schema(checked.db_mut(), id, schema_name)? {
+            return Ok(id);
+        }
+        // Adopt schema if missing; otherwise fail (mismatch).
+        if find_attr_string(checked.db(), id, ATTR_AXI_SCHEMA).is_none() {
+            checked.db_mut().upsert_entity_attr(id, ATTR_AXI_SCHEMA, schema_name)?;
+            return Ok(id);
+        }
+        return Err(anyhow!(
+            "entity `{key}` resolved to entity {id}, but it is not in schema `{schema_name}`"
+        ));
+    };
+
+    // Prefer proposals-imported entities by external id, but only when schema matches.
+    if let Some(id) = find_entity_by_external_id_and_type(checked.db_mut(), key, ty)? {
+        if entity_has_schema(checked.db_mut(), id, schema_name)? {
+            return Ok(id);
+        }
+        if find_attr_string(checked.db(), id, ATTR_AXI_SCHEMA).is_none() {
+            checked.db_mut().upsert_entity_attr(id, ATTR_AXI_SCHEMA, schema_name)?;
+            return Ok(id);
+        }
+    }
+
+    // Canonical `.axi` entities: prefer schema-scoped lookup.
+    if let Some(id) = find_entity_by_name_case_robust_with_type_and_schema(
+        checked.db_mut(),
+        key,
+        ty,
+        schema_name,
+    )? {
+        return Ok(id);
+    }
+
+    // Stub to preserve structure even if the endpoint is missing in this schema.
+    let mut builder = checked.entity_builder(schema_name, ty)?;
+    builder = builder.with_attr(META_ATTR_NAME, key);
+    builder = builder.with_attr("external_id", key);
+    builder = builder.with_attr(ATTR_AXI_SCHEMA, schema_name);
+    let id = builder.commit()?;
+    checked.db_mut().mark_virtual_type(id, "ProposalStub")?;
+    Ok(id)
 }
 
 fn find_entity_by_name_case_robust_with_type(
@@ -766,6 +1009,72 @@ fn find_entity_by_name_case_robust_with_type(
 
     for id in candidates.iter() {
         if type_bm.contains(id) {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+fn find_entity_by_name_case_robust_with_type_and_schema(
+    db: &mut PathDB,
+    name: &str,
+    type_name: &str,
+    schema_name: &str,
+) -> Result<Option<u32>> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let schema_name = schema_name.trim();
+    if schema_name.is_empty() {
+        return find_entity_by_name_case_robust_with_type(db, name, type_name);
+    }
+
+    let Some(type_bm) = db.find_by_type(type_name) else {
+        return Ok(None);
+    };
+
+    let schema_key_id = db.interner.intern(ATTR_AXI_SCHEMA);
+    let schema_value_id = db.interner.intern(schema_name);
+    let schema_bm = db.entities.entities_with_attr_value(schema_key_id, schema_value_id);
+
+    let Some(name_key_id) = db.interner.id_of("name") else {
+        return Ok(None);
+    };
+    if let Some(value_id) = db.interner.id_of(name) {
+        let ids = db.entities.entities_with_attr_value(name_key_id, value_id);
+        for id in ids.iter() {
+            if type_bm.contains(id) && schema_bm.contains(id) {
+                return Ok(Some(id));
+            }
+        }
+    }
+
+    let mut candidates = db.entities_with_attr_fts("name", name);
+    if candidates.is_empty() {
+        candidates = db.entities_with_attr_fts_any("name", name);
+    }
+    if candidates.is_empty() {
+        candidates = db.entities_with_attr_fuzzy("name", name, 2);
+    }
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let needle_lc = name.to_ascii_lowercase();
+    for id in candidates.iter() {
+        if !type_bm.contains(id) || !schema_bm.contains(id) {
+            continue;
+        }
+        if let Some(entity_name) = find_attr_string(db, id, "name") {
+            if entity_name.to_ascii_lowercase() == needle_lc {
+                return Ok(Some(id));
+            }
+        }
+    }
+
+    for id in candidates.iter() {
+        if type_bm.contains(id) && schema_bm.contains(id) {
             return Ok(Some(id));
         }
     }
@@ -907,6 +1216,16 @@ fn find_entity_by_type_and_attr(
         }
     }
     Ok(None)
+}
+
+fn entity_has_schema(db: &mut PathDB, entity_id: u32, schema_name: &str) -> Result<bool> {
+    let schema_name = schema_name.trim();
+    if schema_name.is_empty() {
+        return Ok(true);
+    }
+    Ok(find_attr_string(db, entity_id, ATTR_AXI_SCHEMA)
+        .map(|s| s == schema_name)
+        .unwrap_or(false))
 }
 
 fn upsert_if_missing(db: &mut PathDB, entity_id: u32, key: &str, value: &str) -> Result<()> {

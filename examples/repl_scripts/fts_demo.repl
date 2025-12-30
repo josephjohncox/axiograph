@@ -2,7 +2,14 @@
 #
 # This exercises the full-text-ish token index used for discovery workflows.
 #
-# Run:
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/fts_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/fts_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/fts_demo.repl
 
 gen proto_api 2 3 1

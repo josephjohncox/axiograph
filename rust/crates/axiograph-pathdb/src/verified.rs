@@ -834,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_distribution() {
-        let mut dist = EncodedDistribution {
+        let dist = EncodedDistribution {
             var_id: 1,
             outcomes: vec![
                 (0, VerifiedProb::new(0.3)),

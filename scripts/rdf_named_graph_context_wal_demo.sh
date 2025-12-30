@@ -47,11 +47,22 @@ BASE_AXI="$OUT_DIR/WalBase.axi"
 cat >"$BASE_AXI" <<'EOF'
 module WalBase
 
-schema WalBase:
-  object Dummy
+schema rdfowl:
+  # Minimal schema so the evidence-plane RDF ingest can be queried with AxQL.
+  # (The full RDF/OWL semantics live in the evidence plane; `.axi` stays the
+  # canonical meaning plane.)
+  object Context
+  object RdfResource
+  object Person
 
-instance WalBaseInst of WalBase:
-  Dummy = {dummy0}
+  # In this fixture, resources are typed as `Person` via `rdf:type`, but relation
+  # endpoints are declared at the `RdfResource` supertype.
+  subtype Person < RdfResource
+  relation knows(from: RdfResource, to: RdfResource)
+
+instance WalBaseInst of rdfowl:
+  Context = {}
+  RdfResource = {}
 EOF
 
 SNAPSHOT_ID="$("$AXIOGRAPH" db accept promote --dir "$ACCEPTED_DIR" "$BASE_AXI" --message "demo: base snapshot")"
@@ -61,10 +72,11 @@ echo ""
 echo "-- B) Ingest TriG fixture → proposals.json (evidence plane)"
 "$AXIOGRAPH" ingest dir "$FIXTURE_DIR" --out-dir "$OUT_DIR" --domain rdfowl
 PROPOSALS="$OUT_DIR/proposals.json"
+CHUNKS="$OUT_DIR/chunks.json"
 
 echo ""
-echo "-- C) Commit proposals.json into the PathDB WAL"
-WAL_SNAPSHOT_ID="$("$AXIOGRAPH" db accept pathdb-commit --dir "$ACCEPTED_DIR" --accepted-snapshot "$SNAPSHOT_ID" --proposals "$PROPOSALS" --message "demo: preserve proposals overlay")"
+echo "-- C) Commit (chunks + proposals) into the PathDB WAL"
+WAL_SNAPSHOT_ID="$("$AXIOGRAPH" db accept pathdb-commit --dir "$ACCEPTED_DIR" --accepted-snapshot "$SNAPSHOT_ID" --chunks "$CHUNKS" --proposals "$PROPOSALS" --message "demo: preserve evidence overlay (chunks + proposals)")"
 echo "pathdb wal snapshot: $WAL_SNAPSHOT_ID"
 
 echo ""
@@ -101,6 +113,7 @@ echo ""
 echo "Done."
 echo "Outputs:"
 echo "  $ACCEPTED_DIR"
+echo "  $CHUNKS"
 echo "  $PROPOSALS"
 echo "  $AXPD"
 echo "  $OUT_DIR/repl_output.txt"

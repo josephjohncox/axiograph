@@ -137,6 +137,47 @@ Construction is explicit and fallible:
 This is the Rust analogue of a Lean `Sigma` type: we return *data + a witness*
 that downstream code can rely on without re-checking.
 
+## Checked-by-construction: `CheckedDb` + typed builders
+
+At some boundaries we want stronger guarantees than “you *can* typecheck”:
+we want a clear typestate split between:
+
+- **unchecked** snapshots (may contain ill-typed overlay data), and
+- **checked** snapshots (basic `.axi` well-formedness holds, so downstream code
+  can assume it without re-checking).
+
+In Rust we represent this using a small “checked kernel” wrapper:
+
+- `axiograph_pathdb::checked_db::CheckedDb` (read-only)
+- `axiograph_pathdb::checked_db::CheckedDbMut` (write + typed builders)
+
+These wrappers are intentionally **not** the trusted gate (Lean is). They are
+runtime guardrails: they prevent accidental construction of nonsense and
+produce better errors earlier.
+
+### Example: construct a well-typed fact node
+
+`CheckedDbMut::fact_builder(schema, relation)` returns a builder that:
+
+- enforces that all declared fields are present,
+- rejects unknown fields,
+- checks value types with subtype closure, and
+- derives `axi_fact_in_context` when a `ctx` field exists (runtime scoping).
+
+This is “correct by construction” in the sense that once `commit()` succeeds,
+the resulting fact node is well-typed w.r.t. the meta-plane.
+
+## Explicit type algebra: `AxiType` + `TypingEnv`
+
+To avoid smuggling typing semantics through ad-hoc strings, PathDB also exposes
+a minimal explicit “type algebra”:
+
+- `axiograph_pathdb::axi_type::AxiType` (object/fact/path types, schema-scoped)
+- `axiograph_pathdb::axi_type::TypingEnv` (a `MetaPlaneIndex` plus helpers)
+
+This is a foundation for richer Rust-side typing checks and typed execution
+without duplicating Lean.
+
 ## Correspondence to Lean semantics (Topos view)
 
 This repo uses Lean to pin down the *meaning* of core concepts, and uses Rust to

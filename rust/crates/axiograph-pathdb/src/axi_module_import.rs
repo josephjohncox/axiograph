@@ -74,6 +74,22 @@ pub fn import_axi_schema_v1_module_into_pathdb(
     summary.meta_entities_added += meta.summary.meta_entities_added;
     summary.meta_relations_added += meta.summary.meta_relations_added;
 
+    // Derived traversal edges are a runtime convenience. To avoid collisions when
+    // multiple schemas define the same relation name (e.g. `Fam.Parent` and
+    // `Census.Parent`), we choose a stable label per relation name:
+    //
+    // - emit unqualified `Parent` only when the name is unique across schemas
+    // - otherwise emit schema-qualified `<Schema>.Parent`
+    //
+    // AxQL elaboration desugars `Schema.Rel` accordingly.
+    let meta_plane = crate::axi_semantics::MetaPlaneIndex::from_db(db)?;
+    let mut relation_name_counts: HashMap<String, usize> = HashMap::new();
+    for schema in meta_plane.schemas.values() {
+        for rel in schema.relation_decls.keys() {
+            *relation_name_counts.entry(rel.clone()).or_insert(0) += 1;
+        }
+    }
+
     for inst in &module.instances {
         let schema = module
             .schemas
@@ -90,7 +106,15 @@ pub fn import_axi_schema_v1_module_into_pathdb(
         let schema_index = SchemaIndex::new(schema);
         let schema_handles = handles.schemas.get(&schema.name).cloned();
         let mut ctx =
-            InstanceImportContext::new(db, module, inst, schema, schema_index, schema_handles);
+            InstanceImportContext::new(
+                db,
+                module,
+                inst,
+                schema,
+                schema_index,
+                schema_handles,
+                &relation_name_counts,
+            );
         ctx.import_instance_data()?;
         summary.instances_imported += 1;
         summary.entities_added += ctx.summary.entities_added;
@@ -734,6 +758,7 @@ struct InstanceImportContext<'a> {
     schema: &'a SchemaV1Schema,
     schema_index: SchemaIndex,
     schema_meta: Option<SchemaMetaHandles>,
+    relation_name_counts: &'a HashMap<String, usize>,
     entities_by_key: HashMap<(String, String), u32>, // (type, name) → entity_id
     summary: InstanceSummary,
 }
@@ -746,6 +771,7 @@ impl<'a> InstanceImportContext<'a> {
         schema: &'a SchemaV1Schema,
         schema_index: SchemaIndex,
         schema_meta: Option<SchemaMetaHandles>,
+        relation_name_counts: &'a HashMap<String, usize>,
     ) -> Self {
         Self {
             db,
@@ -754,6 +780,7 @@ impl<'a> InstanceImportContext<'a> {
             schema,
             schema_index,
             schema_meta,
+            relation_name_counts,
             entities_by_key: HashMap::new(),
             summary: InstanceSummary::default(),
         }
@@ -1142,10 +1169,22 @@ impl<'a> InstanceImportContext<'a> {
 
             // Derived binary edge (convenience traversal).
             if let Some((src, dst)) = derive_binary_endpoints(&decl, &values_by_field) {
-                let rel_type_id = self.db.interner.intern(relation_name);
+                let derived_label = if self
+                    .relation_name_counts
+                    .get(relation_name)
+                    .copied()
+                    .unwrap_or(0)
+                    > 1
+                {
+                    format!("{}.{}", self.schema.name, relation_name)
+                } else {
+                    relation_name.to_string()
+                };
+
+                let rel_type_id = self.db.interner.intern(&derived_label);
                 let existed = self.db.relations.has_edge(src, rel_type_id, dst);
                 self.add_edge_if_missing_with_attrs(
-                    relation_name,
+                    &derived_label,
                     src,
                     dst,
                     vec![(ATTR_AXI_FACT_ID, fact_id.as_str())],

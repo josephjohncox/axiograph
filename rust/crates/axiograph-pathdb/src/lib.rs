@@ -35,27 +35,33 @@ pub mod axi_module_export;
 pub mod axi_module_import;
 pub mod axi_module_typecheck;
 pub mod axi_semantics;
+pub mod axi_type;
 pub mod axi_typed;
 pub mod branding;
+pub mod checked_db;
 pub mod certificate;
-mod fact_index;
+pub mod fact_index;
+mod index_sidecar;
 pub mod guardrails;
 pub mod learning;
 pub mod migration;
 pub mod modal;
 pub mod optimizer;
 pub mod proof_mode;
-mod text_index;
+pub mod text_index;
 pub mod typestate;
 pub mod verified;
 pub mod witness;
 
+use ahash::AHashMap;
 use anyhow::Result;
 use dashmap::DashMap;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex, Weak};
+use std::time::Duration;
 
 // Re-export key types
 pub use branding::{DbBranded, DbToken, DbTokenMismatch};
@@ -66,6 +72,12 @@ pub use certificate::{
     RewriteDerivationProofV2, RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION,
     CERTIFICATE_VERSION_V2, FIXED_POINT_DENOMINATOR, FIXED_PROB_PRECISION,
 };
+pub use axi_type::{AxiType, TypingEnv};
+pub use index_sidecar::{
+    read_sidecar_file, write_sidecar_file, IndexSidecarWriter, LruSnapshot, PathDbIndexSidecarV1,
+    PATHDB_INDEX_SIDECAR_VERSION_V1,
+};
+pub use checked_db::{CheckedDb, CheckedDbMut, CheckedDbReport, TypedFactBuilder};
 pub use guardrails::{GuardrailEngine, GuardrailRule, GuardrailViolation, Severity};
 pub use migration::{
     ArrowDeclV1, ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1, Name,
@@ -410,10 +422,20 @@ impl RelationStore {
     /// Get all targets reachable from source via rel_type
     pub fn targets(&self, source: u32, rel_type: StrId) -> RoaringBitmap {
         let mut result = RoaringBitmap::new();
-        for rel in self.outgoing(source, rel_type) {
-            result.insert(rel.target);
-        }
+        self.targets_into(source, rel_type, &mut result);
         result
+    }
+
+    /// Fill `out` with all targets reachable from source via rel_type.
+    pub fn targets_into(&self, source: u32, rel_type: StrId, out: &mut RoaringBitmap) {
+        let Some(ids) = self.forward_index.get(&(source, rel_type)) else {
+            return;
+        };
+        for &id in ids {
+            if let Some(rel) = self.relations.get(id as usize) {
+                out.insert(rel.target);
+            }
+        }
     }
 
     /// Get all targets reachable from `source` via `rel_type`, but only counting
@@ -596,40 +618,414 @@ impl PathSig {
     }
 }
 
+const PATH_INDEX_ASYNC_QUEUE_DEFAULT: usize = 1024;
+const PATH_INDEX_ASYNC_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[derive(Debug)]
+enum IndexUpdate {
+    Insert {
+        path_sig: PathSig,
+        start: u32,
+        targets: RoaringBitmap,
+    },
+    Touch { path_sig: PathSig },
+    SetCapacity(usize),
+    Load { capacity: usize, order: Vec<PathSig> },
+    Clear,
+    Snapshot(mpsc::Sender<LruWorkerSnapshot>),
+    Flush(mpsc::Sender<()>),
+}
+
+#[derive(Debug)]
+struct LruWorkerState {
+    capacity: usize,
+    order: VecDeque<PathSig>,
+}
+
+#[derive(Debug, Clone)]
+struct LruWorkerSnapshot {
+    capacity: usize,
+    order: Vec<PathSig>,
+}
+
+impl LruWorkerState {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::new(),
+        }
+    }
+
+    fn set_capacity(&mut self, capacity: usize, entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>) {
+        self.capacity = capacity;
+        if self.capacity == 0 {
+            entries.clear();
+            self.order.clear();
+        } else {
+            self.evict_if_needed(entries);
+        }
+    }
+
+    fn clear(&mut self, entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>) {
+        entries.clear();
+        self.order.clear();
+    }
+
+    fn touch(&mut self, sig: &PathSig) {
+        if let Some(pos) = self.order.iter().position(|s| s == sig) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(sig.clone());
+    }
+
+    fn insert_start(
+        &mut self,
+        sig: PathSig,
+        start: u32,
+        targets: RoaringBitmap,
+        entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>,
+    ) {
+        if self.capacity == 0 {
+            return;
+        }
+        {
+            let mut entry = entries.entry(sig.clone()).or_insert_with(AHashMap::new);
+            entry.insert(start, targets);
+        }
+        self.touch(&sig);
+        self.evict_if_needed(entries);
+    }
+
+    fn evict_if_needed(&mut self, entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>) {
+        while self.capacity > 0 && entries.len() > self.capacity {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            entries.remove(&oldest);
+        }
+    }
+
+    fn load_order(&mut self, order: Vec<PathSig>, entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>) {
+        self.order.clear();
+        for sig in order {
+            if entries.contains_key(&sig) {
+                self.order.push_back(sig);
+            }
+        }
+        self.evict_if_needed(entries);
+    }
+
+    fn snapshot(&self) -> LruWorkerSnapshot {
+        LruWorkerSnapshot {
+            capacity: self.capacity,
+            order: self.order.iter().cloned().collect(),
+        }
+    }
+}
+
 /// Pre-computed path index for fast multi-hop queries
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PathIndex {
     /// path_sig -> (start_entity -> reachable_entities)
-    index: HashMap<PathSig, HashMap<u32, RoaringBitmap>>,
+    index: AHashMap<PathSig, AHashMap<u32, RoaringBitmap>>,
     /// Maximum indexed path length
     max_depth: usize,
+    /// LRU cache for deeper-than-indexed paths.
+    #[serde(skip, default)]
+    lru_entries: Arc<DashMap<PathSig, AHashMap<u32, RoaringBitmap>>>,
+    /// LRU capacity (number of cached path signatures).
+    #[serde(skip, default)]
+    lru_capacity: AtomicUsize,
+    /// Optional async update channel for LRU inserts.
+    #[serde(skip, default)]
+    async_tx: Mutex<Option<mpsc::SyncSender<IndexUpdate>>>,
+    /// Optional sidecar writer (to persist LRU state).
+    #[serde(skip, default)]
+    sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
+}
+
+impl Default for PathIndex {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 impl PathIndex {
     pub fn new(max_depth: usize) -> Self {
         Self {
-            index: HashMap::new(),
+            index: AHashMap::new(),
             max_depth,
+            lru_entries: Arc::new(DashMap::new()),
+            lru_capacity: AtomicUsize::new(0),
+            async_tx: Mutex::new(None),
+            sidecar: Mutex::new(None),
         }
+    }
+
+    pub fn max_depth(&self) -> usize {
+        self.max_depth
+    }
+
+    pub fn set_max_depth(&mut self, max_depth: usize) {
+        self.max_depth = max_depth;
+    }
+
+    pub fn attach_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
+        let mut guard = self.sidecar.lock().expect("path index sidecar poisoned");
+        *guard = Some(writer);
+    }
+
+    fn mark_sidecar_dirty(&self) {
+        if let Some(writer) = self.sidecar.lock().expect("path index sidecar poisoned").as_ref() {
+            writer.mark_dirty();
+        }
+    }
+
+    pub fn lru_capacity(&self) -> usize {
+        self.lru_capacity.load(Ordering::Relaxed)
+    }
+
+    pub fn lru_len(&self) -> usize {
+        self.lru_entries.len()
+    }
+
+    pub fn lru_contains(&self, sig: &PathSig) -> bool {
+        self.lru_entries.contains_key(sig)
+    }
+
+    pub fn set_lru_capacity(&self, capacity: usize) {
+        self.lru_capacity.store(capacity, Ordering::Relaxed);
+        if let Some(tx) = self
+            .async_tx
+            .lock()
+            .expect("path index async poisoned")
+            .as_ref()
+        {
+            let _ = tx.try_send(IndexUpdate::SetCapacity(capacity));
+        } else if capacity == 0 {
+            self.lru_entries.clear();
+        }
+        self.mark_sidecar_dirty();
+    }
+
+    pub fn enable_async_updates(&self, queue_size: usize) {
+        let mut tx_guard = self.async_tx.lock().expect("path index async poisoned");
+        if tx_guard.is_some() {
+            return;
+        }
+        let queue_size = if queue_size == 0 {
+            PATH_INDEX_ASYNC_QUEUE_DEFAULT
+        } else {
+            queue_size
+        };
+        let queue_size = queue_size.max(1);
+        let (tx, rx) = mpsc::sync_channel(queue_size);
+        let lru_entries = Arc::clone(&self.lru_entries);
+        let initial_capacity = self.lru_capacity.load(Ordering::Relaxed);
+        std::thread::Builder::new()
+            .name("axiograph_path_index_lru".to_string())
+            .spawn(move || {
+                let mut state = LruWorkerState::new(initial_capacity);
+                while let Ok(msg) = rx.recv() {
+                    match msg {
+                        IndexUpdate::Insert {
+                            path_sig,
+                            start,
+                            targets,
+                        } => {
+                            state.insert_start(path_sig, start, targets, &lru_entries);
+                        }
+                        IndexUpdate::Touch { path_sig } => {
+                            state.touch(&path_sig);
+                        }
+                        IndexUpdate::SetCapacity(capacity) => {
+                            state.set_capacity(capacity, &lru_entries);
+                        }
+                        IndexUpdate::Load { capacity, order } => {
+                            state.set_capacity(capacity, &lru_entries);
+                            state.load_order(order, &lru_entries);
+                        }
+                        IndexUpdate::Clear => {
+                            state.clear(&lru_entries);
+                        }
+                        IndexUpdate::Snapshot(resp) => {
+                            let _ = resp.send(state.snapshot());
+                        }
+                        IndexUpdate::Flush(ack) => {
+                            let _ = ack.send(());
+                        }
+                    }
+                }
+            })
+            .expect("failed to spawn path index lru worker");
+        *tx_guard = Some(tx);
+    }
+
+    pub fn async_enabled(&self) -> bool {
+        self.async_tx
+            .lock()
+            .expect("path index async poisoned")
+            .is_some()
+    }
+
+    pub fn flush_async(&self) -> bool {
+        let tx = self
+            .async_tx
+            .lock()
+            .expect("path index async poisoned")
+            .clone();
+        let Some(tx) = tx else {
+            return false;
+        };
+        let (ack_tx, ack_rx) = mpsc::channel();
+        if tx.try_send(IndexUpdate::Flush(ack_tx.clone())).is_err() {
+            if tx.send(IndexUpdate::Flush(ack_tx)).is_err() {
+                return false;
+            }
+        }
+        ack_rx.recv_timeout(PATH_INDEX_ASYNC_FLUSH_TIMEOUT).is_ok()
+    }
+
+    fn clear_lru(&self) {
+        if let Some(tx) = self
+            .async_tx
+            .lock()
+            .expect("path index async poisoned")
+            .as_ref()
+        {
+            let _ = tx.try_send(IndexUpdate::Clear);
+        } else {
+            self.lru_entries.clear();
+        }
+        self.mark_sidecar_dirty();
+    }
+
+    /// Query the LRU cache for deeper-than-indexed paths (diagnostic/testing).
+    pub fn query_lru(&self, start: u32, path: &PathSig) -> Option<RoaringBitmap> {
+        if self.lru_capacity() == 0 {
+            return None;
+        }
+        let entry = self.lru_entries.get(path)?;
+        let targets = entry.get(&start)?.clone();
+        if let Some(tx) = self
+            .async_tx
+            .lock()
+            .expect("path index async poisoned")
+            .as_ref()
+        {
+            let _ = tx.try_send(IndexUpdate::Touch {
+                path_sig: path.clone(),
+            });
+        }
+        Some(targets)
+    }
+
+    pub fn snapshot_lru(&self) -> Option<LruSnapshot> {
+        if self.lru_capacity() == 0 {
+            return None;
+        }
+        let mut capacity = self.lru_capacity();
+        let order = if let Some(tx) = self
+            .async_tx
+            .lock()
+            .expect("path index async poisoned")
+            .as_ref()
+        {
+            let (resp_tx, resp_rx) = mpsc::channel();
+            let _ = tx.try_send(IndexUpdate::Snapshot(resp_tx));
+            resp_rx
+                .recv_timeout(PATH_INDEX_ASYNC_FLUSH_TIMEOUT)
+                .ok()
+                .map(|s| {
+                    capacity = s.capacity;
+                    s.order
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let mut entries: HashMap<PathSig, AHashMap<u32, RoaringBitmap>> = HashMap::new();
+        for item in self.lru_entries.iter() {
+            entries.insert(item.key().clone(), item.value().clone());
+        }
+
+        Some(LruSnapshot {
+            capacity,
+            order,
+            entries,
+        })
+    }
+
+    pub fn restore_lru(&self, snapshot: LruSnapshot) {
+        self.lru_capacity
+            .store(snapshot.capacity, Ordering::Relaxed);
+        self.lru_entries.clear();
+        for (sig, map) in snapshot.entries {
+            self.lru_entries.insert(sig, map);
+        }
+        if let Some(tx) = self
+            .async_tx
+            .lock()
+            .expect("path index async poisoned")
+            .as_ref()
+        {
+            let _ = tx.try_send(IndexUpdate::Load {
+                capacity: snapshot.capacity,
+                order: snapshot.order,
+            });
+        }
+    }
+
+    fn cache_result(&self, path_sig: PathSig, start: u32, targets: RoaringBitmap) {
+        if self.lru_capacity() == 0 {
+            return;
+        }
+        let tx = self
+            .async_tx
+            .lock()
+            .expect("path index async poisoned")
+            .clone();
+        let Some(tx) = tx else {
+            return;
+        };
+        let _ = tx.try_send(IndexUpdate::Insert {
+            path_sig,
+            start,
+            targets,
+        });
+        self.mark_sidecar_dirty();
     }
 
     /// Build path index from relation store
     pub fn build(
         &mut self,
-        entities: &EntityStore,
+        _entities: &EntityStore,
         relations: &RelationStore,
         interner: &StringInterner,
     ) {
+        self.index.clear();
+        self.clear_lru();
+        if self.max_depth == 0 {
+            return;
+        }
+
         // Index single-hop paths
         for rel in &relations.relations {
             let sig = PathSig::new(vec![rel.rel_type]);
             self.index
                 .entry(sig)
-                .or_insert_with(HashMap::new)
+                .or_insert_with(AHashMap::new)
                 .entry(rel.source)
                 .or_insert_with(RoaringBitmap::new)
                 .insert(rel.target);
         }
+
+        if self.max_depth == 1 {
+            return;
+        }
+
+        let rel_types: Vec<StrId> = relations.type_index.keys().copied().collect();
 
         // Build multi-hop paths iteratively
         for depth in 2..=self.max_depth {
@@ -640,36 +1036,45 @@ impl PathIndex {
                 .cloned()
                 .collect();
 
+            let mut new_entries: Vec<(PathSig, AHashMap<u32, RoaringBitmap>)> = Vec::new();
             for prev_sig in prev_sigs {
-                // Get all relation types
-                let rel_types: Vec<StrId> = relations.type_index.keys().copied().collect();
-
-                for rel_type in rel_types {
+                let Some(prev_reach) = self.index.get(&prev_sig) else {
+                    continue;
+                };
+                for rel_type in &rel_types {
                     let mut new_sig = prev_sig.0.clone();
-                    new_sig.push(rel_type);
+                    new_sig.push(*rel_type);
                     let new_path_sig = PathSig::new(new_sig);
 
                     // Compute reachability
-                    if let Some(prev_reach) = self.index.get(&prev_sig) {
-                        let mut new_reach: HashMap<u32, RoaringBitmap> = HashMap::new();
-
-                        for (&start, intermediates) in prev_reach {
-                            let mut targets = RoaringBitmap::new();
-                            for intermediate in intermediates.iter() {
-                                targets |= relations.targets(intermediate, rel_type);
-                            }
-                            if !targets.is_empty() {
-                                new_reach.insert(start, targets);
-                            }
+                    let mut new_reach: AHashMap<u32, RoaringBitmap> = AHashMap::new();
+                    for (&start, intermediates) in prev_reach {
+                        let mut targets = RoaringBitmap::new();
+                        for intermediate in intermediates.iter() {
+                            relations.targets_into(intermediate, *rel_type, &mut targets);
                         }
-
-                        if !new_reach.is_empty() {
-                            self.index.insert(new_path_sig, new_reach);
+                        if !targets.is_empty() {
+                            new_reach.insert(start, targets);
                         }
+                    }
+                    if !new_reach.is_empty() {
+                        new_entries.push((new_path_sig, new_reach));
                     }
                 }
             }
+
+            if new_entries.is_empty() {
+                break;
+            }
+            for (sig, reach) in new_entries {
+                self.index.insert(sig, reach);
+            }
         }
+    }
+
+    pub fn invalidate(&mut self) {
+        self.index.clear();
+        self.clear_lru();
     }
 
     /// Query entities reachable via path
@@ -720,6 +1125,9 @@ pub struct PathDB {
     /// Cached inverted indexes for attribute full-text search (rebuilt on demand).
     #[serde(skip)]
     text_index: TextIndexCache,
+    /// Optional writer for durable index sidecars.
+    #[serde(skip)]
+    index_sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
 }
 
 impl PathDB {
@@ -734,6 +1142,7 @@ impl PathDB {
             confidence_index: Vec::new(),
             fact_index: FactIndexCache::default(),
             text_index: TextIndexCache::default(),
+            index_sidecar: Mutex::new(None),
         }
     }
 
@@ -745,6 +1154,7 @@ impl PathDB {
     pub fn add_entity(&mut self, type_name: &str, attrs: Vec<(&str, &str)>) -> u32 {
         self.fact_index.invalidate();
         self.text_index.invalidate();
+        self.path_index.invalidate();
         let type_id = self.interner.intern(type_name);
         let interned_attrs: Vec<(StrId, StrId)> = attrs
             .into_iter()
@@ -767,6 +1177,7 @@ impl PathDB {
 
         self.fact_index.invalidate();
         self.text_index.invalidate();
+        self.path_index.invalidate();
 
         let key_id = self.interner.intern(key);
         let value_id = self.interner.intern(value);
@@ -790,6 +1201,7 @@ impl PathDB {
         }
 
         self.fact_index.invalidate();
+        self.path_index.invalidate();
         let type_id = self.interner.intern(type_name);
         self.entities
             .type_index
@@ -809,6 +1221,7 @@ impl PathDB {
         attrs: Vec<(&str, &str)>,
     ) -> u32 {
         self.fact_index.invalidate();
+        self.path_index.invalidate();
         let rel_type_id = self.interner.intern(rel_type);
         let interned_attrs: Vec<(StrId, StrId)> = attrs
             .into_iter()
@@ -832,6 +1245,7 @@ impl PathDB {
         // Equivalences don't affect fact-node lookup, but we treat this as a DB mutation
         // and invalidate for simplicity (keeps future dependent caches correct).
         self.fact_index.invalidate();
+        self.path_index.invalidate();
         let equiv_type_id = self.interner.intern(equiv_type);
         self.equivalences
             .entry(e1)
@@ -847,6 +1261,84 @@ impl PathDB {
     pub fn build_indexes(&mut self) {
         self.path_index
             .build(&self.entities, &self.relations, &self.interner);
+    }
+
+    /// Build indexes with a specific path index depth.
+    pub fn build_indexes_with_depth(&mut self, depth: usize) {
+        self.path_index.set_max_depth(depth);
+        self.path_index
+            .build(&self.entities, &self.relations, &self.interner);
+    }
+
+    /// Attach an async indexing source (used to build fact/text caches off-thread).
+    pub fn attach_async_index_source(&self, source: Weak<PathDB>) {
+        self.fact_index.attach_async_source(source.clone());
+        self.text_index.attach_async_source(source);
+    }
+
+    /// Attach a durable index sidecar writer.
+    pub fn attach_index_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
+        self.fact_index.attach_sidecar_writer(writer.clone());
+        self.text_index.attach_sidecar_writer(writer.clone());
+        self.path_index.attach_sidecar_writer(writer.clone());
+        let mut guard = self.index_sidecar.lock().expect("index sidecar poisoned");
+        *guard = Some(writer);
+    }
+
+    /// Snapshot durable indexes into a sidecar payload.
+    pub fn snapshot_index_sidecar(&self, snapshot_id: Option<String>) -> PathDbIndexSidecarV1 {
+        let fact_gen = self.fact_index.generation();
+        let text_gen = self.text_index.generation();
+        let mut sidecar = PathDbIndexSidecarV1::new(snapshot_id);
+        sidecar.fact_index = self.fact_index.snapshot(fact_gen);
+        sidecar.text_indexes = self.text_index.snapshot(text_gen);
+        sidecar.path_lru = self.path_index.snapshot_lru();
+        sidecar
+    }
+
+    /// Load durable indexes from a sidecar payload.
+    pub fn load_index_sidecar(&mut self, sidecar: PathDbIndexSidecarV1) {
+        let fact_gen = self.fact_index.generation();
+        let text_gen = self.text_index.generation();
+        if let Some(idx) = sidecar.fact_index {
+            self.fact_index.load_index(idx, fact_gen);
+        }
+        if !sidecar.text_indexes.is_empty() {
+            self.text_index.load_indexes(text_gen, sidecar.text_indexes);
+        }
+        if let Some(lru) = sidecar.path_lru {
+            self.path_index.restore_lru(lru);
+        }
+    }
+
+    /// Configure the LRU cache for deeper-than-indexed paths.
+    pub fn set_path_index_lru_capacity(&mut self, capacity: usize) {
+        self.path_index.set_lru_capacity(capacity);
+    }
+
+    /// Enable asynchronous LRU updates for deeper-than-indexed paths.
+    pub fn enable_path_index_lru_async(&mut self, queue_size: usize) {
+        self.path_index.enable_async_updates(queue_size);
+    }
+
+    /// Current LRU capacity for deeper-than-indexed paths.
+    pub fn path_index_lru_capacity(&self) -> usize {
+        self.path_index.lru_capacity()
+    }
+
+    /// Current number of cached path signatures in the LRU.
+    pub fn path_index_lru_len(&self) -> usize {
+        self.path_index.lru_len()
+    }
+
+    /// Check whether a path signature is cached in the LRU.
+    pub fn path_index_lru_contains(&self, sig: &PathSig) -> bool {
+        self.path_index.lru_contains(sig)
+    }
+
+    /// Flush pending async LRU updates (best-effort).
+    pub fn flush_path_index_async(&self) -> bool {
+        self.path_index.flush_async()
     }
 
     // ========================================================================
@@ -1014,10 +1506,19 @@ impl PathDB {
             rel_ids.push(id);
         }
         let path_sig = PathSig::new(rel_ids);
+        let path_len = path_sig.len();
+        let max_depth = self.path_index.max_depth();
 
         // Try indexed path first
         if let Some(result) = self.path_index.query(start, &path_sig) {
             return result.clone();
+        }
+
+        // Try LRU cache for deeper paths
+        if path_len > max_depth {
+            if let Some(result) = self.path_index.query_lru(start, &path_sig) {
+                return result;
+            }
         }
 
         // Fall back to iterative traversal
@@ -1038,6 +1539,9 @@ impl PathDB {
             }
         }
 
+        if path_len > max_depth && !current.is_empty() {
+            self.path_index.cache_result(path_sig, start, current.clone());
+        }
         current
     }
 
@@ -1251,6 +1755,7 @@ impl PathDB {
             confidence_index,
             fact_index: FactIndexCache::default(),
             text_index: TextIndexCache::default(),
+            index_sidecar: Mutex::new(None),
         })
     }
 }
@@ -1270,11 +1775,15 @@ impl PathDB {
         let Some(relation_id) = self.interner.id_of(relation_name) else {
             return RoaringBitmap::new();
         };
-        self.fact_index.with_index(self, |idx| {
-            idx.facts_by_relation(relation_id)
-                .cloned()
-                .unwrap_or_default()
-        })
+        self.fact_index.with_index_or_fallback(
+            self,
+            |db| db.fact_nodes_by_relation_scan(relation_id),
+            |idx| {
+                idx.facts_by_relation(relation_id)
+                    .cloned()
+                    .unwrap_or_default()
+            },
+        )
     }
 
     /// Fact nodes whose `(axi_schema, axi_relation)` match the provided names.
@@ -1289,11 +1798,15 @@ impl PathDB {
         let Some(relation_id) = self.interner.id_of(relation_name) else {
             return RoaringBitmap::new();
         };
-        self.fact_index.with_index(self, |idx| {
-            idx.facts_by_schema_relation(schema_id, relation_id)
-                .cloned()
-                .unwrap_or_default()
-        })
+        self.fact_index.with_index_or_fallback(
+            self,
+            |db| db.fact_nodes_by_schema_relation_scan(schema_id, relation_id),
+            |idx| {
+                idx.facts_by_schema_relation(schema_id, relation_id)
+                    .cloned()
+                    .unwrap_or_default()
+            },
+        )
     }
 
     /// Fact nodes scoped to a specific context/world (by entity id).
@@ -1301,11 +1814,15 @@ impl PathDB {
     /// Context scoping is optional: facts without a `axi_fact_in_context` edge
     /// are simply absent from all context-specific indexes.
     pub fn fact_nodes_by_context(&self, context_entity_id: u32) -> RoaringBitmap {
-        self.fact_index.with_index(self, |idx| {
-            idx.facts_by_context(context_entity_id)
-                .cloned()
-                .unwrap_or_default()
-        })
+        self.fact_index.with_index_or_fallback(
+            self,
+            |db| db.fact_nodes_by_context_scan(context_entity_id),
+            |idx| {
+                idx.facts_by_context(context_entity_id)
+                    .cloned()
+                    .unwrap_or_default()
+            },
+        )
     }
 
     /// Fact nodes scoped to a context/world and constrained to a `(axi_schema, axi_relation)` pair.
@@ -1321,11 +1838,19 @@ impl PathDB {
         let Some(relation_id) = self.interner.id_of(relation_name) else {
             return RoaringBitmap::new();
         };
-        self.fact_index.with_index(self, |idx| {
-            idx.facts_by_context_schema_relation(context_entity_id, schema_id, relation_id)
-                .cloned()
-                .unwrap_or_default()
-        })
+        self.fact_index.with_index_or_fallback(
+            self,
+            |db| db.fact_nodes_by_context_schema_relation_scan(
+                context_entity_id,
+                schema_id,
+                relation_id,
+            ),
+            |idx| {
+                idx.facts_by_context_schema_relation(context_entity_id, schema_id, relation_id)
+                    .cloned()
+                    .unwrap_or_default()
+            },
+        )
     }
 
     /// Key-based fact lookup (best-effort).
@@ -1366,9 +1891,129 @@ impl PathDB {
             key_fields,
         };
 
-        self.fact_index.with_index(self, |idx| {
-            idx.lookup_key(&sig, key_values_in_order).cloned()
-        })
+        self.fact_index.with_index_or_fallback(
+            self,
+            |_| None,
+            |idx| idx.lookup_key(&sig, key_values_in_order).cloned(),
+        )
+    }
+
+    fn fact_nodes_by_relation_scan(&self, relation_id: StrId) -> RoaringBitmap {
+        let Some(relation_key_id) = self.interner.id_of(axi_meta::ATTR_AXI_RELATION) else {
+            return RoaringBitmap::new();
+        };
+        let Some(col) = self.entities.attrs.get(&relation_key_id) else {
+            return RoaringBitmap::new();
+        };
+        let mut out = RoaringBitmap::new();
+        for (&entity_id, &rid) in col {
+            if rid == relation_id {
+                out.insert(entity_id);
+            }
+        }
+        out
+    }
+
+    fn fact_nodes_by_schema_relation_scan(
+        &self,
+        schema_id: StrId,
+        relation_id: StrId,
+    ) -> RoaringBitmap {
+        let Some(relation_key_id) = self.interner.id_of(axi_meta::ATTR_AXI_RELATION) else {
+            return RoaringBitmap::new();
+        };
+        let Some(schema_key_id) = self.interner.id_of(axi_meta::ATTR_AXI_SCHEMA) else {
+            return RoaringBitmap::new();
+        };
+        let Some(col) = self.entities.attrs.get(&relation_key_id) else {
+            return RoaringBitmap::new();
+        };
+        let mut out = RoaringBitmap::new();
+        for (&entity_id, &rid) in col {
+            if rid != relation_id {
+                continue;
+            }
+            let Some(found_schema) = self.entities.get_attr(entity_id, schema_key_id) else {
+                continue;
+            };
+            if found_schema == schema_id {
+                out.insert(entity_id);
+            }
+        }
+        out
+    }
+
+    fn fact_nodes_by_context_scan(&self, context_entity_id: u32) -> RoaringBitmap {
+        let Some(context_rel_id) = self.interner.id_of(axi_meta::REL_AXI_FACT_IN_CONTEXT) else {
+            return RoaringBitmap::new();
+        };
+        let Some(relation_key_id) = self.interner.id_of(axi_meta::ATTR_AXI_RELATION) else {
+            return RoaringBitmap::new();
+        };
+        let Some(col) = self.entities.attrs.get(&relation_key_id) else {
+            return RoaringBitmap::new();
+        };
+        let mut out = RoaringBitmap::new();
+        for (&entity_id, _) in col {
+            for &rid in self
+                .relations
+                .outgoing_relation_ids(entity_id, context_rel_id)
+            {
+                let Some(rel) = self.relations.get_relation(rid) else {
+                    continue;
+                };
+                if rel.target == context_entity_id {
+                    out.insert(entity_id);
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    fn fact_nodes_by_context_schema_relation_scan(
+        &self,
+        context_entity_id: u32,
+        schema_id: StrId,
+        relation_id: StrId,
+    ) -> RoaringBitmap {
+        let Some(context_rel_id) = self.interner.id_of(axi_meta::REL_AXI_FACT_IN_CONTEXT) else {
+            return RoaringBitmap::new();
+        };
+        let Some(relation_key_id) = self.interner.id_of(axi_meta::ATTR_AXI_RELATION) else {
+            return RoaringBitmap::new();
+        };
+        let Some(schema_key_id) = self.interner.id_of(axi_meta::ATTR_AXI_SCHEMA) else {
+            return RoaringBitmap::new();
+        };
+        let Some(col) = self.entities.attrs.get(&relation_key_id) else {
+            return RoaringBitmap::new();
+        };
+        let mut out = RoaringBitmap::new();
+        for (&entity_id, &rid) in col {
+            if rid != relation_id {
+                continue;
+            }
+            let Some(found_schema) = self.entities.get_attr(entity_id, schema_key_id) else {
+                continue;
+            };
+            if found_schema != schema_id {
+                continue;
+            }
+            for &rid in self
+                .relations
+                .outgoing_relation_ids(entity_id, context_rel_id)
+            {
+                let Some(rel) = self.relations.get_relation(rid) else {
+                    continue;
+                };
+                if rel.target == context_entity_id {
+                    out.insert(entity_id);
+                    break;
+                }
+            }
+        }
+        out
     }
 }
 

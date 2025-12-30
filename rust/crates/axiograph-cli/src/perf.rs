@@ -17,7 +17,11 @@ use clap::Subcommand;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use axiograph_pathdb::axi_meta::{ATTR_AXI_RELATION, ATTR_AXI_SCHEMA};
+use axiograph_pathdb::{PathDB, PathSig};
 
 #[derive(Subcommand)]
 pub enum PerfCommands {
@@ -140,6 +144,77 @@ pub enum PerfCommands {
         #[arg(long)]
         out_json: Option<PathBuf>,
     },
+
+    /// Synthetic cache/index workload (fact/text caches + path LRU).
+    Indexes {
+        /// Number of entities to create.
+        #[arg(long, default_value_t = 100_000)]
+        entities: usize,
+
+        /// Outgoing edges per entity.
+        #[arg(long, default_value_t = 8)]
+        edges_per_entity: usize,
+
+        /// Number of relation types to use (chosen uniformly at random).
+        #[arg(long, default_value_t = 8)]
+        rel_types: usize,
+
+        /// Maximum hop depth to build a PathIndex for.
+        #[arg(long, default_value_t = 2)]
+        index_depth: usize,
+
+        /// Path length for queries (use > index_depth to exercise LRU).
+        #[arg(long, default_value_t = 4)]
+        path_len: usize,
+
+        /// Number of path queries to run (warm).
+        #[arg(long, default_value_t = 20_000)]
+        path_queries: usize,
+
+        /// Number of fact-cache queries to run (warm).
+        #[arg(long, default_value_t = 20_000)]
+        fact_queries: usize,
+
+        /// Number of text-cache queries to run (warm).
+        #[arg(long, default_value_t = 20_000)]
+        text_queries: usize,
+
+        /// LRU capacity (number of cached path signatures).
+        #[arg(long, default_value_t = 256)]
+        lru_capacity: usize,
+
+        /// Enable async updates for the path LRU.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        lru_async: bool,
+
+        /// Async queue size for LRU updates.
+        #[arg(long, default_value_t = 1024)]
+        lru_queue: usize,
+
+        /// Index build mode: `async` (default) or `sync`.
+        #[arg(long, default_value = "async")]
+        index_mode: String,
+
+        /// Wait up to N seconds for async indexes to finish (used by --verify).
+        #[arg(long, default_value_t = 20)]
+        async_wait_secs: u64,
+
+        /// Perform consistency checks between fallback and indexed results.
+        #[arg(long, default_value_t = false)]
+        verify: bool,
+
+        /// Add N new entities after warmup to exercise invalidation paths.
+        #[arg(long, default_value_t = 0)]
+        mutations: usize,
+
+        /// RNG seed (deterministic).
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+
+        /// Write a JSON performance report to this path.
+        #[arg(long)]
+        out_json: Option<PathBuf>,
+    },
 }
 
 pub fn cmd_perf(command: PerfCommands) -> Result<()> {
@@ -205,6 +280,43 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             axql_queries,
             axql_limit,
             out_axpd.as_ref(),
+            out_json.as_ref(),
+        ),
+        PerfCommands::Indexes {
+            entities,
+            edges_per_entity,
+            rel_types,
+            index_depth,
+            path_len,
+            path_queries,
+            fact_queries,
+            text_queries,
+            lru_capacity,
+            lru_async,
+            lru_queue,
+            index_mode,
+            async_wait_secs,
+            verify,
+            mutations,
+            seed,
+            out_json,
+        } => cmd_perf_indexes(
+            entities,
+            edges_per_entity,
+            rel_types,
+            index_depth,
+            path_len,
+            path_queries,
+            fact_queries,
+            text_queries,
+            lru_capacity,
+            lru_async,
+            lru_queue,
+            &index_mode,
+            async_wait_secs,
+            verify,
+            mutations,
+            seed,
             out_json.as_ref(),
         ),
     }
@@ -431,12 +543,408 @@ fn cmd_perf_axql(
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct PerfIndexesReport {
+    entities: usize,
+    edges_per_entity: usize,
+    rel_types: usize,
+    index_depth: usize,
+    path_len: usize,
+    path_queries: usize,
+    fact_queries: usize,
+    text_queries: usize,
+    seed: u64,
+    ingest_entities_secs: f64,
+    ingest_relations_secs: f64,
+    build_indexes_secs: f64,
+    path_cold_secs: f64,
+    path_warm_secs: f64,
+    path_total_hits: u64,
+    fact_cold_secs: f64,
+    fact_warm_secs: f64,
+    fact_total_hits: u64,
+    text_cold_secs: f64,
+    text_warm_secs: f64,
+    text_total_hits: u64,
+    mutations: usize,
+    mutation_relations_added: usize,
+}
+
+fn cmd_perf_indexes(
+    entities: usize,
+    edges_per_entity: usize,
+    rel_types: usize,
+    index_depth: usize,
+    path_len: usize,
+    path_queries: usize,
+    fact_queries: usize,
+    text_queries: usize,
+    lru_capacity: usize,
+    lru_async: bool,
+    lru_queue: usize,
+    index_mode: &str,
+    async_wait_secs: u64,
+    verify: bool,
+    mutations: usize,
+    seed: u64,
+    out_json: Option<&PathBuf>,
+) -> Result<()> {
+    if entities == 0 {
+        return Err(anyhow!("--entities must be > 0"));
+    }
+    if rel_types == 0 {
+        return Err(anyhow!("--rel-types must be > 0"));
+    }
+    if path_len == 0 {
+        return Err(anyhow!("--path-len must be > 0"));
+    }
+
+    let async_indexes = match index_mode.to_ascii_lowercase().as_str() {
+        "async" => true,
+        "sync" => false,
+        other => return Err(anyhow!("unknown --index-mode `{other}` (expected: async, sync)")),
+    };
+
+    println!("perf/indexes");
+    println!(
+        "  entities={} edges_per_entity={} rel_types={} index_depth={} path_len={} path_queries={} fact_queries={} text_queries={} seed={}",
+        entities, edges_per_entity, rel_types, index_depth, path_len, path_queries, fact_queries, text_queries, seed
+    );
+    println!(
+        "  lru_capacity={} lru_async={} lru_queue={} index_mode={} async_wait_secs={} verify={} mutations={}",
+        lru_capacity, lru_async, lru_queue, if async_indexes { "async" } else { "sync" }, async_wait_secs, verify, mutations
+    );
+
+    let relation_type_names: Vec<String> =
+        (0..rel_types).map(|i| format!("rel_{i}")).collect();
+    let schema_count = rel_types.clamp(1, 4);
+    let schema_names: Vec<String> = (0..schema_count)
+        .map(|i| format!("schema_{i}"))
+        .collect();
+    let tokens = [
+        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "kappa", "lambda",
+    ];
+
+    let mut rng = crate::synthetic_pathdb::XorShift64::new(seed);
+    let mut db = PathDB::new();
+    db.path_index = axiograph_pathdb::PathIndex::new(index_depth);
+
+    // ---------------------------------------------------------------------
+    // Ingest entities (with fact + text attributes).
+    // ---------------------------------------------------------------------
+    let start = Instant::now();
+    for i in 0..entities {
+        let rel_name = &relation_type_names[i % rel_types];
+        let schema_name = &schema_names[i % schema_count];
+        let tok_a = tokens[i % tokens.len()];
+        let tok_b = tokens[(i * 7 + 3) % tokens.len()];
+        let name = format!("node_{i} {tok_a} {tok_b}");
+        db.add_entity(
+            "Fact",
+            vec![
+                (ATTR_AXI_RELATION, rel_name.as_str()),
+                (ATTR_AXI_SCHEMA, schema_name.as_str()),
+                ("name", name.as_str()),
+            ],
+        );
+    }
+    let entity_time = start.elapsed();
+
+    // ---------------------------------------------------------------------
+    // Ingest relations.
+    // ---------------------------------------------------------------------
+    let start = Instant::now();
+    for source in 0..entities {
+        let source_id = source as u32;
+        for _ in 0..edges_per_entity {
+            let target_id = rng.gen_range_usize(entities) as u32;
+            let rel = &relation_type_names[rng.gen_range_usize(rel_types)];
+            db.add_relation(rel, source_id, target_id, 0.9, Vec::new());
+        }
+    }
+    let relation_time = start.elapsed();
+    let edge_count = entities.saturating_mul(edges_per_entity);
+
+    // ---------------------------------------------------------------------
+    // Build indexes (PathIndex only).
+    // ---------------------------------------------------------------------
+    let start = Instant::now();
+    if index_depth > 0 {
+        db.build_indexes_with_depth(index_depth);
+    }
+    let index_time = start.elapsed();
+
+    // ---------------------------------------------------------------------
+    // Configure LRU + async sources.
+    // ---------------------------------------------------------------------
+    if lru_capacity > 0 {
+        db.set_path_index_lru_capacity(lru_capacity);
+        if lru_async {
+            db.enable_path_index_lru_async(lru_queue);
+        }
+    }
+
+    let mut db = Arc::new(db);
+    if async_indexes {
+        db.attach_async_index_source(Arc::downgrade(&db));
+    }
+
+    let cold_rel = relation_type_names[0].as_str();
+    let cold_token = tokens[0];
+    let mut cold_path: Vec<&str> = Vec::with_capacity(path_len);
+    for i in 0..path_len {
+        cold_path.push(relation_type_names[i % rel_types].as_str());
+    }
+
+    let (path_cold_time, path_cold_hits) = time_call(|| db.follow_path(0, &cold_path));
+    let (fact_cold_time, fact_cold_hits) = time_call(|| db.fact_nodes_by_axi_relation(cold_rel));
+    let (text_cold_time, text_cold_hits) =
+        time_call(|| db.entities_with_attr_fts("name", cold_token));
+
+    let name_id = db.interner.id_of("name");
+    let async_timeout = Duration::from_secs(async_wait_secs);
+    if async_indexes && async_wait_secs > 0 {
+        let _ = wait_for(
+            || {
+                let sidecar = db.snapshot_index_sidecar(None);
+                let fact_ready = sidecar.fact_index.is_some();
+                let text_ready = name_id
+                    .and_then(|id| sidecar.text_indexes.get(&id))
+                    .is_some();
+                fact_ready && text_ready
+            },
+            async_timeout,
+        );
+    }
+
+    if lru_capacity > 0 && path_len > index_depth {
+        let sig = path_sig(&db, &cold_path);
+        let _ = wait_for(|| db.path_index_lru_contains(&sig), async_timeout);
+    }
+
+    // ---------------------------------------------------------------------
+    // Warm queries.
+    // ---------------------------------------------------------------------
+    let mut rng = crate::synthetic_pathdb::XorShift64::new(seed.wrapping_add(1));
+
+    let start = Instant::now();
+    let mut path_total_hits: u64 = 0;
+    for _ in 0..path_queries {
+        let start_id = rng.gen_range_usize(entities) as u32;
+        let mut path: Vec<&str> = Vec::with_capacity(path_len);
+        for _ in 0..path_len {
+            path.push(relation_type_names[rng.gen_range_usize(rel_types)].as_str());
+        }
+        let hits = db.follow_path(start_id, &path);
+        path_total_hits = path_total_hits.wrapping_add(hits.len());
+    }
+    let path_warm_time = start.elapsed();
+
+    let start = Instant::now();
+    let mut fact_total_hits: u64 = 0;
+    for _ in 0..fact_queries {
+        let rel_idx = rng.gen_range_usize(rel_types);
+        let rel = &relation_type_names[rel_idx];
+        let hits = if rng.gen_range_usize(2) == 0 {
+            db.fact_nodes_by_axi_relation(rel)
+        } else {
+            let schema = &schema_names[rel_idx % schema_count];
+            db.fact_nodes_by_axi_schema_relation(schema, rel)
+        };
+        fact_total_hits = fact_total_hits.wrapping_add(hits.len());
+    }
+    let fact_warm_time = start.elapsed();
+
+    let start = Instant::now();
+    let mut text_total_hits: u64 = 0;
+    for _ in 0..text_queries {
+        let tok_a = tokens[rng.gen_range_usize(tokens.len())];
+        let tok_b = tokens[rng.gen_range_usize(tokens.len())];
+        let query = if rng.gen_range_usize(2) == 0 {
+            tok_a.to_string()
+        } else {
+            format!("{tok_a} {tok_b}")
+        };
+        let hits = db.entities_with_attr_fts("name", &query);
+        text_total_hits = text_total_hits.wrapping_add(hits.len());
+    }
+    let text_warm_time = start.elapsed();
+
+    let fact_warm_hits = db.fact_nodes_by_axi_relation(cold_rel);
+    let text_warm_hits = db.entities_with_attr_fts("name", cold_token);
+    let path_warm_hits = if lru_capacity > 0 && path_len > index_depth {
+        Some(db.follow_path(0, &cold_path))
+    } else {
+        None
+    };
+
+    if verify {
+        if fact_cold_hits != fact_warm_hits {
+            return Err(anyhow!("fact cache mismatch: fallback != indexed"));
+        }
+        if text_cold_hits != text_warm_hits {
+            return Err(anyhow!("text cache mismatch: fallback != indexed"));
+        }
+        if let Some(path_warm_hits) = path_warm_hits {
+            if path_cold_hits != path_warm_hits {
+                return Err(anyhow!("path LRU mismatch: fallback != cached"));
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Mutation checks (optional).
+    // ---------------------------------------------------------------------
+    let mut mutation_relations_added = 0usize;
+    if mutations > 0 {
+        if lru_async {
+            let _ = db.path_index.flush_async();
+        }
+
+        let mut_ids: Vec<u32> = {
+            let db_mut = Arc::get_mut(&mut db)
+                .ok_or_else(|| anyhow!("cannot mutate shared PathDB (unexpected Arc clones)"))?;
+            let mut ids = Vec::with_capacity(mutations);
+            for i in 0..mutations {
+                let rel = &relation_type_names[i % rel_types];
+                let schema = &schema_names[i % schema_count];
+                let name = format!("node_mut_{i} {cold_token}");
+                let id = db_mut.add_entity(
+                    "Fact",
+                    vec![
+                        (ATTR_AXI_RELATION, rel.as_str()),
+                        (ATTR_AXI_SCHEMA, schema.as_str()),
+                        ("name", name.as_str()),
+                    ],
+                );
+                let source = (i % entities) as u32;
+                db_mut.add_relation(rel, source, id, 0.9, Vec::new());
+                mutation_relations_added += 1;
+                ids.push(id);
+            }
+            ids
+        };
+
+        let hits = db.fact_nodes_by_axi_relation(cold_rel);
+        for id in &mut_ids {
+            if !hits.contains(*id) {
+                return Err(anyhow!("mutation: fact index missing new entity {id}"));
+            }
+        }
+        let hits = db.entities_with_attr_fts("name", cold_token);
+        for id in &mut_ids {
+            if !hits.contains(*id) {
+                return Err(anyhow!("mutation: text index missing new entity {id}"));
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Report.
+    // ---------------------------------------------------------------------
+    println!(
+        "  ingest_entities={:?} ({:.1} entities/sec)",
+        entity_time,
+        rate(entities, entity_time)
+    );
+    println!(
+        "  ingest_relations={:?} ({:.1} edges/sec)",
+        relation_time,
+        rate(edge_count, relation_time)
+    );
+    println!("  build_indexes={:?}", index_time);
+    println!(
+        "  path_queries={:?} ({:.1} queries/sec)",
+        path_warm_time,
+        rate(path_queries, path_warm_time)
+    );
+    println!(
+        "  fact_queries={:?} ({:.1} queries/sec)",
+        fact_warm_time,
+        rate(fact_queries, fact_warm_time)
+    );
+    println!(
+        "  text_queries={:?} ({:.1} queries/sec)",
+        text_warm_time,
+        rate(text_queries, text_warm_time)
+    );
+    println!(
+        "  cold_samples: path={:?} fact={:?} text={:?}",
+        path_cold_time, fact_cold_time, text_cold_time
+    );
+    println!(
+        "  total_hits: path={} fact={} text={}",
+        path_total_hits, fact_total_hits, text_total_hits
+    );
+
+    if let Some(out) = out_json {
+        let report = PerfIndexesReport {
+            entities,
+            edges_per_entity,
+            rel_types,
+            index_depth,
+            path_len,
+            path_queries,
+            fact_queries,
+            text_queries,
+            seed,
+            ingest_entities_secs: entity_time.as_secs_f64(),
+            ingest_relations_secs: relation_time.as_secs_f64(),
+            build_indexes_secs: index_time.as_secs_f64(),
+            path_cold_secs: path_cold_time.as_secs_f64(),
+            path_warm_secs: path_warm_time.as_secs_f64(),
+            path_total_hits,
+            fact_cold_secs: fact_cold_time.as_secs_f64(),
+            fact_warm_secs: fact_warm_time.as_secs_f64(),
+            fact_total_hits,
+            text_cold_secs: text_cold_time.as_secs_f64(),
+            text_warm_secs: text_warm_time.as_secs_f64(),
+            text_total_hits,
+            mutations,
+            mutation_relations_added,
+        };
+        fs::write(out, serde_json::to_string_pretty(&report)?)?;
+        println!("  wrote_json={}", out.display());
+    }
+
+    Ok(())
+}
+
 fn rate(items: usize, dt: std::time::Duration) -> f64 {
     let secs = dt.as_secs_f64();
     if secs <= 0.0 {
         return f64::INFINITY;
     }
     (items as f64) / secs
+}
+
+fn time_call<R>(f: impl FnOnce() -> R) -> (Duration, R) {
+    let start = Instant::now();
+    let out = f();
+    (start.elapsed(), out)
+}
+
+fn wait_for(mut f: impl FnMut() -> bool, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
+fn path_sig(db: &PathDB, rels: &[&str]) -> PathSig {
+    let mut ids = Vec::with_capacity(rels.len());
+    for rel in rels {
+        let id = db
+            .interner
+            .id_of(rel)
+            .unwrap_or_else(|| panic!("missing relation {rel}"));
+        ids.push(id);
+    }
+    PathSig::new(ids)
 }
 
 #[derive(Debug, Clone, Serialize)]

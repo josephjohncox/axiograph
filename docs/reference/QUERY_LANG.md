@@ -35,6 +35,8 @@ Supported atoms:
 
 - Type constraint: `?x : TypeName`
 - (sugar) type constraint: `?x is TypeName`
+  - **Schema-qualified** types are supported: `?x is Fam.Person`
+    - this is elaborated into: `?x is Person, attr(?x,"axi_schema","Fam")`
 - Path constraint (RPQ): `?x -<rpq>-> ?y` where `<rpq>` supports:
   - (sugar) bracketed RPQ: `?x -[<rpq>]-> ?y`
   - concatenation: `rel_0/rel_1/rel_2`
@@ -49,6 +51,7 @@ Supported atoms:
 - N-ary relation (fact) atom (canonical `.axi` import shape):
   - `Flow(from=a, to=b)` (implicit fact/tuple node)
   - `?f = Flow(from=a, to=b)` (bind the tuple node)
+  - Schema-qualified fact atoms are supported: `Flow` can be written as `Fam.Flow(...)`.
 - Optional **context/world scoping** (recommended when your `.axi` uses `@context` / `ctx=...`):
   - `... in CensusData` (single context; lowered into core atoms and **certifiable**)
   - `... in {CensusData, FamilyTree}` (multiple contexts; execution-time union filter; **not certifiable yet**)
@@ -96,6 +99,8 @@ q select ?x where ?x -rel_0-> name("b")
 q select ?x where ?x -rel_0-> b
 q select ?f where ?f = Flow(from=a, to=b)
 q select ?f where ?f = Parent(child=Carol) in CensusData
+q select ?p where ?p is Fam.Person limit 10
+q select ?p where name("Carol") -Fam.Parent-> ?p limit 10
 q select ?x where ?x : Material, contains(?x, "name", "titan")
 q select ?c where ?c : DocChunk, fts(?c, "text", "capture payment")
 q select ?c where ?c : DocChunk, fts(?c, "search_text", "PaymentService CapturePayment")
@@ -119,6 +124,31 @@ schema/theory graph is available), the AxQL planner enriches queries with
 In addition, the executor uses PathDB’s **FactIndex** so queries that filter on
 `axi_relation` (including all fact atoms like `Flow(from=a, to=b)`) do not have to
 scan the attribute column repeatedly.
+
+#### Multi-schema “one universe” behavior (schema-qualified names)
+
+It is common to load multiple schemas into a single snapshot (e.g. `Fam` and
+`Census`) that share names like `Person` or `Parent`.
+
+AxQL supports **schema-qualified names** to disambiguate intentionally:
+
+- `?x is Fam.Person` (type constraint scoped to the `Fam` schema)
+- `?x -Fam.Parent-> ?y` (edge traversal that matches only the derived traversal
+  edges for that schema)
+- `?f = Fam.Parent(child=Carol, parent=Bob)` (fact atom scoped to the schema)
+
+Unqualified edge labels are treated as “best-effort”:
+
+- If a relation name is unambiguous across loaded schemas, the derived traversal
+  edge is emitted unqualified (e.g. `Parent`).
+- If a relation name is ambiguous across schemas, PathDB emits the derived
+  traversal edges schema-qualified (e.g. `Fam.Parent`, `Census.Parent`).
+- If you query with an ambiguous unqualified edge label (e.g. `-Parent->` when
+  both `Fam.Parent` and `Census.Parent` exist), elaboration will either:
+  - **pick a schema** when it can be inferred from other constraints (e.g.
+    schema-qualified facts/types that imply `axi_schema=Fam`), or
+  - treat it as a **union** (RPQ alternation) across schemas, and add an
+    elaboration note recommending explicit qualification.
 
 You can also get a meta-plane by running a schema-discovery step over structured
 ingestion artifacts:

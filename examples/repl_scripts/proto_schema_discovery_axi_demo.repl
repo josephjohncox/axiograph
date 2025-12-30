@@ -7,6 +7,13 @@
 #   examples/schema_discovery/proto_api_proposals.json
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/proto_schema_discovery_axi_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/proto_schema_discovery_axi_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/proto_schema_discovery_axi_demo.repl
 
 import_axi examples/schema_discovery/ProtoApi.proposals.axi
@@ -44,4 +51,3 @@ q select ?f where ?f = proto_rpc_http_endpoint(from=GetUser, to=GET_v1_users_use
 
 export_axi build/proto_schema_discovery_export_v1.axi
 save build/proto_schema_discovery.axpd
-

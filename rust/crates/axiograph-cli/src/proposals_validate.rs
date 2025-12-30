@@ -218,6 +218,7 @@ mod tests {
                 public_rationale: Some("Jamison is a son of Bob (FamilyTree).".to_string()),
                 evidence_text: None,
                 evidence_locator: None,
+                extra_fields: std::collections::HashMap::new(),
             },
         )?;
         assert_eq!(out.summary.rel_type, "Parent");
@@ -225,6 +226,232 @@ mod tests {
 
         let validation = validate_proposals_v1(&base, &out.proposals, "fast", "both")?;
         assert!(!validation.axi_typecheck.skipped, "expected meta-plane typecheck");
+        assert!(
+            validation.axi_typecheck.errors.is_empty(),
+            "unexpected typecheck errors: {:?}",
+            validation.axi_typecheck.errors
+        );
+        assert_eq!(
+            validation.quality_delta.summary.error_count, 0,
+            "unexpected new quality errors: {:?}",
+            validation.quality_delta.findings
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn propose_fact_proposals_sets_endpoints_by_field_name() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let base = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+
+        let out = crate::proposal_gen::propose_fact_proposals_v1(
+            &base,
+            &[],
+            crate::proposal_gen::ProposeFactInputV1 {
+                rel_type: "Fam.Parent".to_string(),
+                fields: std::collections::HashMap::from([
+                    ("child".to_string(), "Jamison".to_string()),
+                    ("parent".to_string(), "Bob".to_string()),
+                    ("ctx".to_string(), "FamilyTree".to_string()),
+                ]),
+                schema_hint: None,
+                confidence: Some(0.9),
+                public_rationale: Some("Jamison is a son of Bob (FamilyTree).".to_string()),
+                evidence_text: None,
+                evidence_locator: None,
+            },
+        )?;
+
+        // Import the overlay into a clone and assert the derived traversal edge direction.
+        let bytes = base.to_bytes()?;
+        let mut preview = PathDB::from_bytes(&bytes)?;
+        let digest_bytes = serde_json::to_vec(&out.proposals)?;
+        let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&digest_bytes);
+        crate::proposals_import::import_proposals_file_into_pathdb(&mut preview, &out.proposals, &digest)?;
+
+        fn find_named_entity(db: &PathDB, type_name: &str, name: &str) -> Option<u32> {
+            let name = name.trim();
+            let Some(name_key) = db.interner.id_of("name") else { return None };
+            let Some(val_id) = db.interner.id_of(name) else { return None };
+            let ids = db.entities.entities_with_attr_value(name_key, val_id);
+            for id in ids.iter() {
+                if let Some(v) = db.get_entity(id) {
+                    if v.entity_type == type_name {
+                        return Some(id);
+                    }
+                }
+            }
+            None
+        }
+
+        let jamison = find_named_entity(&preview, "Person", "Jamison")
+            .ok_or_else(|| anyhow!("expected Jamison Person entity after import"))?;
+        let bob = find_named_entity(&preview, "Person", "Bob")
+            .ok_or_else(|| anyhow!("expected Bob Person entity"))?;
+
+        let rel_id = preview
+            .interner
+            .id_of("Parent")
+            .ok_or_else(|| anyhow!("expected interned Parent relation id"))?;
+        assert!(
+            preview.relations.has_edge(jamison, rel_id, bob),
+            "expected Jamison -Parent-> Bob derived edge"
+        );
+        assert!(
+            !preview.relations.has_edge(bob, rel_id, jamison),
+            "unexpected Bob -Parent-> Jamison derived edge"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn propose_relation_proposals_requires_extra_fields_for_nary_relations() -> Result<()> {
+        let mut base = axiograph_pathdb::PathDB::new();
+        let axi = r#"
+module EconDemo
+
+schema Econ:
+  object Person
+  object Amount
+  object Context
+  object Time
+  relation Flow(from: Person, to: Person, amount: Amount, ctx: Context, time: Time)
+
+instance EconInst of Econ:
+  Person = {Alice, Bob}
+  Amount = {USD_100}
+  Context = {Observed}
+  Time = {T2020}
+"#;
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut base, axi)?;
+        base.build_indexes();
+
+        // Missing required `amount` should fail in proposal generation.
+        let err = crate::proposal_gen::propose_relation_proposals_v1(
+            &base,
+            &[],
+            crate::proposal_gen::ProposeRelationInputV1 {
+                rel_type: "Flow".to_string(),
+                source_name: "Alice".to_string(),
+                target_name: "Bob".to_string(),
+                source_type: None,
+                target_type: None,
+                source_field: None,
+                target_field: None,
+                context: None,
+                time: None,
+                confidence: Some(0.9),
+                schema_hint: Some("Econ".to_string()),
+                public_rationale: None,
+                evidence_text: None,
+                evidence_locator: None,
+                extra_fields: std::collections::HashMap::new(),
+            },
+        )
+        .err()
+        .ok_or_else(|| anyhow!("expected propose_relation_proposals_v1 to fail without amount"))?;
+        assert!(
+            err.to_string().contains("requires additional field `amount`"),
+            "unexpected error: {err}"
+        );
+
+        // With extra_fields, it should validate and typecheck cleanly.
+        let out = crate::proposal_gen::propose_relation_proposals_v1(
+            &base,
+            &[],
+            crate::proposal_gen::ProposeRelationInputV1 {
+                rel_type: "Flow".to_string(),
+                source_name: "Alice".to_string(),
+                target_name: "Bob".to_string(),
+                source_type: None,
+                target_type: None,
+                source_field: None,
+                target_field: None,
+                context: Some("Observed".to_string()),
+                time: Some("T2020".to_string()),
+                confidence: Some(0.9),
+                schema_hint: Some("Econ".to_string()),
+                public_rationale: Some("Alice sends flow to Bob in 2020.".to_string()),
+                evidence_text: None,
+                evidence_locator: None,
+                extra_fields: std::collections::HashMap::from([(
+                    "amount".to_string(),
+                    "USD_100".to_string(),
+                )]),
+            },
+        )?;
+
+        let validation = validate_proposals_v1(&base, &out.proposals, "fast", "both")?;
+        assert!(
+            validation.axi_typecheck.errors.is_empty(),
+            "unexpected typecheck errors: {:?}",
+            validation.axi_typecheck.errors
+        );
+        assert_eq!(
+            validation.quality_delta.summary.error_count, 0,
+            "unexpected new quality errors: {:?}",
+            validation.quality_delta.findings
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn validate_multi_schema_endpoint_resolution_prefers_schema_hint() -> Result<()> {
+        // Regression test:
+        // When multiple schemas share the same object type + element names,
+        // schema-directed proposals import must resolve endpoints *within the
+        // hinted schema* (not “first by id”).
+        let mut base = axiograph_pathdb::PathDB::new();
+        let axi = r#"
+module Universe
+
+schema Census:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+schema Fam:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance CensusInst of Census:
+  Person = {Alice, Bob, Dan}
+  Parent = {(child=Dan, parent=Alice), (child=Dan, parent=Bob)}
+
+instance FamInst of Fam:
+  Person = {Alice, Bob, Carol}
+  Parent = {(child=Carol, parent=Alice), (child=Carol, parent=Bob)}
+"#;
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut base, axi)?;
+        base.build_indexes();
+
+        let out = crate::proposal_gen::propose_relation_proposals_v1(
+            &base,
+            &[],
+            crate::proposal_gen::ProposeRelationInputV1 {
+                rel_type: "Parent".to_string(),
+                source_name: "Carol".to_string(),
+                target_name: "Bob".to_string(),
+                source_type: None,
+                target_type: None,
+                source_field: None,
+                target_field: None,
+                context: None,
+                time: None,
+                confidence: Some(0.9),
+                schema_hint: Some("Fam".to_string()),
+                public_rationale: Some("Carol has parent Bob (Fam).".to_string()),
+                evidence_text: None,
+                evidence_locator: None,
+                extra_fields: std::collections::HashMap::new(),
+            },
+        )?;
+
+        let validation = validate_proposals_v1(&base, &out.proposals, "fast", "both")?;
         assert!(
             validation.axi_typecheck.errors.is_empty(),
             "unexpected typecheck errors: {:?}",

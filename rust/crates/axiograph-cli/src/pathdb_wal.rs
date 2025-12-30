@@ -120,6 +120,7 @@ pub struct PathDbCommitResult {
 pub struct PathdbCommitOptions {
     pub timings: bool,
     pub timings_json: Option<PathBuf>,
+    pub path_index_depth: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -128,6 +129,10 @@ pub struct PathdbBuildOptions {
     pub timings_json: Option<PathBuf>,
     /// Ignore checkpoints and force a rebuild from accepted + ops.
     pub rebuild: bool,
+    /// Override the path index depth (0 disables path indexing).
+    pub path_index_depth: Option<usize>,
+    /// Rewrite the checkpoint for this snapshot (implies rebuild).
+    pub update_checkpoint: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -350,7 +355,11 @@ pub fn commit_pathdb_snapshot_with_overlays_with_options(
 
     // Build/update indexes after all ops.
     let phase_start = Instant::now();
-    db.build_indexes();
+    if let Some(depth) = options.path_index_depth {
+        db.build_indexes_with_depth(depth);
+    } else {
+        db.build_indexes();
+    }
     if let Some(t) = timings.as_mut() {
         t.phases.push(PhaseTimingV1 {
             name: "build_indexes".to_string(),
@@ -559,9 +568,12 @@ pub fn build_pathdb_from_pathdb_snapshot_with_options(
         t.snapshot_id = Some(snapshot_id.clone());
     }
 
+    let force_rebuild =
+        options.rebuild || options.update_checkpoint || options.path_index_depth.is_some();
+
     // Fast path: if we have a checkpoint for this snapshot, just copy it out.
     let checkpoint = checkpoint_path(accepted_dir, &snapshot_id);
-    if checkpoint.exists() && !options.rebuild {
+    if checkpoint.exists() && !force_rebuild {
         let phase_start = Instant::now();
         let size = checkpoint.metadata().ok().map(|m| m.len());
 
@@ -608,8 +620,8 @@ pub fn build_pathdb_from_pathdb_snapshot_with_options(
 
     if let Some(t) = timings.as_mut() {
         t.used_checkpoint = Some(false);
-        if checkpoint.exists() && options.rebuild {
-            t.notes.push("rebuild=true (ignored checkpoint)".to_string());
+        if checkpoint.exists() && force_rebuild {
+            t.notes.push("checkpoint_ignored=true".to_string());
         }
     }
 
@@ -645,7 +657,11 @@ pub fn build_pathdb_from_pathdb_snapshot_with_options(
     }
 
     let phase_start = Instant::now();
-    db.build_indexes();
+    if let Some(depth) = options.path_index_depth {
+        db.build_indexes_with_depth(depth);
+    } else {
+        db.build_indexes();
+    }
     if let Some(t) = timings.as_mut() {
         t.phases.push(PhaseTimingV1 {
             name: "build_indexes".to_string(),
@@ -654,7 +670,8 @@ pub fn build_pathdb_from_pathdb_snapshot_with_options(
     }
 
     let phase_start = Instant::now();
-    fs::write(out_axpd, db.to_bytes()?)?;
+    let db_bytes = db.to_bytes()?;
+    fs::write(out_axpd, &db_bytes)?;
     if let Some(t) = timings.as_mut() {
         t.phases.push(PhaseTimingV1 {
             name: "write_axpd".to_string(),
@@ -662,6 +679,17 @@ pub fn build_pathdb_from_pathdb_snapshot_with_options(
         });
         if let Ok(m) = out_axpd.metadata() {
             t.notes.push(format!("out_bytes={}", m.len()));
+        }
+    }
+
+    if options.update_checkpoint {
+        let phase_start = Instant::now();
+        write_checkpoint_force(accepted_dir, &snapshot_id, &db_bytes)?;
+        if let Some(t) = timings.as_mut() {
+            t.phases.push(PhaseTimingV1 {
+                name: "write_checkpoint".to_string(),
+                millis: phase_start.elapsed().as_millis(),
+            });
         }
     }
 
@@ -877,12 +905,27 @@ fn checkpoint_path(accepted_dir: &Path, snapshot_id: &str) -> PathBuf {
         .join(file)
 }
 
+pub fn checkpoint_sidecar_path(accepted_dir: &Path, snapshot_id: &str) -> PathBuf {
+    let file = format!("{}.axpd.idx.cbor", digest_to_filename(snapshot_id));
+    pathdb_dir(accepted_dir)
+        .join(PATHDB_WAL_CHECKPOINTS_DIR)
+        .join(file)
+}
+
 fn write_checkpoint_if_missing(accepted_dir: &Path, snapshot_id: &str, bytes: &[u8]) -> Result<()> {
     let path = checkpoint_path(accepted_dir, snapshot_id);
     if path.exists() {
         return Ok(());
     }
     fs::write(path, bytes)?;
+    Ok(())
+}
+
+fn write_checkpoint_force(accepted_dir: &Path, snapshot_id: &str, bytes: &[u8]) -> Result<()> {
+    let path = checkpoint_path(accepted_dir, snapshot_id);
+    let tmp = path.with_extension("axpd.tmp");
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, &path)?;
     Ok(())
 }
 

@@ -56,6 +56,7 @@ endif
 # Rust configuration
 CARGO := cargo
 CARGO_OPTS := --release
+CARGO_FEATURES ?=
 
 # Lean configuration (optional)
 LAKE := lake
@@ -102,12 +103,12 @@ dirs:
 
 rust: dirs
 	@echo "━━━ Building Rust crates ━━━"
-	cd $(RUST_DIR) && $(CARGO) build --workspace $(CARGO_OPTS)
+	cd $(RUST_DIR) && $(CARGO) build --workspace $(CARGO_OPTS) $(CARGO_FEATURES)
 	@echo "✓ Rust build complete"
 
 rust-debug: dirs
 	@echo "━━━ Building Rust crates (debug) ━━━"
-	cd $(RUST_DIR) && $(CARGO) build --workspace
+	cd $(RUST_DIR) && $(CARGO) build --workspace $(CARGO_FEATURES)
 	@echo "✓ Rust debug build complete"
 
 rust-test:

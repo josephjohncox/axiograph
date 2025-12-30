@@ -51,6 +51,7 @@ PROPOSALS_JSON="$OUT_DIR/docs_proposals.json"
   --dir "$MASTER_DIR" \
   --accepted-snapshot head \
   --chunks "$CHUNKS_JSON" \
+  --proposals "$PROPOSALS_JSON" \
   --message "demo: import docs chunks overlay"
 
 echo ""

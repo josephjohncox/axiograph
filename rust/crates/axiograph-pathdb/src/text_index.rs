@@ -17,27 +17,56 @@
 //! - Lowercase everything.
 //! - Ignore very short tokens and common stopwords.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
 
-use crate::{PathDB, StrId};
+use crate::{IndexSidecarWriter, PathDB, StrId};
 
-#[derive(Debug, Default, Clone)]
-pub(crate) struct InvertedIndex {
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct InvertedIndex {
     pub token_to_entities: HashMap<String, RoaringBitmap>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct TextIndexCache {
     generation: AtomicU64,
     // attr_key_id -> (built_generation, inverted index)
     indexes: RwLock<HashMap<StrId, (u64, InvertedIndex)>>,
+    building: Mutex<HashSet<StrId>>,
+    async_source: Mutex<Option<Weak<PathDB>>>,
+    sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
+}
+
+impl Default for TextIndexCache {
+    fn default() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            indexes: RwLock::new(HashMap::new()),
+            building: Mutex::new(HashSet::new()),
+            async_source: Mutex::new(None),
+            sidecar: Mutex::new(None),
+        }
+    }
 }
 
 impl TextIndexCache {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+    pub(crate) fn attach_async_source(&self, source: Weak<PathDB>) {
+        let mut guard = self.async_source.lock().expect("text index source poisoned");
+        *guard = Some(source);
+    }
+
+    pub(crate) fn attach_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
+        let mut guard = self.sidecar.lock().expect("text index sidecar poisoned");
+        *guard = Some(writer);
+    }
+
     pub(crate) fn invalidate(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
@@ -51,19 +80,23 @@ impl TextIndexCache {
         if tokens.is_empty() {
             return RoaringBitmap::new();
         }
-        self.ensure_built(db, attr_key_id);
+        let gen = self.generation.load(Ordering::SeqCst);
+        if self.is_ready(attr_key_id, gen) {
+            let guard = self.indexes.read().expect("text index lock poisoned");
+            let Some((_, index)) = guard.get(&attr_key_id) else {
+                return RoaringBitmap::new();
+            };
+            return query_any(index, tokens);
+        }
+        if self.schedule_build_async(db, attr_key_id, gen) {
+            return fallback_any(db, attr_key_id, tokens);
+        }
+        self.ensure_built_sync(db, attr_key_id, gen);
         let guard = self.indexes.read().expect("text index lock poisoned");
         let Some((_, index)) = guard.get(&attr_key_id) else {
             return RoaringBitmap::new();
         };
-
-        let mut out = RoaringBitmap::new();
-        for t in tokens {
-            if let Some(bm) = index.token_to_entities.get(t) {
-                out |= bm;
-            }
-        }
-        out
+        query_any(index, tokens)
     }
 
     pub(crate) fn query_all_tokens(
@@ -75,48 +108,174 @@ impl TextIndexCache {
         if tokens.is_empty() {
             return RoaringBitmap::new();
         }
-        self.ensure_built(db, attr_key_id);
+        let gen = self.generation.load(Ordering::SeqCst);
+        if self.is_ready(attr_key_id, gen) {
+            let guard = self.indexes.read().expect("text index lock poisoned");
+            let Some((_, index)) = guard.get(&attr_key_id) else {
+                return RoaringBitmap::new();
+            };
+            return query_all(index, tokens);
+        }
+        if self.schedule_build_async(db, attr_key_id, gen) {
+            return fallback_all(db, attr_key_id, tokens);
+        }
+        self.ensure_built_sync(db, attr_key_id, gen);
         let guard = self.indexes.read().expect("text index lock poisoned");
         let Some((_, index)) = guard.get(&attr_key_id) else {
             return RoaringBitmap::new();
         };
-
-        let mut out: Option<RoaringBitmap> = None;
-        for t in tokens {
-            let Some(bm) = index.token_to_entities.get(t) else {
-                return RoaringBitmap::new();
-            };
-            out = Some(match out {
-                None => bm.clone(),
-                Some(mut acc) => {
-                    acc &= bm;
-                    acc
-                }
-            });
-        }
-        out.unwrap_or_default()
+        query_all(index, tokens)
     }
 
-    fn ensure_built(&self, db: &PathDB, attr_key_id: StrId) {
-        let gen = self.generation.load(Ordering::SeqCst);
+    pub(crate) fn is_ready(&self, attr_key_id: StrId, gen: u64) -> bool {
+        let guard = self.indexes.read().expect("text index lock poisoned");
+        guard
+            .get(&attr_key_id)
+            .is_some_and(|(built, _)| *built == gen)
+    }
 
-        // Fast path: already built for this generation.
+    pub(crate) fn load_indexes(&self, generation: u64, indexes: HashMap<StrId, InvertedIndex>) {
+        let mut guard = self.indexes.write().expect("text index lock poisoned");
+        for (k, v) in indexes {
+            guard.insert(k, (generation, v));
+        }
+    }
+
+    pub(crate) fn snapshot(&self, generation: u64) -> HashMap<StrId, InvertedIndex> {
+        let guard = self.indexes.read().expect("text index lock poisoned");
+        guard
+            .iter()
+            .filter_map(|(k, (built, idx))| {
+                if *built == generation {
+                    Some((*k, idx.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn schedule_build_async(&self, db: &PathDB, attr_key_id: StrId, gen: u64) -> bool {
         {
             let guard = self.indexes.read().expect("text index lock poisoned");
             if guard
                 .get(&attr_key_id)
                 .is_some_and(|(built, _)| *built == gen)
             {
-                return;
+                return false;
             }
         }
 
-        // Build outside the write lock (keeps lock-hold time small).
-        let new_index = build_inverted_index(db, attr_key_id);
+        let source = self
+            .async_source
+            .lock()
+            .expect("text index source poisoned")
+            .clone();
+        let Some(source) = source else {
+            return false;
+        };
 
+        {
+            let mut building = self.building.lock().expect("text index build poisoned");
+            if building.contains(&attr_key_id) {
+                return true;
+            }
+            building.insert(attr_key_id);
+        }
+
+        std::thread::Builder::new()
+            .name("axiograph_text_index".to_string())
+            .spawn(move || {
+                let Some(db) = source.upgrade() else {
+                    return;
+                };
+                let new_index = build_inverted_index(&db, attr_key_id);
+                let cache = &db.text_index;
+                if cache.generation.load(Ordering::SeqCst) == gen {
+                    cache.load_indexes(gen, [(attr_key_id, new_index)].into());
+                    if let Some(writer) = cache
+                        .sidecar
+                        .lock()
+                        .expect("text index sidecar poisoned")
+                        .as_ref()
+                    {
+                        writer.mark_dirty();
+                    }
+                }
+                let mut building = cache.building.lock().expect("text index build poisoned");
+                building.remove(&attr_key_id);
+            })
+            .expect("failed to spawn text index build thread");
+
+        true
+    }
+
+    fn ensure_built_sync(&self, db: &PathDB, attr_key_id: StrId, gen: u64) {
+        let new_index = build_inverted_index(db, attr_key_id);
         let mut guard = self.indexes.write().expect("text index lock poisoned");
         guard.insert(attr_key_id, (gen, new_index));
     }
+}
+
+fn query_any(index: &InvertedIndex, tokens: &[String]) -> RoaringBitmap {
+    let mut out = RoaringBitmap::new();
+    for t in tokens {
+        if let Some(bm) = index.token_to_entities.get(t) {
+            out |= bm;
+        }
+    }
+    out
+}
+
+fn query_all(index: &InvertedIndex, tokens: &[String]) -> RoaringBitmap {
+    let mut out: Option<RoaringBitmap> = None;
+    for t in tokens {
+        let Some(bm) = index.token_to_entities.get(t) else {
+            return RoaringBitmap::new();
+        };
+        out = Some(match out {
+            None => bm.clone(),
+            Some(mut acc) => {
+                acc &= bm;
+                acc
+            }
+        });
+    }
+    out.unwrap_or_default()
+}
+
+fn fallback_any(db: &PathDB, attr_key_id: StrId, tokens: &[String]) -> RoaringBitmap {
+    let Some(col) = db.entities.attrs.get(&attr_key_id) else {
+        return RoaringBitmap::new();
+    };
+    let mut out = RoaringBitmap::new();
+    for (&entity_id, &value_id) in col {
+        let Some(value) = db.interner.lookup(value_id) else {
+            continue;
+        };
+        let value_tokens = tokenize_text(&value);
+        if tokens.iter().any(|t| value_tokens.contains(t)) {
+            out.insert(entity_id);
+        }
+    }
+    out
+}
+
+fn fallback_all(db: &PathDB, attr_key_id: StrId, tokens: &[String]) -> RoaringBitmap {
+    let Some(col) = db.entities.attrs.get(&attr_key_id) else {
+        return RoaringBitmap::new();
+    };
+    let mut out = RoaringBitmap::new();
+    for (&entity_id, &value_id) in col {
+        let Some(value) = db.interner.lookup(value_id) else {
+            continue;
+        };
+        let value_tokens = tokenize_text(&value);
+        if tokens.iter().all(|t| value_tokens.contains(t)) {
+            out.insert(entity_id);
+        }
+    }
+    out
 }
 
 fn build_inverted_index(db: &PathDB, attr_key_id: StrId) -> InvertedIndex {

@@ -2884,7 +2884,7 @@ pub(crate) struct ToolLoopArtifactsV1 {
     /// A merged `proposals.json` overlay produced by the tool loop, if any.
     ///
     /// Shape matches the output of `propose_relation_proposals` /
-    /// `propose_relations_proposals`:
+    /// `propose_relations_proposals` / `propose_fact_proposals`:
     /// - proposals_json (Evidence/Proposals)
     /// - chunks (DocChunk evidence, optional)
     /// - summary (UI-friendly)
@@ -2975,7 +2975,10 @@ fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) 
 
     let mut overlays: Vec<OverlayStep> = Vec::new();
     for step in transcript {
-        if step.tool != "propose_relation_proposals" && step.tool != "propose_relations_proposals" {
+        if step.tool != "propose_relation_proposals"
+            && step.tool != "propose_relations_proposals"
+            && step.tool != "propose_fact_proposals"
+        {
             continue;
         }
         if step.result.get("error").is_some() {
@@ -3072,6 +3075,19 @@ fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) 
             if !ctx.is_empty() {
                 context = Some(ctx.to_string());
             }
+        } else if ov.tool == "propose_fact_proposals" {
+            // For fact proposals, context is typically in fields.ctx.
+            if let Some(ctx) = ov
+                .args
+                .get("fields")
+                .and_then(|v| v.get("ctx"))
+                .and_then(|v| v.as_str())
+            {
+                let ctx = ctx.trim();
+                if !ctx.is_empty() {
+                    context = Some(ctx.to_string());
+                }
+            }
         }
 
         if let Some(c) = ov.args.get("confidence").and_then(|v| v.as_f64()) {
@@ -3102,6 +3118,26 @@ fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) 
                         if !name.is_empty() {
                             target_names.insert(name.to_string());
                         }
+                    }
+                }
+            }
+        } else if ov.tool == "propose_fact_proposals" {
+            // Infer “source/target names” from the fact summary (canonical endpoint fields).
+            let summary = &ov.out.summary;
+            let src_field = summary.get("axi_source_field").and_then(|v| v.as_str());
+            let dst_field = summary.get("axi_target_field").and_then(|v| v.as_str());
+            let fields = summary.get("fields").and_then(|v| v.as_object());
+            if let (Some(sf), Some(tf), Some(fields)) = (src_field, dst_field, fields) {
+                if let Some(v) = fields.get(sf).and_then(|x| x.as_str()) {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        source_names.insert(v.to_string());
+                    }
+                }
+                if let Some(v) = fields.get(tf).and_then(|x| x.as_str()) {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        target_names.insert(v.to_string());
                     }
                 }
             }
@@ -3239,7 +3275,7 @@ fn tool_loop_enrich_final_answer(steps: &[ToolLoopTranscriptItemV1], final_answe
                     }
                 }
             }
-            "propose_relation_proposals" | "propose_relations_proposals" => {
+            "propose_relation_proposals" | "propose_relations_proposals" | "propose_fact_proposals" => {
                 if let Some(chunks) = step.result.get("chunks").and_then(|v| v.as_array()) {
                     for c in chunks.iter().take(12) {
                         if let Some(cid) = c.get("chunk_id").and_then(|v| v.as_str()) {
@@ -3763,7 +3799,10 @@ fn fallback_tool_loop_final_answer(
 
     // Next: surface proposal generation as a user-facing artifact.
     for item in transcript.iter().rev() {
-        if item.tool != "propose_relation_proposals" && item.tool != "propose_relations_proposals" {
+        if item.tool != "propose_relation_proposals"
+            && item.tool != "propose_relations_proposals"
+            && item.tool != "propose_fact_proposals"
+        {
             continue;
         }
 
@@ -3784,19 +3823,6 @@ fn fallback_tool_loop_final_answer(
         if let Some(rel) = summary.get("rel_type").and_then(|v| v.as_str()) {
             let ctx = summary.get("context").and_then(|v| v.as_str());
 
-            // Prefer the canonical source/target names when present; otherwise
-            // fall back to tool args (useful for the batch tool).
-            let src = summary
-                .get("source_name")
-                .and_then(|v| v.as_str())
-                .or_else(|| item.args.get("source_name").and_then(|v| v.as_str()))
-                .unwrap_or("?");
-            let dst = summary
-                .get("target_name")
-                .and_then(|v| v.as_str())
-                .or_else(|| item.args.get("target_name").and_then(|v| v.as_str()))
-                .unwrap_or("?");
-
             if item.tool == "propose_relations_proposals" {
                 let sources = item
                     .args
@@ -3815,10 +3841,46 @@ fn fallback_tool_loop_final_answer(
                 } else {
                     lines.push(format!("Proposed: {rel} for {sources}×{targets}"));
                 }
-            } else if let Some(ctx) = ctx {
-                lines.push(format!("Proposed: {src} -{rel}-> {dst} (context={ctx})"));
+            } else if item.tool == "propose_fact_proposals" {
+                let fields = summary.get("fields").and_then(|v| v.as_object());
+                if let Some(fields) = fields {
+                    let mut parts: Vec<String> = Vec::new();
+                    for (k, v) in fields.iter().take(8) {
+                        if let Some(s) = v.as_str() {
+                            parts.push(format!("{k}={s}"));
+                        }
+                    }
+                    if let Some(ctx) = fields.get("ctx").and_then(|v| v.as_str()) {
+                        if !ctx.trim().is_empty() {
+                            // ensure ctx is visible even if it wasn't in the first 8 fields
+                            if !parts.iter().any(|p| p.starts_with("ctx=")) {
+                                parts.push(format!("ctx={ctx}"));
+                            }
+                        }
+                    }
+                    lines.push(format!("Proposed fact: {rel}({})", parts.join(", ")));
+                } else {
+                    lines.push(format!("Proposed fact: {rel}(...)"));
+                }
             } else {
-                lines.push(format!("Proposed: {src} -{rel}-> {dst}"));
+                // Prefer the canonical source/target names when present; otherwise
+                // fall back to tool args.
+                let src = summary
+                    .get("source_name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| item.args.get("source_name").and_then(|v| v.as_str()))
+                    .unwrap_or("?");
+                let dst = summary
+                    .get("target_name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| item.args.get("target_name").and_then(|v| v.as_str()))
+                    .unwrap_or("?");
+
+                if let Some(ctx) = ctx {
+                    lines.push(format!("Proposed: {src} -{rel}-> {dst} (context={ctx})"));
+                } else {
+                    lines.push(format!("Proposed: {src} -{rel}-> {dst}"));
+                }
             }
         }
         lines.push("".to_string());
@@ -4168,7 +4230,7 @@ fn tool_loop_tools_schema(store: Option<&ToolLoopStoreContext>) -> Vec<ToolSpecV
         },
         ToolSpecV1 {
             name: "propose_relation_proposals".to_string(),
-            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding a simple relation assertion between two entities in the current snapshot. This does NOT mutate the DB; it produces a reviewable overlay artifact.\n\nImportant: by default, `source_name` binds to the canonical relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` binds to the target-ish field (`to`/`target`/`parent`/`rhs`). If you need to disambiguate direction, set `source_field` and `target_field` explicitly (e.g. for Parent(child,parent): source_field=\"parent\" target_field=\"child\").".to_string(),
+            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding a relation assertion between two entities in the current snapshot. This does NOT mutate the DB; it produces a reviewable overlay artifact.\n\nImportant:\n- By default, `source_name` binds to the canonical relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` binds to the target-ish field (`to`/`target`/`parent`/`rhs`). If you need to disambiguate direction, set `source_field` and `target_field` explicitly (e.g. for Parent(child,parent): source_field=\"parent\" target_field=\"child\").\n- For n-ary relations, use `extra_fields` for required fields beyond endpoints (e.g. amount/currency/policy), or prefer `propose_fact_proposals` to specify all fields directly.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["rel_type", "source_name", "target_name"],
@@ -4184,6 +4246,27 @@ fn tool_loop_tools_schema(store: Option<&ToolLoopStoreContext>) -> Vec<ToolSpecV
                     "time": { "type": "string" },
                     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
                     "schema_hint": { "type": "string" },
+                    "public_rationale": { "type": "string" },
+                    "evidence_text": { "type": "string" },
+                    "evidence_locator": { "type": "string" },
+                    "extra_fields": { "type": "object", "additionalProperties": { "type": "string" } },
+                    "validate": { "type": "boolean" },
+                    "quality_profile": { "type": "string", "enum": ["fast", "strict"] },
+                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] }
+                }
+            }),
+        },
+        ToolSpecV1 {
+            name: "propose_fact_proposals".to_string(),
+            description: "Generate an untrusted `proposals.json` overlay for adding a *typed fact node* (n-ary relation) by specifying field values directly (recommended when direction is ambiguous or the relation has more than 2 fields).\n\nExample fields for Parent(child,parent,ctx,time): {\"child\":\"Jamison\",\"parent\":\"Bob\",\"ctx\":\"FamilyTree\",\"time\":\"T2025\"}.\n\nYou may pass `rel_type` as schema-qualified `Schema.Rel` when multiple schemas share the same relation name.".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "required": ["rel_type", "fields"],
+                "properties": {
+                    "rel_type": { "type": "string" },
+                    "fields": { "type": "object", "additionalProperties": { "type": "string" } },
+                    "schema_hint": { "type": "string" },
+                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
                     "public_rationale": { "type": "string" },
                     "evidence_text": { "type": "string" },
                     "evidence_locator": { "type": "string" },
@@ -4215,6 +4298,7 @@ fn tool_loop_tools_schema(store: Option<&ToolLoopStoreContext>) -> Vec<ToolSpecV
                     "public_rationale": { "type": "string" },
                     "evidence_text": { "type": "string" },
                     "evidence_locator": { "type": "string" },
+                    "extra_fields": { "type": "object", "additionalProperties": { "type": "string" } },
                     "validate": { "type": "boolean" },
                     "quality_profile": { "type": "string", "enum": ["fast", "strict"] },
                     "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] }
@@ -4322,6 +4406,7 @@ fn execute_tool_call(
         "propose_axi_patch" => tool_propose_axi_patch(&call.args),
         "draft_axi_from_proposals" => tool_draft_axi_from_proposals(&call.args),
         "propose_relation_proposals" => tool_propose_relation_proposals(db, default_contexts, &call.args),
+        "propose_fact_proposals" => tool_propose_fact_proposals(db, default_contexts, &call.args),
         "propose_relations_proposals" => tool_propose_relations_proposals(db, default_contexts, &call.args),
         "snapshots_list" => tool_snapshots_list(store, &call.args),
         "snapshot_diff" => tool_snapshot_diff(store, &call.args),
@@ -5662,7 +5747,9 @@ fn tool_lookup_rewrite_rule(
                         "theory": theory_name,
                         "rule": r.name,
                         "orientation": r.orientation,
-                        "vars": r.vars,
+                        "vars": r.vars.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+                        "vars_text": r.vars_text,
+                        "vars_parse_error": r.vars_parse_error,
                         "lhs": r.lhs,
                         "rhs": r.rhs,
                     }),
@@ -6216,6 +6303,9 @@ fn tool_semantic_search(
     let mut notes: Vec<String> = Vec::new();
 
     if let Some(idx) = embeddings {
+        if let Err(e) = idx.assert_in_db(db) {
+            notes.push(format!("embeddings skipped: {e}"));
+        } else {
         fn normalize_vec(v: &mut [f32]) {
             let mut norm2 = 0.0f32;
             for x in v.iter() {
@@ -6453,6 +6543,7 @@ fn tool_semantic_search(
                     other
                 )),
             }
+        }
         }
     }
 
@@ -7003,6 +7094,8 @@ fn tool_propose_relation_proposals(
         #[serde(default)]
         evidence_locator: Option<String>,
         #[serde(default)]
+        extra_fields: std::collections::HashMap<String, String>,
+        #[serde(default)]
         validate: Option<bool>,
         #[serde(default)]
         quality_profile: Option<String>,
@@ -7027,6 +7120,72 @@ fn tool_propose_relation_proposals(
             time: a.time,
             confidence: a.confidence,
             schema_hint: a.schema_hint,
+            public_rationale: a.public_rationale,
+            evidence_text: a.evidence_text,
+            evidence_locator: a.evidence_locator,
+            extra_fields: a.extra_fields,
+        },
+    )?;
+
+    let validate = a.validate.unwrap_or(true);
+    let validation = if validate {
+        let profile = a.quality_profile.unwrap_or_else(|| "fast".to_string());
+        let plane = a.quality_plane.unwrap_or_else(|| "both".to_string());
+        Some(crate::proposals_validate::validate_proposals_v1(
+            db,
+            &out.proposals,
+            &profile,
+            &plane,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(serde_json::json!({
+        "proposals_json": out.proposals,
+        "chunks": out.chunks,
+        "summary": out.summary,
+        "validation": validation,
+    }))
+}
+
+fn tool_propose_fact_proposals(
+    db: &PathDB,
+    default_contexts: &[crate::axql::AxqlContextSpec],
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    #[derive(Deserialize)]
+    struct Args {
+        rel_type: String,
+        fields: std::collections::HashMap<String, String>,
+        #[serde(default)]
+        schema_hint: Option<String>,
+        #[serde(default)]
+        confidence: Option<f64>,
+        #[serde(default)]
+        public_rationale: Option<String>,
+        #[serde(default)]
+        evidence_text: Option<String>,
+        #[serde(default)]
+        evidence_locator: Option<String>,
+        #[serde(default)]
+        validate: Option<bool>,
+        #[serde(default)]
+        quality_profile: Option<String>,
+        #[serde(default)]
+        quality_plane: Option<String>,
+    }
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("propose_fact_proposals: invalid args: {e}"))?;
+
+    let out = crate::proposal_gen::propose_fact_proposals_v1(
+        db,
+        default_contexts,
+        crate::proposal_gen::ProposeFactInputV1 {
+            rel_type: a.rel_type,
+            fields: a.fields,
+            schema_hint: a.schema_hint,
+            confidence: a.confidence,
             public_rationale: a.public_rationale,
             evidence_text: a.evidence_text,
             evidence_locator: a.evidence_locator,
@@ -7090,6 +7249,8 @@ fn tool_propose_relations_proposals(
         #[serde(default)]
         evidence_locator: Option<String>,
         #[serde(default)]
+        extra_fields: std::collections::HashMap<String, String>,
+        #[serde(default)]
         validate: Option<bool>,
         #[serde(default)]
         quality_profile: Option<String>,
@@ -7118,6 +7279,7 @@ fn tool_propose_relations_proposals(
             public_rationale: a.public_rationale,
             evidence_text: a.evidence_text,
             evidence_locator: a.evidence_locator,
+            extra_fields: a.extra_fields,
         },
     )?;
 
@@ -7502,7 +7664,9 @@ fn mock_tool_loop_step(
     options: ToolLoopOptions,
 ) -> Result<ToolLoopModelResponseV1> {
     let has_proposed = transcript.iter().any(|s| {
-        s.tool == "propose_relation_proposals" || s.tool == "propose_relations_proposals"
+        s.tool == "propose_relation_proposals"
+            || s.tool == "propose_relations_proposals"
+            || s.tool == "propose_fact_proposals"
     });
     if has_proposed {
         return Ok(ToolLoopModelResponseV1 {
@@ -7695,7 +7859,9 @@ Rules:
 - For AxQL execution, prefer the typed JSON IR:
   - When calling `axql_elaborate` or `axql_run`, pass `query_ir_v1` (NOT raw `axql` text).
   - If you generated a query, call `axql_elaborate` first to validate it and to see inferred types, then call `axql_run`.
-- For requests that would *change* the graph (add/update facts/relationships), do NOT claim the DB changed. Instead, use `propose_relation_proposals` to generate a reviewable `proposals.json` overlay.
+- For requests that would *change* the graph (add/update facts/relationships), do NOT claim the DB changed. Instead, generate a reviewable `proposals.json` overlay:
+  - Prefer `propose_fact_proposals` when the relation is n-ary (more than 2 fields) or when direction is ambiguous.
+  - Use `propose_relation_proposals` for simple two-endpoint assertions when you are confident about direction.
 - Use `propose_relations_proposals` when the user asks for multiple pairs (e.g. “Jamison is a child of Alice and Bob”).
 - If the user asks to add multiple *different* relationship types in one request (e.g. Parent + Spouse), make multiple proposal tool calls (one per `rel_type`) and then summarize what you proposed.
 - If you are proposing a symmetric relation (e.g. Spouse) and the snapshot stores explicit symmetric facts, propose both directions unless the user asked for only one direction.
@@ -7703,6 +7869,7 @@ Rules:
 - When generating relation proposals, be careful about *direction*:
   - `propose_relation_proposals` maps `source_name` → the relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` → (`to`/`target`/`parent`/`rhs`).
   - If the user’s phrasing is inverse (“Bob is a parent of Jamison”), set `source_field`/`target_field` explicitly (e.g. `source_field="parent"`, `target_field="child"` for `Parent(child,parent)`), or use an alias like `parent_of`.
+- When multiple schemas share the same type/relation name, prefer schema-qualified names (e.g. `Fam.Parent`, `Census.Person`) or set `schema_hint` in proposal tools.
 - When interpreting a “fact node” (an entity with attr `axi_relation`), treat it as a *typed record* with field edges (e.g. `Parent(child=..., parent=..., ctx=..., time=...)`). Use `lookup_relation` (meta-plane signature + constraints) when unsure about endpoints or required fields.
 - If the user wants canonical `.axi` output for a set of proposals, call `draft_axi_from_proposals` (deterministic draft; still untrusted until promoted and checked).
 - If `DocChunk` evidence exists and you used it (via `semantic_search` / `fts_chunks` / `docchunk_get`), cite the `chunk_id` in `citations`.
@@ -8654,7 +8821,14 @@ impl SchemaContextV1 {
                     let vars = if r.vars.is_empty() {
                         String::new()
                     } else {
-                        format!(" vars={}", r.vars.join(", "))
+                        format!(
+                            " vars={}",
+                            r.vars
+                                .iter()
+                                .map(|v| v.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
                     };
                     let line = format!(
                         "{schema_name}.{theory_name}.{} ({}){vars}: {} -> {}",

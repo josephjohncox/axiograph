@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use axiograph_pathdb::axi_meta::ATTR_AXI_RELATION;
+use axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT;
 use axiograph_pathdb::axi_semantics::{ConstraintDecl, MetaPlaneIndex};
 use axiograph_pathdb::PathDB;
 
@@ -249,10 +250,179 @@ pub fn run_quality_checks(
             }
         }
 
+        // Meta-plane is optional, but many checks get stronger when it's present.
+        let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
+
+        // `axi_fact_in_context` targets must always be Contexts (or schema-local subtypes).
+        if let Some(ctx_rel_id) = db.interner.id_of(REL_AXI_FACT_IN_CONTEXT) {
+            let mut allowed_context_types: std::collections::HashSet<String> =
+                ["Context".to_string(), "World".to_string()].into_iter().collect();
+            for schema in meta.schemas.values() {
+                for obj in &schema.object_types {
+                    if schema.is_subtype(obj, "Context") {
+                        allowed_context_types.insert(obj.clone());
+                    }
+                }
+            }
+
+            for rel_id in 0..db.relations.len() as u32 {
+                let Some(rel) = db.relations.get_relation(rel_id) else {
+                    continue;
+                };
+                if rel.rel_type != ctx_rel_id {
+                    continue;
+                }
+                let Some(target_view) = db.get_entity(rel.target) else {
+                    continue;
+                };
+                if !allowed_context_types.contains(&target_view.entity_type) {
+                    findings.push(QualityFindingV1 {
+                        level: "error".to_string(),
+                        code: "axi_fact_in_context_target_type".to_string(),
+                        message: format!(
+                            "`{REL_AXI_FACT_IN_CONTEXT}` target must be a Context/World (got `{}` for entity {})",
+                            target_view.entity_type, rel.target
+                        ),
+                        schema: None,
+                        relation: None,
+                        entity_id: Some(rel.target),
+                    });
+                }
+            }
+        }
+
+        // Evidence/provenance hygiene for proposal-derived entities/facts.
+        //
+        // Grounding should always be possible for proposals: require at least one evidence pointer
+        // (attrs `evidence_*_chunk_id` or edges `has_evidence_chunk`).
+        let proposal_id_key = db.interner.id_of("proposal_id");
+        let proposal_conf_key = db.interner.id_of("proposal_confidence");
+        let has_evidence_rel = db.interner.id_of("has_evidence_chunk");
+
+        let mut entities_with_proposal_id: Vec<u32> = Vec::new();
+        if let Some(key_id) = proposal_id_key {
+            for entity_id in 0..db.entities.len() as u32 {
+                if db.entities.get_attr(entity_id, key_id).is_some() {
+                    entities_with_proposal_id.push(entity_id);
+                }
+            }
+        }
+        entities_with_proposal_id.sort_unstable();
+        entities_with_proposal_id.dedup();
+
+        let mut entities_with_conf: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        if let Some(key_id) = proposal_conf_key {
+            for entity_id in 0..db.entities.len() as u32 {
+                if db.entities.get_attr(entity_id, key_id).is_some() {
+                    entities_with_conf.insert(entity_id);
+                }
+            }
+        }
+
+        let has_any_evidence = |db: &PathDB, entity_id: u32| -> bool {
+            if let Some(rel_id) = has_evidence_rel {
+                if !db.relations.outgoing(entity_id, rel_id).is_empty() {
+                    return true;
+                }
+            }
+            for i in 0usize..64 {
+                let key = format!("evidence_{i}_chunk_id");
+                let Some(key_id) = db.interner.id_of(&key) else {
+                    continue;
+                };
+                if db.entities.get_attr(entity_id, key_id).is_some() {
+                    return true;
+                }
+            }
+            false
+        };
+
+        for entity_id in &entities_with_proposal_id {
+            // proposal_id/confidence pairing
+            if !entities_with_conf.contains(entity_id) {
+                findings.push(QualityFindingV1 {
+                    level: if profile == "strict" {
+                        "error".to_string()
+                    } else {
+                        "warning".to_string()
+                    },
+                    code: "proposal_missing_confidence".to_string(),
+                    message: format!(
+                        "entity {entity_id}: has proposal_id but missing proposal_confidence"
+                    ),
+                    schema: None,
+                    relation: None,
+                    entity_id: Some(*entity_id),
+                });
+            }
+
+            if !has_any_evidence(db, *entity_id) {
+                findings.push(QualityFindingV1 {
+                    level: if profile == "strict" {
+                        "error".to_string()
+                    } else {
+                        "warning".to_string()
+                    },
+                    code: "proposal_missing_evidence".to_string(),
+                    message: format!(
+                        "entity {entity_id}: proposal has no evidence pointers (expected `evidence_*_chunk_id` attrs or `has_evidence_chunk` edges)"
+                    ),
+                    schema: None,
+                    relation: None,
+                    entity_id: Some(*entity_id),
+                });
+            }
+        }
+        for entity_id in &entities_with_conf {
+            if entities_with_proposal_id.binary_search(entity_id).is_err() {
+                findings.push(QualityFindingV1 {
+                    level: if profile == "strict" {
+                        "error".to_string()
+                    } else {
+                        "warning".to_string()
+                    },
+                    code: "proposal_missing_id".to_string(),
+                    message: format!(
+                        "entity {entity_id}: has proposal_confidence but missing proposal_id"
+                    ),
+                    schema: None,
+                    relation: None,
+                    entity_id: Some(*entity_id),
+                });
+            }
+        }
+
+        // Evidence edges should point to DocChunks.
+        if let Some(rel_id) = has_evidence_rel {
+            for edge_id in 0..db.relations.len() as u32 {
+                let Some(rel) = db.relations.get_relation(edge_id) else {
+                    continue;
+                };
+                if rel.rel_type != rel_id {
+                    continue;
+                }
+                let Some(target) = db.get_entity(rel.target) else {
+                    continue;
+                };
+                if target.entity_type != "DocChunk" {
+                    findings.push(QualityFindingV1 {
+                        level: "error".to_string(),
+                        code: "has_evidence_chunk_target_type".to_string(),
+                        message: format!(
+                            "edge#{edge_id}: has_evidence_chunk target must be DocChunk (got `{}` for entity {})",
+                            target.entity_type, rel.target
+                        ),
+                        schema: None,
+                        relation: None,
+                        entity_id: Some(rel.target),
+                    });
+                }
+            }
+        }
+
         // Constraint checks (best-effort) when the meta-plane is available:
         // - key(...) duplicates
         // - functional(field -> field) violations
-        let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
         if !meta.schemas.is_empty() {
             // Build a fact-node lookup: relation name -> fact ids.
             let mut facts_by_relation: HashMap<String, Vec<u32>> = HashMap::new();

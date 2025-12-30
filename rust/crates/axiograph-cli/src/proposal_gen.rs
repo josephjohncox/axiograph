@@ -9,7 +9,7 @@
 //! `axiograph-ingest-docs`, plus optional `Chunk` evidence suitable for loading
 //! into the PathDB WAL.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
@@ -59,6 +59,15 @@ pub struct ProposeRelationInputV1 {
     pub evidence_text: Option<String>,
     /// Optional source locator for the evidence chunk (e.g. "viz_ui").
     pub evidence_locator: Option<String>,
+    /// Optional additional fields for n-ary relations (beyond the inferred
+    /// `(source_field,target_field)` endpoints).
+    ///
+    /// Keys must be declared field names in the canonical `.axi` relation
+    /// signature (e.g. `amount`, `currency`, `policy`, ...). For context/time
+    /// fields, prefer using the top-level `context`/`time` inputs; they also
+    /// default deterministically when omitted.
+    #[serde(default)]
+    pub extra_fields: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +141,53 @@ pub struct ProposeRelationsInputV1 {
     pub evidence_text: Option<String>,
     /// Optional source locator for the evidence chunk (e.g. "viz_ui").
     pub evidence_locator: Option<String>,
+    /// Optional additional fields for n-ary relations (applied to every
+    /// generated pair in this batch).
+    #[serde(default)]
+    pub extra_fields: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposeFactInputV1 {
+    /// Canonical relation name or schema-qualified `Schema.Rel` (preferred when
+    /// multiple schemas share the same relation name).
+    pub rel_type: String,
+    /// Field-value map for the fact (typed record). Values are entity names
+    /// (or external ids) and will be resolved/stubbed during import.
+    pub fields: HashMap<String, String>,
+    #[serde(default)]
+    pub schema_hint: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub public_rationale: Option<String>,
+    /// Optional evidence text to store as a `DocChunk` (WAL overlay).
+    #[serde(default)]
+    pub evidence_text: Option<String>,
+    /// Optional source locator for the evidence chunk (e.g. "viz_ui").
+    #[serde(default)]
+    pub evidence_locator: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposeFactSummaryV1 {
+    pub rel_type: String,
+    #[serde(default)]
+    pub axi_schema: Option<String>,
+    /// The inferred endpoint fields used to populate the underlying
+    /// (source,target) pair in `ProposalV1::Relation`.
+    pub axi_source_field: String,
+    pub axi_target_field: String,
+    pub confidence: f64,
+    pub fields: HashMap<String, String>,
+    pub evidence_chunk_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposeFactOutputV1 {
+    pub proposals: ProposalsFileV1,
+    pub chunks: Vec<Chunk>,
+    pub summary: ProposeFactSummaryV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,6 +457,46 @@ pub fn propose_relation_proposals_v1(
     let mut swapped_endpoints = false;
     let mut rel_alias_used: Option<String> = None;
 
+    let extra_fields_input: HashMap<String, String> = input
+        .extra_fields
+        .iter()
+        .filter_map(|(k, v)| {
+            let key = k.trim();
+            let val = v.trim();
+            if key.is_empty() || val.is_empty() {
+                return None;
+            }
+            let key = if key.eq_ignore_ascii_case("context") {
+                "ctx"
+            } else {
+                key
+            };
+            Some((key.to_string(), val.to_string()))
+        })
+        .collect();
+
+    // Allow callers to pass context/time via `extra_fields` for convenience.
+    // Top-level `context`/`time` still take precedence.
+    if context.is_none() {
+        if let Some(ctx) = extra_fields_input.get("ctx") {
+            if !ctx.trim().is_empty() {
+                context = Some(ctx.trim().to_string());
+                // Canonicalize common structured values so "family tree" resolves to "FamilyTree"
+                // when a `Context` entity exists.
+                if let Some(ctx2) = context.clone() {
+                    context = canonicalize_name_of_type(db, "Context", &ctx2).or(Some(ctx2));
+                }
+            }
+        }
+    }
+    if time_name.is_none() {
+        if let Some(t) = extra_fields_input.get("time") {
+            if !t.trim().is_empty() {
+                time_name = Some(t.trim().to_string());
+            }
+        }
+    }
+
     let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
     if !meta.schemas.is_empty() {
         let schema_hint_raw = schema_hint
@@ -498,22 +594,38 @@ pub fn propose_relation_proposals_v1(
                 .filter(|f| *f != src_field && *f != dst_field)
                 .collect();
 
-            // Fill ctx/time if present; reject other extra fields so the UI/LLM must
-            // ask for explicit values (prevents injecting junk placeholders).
+            // Validate + fill required extra fields.
+            //
+            // Policy: only ctx/time are defaulted; all other required fields must
+            // be provided explicitly (via `extra_fields`) to avoid injecting
+            // junk placeholders.
+            let has_decl_field = |name: &str| rel_decl.fields.iter().any(|f| f.field_name == name);
+
+            for k in extra_fields_input.keys() {
+                if k == &src_field || k == &dst_field {
+                    return Err(anyhow!(
+                        "relation `{rel_type}`: extra_fields must not include endpoint field `{k}`; use source_name/target_name (or set source_field/target_field) instead"
+                    ));
+                }
+                if k != "ctx" && k != "time" && !has_decl_field(k) {
+                    return Err(anyhow!(
+                        "relation `{rel_type}`: unknown extra field `{k}` (not in canonical signature)"
+                    ));
+                }
+            }
+
             for f in &extra_fields {
                 if *f == "ctx" {
                     if context.is_none() {
-                        // If the schema requires a context, pick a sensible default.
-                        // (User can always override with `context=...`.)
                         context = Some("Observed".to_string());
                     }
                 } else if *f == "time" {
                     if time_name.is_none() {
                         time_name = Some(choose_default_time_name(db, now_secs));
                     }
-                } else {
+                } else if !extra_fields_input.contains_key(*f) {
                     return Err(anyhow!(
-                        "relation `{rel_type}` requires additional field `{f}` (only ctx/time can be defaulted); use a richer fact builder or specify the missing field"
+                        "relation `{rel_type}` requires additional field `{f}`; include it in extra_fields"
                     ));
                 }
             }
@@ -718,6 +830,18 @@ pub fn propose_relation_proposals_v1(
     if let Some(t) = time_name.as_ref() {
         attributes.insert("time".to_string(), t.clone());
     }
+    for (k, v) in &extra_fields_input {
+        let k = k.trim();
+        let v = v.trim();
+        if k.is_empty() || v.is_empty() {
+            continue;
+        }
+        // Avoid overriding the canonicalized top-level context/time values.
+        if k == "ctx" || k == "time" {
+            continue;
+        }
+        attributes.insert(k.to_string(), v.to_string());
+    }
 
     file.proposals.push(ProposalV1::Relation {
         meta,
@@ -913,6 +1037,7 @@ pub fn propose_relations_proposals_v1(
                 public_rationale: input.public_rationale.clone(),
                 evidence_text: None,
                 evidence_locator: Some(evidence_locator.clone()),
+                extra_fields: input.extra_fields.clone(),
             },
         )?;
 
@@ -953,6 +1078,182 @@ pub fn propose_relations_proposals_v1(
             proposals: proposals_count,
             context: input.context.clone(),
             confidence,
+            evidence_chunk_id,
+        },
+    })
+}
+
+pub fn propose_fact_proposals_v1(
+    db: &PathDB,
+    default_contexts: &[AxqlContextSpec],
+    input: ProposeFactInputV1,
+) -> Result<ProposeFactOutputV1> {
+    fn split_schema_qualified_simple(name: &str) -> Option<(&str, &str)> {
+        let name = name.trim();
+        let (schema, rest) = name.split_once('.')?;
+        let schema = schema.trim();
+        let rest = rest.trim();
+        if schema.is_empty() || rest.is_empty() {
+            return None;
+        }
+        // Avoid treating dotted identifiers as schema-qualified when there are
+        // multiple dots (we keep this conservative).
+        if rest.contains('.') {
+            return None;
+        }
+        Some((schema, rest))
+    }
+
+    let mut rel_type = input.rel_type.trim().to_string();
+    if rel_type.is_empty() {
+        return Err(anyhow!("propose_fact_proposals: rel_type must be non-empty"));
+    }
+
+    let mut schema_hint = input
+        .schema_hint
+        .as_deref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if let Some((schema_name, rel_name)) = split_schema_qualified_simple(&rel_type) {
+        if schema_hint.is_none() {
+            schema_hint = Some(schema_name.to_string());
+        }
+        rel_type = rel_name.to_string();
+    }
+
+    let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
+    if meta.schemas.is_empty() {
+        return Err(anyhow!(
+            "propose_fact_proposals: no meta-plane schema loaded (import canonical `.axi` first)"
+        ));
+    }
+
+    let resolved = crate::relation_resolution::resolve_schema_relation(
+        &meta,
+        schema_hint.as_deref(),
+        rel_type.as_str(),
+    )
+    .ok_or_else(|| {
+        anyhow!(
+            "propose_fact_proposals: could not resolve relation `{}`{}; try `Schema.Rel` or set schema_hint",
+            rel_type,
+            schema_hint
+                .as_deref()
+                .map(|s| format!(" (schema_hint={s})"))
+                .unwrap_or_default()
+        )
+    })?;
+
+    let (src_field, dst_field) = infer_endpoint_fields(resolved.rel_decl)?;
+
+    // Normalize fields: trim values, and accept "context" as an alias for "ctx".
+    let mut fields: HashMap<String, String> = HashMap::new();
+    for (k, v) in input.fields.into_iter() {
+        let key = k.trim();
+        let val = v.trim();
+        if key.is_empty() || val.is_empty() {
+            continue;
+        }
+        let key = if key.eq_ignore_ascii_case("context") {
+            "ctx"
+        } else {
+            key
+        };
+        fields.insert(key.to_string(), val.to_string());
+    }
+
+    let Some(src_name) = fields.get(&src_field).cloned() else {
+        return Err(anyhow!(
+            "propose_fact_proposals: missing required endpoint field `{}`",
+            src_field
+        ));
+    };
+    let Some(dst_name) = fields.get(&dst_field).cloned() else {
+        return Err(anyhow!(
+            "propose_fact_proposals: missing required endpoint field `{}`",
+            dst_field
+        ));
+    };
+
+    // Collect extra fields for the underlying relation proposal.
+    // - ctx/time are treated specially (top-level inputs), but we still pass
+    //   them through in extra_fields for metadata scoping.
+    let mut extra_fields: HashMap<String, String> = HashMap::new();
+    for f in &resolved.rel_decl.fields {
+        let field = f.field_name.as_str();
+        if field == src_field || field == dst_field {
+            continue;
+        }
+        if let Some(v) = fields.get(field) {
+            extra_fields.insert(field.to_string(), v.to_string());
+        }
+    }
+
+    // Also preserve ctx/time as metadata even when not declared in the relation signature.
+    if let Some(ctx) = fields.get("ctx") {
+        extra_fields.insert("ctx".to_string(), ctx.to_string());
+    }
+    if let Some(t) = fields.get("time") {
+        extra_fields.insert("time".to_string(), t.to_string());
+    }
+
+    // Prefer explicit context/time inputs if present (they also get defaulted by
+    // `propose_relation_proposals_v1` when required by the schema).
+    let context = fields.get("ctx").cloned();
+    let time = fields.get("time").cloned();
+
+    let confidence = input.confidence.unwrap_or(0.9).clamp(0.0, 1.0);
+
+    let src_type_hint = resolved
+        .rel_decl
+        .fields
+        .iter()
+        .find(|f| f.field_name == src_field)
+        .map(|f| f.field_type.clone())
+        .unwrap_or_else(|| "UnknownEntity".to_string());
+    let dst_type_hint = resolved
+        .rel_decl
+        .fields
+        .iter()
+        .find(|f| f.field_name == dst_field)
+        .map(|f| f.field_type.clone())
+        .unwrap_or_else(|| "UnknownEntity".to_string());
+
+    let out = propose_relation_proposals_v1(
+        db,
+        default_contexts,
+        ProposeRelationInputV1 {
+            rel_type: resolved.rel_name.clone(),
+            source_name: src_name,
+            target_name: dst_name,
+            source_type: Some(src_type_hint),
+            target_type: Some(dst_type_hint),
+            source_field: Some(src_field.clone()),
+            target_field: Some(dst_field.clone()),
+            context,
+            time,
+            confidence: Some(confidence),
+            schema_hint: Some(resolved.schema_name.clone()),
+            public_rationale: input.public_rationale,
+            evidence_text: input.evidence_text,
+            evidence_locator: input.evidence_locator,
+            extra_fields,
+        },
+    )?;
+
+    let evidence_chunk_id = out.chunks.first().map(|c| c.chunk_id.clone());
+
+    Ok(ProposeFactOutputV1 {
+        proposals: out.proposals,
+        chunks: out.chunks,
+        summary: ProposeFactSummaryV1 {
+            rel_type: resolved.rel_name,
+            axi_schema: Some(resolved.schema_name),
+            axi_source_field: src_field,
+            axi_target_field: dst_field,
+            confidence,
+            fields,
             evidence_chunk_id,
         },
     })

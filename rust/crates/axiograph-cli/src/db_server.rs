@@ -40,7 +40,7 @@ use tokio::net::TcpListener;
 use url::form_urlencoded;
 
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
-use axiograph_pathdb::PathDB;
+use axiograph_pathdb::{read_sidecar_file, IndexSidecarWriter, PathDB};
 
 use crate::accepted_plane::{AcceptedPlaneEventV1, AcceptedPlaneSnapshotV1};
 use crate::llm::{GeneratedQuery, LlmBackend, LlmState, ToolLoopOptions};
@@ -88,6 +88,9 @@ struct ServerConfig {
     ready_file: Option<PathBuf>,
     cert_verify: CertVerifyConfig,
     llm: LlmState,
+    path_index_lru_capacity: usize,
+    path_index_lru_async: bool,
+    path_index_lru_queue: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +449,9 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
             },
         },
         llm,
+        path_index_lru_capacity: args.path_index_lru_capacity,
+        path_index_lru_async: args.path_index_lru_async,
+        path_index_lru_queue: args.path_index_lru_queue,
     };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1293,7 +1299,7 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
                     "query snapshot override requires a store-backed server (`--dir ...`)"
                 ));
             };
-            let loaded = load_from_store(dir, layer, snapshot)?;
+            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
             (loaded.db, loaded.meta, loaded.snapshot_key)
         } else {
             let loaded = state
@@ -1424,7 +1430,7 @@ async fn handle_anchor_get(
                     "anchor snapshot override requires a store-backed server (`--dir ...`)"
                 ));
             };
-            let loaded = load_from_store(dir, layer, snapshot)?;
+            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
             loaded.db
         } else {
             let loaded = state
@@ -1494,7 +1500,7 @@ async fn handle_reachability_cert(
                     "reachability snapshot override requires a store-backed server (`--dir ...`)"
                 ));
             };
-            let loaded = load_from_store(dir, layer, snapshot)?;
+            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
             loaded.db
         } else {
             let loaded = state
@@ -1564,7 +1570,7 @@ async fn handle_llm_to_query(
                     "llm snapshot override requires a store-backed server (`--dir ...`)"
                 ));
             };
-            let loaded = load_from_store(dir, layer, snapshot)?;
+            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
             loaded.db
         } else {
             let loaded = state
@@ -1657,7 +1663,7 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
                         "llm snapshot override requires a store-backed server (`--dir ...`)"
                     ));
                 };
-                let loaded = load_from_store(dir, layer, snapshot)?;
+                let loaded = load_from_store(dir, layer, snapshot, &state2.config)?;
                 (
                     loaded.db,
                     loaded.meta,
@@ -2112,7 +2118,7 @@ async fn handle_docchunk_get(state: &Arc<ServerState>, query: Option<&str>) -> R
                     "docchunk/get snapshot override requires a store-backed server (`--dir ...`)"
                 ));
             };
-            let loaded = load_from_store(dir, layer, snapshot)?;
+            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
             loaded.db
         } else {
             let loaded = state
@@ -2302,7 +2308,7 @@ async fn handle_viz_request(
                     "viz snapshot override requires a store-backed server (`--dir ...`)"
                 ));
             };
-            let loaded = load_from_store(dir, layer, snapshot)?;
+            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
             (loaded.db, loaded.meta)
         } else {
             let loaded = state
@@ -2803,20 +2809,47 @@ async fn reload_if_head_changed(state: &Arc<ServerState>) -> Result<()> {
 
 fn load_snapshot(config: &ServerConfig) -> Result<LoadedSnapshot> {
     match &config.source {
-        SnapshotSource::Axpd(path) => load_from_axpd(path),
+        SnapshotSource::Axpd(path) => load_from_axpd(path, config),
         SnapshotSource::Store {
             dir,
             layer,
             snapshot,
-        } => load_from_store(dir, layer, snapshot),
+        } => load_from_store(dir, layer, snapshot, config),
     }
 }
 
-fn load_from_axpd(path: &Path) -> Result<LoadedSnapshot> {
+fn configure_path_index(db: &mut PathDB, config: &ServerConfig) {
+    if config.path_index_lru_async || config.path_index_lru_capacity > 0 {
+        let queue = if config.path_index_lru_async {
+            config.path_index_lru_queue
+        } else {
+            0
+        };
+        db.enable_path_index_lru_async(queue);
+    }
+    db.set_path_index_lru_capacity(config.path_index_lru_capacity);
+}
+
+fn sidecar_path_for_axpd(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.idx.cbor", path.display()))
+}
+
+fn load_from_axpd(path: &Path, config: &ServerConfig) -> Result<LoadedSnapshot> {
     let bytes = std::fs::read(path)
         .map_err(|e| anyhow!("failed to read .axpd `{}`: {e}", path.display()))?;
     let snapshot_key = axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes);
-    let db = PathDB::from_bytes(&bytes)?;
+    let mut db = PathDB::from_bytes(&bytes)?;
+    configure_path_index(&mut db, config);
+    let sidecar_path = sidecar_path_for_axpd(path);
+    if sidecar_path.exists() {
+        if let Ok(sidecar) = read_sidecar_file(&sidecar_path) {
+            db.load_index_sidecar(sidecar);
+        }
+    }
+    let db = Arc::new(db);
+    db.attach_async_index_source(Arc::downgrade(&db));
+    let writer = IndexSidecarWriter::new(sidecar_path, Arc::downgrade(&db), Some(snapshot_key.clone()));
+    db.attach_index_sidecar_writer(Arc::new(writer));
     let meta = MetaPlaneIndex::from_db(&db).ok();
     Ok(LoadedSnapshot {
         snapshot_key: snapshot_key.clone(),
@@ -2826,13 +2859,18 @@ fn load_from_axpd(path: &Path) -> Result<LoadedSnapshot> {
         loaded_at_unix_secs: now_unix_secs(),
         entities: db.entities.len(),
         relations: db.relations.len(),
-        db: Arc::new(db),
+        db,
         meta,
         embeddings: None,
     })
 }
 
-fn load_from_store(dir: &Path, layer: &str, snapshot: &str) -> Result<LoadedSnapshot> {
+fn load_from_store(
+    dir: &Path,
+    layer: &str,
+    snapshot: &str,
+    config: &ServerConfig,
+) -> Result<LoadedSnapshot> {
     let layer = layer.trim().to_ascii_lowercase();
     if !matches!(layer.as_str(), "accepted" | "pathdb") {
         return Err(anyhow!(
@@ -2885,7 +2923,27 @@ fn load_from_store(dir: &Path, layer: &str, snapshot: &str) -> Result<LoadedSnap
             .to_string()
     };
 
-    let db = PathDB::from_bytes(&bytes)?;
+    let mut db = PathDB::from_bytes(&bytes)?;
+    configure_path_index(&mut db, config);
+    if let Some(pathdb_snapshot_id) = pathdb_snapshot_id.as_deref() {
+        let sidecar_path = crate::pathdb_wal::checkpoint_sidecar_path(dir, pathdb_snapshot_id);
+        if sidecar_path.exists() {
+            if let Ok(sidecar) = read_sidecar_file(&sidecar_path) {
+                db.load_index_sidecar(sidecar);
+            }
+        }
+    }
+    let db = Arc::new(db);
+    db.attach_async_index_source(Arc::downgrade(&db));
+    if let Some(pathdb_snapshot_id) = pathdb_snapshot_id.as_deref() {
+        let sidecar_path = crate::pathdb_wal::checkpoint_sidecar_path(dir, pathdb_snapshot_id);
+        let writer = IndexSidecarWriter::new(
+            sidecar_path,
+            Arc::downgrade(&db),
+            Some(pathdb_snapshot_id.to_string()),
+        );
+        db.attach_index_sidecar_writer(Arc::new(writer));
+    }
     let meta = MetaPlaneIndex::from_db(&db).ok();
     let embeddings = if let Some(manifest) = pathdb_manifest.as_ref() {
         let mut idx = crate::embeddings::ResolvedEmbeddingsIndexV1::default();
@@ -2923,7 +2981,7 @@ fn load_from_store(dir: &Path, layer: &str, snapshot: &str) -> Result<LoadedSnap
         loaded_at_unix_secs: now_unix_secs(),
         entities: db.entities.len(),
         relations: db.relations.len(),
-        db: Arc::new(db),
+        db,
         meta,
         embeddings,
     })

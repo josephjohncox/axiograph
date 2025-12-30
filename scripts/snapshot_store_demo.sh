@@ -60,6 +60,7 @@ echo "wrote: $CHUNKS_JSON"
 echo ""
 echo "== D) Commit chunks overlay into PathDB WAL (append-only) =="
 "$AXIOGRAPH" db accept pathdb-commit --dir "$ACCEPTED_DIR" --accepted-snapshot head --chunks "$CHUNKS_JSON" \
+  --proposals "$PROPOSALS_JSON" \
   --message "demo: import docs chunks overlay"
 
 echo ""

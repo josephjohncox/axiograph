@@ -1,10 +1,14 @@
 # Axiograph REPL script: supply_chain scenario demo
 #
 # Run (from repo root):
-#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/supply_chain_demo.repl
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/supply_chain_demo.repl
 #
-# Or (from repo root, installed binary):
+# Or (if installed to PATH):
 #   axiograph repl --script examples/repl_scripts/supply_chain_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/supply_chain_demo.repl
 
 # Generate a supply-chain dataset with alternate routes and explicit homotopies.
 gen supply_chain 3 3 1

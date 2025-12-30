@@ -12,6 +12,13 @@
 #   examples/schema_discovery/sql_schema_proposals.json
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/sql_schema_discovery_axi_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/sql_schema_discovery_axi_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/sql_schema_discovery_axi_demo.repl
 
 import_axi examples/schema_discovery/SqlSchema.proposals.axi

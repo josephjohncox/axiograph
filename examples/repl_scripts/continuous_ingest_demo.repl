@@ -1,6 +1,13 @@
 # Axiograph REPL script: continuous ingest demo (mutation + visualization)
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/continuous_ingest_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/continuous_ingest_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/continuous_ingest_demo.repl
 #
 # This demo simulates “continuous ingest” as a sequence of small mutations:
@@ -69,4 +76,3 @@ q select ?svc where name("doc_stream_0") -mentionsService-> ?svc limit 10
 q select ?h where ?h is Homotopy, ?h -from-> name("doc_stream_0") limit 10
 
 export_axi build/continuous_ingest_export_v1.axi
-

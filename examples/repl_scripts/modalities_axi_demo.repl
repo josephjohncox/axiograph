@@ -8,6 +8,13 @@
 # - 2-morphisms: alternative justifications related by `JustificationEquiv`
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/modalities_axi_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/modalities_axi_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/modalities_axi_demo.repl
 
 import_axi examples/modal/Modalities.axi
@@ -38,4 +45,3 @@ q select ?p2 where ?j = JustificationEquiv(path1=Path_Policy, path2=?p2, witness
 
 export_axi build/modalities_axi_export_v1.axi
 save build/modalities_axi.axpd
-

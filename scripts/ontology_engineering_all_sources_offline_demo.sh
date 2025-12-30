@@ -244,8 +244,8 @@ ACCEPTED_AXPD="$OUT_DIR/AllSources.accepted.axpd"
 "$AXIOGRAPH" db accept build-pathdb --dir "$ACCEPTED_DIR" --snapshot "$SNAPSHOT_ID" --out "$ACCEPTED_AXPD"
 
 echo ""
-echo "-- D5) commit merged chunks into PathDB WAL (extension layer)"
-WAL_SNAPSHOT_ID="$("$AXIOGRAPH" db accept pathdb-commit --dir "$ACCEPTED_DIR" --accepted-snapshot "$SNAPSHOT_ID" --chunks "$OUT_DIR/chunks.all.json" --message "demo: attach chunks overlay")"
+echo "-- D5) commit merged evidence into PathDB WAL (chunks + proposals)"
+WAL_SNAPSHOT_ID="$("$AXIOGRAPH" db accept pathdb-commit --dir "$ACCEPTED_DIR" --accepted-snapshot "$SNAPSHOT_ID" --chunks "$OUT_DIR/chunks.all.json" --proposals "$OUT_DIR/proposals.all.aug.json" --message "demo: attach evidence overlay (chunks + proposals)")"
 echo "pathdb WAL snapshot: $WAL_SNAPSHOT_ID"
 
 echo ""

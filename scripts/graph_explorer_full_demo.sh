@@ -33,6 +33,17 @@ set -euo pipefail
 #     - context scoping filter,
 #     - snapshot selector (time travel),
 #     - and an LLM panel (server-only).
+#
+# Profiling (default on):
+#   PROFILE_ENABLED=0 ./scripts/graph_explorer_full_demo.sh
+#   PROFILE_FORMAT=pprof PROFILE_HZ=199 ./scripts/graph_explorer_full_demo.sh
+#   PROFILE_SIGNAL=0 ./scripts/graph_explorer_full_demo.sh
+#
+# Path index tuning (default: skip during commits, async rebuild after):
+#   PATH_INDEX_DEPTH=0 PATH_INDEX_ASYNC=1 PATH_INDEX_ASYNC_DEPTH=3 ./scripts/graph_explorer_full_demo.sh
+#
+# Path index LRU (cache deeper-than-indexed paths at runtime):
+#   PATH_INDEX_LRU_CAPACITY=256 PATH_INDEX_LRU_ASYNC=1 PATH_INDEX_LRU_QUEUE=1024 ./scripts/graph_explorer_full_demo.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -43,13 +54,45 @@ PLANE_DIR="$OUT_DIR/plane"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
+PROFILE_ENABLED="${PROFILE_ENABLED:-1}"
+PROFILE_CPU="${PROFILE_CPU:-1}"
+PROFILE_MEM="${PROFILE_MEM:-1}"
+PROFILE_FORMAT="${PROFILE_FORMAT:-all}"
+PROFILE_HZ="${PROFILE_HZ:-99}"
+PROFILE_INTERVAL="${PROFILE_INTERVAL:-10}"
+PROFILE_SIGNAL="${PROFILE_SIGNAL:-1}"
+PROFILE_DIR="$OUT_DIR/profiles"
+PROFILE_SEQ=0
+
+# Path index tuning (speed up WAL commits)
+PATH_INDEX_DEPTH="${PATH_INDEX_DEPTH:-0}"
+PATH_INDEX_ASYNC="${PATH_INDEX_ASYNC:-1}"
+PATH_INDEX_ASYNC_DEPTH="${PATH_INDEX_ASYNC_DEPTH:-3}"
+PATH_INDEX_LRU_CAPACITY="${PATH_INDEX_LRU_CAPACITY:-256}"
+PATH_INDEX_LRU_ASYNC="${PATH_INDEX_LRU_ASYNC:-1}"
+PATH_INDEX_LRU_QUEUE="${PATH_INDEX_LRU_QUEUE:-1024}"
+
+if [ "$PROFILE_ENABLED" = "0" ]; then
+  PROFILE_CPU=0
+  PROFILE_MEM=0
+fi
+
 echo "== Graph Explorer full demo =="
 echo "root: $ROOT_DIR"
 echo "out:  $OUT_DIR"
+if [ "$PROFILE_ENABLED" = "1" ]; then
+  echo "profiling: cpu=$PROFILE_CPU mem=$PROFILE_MEM format=$PROFILE_FORMAT hz=$PROFILE_HZ interval=${PROFILE_INTERVAL}s signal=$PROFILE_SIGNAL dir=$PROFILE_DIR"
+fi
+echo "path index: commit_depth=$PATH_INDEX_DEPTH async=$PATH_INDEX_ASYNC async_depth=$PATH_INDEX_ASYNC_DEPTH"
+echo "path index LRU: capacity=$PATH_INDEX_LRU_CAPACITY async=$PATH_INDEX_LRU_ASYNC queue=$PATH_INDEX_LRU_QUEUE"
 
 echo ""
 echo "-- Build (via Makefile)"
-make binaries
+if [ "$PROFILE_CPU" = "1" ]; then
+  make binaries CARGO_FEATURES="--features profiling"
+else
+  make binaries
+fi
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
@@ -59,6 +102,59 @@ if [ ! -x "$AXIOGRAPH" ]; then
   echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
   exit 2
 fi
+
+mkdir -p "$PROFILE_DIR"
+TIME_MODE="none"
+TIME_FLAG=""
+if [ "$PROFILE_MEM" = "1" ] && [ -x /usr/bin/time ]; then
+  if /usr/bin/time -o "$PROFILE_DIR/.time_probe" -v true >/dev/null 2>&1; then
+    TIME_MODE="file"
+    TIME_FLAG="-v"
+  elif /usr/bin/time -o "$PROFILE_DIR/.time_probe" -l true >/dev/null 2>&1; then
+    TIME_MODE="file"
+    TIME_FLAG="-l"
+  elif /usr/bin/time -v true >/dev/null 2>&1; then
+    TIME_MODE="tee"
+    TIME_FLAG="-v"
+  elif /usr/bin/time -l true >/dev/null 2>&1; then
+    TIME_MODE="tee"
+    TIME_FLAG="-l"
+  fi
+  rm -f "$PROFILE_DIR/.time_probe"
+fi
+
+profile_label() {
+  PROFILE_SEQ=$((PROFILE_SEQ + 1))
+  printf "%03d_%s" "$PROFILE_SEQ" "$1"
+}
+
+axiograph_profiled() {
+  local label
+  label="$(profile_label "$1")"
+  shift
+
+  local cmd=("$AXIOGRAPH")
+  if [ "$PROFILE_CPU" = "1" ]; then
+    cmd+=(--profile "$PROFILE_FORMAT" --profile-out "$PROFILE_DIR/$label" --profile-hz "$PROFILE_HZ")
+    if [ -n "${PROFILE_INTERVAL:-}" ] && [ "$PROFILE_INTERVAL" -gt 0 ]; then
+      cmd+=(--profile-interval "$PROFILE_INTERVAL")
+    fi
+    if [ "${PROFILE_SIGNAL:-0}" = "1" ]; then
+      cmd+=(--profile-signal)
+    fi
+  fi
+
+  if [ "$PROFILE_MEM" = "1" ] && [ "$TIME_MODE" != "none" ] && [ -n "$TIME_FLAG" ]; then
+    local time_log="$PROFILE_DIR/${label}.time.txt"
+    if [ "$TIME_MODE" = "file" ]; then
+      /usr/bin/time -o "$time_log" "$TIME_FLAG" "${cmd[@]}" "$@"
+    else
+      { /usr/bin/time "$TIME_FLAG" "${cmd[@]}" "$@"; } 2> >(tee "$time_log" >&2)
+    fi
+  else
+    "${cmd[@]}" "$@"
+  fi
+}
 
 # LLM defaults (can be overridden by env vars).
 LLM_BACKEND="${LLM_BACKEND:-ollama}"
@@ -303,10 +399,34 @@ echo ""
 echo "-- D) Commit overlays into the PathDB WAL (one per accepted tick)"
 # The WAL chain is global; committing with a new accepted snapshot id rebuilds
 # the base and replays earlier ops, so evidence stays available across ticks.
-"$AXIOGRAPH" db accept pathdb-commit --dir "$PLANE_DIR" --accepted-snapshot "$SNAP0" --chunks "$CHUNKS" --message "demo: tick0 chunks overlay" >/dev/null
-"$AXIOGRAPH" db accept pathdb-commit --dir "$PLANE_DIR" --accepted-snapshot "$SNAP0" --proposals "$PROPOSALS" --message "demo: tick0 proposals overlay" >/dev/null
-"$AXIOGRAPH" db accept pathdb-commit --dir "$PLANE_DIR" --accepted-snapshot "$SNAP1" --chunks "$CHUNKS" --message "demo: tick1 (replay overlays on new base)" >/dev/null
-"$AXIOGRAPH" db accept pathdb-commit --dir "$PLANE_DIR" --accepted-snapshot "$SNAP2" --chunks "$CHUNKS" --message "demo: tick2 (replay overlays on new base)" >/dev/null
+axiograph_profiled "pathdb_commit_tick0_chunks" db accept pathdb-commit \
+  --dir "$PLANE_DIR" \
+  --accepted-snapshot "$SNAP0" \
+  --chunks "$CHUNKS" \
+  --path-index-depth "$PATH_INDEX_DEPTH" \
+  --message "demo: tick0 chunks overlay" \
+  >/dev/null
+axiograph_profiled "pathdb_commit_tick0_proposals" db accept pathdb-commit \
+  --dir "$PLANE_DIR" \
+  --accepted-snapshot "$SNAP0" \
+  --proposals "$PROPOSALS" \
+  --path-index-depth "$PATH_INDEX_DEPTH" \
+  --message "demo: tick0 proposals overlay" \
+  >/dev/null
+axiograph_profiled "pathdb_commit_tick1_chunks" db accept pathdb-commit \
+  --dir "$PLANE_DIR" \
+  --accepted-snapshot "$SNAP1" \
+  --chunks "$CHUNKS" \
+  --path-index-depth "$PATH_INDEX_DEPTH" \
+  --message "demo: tick1 (replay overlays on new base)" \
+  >/dev/null
+axiograph_profiled "pathdb_commit_tick2_chunks" db accept pathdb-commit \
+  --dir "$PLANE_DIR" \
+  --accepted-snapshot "$SNAP2" \
+  --chunks "$CHUNKS" \
+  --path-index-depth "$PATH_INDEX_DEPTH" \
+  --message "demo: tick2 (replay overlays on new base)" \
+  >/dev/null
 
 EMBED_ENABLED="${EMBED_ENABLED:-1}"
 EMBED_BACKEND="${EMBED_BACKEND:-}"
@@ -332,7 +452,7 @@ if [ "$EMBED_ENABLED" = "1" ] && [ -n "${EMBED_BACKEND:-}" ]; then
     echo "note: make sure the embedding model is available: ollama pull $EMBED_MODEL"
   fi
   set +e
-  "$AXIOGRAPH" db accept pathdb-embed \
+  axiograph_profiled "pathdb_embed_docchunks" db accept pathdb-embed \
       --dir "$PLANE_DIR" \
       --snapshot head \
       --target docchunks \
@@ -348,6 +468,24 @@ if [ "$EMBED_ENABLED" = "1" ] && [ -n "${EMBED_BACKEND:-}" ]; then
       echo "ok: embeddings committed (pathdb snapshot=$EMBED_SNAPSHOT_ID)"
     fi
   fi
+  set -e
+fi
+
+if [ "$PATH_INDEX_ASYNC" = "1" ] && [ "$PATH_INDEX_ASYNC_DEPTH" -gt 0 ]; then
+  echo ""
+  echo "-- D3) Build PathIndex async (depth=$PATH_INDEX_ASYNC_DEPTH)"
+  set +e
+  axiograph_profiled "pathdb_build_index" db accept pathdb-build \
+      --dir "$PLANE_DIR" \
+      --snapshot head \
+      --out "$OUT_DIR/pathdb_index.axpd" \
+      --rebuild \
+      --path-index-depth "$PATH_INDEX_ASYNC_DEPTH" \
+      --update-checkpoint \
+      >"$OUT_DIR/pathdb_build_index.log" 2>&1 &
+  INDEX_PID=$!
+  echo "$INDEX_PID" >"$OUT_DIR/pathdb_build_index.pid"
+  echo "index build pid: $INDEX_PID (log: $OUT_DIR/pathdb_build_index.log)"
   set -e
 fi
 
@@ -381,7 +519,27 @@ else
   LLM_FLAGS+=(--llm-mock)
 fi
 
-"$AXIOGRAPH" db serve \
+SERVER_PROFILE_ARGS=()
+if [ "$PROFILE_CPU" = "1" ]; then
+  SERVER_PROFILE_LABEL="$(profile_label "db_serve")"
+  SERVER_PROFILE_ARGS=(--profile "$PROFILE_FORMAT" --profile-out "$PROFILE_DIR/$SERVER_PROFILE_LABEL" --profile-hz "$PROFILE_HZ")
+  if [ -n "${PROFILE_INTERVAL:-}" ] && [ "$PROFILE_INTERVAL" -gt 0 ]; then
+    SERVER_PROFILE_ARGS+=(--profile-interval "$PROFILE_INTERVAL")
+  fi
+  if [ "${PROFILE_SIGNAL:-0}" = "1" ]; then
+    SERVER_PROFILE_ARGS+=(--profile-signal)
+  fi
+fi
+
+SERVER_INDEX_ARGS=()
+if [ "$PATH_INDEX_LRU_CAPACITY" -gt 0 ]; then
+  SERVER_INDEX_ARGS+=(--path-index-lru-capacity "$PATH_INDEX_LRU_CAPACITY")
+fi
+if [ "$PATH_INDEX_LRU_ASYNC" = "1" ]; then
+  SERVER_INDEX_ARGS+=(--path-index-lru-async --path-index-lru-queue "$PATH_INDEX_LRU_QUEUE")
+fi
+
+"$AXIOGRAPH" "${SERVER_PROFILE_ARGS[@]}" db serve \
   --dir "$PLANE_DIR" \
   --layer pathdb \
   --snapshot head \
@@ -389,6 +547,7 @@ fi
   --admin-token "$ADMIN_TOKEN" \
   --listen 127.0.0.1:0 \
   --ready-file "$READY" \
+  "${SERVER_INDEX_ARGS[@]}" \
   "${LLM_FLAGS[@]}" \
   >"$OUT_DIR/server.log" 2>&1 &
 SERVER_PID=$!

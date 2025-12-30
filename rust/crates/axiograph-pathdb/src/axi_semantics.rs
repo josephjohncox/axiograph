@@ -38,6 +38,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
+use axiograph_dsl::schema_v1::RewriteVarDeclV1;
+
 use crate::axi_meta::*;
 use crate::PathDB;
 
@@ -73,7 +75,10 @@ pub struct RewriteRuleDecl {
     pub theory_name: String,
     pub name: String,
     pub orientation: String,
-    pub vars: Vec<String>,
+    pub vars_text: String,
+    pub vars: Vec<RewriteVarDeclV1>,
+    #[allow(dead_code)]
+    pub vars_parse_error: Option<String>,
     pub lhs: String,
     pub rhs: String,
     pub index: usize,
@@ -130,6 +135,24 @@ impl SchemaIndex {
             .get(sub)
             .map(|s| s.contains(sup))
             .unwrap_or(sub == sup)
+    }
+
+    /// Canonical tuple (fact-node) entity type name for a relation in this schema.
+    ///
+    /// In Axiograph, relations are often reified as first-class fact nodes so we
+    /// can attach attributes, provenance, context/world scoping, etc.
+    ///
+    /// If a schema has both:
+    /// - `object Foo`, and
+    /// - `relation Foo(...)`,
+    /// we use `FooFact` as the tuple type to avoid a name collision with the
+    /// object type.
+    pub fn tuple_entity_type_name(&self, relation_name: &str) -> String {
+        if self.object_types.contains(relation_name) {
+            format!("{relation_name}Fact")
+        } else {
+            relation_name.to_string()
+        }
     }
 }
 
@@ -296,14 +319,13 @@ impl MetaPlaneIndex {
                     };
                     let orientation = entity_attr_string(db, rid, ATTR_REWRITE_RULE_ORIENTATION)
                         .unwrap_or_else(|| "forward".to_string());
-                    let vars_text =
-                        entity_attr_string(db, rid, ATTR_REWRITE_RULE_VARS).unwrap_or_default();
-                    let vars = vars_text
-                        .split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect::<Vec<_>>();
+                    let vars_text = entity_attr_string(db, rid, ATTR_REWRITE_RULE_VARS)
+                        .unwrap_or_default();
+                    let (vars, vars_parse_error) =
+                        match axiograph_dsl::schema_v1::parse_rewrite_var_decl_list_v1(&vars_text) {
+                            Ok(v) => (v, None),
+                            Err(e) => (Vec::new(), Some(e)),
+                        };
                     let lhs = entity_attr_string(db, rid, ATTR_REWRITE_RULE_LHS).unwrap_or_default();
                     let rhs = entity_attr_string(db, rid, ATTR_REWRITE_RULE_RHS).unwrap_or_default();
                     let index = entity_attr_string(db, rid, ATTR_REWRITE_RULE_INDEX)
@@ -318,7 +340,9 @@ impl MetaPlaneIndex {
                             theory_name: theory_name.clone(),
                             name,
                             orientation,
+                            vars_text,
                             vars,
+                            vars_parse_error,
                             lhs,
                             rhs,
                             index,

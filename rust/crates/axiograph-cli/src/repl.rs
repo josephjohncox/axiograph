@@ -13,7 +13,7 @@ use std::io::Read;
 #[cfg(not(feature = "repl-rustyline"))]
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use roaring::RoaringBitmap;
 
 pub fn cmd_repl(initial_axpd: Option<&PathBuf>) -> Result<()> {
@@ -72,7 +72,7 @@ pub fn cmd_repl_script(
             println!("axiograph> {line}");
         }
 
-        let tokens = split_command_line(line);
+        let tokens = tokenize_repl_line(line);
         match dispatch_repl_line_result(&mut state, &tokens) {
             Ok(ReplControl::Continue) => {}
             Ok(ReplControl::Exit) => break,
@@ -121,7 +121,7 @@ fn cmd_repl_simple(initial_axpd: Option<&PathBuf>) -> Result<()> {
             continue;
         }
 
-        let tokens = split_command_line(line);
+        let tokens = tokenize_repl_line(line);
         match dispatch_repl_line_result(&mut state, &tokens) {
             Ok(ReplControl::Continue) => {}
             Ok(ReplControl::Exit) => break,
@@ -255,6 +255,10 @@ fn dispatch_repl_line_result(state: &mut ReplState, tokens: &[String]) -> Result
         }
         "add_entity" => {
             cmd_add_entity(state, args)?;
+            Ok(ReplControl::Continue)
+        }
+        "add_fact" => {
+            cmd_add_fact(state, args)?;
             Ok(ReplControl::Continue)
         }
         "add_edge" | "add_relation" => {
@@ -1054,21 +1058,41 @@ fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
     let ingest = axiograph_ingest_proto::ingest_descriptor_set_json(
         &text,
         Some(path.display().to_string()),
-        Some(schema_hint),
+        Some(schema_hint.clone()),
     )?;
 
     let db = state.db.get_or_insert_with(axiograph_pathdb::PathDB::new);
 
     let start = Instant::now();
-    let (entities, relations, dropped_relations) =
-        import_proposals_into_pathdb(db, &ingest.proposals)?;
+    let chunks_summary = crate::doc_chunks::import_chunks_into_pathdb(db, &ingest.chunks)?;
+
+    let generated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+    let proposals_file = axiograph_ingest_docs::ProposalsFileV1 {
+        version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
+        generated_at,
+        source: axiograph_ingest_docs::ProposalSourceV1 {
+            source_type: "proto".to_string(),
+            locator: path.display().to_string(),
+        },
+        schema_hint: Some(schema_hint),
+        proposals: ingest.proposals,
+    };
+
+    let proposals_summary =
+        crate::proposals_import::import_proposals_file_into_pathdb(db, &proposals_file, &ingest_digest)?;
     db.build_indexes();
 
     println!(
-        "imported proto descriptor: entities={} relations={} dropped_relations={} (reindexed in {:?})",
-        entities,
-        relations,
-        dropped_relations,
+        "imported proto descriptor: chunks_added={} proposals_entities_added={} proposals_relation_facts_added={} derived_edges_added={} evidence_links_added={} (reindexed in {:?})",
+        chunks_summary.chunks_added,
+        proposals_summary.entities_added,
+        proposals_summary.relation_facts_added,
+        proposals_summary.derived_edges_added,
+        proposals_summary.evidence_links_added,
         start.elapsed()
     );
     let next_key = if state.snapshot_key.is_empty() {
@@ -1079,107 +1103,6 @@ fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
     set_snapshot_key(state, next_key);
     refresh_meta_plane_index(state)?;
     Ok(())
-}
-
-fn import_proposals_into_pathdb(
-    db: &mut axiograph_pathdb::PathDB,
-    proposals: &[axiograph_ingest_docs::ProposalV1],
-) -> Result<(usize, usize, usize)> {
-    use axiograph_ingest_docs::ProposalV1;
-
-    let mut id_map: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut entities_added = 0usize;
-    let mut relations_added = 0usize;
-    let mut relations_dropped = 0usize;
-
-    // Pass 1: create entities.
-    for p in proposals {
-        let ProposalV1::Entity {
-            meta,
-            entity_id,
-            entity_type,
-            name,
-            attributes,
-            description,
-        } = p
-        else {
-            continue;
-        };
-
-        if id_map.contains_key(entity_id) {
-            continue;
-        }
-
-        let mut attrs: Vec<(String, String)> = Vec::new();
-        attrs.push(("name".to_string(), name.clone()));
-        attrs.push(("proposal_id".to_string(), meta.proposal_id.clone()));
-        attrs.push(("entity_id".to_string(), entity_id.clone()));
-        if let Some(desc) = description.as_ref() {
-            if !desc.trim().is_empty() {
-                attrs.push(("description".to_string(), desc.clone()));
-            }
-        }
-
-        for (k, v) in attributes {
-            if k == "name" {
-                // Preserve proposal-level `name` as the PathDB primary `name` attribute.
-                // If the source uses `name` as a secondary field (common in proto RPC attrs),
-                // keep it under a distinct key.
-                attrs.push(("source_name".to_string(), v.clone()));
-                continue;
-            }
-            attrs.push((k.clone(), v.clone()));
-        }
-
-        let attrs_ref: Vec<(&str, &str)> = attrs
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        let id = db.add_entity(entity_type, attrs_ref);
-        id_map.insert(entity_id.clone(), id);
-        entities_added += 1;
-    }
-
-    // Pass 2: create relations.
-    for p in proposals {
-        let ProposalV1::Relation {
-            meta,
-            relation_id,
-            rel_type,
-            source,
-            target,
-            attributes,
-        } = p
-        else {
-            continue;
-        };
-
-        let Some(src) = id_map.get(source).copied() else {
-            relations_dropped += 1;
-            continue;
-        };
-        let Some(dst) = id_map.get(target).copied() else {
-            relations_dropped += 1;
-            continue;
-        };
-
-        let confidence = meta.confidence.clamp(0.0, 1.0) as f32;
-        let mut attrs: Vec<(String, String)> = Vec::new();
-        attrs.push(("proposal_id".to_string(), meta.proposal_id.clone()));
-        attrs.push(("relation_id".to_string(), relation_id.clone()));
-        for (k, v) in attributes {
-            attrs.push((k.clone(), v.clone()));
-        }
-
-        let attrs_ref: Vec<(&str, &str)> = attrs
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        db.add_relation(rel_type, src, dst, confidence, attrs_ref);
-        relations_added += 1;
-    }
-
-    Ok((entities_added, relations_added, relations_dropped))
 }
 
 fn tokenize_alnum(s: &str) -> Vec<String> {
@@ -1915,9 +1838,61 @@ fn cmd_add_entity(state: &mut ReplState, args: &[String]) -> Result<()> {
         return Err(anyhow!("usage: add_entity <Type> <name> [k=v...]"));
     }
 
-    let type_name = args[0].as_str();
+    let raw_type_name = args[0].as_str();
     let name = args[1].as_str();
     let extra_attrs = parse_kv_pairs(&args[2..])?;
+
+    let mut explicit_schema_attr: Option<String> = None;
+    for (k, v) in &extra_attrs {
+        if k == axiograph_pathdb::axi_meta::ATTR_AXI_SCHEMA {
+            let v = v.trim();
+            if !v.is_empty() {
+                explicit_schema_attr = Some(v.to_string());
+            }
+        }
+    }
+
+    let (schema_prefix, type_name) = if let Some((schema, ty)) = raw_type_name.split_once('.') {
+        let schema = schema.trim();
+        let ty = ty.trim();
+        if !schema.is_empty() && !ty.is_empty() {
+            (Some(schema.to_string()), ty.to_string())
+        } else {
+            (None, raw_type_name.to_string())
+        }
+    } else {
+        (None, raw_type_name.to_string())
+    };
+
+    // If this looks like an `.axi` schema-scoped object type, prefer the typed
+    // builder so we always stamp `axi_schema` and reject unknown object types.
+    let schema_for_typed_entity: Option<String> = if let Some(s) = schema_prefix {
+        Some(s)
+    } else if let Some(s) = explicit_schema_attr.clone() {
+        Some(s)
+    } else if let Some(meta) = state.meta.as_ref() {
+        let mut schemas: Vec<String> = Vec::new();
+        for (schema_name, schema) in &meta.schemas {
+            if schema.object_types.contains(&type_name) {
+                schemas.push(schema_name.clone());
+            }
+        }
+        schemas.sort();
+        schemas.dedup();
+        match schemas.len() {
+            0 => None,
+            1 => Some(schemas[0].clone()),
+            _ => {
+                return Err(anyhow!(
+                    "add_entity: object type `{}` exists in multiple schemas: {:?} (use `Schema.Type` or pass `axi_schema=...`)",
+                    type_name,
+                    schemas
+                ));
+            }
+        }
+    } else {
+        None
+    };
 
     let mut attrs: Vec<(String, String)> = Vec::with_capacity(1 + extra_attrs.len());
     attrs.push(("name".to_string(), name.to_string()));
@@ -1929,7 +1904,26 @@ fn cmd_add_entity(state: &mut ReplState, args: &[String]) -> Result<()> {
 
     let id = {
         let db = require_db_mut(state)?;
-        db.add_entity(type_name, attrs_ref)
+        if let Some(schema_name) = schema_for_typed_entity.as_ref() {
+            let mut checked = axiograph_pathdb::CheckedDbMut::new(db)?;
+            if let Some(explicit) = explicit_schema_attr.as_ref() {
+                if explicit != schema_name {
+                    return Err(anyhow!(
+                        "add_entity: schema mismatch (type resolves to schema `{}`, but attr axi_schema=`{}` was provided)",
+                        schema_name,
+                        explicit
+                    ));
+                }
+            }
+
+            let mut builder = checked.entity_builder(schema_name, &type_name)?;
+            for (k, v) in &attrs {
+                builder = builder.with_attr(k, v);
+            }
+            builder.commit()?
+        } else {
+            db.add_entity(&type_name, attrs_ref)
+        }
     };
 
     let op_spec = format!("type={type_name}|name={name}|id={id}");
@@ -1942,6 +1936,104 @@ fn cmd_add_entity(state: &mut ReplState, args: &[String]) -> Result<()> {
     refresh_meta_plane_index(state)?;
 
     println!("added entity {} ({type_name}, name={name})", id);
+    Ok(())
+}
+
+fn cmd_add_fact(state: &mut ReplState, args: &[String]) -> Result<()> {
+    if args.len() < 2 {
+        return Err(anyhow!(
+            "usage: add_fact <Schema.Relation|Schema Relation> <field=value...> [confidence <c>]"
+        ));
+    }
+
+    let (schema_name, relation_name, field_tokens) = if let Some((schema, rel)) = args[0].split_once('.') {
+        (schema.trim().to_string(), rel.trim().to_string(), &args[1..])
+    } else {
+        if args.len() < 3 {
+            return Err(anyhow!(
+                "usage: add_fact <Schema.Relation|Schema Relation> <field=value...> [confidence <c>]"
+            ));
+        }
+        (args[0].trim().to_string(), args[1].trim().to_string(), &args[2..])
+    };
+
+    if schema_name.is_empty() || relation_name.is_empty() {
+        return Err(anyhow!("add_fact: schema and relation must be non-empty"));
+    }
+
+    let mut confidence: f32 = 1.0;
+    let mut kv_tokens: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < field_tokens.len() {
+        match field_tokens[i].as_str() {
+            "confidence" => {
+                if i + 1 >= field_tokens.len() {
+                    return Err(anyhow!("add_fact: missing value for `confidence`"));
+                }
+                confidence = field_tokens[i + 1].parse()?;
+                i += 2;
+            }
+            other if other.starts_with("confidence=") => {
+                let (_, v) = other.split_once('=').unwrap_or(("confidence", ""));
+                confidence = v.parse()?;
+                i += 1;
+            }
+            other => {
+                kv_tokens.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+
+    if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+        return Err(anyhow!(
+            "add_fact: confidence must be a finite number in [0, 1] (got {confidence})"
+        ));
+    }
+
+    let fields_kv = parse_kv_pairs(&kv_tokens)?;
+    if fields_kv.is_empty() {
+        return Err(anyhow!(
+            "add_fact: expected at least one field assignment (like `child=Alice`)"
+        ));
+    }
+
+    let fact_id = {
+        let db = require_db_mut(state)?;
+
+        // Resolve all entity references up front so the typed builder can borrow the DB.
+        let mut resolved: Vec<(String, u32)> = Vec::with_capacity(fields_kv.len());
+        for (field, token) in fields_kv {
+            let id = resolve_entity_ref(db, &token)?;
+            resolved.push((field, id));
+        }
+
+        let mut checked = axiograph_pathdb::CheckedDbMut::new(db)?;
+        let mut builder = checked
+            .fact_builder(&schema_name, &relation_name)?
+            .with_edge_confidence(confidence);
+        for (field, id) in resolved {
+            builder.set_field(&field, id)?;
+        }
+        let fact_id = builder.commit()?;
+        checked.db_mut().build_indexes();
+        fact_id
+    };
+
+    let op_spec = format!(
+        "schema={schema_name}|relation={relation_name}|fact_id={fact_id}|confidence={confidence:.3}"
+    );
+    let next_key = if state.snapshot_key.is_empty() {
+        axiograph_dsl::digest::axi_digest_v1(&op_spec)
+    } else {
+        chain_snapshot_key(&state.snapshot_key, "add_fact", &op_spec)
+    };
+    set_snapshot_key(state, next_key);
+    refresh_meta_plane_index(state)?;
+
+    println!(
+        "added fact node {fact_id} ({schema_name}.{relation_name}) (confidence={confidence:.3})"
+    );
     Ok(())
 }
 
@@ -1993,6 +2085,11 @@ fn cmd_add_edge(state: &mut ReplState, args: &[String]) -> Result<()> {
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
 
+    let use_checked_edge_path = state
+        .meta
+        .as_ref()
+        .is_some_and(|m| !m.schemas.is_empty());
+
     let (src, dst, already) = {
         let db = require_db_mut(state)?;
         let src = resolve_entity_ref(db, src_ref)?;
@@ -2000,7 +2097,27 @@ fn cmd_add_edge(state: &mut ReplState, args: &[String]) -> Result<()> {
         let rel_id = db.interner.intern(&rel_type);
         let already = db.relations.has_edge(src, rel_id, dst);
         if !already {
-            db.add_relation(&rel_type, src, dst, confidence, attrs_ref);
+            // Prefer the checked edge path when a meta-plane is available; fall back
+            // to raw edges for untyped/evidence-only databases.
+            if use_checked_edge_path {
+                let mut checked = axiograph_pathdb::CheckedDbMut::new(db)?;
+                checked.add_edge_checked(&rel_type, src, dst, confidence, attrs_ref)?;
+            } else {
+                // Minimal invariant: `axi_fact_in_context` must always target a Context.
+                if rel_type == axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT {
+                    let Some(view) = db.get_entity(dst) else {
+                        return Err(anyhow!("add_edge: missing target entity {dst}"));
+                    };
+                    if view.entity_type != "Context" && view.entity_type != "World" {
+                        return Err(anyhow!(
+                            "add_edge: `{}` target must be a Context/World (got `{}`)",
+                            axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT,
+                            view.entity_type
+                        ));
+                    }
+                }
+                db.add_relation(&rel_type, src, dst, confidence, attrs_ref);
+            }
             db.build_indexes();
         }
         (src, dst, already)
@@ -4041,4 +4158,113 @@ fn split_command_line(line: &str) -> Vec<String> {
     }
 
     out
+}
+
+fn tokenize_repl_line(line: &str) -> Vec<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Vec::new();
+    }
+
+    // Special-case AxQL: preserve quotes inside the query string.
+    //
+    // The REPL tokenization layer exists mainly to support convenient quoting for
+    // file paths and natural language prompts. For AxQL, however, stripping
+    // quotes changes the meaning (and can make URLs/IRIs unparsable).
+    //
+    // So we parse:
+    //   q [--elaborate|--typecheck] <raw query...>
+    // as:
+    //   ["q", "--elaborate", "<raw query...>"]
+    //
+    // preserving the query text verbatim after the option prefix.
+    {
+        let mut cmd_end = None;
+        for (i, c) in line.char_indices() {
+            if c.is_whitespace() {
+                cmd_end = Some(i);
+                break;
+            }
+        }
+
+        let (cmd, rest) = match cmd_end {
+            Some(i) => (&line[..i], line[i..].trim_start()),
+            None => (line, ""),
+        };
+
+        if cmd == "q" || cmd == "axql" {
+            let mut out: Vec<String> = vec![cmd.to_string()];
+            if rest.is_empty() {
+                return out;
+            }
+
+            // Identify the option prefix using the standard tokenizer (options
+            // themselves are not quote-sensitive), but slice the raw query from
+            // the original text.
+            let rest_tokens = split_command_line(rest);
+            let mut opt_count = 0usize;
+            for t in &rest_tokens {
+                if t.starts_with('-') {
+                    opt_count += 1;
+                } else {
+                    break;
+                }
+            }
+            out.extend(rest_tokens.iter().take(opt_count).cloned());
+
+            // Skip `opt_count` leading tokens in the raw `rest` string.
+            let mut i = 0usize;
+            let bytes = rest.as_bytes();
+            let mut skipped = 0usize;
+            while skipped < opt_count {
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                skipped += 1;
+            }
+
+            let raw_query = rest[i..].trim_start();
+            if !raw_query.is_empty() {
+                out.push(raw_query.to_string());
+            }
+            return out;
+        }
+    }
+
+    split_command_line(line)
+}
+
+#[cfg(test)]
+mod repl_tokenize_tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_repl_line_preserves_axql_quotes_and_urls() {
+        let tokens = tokenize_repl_line(
+            r#"q select ?x where attr(?x, "iri", "http://example.org/a") limit 3"#,
+        );
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0], "q");
+        assert_eq!(
+            tokens[1],
+            r#"select ?x where attr(?x, "iri", "http://example.org/a") limit 3"#
+        );
+    }
+
+    #[test]
+    fn tokenize_repl_line_preserves_axql_with_options() {
+        let tokens = tokenize_repl_line(
+            r#"q --elaborate select ?x where name("Alice") -Parent-> ?x limit 3"#,
+        );
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0], "q");
+        assert_eq!(tokens[1], "--elaborate");
+        assert_eq!(
+            tokens[2],
+            r#"select ?x where name("Alice") -Parent-> ?x limit 3"#
+        );
+    }
 }

@@ -296,8 +296,6 @@ fn test_large_attributes() {
 
 #[test]
 fn test_bitmap_operations() {
-    use roaring::RoaringBitmap;
-
     let mut db = PathDB::new();
 
     // Add entities

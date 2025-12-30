@@ -1,8 +1,5 @@
 # Axiograph REPL script: proto import + enterprise matching demo
 #
-# Run (from repo root):
-#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/proto_import_enterprise_demo.repl
-#
 # This demo shows a real proto import (Buf descriptor JSON) and then a simple
 # heuristic "matching" step that links imported `ProtoService` nodes to an
 # enterprise scenario `Service` graph.
@@ -10,6 +7,16 @@
 # Note: the matching step is intentionally untrusted/heuristic (like entity
 # resolution). It's meant for exploration and for producing explicit candidates
 # (later certifiable once we extend reconciliation certificates).
+#
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/proto_import_enterprise_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/proto_import_enterprise_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/proto_import_enterprise_demo.repl
 
 # 1) Generate an enterprise scenario whose service names align with the proto fixture.
 gen enterprise_large_api 3 3 1

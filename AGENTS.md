@@ -268,6 +268,9 @@ These items are “best practices” backed by the related work list in Appendix
   - `neigh ...` (REPL-driven viz export).
 - [x] Add `q --explain` plan output (join order + candidate domains + FactIndex hints).
 - [x] Add a typed JSON query IR for tooling/LLMs (`query_ir_v1`) that compiles into the same AxQL core (REPL `llm query` prints this; the LLM tool-loop emits it; raw AxQL is fallback only).
+- [x] Add schema-qualified AxQL for multi-schema “one universe” snapshots:
+  - `?x is Fam.Person` / `?x -Fam.Parent-> ?y` / `?f = Fam.Parent(child=..., parent=...)`,
+  - ambiguous unqualified edge labels elaborate to either a chosen schema (when inferred) or a union alternation.
 - [x] Add first-class disjunction (`or`) in AxQL with a certifiable subset:
   - execution: UCQ semantics (union of conjunctive branches),
   - certificates: `query_result_v2` (Lean checks each row against the chosen branch).
@@ -292,7 +295,9 @@ These items are “best practices” backed by the related work list in Appendix
   - infer `(axi_schema, axi_source_field, axi_target_field)` from the meta-plane (when available),
   - default common required fields (`ctx`, `time`) deterministically,
   - import relation proposals as typed tuple facts (field edges + `axi_fact_of`) instead of opaque edges,
-  - return a preview validation report (axi typecheck + delta quality findings) from `/proposals/relation(s)` and the LLM tool `propose_relation_proposals`.
+  - support n-ary facts via `extra_fields` and the LLM tool `propose_fact_proposals` (field map),
+  - treat `axi_fact_in_context` as uniform scoping metadata (even when a relation signature lacks a `ctx` field),
+  - return a preview validation report (axi typecheck + delta quality findings) from `/proposals/relation(s)` and LLM proposal tools.
 - [x] Speed up PathDB WAL replay by caching derived CBOR sidecars for `chunks.json` and `proposals.json` blobs (JSON remains the human-readable source of record).
 - [x] Add a network analysis CLI surface (untrusted tooling; evidence-plane friendly) that can emit JSON/text summaries:
   - connected components (weak/strong), “giant component” ratio,

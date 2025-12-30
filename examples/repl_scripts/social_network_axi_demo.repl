@@ -7,6 +7,13 @@
 # - visualization "layering": schema/meta-plane + instance data + fact nodes
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/social_network_axi_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/social_network_axi_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/social_network_axi_demo.repl
 
 import_axi examples/social/SocialNetwork.axi

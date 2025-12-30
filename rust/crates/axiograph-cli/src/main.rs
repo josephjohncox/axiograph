@@ -27,6 +27,7 @@ mod llm;
 mod nlq;
 mod pathdb_wal;
 mod perf;
+mod profiling;
 mod proposal_gen;
 mod proposals_import;
 mod proposals_validate;
@@ -50,6 +51,8 @@ mod web;
     about = "Axiograph: Dependently typed ontology language"
 )]
 struct Cli {
+    #[command(flatten)]
+    profile: profiling::ProfileArgs,
     #[command(subcommand)]
     command: Commands,
 }
@@ -612,6 +615,19 @@ struct DbServeArgs {
     /// Optional model name for the plugin, or for Ollama (required when `--llm-ollama` is set).
     #[arg(long)]
     llm_model: Option<String>,
+
+    /// LRU capacity (number of path signatures) for deeper-than-indexed paths.
+    /// `0` disables the LRU cache.
+    #[arg(long, default_value_t = 0)]
+    path_index_lru_capacity: usize,
+
+    /// Enable async updates for the deeper-path LRU cache.
+    #[arg(long)]
+    path_index_lru_async: bool,
+
+    /// Async queue size for deeper-path LRU updates (ignored unless async is enabled).
+    #[arg(long, default_value_t = 1024)]
+    path_index_lru_queue: usize,
 }
 
 #[derive(Subcommand)]
@@ -1345,6 +1361,10 @@ enum AcceptedCommands {
         /// Write phase timings JSON to this path.
         #[arg(long)]
         timings_json: Option<PathBuf>,
+
+        /// Override path index depth for this commit (0 disables path indexing).
+        #[arg(long)]
+        path_index_depth: Option<usize>,
     },
 
     /// Compute and commit snapshot-scoped embeddings into the PathDB WAL (extension layer).
@@ -1427,6 +1447,14 @@ enum AcceptedCommands {
         /// - sanity-check determinism vs checkpoints.
         #[arg(long)]
         rebuild: bool,
+
+        /// Override path index depth (0 disables path indexing).
+        #[arg(long)]
+        path_index_depth: Option<usize>,
+
+        /// Rewrite the checkpoint for this snapshot (implies rebuild).
+        #[arg(long)]
+        update_checkpoint: bool,
     },
 
     /// Show accepted-plane + PathDB WAL snapshot status (HEADs, counts).
@@ -1456,12 +1484,14 @@ enum AcceptedCommands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let profiler = profiling::Profiler::start(&cli.profile)?;
 
-    match cli.command {
-        Commands::Ingest { command } => match command {
-            IngestCommands::Sql { input, out, chunks } => {
-                cmd_sql(&input, &out, chunks.as_ref())?;
-            }
+    let result = (|| {
+        match cli.command {
+            Commands::Ingest { command } => match command {
+                IngestCommands::Sql { input, out, chunks } => {
+                    cmd_sql(&input, &out, chunks.as_ref())?;
+                }
             IngestCommands::Doc {
                 input,
                 out,
@@ -2024,12 +2054,20 @@ fn main() -> Result<()> {
         Commands::ConstraintsCert { input, out } => {
             cmd_constraints_cert(&input, out.as_ref())?;
         }
-        Commands::Proto { command } => {
-            proto::cmd_proto(command)?;
+            Commands::Proto { command } => {
+                proto::cmd_proto(command)?;
+            }
+        }
+        Ok(())
+    })();
+
+    if let Some(profiler) = profiler {
+        if let Err(err) = profiler.finish() {
+            eprintln!("profile: {err}");
         }
     }
 
-    Ok(())
+    result
 }
 
 fn cmd_pathdb(command: PathdbCommands) -> Result<()> {
@@ -2136,6 +2174,7 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             message,
             timings,
             timings_json,
+            path_index_depth,
         } => {
             if chunks.is_empty() && proposals.is_empty() {
                 return Err(anyhow!(
@@ -2151,6 +2190,7 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
                 pathdb_wal::PathdbCommitOptions {
                     timings,
                     timings_json,
+                    path_index_depth,
                 },
             )?;
             eprintln!(
@@ -2178,6 +2218,8 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             timings,
             timings_json,
             rebuild,
+            path_index_depth,
+            update_checkpoint,
         } => {
             pathdb_wal::build_pathdb_from_pathdb_snapshot_with_options(
                 &dir,
@@ -2187,6 +2229,8 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
                     timings,
                     timings_json,
                     rebuild,
+                    path_index_depth,
+                    update_checkpoint,
                 },
             )?;
             eprintln!("{} {}", "wrote".green().bold(), out.display().to_string().bold());

@@ -1,10 +1,14 @@
 # Axiograph REPL script: social_network scenario demo
 #
 # Run (from repo root):
-#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/social_network_demo.repl
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/social_network_demo.repl
 #
-# Or (from repo root, installed binary):
+# Or (if installed to PATH):
 #   axiograph repl --script examples/repl_scripts/social_network_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/social_network_demo.repl
 
 # Generate a social-network higher-groupoid-ish dataset.
 gen social_network 2 3 1

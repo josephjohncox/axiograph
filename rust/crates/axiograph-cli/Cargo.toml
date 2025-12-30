@@ -30,6 +30,8 @@ sqlparser.workspace = true
 tokio.workspace = true
 ciborium.workspace = true
 hnsw_rs.workspace = true
+pprof = { workspace = true, optional = true }
+signal-hook = { workspace = true, optional = true }
 hyper = { version = "1.8", features = ["server", "http1"] }
 hyper-util = "0.1"
 http-body-util = "0.1"
@@ -47,3 +49,4 @@ repl-rustyline = ["dep:rustyline"]
 llm-ollama = ["dep:reqwest"]
 llm-openai = ["dep:reqwest"]
 llm-anthropic = ["dep:reqwest"]
+profiling = ["dep:pprof", "dep:signal-hook"]

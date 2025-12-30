@@ -1,10 +1,14 @@
 # Axiograph REPL script: enterprise scenario demo
 #
 # Run (from repo root):
-#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/enterprise_demo.repl
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/enterprise_demo.repl
 #
-# Or (from repo root, installed binary):
+# Or (if installed to PATH):
 #   axiograph repl --script examples/repl_scripts/enterprise_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/enterprise_demo.repl
 
 # Generate a realistic scenario graph (shapes + equivalences + homotopies).
 gen enterprise 5 3 1

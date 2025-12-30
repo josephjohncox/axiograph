@@ -841,6 +841,49 @@ mod tests {
     }
 
     #[test]
+    fn branded_equivalence_proofs_cannot_cross_db_tokens() {
+        let optimizer = ProofProducingOptimizer::default();
+        let db1 = DbToken::new();
+        let db2 = DbToken::new();
+
+        let left = PathExprV2::Step {
+            from: 1,
+            rel_type: 10,
+            to: 2,
+        };
+        let right = PathExprV2::Trans {
+            left: Box::new(PathExprV2::Reflexive { entity: 1 }),
+            right: Box::new(PathExprV2::Step {
+                from: 1,
+                rel_type: 10,
+                to: 2,
+            }),
+        };
+
+        let proved = optimizer
+            .path_equiv_v2_branded::<WithProof>(db1, left, right)
+            .expect("equivalence should hold");
+        assert!(proved.proof.assert_token(db1).is_ok());
+        assert!(proved.proof.assert_token(db2).is_err());
+    }
+
+    #[test]
+    fn branded_reconciliation_proofs_cannot_cross_db_tokens() {
+        let optimizer = ProofProducingOptimizer::default();
+        let db1 = DbToken::new();
+        let db2 = DbToken::new();
+
+        let proved = optimizer.resolve_conflict_v2_branded::<WithProof>(
+            db1,
+            FixedProb::new_unchecked(900_000),
+            FixedProb::new_unchecked(850_000),
+            FixedProb::new_unchecked(800_000),
+        );
+        assert!(proved.proof.assert_token(db1).is_ok());
+        assert!(proved.proof.assert_token(db2).is_err());
+    }
+
+    #[test]
     fn path_equiv_congruence_builders_produce_valid_equivalence_proofs() {
         let optimizer = ProofProducingOptimizer::default();
 

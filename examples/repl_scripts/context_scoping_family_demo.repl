@@ -8,6 +8,13 @@
 # - typed visualization overlay (`typed_overlay`)
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/context_scoping_family_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/context_scoping_family_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/context_scoping_family_demo.repl
 
 import_axi examples/Family.axi

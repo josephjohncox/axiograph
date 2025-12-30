@@ -7,6 +7,13 @@
 # - visualization of a schema-evolution neighborhood (migrations + equivalences)
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/schema_evolution_axi_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/schema_evolution_axi_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/schema_evolution_axi_demo.repl
 
 import_axi examples/ontology/SchemaEvolution.axi
@@ -43,4 +50,3 @@ viz build/schema_evolution_axi_productv3_both.html format html plane both focus_
 
 export_axi build/schema_evolution_axi_export_v1.axi
 save build/schema_evolution_axi.axpd
-

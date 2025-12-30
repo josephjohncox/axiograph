@@ -8,10 +8,14 @@
 # - Tacit knowledge exploration: add `DocChunk` nodes with `text=...` and use `fts(...)`
 #
 # Run (from repo root):
-#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/supply_chain_modalities_hott_demo.repl
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/supply_chain_modalities_hott_demo.repl
 #
-# Or (from repo root, installed binary):
+# Or (if installed to PATH):
 #   axiograph repl --script examples/repl_scripts/supply_chain_modalities_hott_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/supply_chain_modalities_hott_demo.repl
 
 import_axi examples/manufacturing/SupplyChainModalitiesHoTT.axi
 

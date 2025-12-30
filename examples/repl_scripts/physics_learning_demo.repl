@@ -8,6 +8,13 @@
 # It also keeps tacit heuristics explicit via confidence + rationale.
 #
 # Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/physics_learning_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/physics_learning_demo.repl
+#
+# Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/physics_learning_demo.repl
 
 import_axi examples/machining/PhysicsKnowledge.axi

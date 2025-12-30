@@ -2501,23 +2501,18 @@ fn chain_key(chain: &[String]) -> (usize, String) {
 
 fn parse_rewrite_vars(vars_text: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    for chunk in vars_text.split(',') {
-        let chunk = chunk.trim();
-        if chunk.is_empty() {
-            continue;
+
+    // Prefer the canonical rewrite-vars parser so `Path(x,y)` doesn’t get split
+    // on its internal comma.
+    if let Ok(vars) = axiograph_dsl::schema_v1::parse_rewrite_var_decl_list_v1(vars_text) {
+        for v in vars {
+            match v.ty {
+                axiograph_dsl::schema_v1::RewriteVarTypeV1::Object { ty } => {
+                    out.insert(v.name.to_string(), ty.to_string());
+                }
+                axiograph_dsl::schema_v1::RewriteVarTypeV1::Path { .. } => {}
+            }
         }
-        let mut parts = chunk.splitn(2, ':');
-        let Some(name) = parts.next() else { continue };
-        let Some(ty) = parts.next() else { continue };
-        let name = name.trim();
-        let ty = ty.trim();
-        if name.is_empty() || ty.is_empty() {
-            continue;
-        }
-        if ty.starts_with("Path(") {
-            continue;
-        }
-        out.insert(name.to_string(), ty.to_string());
     }
     out
 }
@@ -2548,7 +2543,86 @@ fn path_expr_v3_endpoints(expr: &PathExprV3) -> Option<(String, String)> {
 
 fn collect_chain_rewrite_rules(
     db: &axiograph_pathdb::PathDB,
+    meta: &MetaPlaneIndex,
 ) -> Vec<ChainRewriteRule> {
+    let mut relation_name_counts: HashMap<&str, usize> = HashMap::new();
+    for schema in meta.schemas.values() {
+        for rel in schema.relation_decls.keys() {
+            *relation_name_counts.entry(rel.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    fn split_schema_qualified_simple(name: &str) -> Option<(&str, &str)> {
+        let (schema, rest) = name.split_once('.')?;
+        let schema = schema.trim();
+        let rest = rest.trim();
+        if schema.is_empty() || rest.is_empty() {
+            return None;
+        }
+        if rest.contains('.') {
+            return None;
+        }
+        Some((schema, rest))
+    }
+
+    // Map a relation label (from a rewrite rule) into the canonical runtime label
+    // for derived traversal edges.
+    //
+    // This mirrors AxQL’s schema-qualified desugaring:
+    // - `Rel` stays `Rel` when unambiguous across schemas
+    // - otherwise it becomes `<Schema>.Rel`
+    fn canonicalize_rule_relation_label(
+        meta: &MetaPlaneIndex,
+        relation_name_counts: &HashMap<&str, usize>,
+        rule_schema: &str,
+        label: &str,
+    ) -> String {
+        let count = |rel: &str| -> usize { *relation_name_counts.get(rel).unwrap_or(&0) };
+
+        if let Some((schema_name, rel_name)) = split_schema_qualified_simple(label) {
+            if let Some(schema) = meta.schemas.get(schema_name) {
+                if schema.relation_decls.contains_key(rel_name) {
+                    return if count(rel_name) > 1 {
+                        format!("{schema_name}.{rel_name}")
+                    } else {
+                        rel_name.to_string()
+                    };
+                }
+            }
+            return label.to_string();
+        }
+
+        if !rule_schema.trim().is_empty() {
+            if let Some(schema) = meta.schemas.get(rule_schema) {
+                if schema.relation_decls.contains_key(label) && count(label) > 1 {
+                    return format!("{rule_schema}.{label}");
+                }
+            }
+        }
+
+        label.to_string()
+    }
+
+    // For choosing a deterministic canonicalization direction, we want an ordering key
+    // that is stable under schema-qualification.
+    //
+    // Example: if `ZRel` is present in multiple schemas, we canonicalize its runtime label
+    // to `S1.ZRel` / `S2.ZRel` for disambiguation, but we still want the rewrite-direction
+    // choice (`from` vs `to`) to be based on the underlying relation name `ZRel`.
+    fn ordering_key_for_relation_label(meta: &MetaPlaneIndex, label: &str) -> String {
+        if let Some((schema_name, rel_name)) = split_schema_qualified_simple(label) {
+            if meta
+                .schemas
+                .get(schema_name)
+                .map(|s| s.relation_decls.contains_key(rel_name))
+                .unwrap_or(false)
+            {
+                return rel_name.to_string();
+            }
+        }
+        label.to_string()
+    }
+
     let Some(rule_ids) = db.find_by_type(META_TYPE_REWRITE_RULE) else {
         return Vec::new();
     };
@@ -2642,8 +2716,46 @@ fn collect_chain_rewrite_rules(
         let start_type = var_types.get(&start_var).cloned();
         let end_type = var_types.get(&end_var).cloned();
 
-        let lhs_key = chain_key(&lhs_chain);
-        let rhs_key = chain_key(&rhs_chain);
+        let rule_schema = view
+            .attrs
+            .get(ATTR_AXI_SCHEMA)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        let lhs_chain = lhs_chain
+            .into_iter()
+            .map(|r| {
+                canonicalize_rule_relation_label(
+                    meta,
+                    &relation_name_counts,
+                    &rule_schema,
+                    r.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let rhs_chain = rhs_chain
+            .into_iter()
+            .map(|r| {
+                canonicalize_rule_relation_label(
+                    meta,
+                    &relation_name_counts,
+                    &rule_schema,
+                    r.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let lhs_ordering = lhs_chain
+            .iter()
+            .map(|r| ordering_key_for_relation_label(meta, r.as_str()))
+            .collect::<Vec<_>>();
+        let rhs_ordering = rhs_chain
+            .iter()
+            .map(|r| ordering_key_for_relation_label(meta, r.as_str()))
+            .collect::<Vec<_>>();
+
+        let lhs_key = chain_key(&lhs_ordering);
+        let rhs_key = chain_key(&rhs_ordering);
         if lhs_key == rhs_key {
             continue;
         }
@@ -3001,6 +3113,8 @@ impl LoweredQuery {
             return Ok(AxqlElaborationReport::default());
         }
 
+        let mut report = AxqlElaborationReport::default();
+
         fn is_tuple_fact_type(
             schema: &axiograph_pathdb::axi_semantics::SchemaIndex,
             ty: &str,
@@ -3033,6 +3147,228 @@ impl LoweredQuery {
             false
         }
 
+        fn split_schema_qualified_simple(name: &str) -> Option<(&str, &str)> {
+            let (schema, rest) = name.split_once('.')?;
+            let schema = schema.trim();
+            let rest = rest.trim();
+            if schema.is_empty() || rest.is_empty() {
+                return None;
+            }
+            // Treat only a single dot as schema qualification; other dotted names
+            // (e.g. proto packages) remain ordinary identifiers.
+            if rest.contains('.') {
+                return None;
+            }
+            Some((schema, rest))
+        }
+
+        // relation_name -> candidate schemas containing it
+        let mut schemas_by_relation: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (schema_name, schema) in &meta.schemas {
+            for rel in schema.relation_decls.keys() {
+                schemas_by_relation
+                    .entry(rel.as_str())
+                    .or_default()
+                    .push(schema_name.as_str());
+            }
+        }
+        for v in schemas_by_relation.values_mut() {
+            v.sort();
+            v.dedup();
+        }
+
+        // ---------------------------------------------------------------------
+        // Schema-qualified sugar (multi-schema “universe” ergonomics)
+        //
+        // We allow:
+        // - `?x : Fam.Person`
+        // - `Fam.Parent(child=Alice, parent=Bob)` (fact atom syntax expands to AttrEq + Edge atoms)
+        // - `?x -Fam.Parent-> ?y` and schema-qualified labels inside RPQs
+        //
+        // This pass desugars those surface forms into:
+        // - an explicit schema filter: `attr(?x, "axi_schema", "Fam")`, and
+        // - canonical runtime edge labels for derived traversal edges:
+        //     - `Parent` when unique across schemas
+        //     - `Fam.Parent` when ambiguous across schemas
+        //
+        // This keeps multi-schema snapshots predictable and avoids collisions.
+        // ---------------------------------------------------------------------
+
+        // Track existing schema constraints so we can reject contradictory input.
+        let mut schema_constraint_by_term: HashMap<LoweredTerm, String> = HashMap::new();
+        for atom in &self.atoms {
+            let LoweredAtom::AttrEq { term, key, value } = atom else {
+                continue;
+            };
+            if key == ATTR_AXI_SCHEMA {
+                schema_constraint_by_term.insert(term.clone(), value.clone());
+            }
+        }
+
+        // Helper: add (or validate) `attr(term, "axi_schema", schema_name)`.
+        let mut schema_filter_atoms: Vec<LoweredAtom> = Vec::new();
+        let mut require_schema =
+            |term: &LoweredTerm, schema_name: &str| -> Result<()> {
+                let want = schema_name.trim();
+                if want.is_empty() {
+                    return Err(anyhow!("empty schema name in schema-qualified identifier"));
+                }
+                if let Some(existing) = schema_constraint_by_term.get(term) {
+                    if existing != want {
+                        return Err(anyhow!(
+                            "conflicting schema constraints: attr(..., \"{ATTR_AXI_SCHEMA}\", \"{existing}\") vs schema-qualified `{want}`"
+                        ));
+                    }
+                    return Ok(());
+                }
+
+                schema_constraint_by_term.insert(term.clone(), want.to_string());
+                schema_filter_atoms.push(LoweredAtom::AttrEq {
+                    term: term.clone(),
+                    key: ATTR_AXI_SCHEMA.to_string(),
+                    value: want.to_string(),
+                });
+                Ok(())
+            };
+
+        // Helper: resolve a relation label used in an edge/path atom.
+        //
+        // - Schema-qualified (`Schema.Rel`) labels are validated and mapped to the
+        //   canonical runtime edge label (`Rel` if unambiguous, else `Schema.Rel`).
+        // - Unqualified labels are left as-is here; they are disambiguated later
+        //   once we have inferred additional schema constraints from fact atoms.
+        let resolve_edge_relation_label = |label: &str| -> Result<String> {
+            if let Some((schema_name, rel_name)) = split_schema_qualified_simple(label) {
+                let Some(schema) = meta.schemas.get(schema_name) else {
+                    return Err(anyhow!(
+                        "unknown schema `{schema_name}` in qualified relation `{label}`"
+                    ));
+                };
+                if !schema.relation_decls.contains_key(rel_name) {
+                    return Err(anyhow!(
+                        "schema `{schema_name}` does not declare relation `{rel_name}` (from `{label}`)"
+                    ));
+                }
+                let count = schemas_by_relation
+                    .get(rel_name)
+                    .map(|v| v.len())
+                    .unwrap_or(0);
+                return Ok(if count > 1 {
+                    format!("{schema_name}.{rel_name}")
+                } else {
+                    rel_name.to_string()
+                });
+            }
+
+            Ok(label.to_string())
+        };
+
+        // Rewrite RPQ relation labels in-place.
+        fn rewrite_regex_labels(
+            re: &mut AxqlRegex,
+            f: &impl Fn(&str) -> Result<String>,
+        ) -> Result<()> {
+            match re {
+                AxqlRegex::Epsilon => Ok(()),
+                AxqlRegex::Rel(label) => {
+                    let old = label.clone();
+                    *label = f(&old)?;
+                    Ok(())
+                }
+                AxqlRegex::Seq(parts) | AxqlRegex::Alt(parts) => {
+                    for p in parts {
+                        rewrite_regex_labels(p, f)?;
+                    }
+                    Ok(())
+                }
+                AxqlRegex::Star(inner) | AxqlRegex::Plus(inner) | AxqlRegex::Opt(inner) => {
+                    rewrite_regex_labels(inner, f)
+                }
+            }
+        }
+
+        for re in &mut self.rpqs {
+            rewrite_regex_labels(re, &resolve_edge_relation_label)?;
+        }
+
+        // Rewrite atoms.
+        let mut rewritten_atoms: Vec<LoweredAtom> = Vec::with_capacity(self.atoms.len());
+        let mut saw_schema_qualified_sugar = false;
+        for atom in self.atoms.drain(..) {
+            match atom {
+                LoweredAtom::Type { term, type_name } => {
+                    if let Some((schema_name, base_type)) =
+                        split_schema_qualified_simple(&type_name)
+                    {
+                        let Some(schema) = meta.schemas.get(schema_name) else {
+                            return Err(anyhow!(
+                                "unknown schema `{schema_name}` in qualified type `{type_name}`"
+                            ));
+                        };
+                        let type_declared_in_schema = schema.object_types.contains(base_type)
+                            || schema.relation_decls.contains_key(base_type)
+                            || is_tuple_fact_type(schema, base_type)
+                            || schema
+                                .supertypes_of
+                                .values()
+                                .any(|supers| supers.contains(base_type));
+                        if type_declared_in_schema {
+                            require_schema(&term, schema_name)?;
+                            rewritten_atoms.push(LoweredAtom::Type {
+                                term,
+                                type_name: base_type.to_string(),
+                            });
+                            saw_schema_qualified_sugar = true;
+                            continue;
+                        }
+                    }
+
+                    rewritten_atoms.push(LoweredAtom::Type { term, type_name });
+                }
+                LoweredAtom::AttrEq { term, key, value } => {
+                    if key == ATTR_AXI_RELATION {
+                        if let Some((schema_name, rel_name)) =
+                            split_schema_qualified_simple(&value)
+                        {
+                            let Some(schema) = meta.schemas.get(schema_name) else {
+                                return Err(anyhow!(
+                                    "unknown schema `{schema_name}` in qualified relation `{value}`"
+                                ));
+                            };
+                            if schema.relation_decls.contains_key(rel_name) {
+                                require_schema(&term, schema_name)?;
+                                rewritten_atoms.push(LoweredAtom::AttrEq {
+                                    term,
+                                    key,
+                                    value: rel_name.to_string(),
+                                });
+                                saw_schema_qualified_sugar = true;
+                                continue;
+                            }
+                        }
+                    }
+                    rewritten_atoms.push(LoweredAtom::AttrEq { term, key, value });
+                }
+                LoweredAtom::Edge { left, rel, right } => {
+                    let rel = resolve_edge_relation_label(&rel)?;
+                    rewritten_atoms.push(LoweredAtom::Edge { left, rel, right });
+                }
+                other => rewritten_atoms.push(other),
+            }
+        }
+
+        // Re-attach schema filters we inferred from qualified atoms.
+        if !schema_filter_atoms.is_empty() {
+            saw_schema_qualified_sugar = true;
+            rewritten_atoms.extend(schema_filter_atoms);
+        }
+        self.atoms = rewritten_atoms;
+        if saw_schema_qualified_sugar {
+            report.notes.push(
+                "desugared schema-qualified AxQL (`Schema.Type`, `Schema.Rel`) into `axi_schema` filters and canonical runtime labels".to_string(),
+            );
+        }
+
         // Fail fast on unknown types when the meta-plane is present.
         // (If a type is declared but has no instances yet, the meta-plane still
         // knows it; if it is neither declared nor instantiated, it's likely a typo.)
@@ -3049,17 +3385,6 @@ impl LoweredQuery {
             return Err(anyhow!(
                 "unknown type `{type_name}` (not present in data-plane and not declared in the `.axi` meta-plane)"
             ));
-        }
-
-        // relation_name -> candidate schemas containing it
-        let mut schemas_by_relation: HashMap<&str, Vec<&str>> = HashMap::new();
-        for (schema_name, schema) in &meta.schemas {
-            for rel in schema.relation_decls.keys() {
-                schemas_by_relation
-                    .entry(rel.as_str())
-                    .or_default()
-                    .push(schema_name.as_str());
-            }
         }
 
         // Collect per-var schema/relation constraints (if present).
@@ -3118,7 +3443,46 @@ impl LoweredQuery {
         }
 
         let mut extra_atoms: Vec<LoweredAtom> = Vec::new();
-        let mut report = AxqlElaborationReport::default();
+
+        // Existing schema constraints (explicit or inferred so far).
+        //
+        // We use this to:
+        // - reject contradictory schema filters early, and
+        // - disambiguate derived traversal edges for relations whose names collide
+        //   across schemas (e.g. `S1.ZRel` vs `S2.ZRel`).
+        let mut schema_constraints_by_term: HashMap<LoweredTerm, String> = HashMap::new();
+        for atom in &self.atoms {
+            let LoweredAtom::AttrEq { term, key, value } = atom else {
+                continue;
+            };
+            if key == ATTR_AXI_SCHEMA {
+                schema_constraints_by_term.insert(term.clone(), value.clone());
+            }
+        }
+
+        fn require_term_schema(
+            term: &LoweredTerm,
+            schema_name: &str,
+            schema_constraints_by_term: &mut HashMap<LoweredTerm, String>,
+            extra_atoms: &mut Vec<LoweredAtom>,
+        ) -> Result<()> {
+            if let Some(existing) = schema_constraints_by_term.get(term) {
+                if existing != schema_name {
+                    return Err(anyhow!(
+                        "conflicting schema constraints on {term:?}: `{existing}` vs `{schema_name}`"
+                    ));
+                }
+                return Ok(());
+            }
+
+            schema_constraints_by_term.insert(term.clone(), schema_name.to_string());
+            extra_atoms.push(LoweredAtom::AttrEq {
+                term: term.clone(),
+                key: ATTR_AXI_SCHEMA.to_string(),
+                value: schema_name.to_string(),
+            });
+            Ok(())
+        }
 
         if !self.context_scope.is_empty() {
             report.notes.push(format!(
@@ -3258,6 +3622,16 @@ impl LoweredQuery {
                             }
                         }
                     }
+
+                    // Schema-directed universe: values of schema-scoped facts are
+                    // schema-scoped too. This lets us disambiguate edge atoms like
+                    // `?x -Parent-> ?y` when `Parent` exists in multiple schemas.
+                    require_term_schema(
+                        right,
+                        schema_name,
+                        &mut schema_constraints_by_term,
+                        &mut extra_atoms,
+                    )?;
                 }
             } else {
                 // Ambiguous schema: still validate that any fact-atom fields exist in *some*
@@ -3300,6 +3674,200 @@ impl LoweredQuery {
         }
 
         self.atoms.extend(extra_atoms);
+
+        // Disambiguate/normalize edge labels for derived traversal edges when the same
+        // relation name exists in multiple schemas.
+        //
+        // At this point we have additional schema constraints inferred from fact atoms
+        // (field values inherit the fact's schema), so many ambiguous edge atoms can be
+        // resolved deterministically:
+        //
+        // - `?x -ZRel-> ?y` becomes `?x -S1.ZRel-> ?y` when `?x/?y` are known to be in schema `S1`.
+        // - If schema cannot be determined, we fall back to an RPQ alternation
+        //   `-(S1.ZRel|S2.ZRel)->` so the query still has a predictable “union” meaning.
+        let relation_name_count = |rel: &str| -> usize {
+            schemas_by_relation.get(rel).map(|v| v.len()).unwrap_or(0)
+        };
+
+        // Expand ambiguous unqualified relation names inside existing RPQs.
+        fn rewrite_rpq_regex_for_schema_collisions(
+            re: &mut AxqlRegex,
+            meta: &MetaPlaneIndex,
+            schemas_by_relation: &HashMap<&str, Vec<&str>>,
+            split_schema_qualified_simple: &impl Fn(&str) -> Option<(&str, &str)>,
+        ) {
+            match re {
+                AxqlRegex::Epsilon => {}
+                AxqlRegex::Rel(label) => {
+                    let original = label.clone();
+                    if let Some((schema_name, rel_name)) =
+                        split_schema_qualified_simple(&original)
+                    {
+                        if meta
+                            .schemas
+                            .get(schema_name)
+                            .map(|s| s.relation_decls.contains_key(rel_name))
+                            .unwrap_or(false)
+                        {
+                            let count =
+                                schemas_by_relation.get(rel_name).map(|v| v.len()).unwrap_or(0);
+                            *re = AxqlRegex::Rel(if count > 1 {
+                                format!("{schema_name}.{rel_name}")
+                            } else {
+                                rel_name.to_string()
+                            });
+                            return;
+                        }
+                    }
+
+                    let Some(candidates) = schemas_by_relation.get(original.as_str()) else {
+                        return;
+                    };
+                    if candidates.len() <= 1 {
+                        return;
+                    }
+
+                    *re = AxqlRegex::Alt(
+                        candidates
+                            .iter()
+                            .map(|s| AxqlRegex::Rel(format!("{s}.{original}")))
+                            .collect(),
+                    );
+                }
+                AxqlRegex::Seq(parts) | AxqlRegex::Alt(parts) => {
+                    for p in parts {
+                        rewrite_rpq_regex_for_schema_collisions(
+                            p,
+                            meta,
+                            schemas_by_relation,
+                            split_schema_qualified_simple,
+                        );
+                    }
+                }
+                AxqlRegex::Star(inner) | AxqlRegex::Plus(inner) | AxqlRegex::Opt(inner) => {
+                    rewrite_rpq_regex_for_schema_collisions(
+                        inner,
+                        meta,
+                        schemas_by_relation,
+                        split_schema_qualified_simple,
+                    );
+                }
+            }
+        }
+
+        for re in &mut self.rpqs {
+            rewrite_rpq_regex_for_schema_collisions(
+                re,
+                meta,
+                &schemas_by_relation,
+                &split_schema_qualified_simple,
+            );
+        }
+
+        let mut rpq_index: HashMap<AxqlRegex, usize> = HashMap::new();
+        for (idx, re) in self.rpqs.iter().cloned().enumerate() {
+            rpq_index.insert(re, idx);
+        }
+
+        let mut ambiguous_edge_labels_used: HashSet<String> = HashSet::new();
+        let mut new_atoms: Vec<LoweredAtom> = Vec::with_capacity(self.atoms.len());
+        for atom in self.atoms.drain(..) {
+            let LoweredAtom::Edge { left, rel, right } = atom else {
+                new_atoms.push(atom);
+                continue;
+            };
+
+            // Already schema-qualified (or otherwise dotted): keep as-is.
+            if split_schema_qualified_simple(&rel).is_some() {
+                new_atoms.push(LoweredAtom::Edge { left, rel, right });
+                continue;
+            }
+
+            let Some(candidates) = schemas_by_relation.get(rel.as_str()) else {
+                // Not a schema-declared relation; treat as a raw graph edge label.
+                new_atoms.push(LoweredAtom::Edge { left, rel, right });
+                continue;
+            };
+            if candidates.len() <= 1 {
+                new_atoms.push(LoweredAtom::Edge { left, rel, right });
+                continue;
+            }
+
+            // Ambiguous across schemas: attempt to choose a schema from endpoint constraints.
+            let left_schema = schema_constraints_by_term.get(&left).cloned();
+            let right_schema = schema_constraints_by_term.get(&right).cloned();
+            let chosen_schema = match (&left_schema, &right_schema) {
+                (Some(a), Some(b)) if a == b => Some(a.clone()),
+                (Some(a), None) => Some(a.clone()),
+                (None, Some(b)) => Some(b.clone()),
+                (Some(a), Some(b)) => {
+                    return Err(anyhow!(
+                        "ambiguous relation `{rel}` spans multiple schemas, but endpoints disagree: left={a}, right={b}"
+                    ));
+                }
+                (None, None) => None,
+            };
+
+            if let Some(schema_name) = chosen_schema {
+                if !meta
+                    .schemas
+                    .get(schema_name.as_str())
+                    .map(|s| s.relation_decls.contains_key(rel.as_str()))
+                    .unwrap_or(false)
+                {
+                    return Err(anyhow!(
+                        "relation `{rel}` is not declared in schema `{schema_name}` (inferred from endpoint constraints)"
+                    ));
+                }
+
+                let canonical_label = if relation_name_count(rel.as_str()) > 1 {
+                    format!("{schema_name}.{rel}")
+                } else {
+                    rel.clone()
+                };
+                new_atoms.push(LoweredAtom::Edge {
+                    left,
+                    rel: canonical_label,
+                    right,
+                });
+                continue;
+            }
+
+            // Fall back to a union-of-schemas meaning: treat `rel` as `(S1.rel | S2.rel | ...)`.
+            let alt = AxqlRegex::Alt(
+                candidates
+                    .iter()
+                    .map(|s| AxqlRegex::Rel(format!("{s}.{rel}")))
+                    .collect(),
+            );
+            let rpq_id = if let Some(id) = rpq_index.get(&alt) {
+                *id
+            } else {
+                let id = self.rpqs.len();
+                self.rpqs.push(alt.clone());
+                rpq_index.insert(alt, id);
+                id
+            };
+            new_atoms.push(LoweredAtom::Rpq { left, rpq_id, right });
+            ambiguous_edge_labels_used.insert(rel);
+        }
+        self.atoms = new_atoms;
+
+        if !ambiguous_edge_labels_used.is_empty() {
+            let mut rels = ambiguous_edge_labels_used.into_iter().collect::<Vec<_>>();
+            rels.sort();
+            for rel in rels {
+                if let Some(candidates) = schemas_by_relation.get(rel.as_str()) {
+                    if candidates.len() > 1 {
+                        report.notes.push(format!(
+                            "note: relation `{rel}` is ambiguous across schemas: {} (treated as union; qualify with `Schema.{rel}` to force one)",
+                            candidates.join(", ")
+                        ));
+                    }
+                }
+            }
+        }
+
         self.infer_endpoint_types_for_paths(db, meta, &mut report)?;
 
         // Stable inferred-types ordering for display.
@@ -3325,6 +3893,19 @@ impl LoweredQuery {
             return Ok(0);
         }
 
+        fn split_schema_qualified_simple(name: &str) -> Option<(&str, &str)> {
+            let (schema, rest) = name.split_once('.')?;
+            let schema = schema.trim();
+            let rest = rest.trim();
+            if schema.is_empty() || rest.is_empty() {
+                return None;
+            }
+            if rest.contains('.') {
+                return None;
+            }
+            Some((schema, rest))
+        }
+
         // relation_name -> candidate schemas containing it
         let mut schemas_by_relation: HashMap<&str, Vec<&str>> = HashMap::new();
         for (schema_name, schema) in &meta.schemas {
@@ -3334,6 +3915,10 @@ impl LoweredQuery {
                     .or_default()
                     .push(schema_name.as_str());
             }
+        }
+        for v in schemas_by_relation.values_mut() {
+            v.sort();
+            v.dedup();
         }
 
         let sole_schema_name = if meta.schemas.len() == 1 {
@@ -3414,12 +3999,58 @@ impl LoweredQuery {
 
         // Helper: resolve implied endpoint types for a single relation name.
         let mut relation_endpoints_implied_types =
-            |relation_name: &str| -> Result<Option<(Vec<String>, Vec<String>)>> {
+            |relation_label: &str| -> Result<Option<(Vec<String>, Vec<String>)>> {
+                // Schema-qualified relation label: infer endpoints directly from that schema.
+                if let Some((schema_name, rel_name)) =
+                    split_schema_qualified_simple(relation_label)
+                {
+                    if let Some(schema) = meta.schemas.get(schema_name) {
+                        if let Some(rel_decl) = schema.relation_decls.get(rel_name) {
+                            let Some((src_field_type, dst_field_type)) =
+                                derive_endpoints_field_types(rel_decl)
+                            else {
+                                return Ok(None);
+                            };
+
+                            let Some(src_type) =
+                                canonical_entity_type_for_axi_type(schema, &src_field_type)
+                            else {
+                                return Ok(None);
+                            };
+                            let Some(dst_type) =
+                                canonical_entity_type_for_axi_type(schema, &dst_field_type)
+                            else {
+                                return Ok(None);
+                            };
+
+                            let mut src_implied: Vec<String> = Vec::new();
+                            if let Some(supers) = schema.supertypes_of.get(&src_type) {
+                                src_implied.extend(supers.iter().cloned());
+                            } else {
+                                src_implied.push(src_type.clone());
+                            }
+                            src_implied.sort();
+                            src_implied.dedup();
+
+                            let mut dst_implied: Vec<String> = Vec::new();
+                            if let Some(supers) = schema.supertypes_of.get(&dst_type) {
+                                dst_implied.extend(supers.iter().cloned());
+                            } else {
+                                dst_implied.push(dst_type.clone());
+                            }
+                            dst_implied.sort();
+                            dst_implied.dedup();
+
+                            return Ok(Some((src_implied, dst_implied)));
+                        }
+                    }
+                }
+
                 let candidate_schemas: Vec<&str> = if let Some(sole) = sole_schema_name {
                     vec![sole]
                 } else {
                     schemas_by_relation
-                        .get(relation_name)
+                        .get(relation_label)
                         .cloned()
                         .unwrap_or_default()
                 };
@@ -3429,7 +4060,7 @@ impl LoweredQuery {
                 if candidate_schemas.len() > 1 {
                     // We avoid guessing a schema here; edge atoms don’t currently
                     // have an explicit schema qualifier.
-                    edge_rel_ambiguity.insert(relation_name.to_string());
+                    edge_rel_ambiguity.insert(relation_label.to_string());
                     return Ok(None);
                 }
 
@@ -3437,7 +4068,7 @@ impl LoweredQuery {
                 let Some(schema) = meta.schemas.get(schema_name) else {
                     return Ok(None);
                 };
-                let Some(rel_decl) = schema.relation_decls.get(relation_name) else {
+                let Some(rel_decl) = schema.relation_decls.get(relation_label) else {
                     return Ok(None);
                 };
                 let Some((src_field_type, dst_field_type)) =
@@ -3478,6 +4109,76 @@ impl LoweredQuery {
                 Ok(Some((src_implied, dst_implied)))
             };
 
+        // Helper: resolve canonical (schema, src_type, dst_type) for a single relation label.
+        //
+        // Returns `None` when the label is unknown or ambiguous across schemas.
+        let relation_endpoints_canonical_types =
+            |relation_label: &str| -> Result<Option<(String, String, String)>> {
+                // Schema-qualified relation label.
+                if let Some((schema_name, rel_name)) =
+                    split_schema_qualified_simple(relation_label)
+                {
+                    let Some(schema) = meta.schemas.get(schema_name) else {
+                        return Ok(None);
+                    };
+                    let Some(rel_decl) = schema.relation_decls.get(rel_name) else {
+                        return Ok(None);
+                    };
+                    let Some((src_field_type, dst_field_type)) =
+                        derive_endpoints_field_types(rel_decl)
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(src_type) =
+                        canonical_entity_type_for_axi_type(schema, &src_field_type)
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(dst_type) =
+                        canonical_entity_type_for_axi_type(schema, &dst_field_type)
+                    else {
+                        return Ok(None);
+                    };
+                    return Ok(Some((schema_name.to_string(), src_type, dst_type)));
+                }
+
+                let candidate_schemas: Vec<&str> = if let Some(sole) = sole_schema_name {
+                    vec![sole]
+                } else {
+                    schemas_by_relation
+                        .get(relation_label)
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                if candidate_schemas.len() != 1 {
+                    return Ok(None);
+                }
+
+                let schema_name = candidate_schemas[0];
+                let Some(schema) = meta.schemas.get(schema_name) else {
+                    return Ok(None);
+                };
+                let Some(rel_decl) = schema.relation_decls.get(relation_label) else {
+                    return Ok(None);
+                };
+                let Some((src_field_type, dst_field_type)) =
+                    derive_endpoints_field_types(rel_decl)
+                else {
+                    return Ok(None);
+                };
+                let Some(src_type) =
+                    canonical_entity_type_for_axi_type(schema, &src_field_type)
+                else {
+                    return Ok(None);
+                };
+                let Some(dst_type) =
+                    canonical_entity_type_for_axi_type(schema, &dst_field_type)
+                else {
+                    return Ok(None);
+                };
+                Ok(Some((schema_name.to_string(), src_type, dst_type)))
+            };
+
         for atom in &self.atoms {
             match atom {
                 LoweredAtom::Edge { left, rel, right } => {
@@ -3491,6 +4192,67 @@ impl LoweredQuery {
                         return Err(anyhow!("invalid rpq_id {rpq_id}"));
                     };
                     if let Some(chain) = simple_chain(regex) {
+                        // Extra safety: when we can resolve endpoint types for every relation in
+                        // a simple chain, reject obviously ill-typed compositions early.
+                        //
+                        // This keeps “type-directed querying” honest: we don’t just infer outer
+                        // endpoints; we also refuse impossible path compositions.
+                        if chain.len() >= 2 {
+                            let mut resolved: Vec<(String, String, String, String)> = Vec::new();
+                            for (i, rel) in chain.iter().enumerate() {
+                                let Some((schema_name, src_type, dst_type)) =
+                                    relation_endpoints_canonical_types(rel)?
+                                else {
+                                    // If any step is ambiguous or unknown, we keep the old behavior
+                                    // (no strict composition check).
+                                    resolved.clear();
+                                    break;
+                                };
+                                resolved.push((format!("{rel}"), schema_name, src_type, dst_type));
+                                if i >= 32 {
+                                    // Defensive cap: elaboration should stay cheap.
+                                    break;
+                                }
+                            }
+
+                            if resolved.len() == chain.len() {
+                                let schema_name = resolved[0].1.clone();
+                                if resolved.iter().any(|(_, s, _, _)| s != &schema_name) {
+                                    // Cross-schema chains are allowed in general (multi-schema
+                                    // “universe”), but we do not yet have a principled typing story
+                                    // for composing across schema boundaries here.
+                                    // Keep the old behavior (infer only outer endpoints).
+                                } else if let Some(schema) = meta.schemas.get(&schema_name) {
+                                    // Collect candidate types: object types + tuple (fact-node) types.
+                                    let mut candidate_types: Vec<String> =
+                                        schema.object_types.iter().cloned().collect();
+                                    for rel_name in schema.relation_decls.keys() {
+                                        candidate_types.push(tuple_entity_type_name(schema, rel_name));
+                                    }
+                                    candidate_types.sort();
+                                    candidate_types.dedup();
+
+                                    for w in resolved.windows(2) {
+                                        let (rel_a, _schema_a, _src_a, dst_a) = &w[0];
+                                        let (rel_b, _schema_b, src_b, _dst_b) = &w[1];
+
+                                        let mut ok = false;
+                                        for t in &candidate_types {
+                                            if schema.is_subtype(t, dst_a) && schema.is_subtype(t, src_b) {
+                                                ok = true;
+                                                break;
+                                            }
+                                        }
+                                        if !ok {
+                                            return Err(anyhow!(
+                                                "ill-typed RPQ chain: cannot compose `{rel_a}` (… -> `{dst_a}`) with `{rel_b}` (`{src_b}` -> …) in schema `{schema_name}`"
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if let (Some(first), Some(last)) = (chain.first(), chain.last()) {
                             // For a chain `r0/r1/.../rn`, infer:
                             // - `left` from the source endpoint type of `r0`
@@ -3543,7 +4305,7 @@ impl LoweredQuery {
             return Ok(0);
         }
 
-        let rules = collect_chain_rewrite_rules(db);
+        let rules = collect_chain_rewrite_rules(db, meta);
         if rules.is_empty() {
             return Ok(0);
         }
@@ -6656,6 +7418,33 @@ instance DemoInst of Demo:
         db
     }
 
+    fn db_with_multi_schema_parent_collision() -> axiograph_pathdb::PathDB {
+        let mut db = axiograph_pathdb::PathDB::new();
+        let axi = r#"
+module Universe
+
+schema Fam:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+schema Census:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance FamInst of Fam:
+  Person = {Alice, Bob, Carol}
+  Parent = {(child=Carol, parent=Alice), (child=Carol, parent=Bob)}
+
+instance CensusInst of Census:
+  Person = {Alice, Bob, Dan}
+  Parent = {(child=Dan, parent=Alice), (child=Dan, parent=Bob)}
+"#;
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import multi-schema axi module");
+        db.build_indexes();
+        db
+    }
+
     fn tiny_db() -> axiograph_pathdb::PathDB {
         let mut db = axiograph_pathdb::PathDB::new();
         let a = db.add_entity("Node", vec![("name", "a")]);
@@ -6711,6 +7500,92 @@ instance DemoInst of Demo:
             .unwrap_or_default();
         assert!(inferred.contains(&"Supplier".to_string()));
         assert!(inferred.contains(&"Node".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn axql_schema_qualified_type_filters_axi_schema() -> Result<()> {
+        let db = db_with_multi_schema_parent_collision();
+        let q = parse_axql_query(r#"select ?x where ?x is Fam.Person limit 100"#)?;
+        let res = execute_axql_query(&db, &q)?;
+        assert_eq!(res.rows.len(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn axql_schema_qualified_relation_edge_atoms_work() -> Result<()> {
+        let db = db_with_multi_schema_parent_collision();
+
+        let fam = parse_axql_query(r#"select ?p where Carol -Fam.Parent-> ?p limit 10"#)?;
+        let fam_res = execute_axql_query(&db, &fam)?;
+        assert_eq!(fam_res.rows.len(), 2);
+
+        let census = parse_axql_query(r#"select ?p where Dan -Census.Parent-> ?p limit 10"#)?;
+        let census_res = execute_axql_query(&db, &census)?;
+        assert_eq!(census_res.rows.len(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn axql_unqualified_ambiguous_edge_relation_means_union() -> Result<()> {
+        let db = db_with_multi_schema_parent_collision();
+        let meta = MetaPlaneIndex::from_db(&db)?;
+        let q = parse_axql_query(r#"select ?p where Carol -Parent-> ?p limit 10"#)?;
+        let mut prepared = prepare_axql_query_with_meta(&db, &q, Some(&meta))?;
+        let report = prepared.elaboration_report();
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("treated as union")));
+
+        let res = prepared.execute(&db, Some(&meta))?;
+        assert_eq!(res.rows.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn axql_schema_qualified_fact_atom_adds_schema_filter() -> Result<()> {
+        let db = db_with_multi_schema_parent_collision();
+        let q =
+            parse_axql_query(r#"select ?f where ?f = Fam.Parent(child=Carol, parent=Alice) limit 10"#)?;
+        let res = execute_axql_query(&db, &q)?;
+        assert_eq!(res.rows.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn axql_rejects_ill_typed_rpq_chain_composition() -> Result<()> {
+        let mut db = axiograph_pathdb::PathDB::new();
+        let axi = r#"
+module BadChain
+
+schema S:
+  object A
+  object B
+  object C
+  relation R1(from: A, to: B)
+  relation R2(from: C, to: A)
+
+instance I of S:
+  A = {a}
+  B = {b}
+  C = {c}
+  R1 = {(from=a, to=b)}
+  R2 = {(from=c, to=a)}
+"#;
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+
+        let meta = MetaPlaneIndex::from_db(&db)?;
+        let q = parse_axql_query(r#"select ?x where a -R1/R2-> ?x limit 10"#)?;
+        match prepare_axql_query_with_meta(&db, &q, Some(&meta)) {
+            Ok(_) => return Err(anyhow!("expected ill-typed RPQ chain to be rejected")),
+            Err(err) => assert!(
+                err.to_string().contains("ill-typed RPQ chain"),
+                "unexpected error: {err}"
+            ),
+        }
         Ok(())
     }
 
@@ -6781,6 +7656,18 @@ instance I2 of S2:
             .map(|s| s.rule_name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(rule_names, vec!["z_to_y", "y_to_x"]);
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_queries_cannot_cross_db_tokens() -> Result<()> {
+        let db1 = tiny_db();
+        let db2 = tiny_db();
+
+        let q = parse_axql_query(r#"select ?dst where a -rel_0-> ?dst limit 10"#)?;
+        let mut prepared = prepare_axql_query_with_meta(&db1, &q, None)?;
+        let err = prepared.execute(&db2, None).expect_err("expected db token mismatch");
+        assert!(err.to_string().contains("db token mismatch"));
         Ok(())
     }
 
