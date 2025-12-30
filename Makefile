@@ -128,7 +128,9 @@ rust-test-semantics:
 lean-cache: dirs
 	@echo "━━━ Updating Lean dependencies/cache ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) update && $(LEAN_ENV) $(LAKE) exe cache get && echo "✓ Lean cache updated"; \
+		(cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) update) || echo "⚠️  lake update failed (offline?); continuing"; \
+		(cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) exe cache get) || echo "⚠️  lake exe cache get failed (offline?); continuing"; \
+		echo "✓ Lean cache step complete"; \
 	else \
 		echo "⚠️  lake (Lean) not found - skipping Lean cache update"; \
 		echo "   Install via elan: https://leanprover-community.github.io/get_started.html"; \

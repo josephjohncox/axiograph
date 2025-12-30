@@ -819,7 +819,16 @@ structure TupleFactInfoV3 where
 structure ObjectInfoV3 where
   schemaName : String
   instanceName : String
-  objectType : String
+  /-- Declared object types for this identifier in the `.axi` instance.
+
+  Canonical `.axi` instances often list the same identifier under both a subtype
+  and a supertype (e.g. `Supplier` and `Node`) for readability.
+
+  For certificate checking, we treat that as **one object** with multiple types,
+  and accept a type atom `?x : T` when *any* declared type of `x` is a subtype
+  of `T` (in the schema’s subtyping closure).
+  -/
+  objectTypes : Std.HashSet String
   deriving Repr
 
 structure AxiQueryIndexV3 where
@@ -949,12 +958,16 @@ def buildAxiQueryIndexV3 (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String A
               match objects.get? name with
               | none =>
                   objects :=
-                    objects.insert name { schemaName := schema.name, instanceName := inst.name, objectType := a.name }
+                    objects.insert name {
+                      schemaName := schema.name
+                      instanceName := inst.name
+                      objectTypes := ({} : Std.HashSet String).insert a.name
+                    }
               | some prev =>
-                  if prev.objectType != a.name || prev.schemaName != schema.name || prev.instanceName != inst.name then
+                  if prev.schemaName != schema.name || prev.instanceName != inst.name then
                     throw s!"ambiguous object name `{name}` across assignments (expected unique names for query_result_v3)"
                   else
-                    pure ()
+                    objects := objects.insert name { prev with objectTypes := prev.objectTypes.insert a.name }
             else
               -- Not an object assignment in this schema; ignore (fail-closed behavior for non-canonical inputs).
               pure ()
@@ -1142,8 +1155,10 @@ def verifyQueryRowV3Anchored
             | throw s!"unknown object/entity name `{entity}`"
           let some schema := index.schemas.get? obj.schemaName
             | throw s!"missing schema `{obj.schemaName}` (internal index error)"
-          if !isSubtypeInSchema schema obj.objectType typeName then
-            throw s!"object type mismatch for `{entity}`: expected `{typeName}` (allowing subtypes), got `{obj.objectType}`"
+          let ok :=
+            obj.objectTypes.toList.any (fun actualType => isSubtypeInSchema schema actualType typeName)
+          if !ok then
+            throw s!"object type mismatch for `{entity}`: expected `{typeName}` (allowing subtypes), got one of {obj.objectTypes.toList}"
 
     | .attrEq term key value, .attrEq entity key' value' => do
         if key != key' || value != value' then

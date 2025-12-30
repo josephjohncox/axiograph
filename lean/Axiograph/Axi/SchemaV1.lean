@@ -448,12 +448,25 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       skipString "->"
       ws
       let (rel2, dstField) ← relField
-      if rel1 != rel2 then
-        fail "functional constraint must reference the same relation on both sides"
-      pure (.functional rel1 srcField dstField)
+      if rel1 == rel2 then
+        pure (.functional rel1 srcField dstField)
+      else
+        -- Keep parsing robust across dialect variations. Rust treats mismatched
+        -- relation references as an unknown constraint instead of failing the
+        -- entire module parse.
+        pure (.unknown trimmed)
     match runLineParser p trimmed with
     | .ok v => return v
-    | .error msg => throw msg
+    | .error _msg =>
+        -- Some examples use a more declarative form like:
+        --
+        --   `constraint functional Rel(field0, field1, ...)`
+        --   `constraint functional Rel(field0, ...) -> Rel.someOutput`
+        --
+        -- The initial certified subset only understands
+        -- `functional Rel.field -> Rel.field`. For now, keep these constraints
+        -- parseable (and visible) without making them part of the trusted core.
+        return (.unknown trimmed)
   else if startsWith trimmed "symmetric " then
     let p : LineParser ConstraintV1 := do
       skipString "symmetric"
