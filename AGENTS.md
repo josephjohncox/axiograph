@@ -251,6 +251,13 @@ These items are “best practices” backed by the related work list in Appendix
 - [ ] Add smoke tests for container startup + `/status` in CI.
 - [ ] Provide a chart values profile for replicas + read-only replicas (fan-out) and ingress examples.
 
+**Indexes / caches (PathDB)**
+- [x] Durable index sidecar (`.axpd.idx.cbor`) for fact/text caches + path LRU, keyed by snapshot id.
+- [x] `db serve` loads sidecar on startup (direct `.axpd` or store checkpoint) and persists updates via a debounced background writer.
+- [x] FactIndex/TextIndex build asynchronously when an async source is attached; queries fall back to scans until ready; invalidated on mutation.
+- [x] PathIndex LRU updates on a dedicated worker thread; query threads only enqueue updates; LRU persisted in sidecar; clears on mutation.
+- [x] Perf harness: `axiograph tools perf indexes` + `scripts/perf_index_caches.sh` (profiles cache/index behavior, optional verify/mutation checks, multi-scale growth/shrink runs).
+
 **AxQL performance (planner/runtime)**
 - [x] Keep simple path chains as RPQ and route to PathIndex when beneficial; add fast single-path execution.
 - [x] Add selectivity heuristics (relation-type counts + candidate sizes) and atom ordering; reduce RPQ clone overhead.

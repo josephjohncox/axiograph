@@ -4,7 +4,7 @@
 # new enough to parse `edition = "2024"` in dependency manifests.
 #
 # Pin to a known-good toolchain (overrideable via `--build-arg RUST_IMAGE=...`).
-ARG RUST_IMAGE=rust:1.86-slim-bookworm
+ARG RUST_IMAGE=rust:1.88-slim-bookworm
 
 FROM ${RUST_IMAGE} AS builder
 
