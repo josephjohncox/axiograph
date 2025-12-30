@@ -61,8 +61,7 @@ theorem verifyReachabilityProofV2_ok_matches_computations
   induction proof generalizing result with
   | reflexive entity =>
       intro h
-      simp [verifyReachabilityProofV2, ReachabilityProofV2.start, ReachabilityProofV2.end_,
-        ReachabilityProofV2.pathLen, ReachabilityProofV2.confidence] at h
+      simp [verifyReachabilityProofV2] at h
       cases h
       simp [ReachabilityProofV2.start, ReachabilityProofV2.end_, ReachabilityProofV2.pathLen,
         ReachabilityProofV2.confidence]
@@ -132,8 +131,7 @@ theorem verifyReachabilityProofV2Anchored_ok_matches_computations
   induction proof generalizing result with
   | reflexive entity =>
       intro h
-      simp [verifyReachabilityProofV2Anchored, ReachabilityProofV2.start, ReachabilityProofV2.end_,
-        ReachabilityProofV2.pathLen, ReachabilityProofV2.confidence] at h
+      simp [verifyReachabilityProofV2Anchored] at h
       cases h
       simp [ReachabilityProofV2.start, ReachabilityProofV2.end_, ReachabilityProofV2.pathLen,
         ReachabilityProofV2.confidence]
@@ -288,12 +286,12 @@ theorem verifyResolutionProofV2_ok_matches_decision
   | true =>
       -- In the mismatch branch, the verifier returns `.error`, so `.ok` is impossible.
       have : False := by
-        simpa [hMismatch] using h
+        simp [hMismatch] at h
       exact False.elim this
   | false =>
       simp [hMismatch] at h
       cases h
-      simpa [hExpected]
+      simp [hExpected]
 
 /-!
 If a `resolution_v2` certificate verifies and the decision is `choose_first`,
@@ -363,7 +361,7 @@ theorem runDerivationCore_preserves_denotation
       cases hApply : applyAt step.pos.toList step.rule input with
       | error msg =>
           have : False := by
-            simpa [runDerivationCore, hApply] using hRun
+            simp [runDerivationCore, hApply] at hRun
           exact False.elim this
       | ok next =>
           -- Rewrite-rule soundness gives: `denote input = denote next`.
@@ -381,14 +379,14 @@ theorem runDerivationCore_preserves_denotation
           cases hEndpoints : endpoints next with
           | error msg =>
               have : False := by
-                simpa [runDerivationCore, hApply, hEndpoints] using hRun
+                simp [runDerivationCore, hApply, hEndpoints] at hRun
               exact False.elim this
           | ok endpointsNext =>
               rcases endpointsNext with ⟨nextStart, nextEnd⟩
               by_cases hBad : (nextStart != start || nextEnd != end_)
               ·
                 have : False := by
-                  simpa [runDerivationCore, hApply, hEndpoints, hBad] using hRun
+                  simp [runDerivationCore, hApply, hEndpoints, hBad] at hRun
                 exact False.elim this
               ·
                 -- Successful replay means the tail replay succeeded.
@@ -414,7 +412,7 @@ theorem runDerivation_preserves_denotation
   cases hEndpoints : endpoints input with
   | error msg =>
       have : False := by
-        simpa [runDerivation, hEndpoints] using hRun
+        simp [runDerivation, hEndpoints] at hRun
       exact False.elim this
   | ok endpointsInput =>
       rcases endpointsInput with ⟨start, end_⟩
@@ -447,41 +445,41 @@ theorem verifyNormalizePathProofV2_sound_of_derivation
     cases hInputEndpoints : endpoints proof.input with
     | error msg =>
         have : False := by
-          simpa [verifyNormalizePathProofV2, hInputEndpoints] using hVerify
+            simp [hInputEndpoints] at hVerify
         exact False.elim this
     | ok inputEnds =>
         rcases inputEnds with ⟨inputStart, inputEnd⟩
         cases hNormEndpoints : endpoints proof.normalized with
         | error msg =>
             have : False := by
-              simpa [verifyNormalizePathProofV2, hInputEndpoints, hNormEndpoints] using hVerify
+                simp [hInputEndpoints, hNormEndpoints] at hVerify
             exact False.elim this
         | ok normEnds =>
             rcases normEnds with ⟨normStart, normEnd⟩
             cases hEndpointsMismatch : (inputStart != normStart || inputEnd != normEnd) with
             | true =>
                 have : False := by
-                  simpa [verifyNormalizePathProofV2, hInputEndpoints, hNormEndpoints, hEndpointsMismatch] using hVerify
+                    simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch] at hVerify
                 exact False.elim this
             | false =>
                 -- Reduce the optional derivation branch using `hDerivation`, then analyze `runDerivation`.
                 cases hRun : runDerivation proof.input steps with
                 | error msg =>
                     have : False := by
-                      simpa [verifyNormalizePathProofV2, hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
-                        hDerivation, hRun] using hVerify
+                        simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
+                          hDerivation, hRun] at hVerify
                     exact False.elim this
                 | ok derived =>
                     cases hMismatch : (derived != proof.normalized) with
                     | true =>
                         have : False := by
-                          simpa [verifyNormalizePathProofV2, hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
-                            hDerivation, hRun, hMismatch] using hVerify
+                            simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
+                              hDerivation, hRun, hMismatch] at hVerify
                         exact False.elim this
-                    | false =>
-                        have hEq : derived = proof.normalized :=
-                          (bne_eq_false_iff_eq).1 hMismatch
-                        simpa [hRun, hEq]
+                      | false =>
+                          have hEq : derived = proof.normalized :=
+                            (bne_eq_false_iff_eq).1 hMismatch
+                          simp [hEq]
   exact runDerivation_preserves_denotation proof.input steps proof.normalized hReplay hTyped
 
 /-!
@@ -507,40 +505,40 @@ theorem verifyRewriteDerivationProofV2_sound
     cases hInputEndpoints : endpoints proof.input with
     | error msg =>
         have : False := by
-          simpa [verifyRewriteDerivationProofV2, hInputEndpoints] using hVerify
+            simp [hInputEndpoints] at hVerify
         exact False.elim this
     | ok inputEnds =>
         rcases inputEnds with ⟨inputStart, inputEnd⟩
         cases hOutEndpoints : endpoints proof.output with
         | error msg =>
             have : False := by
-              simpa [verifyRewriteDerivationProofV2, hInputEndpoints, hOutEndpoints] using hVerify
+                simp [hInputEndpoints, hOutEndpoints] at hVerify
             exact False.elim this
         | ok outEnds =>
             rcases outEnds with ⟨outStart, outEnd⟩
             cases hEndpointsMismatch : (inputStart != outStart || inputEnd != outEnd) with
             | true =>
                 have : False := by
-                  simpa [verifyRewriteDerivationProofV2, hInputEndpoints, hOutEndpoints, hEndpointsMismatch] using hVerify
+                    simp [hInputEndpoints, hOutEndpoints, hEndpointsMismatch] at hVerify
                 exact False.elim this
             | false =>
                 cases hRun : runDerivation proof.input proof.derivation with
                 | error msg =>
                     have : False := by
-                      simpa [verifyRewriteDerivationProofV2, hInputEndpoints, hOutEndpoints, hEndpointsMismatch,
-                        hRun] using hVerify
+                        simp [hInputEndpoints, hOutEndpoints, hEndpointsMismatch,
+                          hRun] at hVerify
                     exact False.elim this
                 | ok derived =>
                     cases hMismatch : (derived != proof.output) with
                     | true =>
                         have : False := by
-                          simpa [verifyRewriteDerivationProofV2, hInputEndpoints, hOutEndpoints, hEndpointsMismatch,
-                            hRun, hMismatch] using hVerify
+                            simp [hInputEndpoints, hOutEndpoints, hEndpointsMismatch,
+                              hRun, hMismatch] at hVerify
                         exact False.elim this
-                    | false =>
-                        have hEq : derived = proof.output :=
-                          (bne_eq_false_iff_eq).1 hMismatch
-                        simpa [hRun, hEq]
+                      | false =>
+                          have hEq : derived = proof.output :=
+                            (bne_eq_false_iff_eq).1 hMismatch
+                          simp [hEq]
   exact runDerivation_preserves_denotation proof.input proof.derivation proof.output hReplay hTyped
 
 end RewriteInvariants

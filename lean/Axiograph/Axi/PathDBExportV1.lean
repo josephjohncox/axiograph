@@ -103,7 +103,7 @@ def strUtf8HexTokenToString (token : String) : Except String String := do
   let some hex := stripPrefix? token prefixStrUtf8Hex
     | throw s!"expected token prefix `{prefixStrUtf8Hex}`, got `{token}`"
   let chars ← decodeHexPairsToChars hex.toList
-  pure (String.mk chars)
+  pure (String.ofList chars)
 
 def pow2 (n : Nat) : Nat := Nat.pow 2 n
 

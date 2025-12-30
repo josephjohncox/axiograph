@@ -106,7 +106,7 @@ theorem toTyped_trans_ok {left right : PathExprV2} {typed : TypedSigma} :
           · cases hb
             simp [toTyped, hLeft, hRight] at h
             cases h
-            refine ⟨a, b, c, p, q, rfl, ?_, ?_⟩ <;> simpa [hLeft, hRight]
+            refine ⟨a, b, c, p, q, rfl, ?_, ?_⟩ <;> simp
           · simp [toTyped, hLeft, hRight, hb] at h
 
 theorem toTyped_inv_ok {path : PathExprV2} {typed : TypedSigma} :
@@ -123,7 +123,7 @@ theorem toTyped_inv_ok {path : PathExprV2} {typed : TypedSigma} :
       simp [toTyped, hPath] at h
       cases h
       refine ⟨a, b, p, rfl, ?_⟩
-      simpa [hPath]
+      simp
 
 theorem toTyped_trans_mk {left right : PathExprV2}
     {a b c : Nat} {p : TypedExpr a b} {q : TypedExpr b c}
@@ -214,7 +214,7 @@ theorem applyRule_preserves_denote
                 exact this.symm
               refine ⟨q, (by simpa using hRight), ?_⟩
               -- `typed = trans (refl a) q` after rewriting `p`.
-              simpa [hp, Axiograph.HoTT.denote] using (Axiograph.HoTT.denote_id_left (a := a) (b := b) q)
+              simp [hp, Axiograph.HoTT.denote]
           | _ =>
               simp [PathNormalization.applyRule] at hApply
       | _ =>
@@ -250,7 +250,7 @@ theorem applyRule_preserves_denote
                   simpa [toTyped] using hRight
                 exact this.symm
               refine ⟨p, (by simpa using hLeft), ?_⟩
-              simpa [hq, Axiograph.HoTT.denote] using (Axiograph.HoTT.denote_id_right (a := a) (b := b) p)
+              simp [hq, Axiograph.HoTT.denote]
           | _ =>
               simp [PathNormalization.applyRule] at hApply
       | _ =>
@@ -274,7 +274,7 @@ theorem applyRule_preserves_denote
               have hOut : toTyped (.trans p (.trans q r)) = .ok ⟨a, b, .trans pT (.trans qT rT)⟩ :=
                 toTyped_trans_mk (left := p) (right := .trans q r) hP hQR
               refine ⟨.trans pT (.trans qT rT), hOut, ?_⟩
-              simpa [Axiograph.HoTT.denote_assoc, Axiograph.HoTT.denote, Category.assoc]
+              simp [Axiograph.HoTT.denote, Category.assoc]
           | _ =>
               simp [PathNormalization.applyRule] at hApply
       | _ =>
@@ -311,7 +311,7 @@ theorem applyRule_preserves_denote
 
               refine ⟨.refl a, by simp [toTyped], ?_⟩
               -- Denotation: `(refl)⁻¹ = refl`.
-              simpa [hp, Axiograph.HoTT.denote]
+              simp [hp, Axiograph.HoTT.denote]
           | _ =>
               simp [PathNormalization.applyRule] at hApply
       | _ =>
@@ -502,7 +502,7 @@ theorem applyRule_preserves_denote
                           cases hBTyped
 
                           -- Now the cancellation is the groupoid law `p ≫ p⁻¹ = 𝟙`.
-                          simp [Axiograph.HoTT.denote, Category.assoc]
+                          simp [Axiograph.HoTT.denote]
                       | _ =>
                           simp [PathNormalization.isAtom, PathNormalization.atomsAreInverse] at hCond
                   | _ =>
@@ -553,7 +553,7 @@ theorem applyRule_preserves_denote
                             injection this
                           cases hBTyped
 
-                          simp [Axiograph.HoTT.denote, Category.assoc]
+                          simp [Axiograph.HoTT.denote]
                       | _ =>
                           simp [PathNormalization.isAtom, PathNormalization.atomsAreInverse] at hCond
                   | _ =>
