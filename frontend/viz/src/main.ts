@@ -11,6 +11,22 @@ function setHeaderCounts(graph: GraphPayload) {
   if (truncEl) truncEl.textContent = String(!!graph.truncated);
 }
 
+function loadGraphFromEmbedded(): GraphPayload | null {
+  const win = window as any;
+  if (win && win.__AXIOGRAPH_GRAPH) {
+    return win.__AXIOGRAPH_GRAPH as GraphPayload;
+  }
+  const el = document.getElementById("axiograph_graph");
+  if (el && el.textContent) {
+    try {
+      return JSON.parse(el.textContent) as GraphPayload;
+    } catch (_e) {
+      return null;
+    }
+  }
+  return null;
+}
+
 async function loadGraphFromUrl(url: string): Promise<GraphPayload | null> {
   try {
     const resp = await fetch(url, { cache: "no-store" });
@@ -26,10 +42,10 @@ async function boot() {
   const dataParam = params.get("data");
   const isServer = window.location.protocol === "http:" || window.location.protocol === "https:";
 
-  let graph: GraphPayload | null = null;
-  if (dataParam) {
+  let graph: GraphPayload | null = loadGraphFromEmbedded();
+  if (!graph && dataParam) {
     graph = await loadGraphFromUrl(dataParam);
-  } else if (isServer) {
+  } else if (!graph && isServer) {
     graph = await loadGraphFromUrl("/viz.json" + window.location.search);
   }
 

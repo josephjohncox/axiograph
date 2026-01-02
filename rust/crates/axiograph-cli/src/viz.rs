@@ -1375,7 +1375,7 @@ pub fn viz_index_path() -> PathBuf {
     viz_dist_dir().join("index.html")
 }
 
-pub fn write_html_bundle(out: &std::path::Path, html: &str) -> Result<PathBuf> {
+pub fn write_html_bundle(out: &std::path::Path, html: &str, graph_json: Option<&str>) -> Result<PathBuf> {
     let out_dir = if out.extension().is_some_and(|e| e == "html") {
         out.with_extension("")
     } else {
@@ -1387,10 +1387,21 @@ pub fn write_html_bundle(out: &std::path::Path, html: &str) -> Result<PathBuf> {
     if assets_src.exists() {
         copy_dir_recursive(&assets_src, &assets_dst)?;
     }
-    std::fs::write(out_dir.join("index.html"), html)?;
+    let mut html_out = html.to_string();
+    if let Some(graph_json) = graph_json {
+        let safe = graph_json.replace("</", "<\\/");
+        let snippet =
+            format!("<script id=\"axiograph_graph\" type=\"application/json\">{safe}</script>");
+        if let Some(idx) = html_out.rfind("</body>") {
+            html_out.insert_str(idx, &snippet);
+        } else {
+            html_out.push_str(&snippet);
+        }
+    }
+    std::fs::write(out_dir.join("index.html"), html_out)?;
     std::fs::write(
         out_dir.join("README.txt"),
-        "Open index.html with ?data=graph.json (e.g., index.html?data=graph.json).\n",
+        "Open index.html (embedded data). Optional: index.html?data=graph.json\n",
     )?;
     Ok(out_dir)
 }

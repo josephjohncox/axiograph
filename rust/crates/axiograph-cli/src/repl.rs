@@ -1460,7 +1460,9 @@ fn cmd_viz(state: &ReplState, args: &[String]) -> Result<()> {
         crate::viz::VizFormat::Html => crate::viz::render_html(db, &g)?,
     };
     if matches!(format, crate::viz::VizFormat::Html) {
-        let out_dir = crate::viz::write_html_bundle(&out, &rendered)?;
+        let json = crate::viz::render_json(&g)?;
+        let out_dir = crate::viz::write_html_bundle(&out, &rendered, Some(&json))?;
+        fs::write(out_dir.join("graph.json"), json)?;
         println!(
             "wrote {} (nodes={} edges={} truncated={})",
             out_dir.display(),
@@ -2871,8 +2873,8 @@ fn cmd_neigh(state: &ReplState, args: &[String]) -> Result<()> {
             crate::viz::VizFormat::Html => crate::viz::render_html(db, &g)?,
         };
         if matches!(format, crate::viz::VizFormat::Html) {
-            let out_dir = crate::viz::write_html_bundle(out, &rendered)?;
             let json = crate::viz::render_json(&g)?;
+            let out_dir = crate::viz::write_html_bundle(out, &rendered, Some(&json))?;
             fs::write(out_dir.join("graph.json"), json)?;
             println!("wrote {}", out_dir.display());
         } else {
