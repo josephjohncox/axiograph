@@ -97,6 +97,13 @@ pub enum ConstraintDecl {
         src_field: String,
         dst_field: String,
     },
+    AtMost {
+        relation: String,
+        src_field: String,
+        dst_field: String,
+        max: u32,
+        params: Option<Vec<String>>,
+    },
     Typing {
         relation: String,
         rule: String,
@@ -305,6 +312,37 @@ impl MetaPlaneIndex {
                                 dst_field,
                             }
                         }
+                        "at_most" => {
+                            let relation = rel_name.clone().unwrap_or_default();
+                            let src_field = entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD)
+                                .unwrap_or_default();
+                            let dst_field = entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD)
+                                .unwrap_or_default();
+                            let max = entity_attr_string(db, cid, ATTR_CONSTRAINT_MAX)
+                                .and_then(|v| v.parse::<u32>().ok())
+                                .unwrap_or(0);
+                            let params = entity_attr_string(db, cid, ATTR_CONSTRAINT_PARAM_FIELDS)
+                                .and_then(|csv| {
+                                    let fields = csv
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string())
+                                        .collect::<Vec<_>>();
+                                    if fields.is_empty() {
+                                        None
+                                    } else {
+                                        Some(fields)
+                                    }
+                                });
+                            ConstraintDecl::AtMost {
+                                relation,
+                                src_field,
+                                dst_field,
+                                max,
+                                params,
+                            }
+                        }
                         "typing" => {
                             let relation = rel_name.clone().unwrap_or_default();
                             let rule = entity_attr_string(db, cid, ATTR_CONSTRAINT_TEXT)
@@ -463,6 +501,7 @@ impl MetaPlaneIndex {
 
                     let key = match &decl {
                         ConstraintDecl::Functional { relation, .. } => relation.clone(),
+                        ConstraintDecl::AtMost { relation, .. } => relation.clone(),
                         ConstraintDecl::Typing { relation, .. } => relation.clone(),
                         ConstraintDecl::SymmetricWhereIn { relation, .. } => relation.clone(),
                         ConstraintDecl::Symmetric { relation, .. } => relation.clone(),

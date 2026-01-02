@@ -96,8 +96,8 @@ schema Family:
   object Text
 
 theory KinshipLaws on Family:
-  -- Parent is functional (unique parents, barring adoption)
-  constraint key Parent(child)
+  -- Parent is bounded (at most two parents per child).
+  constraint at_most 2 Parent.child -> Parent.parent
 
   -- Spouse is symmetric
   constraint symmetric Spouse
@@ -264,4 +264,3 @@ instance ExtendedFamily of Family:
     -- In some systems: parallel cousins ≡ siblings (for marriage taboos)
     (culture=Arabic, rel1=ParallelCousin, rel2=Sibling, reason=ParallelEquiv)
   }
-

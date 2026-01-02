@@ -276,6 +276,7 @@ pub struct AxiWellTypedProofV1 {
 /// Certified subset (high ROI, low ambiguity):
 /// - `constraint key Rel(...)`
 /// - `constraint functional Rel.field -> Rel.field`
+/// - `constraint at_most N Rel.field -> Rel.field [param (...)]`
 /// - `constraint symmetric Rel`
 /// - `constraint symmetric Rel where Rel.field in {A, B, ...}`
 /// - `constraint transitive Rel` (closure-compatibility for keys/functionals on carrier fields)

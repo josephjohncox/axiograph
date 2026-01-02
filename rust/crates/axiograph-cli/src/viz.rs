@@ -664,6 +664,21 @@ pub fn extract_viz_graph_with_meta(
                     dst_field,
                     ..
                 } => parts.push(format!("functional({src_field} -> {dst_field})")),
+                ConstraintDecl::AtMost {
+                    src_field,
+                    dst_field,
+                    max,
+                    params,
+                    ..
+                } => {
+                    let mut s = format!("at_most {max} {src_field} -> {dst_field}");
+                    if let Some(ps) = params {
+                        if !ps.is_empty() {
+                            s.push_str(&format!(" param ({})", ps.join(", ")));
+                        }
+                    }
+                    parts.push(s);
+                }
                 ConstraintDecl::Typing { rule, .. } => parts.push(format!("typing({rule})")),
                 ConstraintDecl::SymmetricWhereIn {
                     field,

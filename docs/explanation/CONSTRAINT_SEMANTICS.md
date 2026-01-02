@@ -64,6 +64,10 @@ These are constraints that can be checked against the explicitly present tuples:
 - `constraint functional Rel.src -> Rel.dst`  
   A special case of determinism (“src determines dst”).
 
+- `constraint at_most N Rel.src -> Rel.dst`  
+  Bounded fan‑out (“src determines at most N distinct dst values”).
+  Optional fiber params: `... param (ctx, time)` to enforce per fixed assignment.
+
 These are good candidates for certification because they are:
 
 - local and deterministic,

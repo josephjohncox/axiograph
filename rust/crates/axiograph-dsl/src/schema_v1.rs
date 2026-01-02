@@ -95,6 +95,19 @@ pub enum ConstraintV1 {
         src_field: Name,
         dst_field: Name,
     },
+    /// Bounded fan-out: a source field maps to at most `max` distinct targets.
+    ///
+    /// Canonical surface syntax:
+    /// - `constraint at_most N Rel.src -> Rel.dst`
+    /// - `constraint at_most N Rel.src -> Rel.dst param (ctx, time)`
+    AtMost {
+        relation: Name,
+        src_field: Name,
+        dst_field: Name,
+        max: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<Vec<Name>>,
+    },
     /// A first-class *typing rule annotation* for a relation.
     ///
     /// Canonical surface syntax:
@@ -939,11 +952,16 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
 
     let (rest, carriers, params) = split_closure_clauses(rest)?;
     let rest = rest.trim();
-    if (carriers.is_some() || params.is_some())
-        && !(rest.starts_with("symmetric ") || rest.starts_with("transitive "))
+    if carriers.is_some() && !(rest.starts_with("symmetric ") || rest.starts_with("transitive ")) {
+        return Err("`on (...)` is only supported for symmetric/transitive constraints".to_string());
+    }
+    if params.is_some()
+        && !(rest.starts_with("symmetric ")
+            || rest.starts_with("transitive ")
+            || rest.starts_with("at_most "))
     {
         return Err(
-            "`on (...)` / `param (...)` are only supported for symmetric/transitive constraints"
+            "`param (...)` is only supported for symmetric/transitive/at_most constraints"
                 .to_string(),
         );
     }
@@ -971,6 +989,37 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
         return Ok(ConstraintV1::Unknown {
             text: rest.to_string(),
         });
+    }
+
+    if let Some(after) = rest.strip_prefix("at_most ").map(str::trim) {
+        if carriers.is_some() {
+            return Err("`on (...)` is not supported for at_most constraints".to_string());
+        }
+        let (max_str, rest2) = after
+            .split_once(' ')
+            .ok_or_else(|| "at_most expects: `at_most N Rel.field -> Rel.field`".to_string())?;
+        let max: u32 = max_str
+            .parse()
+            .map_err(|_| "at_most expects a non-negative integer bound".to_string())?;
+        let parts: Vec<&str> = rest2.split("->").collect();
+        if parts.len() != 2 {
+            return Err("at_most expects: `Rel.field -> Rel.field`".to_string());
+        }
+        if let (Ok((rel1, field1)), Ok((rel2, field2))) = (
+            split_rel_field(parts[0].trim()),
+            split_rel_field(parts[1].trim()),
+        ) {
+            if rel1 == rel2 {
+                return Ok(ConstraintV1::AtMost {
+                    relation: rel1,
+                    src_field: field1,
+                    dst_field: field2,
+                    max,
+                    params,
+                });
+            }
+        }
+        return Err("at_most expects: `Rel.field -> Rel.field` (same relation)".to_string());
     }
 
     if let Some(after) = rest.strip_prefix("typing ").map(str::trim) {
@@ -1132,6 +1181,29 @@ pub fn format_constraint_v1(constraint: &ConstraintV1) -> Result<String, String>
         } => Ok(format!(
             "constraint functional {relation}.{src_field} -> {relation}.{dst_field}"
         )),
+        ConstraintV1::AtMost {
+            relation,
+            src_field,
+            dst_field,
+            max,
+            params,
+        } => {
+            let mut out = format!(
+                "constraint at_most {max} {relation}.{src_field} -> {relation}.{dst_field}"
+            );
+            if let Some(params) = params {
+                let params = params
+                    .iter()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !params.is_empty() {
+                    out.push_str(&format!(" param ({params})"));
+                }
+            }
+            Ok(out)
+        }
         ConstraintV1::Typing { relation, rule } => {
             Ok(format!("constraint typing {relation}: {rule}"))
         }

@@ -80,6 +80,7 @@ deriving Repr, DecidableEq
 
 inductive ConstraintV1 where
   | functional (relation srcField dstField : Name)
+  | atMost (relation srcField dstField : Name) (max : Nat) (params : Option (Array Name))
   /-- A first-class typing rule annotation for a relation (metadata today). -/
   | typing (relation : Name) (rule : Name)
   /-- Conditional symmetry: only enforce symmetry for tuples whose `field` value is in `values`. -/
@@ -310,6 +311,13 @@ def identifier : LineParser Name := do
   let rest ← many (satisfy isIdentContinue)
   pure <| String.ofList (first :: rest.toList)
 
+def natLiteral : LineParser Nat := do
+  let digits ← many1 (satisfy Char.isDigit)
+  let s := String.ofList digits.toList
+  match s.toNat? with
+  | some n => pure n
+  | none => fail "expected a natural number"
+
 partial def sepBy1Core (p : LineParser α) (sep : LineParser Unit) (acc : Array α) : LineParser (Array α) :=
   (attempt do
     let _ ← sep
@@ -497,6 +505,41 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
         --
         -- For now we keep parsing robust (and keep the text visible) without
         -- making these dialect forms part of the trusted core.
+        return (.unknown trimmed)
+  else if startsWith trimmed "at_most " then
+    let comma : LineParser Unit := do
+      ws
+      skipChar ','
+      ws
+      pure ()
+    let paramClauseP : LineParser (Array Name) := do
+      ws1
+      skipString "param"
+      ws1
+      skipChar '('
+      ws
+      let xs ← sepBy1 identifier comma
+      ws
+      skipChar ')'
+      pure xs
+    let p : LineParser ConstraintV1 := do
+      skipString "at_most"
+      ws1
+      let max ← natLiteral
+      ws1
+      let (rel1, srcField) ← relField
+      ws
+      skipString "->"
+      ws
+      let (rel2, dstField) ← relField
+      let params ← (attempt (some <$> paramClauseP)) <|> pure none
+      if rel1 == rel2 then
+        pure (.atMost rel1 srcField dstField max params)
+      else
+        pure (.unknown trimmed)
+    match runLineParser p trimmed with
+    | .ok v => return v
+    | .error _msg =>
         return (.unknown trimmed)
   else if startsWith trimmed "typing " then
     let p : LineParser ConstraintV1 := do

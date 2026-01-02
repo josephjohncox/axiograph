@@ -270,6 +270,21 @@ impl UnifiedStorage {
                 src_field,
                 dst_field,
             } => format!("functional {relation} ({src_field} -> {dst_field})"),
+            ConstraintV1::AtMost {
+                relation,
+                src_field,
+                dst_field,
+                max,
+                params,
+            } => {
+                let mut s = format!("at_most {max} {relation} ({src_field} -> {dst_field})");
+                if let Some(ps) = params.as_ref() {
+                    if !ps.is_empty() {
+                        s.push_str(&format!(" param ({})", ps.join(", ")));
+                    }
+                }
+                s
+            }
             ConstraintV1::Typing { relation, rule } => format!("typing {relation}: {rule}"),
             ConstraintV1::SymmetricWhereIn {
                 relation,

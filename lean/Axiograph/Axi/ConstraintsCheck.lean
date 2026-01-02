@@ -30,6 +30,7 @@ Certified subset:
 
 * `constraint key Rel(field, ...)`
 * `constraint functional Rel.field -> Rel.field`
+* `constraint at_most N Rel.field -> Rel.field` (bounded fan-out)
 * `constraint symmetric Rel`
 * `constraint symmetric Rel where Rel.field in {A, B, ...}`
 * `constraint transitive Rel` (closure-compatibility for keys/functionals on carrier fields)
@@ -53,6 +54,7 @@ structure ConstraintsCheckSummaryV1 where
 private inductive CoreConstraint where
   | key (schema : Name) (relation : Name) (fields : Array Name)
   | functional (schema : Name) (relation : Name) (srcField : Name) (dstField : Name)
+  | atMost (schema : Name) (relation : Name) (srcField : Name) (dstField : Name) (max : Nat) (params : Option (Array Name))
   | symmetric (schema : Name) (relation : Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
   | symmetricWhereIn (schema : Name) (relation : Name) (field : Name) (values : Array Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
   | transitive (schema : Name) (relation : Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
@@ -69,6 +71,8 @@ private def gatherCoreConstraints (m : Axiograph.Axi.AxiV1.AxiV1Module) : Array 
             out := out.push (.key th.schema rel fields)
         | .functional rel src dst =>
             out := out.push (.functional th.schema rel src dst)
+        | .atMost rel src dst max params =>
+            out := out.push (.atMost th.schema rel src dst max params)
         | .symmetric rel carriers params =>
             out := out.push (.symmetric th.schema rel carriers params)
         | .symmetricWhereIn rel field values carriers params =>
@@ -164,6 +168,36 @@ private def checkFunctionalConstraint
           throw s!"functional violation in instance `{inst.name}` on `{relationName}`.{srcField} -> {relationName}.{dstField}: src `{src}` maps to both `{prev}` and `{dst}` (tuple {i})"
     | none =>
         map := map.insert src dst
+
+private def checkAtMostConstraint
+    (inst : SchemaV1Instance)
+    (relationName : Name)
+    (srcField dstField : Name)
+    (max : Nat)
+    (params : Option (Array Name)) : Except String Unit := do
+  let tuples := relationTuples inst relationName
+  let params := params.getD #[]
+  let mut map : Std.HashMap (List Name) (Std.HashSet Name) := {}
+  for i in List.range tuples.size do
+    let fields := tuples[i]!
+    let tmap ← tupleToMap inst.name relationName fields
+    let some src := tmap.get? srcField
+      | throw s!"instance `{inst.name}` relation `{relationName}`: at_most src field `{srcField}` missing from tuple"
+    let some dst := tmap.get? dstField
+      | throw s!"instance `{inst.name}` relation `{relationName}`: at_most dst field `{dstField}` missing from tuple"
+    let mut key : List Name := [src]
+    let mut ctxParts : Array String := #[]
+    for p in params do
+      let some v := tmap.get? p
+        | throw s!"instance `{inst.name}` relation `{relationName}`: at_most param field `{p}` missing from tuple"
+      key := key.concat v
+      ctxParts := ctxParts.push s!"{p}={v}"
+    let cur := (map.get? key).getD {}
+    let next := cur.insert dst
+    if next.size > max then
+      let ctx := if ctxParts.isEmpty then "" else s!" params [{String.intercalate ", " ctxParts.toList}]"
+      throw s!"at_most violation in instance `{inst.name}` on `{relationName}`.{srcField} -> {relationName}.{dstField} (max {max}): src `{src}` has {next.size} values{ctx} (tuple {i})"
+    map := map.insert key next
 
 private def tupleValuesInOrder
     (instName relationName : Name)
@@ -857,6 +891,10 @@ def checkModule (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String Constraint
           if schema == inst.schema then
             checkCount := checkCount + 1
             checkFunctionalConstraint inst rel src dst
+      | .atMost schema rel src dst max params =>
+          if schema == inst.schema then
+            checkCount := checkCount + 1
+            checkAtMostConstraint inst rel src dst max params
       | .symmetric schema rel carriers params =>
           if schema == inst.schema then
             checkCount := checkCount + 1

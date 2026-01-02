@@ -521,6 +521,30 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
                 (ATTR_CONSTRAINT_DST_FIELD.to_string(), dst_field.clone()),
             ],
         ),
+        ConstraintV1::AtMost {
+            relation,
+            src_field,
+            dst_field,
+            max,
+            params,
+        } => (
+            "at_most",
+            {
+                let mut attrs = vec![
+                    (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
+                    (ATTR_CONSTRAINT_SRC_FIELD.to_string(), src_field.clone()),
+                    (ATTR_CONSTRAINT_DST_FIELD.to_string(), dst_field.clone()),
+                    (ATTR_CONSTRAINT_MAX.to_string(), max.to_string()),
+                ];
+                if let Some(ps) = params.as_ref() {
+                    attrs.push((
+                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
+                        ps.join(","),
+                    ));
+                }
+                attrs
+            },
+        ),
         ConstraintV1::Typing { relation, rule } => (
             "typing",
             vec![

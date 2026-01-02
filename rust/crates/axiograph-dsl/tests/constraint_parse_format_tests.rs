@@ -50,7 +50,7 @@ fn parses_param_before_on_even_if_noncanonical() {
 #[test]
 fn rejects_param_clause_on_key_constraints() {
     let err = parse_constraint_v1("key R(a) param (ctx)").expect_err("should error");
-    assert!(err.contains("only supported for symmetric/transitive"), "err={err}");
+    assert!(err.contains("only supported for symmetric/transitive/at_most"), "err={err}");
 }
 
 #[test]
@@ -126,5 +126,27 @@ fn parses_transitive_with_param_only() {
             carriers: None,
             params: Some(vec!["ctx".to_string()]),
         }
+    );
+}
+
+#[test]
+fn parses_at_most_with_param_clause() {
+    let c = parse_constraint_v1("at_most 2 Parent.child -> Parent.parent param (ctx, time)")
+        .expect("parse");
+    assert_eq!(
+        c,
+        ConstraintV1::AtMost {
+            relation: "Parent".to_string(),
+            src_field: "child".to_string(),
+            dst_field: "parent".to_string(),
+            max: 2,
+            params: Some(vec!["ctx".to_string(), "time".to_string()]),
+        }
+    );
+
+    let formatted = axiograph_dsl::schema_v1::format_constraint_v1(&c).expect("format");
+    assert_eq!(
+        formatted,
+        "constraint at_most 2 Parent.child -> Parent.parent param (ctx, time)"
     );
 }

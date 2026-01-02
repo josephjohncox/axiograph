@@ -12,7 +12,7 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use axiograph_pathdb::axi_meta::ATTR_AXI_RELATION;
@@ -527,6 +527,67 @@ pub fn run_quality_checks(
                                         }
                                     } else {
                                         map.insert(*src, *dst);
+                                    }
+                                }
+                            }
+                            ConstraintDecl::AtMost {
+                                src_field,
+                                dst_field,
+                                max,
+                                params,
+                                ..
+                            } => {
+                                let mut map: HashMap<Vec<u32>, HashSet<u32>> = HashMap::new();
+                                for (i, t) in tuples.iter().enumerate() {
+                                    let Some(src) = t.get(src_field) else {
+                                        continue;
+                                    };
+                                    let Some(dst) = t.get(dst_field) else {
+                                        continue;
+                                    };
+                                    let mut key: Vec<u32> =
+                                        Vec::with_capacity(1 + params.as_ref().map_or(0, |p| p.len()));
+                                    let mut param_pairs: Vec<(String, u32)> = Vec::new();
+                                    key.push(*src);
+                                    let mut missing_param = false;
+                                    if let Some(ps) = params {
+                                        for p in ps {
+                                            let Some(v) = t.get(p) else {
+                                                missing_param = true;
+                                                break;
+                                            };
+                                            key.push(*v);
+                                            param_pairs.push((p.clone(), *v));
+                                        }
+                                    }
+                                    if missing_param {
+                                        continue;
+                                    }
+                                    let entry = map.entry(key).or_insert_with(HashSet::new);
+                                    entry.insert(*dst);
+                                    if entry.len() > *max as usize {
+                                        let ctx = if param_pairs.is_empty() {
+                                            String::new()
+                                        } else {
+                                            let params_str = param_pairs
+                                                .iter()
+                                                .map(|(name, val)| format!("{name}={val}"))
+                                                .collect::<Vec<_>>()
+                                                .join(", ");
+                                            format!(" params [{params_str}]")
+                                        };
+                                        findings.push(QualityFindingV1 {
+                                            level: if profile == "strict" { "error".to_string() } else { "warning".to_string() },
+                                            code: "at_most_violation".to_string(),
+                                            message: format!(
+                                                "at_most violation on {rel_name}.{src_field} -> {rel_name}.{dst_field} (max {max}): src={} has {} values{ctx} (tuple={i})",
+                                                src,
+                                                entry.len()
+                                            ),
+                                            schema: Some(schema_name.clone()),
+                                            relation: Some(rel_name.clone()),
+                                            entity_id: None,
+                                        });
                                     }
                                 }
                             }

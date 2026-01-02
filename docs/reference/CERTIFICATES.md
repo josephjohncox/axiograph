@@ -170,6 +170,8 @@ Certified subset:
 - `constraint functional Rel.field -> Rel.field`
   - Only **unary** FDs are canonical. Multi-field determinism should be written as a
     composite key: `constraint key Rel(a, b, ...)`.
+- `constraint at_most N Rel.field -> Rel.field`
+  - Optional fiber params: `... param (ctx, time)` (enforced per fixed param assignment).
 - symmetry annotations:
   - `constraint symmetric Rel`
   - `constraint symmetric Rel where Rel.field in {A, B, ...}`

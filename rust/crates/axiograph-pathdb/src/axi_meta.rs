@@ -101,6 +101,7 @@ pub const ATTR_CONSTRAINT_FIELDS: &str = "axi_constraint_fields";
 pub const ATTR_CONSTRAINT_PARAM_FIELDS: &str = "axi_constraint_param_fields";
 pub const ATTR_CONSTRAINT_WHERE_FIELD: &str = "axi_constraint_where_field";
 pub const ATTR_CONSTRAINT_WHERE_IN_VALUES: &str = "axi_constraint_where_in_values";
+pub const ATTR_CONSTRAINT_MAX: &str = "axi_constraint_max";
 pub const ATTR_CONSTRAINT_TEXT: &str = "axi_constraint_text";
 pub const ATTR_CONSTRAINT_INDEX: &str = "axi_constraint_index";
 

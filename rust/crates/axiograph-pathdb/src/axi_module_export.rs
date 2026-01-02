@@ -362,6 +362,25 @@ fn format_constraint(db: &PathDB, constraint_id: u32) -> Result<String> {
             let dst = entity_attr(db, constraint_id, ATTR_CONSTRAINT_DST_FIELD).unwrap_or_default();
             format!("constraint functional {rel}.{src} -> {rel}.{dst}")
         }
+        "at_most" => {
+            let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
+            let src = entity_attr(db, constraint_id, ATTR_CONSTRAINT_SRC_FIELD).unwrap_or_default();
+            let dst = entity_attr(db, constraint_id, ATTR_CONSTRAINT_DST_FIELD).unwrap_or_default();
+            let max = entity_attr(db, constraint_id, ATTR_CONSTRAINT_MAX).unwrap_or_default();
+            let mut out = format!("constraint at_most {max} {rel}.{src} -> {rel}.{dst}");
+            if let Some(params) = entity_attr(db, constraint_id, ATTR_CONSTRAINT_PARAM_FIELDS) {
+                let params = params
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !params.is_empty() {
+                    out.push_str(&format!(" param ({params})"));
+                }
+            }
+            out
+        }
         "typing" => {
             let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
             let rule = entity_attr(db, constraint_id, ATTR_CONSTRAINT_TEXT).unwrap_or_default();

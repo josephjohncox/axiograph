@@ -18,8 +18,8 @@ schema Fam:
   relation Sibling(a: Person, b: Person)
 
 theory FamRules on Fam:
-  -- Each person has at most two parents (functional from child)
-  constraint functional Parent.child -> Parent.parent
+  -- Each person has at most two parents (per context/time).
+  constraint at_most 2 Parent.child -> Parent.parent param (ctx, time)
 
   -- Spouse is symmetric
   constraint symmetric Spouse

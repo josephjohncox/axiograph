@@ -125,7 +125,7 @@ Today we support:
 - **v2 reachability**: fixed-point confidences (trusted representation).
 - **v2 reachability (anchored)**: optional `.axi` anchor + `relation_id` fact IDs checked against `PathDBExportV1` (endpoints, rel-type, confidence).
 - **v2 axi_well_typed_v1 (anchored)**: canonical `.axi` module well-typedness gate (small decision procedure; Lean re-checks the parsed AST).
-- **v2 axi_constraints_ok_v1 (anchored)**: core theory-constraint gate (keys/functionals; Lean re-checks against the parsed AST).
+- **v2 axi_constraints_ok_v1 (anchored)**: core theory-constraint gate (keys/functionals/at_most; Lean re-checks against the parsed AST).
 - **v2 query_result_v1 (anchored)**: conjunctive query results (AxQL / SQL-ish), with per-atom witnesses checked against `PathDBExportV1`.
 - **v2 resolution**: fixed-point reconciliation decision (Lean recomputes `decideResolution`).
 - **v2 normalize_path**: free-groupoid path normalization (Lean recomputes normalization) and

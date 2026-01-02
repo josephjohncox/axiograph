@@ -12,6 +12,7 @@
 //! Supported constraint kinds:
 //! - `constraint key Rel(field, ...)`
 //! - `constraint functional Rel.field -> Rel.field`
+//! - `constraint at_most N Rel.field -> Rel.field [param (...)]`
 //! - `constraint symmetric Rel`
 //! - `constraint symmetric Rel where Rel.field in {A, B, ...}`
 //! - `constraint transitive Rel` (closure-compatibility for keys/functionals on carrier fields)
@@ -53,6 +54,14 @@ enum CoreConstraint<'a> {
         relation: &'a str,
         src_field: &'a str,
         dst_field: &'a str,
+    },
+    AtMost {
+        schema: &'a str,
+        relation: &'a str,
+        src_field: &'a str,
+        dst_field: &'a str,
+        max: u32,
+        params: Option<&'a [String]>,
     },
     Symmetric {
         schema: &'a str,
@@ -100,6 +109,20 @@ fn gather_core_constraints(module: &SchemaV1Module) -> Vec<CoreConstraint<'_>> {
                     relation,
                     src_field,
                     dst_field,
+                }),
+                ConstraintV1::AtMost {
+                    relation,
+                    src_field,
+                    dst_field,
+                    max,
+                    params,
+                } => out.push(CoreConstraint::AtMost {
+                    schema: &th.schema,
+                    relation,
+                    src_field,
+                    dst_field,
+                    max: *max,
+                    params: params.as_deref(),
                 }),
                 ConstraintV1::SymmetricWhereIn {
                     relation,
@@ -292,6 +315,70 @@ fn check_functional_on_tuples(
             }
         } else {
             map.insert(src, dst);
+        }
+    }
+    Ok(())
+}
+
+fn check_at_most_on_tuples(
+    inst_name: &str,
+    relation_name: &str,
+    relation_fields: &[String],
+    tuples: impl Iterator<Item = Vec<String>>,
+    src_field: &str,
+    dst_field: &str,
+    max: u32,
+    params: Option<&[String]>,
+) -> Result<()> {
+    let Some(src_idx) = relation_fields.iter().position(|x| x == src_field) else {
+        return Err(anyhow!(
+            "instance `{inst_name}` relation `{relation_name}`: at_most src field `{src_field}` is not a declared field",
+        ));
+    };
+    let Some(dst_idx) = relation_fields.iter().position(|x| x == dst_field) else {
+        return Err(anyhow!(
+            "instance `{inst_name}` relation `{relation_name}`: at_most dst field `{dst_field}` is not a declared field",
+        ));
+    };
+
+    let param_idxs: Vec<(String, usize)> = params
+        .unwrap_or(&[])
+        .iter()
+        .map(|p| {
+            let Some(idx) = relation_fields.iter().position(|x| x == p) else {
+                return Err(anyhow!(
+                    "instance `{inst_name}` relation `{relation_name}`: at_most param field `{p}` is not a declared field",
+                ));
+            };
+            Ok((p.clone(), idx))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut map: HashMap<Vec<String>, std::collections::HashSet<String>> = HashMap::new();
+    for (i, tuple) in tuples.enumerate() {
+        let mut key: Vec<String> = Vec::with_capacity(1 + param_idxs.len());
+        let src_val = tuple[src_idx].clone();
+        key.push(src_val.clone());
+        for (_name, idx) in &param_idxs {
+            key.push(tuple[*idx].clone());
+        }
+        let entry = map.entry(key.clone()).or_default();
+        entry.insert(tuple[dst_idx].clone());
+        if entry.len() > max as usize {
+            let mut ctx = String::new();
+            if !param_idxs.is_empty() {
+                let params_str = param_idxs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, _))| format!("{name}={}", key[i + 1]))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ctx = format!(" params [{params_str}]");
+            }
+            return Err(anyhow!(
+                "at_most violation in instance `{inst_name}` on `{relation_name}`.{src_field} -> {relation_name}.{dst_field} (max {max}): src `{src_val}` has {} values{ctx} (tuple {i})",
+                entry.len()
+            ));
         }
     }
     Ok(())
@@ -1343,6 +1430,7 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
             CoreConstraint::SymmetricWhereIn { schema, .. } => *schema == inst.schema,
             CoreConstraint::Transitive { schema, .. } => *schema == inst.schema,
             CoreConstraint::Typing { schema, .. } => *schema == inst.schema,
+            CoreConstraint::AtMost { schema, .. } => *schema == inst.schema,
         }) {
             check_count += 1;
             match c {
@@ -1376,6 +1464,28 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                         }).collect::<Result<Vec<_>>>()?.into_iter(),
                         src_field,
                         dst_field,
+                    )?;
+                }
+                CoreConstraint::AtMost {
+                    relation,
+                    src_field,
+                    dst_field,
+                    max,
+                    params,
+                    ..
+                } => {
+                    let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
+                    check_at_most_on_tuples(
+                        &inst.name,
+                        relation,
+                        relation_fields,
+                        relation_tuples(inst, relation).map(|t| {
+                            tuple_values_in_order(&inst.name, relation, t, relation_fields)
+                        }).collect::<Result<Vec<_>>>()?.into_iter(),
+                        src_field,
+                        dst_field,
+                        *max,
+                        *params,
                     )?;
                 }
                 CoreConstraint::Symmetric {
@@ -1521,5 +1631,60 @@ instance Demo of S:
             msg.contains("non-carrier/non-param field") && msg.contains("witness"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn at_most_param_allows_two_values() {
+        let text = r#"
+module AtMostParamOk
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person, ctx: Context)
+
+theory Rules on S:
+  constraint at_most 2 Parent.child -> Parent.parent param (ctx)
+
+instance Demo of S:
+  Person = {Alice, Bob, Carol}
+  Context = {C0}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=C0),
+    (child=Alice, parent=Carol, ctx=C0)
+  }
+"#;
+
+        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        check_axi_constraints_ok_v1(&module).expect("axi_constraints_ok_v1 should pass");
+    }
+
+    #[test]
+    fn at_most_param_rejects_three_values() {
+        let text = r#"
+module AtMostParamFail
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person, ctx: Context)
+
+theory Rules on S:
+  constraint at_most 2 Parent.child -> Parent.parent param (ctx)
+
+instance Demo of S:
+  Person = {Alice, Bob, Carol, Dan}
+  Context = {C0}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=C0),
+    (child=Alice, parent=Carol, ctx=C0),
+    (child=Alice, parent=Dan, ctx=C0)
+  }
+"#;
+
+        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("at_most violation") && msg.contains("Parent"), "err={msg}");
     }
 }

@@ -2727,16 +2727,24 @@ pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) ->
         return Ok(v);
     }
 
-    // Best-effort: extract the first *complete* JSON object substring.
+    // Best-effort recovery:
     //
-    // Some models wrap JSON in prose/markdown or accidentally emit trailing content.
-    // Using brace balancing (outside strings) is more robust than rfind('}'), which
-    // can select an inner brace and produce "EOF while parsing an object".
-    let Some(start) = trimmed.find('{') else {
-        return Err(anyhow!("LLM did not return JSON (no '{{' found)"));
+    // Many models are “almost” correct: they may wrap JSON in prose/markdown, or
+    // truncate the final closing `]`/`}`. We try to extract the first JSON value
+    // (object or array), and if it's truncated we attempt a conservative repair
+    // by:
+    // - optionally closing an unterminated string, and
+    // - appending the missing `]`/`}` delimiters based on balanced scanning.
+    let start_obj = trimmed.find('{');
+    let start_arr = trimmed.find('[');
+    let start = match (start_obj, start_arr) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return Err(anyhow!("LLM did not return JSON (no '{{' or '[' found)")),
     };
 
-    let mut depth: i64 = 0;
+    let mut stack: Vec<char> = Vec::new();
     let mut in_string = false;
     let mut escape = false;
     let mut end: Option<usize> = None;
@@ -2757,30 +2765,70 @@ pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) ->
 
         match ch {
             '"' => in_string = true,
-            '{' => depth += 1,
+            '{' | '[' => stack.push(ch),
             '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = Some(idx);
-                    break;
+                if stack.last() == Some(&'{') {
+                    stack.pop();
+                    if stack.is_empty() {
+                        end = Some(idx);
+                        break;
+                    }
+                }
+            }
+            ']' => {
+                if stack.last() == Some(&'[') {
+                    stack.pop();
+                    if stack.is_empty() {
+                        end = Some(idx);
+                        break;
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    let candidate = if let Some(end) = end {
-        &trimmed[start..=end]
+    let mut candidate = if let Some(end) = end {
+        trimmed[start..=end].to_string()
     } else {
-        // Fall back to the last brace we can find (may still fail, but gives a
-        // useful error message).
-        let Some(end) = trimmed.rfind('}') else {
-            return Err(anyhow!("LLM did not return JSON (no '}}' found)"));
-        };
-        &trimmed[start..=end]
+        trimmed[start..].to_string()
     };
 
-    serde_json::from_str(candidate).map_err(|e| anyhow!("LLM returned invalid JSON: {e}"))
+    // If the scan didn't find a complete JSON value, try to repair a truncated
+    // suffix by closing strings and appending missing delimiters.
+    if end.is_none() {
+        // Close an unterminated string (best-effort).
+        if in_string {
+            if escape {
+                // Last char was a backslash; add a second one so we don't escape
+                // the closing quote.
+                candidate.push('\\');
+            }
+            candidate.push('"');
+        }
+
+        // Remove a trailing comma (common truncation artifact).
+        while candidate.ends_with(|c: char| c.is_whitespace()) {
+            candidate.pop();
+        }
+        if candidate.ends_with(',') {
+            candidate.pop();
+        }
+        while candidate.ends_with(|c: char| c.is_whitespace()) {
+            candidate.pop();
+        }
+
+        // Append missing closers.
+        for open in stack.iter().rev().copied() {
+            match open {
+                '{' => candidate.push('}'),
+                '[' => candidate.push(']'),
+                _ => {}
+            }
+        }
+    }
+
+    serde_json::from_str(&candidate).map_err(|e| anyhow!("LLM returned invalid JSON: {e}"))
 }
 
 pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()> {
@@ -2815,7 +2863,7 @@ pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_axql_candidate;
+    use super::{normalize_axql_candidate, parse_llm_json_object};
 
     #[test]
     fn normalizes_bare_atom_to_where_clause() {
@@ -2858,6 +2906,47 @@ mod tests {
                 )
             });
         }
+    }
+
+    #[test]
+    fn parse_llm_json_object_repairs_truncated_world_model_output() {
+        // Realistic failure mode: the model produces a correct prefix but the
+        // last closing delimiters are missing (often reported as "EOF while
+        // parsing a list").
+        let truncated = r#"
+{
+  "version": 1,
+  "generated_at": "0",
+  "source": {"source_type":"world_model","locator":"wm::test"},
+  "schema_hint": null,
+  "proposals": [
+    {
+      "kind":"Relation",
+      "proposal_id":"wm::test::0",
+      "confidence":0.7,
+      "evidence":[],
+      "public_rationale":"demo",
+      "metadata":{},
+      "schema_hint":null,
+      "relation_id":"wm::test::r0",
+      "rel_type":"Parent",
+      "source":"Alice",
+      "target":"Bob",
+      "attributes":{}
+    }
+  "#;
+
+        let v: serde_json::Value = parse_llm_json_object(truncated).expect("repair + parse JSON");
+        assert_eq!(v.get("version").and_then(|x| x.as_i64()), Some(1));
+        let proposals = v
+            .get("proposals")
+            .and_then(|x| x.as_array())
+            .expect("proposals array present");
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(
+            proposals[0].get("rel_type").and_then(|x| x.as_str()),
+            Some("Parent")
+        );
     }
 
     #[test]
@@ -6159,6 +6248,21 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Functional {
                     src_field, dst_field, ..
                 } => format!("functional({src_field} -> {dst_field})"),
+                axiograph_pathdb::axi_semantics::ConstraintDecl::AtMost {
+                    src_field,
+                    dst_field,
+                    max,
+                    params,
+                    ..
+                } => {
+                    let mut s = format!("at_most {max} {src_field} -> {dst_field}");
+                    if let Some(ps) = params {
+                        if !ps.is_empty() {
+                            s.push_str(&format!(" param ({})", ps.join(", ")));
+                        }
+                    }
+                    s
+                }
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Typing { rule, .. } => {
                     format!("typing({rule})")
                 }
@@ -9306,6 +9410,21 @@ impl SchemaContextV1 {
                     C::Functional {
                         src_field, dst_field, ..
                     } => parts.push(format!("functional({src_field} -> {dst_field})")),
+                    C::AtMost {
+                        src_field,
+                        dst_field,
+                        max,
+                        params,
+                        ..
+                    } => {
+                        let mut s = format!("at_most {max} {src_field} -> {dst_field}");
+                        if let Some(ps) = params {
+                            if !ps.is_empty() {
+                                s.push_str(&format!(" param ({})", ps.join(", ")));
+                            }
+                        }
+                        parts.push(s);
+                    }
                     C::Typing { rule, .. } => parts.push(format!("typing({rule})")),
                     C::SymmetricWhereIn { field, values, .. } => parts.push(format!(
                         "symmetric_where_in({field} in {{{}}})",
