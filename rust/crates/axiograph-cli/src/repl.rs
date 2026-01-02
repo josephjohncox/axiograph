@@ -1437,6 +1437,7 @@ fn cmd_viz(state: &ReplState, args: &[String]) -> Result<()> {
 
     let options = crate::viz::VizOptions {
         focus_ids,
+        all_nodes: false,
         hops,
         max_nodes,
         max_edges,
@@ -2819,6 +2820,7 @@ fn cmd_neigh(state: &ReplState, args: &[String]) -> Result<()> {
 
     let options = crate::viz::VizOptions {
         focus_ids: vec![focus_id],
+        all_nodes: false,
         hops,
         max_nodes,
         max_edges,

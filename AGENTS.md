@@ -368,6 +368,7 @@ These items are “best practices” backed by the related work list in Appendix
   - “constraint-satisfied for core constraints” (`axi_constraints_ok_v1`: key/functional + symmetry (incl. guarded) + transitivity (closure-compatibility) + builtin typing rules), and
   - “rewrite derivation validates” (already exists; extend to rule-set soundness later).
   - closure carrier fields: support optional `... on (field0, field1)` for `symmetric`/`transitive` constraints (Rust+Lean + cert check).
+  - closure parameter fields: support optional `... param (field0, field1, ...)` to interpret symmetry/transitivity as fibered closure (e.g. `ctx/time`), and allow key constraints to mention carriers + params.
 
 **Docs system (Diataxis)**
 - [ ] Re-organize docs into Diataxis quadrants (Tutorials / How-to / Reference / Explanation), keeping existing content but improving navigation.

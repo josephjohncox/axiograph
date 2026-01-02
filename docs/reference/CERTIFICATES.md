@@ -174,20 +174,30 @@ Certified subset:
   - `constraint symmetric Rel`
   - `constraint symmetric Rel where Rel.field in {A, B, ...}`
   - optional carrier-field clause: `... on (field0, field1)`
+  - optional parameter-field clause: `... param (field0, field1, ...)`
   Semantics: the checker does **not** require inverse tuples to be explicitly present.
   Instead, it checks that the module’s **key/functional** constraints remain consistent
   under symmetric closure (adding swapped-endpoint tuples) on the carrier fields.
   By default the carrier fields are the first two relation fields; `on (field0, field1)`
   makes the choice explicit.
+  If `param (..)` is present, symmetric closure is interpreted as operating on the
+  carrier pair **within each fixed assignment** of the parameter fields (e.g. `ctx`, `time`),
+  and other relation fields are treated as out-of-scope annotations/witnesses for the
+  purposes of this certificate.
 - transitivity annotations:
   - `constraint transitive Rel`
   - optional carrier-field clause: `constraint transitive Rel on (field0, field1)`
+  - optional parameter-field clause: `constraint transitive Rel ... param (field0, field1, ...)`
   Semantics: the checker does **not** require the transitive closure to be explicitly
   materialized. Instead, it checks that the module’s **key/functional** constraints
   remain consistent under transitive closure on the relation’s carrier fields.
   By default the carrier fields are the first two relation fields; `on (field0, field1)`
-  makes the choice explicit. If a key/functional constraint refers to non-carrier fields,
-  the certificate check fails (witness construction is out of scope for this certificate).
+  makes the choice explicit.
+  If `param (..)` is present, transitive closure is interpreted as operating on the
+  carrier pair within each fixed assignment of the parameter fields (e.g. `ctx`, `time`),
+  without inventing new parameter values.
+  If a key/functional constraint refers to non-carrier/non-param fields, the certificate
+  check fails (witness construction is out of scope for this certificate).
 - executable typing rules (small builtin set):
   - `constraint typing Rel: preserves_manifold_and_increments_degree`
   - `constraint typing Rel: preserves_manifold_and_adds_degree`

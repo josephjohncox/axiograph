@@ -7397,6 +7397,7 @@ fn tool_viz_render(
 
     let options = crate::viz::VizOptions {
         focus_ids: vec![focus_id],
+        all_nodes: false,
         hops,
         max_nodes,
         max_edges,

@@ -91,6 +91,14 @@ Carrier fields:
 - By default, the carrier fields are the **first two** relation fields.
 - For relations with extra fields (context/time/witnesses), authors can be explicit:
   `constraint symmetric Rel ... on (field0, field1)`.
+Parameter fields (fibered closure):
+- Optionally, authors can name which *non-carrier* fields should be treated as
+  fixed parameters of the closure:
+  `constraint symmetric Rel ... param (ctx, time)`.
+- When `param (..)` is present, the certified symmetry semantics is:
+  “swap endpoints **within each fixed assignment** of the parameter fields”.
+  Other relation fields are treated as out-of-scope annotations/witnesses for
+  this certificate kind.
 
 - if you add the swapped-endpoint tuples (respecting any `where … in {…}` guard),
   the relation’s **key/functional** constraints remain satisfied.
@@ -134,6 +142,9 @@ As a pragmatic ontology-engineering gate, we can also certify a weaker property:
   or explicitly via `constraint transitive Rel on (field0, field1)`),
   so “treat this as transitive” won’t contradict your own uniqueness constraints,
   without requiring explicit materialization of the closure.
+  When `param (..)` is present (e.g. `constraint transitive Accessible param (ctx, time)`),
+  the closure is interpreted as operating *within each fixed parameter fiber*:
+  `Accessible(ctx,time,a,b) ∧ Accessible(ctx,time,b,c) ⇒ Accessible(ctx,time,a,c)`.
 
 ### F) Negative constraints (require explicit closed-world intent)
 

@@ -72,6 +72,7 @@ impl VizDirection {
 #[derive(Debug, Clone)]
 pub struct VizOptions {
     pub focus_ids: Vec<u32>,
+    pub all_nodes: bool,
     pub hops: usize,
     pub max_nodes: usize,
     pub max_edges: usize,
@@ -91,6 +92,7 @@ impl Default for VizOptions {
     fn default() -> Self {
         Self {
             focus_ids: Vec::new(),
+            all_nodes: false,
             hops: 2,
             max_nodes: 250,
             max_edges: 4_000,
@@ -133,6 +135,8 @@ pub struct VizContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VizSummary {
     pub focus_ids: Vec<u32>,
+    #[serde(default)]
+    pub all_nodes: bool,
     pub hops: usize,
     pub max_nodes: usize,
     pub max_edges: usize,
@@ -514,98 +518,120 @@ pub fn extract_viz_graph_with_meta(
     let max_nodes = options.max_nodes.max(1);
     let max_edges = options.max_edges.max(1);
 
-    // Build lightweight neighbor maps once.
-    //
-    // We intentionally keep these maps *untyped*: for neighborhood expansion we
-    // only need to know which nodes are adjacent. We re-scan the RelationStore
-    // later to materialize labeled edges within the selected node set.
-    //
-    // This keeps the extraction runtime reasonable even when a graph has many
-    // relation labels, and avoids repeatedly scanning the `(source, rel_type)`
-    // index for every visited node.
-    let mut out_neighbors: HashMap<u32, Vec<u32>> = HashMap::new();
-    let mut in_neighbors: HashMap<u32, Vec<u32>> = HashMap::new();
-    for rel_id in 0..db.relations.len() as u32 {
-        let Some(rel) = db.relations.get_relation(rel_id) else {
-            continue;
-        };
-        out_neighbors
-            .entry(rel.source)
-            .or_default()
-            .push(rel.target);
-        in_neighbors.entry(rel.target).or_default().push(rel.source);
-    }
-
     let mut nodes: Vec<u32> = Vec::new();
     let mut visited: HashSet<u32> = HashSet::new();
+    let mut nodes_truncated = false;
 
-    let mut queue: VecDeque<(u32, usize)> = VecDeque::new();
-    if options.focus_ids.is_empty() {
-        // Fallback: show the first few entity ids deterministically.
+    if options.all_nodes {
         for id in 0..(db.entities.len() as u32) {
-            queue.push_back((id, 0));
-            if queue.len() >= 1 {
+            if nodes.len() >= max_nodes {
+                nodes_truncated = true;
                 break;
             }
+            let Some(view) = db.get_entity(id) else {
+                continue;
+            };
+            let is_meta = is_meta_plane_entity(&view.entity_type);
+            if is_meta && !options.include_meta_plane {
+                continue;
+            }
+            if !is_meta && !options.include_data_plane {
+                continue;
+            }
+            nodes.push(id);
         }
     } else {
-        for id in &options.focus_ids {
-            queue.push_back((*id, 0));
-        }
-    }
-
-    while let Some((entity, depth)) = queue.pop_front() {
-        if visited.contains(&entity) {
-            continue;
-        }
-        if nodes.len() >= max_nodes {
-            break;
-        }
-
-        let Some(view) = db.get_entity(entity) else {
-            continue;
-        };
-        let is_meta = is_meta_plane_entity(&view.entity_type);
-        if is_meta && !options.include_meta_plane {
-            // Skip meta-plane nodes unless explicitly requested.
-            continue;
-        }
-        if !is_meta && !options.include_data_plane {
-            // Skip data-plane nodes unless explicitly requested.
-            continue;
+        // Build lightweight neighbor maps once.
+        //
+        // We intentionally keep these maps *untyped*: for neighborhood expansion we
+        // only need to know which nodes are adjacent. We re-scan the RelationStore
+        // later to materialize labeled edges within the selected node set.
+        //
+        // This keeps the extraction runtime reasonable even when a graph has many
+        // relation labels, and avoids repeatedly scanning the `(source, rel_type)`
+        // index for every visited node.
+        let mut out_neighbors: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut in_neighbors: HashMap<u32, Vec<u32>> = HashMap::new();
+        for rel_id in 0..db.relations.len() as u32 {
+            let Some(rel) = db.relations.get_relation(rel_id) else {
+                continue;
+            };
+            out_neighbors
+                .entry(rel.source)
+                .or_default()
+                .push(rel.target);
+            in_neighbors.entry(rel.target).or_default().push(rel.source);
         }
 
-        visited.insert(entity);
-        nodes.push(entity);
-
-        if depth >= hops {
-            continue;
-        }
-
-        // Expand neighbors (directional).
-        if matches!(options.direction, VizDirection::Out | VizDirection::Both) {
-            if let Some(list) = out_neighbors.get(&entity) {
-                for &target in list {
-                    if visited.contains(&target) {
-                        continue;
-                    }
-                    if queue.len() + nodes.len() >= max_nodes * 6 {
-                        continue;
-                    }
-                    queue.push_back((target, depth + 1));
+        let mut queue: VecDeque<(u32, usize)> = VecDeque::new();
+        if options.focus_ids.is_empty() {
+            // Fallback: show the first few entity ids deterministically.
+            for id in 0..(db.entities.len() as u32) {
+                queue.push_back((id, 0));
+                if queue.len() >= 1 {
+                    break;
                 }
             }
+        } else {
+            for id in &options.focus_ids {
+                queue.push_back((*id, 0));
+            }
         }
-        if matches!(options.direction, VizDirection::In | VizDirection::Both) {
-            if let Some(list) = in_neighbors.get(&entity) {
-                for &source in list {
-                    if visited.contains(&source) {
-                        continue;
+
+        while let Some((entity, depth)) = queue.pop_front() {
+            if visited.contains(&entity) {
+                continue;
+            }
+            if nodes.len() >= max_nodes {
+                nodes_truncated = true;
+                break;
+            }
+
+            let Some(view) = db.get_entity(entity) else {
+                continue;
+            };
+            let is_meta = is_meta_plane_entity(&view.entity_type);
+            if is_meta && !options.include_meta_plane {
+                // Skip meta-plane nodes unless explicitly requested.
+                continue;
+            }
+            if !is_meta && !options.include_data_plane {
+                // Skip data-plane nodes unless explicitly requested.
+                continue;
+            }
+
+            visited.insert(entity);
+            nodes.push(entity);
+
+            if depth >= hops {
+                continue;
+            }
+
+            // Expand neighbors (directional).
+            if matches!(options.direction, VizDirection::Out | VizDirection::Both) {
+                if let Some(list) = out_neighbors.get(&entity) {
+                    for &target in list {
+                        if visited.contains(&target) {
+                            continue;
+                        }
+                        if queue.len() + nodes.len() >= max_nodes * 6 {
+                            continue;
+                        }
+                        queue.push_back((target, depth + 1));
                     }
-                    if queue.len() + nodes.len() >= max_nodes * 6 {
-                        continue;
+                }
+            }
+            if matches!(options.direction, VizDirection::In | VizDirection::Both) {
+                if let Some(list) = in_neighbors.get(&entity) {
+                    for &source in list {
+                        if visited.contains(&source) {
+                            continue;
+                        }
+                        if queue.len() + nodes.len() >= max_nodes * 6 {
+                            continue;
+                        }
+                        queue.push_back((source, depth + 1));
                     }
-                    queue.push_back((source, depth + 1));
                 }
             }
         }
@@ -772,7 +798,7 @@ pub fn extract_viz_graph_with_meta(
 
     // Collect edges among selected nodes.
     let mut edges: Vec<VizEdge> = Vec::new();
-    let mut truncated = false;
+    let mut truncated = nodes_truncated;
     for rel_id in 0..db.relations.len() as u32 {
         if edges.len() >= max_edges {
             truncated = true;
@@ -968,6 +994,7 @@ pub fn extract_viz_graph_with_meta(
         truncated,
         summary: VizSummary {
             focus_ids: options.focus_ids.clone(),
+            all_nodes: options.all_nodes,
             hops: options.hops,
             max_nodes: options.max_nodes,
             max_edges: options.max_edges,

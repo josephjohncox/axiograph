@@ -760,6 +760,9 @@ struct VizArgs {
     /// Focus entity name (matches `attr(name) == <value>`).
     #[arg(long)]
     focus_name: Option<String>,
+    /// Include all nodes (ignores focus + hops; still respects max_nodes/max_edges).
+    #[arg(long)]
+    all: bool,
     /// Optional focus entity type filter (used only with `--focus-name`).
     ///
     /// Useful when both the meta-plane and data-plane contain the same `name`.
@@ -3771,6 +3774,7 @@ fn cmd_viz_from_args(args: &VizArgs) -> Result<()> {
         &args.focus_id,
         args.focus_name.as_deref(),
         args.focus_type.as_deref(),
+        args.all,
         args.hops,
         args.max_nodes,
         args.max_edges,
@@ -3789,6 +3793,7 @@ fn cmd_viz(
     focus_id: &[u32],
     focus_name: Option<&str>,
     focus_type: Option<&str>,
+    all: bool,
     hops: usize,
     max_nodes: usize,
     max_edges: usize,
@@ -3811,24 +3816,27 @@ fn cmd_viz(
     };
 
     let mut focus: Vec<u32> = focus_id.to_vec();
-    if focus.is_empty() {
-        if let Some(name) = focus_name {
-            if let Some(id) = crate::viz::resolve_focus_by_name_and_type(&db, name, focus_type)? {
-                focus.push(id);
-            } else {
-                return Err(anyhow!(
-                    "no entity found with name `{}` (tip: try `axiograph repl` + `find_by_type`/`q` to locate ids)",
-                    name
-                ));
+    if !all {
+        if focus.is_empty() {
+            if let Some(name) = focus_name {
+                if let Some(id) = crate::viz::resolve_focus_by_name_and_type(&db, name, focus_type)? {
+                    focus.push(id);
+                } else {
+                    return Err(anyhow!(
+                        "no entity found with name `{}` (tip: try `axiograph repl` + `find_by_type`/`q` to locate ids)",
+                        name
+                    ));
+                }
             }
         }
-    }
-    if focus.is_empty() {
-        eprintln!("note: no focus specified; using a fallback node");
+        if focus.is_empty() {
+            eprintln!("note: no focus specified; using a fallback node");
+        }
     }
 
     let options = crate::viz::VizOptions {
         focus_ids: focus,
+        all_nodes: all,
         hops,
         max_nodes,
         max_edges,

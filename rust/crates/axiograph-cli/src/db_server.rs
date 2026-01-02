@@ -1435,6 +1435,9 @@ struct VizRequestV1 {
     /// data|meta|both
     #[serde(default)]
     plane: Option<String>,
+    /// Include all nodes (ignores focus + hops).
+    #[serde(default)]
+    all: Option<bool>,
     #[serde(default)]
     focus_name: Option<String>,
     #[serde(default)]
@@ -3039,6 +3042,7 @@ fn viz_request_from_query(query: Option<&str>) -> Result<VizRequestV1> {
     Ok(VizRequestV1 {
         format: p.get("format").cloned(),
         plane: p.get("plane").cloned(),
+        all: p.get("all").and_then(|s| parse_bool(Some(s.as_str()))),
         focus_name: p.get("focus_name").cloned(),
         focus_type: p.get("focus_type").cloned(),
         focus_id,
@@ -3108,6 +3112,7 @@ async fn handle_viz_request(
     let hops = req.hops.unwrap_or(2);
     let max_nodes = req.max_nodes.unwrap_or(250);
     let max_edges = req.max_edges.unwrap_or(4_000);
+    let all_nodes = req.all.unwrap_or(false);
 
     let refresh_secs = req.refresh_secs.unwrap_or(0);
     let snapshot_override = req.snapshot.clone();
@@ -3131,20 +3136,23 @@ async fn handle_viz_request(
         };
 
         let mut focus_ids: Vec<u32> = Vec::new();
-        if let Some(id) = req.focus_id {
-            focus_ids.push(id);
-        } else if let Some(name) = req.focus_name.as_deref() {
-            let id = crate::viz::resolve_focus_by_name_and_type(
-                &db,
-                name,
-                req.focus_type.as_deref(),
-            )?
-            .ok_or_else(|| anyhow!("could not resolve focus_name `{name}`"))?;
-            focus_ids.push(id);
+        if !all_nodes {
+            if let Some(id) = req.focus_id {
+                focus_ids.push(id);
+            } else if let Some(name) = req.focus_name.as_deref() {
+                let id = crate::viz::resolve_focus_by_name_and_type(
+                    &db,
+                    name,
+                    req.focus_type.as_deref(),
+                )?
+                .ok_or_else(|| anyhow!("could not resolve focus_name `{name}`"))?;
+                focus_ids.push(id);
+            }
         }
 
         let options = crate::viz::VizOptions {
             focus_ids,
+            all_nodes,
             hops,
             max_nodes,
             max_edges,

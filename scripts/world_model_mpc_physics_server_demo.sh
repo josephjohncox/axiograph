@@ -12,6 +12,8 @@ OUT_DIR="$ROOT_DIR/build/world_model_mpc_physics_server_demo"
 PLANE_DIR="$OUT_DIR/accepted_plane"
 READY_FILE="$OUT_DIR/server_ready.json"
 VIZ_OUT="$OUT_DIR/viz.html"
+VIZ_FULL_OUT="$OUT_DIR/viz_full.html"
+VIZ_FULL_JSON="$OUT_DIR/viz_full.json"
 PLAN_OUT="$OUT_DIR/plan_response.json"
 ADMIN_TOKEN="demo-token"
 MODEL_PATH="${WORLD_MODEL_MODEL_PATH:-models/world_model_small.onnx}"
@@ -158,7 +160,14 @@ import json
 import os
 with open(os.environ["READY_FILE"]) as f:
     data = json.load(f)
-print(data["listen"].split(":")[-1])
+addr = data.get("addr", "")
+if addr.startswith("[") and "]" in addr:
+    host, _, port = addr[1:].partition("]")
+    if ":" in port:
+        port = port.split(":")[-1]
+else:
+    port = addr.split(":")[-1]
+print(port)
 PY
 )
 
@@ -200,11 +209,18 @@ echo "-- E) Fetch viz"
 curl -sS "$BASE_URL/viz" >"$VIZ_OUT"
 
 echo ""
+echo "-- F) Fetch full viz (all nodes, all planes)"
+curl -sS "$BASE_URL/viz?plane=both&typed_overlay=true&all=1&max_nodes=200000&max_edges=400000" >"$VIZ_FULL_OUT"
+curl -sS "$BASE_URL/viz.json?plane=both&typed_overlay=true&all=1&max_nodes=200000&max_edges=400000" >"$VIZ_FULL_JSON"
+
+echo ""
 echo "Done."
 echo "Outputs:"
 echo "  $OUT_DIR/server.log"
 echo "  $PLAN_OUT"
 echo "  $VIZ_OUT"
+echo "  $VIZ_FULL_OUT"
+echo "  $VIZ_FULL_JSON"
 
 echo ""
 echo "=== Viz UI demo playbook ==="

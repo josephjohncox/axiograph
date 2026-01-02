@@ -391,13 +391,12 @@ private def checkSymmetricCompatibleWithKeysAndFunctionals
             seenTups := seenTups.insert projVals
             out := out.push projVals
 
-          let apply :=
+          let apply ←
             match condIdx with
-            | none => true
-            | some idx =>
-                match (fullVals.get? idx) with
-                | some v => whereValues.contains v
-                | none => false
+            | none => pure true
+            | some idx => do
+                let v ← listGet! inst.name relationName fullVals idx
+                pure (whereValues.contains v)
 
           if apply then
             let a ← listGet! inst.name relationName projVals swapLeftProj
@@ -471,24 +470,43 @@ private def checkTransitiveCompatibleWithKeysAndFunctionals
     (constraints : Array CoreConstraint)
     (inst : SchemaV1Instance)
     (relationName : Name)
-    (carriers : Option CarrierFieldsV1) : Except String Unit := do
-  let relationFields ← relationFieldOrder m inst.schema relationName
-  if relationFields.size < 2 then
+    (carriers : Option CarrierFieldsV1)
+    (params : Option (Array Name)) : Except String Unit := do
+  let relationFieldsFull ← relationFieldOrder m inst.schema relationName
+  if relationFieldsFull.size < 2 then
     throw s!"instance `{inst.name}` relation `{relationName}`: transitive constraint requires at least 2 fields"
 
   let (carrier0, carrier1, carrier0Idx, carrier1Idx) ←
     match carriers with
     | none =>
-        pure (relationFields[0]!, relationFields[1]!, 0, 1)
+        pure (relationFieldsFull[0]!, relationFieldsFull[1]!, 0, 1)
     | some c =>
-        let leftIdx ← fieldIndex inst.name relationName relationFields c.leftField
-        let rightIdx ← fieldIndex inst.name relationName relationFields c.rightField
+        let leftIdx ← fieldIndex inst.name relationName relationFieldsFull c.leftField
+        let rightIdx ← fieldIndex inst.name relationName relationFieldsFull c.rightField
         if leftIdx == rightIdx then
           throw s!"instance `{inst.name}` relation `{relationName}`: transitive carrier fields must be distinct (got `{c.leftField}` twice)"
         pure (c.leftField, c.rightField, leftIdx, rightIdx)
 
-  -- We only certify "closure compatibility" when keys/functionals are present,
-  -- and only for constraints that talk about the carrier fields.
+  -- Optional "fiber" parameters: transitivity applies within each fixed assignment
+  -- of these parameters (e.g. ctx/time), rather than globally.
+  let ps : Array Name := params.getD #[]
+  -- Validate params (existence + no duplicates + not carriers).
+  for p in ps do
+    if p == carrier0 || p == carrier1 then
+      throw s!"transitive `{inst.schema}.{relationName}`: param field `{p}` must not be a carrier field"
+  let mut seen : Std.HashSet Name := {}
+  for p in ps do
+    if seen.contains p then
+      throw s!"transitive `{inst.schema}.{relationName}`: duplicate param field `{p}`"
+    seen := seen.insert p
+  let mut paramIdxs : Array Nat := #[]
+  for p in ps do
+    paramIdxs := paramIdxs.push (← fieldIndex inst.name relationName relationFieldsFull p)
+
+  let allowed : Array Name := #[carrier0, carrier1] ++ ps
+
+  -- We only certify "closure compatibility" when keys/functionals are present.
+  -- Keys may mention carrier fields and (when `param (...)` is present) param fields.
   let mut hasRelevantChecks := false
   for c in constraints do
     match c with
@@ -496,8 +514,8 @@ private def checkTransitiveCompatibleWithKeysAndFunctionals
         if schema == inst.schema && rel == relationName then
           hasRelevantChecks := true
           for f in keyFields do
-            if f != carrier0 && f != carrier1 then
-              throw s!"transitive `{inst.schema}.{relationName}`: key constraint mentions non-carrier field `{f}` (only `{carrier0}` and `{carrier1}` are supported for transitive closure-compatibility checks)"
+            if !allowed.contains f then
+              throw s!"transitive `{inst.schema}.{relationName}`: key constraint mentions non-carrier/non-param field `{f}`"
     | .functional schema rel src dst =>
         if schema == inst.schema && rel == relationName then
           hasRelevantChecks := true
@@ -511,17 +529,82 @@ private def checkTransitiveCompatibleWithKeysAndFunctionals
     pure ()
   else
     let tuplesRaw := relationTuples inst relationName
-    let closure ← transitiveClosurePairs inst.name relationName relationFields tuplesRaw carrier0Idx carrier1Idx
-    let carrierFields : Array Name := #[carrier0, carrier1]
+    let (relationFields, closure) ←
+      if paramIdxs.isEmpty then
+        let closure ← transitiveClosurePairs inst.name relationName relationFieldsFull tuplesRaw carrier0Idx carrier1Idx
+        pure (#[carrier0, carrier1], closure)
+      else
+        -- Projection field order (preserve declared order).
+        let mut projectionFields : Array Name := #[]
+        for f in relationFieldsFull do
+          if allowed.contains f then
+            projectionFields := projectionFields.push f
+
+        -- Map param field -> index in `ps` / `paramKey`.
+        let mut paramPos : Std.HashMap Name Nat := {}
+        for i in List.range ps.size do
+          paramPos := paramPos.insert (ps[i]!) i
+
+        -- Build adjacency per fiber.
+        let mut adjByParam : Std.HashMap (List Name) (Std.HashMap Name (Array Name)) := {}
+        for tupFields in tuplesRaw do
+          let fullVals ← tupleValuesInOrder inst.name relationName tupFields relationFieldsFull
+          let mut pkey : List Name := []
+          for idx in paramIdxs do
+            pkey := pkey.concat (← listGet! inst.name relationName fullVals idx)
+          let a ← listGet! inst.name relationName fullVals carrier0Idx
+          let b ← listGet! inst.name relationName fullVals carrier1Idx
+
+          let mut adj : Std.HashMap Name (Array Name) := adjByParam.getD pkey {}
+          let current := adj.getD a #[]
+          adj := adj.insert a (current.push b)
+          adjByParam := adjByParam.insert pkey adj
+
+        let mut out : Array (List Name) := #[]
+        for (pkey, adj) in adjByParam.toList do
+          -- Compute carrier closure within this fiber.
+          let mut closurePairs : Std.HashSet (Name × Name) := {}
+          for (src, neighs) in adj.toList do
+            let mut visited : Std.HashSet Name := {}
+            let mut queue : Array Name := neighs
+            let mut i : Nat := 0
+            while i < queue.size do
+              let v := queue[i]!
+              i := i + 1
+              if visited.contains v then
+                continue
+              visited := visited.insert v
+              closurePairs := closurePairs.insert (src, v)
+              let more := adj.getD v #[]
+              for w in more do
+                queue := queue.push w
+
+          -- Emit closure tuples in projection field order.
+          for (a, b) in closurePairs.toList do
+            let mut tup : List Name := []
+            for f in projectionFields do
+              if f == carrier0 then
+                tup := tup.concat a
+              else if f == carrier1 then
+                tup := tup.concat b
+              else
+                let some i := paramPos.get? f
+                  | throw s!"internal error: transitive projection field `{f}` is neither a carrier nor a param"
+                -- pkey is in `ps` order.
+                let pv ← listGet! inst.name relationName pkey i
+                tup := tup.concat pv
+            out := out.push tup
+
+        pure (projectionFields, out)
 
     for c in constraints do
       match c with
       | .key schema rel keyFields =>
           if schema == inst.schema && rel == relationName then
-            checkKeyOnTuples inst.name relationName carrierFields closure keyFields
+            checkKeyOnTuples inst.name relationName relationFields closure keyFields
       | .functional schema rel src dst =>
           if schema == inst.schema && rel == relationName then
-            checkFunctionalOnTuples inst.name relationName carrierFields closure src dst
+            checkFunctionalOnTuples inst.name relationName relationFields closure src dst
       | _ => pure ()
 
 private def parseNatConst (n : Name) : Option Nat :=
@@ -774,18 +857,18 @@ def checkModule (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String Constraint
           if schema == inst.schema then
             checkCount := checkCount + 1
             checkFunctionalConstraint inst rel src dst
-      | .symmetric schema rel carriers =>
+      | .symmetric schema rel carriers params =>
           if schema == inst.schema then
             checkCount := checkCount + 1
-            checkSymmetricCompatibleWithKeysAndFunctionals m constraints inst rel carriers none #[]
-      | .symmetricWhereIn schema rel field values carriers =>
+            checkSymmetricCompatibleWithKeysAndFunctionals m constraints inst rel carriers params none #[]
+      | .symmetricWhereIn schema rel field values carriers params =>
           if schema == inst.schema then
             checkCount := checkCount + 1
-            checkSymmetricCompatibleWithKeysAndFunctionals m constraints inst rel carriers (some field) values
-      | .transitive schema rel carriers =>
+            checkSymmetricCompatibleWithKeysAndFunctionals m constraints inst rel carriers params (some field) values
+      | .transitive schema rel carriers params =>
           if schema == inst.schema then
             checkCount := checkCount + 1
-            checkTransitiveCompatibleWithKeysAndFunctionals m constraints inst rel carriers
+            checkTransitiveCompatibleWithKeysAndFunctionals m constraints inst rel carriers params
       | .typing schema rel rule =>
           if schema == inst.schema then
             checkCount := checkCount + 1

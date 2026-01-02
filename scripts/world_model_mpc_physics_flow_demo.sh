@@ -28,8 +28,11 @@ MERGED_PROPOSALS="$OUT_DIR/wm_plan_proposals.json"
 DRAFT_AXI="$OUT_DIR/wm_plan_draft.axi"
 AXPD_BASE="$OUT_DIR/physics_base.axpd"
 AXPD_OUT="$OUT_DIR/physics_wm.axpd"
+AXPD_WAL="$OUT_DIR/physics_wm_full.axpd"
 CQ_OUT="$OUT_DIR/physics_cq.json"
 VIZ_OUT="$OUT_DIR/physics_wm_viz.html"
+VIZ_FULL_OUT="$OUT_DIR/physics_wm_viz_full.html"
+VIZ_FULL_JSON="$OUT_DIR/physics_wm_viz_full.json"
 MODEL_PATH="${WORLD_MODEL_MODEL_PATH:-models/world_model_small.onnx}"
 PYTHON="${PYTHON:-python}"
 if [ -x "$ROOT_DIR/.venv-onnx/bin/python" ]; then
@@ -181,17 +184,49 @@ echo "-- F) Draft canonical module"
   --infer-constraints
 
 echo ""
-echo "-- G) Promote + rebuild PathDB"
+echo "-- G) Promote + rebuild PathDB (accepted plane)"
 "$AXIOGRAPH" db accept promote "$DRAFT_AXI" --dir "$PLANE_DIR" --message "wm plan draft (physics)" --quality fast
 "$AXIOGRAPH" db accept build-pathdb --dir "$PLANE_DIR" --snapshot head --out "$AXPD_OUT"
 
 echo ""
-echo "-- H) Viz"
+echo "-- H) Commit evidence (WAL) + full PathDB"
+COMMIT_OUT="$("$AXIOGRAPH" db accept pathdb-commit --dir "$PLANE_DIR" --accepted-snapshot head --proposals "$MERGED_PROPOSALS" --message "wm plan proposals (physics)")"
+echo "$COMMIT_OUT"
+WAL_SNAPSHOT="$(echo "$COMMIT_OUT" | grep -oE 'fnv1a64:[0-9a-f]+' | tail -n1)"
+if [ -z "$WAL_SNAPSHOT" ]; then
+  echo "error: failed to parse WAL snapshot id from pathdb-commit output"
+  exit 2
+fi
+"$AXIOGRAPH" db accept pathdb-build --dir "$PLANE_DIR" --snapshot "$WAL_SNAPSHOT" --out "$AXPD_WAL"
+
+echo ""
+echo "-- I) Viz (focused)"
 "$AXIOGRAPH" tools viz "$AXPD_OUT" \
   --out "$VIZ_OUT" \
   --format html \
-  --plane data \
-  --focus-name MinkowskiSpacetime_M4
+  --plane both \
+  --typed-overlay \
+  --max-nodes 1200 \
+  --max-edges 12000
+
+echo ""
+echo "-- J) Viz (full graph, all planes)"
+"$AXIOGRAPH" tools viz "$AXPD_WAL" \
+  --out "$VIZ_FULL_OUT" \
+  --format html \
+  --plane both \
+  --typed-overlay \
+  --all \
+  --max-nodes 200000 \
+  --max-edges 400000
+"$AXIOGRAPH" tools viz "$AXPD_WAL" \
+  --out "$VIZ_FULL_JSON" \
+  --format json \
+  --plane both \
+  --typed-overlay \
+  --all \
+  --max-nodes 200000 \
+  --max-edges 400000
 
 echo ""
 echo "Done."
@@ -200,4 +235,7 @@ echo "  $PLAN_REPORT"
 echo "  $MERGED_PROPOSALS"
 echo "  $DRAFT_AXI"
 echo "  $AXPD_OUT"
+echo "  $AXPD_WAL"
 echo "  $VIZ_OUT"
+echo "  $VIZ_FULL_OUT"
+echo "  $VIZ_FULL_JSON"

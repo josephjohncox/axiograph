@@ -552,7 +552,12 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       pure xs
     let closureClausesP : LineParser (Option CarrierFieldsV1 × Option (Array Name)) := do
       let clause : LineParser (Sum CarrierFieldsV1 (Array Name)) :=
-        (attempt (onClauseP.map Sum.inl)) <|> (attempt (paramClauseP.map Sum.inr))
+        (attempt do
+            let on ← onClauseP
+            pure (Sum.inl on))
+        <|> (attempt do
+            let ps ← paramClauseP
+            pure (Sum.inr ps))
       let clauses ← many clause
       let mut carriers : Option CarrierFieldsV1 := none
       let mut params : Option (Array Name) := none
@@ -634,7 +639,12 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       pure xs
     let closureClausesP : LineParser (Option CarrierFieldsV1 × Option (Array Name)) := do
       let clause : LineParser (Sum CarrierFieldsV1 (Array Name)) :=
-        (attempt (onClauseP.map Sum.inl)) <|> (attempt (paramClauseP.map Sum.inr))
+        (attempt do
+            let on ← onClauseP
+            pure (Sum.inl on))
+        <|> (attempt do
+            let ps ← paramClauseP
+            pure (Sum.inr ps))
       let clauses ← many clause
       let mut carriers : Option CarrierFieldsV1 := none
       let mut params : Option (Array Name) := none

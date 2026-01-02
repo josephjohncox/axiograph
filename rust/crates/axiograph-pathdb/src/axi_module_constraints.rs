@@ -1453,3 +1453,73 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
         check_count,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transitive_param_allows_keys_over_carriers_and_params() {
+        let text = r#"
+module TransitiveParamTest
+
+schema S:
+  object World
+  object Context
+  object Time
+  relation Accessible(from: World, to: World, ctx: Context, time: Time)
+
+theory Rules on S:
+  constraint transitive Accessible param (ctx, time)
+  constraint key Accessible(from, to, ctx, time)
+
+instance Demo of S:
+  World = {A, B, C}
+  Context = {C0}
+  Time = {T0}
+  Accessible = {
+    (from=A, to=B, ctx=C0, time=T0),
+    (from=B, to=C, ctx=C0, time=T0)
+  }
+"#;
+
+        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        check_axi_constraints_ok_v1(&module).expect("axi_constraints_ok_v1 should pass");
+    }
+
+    #[test]
+    fn transitive_param_rejects_keys_that_mention_non_param_fields() {
+        let text = r#"
+module TransitiveParamRejectsWitnessField
+
+schema S:
+  object World
+  object Context
+  object Time
+  object Evidence
+  relation Accessible(from: World, to: World, ctx: Context, time: Time, witness: Evidence)
+
+theory Rules on S:
+  constraint transitive Accessible param (ctx, time)
+  constraint key Accessible(from, to, ctx, time, witness)
+
+instance Demo of S:
+  World = {A, B, C}
+  Context = {C0}
+  Time = {T0}
+  Evidence = {E0}
+  Accessible = {
+    (from=A, to=B, ctx=C0, time=T0, witness=E0),
+    (from=B, to=C, ctx=C0, time=T0, witness=E0)
+  }
+"#;
+
+        let module = axiograph_dsl::schema_v1::parse_schema_v1(text).expect("parse module");
+        let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-carrier/non-param field") && msg.contains("witness"),
+            "unexpected error: {msg}"
+        );
+    }
+}
