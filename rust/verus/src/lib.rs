@@ -24,6 +24,7 @@
 //! - Bitmap bounds: no out-of-bounds access
 //! - Path signatures: length-indexed for safety
 //! - Reachability proofs: witnesses are valid
+//! - Fixed-point probabilities: Lean-aligned `[0, 1]` without floats
 
 // ============================================================================
 // Verus Prelude (only active under Verus)
@@ -121,6 +122,97 @@ impl VProb {
 }
 
 } // verus!
+
+// ============================================================================
+// Verified Fixed-Point Probability (Lean-aligned)
+// ============================================================================
+
+/// Fixed-point denominator shared with the Lean checker (`Axiograph.Prob.Precision`).
+pub const FIXED_POINT_DENOMINATOR: u32 = 1_000_000;
+
+/// A fixed-point probability numerator in `[0, FIXED_POINT_DENOMINATOR]`.
+///
+/// This matches the trusted boundary representation used in certificates.
+#[cfg_attr(verus, verus::trusted)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VFixedProb {
+    numerator: u32,
+}
+
+#[cfg(verus)]
+verus! {
+
+impl VFixedProb {
+    #[verifier::spec]
+    pub open spec fn valid(&self) -> bool {
+        self.numerator <= FIXED_POINT_DENOMINATOR
+    }
+
+    /// Construct a fixed-point probability (proof obligation: in range).
+    #[verifier::proof]
+    #[requires(numerator <= FIXED_POINT_DENOMINATOR)]
+    #[ensures(|result: VFixedProb| result.valid())]
+    pub fn new(numerator: u32) -> (result: VFixedProb) {
+        VFixedProb { numerator }
+    }
+
+    #[ensures(|result: u32| self.valid() ==> result <= FIXED_POINT_DENOMINATOR)]
+    pub fn numerator(&self) -> u32 {
+        self.numerator
+    }
+
+    /// Fixed-point multiplication with rounding down:
+    /// `(a * b) / FIXED_POINT_DENOMINATOR`.
+    #[requires(self.valid() && other.valid())]
+    #[ensures(|result: VFixedProb| result.valid())]
+    pub fn mul(&self, other: &VFixedProb) -> (result: VFixedProb) {
+        let denom = FIXED_POINT_DENOMINATOR as u64;
+        let a = self.numerator as u64;
+        let b = other.numerator as u64;
+        let scaled = (a * b) / denom;
+
+        proof {
+            // Since a <= denom and b <= denom, a*b <= denom*denom.
+            // Dividing by denom yields <= denom.
+            assert(scaled <= denom);
+        }
+
+        VFixedProb { numerator: scaled as u32 }
+    }
+
+    #[requires(self.valid())]
+    #[ensures(|result: VFixedProb| result.valid())]
+    pub fn complement(&self) -> (result: VFixedProb) {
+        VFixedProb { numerator: FIXED_POINT_DENOMINATOR - self.numerator }
+    }
+}
+
+} // verus!
+
+#[cfg(not(verus))]
+impl VFixedProb {
+    pub fn try_new(numerator: u32) -> Option<Self> {
+        (numerator <= FIXED_POINT_DENOMINATOR).then_some(Self { numerator })
+    }
+
+    pub fn numerator(&self) -> u32 {
+        self.numerator
+    }
+
+    pub fn mul(&self, other: &VFixedProb) -> Self {
+        let denom = FIXED_POINT_DENOMINATOR as u64;
+        let scaled = ((self.numerator as u64) * (other.numerator as u64)) / denom;
+        Self {
+            numerator: scaled.min(denom) as u32,
+        }
+    }
+
+    pub fn complement(&self) -> Self {
+        Self {
+            numerator: FIXED_POINT_DENOMINATOR - self.numerator,
+        }
+    }
+}
 
 // ============================================================================
 // Non-Verus fallback implementations
@@ -388,6 +480,15 @@ mod tests {
     }
 
     #[test]
+    fn test_vfixedprob() {
+        let p = VFixedProb::try_new(FIXED_POINT_DENOMINATOR / 2).unwrap();
+        let q = p.mul(&p);
+        assert_eq!(q.numerator(), FIXED_POINT_DENOMINATOR / 4);
+        let c = p.complement();
+        assert_eq!(c.numerator(), FIXED_POINT_DENOMINATOR / 2);
+    }
+
+    #[test]
     fn test_vbitmap() {
         let mut bm = VBitmap::new(100);
         assert_eq!(bm.get(50), Some(false));
@@ -425,4 +526,3 @@ mod tests {
         assert!(!bad_proof.verify());
     }
 }
-

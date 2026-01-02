@@ -91,8 +91,8 @@ q select ?obl where name("ERPEvent_0") -EvidenceSuggestsObligation-> ?obl min_co
 
 # Note: REPL command parsing is token-based. Prefer single-token `fts` queries
 # in scripts (no spaces) to avoid escaping issues.
-q select ?c where ?c is DocChunk, fts(?c, text, backup) limit 10
-q select ?c where ?c is DocChunk, fts(?c, text, lead) limit 10
+q select ?c where ?c is DocChunk, fts(?c, "text", "backup") limit 10
+q select ?c where ?c is DocChunk, fts(?c, "text", "lead") limit 10
 
 # Typed overlay viz (shows inferred supertypes + relation signatures + constraints).
 viz build/supply_chain_modalities_hott_typed.html format html plane both focus_name RawMetal_A hops 2 max_nodes 360 typed_overlay

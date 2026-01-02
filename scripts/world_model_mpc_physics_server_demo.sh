@@ -235,8 +235,8 @@ Explore tab:
 
 Query tab (AxQL):
   select ?q ?u where
-    ?q is Quantity,
-    ?q QuantityHasCanonicalUnit ?u
+    ?q is PhysicsMeasurements.Quantity,
+    ?q -PhysicsMeasurements.QuantityHasCanonicalUnit-> ?u
   limit 10
 
 LLM tab (tool loop):

@@ -38,6 +38,12 @@ Endpoints:
 - `GET /viz` (HTML)
 - `GET /viz.json` (JSON)
 - `GET /viz.dot` (Graphviz DOT)
+
+Note: the `/viz` HTML is served from the Vite frontend in `frontend/viz/dist`.
+Build it first with `make viz-build` (or `cd frontend/viz && npm install && npm run build`).
+
+CLI HTML exports now write a directory with `index.html`, `graph.json`, and
+`assets/`. Open `index.html?data=graph.json`.
 - `POST /llm/to_query` (LLM: question -> query)
 - `POST /llm/agent` (LLM: tool-loop, recommended)
 - `POST /world_model/propose` (world-model proposals -> evidence-plane `proposals.json`)

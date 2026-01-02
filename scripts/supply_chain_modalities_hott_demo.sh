@@ -67,7 +67,7 @@ echo "-- A) Import canonical .axi, explore, and save a snapshot"
   --cmd 'add_edge EvidenceSuggestsObligation PolicyDoc_0 UseBackupSupplier_B confidence 0.95' \
   --cmd 'q select ?obl where name("ERPEvent_0") -EvidenceSuggestsObligation-> ?obl limit 10' \
   --cmd 'q select ?obl where name("ERPEvent_0") -EvidenceSuggestsObligation-> ?obl min_confidence 0.80 limit 10' \
-  --cmd 'q select ?c where ?c is DocChunk, fts(?c, text, backup) limit 10' \
+  --cmd 'q select ?c where ?c is DocChunk, fts(?c, "text", "backup") limit 10' \
   --cmd 'add_entity Homotopy demo_homotopy_0' \
   --cmd 'export_axi '"$EXPORT_AXI" \
   --cmd 'save '"$AXPD" \

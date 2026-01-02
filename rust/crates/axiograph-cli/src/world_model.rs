@@ -62,6 +62,10 @@ pub struct JepaExportOptions {
     pub max_items: usize,
     pub mask_fields: usize,
     pub seed: u64,
+    /// Relation names to exclude from the export (useful to hide snapshot
+    /// implementation details such as `interned_string` when falling back to
+    /// `PathDBExportV1`).
+    pub exclude_relations: Vec<String>,
 }
 
 pub fn build_jepa_export_from_axi_text(
@@ -87,6 +91,11 @@ pub fn build_jepa_export_from_axi_text(
 
     let mut rng = crate::synthetic_pathdb::XorShift64::new(opts.seed);
     let mut items: Vec<JepaExportItemV1> = Vec::new();
+    let excluded: HashSet<&str> = opts
+        .exclude_relations
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
 
     for inst in &module.instances {
         if let Some(filter) = opts.instance_filter.as_ref() {
@@ -99,6 +108,9 @@ pub fn build_jepa_export_from_axi_text(
         };
 
         for assign in &inst.assignments {
+            if excluded.contains(assign.name.as_str()) {
+                continue;
+            }
             if !rel_set.contains(&assign.name) {
                 continue;
             }
@@ -550,6 +562,17 @@ pub struct WorldModelInputV1 {
     pub axi_digest_v1: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub axi_module_text: Option<String>,
+    /// Describes the provenance of `axi_module_text` when provided.
+    ///
+    /// Expected values:
+    /// - `canonical_module_export` (preferred)
+    /// - `pathdb_export_fallback` (debug-only; includes PathDBExportV1 internals)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub axi_input_kind: Option<String>,
+    /// If the snapshot contains multiple canonical modules, records which module
+    /// was selected (or requested) for export.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub axi_input_module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export: Option<JepaExportFileV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -998,6 +1021,8 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
         "max_new_proposals": opts.max_new_proposals,
         "notes": opts.notes,
         "axi_digest_v1": input.axi_digest_v1,
+        "axi_input_kind": input.axi_input_kind,
+        "axi_input_module": input.axi_input_module,
         "export_summary": export_summary,
         "export_path": input.export_path,
     });
@@ -1023,6 +1048,8 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
         "- Use stable ids (e.g. wm::<trace_id>::n).",
         "- Keep confidence between 0.55 and 0.9.",
         "- Use only info grounded in export_summary + goals.",
+        "- Do NOT infer relationships from mere co-occurrence of string tokens/ids (especially intern tables or other low-level snapshot artifacts). If you cannot cite a specific typed item/field in export_summary that supports the proposal, do not propose it.",
+        "- If axi_input_kind is `pathdb_export_fallback`, treat the input as debug-only (it may contain implementation details). Prefer returning fewer proposals with stronger grounding.",
     ]
     .join("\n");
 
@@ -1536,11 +1563,39 @@ instance I of S:
             max_items: 0,
             mask_fields: 1,
             seed: 1,
+            exclude_relations: Vec::new(),
         };
         let export = build_jepa_export_from_axi_text(axi, &opts).expect("export");
         assert!(!export.items.is_empty());
         for item in &export.items {
             assert_eq!(item.mask_fields.len(), 1);
+        }
+    }
+
+    #[test]
+    fn jepa_export_can_exclude_relations() {
+        let axi = r#"
+module M
+schema S:
+  object A
+  relation interned_string(id: A, text: A)
+  relation R(from: A, to: A)
+instance I of S:
+  A = {x, y}
+  interned_string = {(id=x, text=y)}
+  R = {(from=x, to=y)}
+"#;
+        let opts = JepaExportOptions {
+            instance_filter: None,
+            max_items: 0,
+            mask_fields: 1,
+            seed: 1,
+            exclude_relations: vec!["interned_string".to_string()],
+        };
+        let export = build_jepa_export_from_axi_text(axi, &opts).expect("export");
+        assert!(!export.items.is_empty());
+        for item in &export.items {
+            assert_ne!(item.relation, "interned_string");
         }
     }
 

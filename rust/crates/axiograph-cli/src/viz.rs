@@ -10,14 +10,15 @@
 //!
 //! Output formats:
 //! - Graphviz DOT (best-in-class layout, external tooling)
-//! - Self-contained HTML explorer (no deps; works offline)
+//! - HTML explorer (built from frontend/viz/dist)
 //! - JSON (for custom frontends)
 
 #![allow(dead_code)]
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 
 use axiograph_pathdb::axi_meta::{
     ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, ATTR_CONSTRAINT_RELATION, ATTR_FIELD_TYPE, REL_AXI_FACT_IN_CONTEXT,
@@ -1340,6 +1341,60 @@ pub fn render_json(g: &VizGraph) -> Result<String> {
     Ok(serde_json::to_string_pretty(g)?)
 }
 
+pub fn viz_dist_dir() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut dir = cwd.clone();
+    loop {
+        let candidate = dir.join("frontend").join("viz").join("dist");
+        if candidate.join("index.html").exists() {
+            return candidate;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    cwd.join("frontend").join("viz").join("dist")
+}
+
+pub fn viz_index_path() -> PathBuf {
+    viz_dist_dir().join("index.html")
+}
+
+pub fn write_html_bundle(out: &std::path::Path, html: &str) -> Result<PathBuf> {
+    let out_dir = if out.extension().is_some_and(|e| e == "html") {
+        out.with_extension("")
+    } else {
+        out.to_path_buf()
+    };
+    std::fs::create_dir_all(&out_dir)?;
+    let assets_src = viz_dist_dir().join("assets");
+    let assets_dst = out_dir.join("assets");
+    if assets_src.exists() {
+        copy_dir_recursive(&assets_src, &assets_dst)?;
+    }
+    std::fs::write(out_dir.join("index.html"), html)?;
+    std::fs::write(
+        out_dir.join("README.txt"),
+        "Open index.html with ?data=graph.json (e.g., index.html?data=graph.json).\n",
+    )?;
+    Ok(out_dir)
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_recursive(&path, &target)?;
+        } else {
+            std::fs::copy(&path, &target)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn render_html(db: &PathDB, g: &VizGraph) -> Result<String> {
     // Render via a template file so the explorer remains readable/maintainable.
     //
@@ -1347,8 +1402,10 @@ pub fn render_html(db: &PathDB, g: &VizGraph) -> Result<String> {
     // the `<script>` tag if graph data contains `</script>`.
     let json = serde_json::to_string(g)?.replace("</", "<\\/");
 
-    let template = include_str!("../templates/viz_explorer.html");
-    let mut html = template.to_string();
+    let index_path = viz_index_path();
+    let template = std::fs::read_to_string(&index_path)
+        .with_context(|| format!("missing viz frontend at {}", index_path.display()))?;
+    let mut html = template;
     html = html.replace("{{GRAPH_JSON}}", &json);
     html = html.replace("{{NODES_COUNT}}", &g.nodes.len().to_string());
     html = html.replace("{{EDGES_COUNT}}", &g.edges.len().to_string());

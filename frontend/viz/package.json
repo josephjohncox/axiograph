@@ -1,0 +1,16 @@
+{
+  "name": "axiograph-viz",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:debug": "vite build --mode debug",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vite": "^5.4.6"
+  }
+}

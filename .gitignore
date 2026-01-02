@@ -92,6 +92,7 @@ output
 data_cache
 data/header-data.json
 .DS_Store
+frontend/viz/node_modules/
 
 ## Core latex/pdflatex auxiliary files:
 *.aux

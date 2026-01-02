@@ -31,6 +31,7 @@
 	verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1 \
 	verify-lean-certificates verify-lean-e2e-suite \
 	rust-test-semantics verify-semantics test-semantics \
+	viz-install viz-build viz-dev \
 	demo test clean install help
 
 # ============================================================================
@@ -517,6 +518,30 @@ docs: rust
 	@echo "✓ Docs available at $(RUST_DIR)/target/doc/index.html"
 
 # ============================================================================
+# Frontend (Viz)
+# ============================================================================
+
+viz-install:
+	@echo "━━━ Installing viz frontend deps ━━━"
+	cd frontend/viz && npm install
+	@echo "✓ Viz deps installed"
+
+viz-build:
+	@echo "━━━ Building viz frontend ━━━"
+	cd frontend/viz && npm install && npm run build
+	@echo "✓ Viz frontend built (frontend/viz/dist)"
+
+viz-build-debug:
+	@echo "━━━ Building viz frontend (debug) ━━━"
+	cd frontend/viz && npm install && npm run build:debug
+	@echo "✓ Viz frontend built (debug) (frontend/viz/dist)"
+
+viz-dev:
+	@echo "━━━ Starting viz frontend dev server ━━━"
+	@echo "Tip: open the Vite dev URL and point Axiograph to it for UI iteration."
+	cd frontend/viz && npm install && npm run dev
+
+# ============================================================================
 # Clean
 # ============================================================================
 
@@ -557,6 +582,9 @@ help:
 	@echo "  verify-lean-cert  Verify CERT=... (optional AXI=...)"
 	@echo "  verify-lean-e2e  Rust → Lean certificate check"
 	@echo "  verify-semantics  Focused Rust+Lean semantics suite"
+	@echo "  viz-build    Build the viz frontend (frontend/viz/dist)"
+	@echo "  viz-build-debug  Build the viz frontend without minify + with sourcemaps"
+	@echo "  viz-dev      Run the viz frontend dev server (Vite)"
 	@echo ""
 	@echo "Prerequisites:"
 	@echo "  - Rust 1.75+ (cargo)"

@@ -193,7 +193,7 @@ Explore tab:
 
 Query tab (AxQL):
   select ?child ?parent where
-    ?child Parent ?parent
+    ?child -Parent-> ?parent
   limit 10
 
 LLM tab (tool loop):

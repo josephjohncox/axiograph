@@ -1,0 +1,402 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Axiograph Graph Explorer</title>
+<style>
+
+.app-shell { background: radial-gradient(circle at top left, #f7f6f1 0%, #fbfbfd 40%, #f7f8ff 100%); min-height: 100vh; }
+:root {
+  --ink: #1f2430;
+  --muted: #5b6475;
+  --panel: #ffffff;
+  --panel-border: #e6e7ee;
+  --accent: #2b7fff;
+  --accent-soft: #e9f1ff;
+  --sunset: #ffb86b;
+  --olive: #3e5d3a;
+  --shadow: 0 12px 30px rgba(24,32,56,0.08);
+}
+body { font-family: "Space Grotesk", "Avenir Next", "Helvetica Neue", Arial, sans-serif; margin: 0; color: var(--ink); }
+header { padding: 14px 18px; border-bottom: 1px solid var(--panel-border); display: flex; flex-direction: column; gap: 6px; background: rgba(255,255,255,0.8); backdrop-filter: blur(10px); }
+main { display: grid; grid-template-columns: 360px minmax(0, 1fr); height: calc(100vh - 64px); }
+aside { border-right: 1px solid var(--panel-border); overflow: auto; padding: 14px; background: #f9f8f4; }
+section { overflow: auto; padding: 0; display: grid; grid-template-rows: 440px 1fr; }
+.graph { border-bottom: 1px solid var(--panel-border); background: #fcfcfd; }
+.detail { overflow: auto; padding: 14px 18px; background: #fff; }
+input[type="search"] { width: 100%; padding: 10px 12px; font-size: 14px; border-radius: 10px; border: 1px solid var(--panel-border); }
+.serverbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.serverbar select, .serverbar input { padding: 6px 8px; font-size: 13px; border: 1px solid var(--panel-border); border-radius: 8px; background: #fff; }
+.filters select { padding: 6px 8px; font-size: 13px; border: 1px solid var(--panel-border); border-radius: 8px; background: #fff; }
+.btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: #fff; cursor: pointer; }
+.btn:hover { border-color: #c7ccd9; }
+.tabs { margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tabbtn { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--panel-border); background: #fff; cursor: pointer; font-size: 13px; }
+.tabbtn:hover { border-color: #c7ccd9; }
+.tabbtn.active { border-color: var(--accent); background: var(--accent-soft); color: #1b2a4a; }
+.tabpanel { display: none; }
+.tabpanel.active { display: block; }
+.badge { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; background:#f3f6ff; color:#244; font-size:12px; border:1px solid #dbe5ff; }
+.badge strong { font-weight:600; }
+.btn.preset.active { border-color: var(--accent); background: var(--accent-soft); color: #1b2a4a; }
+.filters { margin-top: 12px; padding: 12px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow); }
+.filters .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.filters label { font-size: 13px; color: var(--ink); user-select: none; }
+.filters input[type="checkbox"] { margin-right: 6px; }
+.filters button { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: #fff; cursor: pointer; }
+.filters button:hover { border-color: #c7ccd9; }
+.node { padding: 8px 10px; border: 1px solid var(--panel-border); border-radius: 10px; margin-top: 8px; cursor: pointer; background: #fff; }
+.node:hover { border-color: #c7ccd9; }
+.node.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(43,127,255,0.15); }
+.node.highlighted { border-color: var(--sunset); box-shadow: 0 0 0 2px rgba(255,184,107,0.25); }
+.node-list-virtual { position: relative; overflow-y: auto; max-height: 360px; border: 1px solid var(--panel-border); border-radius: 12px; padding: 6px; background: #fff; }
+.node-list-viewport { position: absolute; left: 0; right: 0; top: 0; }
+.node-list-spacer { width: 100%; }
+.node-list-virtual .node { margin-top: 6px; }
+.nodegroup { margin-top: 12px; }
+.nodegroup > summary { cursor: pointer; font-size: 13px; user-select:none; }
+.nodegroup > summary .muted { margin-left: 6px; }
+.nodegroup .node { margin-top: 6px; }
+.muted { color: var(--muted); font-size: 12px; }
+.llmchat { border: 1px solid var(--panel-border); border-radius: 10px; padding: 8px; max-height: 220px; overflow: auto; background: #fafafa; }
+.llmmsg { margin: 0 0 10px 0; }
+.llmmsg:last-child { margin-bottom: 0; }
+.llmmsg .role { font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+.llmmsg.user .role { color: #2b7fff; }
+.llmmsg.assistant .role { color: #8a5a00; }
+.llmmsg .text { white-space: pre-wrap; font-size: 12px; color: #222; }
+.proplist { border: 1px solid #eee; border-radius: 10px; background: #fff; overflow: hidden; }
+.proprow { padding: 8px 10px; border-bottom: 1px solid #eee; display: flex; gap: 10px; align-items: flex-start; }
+.proprow:last-child { border-bottom: none; }
+.proprow .main { flex: 1; min-width: 0; }
+.proprow .line { font-size: 12px; color: #222; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proprow .sub { margin-top: 4px; font-size: 12px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proprow details { margin-top: 6px; }
+.proprow summary { cursor: pointer; user-select: none; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #eee; background: #fafafa; font-size: 11px; color: #444; margin-left: 6px; }
+.chip.ok { border-color: #b7f0c0; background: #f3fff5; color: #1b5e20; }
+.chip.bad { border-color: #ffd2d2; background: #fff5f5; color: #8a0000; }
+.detailtabs { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin: 6px 0 12px 0; }
+.detailtabbtn { padding: 6px 10px; border-radius: 999px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 13px; }
+.detailtabbtn:hover { border-color: #bbb; }
+.detailtabbtn.active { border-color: #2b7fff; background: #f5f9ff; }
+.detailtabpanel { display:none; }
+.detailtabpanel.active { display:block; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+a.link { color: #2b7fff; text-decoration: none; }
+a.link:hover { text-decoration: underline; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 2px solid #999; margin-left: 6px; margin-right: 4px; vertical-align: middle; }
+.swatch.plane-accepted { border-color: #1b5e20; }
+.swatch.plane-evidence { border-color: #b85c00; }
+.swatch.plane-data { border-color: #2b7fff; }
+.swatch.plane-meta { border-color: #777; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+<header>
+<strong>Axiograph Graph Explorer</strong>
+<div class="muted">nodes=<span id="graph_nodes">0</span>, edges=<span id="graph_edges">0</span>, truncated=<span id="graph_truncated">false</span></div>
+<div id="server_controls" class="serverbar muted"></div>
+</header>
+<main>
+<aside>
+<input id="search" type="search" placeholder="Search by id/type/name…"/>
+<div class="tabs">
+  <button class="tabbtn active" data-tab="explore" type="button">explore</button>
+  <button class="tabbtn" data-tab="query" type="button">query</button>
+  <button class="tabbtn" data-tab="llm" type="button">llm</button>
+  <button class="tabbtn" data-tab="world_model" type="button">world model</button>
+  <button class="tabbtn" data-tab="review" type="button">review</button>
+  <button class="tabbtn" data-tab="add" type="button">add</button>
+</div>
+
+<div id="tab_explore" class="filters tabpanel active">
+  <div class="row"><strong style="font-size:13px;">Explore</strong> <span class="muted">(shift-click 2 nodes to highlight a path)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <span class="muted">layout:</span>
+    <select id="layout_algo">
+      <option value="radial">radial</option>
+      <option value="grid">grid (BFS)</option>
+      <option value="type_columns">type columns</option>
+      <option value="random">random</option>
+    </select>
+    <select id="layout_center">
+      <option value="focus">center: focus</option>
+      <option value="selected">center: selected</option>
+    </select>
+    <button id="layout_refresh" class="btn" type="button" title="Recompute layout positions">refresh</button>
+    <button id="layout_fit" class="btn" type="button" title="Fit view to visible nodes">fit</button>
+    <button id="layout_reset_view" class="btn" type="button" title="Reset pan/zoom">reset view</button>
+  </div>
+  <div class="row" style="margin-top:6px;">
+    <span class="muted">presets:</span>
+    <button class="btn preset" type="button" data-layout-preset="radial">radial</button>
+    <button class="btn preset" type="button" data-layout-preset="grid">grid</button>
+    <button class="btn preset" type="button" data-layout-preset="type_columns">types</button>
+    <span class="muted" style="margin-left:8px;">labels:</span>
+    <select id="label_density">
+      <option value="smart">smart</option>
+      <option value="all">all</option>
+      <option value="none">none</option>
+    </select>
+  </div>
+  <details id="nav_help" style="margin-top:8px;">
+    <summary class="muted">? navigation tips</summary>
+    <div class="muted" style="margin-top:6px; line-height:1.45;">
+      <div><code>click</code> node to inspect • <code>shift+click</code> two nodes to highlight a path</div>
+      <div><code>Alt+drag</code> pan • <code>scroll</code> zoom • <code>r</code> refresh layout • <code>f</code> fit • <code>0</code> reset view</div>
+      <div><code>Esc</code> clear path • <code>/</code> focus search</div>
+    </div>
+  </details>
+  <div class="row" style="margin-top:8px;"><span class="muted">planes:</span>
+    <label><input type="checkbox" id="show_plane_accepted" checked/><span class="swatch plane-accepted"></span>accepted</label>
+    <label><input type="checkbox" id="show_plane_evidence" checked/><span class="swatch plane-evidence"></span>evidence</label>
+    <label><input type="checkbox" id="show_plane_data" checked/><span class="swatch plane-data"></span>data</label>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">runs:</span>
+    <select id="run_filter"></select>
+    <label><input type="checkbox" id="show_only_run"/>only run</label>
+    <button id="run_clear" type="button">clear</button>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">context:</span>
+    <select id="context_filter"></select>
+    <span id="context_badge" class="badge" style="margin-left:6px; display:none;"></span>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">nodes:</span>
+    <label><input type="checkbox" id="show_entity" checked/>entity</label>
+    <label><input type="checkbox" id="show_fact" checked/>fact</label>
+    <label><input type="checkbox" id="show_morphism" checked/>morphism</label>
+    <label><input type="checkbox" id="show_homotopy" checked/>homotopy</label>
+    <label><input type="checkbox" id="show_meta" checked/>meta</label>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">edges:</span>
+    <label><input type="checkbox" id="show_edge_relation" checked/>relation</label>
+    <label><input type="checkbox" id="show_edge_equivalence" checked/>equiv</label>
+    <label><input type="checkbox" id="show_edge_meta" checked/>meta</label>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">confidence:</span>
+    <label style="display:flex; align-items:center; gap:8px;">min <input type="range" id="min_confidence" min="0" max="1" step="0.05" value="0"/> <span id="min_confidence_val" class="muted">0.00</span></label>
+    <label><input type="checkbox" id="opacity_by_confidence" checked/>opacity</label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="clear_path" type="button">Clear path</button>
+    <button id="certify_path" type="button">Certify path</button>
+    <button id="verify_path" type="button">Verify path</button>
+    <span id="path_status" class="muted"></span>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="jump_component" class="btn" type="button">other component</button>
+    <span id="component_status" class="muted"></span>
+  </div>
+
+  <div style="margin-top:10px;">
+    <div class="row"><strong style="font-size:13px;">Nodes</strong> <span class="muted">(grouped by type)</span></div>
+    <div id="nodes"></div>
+  </div>
+</div>
+
+<div id="tab_query" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">Query</strong> <span class="muted">(AxQL)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="axql_query" rows="4" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="select ?x where ..."></textarea>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="axql_run" class="btn">run</button>
+    <button id="axql_cert" class="btn">certify</button>
+    <button id="axql_verify" class="btn">certify+verify</button>
+    <span id="axql_status" class="muted"></span>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">query output</summary><pre id="axql_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:8px;"><summary class="muted">certificate</summary><pre id="cert_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+
+<div id="tab_llm" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">LLM</strong> <span class="muted">(tool-loop)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <input id="llm_question" type="search" placeholder="Ask a question…"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="llm_auto_commit" type="checkbox"/>
+      auto-commit validated overlays (requires admin token)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="llm_certify" type="checkbox"/>
+      certify executed query steps (best-effort)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="llm_verify" type="checkbox"/>
+      verify query certificates (Lean) (best-effort)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="llm_require_verified" type="checkbox"/>
+      require verified query certificates (fail closed)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="llm_ask" class="btn">ask</button>
+    <button id="llm_to_query" class="btn">to query</button>
+    <button id="llm_clear" class="btn">clear chat</button>
+    <span id="llm_status" class="muted"></span>
+  </div>
+  <div id="llm_chat" class="llmchat" style="margin-top:8px;"></div>
+  <details style="margin-top:8px;"><summary class="muted">citations / opened chunk</summary><pre id="llm_citations" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:8px;"><summary class="muted">llm debug</summary><pre id="llm_debug" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+
+<div id="tab_world_model" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">World Model</strong> <span class="muted">(propose / plan)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="wm_goals" rows="3" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="goals (one per line)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
+    <input id="wm_max_new" type="number" min="0" step="1" placeholder="max new proposals (0 = no cap)" style="flex:1; min-width:150px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+    <input id="wm_seed" type="number" min="0" step="1" placeholder="seed (optional)" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
+    <input id="wm_steps" type="number" min="1" step="1" value="2" placeholder="steps" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+    <input id="wm_rollouts" type="number" min="1" step="1" value="2" placeholder="rollouts" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
+    <select id="wm_guardrail_profile">
+      <option value="fast" selected>guardrail: fast</option>
+      <option value="strict">guardrail: strict</option>
+      <option value="off">guardrail: off</option>
+    </select>
+    <select id="wm_guardrail_plane">
+      <option value="both" selected>plane: both</option>
+      <option value="meta">plane: meta</option>
+      <option value="data">plane: data</option>
+    </select>
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="wm_include_guardrail" type="checkbox" checked/>
+      include guardrail
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="wm_task_costs" rows="2" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="task costs (name=value[:weight[:unit]], one per line)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="wm_auto_commit" type="checkbox"/>
+      auto-commit to WAL (requires admin token)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="wm_commit_stepwise" type="checkbox"/>
+      commit stepwise (plan only)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="wm_propose" class="btn">propose</button>
+    <button id="wm_plan" class="btn">plan</button>
+    <span id="wm_status" class="muted"></span>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">response</summary><pre id="wm_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+
+<div id="tab_review" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">Review</strong> <span class="muted">(draft overlay → WAL → accepted)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <input id="review_filter" type="search" placeholder="Filter proposals… (name, type, rel, id)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="review_select_all" class="btn" type="button">select all</button>
+    <button id="review_select_none" class="btn" type="button">select none</button>
+    <button id="review_clear" class="btn" type="button">clear draft</button>
+    <span id="review_status" class="muted"></span>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input id="review_message" type="search" placeholder="commit/promote message (optional)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input id="review_admin_token" type="password" placeholder="admin token (optional; required for commit/promote)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="review_commit" class="btn" type="button">commit selected (WAL)</button>
+    <button id="review_draft_axi" class="btn" type="button">draft .axi</button>
+    <button id="review_promote_axi" class="btn" type="button">promote</button>
+  </div>
+  <div id="review_list" class="proplist" style="margin-top:10px;"></div>
+  <details style="margin-top:10px;"><summary class="muted">validation</summary><pre id="review_validation" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:10px;"><summary class="muted">draft axi text</summary><textarea id="review_axi_text" rows="10" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="draft .axi text will appear here (editable before promotion)"></textarea></details>
+  <details style="margin-top:10px;"><summary class="muted">commit response</summary><pre id="review_commit_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:10px;"><summary class="muted">promote response</summary><pre id="review_promote_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:10px;"><summary class="muted">raw draft overlay</summary><pre id="review_overlay_raw" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+
+<div id="tab_add" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">Add Data</strong> <span class="muted">(WAL overlay → new snapshot)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <input id="add_rel_type" type="search" placeholder="relation type (e.g. Parent)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="add_source_name" rows="2" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="source name(s) (one per line; e.g. Alice)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="add_target_name" rows="2" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="target name(s) (one per line; e.g. Bob)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px;">
+    <span class="muted">pairing</span>
+    <select id="add_pairing">
+      <option value="cartesian">all pairs (cartesian)</option>
+      <option value="zip">zip pairs (line i ↔ line i)</option>
+    </select>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px;">
+    <input id="add_context" type="search" placeholder="context (optional; e.g. FamilyTree)"/>
+    <button id="add_ctx_from_filter" class="btn" title="Fill context from current context filter">use</button>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="add_evidence_text" rows="3" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="evidence text (optional; stored as DocChunk for grounding)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label style="display:flex; align-items:center; gap:8px; width:100%;">
+      <span class="muted">confidence</span>
+      <input type="range" id="add_confidence" min="0" max="1" step="0.05" value="0.9" style="flex:1;"/>
+      <span id="add_confidence_val" class="muted">0.90</span>
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input id="add_message" type="search" placeholder="commit message (optional; synced with Review tab)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <input id="add_admin_token" type="password" placeholder="admin token (optional; synced with Review tab)"/>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="add_generate" class="btn">generate</button>
+    <button id="add_commit" class="btn">commit</button>
+    <span id="add_status" class="muted"></span>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">generated proposals</summary><pre id="add_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <details style="margin-top:8px;"><summary class="muted">commit response</summary><pre id="add_commit_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+  <div class="row" style="margin-top:10px;"><strong style="font-size:13px;">Discovery</strong> <span class="muted">(draft canonical .axi)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <button id="add_draft_axi" class="btn">draft .axi</button>
+    <button id="add_promote_axi" class="btn">promote</button>
+    <span id="add_promote_status" class="muted"></span>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">draft axi text</summary><textarea id="add_axi_text" rows="10" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="draft .axi text will appear here (editable before promotion)"></textarea></details>
+  <details style="margin-top:8px;"><summary class="muted">promote response</summary><pre id="add_promote_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+</aside>
+<section>
+<div class="graph"><svg id="svg" width="100%" height="100%"></svg></div>
+<div id="detail" class="detail muted">Select a node to inspect attributes and edges.</div>
+</section>
+ </main>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

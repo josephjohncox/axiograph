@@ -873,6 +873,7 @@ fn cmd_perf_world_model(
             max_items: export_max_items,
             mask_fields: export_mask_fields,
             seed: export_seed,
+            exclude_relations: Vec::new(),
         };
         jepa_export = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
 

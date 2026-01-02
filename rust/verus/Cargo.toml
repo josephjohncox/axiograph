@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Verus-verified components for Axiograph"
 
+[workspace]
+members = ["."]
+resolver = "2"
+
 [dependencies]
 # Verus is used as a verification tool, not a runtime dependency
 # To verify: verus --crate-type lib src/lib.rs
@@ -14,4 +18,3 @@ verus = [] # Enable when running under Verus verifier
 
 [lib]
 path = "src/lib.rs"
-

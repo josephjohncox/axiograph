@@ -4533,6 +4533,8 @@ fn tool_loop_tools_schema(
                 "type": "object",
                 "properties": {
                     "goals": { "type": "array", "items": { "type": "string" } },
+                    "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
+                    "require_canonical_axi": { "type": "boolean", "description": "If true, refuse to run unless a canonical module export is available." },
                     "seed": { "type": "integer", "minimum": 0 },
                     "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
                     "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
@@ -4551,6 +4553,8 @@ fn tool_loop_tools_schema(
                 "type": "object",
                 "properties": {
                     "goals": { "type": "array", "items": { "type": "string" } },
+                    "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
+                    "require_canonical_axi": { "type": "boolean", "description": "If true, refuse to run unless a canonical module export is available." },
                     "seed": { "type": "integer", "minimum": 0 },
                     "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
                     "horizon_steps": { "type": "integer", "minimum": 1, "maximum": 20 },
@@ -4633,12 +4637,6 @@ fn execute_tool_call(
     }
 }
 
-fn export_pathdb_anchor_axi(db: &PathDB) -> Result<(String, String)> {
-    let axi = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(db)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi);
-    Ok((digest, axi))
-}
-
 fn tool_world_model_propose(
     db: &PathDB,
     ctx: Option<&ToolLoopWorldModelContext>,
@@ -4652,6 +4650,12 @@ fn tool_world_model_propose(
     struct Args {
         #[serde(default)]
         goals: Vec<String>,
+        /// Optional canonical `.axi` module name to export and feed into the world model.
+        #[serde(default)]
+        axi_module: Option<String>,
+        /// If true, refuse to run unless a canonical module export is available.
+        #[serde(default)]
+        require_canonical_axi: Option<bool>,
         #[serde(default)]
         seed: Option<u64>,
         #[serde(default)]
@@ -4704,27 +4708,53 @@ fn tool_world_model_propose(
         input.guardrail = guardrail.clone();
     }
     input.notes.push("source=llm_tool_loop".to_string());
-    if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db) {
-        input.axi_digest_v1 = Some(digest.clone());
-        input.axi_module_text = Some(axi_text.clone());
+    let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
+        module_name: a.axi_module.clone(),
+        require_canonical: a.require_canonical_axi.unwrap_or(false),
+    };
+    let exported = crate::world_model_input::export_pathdb_world_model_axi(db, &opts)?;
+    input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
+    input.axi_module_text = Some(exported.axi_text.clone());
+    input.axi_input_kind = Some(exported.kind.as_str().to_string());
+    input.axi_input_module = exported.selected_module_name.clone();
+    input.notes.push(format!("axi_input_kind={}", exported.kind.as_str()));
+    if let Some(m) = exported.selected_module_name.as_ref() {
+        input.notes.push(format!("axi_input_module={m}"));
+    }
+    if matches!(
+        exported.kind,
+        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+    ) {
+        input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
+    }
         let max_items = a
             .max_new_proposals
             .unwrap_or(0)
             .saturating_mul(20)
             .min(2000)
             .max(1000);
+        let exclude_relations = if matches!(
+            exported.kind,
+            crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+        ) {
+            vec!["interned_string".to_string()]
+        } else {
+            Vec::new()
+        };
         let export_opts = crate::world_model::JepaExportOptions {
             instance_filter: None,
             max_items,
             mask_fields: 1,
             seed: 1,
+            exclude_relations,
         };
-        if let Ok(export) =
-            crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+        if let Ok(export) = crate::world_model::build_jepa_export_from_axi_text(
+            &exported.axi_text,
+            &export_opts,
+        )
         {
             input.export = Some(export);
         }
-    }
     input.snapshot = ctx.snapshot.clone();
 
     let max_keep = a.max_new_proposals.unwrap_or(0);
@@ -4790,6 +4820,12 @@ fn tool_world_model_plan(
     struct Args {
         #[serde(default)]
         goals: Vec<String>,
+        /// Optional canonical `.axi` module name to export and feed into the world model.
+        #[serde(default)]
+        axi_module: Option<String>,
+        /// If true, refuse to run unless a canonical module export is available.
+        #[serde(default)]
+        require_canonical_axi: Option<bool>,
         #[serde(default)]
         seed: Option<u64>,
         #[serde(default)]
@@ -4835,25 +4871,53 @@ fn tool_world_model_plan(
 
     let mut base_input = crate::world_model::WorldModelInputV1::default();
     base_input.notes.push("source=llm_tool_loop".to_string());
-    if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db) {
-        base_input.axi_digest_v1 = Some(digest.clone());
-        base_input.axi_module_text = Some(axi_text.clone());
+    let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
+        module_name: a.axi_module.clone(),
+        require_canonical: a.require_canonical_axi.unwrap_or(false),
+    };
+    let exported = crate::world_model_input::export_pathdb_world_model_axi(db, &opts)?;
+    base_input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
+    base_input.axi_module_text = Some(exported.axi_text.clone());
+    base_input.axi_input_kind = Some(exported.kind.as_str().to_string());
+    base_input.axi_input_module = exported.selected_module_name.clone();
+    base_input
+        .notes
+        .push(format!("axi_input_kind={}", exported.kind.as_str()));
+    if let Some(m) = exported.selected_module_name.as_ref() {
+        base_input.notes.push(format!("axi_input_module={m}"));
+    }
+    if matches!(
+        exported.kind,
+        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+    ) {
+        base_input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
+    }
         let max_items = max_new_proposals
             .saturating_mul(20)
             .min(2000)
             .max(1000);
+        let exclude_relations = if matches!(
+            exported.kind,
+            crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+        ) {
+            vec!["interned_string".to_string()]
+        } else {
+            Vec::new()
+        };
         let export_opts = crate::world_model::JepaExportOptions {
             instance_filter: None,
             max_items,
             mask_fields: 1,
             seed: 1,
+            exclude_relations,
         };
-        if let Ok(export) =
-            crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+        if let Ok(export) = crate::world_model::build_jepa_export_from_axi_text(
+            &exported.axi_text,
+            &export_opts,
+        )
         {
             base_input.export = Some(export);
         }
-    }
     base_input.snapshot = ctx.snapshot.clone();
 
     let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {

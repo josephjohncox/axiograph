@@ -26,7 +26,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -622,6 +622,19 @@ async fn handle_request(
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
+    if method == Method::GET && path.starts_with("/viz/") {
+        if path == "/viz/" || path == "/viz/index.html" {
+            return match handle_viz_get(&state, req.uri().query()).await {
+                Ok(r) => Ok(r),
+                Err(e) => Ok(json_error(StatusCode::BAD_REQUEST, &e.to_string())),
+            };
+        }
+        return Ok(match handle_viz_static_get(&path).await {
+            Ok(r) => r,
+            Err(e) => json_error(StatusCode::NOT_FOUND, &e.to_string()),
+        });
+    }
+
     let resp = match (method, path.as_str()) {
         (Method::GET, "/healthz") => text_response(StatusCode::OK, "ok\n"),
         (Method::GET, "/status") => match status_payload(&state) {
@@ -648,10 +661,18 @@ async fn handle_request(
             Ok(v) => json_response(StatusCode::OK, &v),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
         },
-        (Method::GET, "/viz") => match handle_viz_get(&state, req.uri().query()).await {
-            Ok(r) => r,
-            Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
-        },
+        (Method::GET, "/viz") => {
+            let mut location = String::from("/viz/");
+            if let Some(q) = req.uri().query() {
+                location.push('?');
+                location.push_str(q);
+            }
+            Response::builder()
+                .status(StatusCode::FOUND)
+                .header("location", location)
+                .body(Full::new(Bytes::new()))
+                .unwrap_or_else(|_e| text_response(StatusCode::INTERNAL_SERVER_ERROR, "viz redirect failed\n"))
+        }
         (Method::GET, "/viz.json") => match handle_viz_get_as(&state, req.uri().query(), "json").await
         {
             Ok(r) => r,
@@ -1296,6 +1317,12 @@ struct WorldModelProposeRequestV1 {
     /// Optional goals/targets for the world model (free-form).
     #[serde(default)]
     goals: Vec<String>,
+    /// Optional canonical `.axi` module name to export and feed into the world model.
+    #[serde(default)]
+    axi_module: Option<String>,
+    /// If true, refuse to run unless a canonical module export is available.
+    #[serde(default)]
+    require_canonical_axi: Option<bool>,
     /// Optional seed passed to the world model.
     #[serde(default)]
     seed: Option<u64>,
@@ -1345,6 +1372,12 @@ struct WorldModelPlanRequestV1 {
     /// Optional goals/targets for the world model (free-form).
     #[serde(default)]
     goals: Vec<String>,
+    /// Optional canonical `.axi` module name to export and feed into the world model.
+    #[serde(default)]
+    axi_module: Option<String>,
+    /// If true, refuse to run unless a canonical module export is available.
+    #[serde(default)]
+    require_canonical_axi: Option<bool>,
     /// Optional seed passed to the world model.
     #[serde(default)]
     seed: Option<u64>,
@@ -2439,27 +2472,51 @@ async fn handle_world_model_propose(
             input.guardrail = guardrail.clone();
         }
         input.notes.push("source=db_server".to_string());
-        if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db.as_ref()) {
-            input.axi_digest_v1 = Some(digest.clone());
-            input.axi_module_text = Some(axi_text.clone());
+        let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
+            module_name: req2.axi_module.clone(),
+            require_canonical: req2.require_canonical_axi.unwrap_or(false),
+        };
+        let exported = crate::world_model_input::export_pathdb_world_model_axi(db.as_ref(), &opts)?;
+        input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
+        input.axi_module_text = Some(exported.axi_text.clone());
+        input.axi_input_kind = Some(exported.kind.as_str().to_string());
+        input.axi_input_module = exported.selected_module_name.clone();
+        input.notes.push(format!("axi_input_kind={}", exported.kind.as_str()));
+        if let Some(m) = exported.selected_module_name.as_ref() {
+            input.notes.push(format!("axi_input_module={m}"));
+        }
+        if matches!(
+            exported.kind,
+            crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+        ) {
+            input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
+        }
             let max_items = req2
                 .max_new_proposals
                 .unwrap_or(0)
                 .saturating_mul(20)
                 .min(2000)
                 .max(1000);
+            let exclude_relations = if matches!(
+                exported.kind,
+                crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+            ) {
+                vec!["interned_string".to_string()]
+            } else {
+                Vec::new()
+            };
             let export_opts = crate::world_model::JepaExportOptions {
                 instance_filter: None,
                 max_items,
                 mask_fields: 1,
                 seed: 1,
+                exclude_relations,
             };
             if let Ok(export) =
-                crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+                crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
             {
                 input.export = Some(export);
             }
-        }
 
         input.snapshot = Some(match &config.source {
             SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
@@ -2519,7 +2576,11 @@ async fn handle_world_model_propose(
             proposals.proposals.truncate(max_keep);
         }
 
-        let notes = response.notes.clone();
+        let mut notes = response.notes.clone();
+        notes.push(format!("axi_input_kind={}", exported.kind.as_str()));
+        if let Some(m) = exported.selected_module_name.as_ref() {
+            notes.push(format!("axi_input_module={m}"));
+        }
         Ok::<_, anyhow::Error>((response.trace_id, proposals, guardrail, notes))
     }).await?;
 
@@ -2622,22 +2683,49 @@ async fn handle_world_model_plan(
                 base_input
                     .notes
                     .push(format!("source=db_server_plan step={step_idx}"));
-                if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db.as_ref()) {
-                    base_input.axi_digest_v1 = Some(digest.clone());
-                    base_input.axi_module_text = Some(axi_text.clone());
+                let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
+                    module_name: req2.axi_module.clone(),
+                    require_canonical: req2.require_canonical_axi.unwrap_or(false),
+                };
+                let exported =
+                    crate::world_model_input::export_pathdb_world_model_axi(db.as_ref(), &opts)?;
+                base_input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
+                base_input.axi_module_text = Some(exported.axi_text.clone());
+                base_input.axi_input_kind = Some(exported.kind.as_str().to_string());
+                base_input.axi_input_module = exported.selected_module_name.clone();
+                base_input
+                    .notes
+                    .push(format!("axi_input_kind={}", exported.kind.as_str()));
+                if let Some(m) = exported.selected_module_name.as_ref() {
+                    base_input.notes.push(format!("axi_input_module={m}"));
+                }
+                if matches!(
+                    exported.kind,
+                    crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+                ) {
+                    base_input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
+                }
                     let max_items = max_new.saturating_mul(20).min(2000).max(1000);
+                    let exclude_relations = if matches!(
+                        exported.kind,
+                        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+                    ) {
+                        vec!["interned_string".to_string()]
+                    } else {
+                        Vec::new()
+                    };
                     let export_opts = crate::world_model::JepaExportOptions {
                         instance_filter: None,
                         max_items,
                         mask_fields: 1,
                         seed: 1,
+                        exclude_relations,
                     };
                     if let Ok(export) =
-                        crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+                        crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
                     {
                         base_input.export = Some(export);
                     }
-                }
                 base_input.snapshot = Some(match &config.source {
                     SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
                         kind: "axpd".to_string(),
@@ -2757,22 +2845,48 @@ async fn handle_world_model_plan(
         let report = state.world_model_executor.run(move || {
             let mut base_input = crate::world_model::WorldModelInputV1::default();
             base_input.notes.push("source=db_server_plan".to_string());
-            if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db.as_ref()) {
-                base_input.axi_digest_v1 = Some(digest.clone());
-                base_input.axi_module_text = Some(axi_text.clone());
+            let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
+                module_name: req2.axi_module.clone(),
+                require_canonical: req2.require_canonical_axi.unwrap_or(false),
+            };
+            let exported = crate::world_model_input::export_pathdb_world_model_axi(db.as_ref(), &opts)?;
+            base_input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
+            base_input.axi_module_text = Some(exported.axi_text.clone());
+            base_input.axi_input_kind = Some(exported.kind.as_str().to_string());
+            base_input.axi_input_module = exported.selected_module_name.clone();
+            base_input
+                .notes
+                .push(format!("axi_input_kind={}", exported.kind.as_str()));
+            if let Some(m) = exported.selected_module_name.as_ref() {
+                base_input.notes.push(format!("axi_input_module={m}"));
+            }
+            if matches!(
+                exported.kind,
+                crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+            ) {
+                base_input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
+            }
                 let max_items = max_new.saturating_mul(20).min(2000).max(1000);
+                let exclude_relations = if matches!(
+                    exported.kind,
+                    crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+                ) {
+                    vec!["interned_string".to_string()]
+                } else {
+                    Vec::new()
+                };
                 let export_opts = crate::world_model::JepaExportOptions {
                     instance_filter: None,
                     max_items,
                     mask_fields: 1,
                     seed: 1,
+                    exclude_relations,
                 };
                 if let Ok(export) =
-                    crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+                    crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
                 {
                     base_input.export = Some(export);
                 }
-            }
             base_input.snapshot = Some(match &config.source {
                 SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
                     kind: "axpd".to_string(),
@@ -3075,6 +3189,54 @@ async fn handle_viz_get(
 ) -> Result<Response<Full<Bytes>>> {
     let req = viz_request_from_query(query)?;
     handle_viz_request(state, req).await
+}
+
+async fn handle_viz_static_get(path: &str) -> Result<Response<Full<Bytes>>> {
+    let dist_dir = crate::viz::viz_dist_dir();
+    let rel = path.trim_start_matches("/viz/");
+    if rel.is_empty() {
+        return Err(anyhow!("missing viz asset"));
+    }
+    if rel.contains("..") {
+        return Err(anyhow!("invalid viz asset path"));
+    }
+    let file_path = dist_dir.join(rel);
+    let data = tokio::fs::read(&file_path).await.with_context(|| {
+        format!(
+            "viz asset not found (expected {}); run `npm install && npm run build` in frontend/viz",
+            file_path.display()
+        )
+    })?;
+    let mime = viz_static_mime(rel);
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", mime)
+        .body(Full::new(Bytes::from(data)))?)
+}
+
+fn viz_static_mime(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".js") {
+        "application/javascript"
+    } else if lower.ends_with(".css") {
+        "text/css"
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".json") {
+        "application/json"
+    } else if lower.ends_with(".map") {
+        "application/json"
+    } else if lower.ends_with(".woff2") {
+        "font/woff2"
+    } else if lower.ends_with(".woff") {
+        "font/woff"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 async fn handle_viz_post(

@@ -47,6 +47,7 @@ mod synthetic_pathdb;
 mod viz;
 mod web;
 mod world_model;
+mod world_model_input;
 
 #[derive(Parser)]
 #[command(name = "axiograph")]
@@ -3855,14 +3856,27 @@ fn cmd_viz(
         crate::viz::VizFormat::Html => crate::viz::render_html(&db, &g)?,
     };
 
-    fs::write(out, rendered)?;
-    println!(
-        "wrote {} (nodes={} edges={} truncated={})",
-        out.display(),
-        g.nodes.len(),
-        g.edges.len(),
-        g.truncated
-    );
+    if matches!(format, crate::viz::VizFormat::Html) {
+        let out_dir = crate::viz::write_html_bundle(out, &rendered)?;
+        let json = crate::viz::render_json(&g)?;
+        fs::write(out_dir.join("graph.json"), json)?;
+        println!(
+            "wrote {} (nodes={} edges={} truncated={})",
+            out_dir.display(),
+            g.nodes.len(),
+            g.edges.len(),
+            g.truncated
+        );
+    } else {
+        fs::write(out, rendered)?;
+        println!(
+            "wrote {} (nodes={} edges={} truncated={})",
+            out.display(),
+            g.nodes.len(),
+            g.edges.len(),
+            g.truncated
+        );
+    }
     Ok(())
 }
 
@@ -6533,6 +6547,7 @@ fn cmd_discover_jepa_export(
         max_items,
         mask_fields,
         seed,
+        exclude_relations: Vec::new(),
     };
     crate::world_model::write_jepa_export(input, out, &opts)?;
     println!("wrote {}", out.display());
@@ -6948,6 +6963,7 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
             max_items: args.export_max_items,
             mask_fields: args.export_mask_fields,
             seed: args.export_seed,
+            exclude_relations: Vec::new(),
         };
         let export = crate::world_model::build_jepa_export_from_axi_text(text, &opts)?;
         if let Some(out_path) = args.export_out.as_ref() {

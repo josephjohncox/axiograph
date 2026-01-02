@@ -302,7 +302,12 @@ For quick exploration beyond raw `show`/`follow`, the REPL can export a small
 neighborhood graph around an entity as:
 
 - Graphviz DOT (best layout; render to SVG/PNG with `dot`)
-- a self-contained offline HTML explorer (simple radial graph view + node inspector)
+- an HTML explorer (simple radial graph view + node inspector)
+
+Note: HTML output is served from `frontend/viz/dist`. Run `make viz-build`
+once before exporting HTML (`viz ... format html`). The export now writes a
+directory containing `index.html` + `graph.json` + `assets/`. Open
+`index.html?data=graph.json` in a browser.
 
 Examples:
 

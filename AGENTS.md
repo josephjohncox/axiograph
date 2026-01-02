@@ -23,6 +23,7 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - `axiograph_v6/rust/crates/axiograph-llm-sync/src/path_verification.rs` implements a typed `VerifiedGraph`, `Path`, conflict detection.
 - **Rust formal verification tooling is already present (partial)**:
   - `axiograph_v6/rust/verus/` exists as a verification crate (Verus-oriented).
+- **Viz frontend (TS)**: `frontend/viz/` is a Vite + TypeScript app; servers/tools load HTML from `frontend/viz/dist` (no embedded template fallback).
 
 ### Decision (committed direction)
 

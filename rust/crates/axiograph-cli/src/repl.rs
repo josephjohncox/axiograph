@@ -1453,19 +1453,31 @@ fn cmd_viz(state: &ReplState, args: &[String]) -> Result<()> {
     } else {
         crate::viz::extract_viz_graph_with_meta(db, &options, state.meta.as_ref())?
     };
-    let rendered = match crate::viz::VizFormat::parse(&format)? {
+    let format = crate::viz::VizFormat::parse(&format)?;
+    let rendered = match format {
         crate::viz::VizFormat::Dot => crate::viz::render_dot(db, &g),
         crate::viz::VizFormat::Json => crate::viz::render_json(&g)?,
         crate::viz::VizFormat::Html => crate::viz::render_html(db, &g)?,
     };
-    fs::write(&out, rendered)?;
-    println!(
-        "wrote {} (nodes={} edges={} truncated={})",
-        out.display(),
-        g.nodes.len(),
-        g.edges.len(),
-        g.truncated
-    );
+    if matches!(format, crate::viz::VizFormat::Html) {
+        let out_dir = crate::viz::write_html_bundle(&out, &rendered)?;
+        println!(
+            "wrote {} (nodes={} edges={} truncated={})",
+            out_dir.display(),
+            g.nodes.len(),
+            g.edges.len(),
+            g.truncated
+        );
+    } else {
+        fs::write(&out, rendered)?;
+        println!(
+            "wrote {} (nodes={} edges={} truncated={})",
+            out.display(),
+            g.nodes.len(),
+            g.edges.len(),
+            g.truncated
+        );
+    }
     Ok(())
 }
 
@@ -2852,13 +2864,21 @@ fn cmd_neigh(state: &ReplState, args: &[String]) -> Result<()> {
     );
 
     if let Some(out) = out.as_ref() {
-        let rendered = match crate::viz::VizFormat::parse(&format)? {
+        let format = crate::viz::VizFormat::parse(&format)?;
+        let rendered = match format {
             crate::viz::VizFormat::Dot => crate::viz::render_dot(db, &g),
             crate::viz::VizFormat::Json => crate::viz::render_json(&g)?,
             crate::viz::VizFormat::Html => crate::viz::render_html(db, &g)?,
         };
-        fs::write(out, rendered)?;
-        println!("wrote {}", out.display());
+        if matches!(format, crate::viz::VizFormat::Html) {
+            let out_dir = crate::viz::write_html_bundle(out, &rendered)?;
+            let json = crate::viz::render_json(&g)?;
+            fs::write(out_dir.join("graph.json"), json)?;
+            println!("wrote {}", out_dir.display());
+        } else {
+            fs::write(out, rendered)?;
+            println!("wrote {}", out.display());
+        }
     }
 
     Ok(())
@@ -4617,6 +4637,7 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
             max_items: 0,
             mask_fields: 1,
             seed: 1,
+            exclude_relations: Vec::new(),
         };
         export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
     }
@@ -4931,6 +4952,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
             max_items: 0,
             mask_fields: 1,
             seed: 1,
+            exclude_relations: Vec::new(),
         };
         export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
     }
