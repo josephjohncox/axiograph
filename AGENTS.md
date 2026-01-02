@@ -168,7 +168,7 @@ Deliver a **proof-carrying knowledge backend** where every high-value inference 
 
 **Rust formal verification (Verus, additive)**
 - [x] Optional Verus target: `make verify-verus` (runs `rust/verus/src/lib.rs` if Verus is installed).
-- [ ] Align Verus probability model with Lean fixed-point `VProb` (avoid floats in verified core).
+- [x] Align Verus probability model with Lean fixed-point `VProb` (avoid floats in verified core).
 - [ ] Prove certificate invariants for runtime witnesses (reachability, normalization, reconciliation).
 
 **Rust “dependent type” encodings (design)**

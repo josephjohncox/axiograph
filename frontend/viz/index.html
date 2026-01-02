@@ -26,8 +26,13 @@ section { overflow: auto; padding: 0; display: grid; grid-template-rows: 440px 1
 .graph { border-bottom: 1px solid var(--panel-border); background: #fcfcfd; }
 .detail { overflow: auto; padding: 14px 18px; background: #fff; }
 input[type="search"] { width: 100%; padding: 10px 12px; font-size: 14px; border-radius: 10px; border: 1px solid var(--panel-border); }
-.serverbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.serverbar select, .serverbar input { padding: 6px 8px; font-size: 13px; border: 1px solid var(--panel-border); border-radius: 8px; background: #fff; }
+.serverbar { display: block; }
+.serverbar select, .serverbar input { padding: 6px 8px; font-size: 12px; border: 1px solid var(--panel-border); border-radius: 8px; background: #fff; }
+.server-panel { width: 100%; border: 1px solid var(--panel-border); border-radius: 10px; padding: 6px 10px; background: #fff; }
+.server-panel > summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; }
+.server-controls-grid { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.server-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.server-row .btn { padding: 4px 8px; font-size: 12px; }
 .filters select { padding: 6px 8px; font-size: 13px; border: 1px solid var(--panel-border); border-radius: 8px; background: #fff; }
 .btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: #fff; cursor: pointer; }
 .btn:hover { border-color: #c7ccd9; }
@@ -41,8 +46,11 @@ input[type="search"] { width: 100%; padding: 10px 12px; font-size: 14px; border-
 .badge strong { font-weight:600; }
 .btn.preset.active { border-color: var(--accent); background: var(--accent-soft); color: #1b2a4a; }
 .filters { margin-top: 12px; padding: 12px; border: 1px solid var(--panel-border); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow); }
-.filters .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-.filters label { font-size: 13px; color: var(--ink); user-select: none; }
+.filters .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.filters label { font-size: 12px; color: var(--ink); user-select: none; }
+.filters details { border: 1px solid #eee; border-radius: 10px; padding: 8px 10px; background: #fafafa; margin-top: 8px; }
+.filters details > summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; }
+.filters details .row { margin-top: 8px; }
 .filters input[type="checkbox"] { margin-right: 6px; }
 .filters button { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--panel-border); background: #fff; cursor: pointer; }
 .filters button:hover { border-color: #c7ccd9; }
@@ -54,6 +62,12 @@ input[type="search"] { width: 100%; padding: 10px 12px; font-size: 14px; border-
 .node-list-viewport { position: absolute; left: 0; right: 0; top: 0; }
 .node-list-spacer { width: 100%; }
 .node-list-virtual .node { margin-top: 6px; }
+.context-menu { position: fixed; z-index: 1000; min-width: 200px; background: #fff; border: 1px solid var(--panel-border); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; display: none; }
+.context-menu-item { width: 100%; text-align: left; background: transparent; border: none; padding: 6px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; color: var(--ink); }
+.context-menu-item:hover:not(:disabled) { background: var(--accent-soft); }
+.context-menu-item:disabled { color: #999; cursor: default; }
+.context-menu-item.danger:hover:not(:disabled) { background: #fff2f2; color: #8a0000; }
+.context-menu-sep { height: 1px; background: #eee; margin: 4px 0; }
 .nodegroup { margin-top: 12px; }
 .nodegroup > summary { cursor: pointer; font-size: 13px; user-select:none; }
 .nodegroup > summary .muted { margin-left: 6px; }
@@ -100,7 +114,12 @@ a.link:hover { text-decoration: underline; }
 <header>
 <strong>Axiograph Graph Explorer</strong>
 <div class="muted">nodes=<span id="graph_nodes">0</span>, edges=<span id="graph_edges">0</span>, truncated=<span id="graph_truncated">false</span></div>
-<div id="server_controls" class="serverbar muted"></div>
+<div class="serverbar muted">
+  <details id="server_controls_panel" class="server-panel">
+    <summary>server controls</summary>
+    <div id="server_controls" class="server-controls-grid"></div>
+  </details>
+</div>
 </header>
 <main>
 <aside>
@@ -152,51 +171,62 @@ a.link:hover { text-decoration: underline; }
       <div><code>Esc</code> clear path • <code>/</code> focus search</div>
     </div>
   </details>
-  <div class="row" style="margin-top:8px;"><span class="muted">planes:</span>
-    <label><input type="checkbox" id="show_plane_accepted" checked/><span class="swatch plane-accepted"></span>accepted</label>
-    <label><input type="checkbox" id="show_plane_evidence" checked/><span class="swatch plane-evidence"></span>evidence</label>
-    <label><input type="checkbox" id="show_plane_data" checked/><span class="swatch plane-data"></span>data</label>
-  </div>
-  <div class="row" style="margin-top:8px;"><span class="muted">runs:</span>
-    <select id="run_filter"></select>
-    <label><input type="checkbox" id="show_only_run"/>only run</label>
-    <button id="run_clear" type="button">clear</button>
-  </div>
-  <div class="row" style="margin-top:8px;"><span class="muted">context:</span>
-    <select id="context_filter"></select>
-    <span id="context_badge" class="badge" style="margin-left:6px; display:none;"></span>
-  </div>
-  <div class="row" style="margin-top:8px;"><span class="muted">nodes:</span>
-    <label><input type="checkbox" id="show_entity" checked/>entity</label>
-    <label><input type="checkbox" id="show_fact" checked/>fact</label>
-    <label><input type="checkbox" id="show_morphism" checked/>morphism</label>
-    <label><input type="checkbox" id="show_homotopy" checked/>homotopy</label>
-    <label><input type="checkbox" id="show_meta" checked/>meta</label>
-  </div>
-  <div class="row" style="margin-top:8px;"><span class="muted">edges:</span>
-    <label><input type="checkbox" id="show_edge_relation" checked/>relation</label>
-    <label><input type="checkbox" id="show_edge_equivalence" checked/>equiv</label>
-    <label><input type="checkbox" id="show_edge_meta" checked/>meta</label>
-  </div>
-  <div class="row" style="margin-top:8px;"><span class="muted">confidence:</span>
-    <label style="display:flex; align-items:center; gap:8px;">min <input type="range" id="min_confidence" min="0" max="1" step="0.05" value="0"/> <span id="min_confidence_val" class="muted">0.00</span></label>
-    <label><input type="checkbox" id="opacity_by_confidence" checked/>opacity</label>
-  </div>
-  <div class="row" style="margin-top:8px;">
-    <button id="clear_path" type="button">Clear path</button>
-    <button id="certify_path" type="button">Certify path</button>
-    <button id="verify_path" type="button">Verify path</button>
-    <span id="path_status" class="muted"></span>
-  </div>
-  <div class="row" style="margin-top:8px;">
-    <button id="jump_component" class="btn" type="button">other component</button>
-    <span id="component_status" class="muted"></span>
-  </div>
+  <details open>
+    <summary>filters</summary>
+    <div class="row"><span class="muted">planes:</span>
+      <label><input type="checkbox" id="show_plane_accepted" checked/><span class="swatch plane-accepted"></span>accepted</label>
+      <label><input type="checkbox" id="show_plane_evidence" checked/><span class="swatch plane-evidence"></span>evidence</label>
+      <label><input type="checkbox" id="show_plane_data" checked/><span class="swatch plane-data"></span>data</label>
+    </div>
+    <div class="row"><span class="muted">runs:</span>
+      <select id="run_filter"></select>
+      <label><input type="checkbox" id="show_only_run"/>only run</label>
+      <button id="run_clear" type="button">clear</button>
+    </div>
+    <div class="row"><span class="muted">context:</span>
+      <select id="context_filter"></select>
+      <span id="context_badge" class="badge" style="margin-left:6px; display:none;"></span>
+    </div>
+    <div class="row"><span class="muted">nodes:</span>
+      <label><input type="checkbox" id="show_entity" checked/>entity</label>
+      <label><input type="checkbox" id="show_fact" checked/>fact</label>
+      <label><input type="checkbox" id="show_morphism" checked/>morphism</label>
+      <label><input type="checkbox" id="show_homotopy" checked/>homotopy</label>
+      <label><input type="checkbox" id="show_meta" checked/>meta</label>
+    </div>
+    <div class="row"><span class="muted">edges:</span>
+      <label><input type="checkbox" id="show_edge_relation" checked/>relation</label>
+      <label><input type="checkbox" id="show_edge_equivalence" checked/>equiv</label>
+      <label><input type="checkbox" id="show_edge_meta" checked/>meta</label>
+    </div>
+    <div class="row"><span class="muted">confidence:</span>
+      <label style="display:flex; align-items:center; gap:8px;">min <input type="range" id="min_confidence" min="0" max="1" step="0.05" value="0"/> <span id="min_confidence_val" class="muted">0.00</span></label>
+      <label><input type="checkbox" id="opacity_by_confidence" checked/>opacity</label>
+    </div>
+  </details>
 
-  <div style="margin-top:10px;">
-    <div class="row"><strong style="font-size:13px;">Nodes</strong> <span class="muted">(grouped by type)</span></div>
+  <details>
+    <summary>path tools</summary>
+    <div class="row">
+      <button id="clear_path" type="button">Clear path</button>
+      <button id="certify_path" type="button">Certify path</button>
+      <button id="verify_path" type="button">Verify path</button>
+    </div>
+    <div class="row"><span id="path_status" class="muted"></span></div>
+  </details>
+
+  <details>
+    <summary>components</summary>
+    <div class="row">
+      <button id="jump_component" class="btn" type="button">other component</button>
+      <span id="component_status" class="muted"></span>
+    </div>
+  </details>
+
+  <details open>
+    <summary>nodes</summary>
     <div id="nodes"></div>
-  </div>
+  </details>
 </div>
 
 <div id="tab_query" class="filters tabpanel">

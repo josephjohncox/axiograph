@@ -459,6 +459,7 @@ initPathUi(appCtx);
 initContextFilter(appCtx);
 Object.assign(appCtx, initRunFilter(appCtx));
 Object.assign(appCtx, initComponents(appCtx));
+appCtx.clearPath = clearPath;
 
 Object.assign(appCtx, {
   setActiveTab,
@@ -634,6 +635,8 @@ async function certifySelectedPath(verify) {
   }
 }
 
+appCtx.certifySelectedPath = certifySelectedPath;
+
 if (certifyPathBtn) certifyPathBtn.addEventListener("click", () => certifySelectedPath(false));
 if (verifyPathBtn) verifyPathBtn.addEventListener("click", () => certifySelectedPath(true));
 
@@ -731,8 +734,20 @@ function resetViewToDefault() {
   setViewBox();
 }
 
+function centerViewOnNode(nodeId) {
+  if (!ui.nodePos || !ui.nodePos.has(nodeId)) return;
+  const p = ui.nodePos.get(nodeId);
+  view.x = p.x - view.w / 2;
+  view.y = p.y - view.h / 2;
+  setViewBox();
+}
+
 if (layoutFitBtn) layoutFitBtn.addEventListener("click", fitViewToLayoutBounds);
 if (layoutResetViewBtn) layoutResetViewBtn.addEventListener("click", resetViewToDefault);
+
+appCtx.fitViewToLayoutBounds = fitViewToLayoutBounds;
+appCtx.resetViewToDefault = resetViewToDefault;
+appCtx.centerViewOnNode = centerViewOnNode;
 
 // Keyboard shortcuts (avoid interfering with typing in inputs).
 window.addEventListener("keydown", (ev) => {

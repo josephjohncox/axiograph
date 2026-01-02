@@ -152,12 +152,15 @@ export async function initServerControls(ctx) {
     info.textContent = `layer=${layer} snapshots=${list.length}`;
 
     serverControlsEl.innerHTML = "";
-    serverControlsEl.appendChild(label);
-    serverControlsEl.appendChild(headBtn);
-    serverControlsEl.appendChild(newerBtn);
-    serverControlsEl.appendChild(olderBtn);
-    serverControlsEl.appendChild(sel);
-    serverControlsEl.appendChild(info);
+    const snapshotRow = document.createElement("div");
+    snapshotRow.className = "server-row";
+    snapshotRow.appendChild(label);
+    snapshotRow.appendChild(headBtn);
+    snapshotRow.appendChild(newerBtn);
+    snapshotRow.appendChild(olderBtn);
+    snapshotRow.appendChild(sel);
+    snapshotRow.appendChild(info);
+    serverControlsEl.appendChild(snapshotRow);
 
     const params2 = new URLSearchParams(window.location.search || "");
     const curFocusName = params2.get("focus_name") || "";
@@ -274,19 +277,22 @@ export async function initServerControls(ctx) {
       setParams({ focus_id: v, focus_name: null, all: null });
     });
 
-    serverControlsEl.appendChild(focusLabel);
-    serverControlsEl.appendChild(focusInput);
-    serverControlsEl.appendChild(focusNameBtn);
-    serverControlsEl.appendChild(focusIdInput);
-    serverControlsEl.appendChild(focusIdBtn);
-    serverControlsEl.appendChild(focusSelectedBtn);
-    serverControlsEl.appendChild(allBtn);
-    serverControlsEl.appendChild(neighBtn);
-    serverControlsEl.appendChild(compBtn);
+    const focusRow = document.createElement("div");
+    focusRow.className = "server-row";
+    focusRow.appendChild(focusLabel);
+    focusRow.appendChild(focusInput);
+    focusRow.appendChild(focusNameBtn);
+    focusRow.appendChild(focusIdInput);
+    focusRow.appendChild(focusIdBtn);
+    focusRow.appendChild(focusSelectedBtn);
+    focusRow.appendChild(allBtn);
+    focusRow.appendChild(neighBtn);
+    focusRow.appendChild(compBtn);
     if (ctxs.length) {
-      serverControlsEl.appendChild(ctxLabel);
-      serverControlsEl.appendChild(ctxSelect);
+      focusRow.appendChild(ctxLabel);
+      focusRow.appendChild(ctxSelect);
     }
+    serverControlsEl.appendChild(focusRow);
   } catch (_e) {
     // ignore: offline or no server endpoints
   }

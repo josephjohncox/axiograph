@@ -14,7 +14,7 @@ PLANE_DIR="$OUT_DIR/accepted_plane"
 READY_FILE="$OUT_DIR/server_ready.json"
 VIZ_OUT="$OUT_DIR/viz.html"
 PLAN_OUT="$OUT_DIR/plan_response.json"
-ADMIN_TOKEN="demo-token"
+ADMIN_TOKEN="${ADMIN_TOKEN:-demo-token}"
 
 if [ -z "${AXIOGRAPH_DEMO_KEEP:-}" ]; then
   rm -rf "$PLANE_DIR"
@@ -181,6 +181,7 @@ echo "Outputs:"
 echo "  $OUT_DIR/server.log"
 echo "  $PLAN_OUT"
 echo "  $VIZ_OUT"
+echo "admin token: $ADMIN_TOKEN"
 
 echo ""
 echo "=== Viz UI demo playbook ==="

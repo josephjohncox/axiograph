@@ -14,6 +14,7 @@ cd "$ROOT_DIR"
 OUT_DIR="$ROOT_DIR/build/db_server_api_demo"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
+ADMIN_TOKEN="${ADMIN_TOKEN:-demo-admin-token}"
 
 echo "== PathDB server API demo =="
 echo "root: $ROOT_DIR"
@@ -40,7 +41,7 @@ AXPD="$OUT_DIR/ontology_rewrites.axpd"
 echo ""
 echo "-- B) Start server (ephemeral port)"
 READY="$OUT_DIR/ready.json"
-"$AXIOGRAPH" db serve --axpd "$AXPD" --listen 127.0.0.1:0 --ready-file "$READY" >"$OUT_DIR/server.log" 2>&1 &
+"$AXIOGRAPH" db serve --axpd "$AXPD" --listen 127.0.0.1:0 --ready-file "$READY" --admin-token "$ADMIN_TOKEN" >"$OUT_DIR/server.log" 2>&1 &
 SERVER_PID=$!
 trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
@@ -63,6 +64,7 @@ PY
 
 ADDR="$(cat "$OUT_DIR/addr.txt")"
 echo "server: http://$ADDR"
+echo "admin token: $ADMIN_TOKEN"
 
 echo ""
 echo "-- C) Status + query over HTTP"

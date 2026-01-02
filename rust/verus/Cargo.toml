@@ -8,6 +8,9 @@ description = "Verus-verified components for Axiograph"
 members = ["."]
 resolver = "2"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus)"] }
+
 [dependencies]
 # Verus is used as a verification tool, not a runtime dependency
 # To verify: verus --crate-type lib src/lib.rs
