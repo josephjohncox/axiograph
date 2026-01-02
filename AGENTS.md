@@ -95,6 +95,9 @@ Deliver a **proof-carrying knowledge backend** where every high-value inference 
   - `axiograph_v6/rust/crates/axiograph-pathdb/src/verified.rs` (`ReachabilityProof`, `VerifiedProb`)
   - `axiograph_v6/rust/crates/axiograph-llm-sync/src/path_verification.rs`
 - **Build entrypoint**: `axiograph_v6/Makefile`
+- **Competency questions + world model demos**:
+  - CLI: `axiograph discover competency-questions` (schema-driven or NL→AxQL with LLM)
+  - Physics-scale demos: `scripts/world_model_mpc_physics_*_demo.sh` and `examples/competency_questions/physics_cq.json`
 
 ### Migration checklist (living)
 

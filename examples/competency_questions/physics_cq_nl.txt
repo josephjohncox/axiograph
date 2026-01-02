@@ -1,0 +1,8 @@
+List a physics concept in the ontology.
+Which concepts require DifferentialGeometry?
+Find a Lie group and its Lie algebra.
+Find a manifold and its dimension.
+Find a metric defined on a smooth manifold.
+Find a Levi-Civita connection associated with a metric.
+Find a curvature tensor associated with a connection.
+Show a measurement observation record with run, quantity, unit, context, and time.

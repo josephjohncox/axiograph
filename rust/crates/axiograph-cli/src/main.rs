@@ -19,6 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod accepted_plane;
 mod analyze;
 mod axql;
+mod competency_questions;
 mod db_server;
 mod doc_chunks;
 mod embeddings;
@@ -1254,6 +1255,9 @@ enum DiscoverCommands {
         seed: u64,
     },
 
+    /// Generate or translate competency questions (AxQL) for coverage checks.
+    CompetencyQuestions(CompetencyQuestionsArgs),
+
     /// Run a world model plugin to propose new facts/relations (evidence plane).
     WorldModelPropose(WorldModelProposeArgs),
 }
@@ -1369,6 +1373,88 @@ struct WorldModelProposeArgs {
     /// Validation plane: meta|data|both.
     #[arg(long, default_value = "both")]
     quality_plane: String,
+}
+
+#[derive(Args, Debug, Clone)]
+struct CompetencyQuestionsArgs {
+    /// Input `.axi` or `.axpd` snapshot (for schema + NL query translation).
+    input: PathBuf,
+
+    /// Output JSON file (array of competency questions).
+    #[arg(short, long)]
+    out: PathBuf,
+
+    /// Optional natural-language question file (txt or json) to translate.
+    #[arg(long)]
+    from_nl: Option<PathBuf>,
+
+    /// Disable schema-based generation (use only `--from-nl`).
+    #[arg(long)]
+    no_schema: bool,
+
+    /// Exclude object-type questions from schema generation.
+    #[arg(long)]
+    no_types: bool,
+
+    /// Exclude relation questions from schema generation.
+    #[arg(long)]
+    no_relations: bool,
+
+    /// Default minimum rows required to satisfy a CQ.
+    #[arg(long, default_value_t = 1)]
+    min_rows: usize,
+
+    /// Default weight (penalty) when a CQ is unsatisfied.
+    #[arg(long, default_value_t = 1.0)]
+    weight: f64,
+
+    /// Default contexts to scope the CQ (repeatable).
+    #[arg(long)]
+    context: Vec<String>,
+
+    /// Cap the number of emitted questions (0 = no cap).
+    #[arg(long, default_value_t = 0)]
+    max_questions: usize,
+
+    /// Use the mock NLQ backend for NL->AxQL translation.
+    #[arg(long)]
+    llm_mock: bool,
+
+    /// Use the built-in Ollama backend for NL->AxQL translation.
+    #[arg(long)]
+    llm_ollama: bool,
+
+    /// Optional Ollama host override.
+    #[arg(long)]
+    llm_ollama_host: Option<String>,
+
+    /// Use the built-in OpenAI backend for NL->AxQL translation.
+    #[arg(long)]
+    llm_openai: bool,
+
+    /// Optional OpenAI base URL override.
+    #[arg(long)]
+    llm_openai_base_url: Option<String>,
+
+    /// Use the built-in Anthropic backend for NL->AxQL translation.
+    #[arg(long)]
+    llm_anthropic: bool,
+
+    /// Optional Anthropic base URL override.
+    #[arg(long)]
+    llm_anthropic_base_url: Option<String>,
+
+    /// Optional LLM plugin executable (speaks `axiograph_llm_plugin_v2`).
+    #[arg(long)]
+    llm_plugin: Option<PathBuf>,
+
+    /// Extra args for `--llm-plugin` (repeatable).
+    #[arg(long)]
+    llm_plugin_arg: Vec<String>,
+
+    /// Model name (for LLM backends or plugins).
+    #[arg(long)]
+    llm_model: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -2157,6 +2243,9 @@ fn main() -> Result<()> {
                     mask_fields,
                     seed,
                 )?;
+            }
+            DiscoverCommands::CompetencyQuestions(args) => {
+                cmd_discover_competency_questions(&args)?;
             }
             DiscoverCommands::WorldModelPropose(args) => {
                 cmd_world_model_propose(&args)?;
@@ -6363,6 +6452,194 @@ fn cmd_discover_jepa_export(
     crate::world_model::write_jepa_export(input, out, &opts)?;
     println!("wrote {}", out.display());
     Ok(())
+}
+
+fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<()> {
+    let db = load_pathdb_for_cli(&args.input)?;
+
+    let options = crate::competency_questions::CompetencyQuestionOptions {
+        include_types: !args.no_types,
+        include_relations: !args.no_relations,
+        min_rows: args.min_rows,
+        weight: args.weight,
+        contexts: args.context.clone(),
+    };
+
+    let mut out: Vec<crate::world_model::CompetencyQuestionV1> = Vec::new();
+    if !args.no_schema {
+        let mut generated = crate::competency_questions::generate_from_schema(&db, &options)?;
+        out.append(&mut generated);
+    }
+
+    if let Some(path) = args.from_nl.as_ref() {
+        let prompts = crate::competency_questions::load_question_prompts(path)?;
+        let needs_llm = prompts.iter().any(|p| p.query.is_none());
+        let llm = if needs_llm {
+            Some(resolve_llm_state_for_competency_questions(args)?)
+        } else {
+            None
+        };
+        let mut translated = crate::competency_questions::prompts_to_competency_questions(
+            &db,
+            llm.as_ref(),
+            &prompts,
+            &options,
+        )?;
+        out.append(&mut translated);
+    }
+
+    if out.is_empty() {
+        return Err(anyhow!(
+            "no competency questions generated (enable schema generation or pass --from-nl)"
+        ));
+    }
+
+    if args.max_questions > 0 && out.len() > args.max_questions {
+        out.truncate(args.max_questions);
+    }
+
+    let json = serde_json::to_string_pretty(&out)?;
+    fs::write(&args.out, json)?;
+    println!("wrote {}", args.out.display());
+    Ok(())
+}
+
+fn resolve_llm_state_for_competency_questions(
+    args: &CompetencyQuestionsArgs,
+) -> Result<crate::llm::LlmState> {
+    let selected = (args.llm_mock as usize)
+        + (args.llm_ollama as usize)
+        + (args.llm_openai as usize)
+        + (args.llm_anthropic as usize)
+        + (args.llm_plugin.is_some() as usize);
+    if selected == 0 {
+        return Err(anyhow!(
+            "no LLM backend configured (use --llm-mock, --llm-ollama, --llm-openai, --llm-anthropic, or --llm-plugin)"
+        ));
+    }
+    if selected > 1 {
+        return Err(anyhow!(
+            "choose at most one LLM backend: --llm-mock, --llm-ollama, --llm-openai, --llm-anthropic, or --llm-plugin"
+        ));
+    }
+
+    let mut llm = crate::llm::LlmState::default();
+    if args.llm_mock {
+        llm.backend = crate::llm::LlmBackend::Mock;
+        llm.model = Some("mock".to_string());
+        return Ok(llm);
+    }
+
+    if let Some(plugin) = args.llm_plugin.as_ref() {
+        llm.backend = crate::llm::LlmBackend::Command {
+            program: plugin.clone(),
+            args: args.llm_plugin_arg.clone(),
+        };
+        llm.model = args.llm_model.clone();
+        return Ok(llm);
+    }
+
+    if args.llm_ollama {
+        #[cfg(feature = "llm-ollama")]
+        {
+            let host = args
+                .llm_ollama_host
+                .clone()
+                .unwrap_or_else(crate::llm::default_ollama_host);
+            llm.backend = crate::llm::LlmBackend::Ollama { host };
+            let model = args.llm_model.clone().ok_or_else(|| {
+                anyhow!("`--llm-ollama` requires `--llm-model <model>`")
+            })?;
+            llm.model = Some(model);
+            return Ok(llm);
+        }
+        #[cfg(not(feature = "llm-ollama"))]
+        {
+            return Err(anyhow!(
+                "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+            ));
+        }
+    }
+
+    if args.llm_openai {
+        #[cfg(feature = "llm-openai")]
+        {
+            let key = std::env::var(crate::llm::OPENAI_API_KEY_ENV).unwrap_or_default();
+            if key.trim().is_empty() {
+                return Err(anyhow!(
+                    "openai backend requires {}",
+                    crate::llm::OPENAI_API_KEY_ENV
+                ));
+            }
+            llm.backend = crate::llm::LlmBackend::OpenAI {
+                base_url: args
+                    .llm_openai_base_url
+                    .clone()
+                    .unwrap_or_else(crate::llm::default_openai_base_url),
+            };
+            let model = args.llm_model.clone().or_else(|| {
+                let env = std::env::var(crate::llm::OPENAI_MODEL_ENV).unwrap_or_default();
+                let env = env.trim().to_string();
+                if env.is_empty() { None } else { Some(env) }
+            });
+            let model = model.ok_or_else(|| {
+                anyhow!(
+                    "`--llm-openai` requires `--llm-model <model>` (or set {})",
+                    crate::llm::OPENAI_MODEL_ENV
+                )
+            })?;
+            llm.model = Some(model);
+            return Ok(llm);
+        }
+        #[cfg(not(feature = "llm-openai"))]
+        {
+            return Err(anyhow!(
+                "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+            ));
+        }
+    }
+
+    if args.llm_anthropic {
+        #[cfg(feature = "llm-anthropic")]
+        {
+            let key =
+                std::env::var(crate::llm::ANTHROPIC_API_KEY_ENV).unwrap_or_default();
+            if key.trim().is_empty() {
+                return Err(anyhow!(
+                    "anthropic backend requires {}",
+                    crate::llm::ANTHROPIC_API_KEY_ENV
+                ));
+            }
+            llm.backend = crate::llm::LlmBackend::Anthropic {
+                base_url: args
+                    .llm_anthropic_base_url
+                    .clone()
+                    .unwrap_or_else(crate::llm::default_anthropic_base_url),
+            };
+            let model = args.llm_model.clone().or_else(|| {
+                let env =
+                    std::env::var(crate::llm::ANTHROPIC_MODEL_ENV).unwrap_or_default();
+                let env = env.trim().to_string();
+                if env.is_empty() { None } else { Some(env) }
+            });
+            let model = model.ok_or_else(|| {
+                anyhow!(
+                    "`--llm-anthropic` requires `--llm-model <model>` (or set {})",
+                    crate::llm::ANTHROPIC_MODEL_ENV
+                )
+            })?;
+            llm.model = Some(model);
+            return Ok(llm);
+        }
+        #[cfg(not(feature = "llm-anthropic"))]
+        {
+            return Err(anyhow!(
+                "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
+            ));
+        }
+    }
+
+    Err(anyhow!("no LLM backend configured"))
 }
 
 fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {

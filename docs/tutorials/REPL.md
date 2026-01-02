@@ -502,6 +502,18 @@ MPC-style planning loop (multi-step):
 axiograph> wm plan build/wm_plan.json --steps 3 --rollouts 2 --goal "fill missing parent links" --cq "has_parent=select ?p where ?p is Person limit 1"
 ```
 
+You can also generate a CQ file from the schema and pass it to `wm plan`:
+
+```bash
+bin/axiograph discover competency-questions \
+  --input build/family.axpd \
+  --out build/family_cq.json
+```
+
+```text
+axiograph> wm plan build/wm_plan.json --steps 3 --rollouts 2 --goal "fill missing parent links" --cq-file build/family_cq.json
+```
+
 To commit proposals into the PathDB WAL (store-backed workflows), pass `--commit-dir`:
 
 ```text

@@ -1,0 +1,10 @@
+# Axiograph REPL script: physics-scale world model MPC demo
+#
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/world_model_mpc_physics_demo.repl
+
+import_axi examples/physics/PhysicsOntology.axi
+import_axi examples/physics/PhysicsMeasurements.axi
+wm use command scripts/axiograph_world_model_plugin_baseline.py --strategy oracle
+wm plan build/world_model_mpc_physics_plan.json --steps 2 --rollouts 2 --max 150 --guardrail strict --plane both --goal "expand physics ontology coverage" --axi examples/physics/PhysicsOntology.axi --cq-file examples/competency_questions/physics_cq.json

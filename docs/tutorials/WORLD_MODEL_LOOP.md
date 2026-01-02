@@ -187,6 +187,50 @@ See `docs/howto/ACCEPTED_PLANE.md` for the full workflow.
 
 ---
 
+## 9) Physics-scale demo (larger corpus)
+
+The physics examples include differential geometry, mechanics, QFT, and algebra.
+This flow uses:
+- `examples/physics/PhysicsOntology.axi`
+- `examples/physics/PhysicsMeasurements.axi`
+
+End-to-end script (accepted plane → CQs → MPC plan → promote → viz):
+
+```bash
+./scripts/world_model_mpc_physics_flow_demo.sh
+```
+
+REPL-only script:
+
+```bash
+./scripts/world_model_mpc_physics_repl_demo.sh
+```
+
+Server + viz demo (stepwise auto-commit):
+
+```bash
+./scripts/world_model_mpc_physics_server_demo.sh
+```
+
+Generate schema-driven competency questions:
+
+```bash
+bin/axiograph discover competency-questions \
+  --input build/physics_base.axpd \
+  --out build/physics_cq.json \
+  --max-questions 120
+```
+
+Translate natural-language CQs to AxQL (LLM backend required):
+
+```bash
+bin/axiograph discover competency-questions \
+  --input build/physics_base.axpd \
+  --from-nl examples/competency_questions/physics_cq_nl.txt \
+  --llm-openai --llm-model gpt-4o-mini \
+  --out build/physics_cq_structured.json
+```
+
 ## Next steps
 
 - Try guardrail weight overrides and task costs:

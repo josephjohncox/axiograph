@@ -1,0 +1,107 @@
+[
+  {
+    "name": "concept_any",
+    "question": "List a Concept in the physics ontology.",
+    "query": "select ?c where ?c is Physics.Concept limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "concept_prereq",
+    "question": "Find a prerequisite link between physics concepts.",
+    "query": "select ?f where ?f = Physics.requires(concept=?c, prereq=?p) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "concept_guideline",
+    "question": "Find a safety guideline attached to a concept.",
+    "query": "select ?f where ?f = Physics.explains(concept=?c, guideline=?g) limit 1",
+    "min_rows": 1,
+    "weight": 1.5
+  },
+  {
+    "name": "concept_example",
+    "question": "Find an example linked to a physics concept.",
+    "query": "select ?f where ?f = Physics.demonstrates(example=?e, concept=?c) limit 1",
+    "min_rows": 1,
+    "weight": 1.5
+  },
+  {
+    "name": "concept_description",
+    "question": "Find a description text linked to a concept.",
+    "query": "select ?f where ?f = Physics.conceptDescription(concept=?c, text=?t) limit 1",
+    "min_rows": 1,
+    "weight": 1.5
+  },
+  {
+    "name": "lie_group_has_algebra",
+    "question": "Find a Lie group and its Lie algebra.",
+    "query": "select ?f where ?f = Physics.LieGroupHasLieAlgebra(group=?g, alg=?a) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "manifold_dimension",
+    "question": "Find a manifold and its dimension.",
+    "query": "select ?f where ?f = Physics.ManifoldDimension(manifold=?m, dim=?d) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "metric_on_manifold",
+    "question": "Find a metric defined on a smooth manifold.",
+    "query": "select ?f where ?f = Physics.MetricOn(metric=?m, manifold=?s) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "levi_civita_connection",
+    "question": "Find a Levi-Civita connection associated with a metric.",
+    "query": "select ?f where ?f = Physics.LeviCivitaConnection(metric=?m, connection=?c) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "curvature_of_connection",
+    "question": "Find a curvature tensor associated with a connection.",
+    "query": "select ?f where ?f = Physics.CurvatureOf(connection=?c, curvature=?k) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "form_on_manifold",
+    "question": "Find a differential form defined on a manifold.",
+    "query": "select ?f where ?f = Physics.FormOn(form=?f0, manifold=?m) limit 1",
+    "min_rows": 1,
+    "weight": 1.5
+  },
+  {
+    "name": "hamiltonian_vector_field",
+    "question": "Find a Hamiltonian vector field.",
+    "query": "select ?f where ?f = Physics.HamiltonianVectorFieldOf(H=?h, X=?x) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "stress_energy_on_spacetime",
+    "question": "Find a stress-energy tensor on a spacetime.",
+    "query": "select ?f where ?f = Physics.StressEnergyOn(T=?t, spacetime=?s) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "measurement_observation",
+    "question": "Find a measurement observation record (run, quantity, unit, bin, ctx, time).",
+    "query": "select ?f where ?f = PhysicsMeasurements.MeasurementObs(run=?r, quantity=?q, unit=?u, value_bin=?b, ctx=?c, time=?t) limit 1",
+    "min_rows": 1,
+    "weight": 2.0
+  },
+  {
+    "name": "quantity_has_unit",
+    "question": "Find a quantity with a canonical unit.",
+    "query": "select ?f where ?f = PhysicsMeasurements.QuantityHasCanonicalUnit(quantity=?q, unit=?u) limit 1",
+    "min_rows": 1,
+    "weight": 1.5
+  }
+]

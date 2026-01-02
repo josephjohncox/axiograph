@@ -404,6 +404,7 @@ pub fn parse_competency_questions(items: &[String]) -> Result<Vec<CompetencyQues
         }
         out.push(CompetencyQuestionV1 {
             name: name.to_string(),
+            question: None,
             query: query.to_string(),
             min_rows: 1,
             weight: 1.0,
@@ -580,6 +581,8 @@ pub struct WorldModelTaskCostV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompetencyQuestionV1 {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
     pub query: String,
     #[serde(default)]
     pub min_rows: usize,
