@@ -7395,6 +7395,7 @@ fn eval_rpq_program_impl(
 mod tests {
     use super::*;
     use axiograph_pathdb::certificate::CertificatePayloadV2;
+    use proptest::prelude::*;
 
     fn db_with_axi_meta_plane() -> axiograph_pathdb::PathDB {
         let mut db = axiograph_pathdb::PathDB::new();
@@ -8185,5 +8186,170 @@ instance I2 of S2:
         }
 
         Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // Property tests: AxQL execution semantics
+    // ---------------------------------------------------------------------
+
+    const MAX_ENTITIES: usize = 12;
+    const MAX_REL_TYPES: usize = 5;
+    const MAX_EDGES: usize = 80;
+    const MAX_PATH_LEN: usize = 5;
+
+    #[derive(Debug, Clone)]
+    struct GraphCase {
+        entity_count: usize,
+        rel_names: Vec<String>,
+        edges: Vec<(usize, usize, usize, u32)>, // (rel_idx, src_idx, dst_idx, confidence_fp)
+        start_idx: usize,
+        path_a: Vec<usize>,
+        path_b: Vec<usize>,
+        min_conf_fp: u32,
+    }
+
+    fn graph_case_strategy() -> impl Strategy<Value = GraphCase> {
+        let denom = axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR;
+        (1usize..=MAX_ENTITIES, 1usize..=MAX_REL_TYPES).prop_flat_map(move |(entity_count, rel_count)| {
+            let rel_names = (0..rel_count).map(|i| format!("r{i}")).collect::<Vec<_>>();
+            (
+                Just(entity_count),
+                Just(rel_names),
+                prop::collection::vec(
+                    (
+                        0usize..rel_count,
+                        0usize..entity_count,
+                        0usize..entity_count,
+                        0u32..=denom,
+                    ),
+                    0..=MAX_EDGES,
+                ),
+                0usize..entity_count,
+                prop::collection::vec(0usize..rel_count, 1..=MAX_PATH_LEN),
+                prop::collection::vec(0usize..rel_count, 1..=MAX_PATH_LEN),
+                0u32..=denom,
+            )
+        })
+        .prop_map(
+            |(entity_count, rel_names, edges, start_idx, path_a, path_b, min_conf_fp)| GraphCase {
+                entity_count,
+                rel_names,
+                edges,
+                start_idx,
+                path_a,
+                path_b,
+                min_conf_fp,
+            },
+        )
+    }
+
+    fn build_db(case: &GraphCase) -> (axiograph_pathdb::PathDB, Vec<u32>) {
+        let mut db = axiograph_pathdb::PathDB::new();
+        let mut ids: Vec<u32> = Vec::with_capacity(case.entity_count);
+        for i in 0..case.entity_count {
+            let id = db.add_entity("Node", vec![("name", &format!("n{i}"))]);
+            ids.push(id);
+        }
+
+        let denom = axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR as f32;
+        for (rel_idx, src_idx, dst_idx, conf_fp) in &case.edges {
+            let rel = &case.rel_names[*rel_idx];
+            let src = ids[*src_idx];
+            let dst = ids[*dst_idx];
+            let conf = (*conf_fp as f32) / denom;
+            db.add_relation(rel, src, dst, conf, Vec::new());
+        }
+
+        (db, ids)
+    }
+
+    fn exec_single_path_query(
+        db: &axiograph_pathdb::PathDB,
+        start: u32,
+        path_expr: &str,
+        min_confidence: Option<f32>,
+    ) -> Vec<u32> {
+        let mut q = format!("select ?dst where {start} -{path_expr}-> ?dst");
+        if let Some(min_conf) = min_confidence {
+            q.push_str(&format!(" min_conf {min_conf:.6}"));
+        }
+        q.push_str(" limit 500");
+
+        let parsed = parse_axql_query(&q).expect("parse AxQL query");
+        let res = execute_axql_query(db, &parsed).expect("execute AxQL query");
+        assert!(!res.truncated);
+        let mut out: Vec<u32> = res
+            .rows
+            .iter()
+            .filter_map(|row| row.get("?dst").copied())
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn axql_fixed_path_matches_follow_path(case in graph_case_strategy()) {
+            let (db, ids) = build_db(&case);
+            let start = ids[case.start_idx];
+
+            let path_strs: Vec<&str> = case.path_a.iter().map(|i| case.rel_names[*i].as_str()).collect();
+            let expected: Vec<u32> = db.follow_path(start, &path_strs).iter().collect();
+
+            let path_expr = path_strs.join("/");
+            let actual = exec_single_path_query(&db, start, &path_expr, None);
+
+            prop_assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn axql_min_confidence_matches_follow_path_with_min_confidence(case in graph_case_strategy()) {
+            let (db, ids) = build_db(&case);
+            let start = ids[case.start_idx];
+
+            let denom = axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR as f32;
+            let min_conf = (case.min_conf_fp as f32) / denom;
+
+            let path_strs: Vec<&str> = case.path_a.iter().map(|i| case.rel_names[*i].as_str()).collect();
+            let expected: Vec<u32> = db.follow_path_with_min_confidence(start, &path_strs, min_conf).iter().collect();
+
+            let path_expr = path_strs.join("/");
+            let actual = exec_single_path_query(&db, start, &path_expr, Some(min_conf));
+
+            prop_assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn axql_or_is_union_of_branches(case in graph_case_strategy()) {
+            let (db, ids) = build_db(&case);
+            let start = ids[case.start_idx];
+
+            let path_a: Vec<&str> = case.path_a.iter().map(|i| case.rel_names[*i].as_str()).collect();
+            let path_b: Vec<&str> = case.path_b.iter().map(|i| case.rel_names[*i].as_str()).collect();
+            let pa = path_a.join("/");
+            let pb = path_b.join("/");
+
+            let q = format!("select ?dst where {start} -{pa}-> ?dst or {start} -{pb}-> ?dst limit 500");
+            let parsed = parse_axql_query(&q).expect("parse AxQL query");
+            let res = execute_axql_query(&db, &parsed).expect("execute AxQL query");
+            prop_assert!(!res.truncated);
+
+            let mut actual: Vec<u32> = res.rows.iter().filter_map(|row| row.get("?dst").copied()).collect();
+            actual.sort_unstable();
+            actual.dedup();
+
+            let mut expected: Vec<u32> = (db.follow_path(start, &path_a) | db.follow_path(start, &path_b)).iter().collect();
+            expected.sort_unstable();
+            expected.dedup();
+
+            prop_assert_eq!(actual, expected);
+        }
     }
 }
