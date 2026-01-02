@@ -1,0 +1,38 @@
+# Axiograph REPL script: fibered closure constraints (`param (...)`)
+#
+# This demo imports a canonical `.axi` module that uses:
+# - `constraint symmetric ... param (...)`
+# - `constraint transitive ... param (...)`
+#
+# It then:
+# - shows the imported constraints (including `param (...)`),
+# - validates the instance data against the meta-plane typing,
+# - runs a couple of small queries,
+# - renders a typed-overlay visualization,
+# - and exports a PathDB snapshot as canonical `.axi`.
+#
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/fibered_closure_constraints_demo.repl
+
+import_axi examples/demo_data/FiberedClosureConstraints.axi
+
+schema Fibered
+constraints Fibered
+constraints Fibered Accessible
+constraints Fibered Relationship
+constraints Fibered Knows
+
+validate_axi
+stats
+
+# Derived traversal edges exist for relations with clear endpoints.
+q select ?to where name("Alice") -Accessible-> ?to limit 10
+q select ?to where name("Alice") -Knows-> ?to limit 10
+
+# Render a small neighborhood showing both planes with the meta-plane as a type layer.
+viz build/fibered_closure_constraints.html format html plane both focus_name Alice hops 3 max_nodes 220 typed_overlay
+
+export_axi build/fibered_closure_constraints_export_v1.axi
+save build/fibered_closure_constraints.axpd
+

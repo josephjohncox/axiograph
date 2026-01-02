@@ -42,3 +42,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus)'] }
 
 [dev-dependencies]
 tempfile = "3"
+proptest.workspace = true

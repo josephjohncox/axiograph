@@ -88,6 +88,9 @@ fn scenario_query_axql(scenario: &str) -> String {
             "select ?x where name(\"Alice\") -Relationship-> ?x limit 10".to_string()
         }
         "family_hott" => "select ?p where name(\"Alice\") -Parent-> ?p limit 10".to_string(),
+        "fibered_closure_constraints" => {
+            "select ?to where name(\"Alice\") -Accessible-> ?to limit 10".to_string()
+        }
         "supply_chain" => {
             "select ?f where name(\"supplier_0\") -supplies-> ?f limit 10".to_string()
         }

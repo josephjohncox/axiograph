@@ -10,3 +10,6 @@ description = "Axiograph DSL types and parser"
 thiserror.workspace = true
 serde.workspace = true
 nom.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

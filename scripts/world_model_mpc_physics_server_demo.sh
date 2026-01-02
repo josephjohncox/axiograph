@@ -5,6 +5,7 @@ set -euo pipefail
 #
 # Run:
 #   ./scripts/world_model_mpc_physics_server_demo.sh
+#   KEEP_RUNNING=0 ./scripts/world_model_mpc_physics_server_demo.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -259,3 +260,12 @@ Add tab (manual overlay):
 
 Note: Auto‑commit in World Model tab requires the same admin token used by Review/Add.
 TXT
+
+if [ "${KEEP_RUNNING:-1}" = "1" ]; then
+  echo ""
+  echo "Keeping the server running (KEEP_RUNNING=1). Press Ctrl-C to stop."
+  wait "$SERVER_PID"
+else
+  echo ""
+  echo "Tip: keep it running (default) or exit by setting KEEP_RUNNING=0."
+fi
