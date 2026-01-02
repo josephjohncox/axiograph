@@ -147,8 +147,9 @@ theory SupplyChainLaws on SupplyChain:
   -- BOM defines a unique product structure
   constraint key BOM(product, component)
 
-  -- Inventory conservation: what goes out must come from somewhere
-  constraint functional FlowChangesInventory(flow, sourceLoc, targetLoc)
+  -- Inventory deltas are well-defined per flow + endpoints.
+  -- Canonical form: represent multi-field functional dependency as a composite key.
+  constraint key FlowChangesInventory(flow, sourceLoc, targetLoc)
 
   -- Process equivalence respects composition
   -- If P1 ≃ P2 and Q1 ≃ Q2, then P1;Q1 ≃ P2;Q2
@@ -338,4 +339,3 @@ instance ManufacturingExample of SupplyChain:
     (loc=Loc_WIP_WH, material=Machined_Part, qty=Q100),
     (loc=Loc_Finished_WH, material=Assembled_Product, qty=Q10)
   }
-

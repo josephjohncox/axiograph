@@ -458,14 +458,17 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        -- Some examples use a more declarative form like:
+        -- Some (older) `.axi` sources use more declarative forms like:
         --
         --   `constraint functional Rel(field0, field1, ...)`
         --   `constraint functional Rel(field0, ...) -> Rel.someOutput`
         --
-        -- The initial certified subset only understands
-        -- `functional Rel.field -> Rel.field`. For now, keep these constraints
-        -- parseable (and visible) without making them part of the trusted core.
+        -- These are *not canonical* in axi_v1 today. Prefer:
+        -- - `constraint functional Rel.field -> Rel.field` for unary FDs, and
+        -- - `constraint key Rel(field0, field1, ...)` for multi-field determinism.
+        --
+        -- For now we keep parsing robust (and keep the text visible) without
+        -- making these dialect forms part of the trusted core.
         return (.unknown trimmed)
   else if startsWith trimmed "symmetric " then
     let p : LineParser ConstraintV1 := do
@@ -475,7 +478,14 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       pure (.symmetric relation)
     match runLineParser p trimmed with
     | .ok v => return v
-    | .error msg => throw msg
+    | .error _msg =>
+        -- Keep parsing robust across dialect variations like:
+        --
+        --   `constraint symmetric Rel where ...`
+        --
+        -- We keep the text visible as an unknown constraint so downstream tools
+        -- can surface/repair it, without failing the entire module parse.
+        return (.unknown trimmed)
   else if startsWith trimmed "transitive " then
     let p : LineParser ConstraintV1 := do
       skipString "transitive"
@@ -484,7 +494,14 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       pure (.transitive relation)
     match runLineParser p trimmed with
     | .ok v => return v
-    | .error msg => throw msg
+    | .error _msg =>
+        -- Keep parsing robust across dialect variations like:
+        --
+        --   `constraint transitive Rel where ...`
+        --
+        -- We keep the text visible as an unknown constraint so downstream tools
+        -- can surface/repair it, without failing the entire module parse.
+        return (.unknown trimmed)
   else if startsWith trimmed "key " then
     let comma : LineParser Unit := do
       ws

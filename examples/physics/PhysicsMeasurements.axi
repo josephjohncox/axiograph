@@ -97,7 +97,10 @@ theory PhysicsMeasurementsRules on PhysicsMeasurements:
   -- Intuition:
   --   within a given world/context and timestamp, a run produces at most one
   --   observation for a given quantity (unit/bin are outputs).
-  constraint functional MeasurementObs(run, quantity, ctx, time)
+  -- Canonical: express multi-field determinism as a composite key on the
+  -- “input” fields (it implies `run,quantity,ctx,time` functionally determine
+  -- the remaining fields).
+  constraint key MeasurementObs(run, quantity, ctx, time)
   constraint key MeasurementObs(run, quantity, unit, value_bin, ctx, time)
 
 instance PhysicsMeasurementsSeed of PhysicsMeasurements:
@@ -150,4 +153,3 @@ instance PhysicsMeasurementsSeed of PhysicsMeasurements:
     (run=Run_Seed_0, quantity=PositionX, unit=Unit_Meter, value_bin=Bin_0, ctx=ObservedSensors, time=T0),
     (run=Run_Seed_0, quantity=Temperature, unit=Unit_Kelvin, value_bin=Bin_0, ctx=ObservedSensors, time=T0)
   }
-

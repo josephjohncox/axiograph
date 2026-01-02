@@ -104,8 +104,9 @@ theory SocialRules on SocialGraph:
   constraint symmetric Relationship where
     Relationship.relType in {Friend, Colleague, Sibling}
 
-  -- Trust composition is well-defined
-  constraint functional TrustComposition(a, b, c, trust_ab, trust_bc) -> TrustComposition.trust_ac
+  -- Trust composition is well-defined.
+  -- Canonical form: represent multi-field functional dependency as a composite key.
+  constraint key TrustComposition(a, b, c, trust_ab, trust_bc)
 
   -- History equivalence is itself an equivalence relation
   constraint symmetric HistoryEquivalence
@@ -199,4 +200,3 @@ instance SocialExample of SocialGraph:
      path2=FriendThenWork,
      witness=SameFriendship)
   }
-

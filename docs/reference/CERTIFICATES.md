@@ -165,6 +165,9 @@ This certificate kind is a conservative ontology-engineering gate:
 Certified subset (initial):
 - `constraint key Rel(field, ...)`
 - `constraint functional Rel.field -> Rel.field`
+  - Note: multi-field “functional dependency” forms like `constraint functional Rel(a, b, ...)`
+    are **not canonical**; express them as a composite key instead:
+    `constraint key Rel(a, b, ...)`.
 
 Shape (sketch):
 
