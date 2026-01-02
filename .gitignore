@@ -81,6 +81,7 @@ data/undergrad.yaml
 data/project_history.yaml
 data/projects.yaml
 /.venv/
+.venv-onnx/
 .doit*
 cache
 output

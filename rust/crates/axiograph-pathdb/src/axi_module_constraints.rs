@@ -17,6 +17,16 @@
 //! - `constraint transitive Rel` (closure-compatibility for keys/functionals on carrier fields)
 //! - `constraint typing Rel: rule_name` (small builtin rule set)
 //!
+//! Carrier fields for closure constraints (`symmetric`/`transitive`):
+//! - Default: the first two relation fields.
+//! - Optional explicit form: `... on (field0, field1)`.
+//!
+//! Parameter fields for closure constraints (`symmetric`/`transitive`):
+//! - Optional explicit form: `... param (field0, field1, ...)`.
+//! - When present, closure is interpreted as operating on the carrier pair
+//!   **within each fixed assignment** of these parameters (e.g. `ctx`, `time`),
+//!   rather than globally.
+//!
 //! Not yet certified:
 //! - global entailment / inference,
 //! - relational algebra beyond simple uniqueness checks.
@@ -25,7 +35,9 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 
-use axiograph_dsl::schema_v1::{ConstraintV1, SchemaV1Instance, SchemaV1Module, SetItemV1};
+use axiograph_dsl::schema_v1::{
+    CarrierFieldsV1, ConstraintV1, SchemaV1Instance, SchemaV1Module, SetItemV1,
+};
 
 use crate::certificate::AxiConstraintsOkProofV1;
 
@@ -45,16 +57,22 @@ enum CoreConstraint<'a> {
     Symmetric {
         schema: &'a str,
         relation: &'a str,
+        carriers: Option<&'a CarrierFieldsV1>,
+        params: Option<&'a [String]>,
     },
     SymmetricWhereIn {
         schema: &'a str,
         relation: &'a str,
         field: &'a str,
         values: &'a [String],
+        carriers: Option<&'a CarrierFieldsV1>,
+        params: Option<&'a [String]>,
     },
     Transitive {
         schema: &'a str,
         relation: &'a str,
+        carriers: Option<&'a CarrierFieldsV1>,
+        params: Option<&'a [String]>,
     },
     Typing {
         schema: &'a str,
@@ -83,23 +101,41 @@ fn gather_core_constraints(module: &SchemaV1Module) -> Vec<CoreConstraint<'_>> {
                     src_field,
                     dst_field,
                 }),
-                ConstraintV1::Symmetric { relation } => out.push(CoreConstraint::Symmetric {
-                    schema: &th.schema,
-                    relation,
-                }),
                 ConstraintV1::SymmetricWhereIn {
                     relation,
                     field,
                     values,
+                    carriers,
+                    params,
                 } => out.push(CoreConstraint::SymmetricWhereIn {
                     schema: &th.schema,
                     relation,
                     field,
                     values,
+                    carriers: carriers.as_ref(),
+                    params: params.as_deref(),
                 }),
-                ConstraintV1::Transitive { relation } => out.push(CoreConstraint::Transitive {
+                ConstraintV1::Symmetric {
+                    relation,
+                    carriers,
+                    params,
+                } => {
+                    out.push(CoreConstraint::Symmetric {
+                        schema: &th.schema,
+                        relation,
+                        carriers: carriers.as_ref(),
+                        params: params.as_deref(),
+                    })
+                }
+                ConstraintV1::Transitive {
+                    relation,
+                    carriers,
+                    params,
+                } => out.push(CoreConstraint::Transitive {
                     schema: &th.schema,
                     relation,
+                    carriers: carriers.as_ref(),
+                    params: params.as_deref(),
                 }),
                 ConstraintV1::Typing { relation, rule } => out.push(CoreConstraint::Typing {
                     schema: &th.schema,
@@ -266,6 +302,8 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
     schema_name: &str,
     relation_name: &str,
     relation_fields: &[String],
+    carriers: Option<&CarrierFieldsV1>,
+    params: Option<&[String]>,
     where_field: Option<&str>,
     where_values: &[String],
     all_constraints: &[CoreConstraint<'_>],
@@ -276,6 +314,39 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
             inst.name
         ));
     }
+
+    let (carrier_left, carrier_right, swap_left_idx, swap_right_idx) = match carriers {
+        Some(c) => {
+            let Some(left_idx) = relation_fields.iter().position(|x| x == &c.left_field) else {
+                return Err(anyhow!(
+                    "instance `{}` relation `{relation_name}`: symmetric carrier field `{}` is not a declared field",
+                    inst.name,
+                    c.left_field
+                ));
+            };
+            let Some(right_idx) = relation_fields.iter().position(|x| x == &c.right_field) else {
+                return Err(anyhow!(
+                    "instance `{}` relation `{relation_name}`: symmetric carrier field `{}` is not a declared field",
+                    inst.name,
+                    c.right_field
+                ));
+            };
+            if left_idx == right_idx {
+                return Err(anyhow!(
+                    "instance `{}` relation `{relation_name}`: symmetric carrier fields must be distinct (got `{}` twice)",
+                    inst.name,
+                    c.left_field
+                ));
+            }
+            (c.left_field.as_str(), c.right_field.as_str(), left_idx, right_idx)
+        }
+        None => (
+            relation_fields[0].as_str(),
+            relation_fields[1].as_str(),
+            0,
+            1,
+        ),
+    };
 
     let mut cond_idx: Option<usize> = None;
     if let Some(field) = where_field {
@@ -288,27 +359,111 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
         cond_idx = Some(idx);
     }
 
-    let mut closed: Vec<Vec<String>> = Vec::new();
-    let mut seen: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
-
-    for tuple in relation_tuples(inst, relation_name) {
-        let vals = tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
-        if seen.insert(vals.clone()) {
-            closed.push(vals.clone());
-        }
-
-        let apply = match cond_idx {
-            None => true,
-            Some(idx) => where_values.iter().any(|v| v == &vals[idx]),
-        };
-        if apply {
-            let mut swapped = vals;
-            swapped.swap(0, 1);
-            if seen.insert(swapped.clone()) {
-                closed.push(swapped);
+    // If `param (...)` is present, interpret symmetry as a closure on the
+    // projection to (carrier fields + parameter fields), and treat other
+    // relation fields as out-of-scope witnesses/annotations.
+    let (closure_relation_fields, closed): (Vec<String>, Vec<Vec<String>>) = if let Some(params) =
+        params
+    {
+        let mut seen_params: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for p in params.iter() {
+            if !seen_params.insert(p.as_str()) {
+                return Err(anyhow!(
+                    "symmetric `{schema_name}.{relation_name}`: duplicate param field `{p}`",
+                ));
+            }
+            if p.as_str() == carrier_left || p.as_str() == carrier_right {
+                return Err(anyhow!(
+                    "symmetric `{schema_name}.{relation_name}`: param field `{p}` must not be a carrier field",
+                ));
+            }
+            if !relation_fields.iter().any(|f| f == p) {
+                return Err(anyhow!(
+                    "instance `{}` relation `{relation_name}`: symmetric param field `{p}` is not a declared field",
+                    inst.name,
+                ));
             }
         }
-    }
+
+        let mut allowed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        allowed.insert(carrier_left);
+        allowed.insert(carrier_right);
+        for p in params.iter() {
+            allowed.insert(p.as_str());
+        }
+
+        let mut projection_fields: Vec<String> = Vec::new();
+        let mut projection_idxs: Vec<usize> = Vec::new();
+        for (i, f) in relation_fields.iter().enumerate() {
+            if allowed.contains(f.as_str()) {
+                projection_fields.push(f.clone());
+                projection_idxs.push(i);
+            }
+        }
+
+        let Some(swap_left_proj) = projection_fields.iter().position(|x| x == carrier_left) else {
+            return Err(anyhow!(
+                "internal error: symmetric carriers missing from projection fields"
+            ));
+        };
+        let Some(swap_right_proj) = projection_fields.iter().position(|x| x == carrier_right) else {
+            return Err(anyhow!(
+                "internal error: symmetric carriers missing from projection fields"
+            ));
+        };
+
+        let mut closed: Vec<Vec<String>> = Vec::new();
+        let mut seen: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
+
+        for tuple in relation_tuples(inst, relation_name) {
+            let full = tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
+            let mut vals: Vec<String> = Vec::with_capacity(projection_idxs.len());
+            for idx in projection_idxs.iter() {
+                vals.push(full[*idx].clone());
+            }
+            if seen.insert(vals.clone()) {
+                closed.push(vals.clone());
+            }
+
+            let apply = match cond_idx {
+                None => true,
+                Some(idx) => where_values.iter().any(|v| v == &full[idx]),
+            };
+            if apply {
+                let mut swapped = vals.clone();
+                swapped.swap(swap_left_proj, swap_right_proj);
+                if seen.insert(swapped.clone()) {
+                    closed.push(swapped);
+                }
+            }
+        }
+
+        (projection_fields, closed)
+    } else {
+        let mut closed: Vec<Vec<String>> = Vec::new();
+        let mut seen: std::collections::HashSet<Vec<String>> = std::collections::HashSet::new();
+
+        for tuple in relation_tuples(inst, relation_name) {
+            let vals = tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
+            if seen.insert(vals.clone()) {
+                closed.push(vals.clone());
+            }
+
+            let apply = match cond_idx {
+                None => true,
+                Some(idx) => where_values.iter().any(|v| v == &vals[idx]),
+            };
+            if apply {
+                let mut swapped = vals.clone();
+                swapped.swap(swap_left_idx, swap_right_idx);
+                if seen.insert(swapped.clone()) {
+                    closed.push(swapped);
+                }
+            }
+        }
+
+        (relation_fields.to_vec(), closed)
+    };
 
     // Re-check keys/functionals for this relation on the symmetric closure.
     for c in all_constraints.iter() {
@@ -318,10 +473,26 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
                 relation,
                 fields,
             } if *schema == schema_name && *relation == relation_name => {
+                if let Some(params) = params {
+                    let mut allowed: std::collections::HashSet<&str> =
+                        std::collections::HashSet::new();
+                    allowed.insert(carrier_left);
+                    allowed.insert(carrier_right);
+                    for p in params.iter() {
+                        allowed.insert(p.as_str());
+                    }
+                    for f in *fields {
+                        if !allowed.contains(f.as_str()) {
+                            return Err(anyhow!(
+                                "symmetric `{schema_name}.{relation_name}`: key constraint mentions non-carrier/non-param field `{f}`",
+                            ));
+                        }
+                    }
+                }
                 check_key_on_tuples(
                     &inst.name,
                     relation_name,
-                    relation_fields,
+                    &closure_relation_fields,
                     closed.iter().cloned(),
                     fields,
                 )?;
@@ -332,10 +503,29 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
                 src_field,
                 dst_field,
             } if *schema == schema_name && *relation == relation_name => {
+                if let Some(params) = params {
+                    let mut allowed: std::collections::HashSet<&str> =
+                        std::collections::HashSet::new();
+                    allowed.insert(carrier_left);
+                    allowed.insert(carrier_right);
+                    for p in params.iter() {
+                        allowed.insert(p.as_str());
+                    }
+                    if !allowed.contains(src_field) {
+                        return Err(anyhow!(
+                            "symmetric `{schema_name}.{relation_name}`: functional src field `{src_field}` is not a carrier/param field",
+                        ));
+                    }
+                    if !allowed.contains(dst_field) {
+                        return Err(anyhow!(
+                            "symmetric `{schema_name}.{relation_name}`: functional dst field `{dst_field}` is not a carrier/param field",
+                        ));
+                    }
+                }
                 check_functional_on_tuples(
                     &inst.name,
                     relation_name,
-                    relation_fields,
+                    &closure_relation_fields,
                     closed.iter().cloned(),
                     src_field,
                     dst_field,
@@ -353,6 +543,8 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
     schema_name: &str,
     relation_name: &str,
     relation_fields: &[String],
+    carriers: Option<&CarrierFieldsV1>,
+    params: Option<&[String]>,
     all_constraints: &[CoreConstraint<'_>],
 ) -> Result<()> {
     if relation_fields.len() < 2 {
@@ -361,11 +553,81 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
             inst.name
         ));
     }
-    let carrier0 = relation_fields[0].as_str();
-    let carrier1 = relation_fields[1].as_str();
+    let (carrier0, carrier1, carrier0_idx, carrier1_idx) = match carriers {
+        Some(c) => {
+            let Some(left_idx) = relation_fields.iter().position(|x| x == &c.left_field) else {
+                return Err(anyhow!(
+                    "instance `{}` relation `{relation_name}`: transitive carrier field `{}` is not a declared field",
+                    inst.name,
+                    c.left_field
+                ));
+            };
+            let Some(right_idx) = relation_fields.iter().position(|x| x == &c.right_field) else {
+                return Err(anyhow!(
+                    "instance `{}` relation `{relation_name}`: transitive carrier field `{}` is not a declared field",
+                    inst.name,
+                    c.right_field
+                ));
+            };
+            if left_idx == right_idx {
+                return Err(anyhow!(
+                    "instance `{}` relation `{relation_name}`: transitive carrier fields must be distinct (got `{}` twice)",
+                    inst.name,
+                    c.left_field
+                ));
+            }
+            (c.left_field.as_str(), c.right_field.as_str(), left_idx, right_idx)
+        }
+        None => (
+            relation_fields[0].as_str(),
+            relation_fields[1].as_str(),
+            0,
+            1,
+        ),
+    };
+
+    // Optional "fiber" fields: transitive closure is interpreted as operating
+    // on the carrier pair within each fixed assignment of these parameters.
+    //
+    // Example:
+    //   constraint transitive Accessible param (ctx, time)
+    //
+    // means:
+    //   Accessible(ctx, time, a, b) ∧ Accessible(ctx, time, b, c) ⇒ Accessible(ctx, time, a, c)
+    //
+    // for each fixed (ctx,time) fiber, without inventing new ctx/time values.
+    let mut param_idxs: Vec<usize> = Vec::new();
+    let mut allowed_fields: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    allowed_fields.insert(carrier0);
+    allowed_fields.insert(carrier1);
+
+    if let Some(params) = params {
+        let mut seen_params: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for p in params.iter() {
+            if !seen_params.insert(p.as_str()) {
+                return Err(anyhow!(
+                    "transitive `{schema_name}.{relation_name}`: duplicate param field `{p}`",
+                ));
+            }
+            if p.as_str() == carrier0 || p.as_str() == carrier1 {
+                return Err(anyhow!(
+                    "transitive `{schema_name}.{relation_name}`: param field `{p}` must not be a carrier field",
+                ));
+            }
+            let Some(idx) = relation_fields.iter().position(|x| x == p) else {
+                return Err(anyhow!(
+                    "instance `{}` relation `{relation_name}`: transitive param field `{p}` is not a declared field",
+                    inst.name,
+                ));
+            };
+            param_idxs.push(idx);
+            allowed_fields.insert(p.as_str());
+        }
+    }
 
     // We only certify "closure compatibility" when keys/functionals are present,
-    // and only for constraints that talk about the carrier fields.
+    // and only for constraints that talk about the carrier fields (and optional
+    // param fields, when `param (...)` is present).
     let mut has_relevant_checks = false;
     for c in all_constraints.iter() {
         match c {
@@ -376,9 +638,9 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
             } if *schema == schema_name && *relation == relation_name => {
                 has_relevant_checks = true;
                 for f in *fields {
-                    if f != carrier0 && f != carrier1 {
+                    if !allowed_fields.contains(f.as_str()) {
                         return Err(anyhow!(
-                            "transitive `{schema_name}.{relation_name}`: key constraint mentions non-carrier field `{f}` (only `{carrier0}` and `{carrier1}` are supported for transitive closure-compatibility checks)",
+                            "transitive `{schema_name}.{relation_name}`: key constraint mentions non-carrier/non-param field `{f}`",
                         ));
                     }
                 }
@@ -418,43 +680,135 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
         return Ok(());
     }
 
-    // Build transitive closure on the carrier pair (field0, field1).
-    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-    for tuple in relation_tuples(inst, relation_name) {
-        let vals = tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
-        let src = vals[0].clone();
-        let dst = vals[1].clone();
-        adj.entry(src).or_default().push(dst);
-    }
+    let (closure_relation_fields, closure_tuples): (Vec<String>, Vec<Vec<String>>) =
+        if param_idxs.is_empty() {
+            // Build transitive closure on the carrier pair (global).
+            let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+            for tuple in relation_tuples(inst, relation_name) {
+                let vals =
+                    tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
+                let src = vals[carrier0_idx].clone();
+                let dst = vals[carrier1_idx].clone();
+                adj.entry(src).or_default().push(dst);
+            }
 
-    let mut closure: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-    let sources: Vec<String> = adj.keys().cloned().collect();
-    for src in sources {
-        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-        if let Some(neigh) = adj.get(&src) {
-            for v in neigh {
-                queue.push_back(v.clone());
-            }
-        }
-        while let Some(v) = queue.pop_front() {
-            if !visited.insert(v.clone()) {
-                continue;
-            }
-            closure.insert((src.clone(), v.clone()));
-            if let Some(more) = adj.get(&v) {
-                for w in more {
-                    queue.push_back(w.clone());
+            let mut closure: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            let sources: Vec<String> = adj.keys().cloned().collect();
+            for src in sources {
+                let mut visited: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let mut queue: std::collections::VecDeque<String> =
+                    std::collections::VecDeque::new();
+                if let Some(neigh) = adj.get(&src) {
+                    for v in neigh {
+                        queue.push_back(v.clone());
+                    }
+                }
+                while let Some(v) = queue.pop_front() {
+                    if !visited.insert(v.clone()) {
+                        continue;
+                    }
+                    closure.insert((src.clone(), v.clone()));
+                    if let Some(more) = adj.get(&v) {
+                        for w in more {
+                            queue.push_back(w.clone());
+                        }
+                    }
                 }
             }
-        }
-    }
 
-    let closure_pairs: Vec<Vec<String>> = closure
-        .into_iter()
-        .map(|(a, b)| vec![a, b])
-        .collect();
-    let carrier_fields = vec![carrier0.to_string(), carrier1.to_string()];
+            let closure_pairs: Vec<Vec<String>> = closure
+                .into_iter()
+                .map(|(a, b)| vec![a, b])
+                .collect();
+            let carrier_fields = vec![carrier0.to_string(), carrier1.to_string()];
+            (carrier_fields, closure_pairs)
+        } else {
+            // Build transitive closure per fiber (parameter fields fixed).
+            let mut projection_fields: Vec<String> = Vec::new();
+            for f in relation_fields.iter() {
+                if allowed_fields.contains(f.as_str()) {
+                    projection_fields.push(f.clone());
+                }
+            }
+
+            // Map param field name -> index in the `params` list / `param_key` tuple.
+            let mut param_pos: HashMap<&str, usize> = HashMap::new();
+            if let Some(params) = params {
+                for (i, p) in params.iter().enumerate() {
+                    param_pos.insert(p.as_str(), i);
+                }
+            }
+
+            let mut adj_by_param: HashMap<Vec<String>, HashMap<String, Vec<String>>> =
+                HashMap::new();
+            for tuple in relation_tuples(inst, relation_name) {
+                let vals =
+                    tuple_values_in_order(&inst.name, relation_name, tuple, relation_fields)?;
+                let mut pkey: Vec<String> = Vec::with_capacity(param_idxs.len());
+                for idx in param_idxs.iter() {
+                    pkey.push(vals[*idx].clone());
+                }
+                let src = vals[carrier0_idx].clone();
+                let dst = vals[carrier1_idx].clone();
+                adj_by_param
+                    .entry(pkey)
+                    .or_default()
+                    .entry(src)
+                    .or_default()
+                    .push(dst);
+            }
+
+            let mut closure_tuples: Vec<Vec<String>> = Vec::new();
+            for (pkey, adj) in adj_by_param.into_iter() {
+                let mut closure: std::collections::HashSet<(String, String)> =
+                    std::collections::HashSet::new();
+                let sources: Vec<String> = adj.keys().cloned().collect();
+                for src in sources {
+                    let mut visited: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    let mut queue: std::collections::VecDeque<String> =
+                        std::collections::VecDeque::new();
+                    if let Some(neigh) = adj.get(&src) {
+                        for v in neigh {
+                            queue.push_back(v.clone());
+                        }
+                    }
+                    while let Some(v) = queue.pop_front() {
+                        if !visited.insert(v.clone()) {
+                            continue;
+                        }
+                        closure.insert((src.clone(), v.clone()));
+                        if let Some(more) = adj.get(&v) {
+                            for w in more {
+                                queue.push_back(w.clone());
+                            }
+                        }
+                    }
+                }
+
+                for (a, b) in closure.into_iter() {
+                    let mut tup: Vec<String> = Vec::with_capacity(projection_fields.len());
+                    for f in projection_fields.iter() {
+                        if f == carrier0 {
+                            tup.push(a.clone());
+                        } else if f == carrier1 {
+                            tup.push(b.clone());
+                        } else if let Some(i) = param_pos.get(f.as_str()) {
+                            tup.push(pkey[*i].clone());
+                        } else {
+                            return Err(anyhow!(
+                                "internal error: transitive closure projection field `{f}` is neither a carrier nor a param",
+                            ));
+                        }
+                    }
+                    closure_tuples.push(tup);
+                }
+            }
+
+            (projection_fields, closure_tuples)
+        };
 
     // Re-check keys/functionals for this relation on the transitive closure of the carrier fields.
     for c in all_constraints.iter() {
@@ -467,8 +821,8 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
                 check_key_on_tuples(
                     &inst.name,
                     relation_name,
-                    &carrier_fields,
-                    closure_pairs.iter().cloned(),
+                    &closure_relation_fields,
+                    closure_tuples.iter().cloned(),
                     fields,
                 )?;
             }
@@ -481,8 +835,8 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
                 check_functional_on_tuples(
                     &inst.name,
                     relation_name,
-                    &carrier_fields,
-                    closure_pairs.iter().cloned(),
+                    &closure_relation_fields,
+                    closure_tuples.iter().cloned(),
                     src_field,
                     dst_field,
                 )?;
@@ -1024,13 +1378,20 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                         dst_field,
                     )?;
                 }
-                CoreConstraint::Symmetric { relation, .. } => {
+                CoreConstraint::Symmetric {
+                    relation,
+                    carriers,
+                    params,
+                    ..
+                } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
                     check_symmetric_closure_compatible_with_keys_and_functionals(
                         inst,
                         &inst.schema,
                         relation,
                         relation_fields,
+                        *carriers,
+                        *params,
                         None,
                         &[],
                         &constraints,
@@ -1040,6 +1401,8 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                     relation,
                     field,
                     values,
+                    carriers,
+                    params,
                     ..
                 } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
@@ -1048,18 +1411,27 @@ pub fn check_axi_constraints_ok_v1(module: &SchemaV1Module) -> Result<AxiConstra
                         &inst.schema,
                         relation,
                         relation_fields,
+                        *carriers,
+                        *params,
                         Some(field),
                         values,
                         &constraints,
                     )?;
                 }
-                CoreConstraint::Transitive { relation, .. } => {
+                CoreConstraint::Transitive {
+                    relation,
+                    carriers,
+                    params,
+                    ..
+                } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
                     check_transitive_closure_compatible_with_keys_and_functionals(
                         inst,
                         &inst.schema,
                         relation,
                         relation_fields,
+                        *carriers,
+                        *params,
                         &constraints,
                     )?;
                 }

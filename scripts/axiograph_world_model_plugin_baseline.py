@@ -72,7 +72,7 @@ def main() -> int:
         proposal_id = f"rel::{rel}::{src}::{dst}::{idx}"
         proposals.append(
             {
-                "kind": "relation",
+                "kind": "Relation",
                 "proposal_id": proposal_id,
                 "confidence": 0.9 if args.strategy == "oracle" else 0.5,
                 "evidence": [],

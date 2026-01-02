@@ -95,10 +95,10 @@ def _summarize_request(req: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         "  ]\n"
         "}\n"
         "ProposalV1 entity:\n"
-        '{ "kind":"entity", "proposal_id":"...", "confidence":0.0-1.0, "evidence":[], "public_rationale":"...", "metadata":{}, "schema_hint":null,\n'
+        '{ "kind":"Entity", "proposal_id":"...", "confidence":0.0-1.0, "evidence":[], "public_rationale":"...", "metadata":{}, "schema_hint":null,\n'
         '  "entity_id":"...", "entity_type":"...", "name":"...", "attributes":{}, "description":null }\n'
         "ProposalV1 relation:\n"
-        '{ "kind":"relation", "proposal_id":"...", "confidence":0.0-1.0, "evidence":[], "public_rationale":"...", "metadata":{}, "schema_hint":null,\n'
+        '{ "kind":"Relation", "proposal_id":"...", "confidence":0.0-1.0, "evidence":[], "public_rationale":"...", "metadata":{}, "schema_hint":null,\n'
         '  "relation_id":"...", "rel_type":"...", "source":"...", "target":"...", "attributes":{} }\n'
         "Rules:\n"
         "- Propose at most max_new_proposals items.\n"
@@ -123,6 +123,7 @@ def _normalize_proposals(trace_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(p, dict):
             continue
         kind = p.get("kind")
+        kind = "Entity" if str(kind).lower() == "entity" else "Relation"
         base_id = f"wm::{trace_id}::{idx}"
         meta = {
             "proposal_id": p.get("proposal_id") or base_id,
@@ -132,20 +133,20 @@ def _normalize_proposals(trace_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
             "metadata": p.get("metadata") if isinstance(p.get("metadata"), dict) else {},
             "schema_hint": p.get("schema_hint"),
         }
-        if kind == "entity":
+        if kind == "Entity":
             fixed.append({
                 **meta,
-                "kind": "entity",
+                "kind": "Entity",
                 "entity_id": p.get("entity_id") or f"{base_id}:entity",
                 "entity_type": p.get("entity_type") or "Entity",
                 "name": p.get("name") or p.get("entity_id") or f"Entity {idx}",
                 "attributes": p.get("attributes") if isinstance(p.get("attributes"), dict) else {},
                 "description": p.get("description"),
             })
-        elif kind == "relation":
+        else:
             fixed.append({
                 **meta,
-                "kind": "relation",
+                "kind": "Relation",
                 "relation_id": p.get("relation_id") or f"{base_id}:rel",
                 "rel_type": p.get("rel_type") or "related_to",
                 "source": p.get("source") or "",

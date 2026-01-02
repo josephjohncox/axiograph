@@ -15,6 +15,7 @@ use crate::world_model::CompetencyQuestionV1;
 pub struct CompetencyQuestionOptions {
     pub include_types: bool,
     pub include_relations: bool,
+    pub include_entity: bool,
     pub min_rows: usize,
     pub weight: f64,
     pub contexts: Vec<String>,
@@ -25,6 +26,7 @@ impl Default for CompetencyQuestionOptions {
         Self {
             include_types: true,
             include_relations: true,
+            include_entity: false,
             min_rows: 1,
             weight: 1.0,
             contexts: Vec::new(),
@@ -64,6 +66,9 @@ pub fn generate_from_schema(
             let mut types: Vec<String> = schema.object_types.iter().cloned().collect();
             types.sort();
             for ty in types {
+                if ty == "Entity" && !options.include_entity {
+                    continue;
+                }
                 let name = format!("type::{schema_name}::{ty}");
                 let query = format!("select ?x where ?x is {schema_name}.{ty} limit 1");
                 let question = format!("Find a {ty} instance in schema {schema_name}.");

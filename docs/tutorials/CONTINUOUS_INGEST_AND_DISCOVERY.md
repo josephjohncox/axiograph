@@ -146,7 +146,7 @@ Example trace skeleton:
   "generated_at": "…",
   "proposals": [
     {
-      "kind": "relation",
+      "kind": "Relation",
       "rel_type": "Mentions",
       "from": "rust/crates/axiograph-pathdb/src/certificate.rs",
       "to": "lean/Axiograph/Certificate/Check.lean",

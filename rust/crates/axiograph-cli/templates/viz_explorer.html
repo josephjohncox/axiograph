@@ -84,6 +84,7 @@ a.link:hover { text-decoration: underline; }
   <button class="tabbtn active" data-tab="explore" type="button">explore</button>
   <button class="tabbtn" data-tab="query" type="button">query</button>
   <button class="tabbtn" data-tab="llm" type="button">llm</button>
+  <button class="tabbtn" data-tab="world_model" type="button">world model</button>
   <button class="tabbtn" data-tab="review" type="button">review</button>
   <button class="tabbtn" data-tab="add" type="button">add</button>
 </div>
@@ -204,6 +205,58 @@ a.link:hover { text-decoration: underline; }
   <div id="llm_chat" class="llmchat" style="margin-top:8px;"></div>
   <details style="margin-top:8px;"><summary class="muted">citations / opened chunk</summary><pre id="llm_citations" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
   <details style="margin-top:8px;"><summary class="muted">llm debug</summary><pre id="llm_debug" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
+</div>
+
+<div id="tab_world_model" class="filters tabpanel">
+  <div class="row"><strong style="font-size:13px;">World Model</strong> <span class="muted">(propose / plan)</span></div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="wm_goals" rows="3" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="goals (one per line)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
+    <input id="wm_max_new" type="number" min="0" step="1" placeholder="max new proposals (0 = no cap)" style="flex:1; min-width:150px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+    <input id="wm_seed" type="number" min="0" step="1" placeholder="seed (optional)" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
+    <input id="wm_steps" type="number" min="1" step="1" value="2" placeholder="steps" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+    <input id="wm_rollouts" type="number" min="1" step="1" value="2" placeholder="rollouts" style="flex:1; min-width:120px; padding:6px 8px; font-size:12px; border:1px solid #ddd; border-radius:8px;"/>
+  </div>
+  <div class="row" style="margin-top:8px; gap:8px; flex-wrap: wrap;">
+    <select id="wm_guardrail_profile">
+      <option value="fast" selected>guardrail: fast</option>
+      <option value="strict">guardrail: strict</option>
+      <option value="off">guardrail: off</option>
+    </select>
+    <select id="wm_guardrail_plane">
+      <option value="both" selected>plane: both</option>
+      <option value="meta">plane: meta</option>
+      <option value="data">plane: data</option>
+    </select>
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="wm_include_guardrail" type="checkbox" checked/>
+      include guardrail
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <textarea id="wm_task_costs" rows="2" style="width:100%; padding:8px 10px; font-size:12px; border:1px solid #ddd; border-radius:8px; resize:vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="task costs (name=value[:weight[:unit]], one per line)"></textarea>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="wm_auto_commit" type="checkbox"/>
+      auto-commit to WAL (requires admin token)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="muted" style="display:flex; align-items:center; gap:8px;">
+      <input id="wm_commit_stepwise" type="checkbox"/>
+      commit stepwise (plan only)
+    </label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <button id="wm_propose" class="btn">propose</button>
+    <button id="wm_plan" class="btn">plan</button>
+    <span id="wm_status" class="muted"></span>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">response</summary><pre id="wm_output" style="white-space:pre-wrap; max-height:240px; overflow:auto; margin:8px 0 0 0;"></pre></details>
 </div>
 
 <div id="tab_review" class="filters tabpanel">
@@ -338,6 +391,21 @@ const llmStatusEl = document.getElementById("llm_status");
 const llmChatEl = document.getElementById("llm_chat");
 const llmCitationsEl = document.getElementById("llm_citations");
 const llmDebugEl = document.getElementById("llm_debug");
+const wmGoalsEl = document.getElementById("wm_goals");
+const wmMaxNewEl = document.getElementById("wm_max_new");
+const wmSeedEl = document.getElementById("wm_seed");
+const wmStepsEl = document.getElementById("wm_steps");
+const wmRolloutsEl = document.getElementById("wm_rollouts");
+const wmGuardrailProfileEl = document.getElementById("wm_guardrail_profile");
+const wmGuardrailPlaneEl = document.getElementById("wm_guardrail_plane");
+const wmIncludeGuardrailEl = document.getElementById("wm_include_guardrail");
+const wmTaskCostsEl = document.getElementById("wm_task_costs");
+const wmAutoCommitEl = document.getElementById("wm_auto_commit");
+const wmCommitStepwiseEl = document.getElementById("wm_commit_stepwise");
+const wmProposeBtn = document.getElementById("wm_propose");
+const wmPlanBtn = document.getElementById("wm_plan");
+const wmStatusEl = document.getElementById("wm_status");
+const wmOutputEl = document.getElementById("wm_output");
 
 const axqlQueryEl = document.getElementById("axql_query");
 const axqlRunBtn = document.getElementById("axql_run");
@@ -423,6 +491,7 @@ const tabPanels = {
   explore: document.getElementById("tab_explore"),
   query: document.getElementById("tab_query"),
   llm: document.getElementById("tab_llm"),
+  world_model: document.getElementById("tab_world_model"),
   review: document.getElementById("tab_review"),
   add: document.getElementById("tab_add"),
 };
@@ -1946,6 +2015,17 @@ function setAddStatus(msg) {
   addStatusEl.textContent = msg || "";
 }
 
+function setWorldModelStatus(msg) {
+  if (!wmStatusEl) return;
+  wmStatusEl.textContent = msg || "";
+}
+
+function setWorldModelOutput(obj) {
+  if (!wmOutputEl) return;
+  if (obj === null || obj === undefined) wmOutputEl.textContent = "";
+  else wmOutputEl.textContent = (typeof obj === "string") ? obj : JSON.stringify(obj, null, 2);
+}
+
 function setReviewStatusHtml(html) {
   if (!reviewStatusEl) return;
   reviewStatusEl.innerHTML = html || "";
@@ -2393,7 +2473,12 @@ function prefillAddFromToolLoop(outcome) {
   for (let i = steps.length - 1; i >= 0; i--) {
     const s = steps[i];
     if (!s) continue;
-    if (s.tool !== "propose_relation_proposals" && s.tool !== "propose_relations_proposals") continue;
+    if (
+      s.tool !== "propose_relation_proposals"
+      && s.tool !== "propose_relations_proposals"
+      && s.tool !== "world_model_propose"
+      && s.tool !== "world_model_plan"
+    ) continue;
     const r = s.result || null;
     if (!r || !r.proposals_json) continue;
     return setDraftOverlay(r, { notePrefix: "generated from LLM (fallback)" });
@@ -2419,6 +2504,213 @@ function parseTextList(text) {
   }
   return out;
 }
+
+function parseTaskCosts(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return [];
+  const lines = raw.split(/\n+/g).map(s => s.trim()).filter(Boolean);
+  const out = [];
+  for (const line of lines) {
+    const eqIdx = line.indexOf("=");
+    if (eqIdx <= 0) continue;
+    const name = line.slice(0, eqIdx).trim();
+    const rest = line.slice(eqIdx + 1).trim();
+    if (!name || !rest) continue;
+    const parts = rest.split(":").map(s => s.trim()).filter(Boolean);
+    const value = Number(parts[0]);
+    if (!Number.isFinite(value)) continue;
+    const weight = parts.length > 1 ? Number(parts[1]) : 1.0;
+    const unit = parts.length > 2 ? parts.slice(2).join(":") : null;
+    out.push({
+      name,
+      value,
+      weight: Number.isFinite(weight) ? weight : 1.0,
+      unit: unit || null,
+    });
+  }
+  return out;
+}
+
+function buildWorldModelBaseRequest() {
+  const goals = parseTextList(wmGoalsEl && wmGoalsEl.value || "");
+  const maxNewRaw = wmMaxNewEl ? String(wmMaxNewEl.value || "").trim() : "";
+  const seedRaw = wmSeedEl ? String(wmSeedEl.value || "").trim() : "";
+  const maxNew = maxNewRaw ? Number(maxNewRaw) : NaN;
+  const seed = seedRaw ? Number(seedRaw) : NaN;
+  const guardrailProfile = wmGuardrailProfileEl ? String(wmGuardrailProfileEl.value || "fast") : "fast";
+  const guardrailPlane = wmGuardrailPlaneEl ? String(wmGuardrailPlaneEl.value || "both") : "both";
+  const includeGuardrail = wmIncludeGuardrailEl ? !!wmIncludeGuardrailEl.checked : true;
+  const taskCosts = parseTaskCosts(wmTaskCostsEl && wmTaskCostsEl.value || "");
+  const body = {
+    goals,
+    guardrail_profile: guardrailProfile,
+    guardrail_plane: guardrailPlane,
+    include_guardrail: includeGuardrail,
+    task_costs: taskCosts,
+  };
+  if (Number.isFinite(maxNew)) body.max_new_proposals = Math.max(0, Math.floor(maxNew));
+  if (Number.isFinite(seed)) body.seed = Math.max(0, Math.floor(seed));
+  return body;
+}
+
+function worldModelHeaders() {
+  const headers = { "content-type": "application/json" };
+  const token = (reviewAdminTokenEl && reviewAdminTokenEl.value || addAdminTokenEl && addAdminTokenEl.value || "").trim();
+  if (token) headers["authorization"] = `Bearer ${token}`;
+  return headers;
+}
+
+function mergeWorldModelPlanProposals(report) {
+  if (!report || !Array.isArray(report.steps)) return null;
+  const proposals = [];
+  for (const step of report.steps) {
+    const p = step && step.proposals && Array.isArray(step.proposals.proposals)
+      ? step.proposals.proposals
+      : [];
+    proposals.push(...p);
+  }
+  if (!proposals.length) return null;
+  const traceId = report.trace_id || "world_model_plan";
+  const generatedAt = String(report.generated_at_unix_secs || Math.floor(Date.now() / 1000));
+  return {
+    version: 1,
+    generated_at: generatedAt,
+    source: { source_type: "world_model_plan", locator: traceId },
+    schema_hint: null,
+    proposals,
+  };
+}
+
+async function runWorldModelPropose() {
+  setWorldModelStatus("");
+  setWorldModelOutput(null);
+  setAddCommitOutput(null);
+  setReviewCommitOutput(null);
+  ui.reviewActionStatus = "";
+
+  if (!isServerMode()) {
+    setWorldModelStatus("requires server mode (`axiograph db serve`)");
+    return;
+  }
+
+  const body = buildWorldModelBaseRequest();
+  const steps = wmStepsEl ? Number(wmStepsEl.value || "") : NaN;
+  if (Number.isFinite(steps)) body.horizon_steps = Math.max(1, Math.floor(steps));
+
+  const autoCommit = wmAutoCommitEl ? !!wmAutoCommitEl.checked : false;
+  if (autoCommit) {
+    const token = (reviewAdminTokenEl && reviewAdminTokenEl.value || addAdminTokenEl && addAdminTokenEl.value || "").trim();
+    if (!token) {
+      setWorldModelStatus("auto-commit requires admin token");
+      return;
+    }
+    body.auto_commit = true;
+    const message = (reviewMessageEl && reviewMessageEl.value || addMessageEl && addMessageEl.value || "").trim();
+    if (message) body.commit_message = message;
+  }
+
+  try {
+    setWorldModelStatus("running…");
+    const resp = await fetch("/world_model/propose", {
+      method: "POST",
+      headers: worldModelHeaders(),
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    setWorldModelOutput(data);
+    if (!resp.ok) {
+      setWorldModelStatus(`error (${resp.status})`);
+      return;
+    }
+    setWorldModelStatus("ok");
+    if (data && data.commit) {
+      setReviewCommitOutput(data.commit);
+    }
+    if (data && data.commit_steps) {
+      setReviewCommitOutput(data.commit_steps);
+    }
+    if (data && data.commit_steps) {
+      setReviewCommitOutput(data.commit_steps);
+    }
+    if (data && data.proposals) {
+      const overlay = {
+        proposals_json: data.proposals,
+        chunks: [],
+        summary: { source: "world_model_propose", trace_id: data.trace_id },
+      };
+      setDraftOverlay(overlay, { notePrefix: "generated from world model" });
+    }
+  } catch (e) {
+    setWorldModelStatus("error");
+    setWorldModelOutput(String(e));
+  }
+}
+
+async function runWorldModelPlan() {
+  setWorldModelStatus("");
+  setWorldModelOutput(null);
+  setAddCommitOutput(null);
+  setReviewCommitOutput(null);
+  ui.reviewActionStatus = "";
+
+  if (!isServerMode()) {
+    setWorldModelStatus("requires server mode (`axiograph db serve`)");
+    return;
+  }
+
+  const body = buildWorldModelBaseRequest();
+  const steps = wmStepsEl ? Number(wmStepsEl.value || "") : NaN;
+  const rollouts = wmRolloutsEl ? Number(wmRolloutsEl.value || "") : NaN;
+  if (Number.isFinite(steps)) body.horizon_steps = Math.max(1, Math.floor(steps));
+  if (Number.isFinite(rollouts)) body.rollouts = Math.max(1, Math.floor(rollouts));
+
+  const autoCommit = wmAutoCommitEl ? !!wmAutoCommitEl.checked : false;
+  if (autoCommit) {
+    const token = (reviewAdminTokenEl && reviewAdminTokenEl.value || addAdminTokenEl && addAdminTokenEl.value || "").trim();
+    if (!token) {
+      setWorldModelStatus("auto-commit requires admin token");
+      return;
+    }
+    body.auto_commit = true;
+    body.commit_stepwise = wmCommitStepwiseEl ? !!wmCommitStepwiseEl.checked : false;
+    const message = (reviewMessageEl && reviewMessageEl.value || addMessageEl && addMessageEl.value || "").trim();
+    if (message) body.commit_message = message;
+  }
+
+  try {
+    setWorldModelStatus("running…");
+    const resp = await fetch("/world_model/plan", {
+      method: "POST",
+      headers: worldModelHeaders(),
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    setWorldModelOutput(data);
+    if (!resp.ok) {
+      setWorldModelStatus(`error (${resp.status})`);
+      return;
+    }
+    setWorldModelStatus("ok");
+    if (data && data.commit) {
+      setReviewCommitOutput(data.commit);
+    }
+    const merged = data && data.report ? mergeWorldModelPlanProposals(data.report) : null;
+    if (merged && merged.proposals && merged.proposals.length) {
+      const overlay = {
+        proposals_json: merged,
+        chunks: [],
+        summary: { source: "world_model_plan", trace_id: data.report && data.report.trace_id },
+      };
+      setDraftOverlay(overlay, { notePrefix: "generated from world model plan" });
+    }
+  } catch (e) {
+    setWorldModelStatus("error");
+    setWorldModelOutput(String(e));
+  }
+}
+
+if (wmProposeBtn) wmProposeBtn.addEventListener("click", runWorldModelPropose);
+if (wmPlanBtn) wmPlanBtn.addEventListener("click", runWorldModelPlan);
 
 async function generateRelationProposals() {
   setAddStatus("");
@@ -3552,6 +3844,13 @@ async function initServerControls() {
     if (status && status.llm && llmStatusEl) {
       if (status.llm.enabled) setLlmStatus(`ready (${status.llm.backend})`);
       else setLlmStatus("disabled");
+    }
+    if (status && status.world_model && wmStatusEl) {
+      if (status.world_model.enabled) {
+        setWorldModelStatus(`ready (${status.world_model.backend})`);
+      } else {
+        setWorldModelStatus("disabled");
+      }
     }
     const list = Array.isArray(snaps.snapshots) ? snaps.snapshots : [];
     if (!list.length) return;

@@ -21,6 +21,9 @@ DRAFT_AXI="$OUT_DIR/wm_plan_draft.axi"
 AXPD_OUT="$OUT_DIR/wm_plan.axpd"
 VIZ_OUT="$OUT_DIR/wm_plan_viz.html"
 
+if [ -z "${AXIOGRAPH_DEMO_KEEP:-}" ]; then
+  rm -rf "$PLANE_DIR"
+fi
 mkdir -p "$OUT_DIR"
 
 echo "== World model MPC flow demo =="
@@ -31,6 +34,44 @@ echo ""
 echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"
 make binaries
+
+if [ -z "${WORLD_MODEL_BACKEND:-}" ]; then
+  export WORLD_MODEL_BACKEND="openai"
+fi
+
+WM_REPL_USE="wm use llm"
+WM_DESC="llm"
+WM_MODEL="${WORLD_MODEL_MODEL:-${OPENAI_MODEL:-${ANTHROPIC_MODEL:-${OLLAMA_MODEL:-}}}}"
+
+if [ "$WORLD_MODEL_BACKEND" = "baseline" ]; then
+  WM_REPL_USE="wm use command scripts/axiograph_world_model_plugin_baseline.py --strategy oracle"
+  WM_DESC="baseline"
+  WM_MODEL="baseline_oracle"
+elif [ "$WORLD_MODEL_BACKEND" = "onnx" ]; then
+  echo "error: WORLD_MODEL_BACKEND=onnx is not supported in this demo (use physics demos)"
+  exit 2
+else
+  if [ "$WORLD_MODEL_BACKEND" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "error: OPENAI_API_KEY is required for WORLD_MODEL_BACKEND=openai"
+    exit 2
+  fi
+  if [ "$WORLD_MODEL_BACKEND" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "error: ANTHROPIC_API_KEY is required for WORLD_MODEL_BACKEND=anthropic"
+    exit 2
+  fi
+  if [ "$WORLD_MODEL_BACKEND" = "ollama" ] && [ -z "${OLLAMA_HOST:-}" ] && [ -z "${OLLAMA_MODEL:-}" ]; then
+    echo "error: OLLAMA_HOST or OLLAMA_MODEL is required for WORLD_MODEL_BACKEND=ollama"
+    exit 2
+  fi
+  if [ -z "$WM_MODEL" ]; then
+    echo "error: WORLD_MODEL_MODEL (or OPENAI_MODEL / ANTHROPIC_MODEL / OLLAMA_MODEL) is required"
+    exit 2
+  fi
+  export WORLD_MODEL_MODEL="$WM_MODEL"
+fi
+
+echo ""
+echo "-- World model backend: $WORLD_MODEL_BACKEND (mode=$WM_DESC model=$WM_MODEL)"
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
@@ -50,7 +91,8 @@ echo ""
 echo "-- B) MPC plan (REPL non-interactive)"
 "$AXIOGRAPH" repl --quiet \
   --cmd "import_axi examples/Family.axi" \
-  --cmd "wm use command scripts/axiograph_world_model_plugin_baseline.py --strategy oracle" \
+  --cmd "$WM_REPL_USE" \
+  --cmd "wm model $WM_MODEL" \
   --cmd "wm plan $PLAN_REPORT --steps 2 --rollouts 2 --goal \"predict missing parent links\" --axi examples/Family.axi --cq \"has_parent=select ?p where ?p is Person limit 1\""
 
 if [ ! -f "$PLAN_REPORT" ]; then

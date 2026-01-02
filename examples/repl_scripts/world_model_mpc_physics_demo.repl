@@ -6,5 +6,14 @@
 
 import_axi examples/physics/PhysicsOntology.axi
 import_axi examples/physics/PhysicsMeasurements.axi
-wm use command scripts/axiograph_world_model_plugin_real.py
+# Real world model backend (no Python; uses WORLD_MODEL_BACKEND + WORLD_MODEL_MODEL).
+# Example:
+#   export WORLD_MODEL_BACKEND=openai
+#   export WORLD_MODEL_MODEL=gpt-4o-mini
+#   export OPENAI_API_KEY=...
+wm use llm
 wm plan build/world_model_mpc_physics_plan.json --steps 2 --rollouts 2 --max 150 --guardrail strict --plane both --goal "expand physics ontology coverage" --axi examples/physics/PhysicsOntology.axi --cq-file examples/competency_questions/physics_cq.json
+
+# Export the resulting snapshot (PathDBExportV1) so e2e tests can certify a query.
+export_axi build/world_model_mpc_physics_export_v1.axi
+save build/world_model_mpc_physics.axpd

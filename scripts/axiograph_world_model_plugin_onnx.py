@@ -42,7 +42,8 @@ def _normalize_proposals(trace_id: str, proposals: List[Dict[str, Any]]) -> Dict
         "proposals": [],
     }
     for idx, p in enumerate(proposals):
-        kind = p.get("kind", "relation")
+        kind = p.get("kind", "Relation")
+        kind = "Entity" if str(kind).lower() == "entity" else "Relation"
         base_id = f"wm::{trace_id}::{idx}"
         meta = {
             "proposal_id": p.get("proposal_id") or base_id,
@@ -52,10 +53,10 @@ def _normalize_proposals(trace_id: str, proposals: List[Dict[str, Any]]) -> Dict
             "metadata": p.get("metadata") if isinstance(p.get("metadata"), dict) else {},
             "schema_hint": p.get("schema_hint"),
         }
-        if kind == "entity":
+        if kind == "Entity":
             out["proposals"].append({
                 **meta,
-                "kind": "entity",
+                "kind": "Entity",
                 "entity_id": p.get("entity_id") or f"{base_id}:entity",
                 "entity_type": p.get("entity_type") or "Entity",
                 "name": p.get("name") or p.get("entity_id") or f"Entity {idx}",
@@ -65,7 +66,7 @@ def _normalize_proposals(trace_id: str, proposals: List[Dict[str, Any]]) -> Dict
         else:
             out["proposals"].append({
                 **meta,
-                "kind": "relation",
+                "kind": "Relation",
                 "relation_id": p.get("relation_id") or f"{base_id}:rel",
                 "rel_type": p.get("rel_type") or "related_to",
                 "source": p.get("source") or "",
@@ -101,6 +102,7 @@ def main() -> None:
     for idx, it in enumerate(items[:max_new]):
         rel = it.get("relation") or "related_to"
         fields = it.get("fields", []) or []
+        field_map = {k: v for (k, v) in fields} if isinstance(fields, list) else {}
         mask = it.get("mask_fields", []) or []
         # Deterministic pseudo-input to ONNX model.
         text = json.dumps({"relation": rel, "fields": fields, "mask": mask}, sort_keys=True)
@@ -112,18 +114,18 @@ def main() -> None:
         score = float(result[0]) if result is not None else 0.7
         conf = max(0.55, min(0.95, score))
         proposals.append({
-            "kind": "relation",
+            "kind": "Relation",
             "proposal_id": f"rel::{rel}::{idx}",
             "confidence": conf,
             "evidence": [],
             "public_rationale": "onnx world model prediction",
             "metadata": {"model_path": model_path},
-            "schema_hint": None,
+            "schema_hint": it.get("schema"),
             "relation_id": f"rel::{rel}::{idx}",
             "rel_type": rel,
             "source": fields[0][1] if fields else "",
             "target": fields[1][1] if len(fields) > 1 else "",
-            "attributes": {},
+            "attributes": field_map,
         })
 
     proposals_file = _normalize_proposals(trace_id, proposals)

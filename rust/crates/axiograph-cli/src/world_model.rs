@@ -8,12 +8,15 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axiograph_ingest_docs::{ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1};
+use axiograph_ingest_docs::{
+    EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1,
+};
 use axiograph_pathdb::checked_db::CheckedDb;
 use axiograph_pathdb::PathDB;
 
@@ -715,6 +718,7 @@ pub enum WorldModelBackend {
     Disabled,
     Stub,
     Command { program: PathBuf, args: Vec<String> },
+    Http { url: String },
 }
 
 impl Default for WorldModelBackend {
@@ -734,9 +738,14 @@ impl WorldModelState {
         let backend = match &self.backend {
             WorldModelBackend::Disabled => "disabled".to_string(),
             WorldModelBackend::Stub => "stub".to_string(),
-            WorldModelBackend::Command { program, .. } => {
-                format!("command({})", program.display())
+            WorldModelBackend::Command { program, args } => {
+                if args.iter().any(|s| s == "world-model-plugin-llm") {
+                    "llm".to_string()
+                } else {
+                    format!("command({})", program.display())
+                }
             }
+            WorldModelBackend::Http { url } => format!("http({url})"),
         };
         let model = self
             .model
@@ -763,6 +772,7 @@ impl WorldModelState {
                 let response = run_world_model_plugin(program, args, req)?;
                 Ok(response)
             }
+            WorldModelBackend::Http { url } => run_world_model_http(url, req),
         }
     }
 
@@ -770,11 +780,47 @@ impl WorldModelState {
         match &self.backend {
             WorldModelBackend::Disabled => "disabled".to_string(),
             WorldModelBackend::Stub => "stub".to_string(),
-            WorldModelBackend::Command { program, .. } => {
-                format!("command:{}", program.display())
+            WorldModelBackend::Command { program, args } => {
+                if args.iter().any(|s| s == "world-model-plugin-llm") {
+                    "llm".to_string()
+                } else {
+                    format!("command:{}", program.display())
+                }
             }
+            WorldModelBackend::Http { url } => format!("http:{url}"),
         }
     }
+}
+
+#[cfg(feature = "world-model-http")]
+fn run_world_model_http(url: &str, req: &WorldModelRequestV1) -> Result<WorldModelResponseV1> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
+    let resp = client
+        .post(url)
+        .json(req)
+        .send()
+        .map_err(|e| anyhow!("world model http backend failed: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().unwrap_or_default();
+        return Err(anyhow!(
+            "world model http backend returned {status}: {text}"
+        ));
+    }
+    let parsed = resp
+        .json()
+        .map_err(|e| anyhow!("world model http backend returned invalid JSON: {e}"))?;
+    Ok(parsed)
+}
+
+#[cfg(not(feature = "world-model-http"))]
+fn run_world_model_http(_url: &str, _req: &WorldModelRequestV1) -> Result<WorldModelResponseV1> {
+    Err(anyhow!(
+        "world model http backend is unavailable (enable feature `world-model-http`)"
+    ))
 }
 
 fn empty_proposals(trace_id: &str) -> ProposalsFileV1 {
@@ -908,6 +954,251 @@ fn apply_provenance_meta(meta: &mut ProposalMetaV1, provenance: &WorldModelProve
         meta.metadata
             .entry("axiograph_guardrail_plane".to_string())
             .or_insert_with(|| plane.clone());
+    }
+}
+
+pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Value) {
+    let trace_id = if req.trace_id.trim().is_empty() {
+        default_trace_id()
+    } else {
+        req.trace_id.clone()
+    };
+    let opts = &req.options;
+    let input = &req.input;
+
+    let export_summary = input.export.as_ref().map(|export| {
+        let sample = export
+            .items
+            .iter()
+            .take(3)
+            .map(|it| {
+                json!({
+                    "schema": it.schema,
+                    "instance": it.instance,
+                    "relation": it.relation,
+                    "fields": it.fields.iter().take(4).cloned().collect::<Vec<_>>(),
+                    "mask_fields": it.mask_fields.iter().take(4).cloned().collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "module_name": export.module_name,
+            "axi_digest_v1": export.axi_digest_v1,
+            "items": export.items.len(),
+            "sample": sample,
+        })
+    });
+
+    let summary = json!({
+        "trace_id": trace_id,
+        "generated_at": req.generated_at_unix_secs,
+        "goals": opts.goals,
+        "objectives": opts.objectives,
+        "task_costs": opts.task_costs,
+        "max_new_proposals": opts.max_new_proposals,
+        "notes": opts.notes,
+        "axi_digest_v1": input.axi_digest_v1,
+        "export_summary": export_summary,
+        "export_path": input.export_path,
+    });
+
+    let prompt = [
+        "You are a world-model assistant for Axiograph.",
+        "Return ONLY JSON (no markdown) that conforms to:",
+        "ProposalsFileV1 = {",
+        "  \"version\": 1,",
+        "  \"generated_at\": \"<unix-secs as string>\",",
+        "  \"source\": {\"source_type\": \"world_model\", \"locator\": \"<trace_id>\"},",
+        "  \"schema_hint\": null,",
+        "  \"proposals\": [ ProposalV1 (entity or relation) ]",
+        "}",
+        "ProposalV1 entity:",
+        "{ \"kind\":\"Entity\", \"proposal_id\":\"...\", \"confidence\":0.0-1.0, \"evidence\":[], \"public_rationale\":\"...\", \"metadata\":{}, \"schema_hint\":null,",
+        "  \"entity_id\":\"...\", \"entity_type\":\"...\", \"name\":\"...\", \"attributes\":{}, \"description\":null }",
+        "ProposalV1 relation:",
+        "{ \"kind\":\"Relation\", \"proposal_id\":\"...\", \"confidence\":0.0-1.0, \"evidence\":[], \"public_rationale\":\"...\", \"metadata\":{}, \"schema_hint\":null,",
+        "  \"relation_id\":\"...\", \"rel_type\":\"...\", \"source\":\"...\", \"target\":\"...\", \"attributes\":{} }",
+        "Rules:",
+        "- Propose at most max_new_proposals items.",
+        "- Use stable ids (e.g. wm::<trace_id>::n).",
+        "- Keep confidence between 0.55 and 0.9.",
+        "- Use only info grounded in export_summary + goals.",
+    ]
+    .join("\n");
+
+    (prompt, summary)
+}
+
+pub(crate) fn normalize_world_model_proposals_value(
+    trace_id: &str,
+    value: Value,
+) -> ProposalsFileV1 {
+    let now = now_unix_secs().to_string();
+    let obj = value.as_object().cloned().unwrap_or_default();
+    let generated_at = obj
+        .get("generated_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&now)
+        .to_string();
+    let schema_hint = obj
+        .get("schema_hint")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let proposals_v = obj.get("proposals").and_then(|v| v.as_array()).cloned();
+    let proposals_v = proposals_v.unwrap_or_default();
+
+    let mut proposals: Vec<ProposalV1> = Vec::new();
+    for (idx, item) in proposals_v.iter().enumerate() {
+        let Some(p) = item.as_object() else { continue };
+        let kind_raw = p
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Relation")
+            .to_ascii_lowercase();
+        let kind = if kind_raw == "entity" { "Entity" } else { "Relation" };
+        let base_id = format!("wm::{trace_id}::{idx}");
+        let proposal_id = p
+            .get("proposal_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&base_id)
+            .to_string();
+
+        let confidence = p
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.7)
+            .clamp(0.0, 1.0);
+        let public_rationale = p
+            .get("public_rationale")
+            .and_then(|v| v.as_str())
+            .unwrap_or("world model proposal")
+            .to_string();
+
+        let metadata = p
+            .get("metadata")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), value_to_string(v)))
+                    .collect::<HashMap<String, String>>()
+            })
+            .unwrap_or_default();
+
+        let schema_hint = p
+            .get("schema_hint")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let evidence = p
+            .get("evidence")
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Vec<EvidencePointer>>(v).ok())
+            .unwrap_or_default();
+
+        let meta = ProposalMetaV1 {
+            proposal_id: proposal_id.clone(),
+            confidence,
+            evidence,
+            public_rationale,
+            metadata,
+            schema_hint,
+        };
+
+        if kind == "Entity" {
+            let entity_id = p
+                .get("entity_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&format!("{base_id}:entity"))
+                .to_string();
+            let entity_type = p
+                .get("entity_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Entity")
+                .to_string();
+            let name = p
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&entity_id)
+                .to_string();
+            let attributes = p
+                .get("attributes")
+                .and_then(|v| v.as_object())
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), value_to_string(v)))
+                        .collect::<HashMap<String, String>>()
+                })
+                .unwrap_or_default();
+            let description = p
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            proposals.push(ProposalV1::Entity {
+                meta,
+                entity_id,
+                entity_type,
+                name,
+                attributes,
+                description,
+            });
+        } else {
+            let relation_id = p
+                .get("relation_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&format!("{base_id}:rel"))
+                .to_string();
+            let rel_type = p
+                .get("rel_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("related_to")
+                .to_string();
+            let source = p
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let target = p
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let attributes = p
+                .get("attributes")
+                .and_then(|v| v.as_object())
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), value_to_string(v)))
+                        .collect::<HashMap<String, String>>()
+                })
+                .unwrap_or_default();
+            proposals.push(ProposalV1::Relation {
+                meta,
+                relation_id,
+                rel_type,
+                source,
+                target,
+                attributes,
+            });
+        }
+    }
+
+    ProposalsFileV1 {
+        version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
+        generated_at,
+        source: ProposalSourceV1 {
+            source_type: "world_model".to_string(),
+            locator: trace_id.to_string(),
+        },
+        schema_hint,
+        proposals,
+    }
+}
+
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 

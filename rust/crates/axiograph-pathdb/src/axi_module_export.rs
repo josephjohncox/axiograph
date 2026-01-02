@@ -369,7 +369,27 @@ fn format_constraint(db: &PathDB, constraint_id: u32) -> Result<String> {
         }
         "symmetric" => {
             let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
-            format!("constraint symmetric {rel}")
+            let mut out = format!("constraint symmetric {rel}");
+            if let (Some(left), Some(right)) = (
+                entity_attr(db, constraint_id, ATTR_CONSTRAINT_SRC_FIELD),
+                entity_attr(db, constraint_id, ATTR_CONSTRAINT_DST_FIELD),
+            ) {
+                if !left.trim().is_empty() && !right.trim().is_empty() {
+                    out.push_str(&format!(" on ({left}, {right})"));
+                }
+            }
+            if let Some(params) = entity_attr(db, constraint_id, ATTR_CONSTRAINT_PARAM_FIELDS) {
+                let params = params
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !params.is_empty() {
+                    out.push_str(&format!(" param ({params})"));
+                }
+            }
+            out
         }
         "symmetric_where_in" => {
             let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
@@ -382,11 +402,51 @@ fn format_constraint(db: &PathDB, constraint_id: u32) -> Result<String> {
                 .filter(|s| !s.trim().is_empty())
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("constraint symmetric {rel} where {rel}.{field} in {{{values}}}")
+            let mut out = format!("constraint symmetric {rel} where {rel}.{field} in {{{values}}}");
+            if let (Some(left), Some(right)) = (
+                entity_attr(db, constraint_id, ATTR_CONSTRAINT_SRC_FIELD),
+                entity_attr(db, constraint_id, ATTR_CONSTRAINT_DST_FIELD),
+            ) {
+                if !left.trim().is_empty() && !right.trim().is_empty() {
+                    out.push_str(&format!(" on ({left}, {right})"));
+                }
+            }
+            if let Some(params) = entity_attr(db, constraint_id, ATTR_CONSTRAINT_PARAM_FIELDS) {
+                let params = params
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !params.is_empty() {
+                    out.push_str(&format!(" param ({params})"));
+                }
+            }
+            out
         }
         "transitive" => {
             let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
-            format!("constraint transitive {rel}")
+            let mut out = format!("constraint transitive {rel}");
+            if let (Some(left), Some(right)) = (
+                entity_attr(db, constraint_id, ATTR_CONSTRAINT_SRC_FIELD),
+                entity_attr(db, constraint_id, ATTR_CONSTRAINT_DST_FIELD),
+            ) {
+                if !left.trim().is_empty() && !right.trim().is_empty() {
+                    out.push_str(&format!(" on ({left}, {right})"));
+                }
+            }
+            if let Some(params) = entity_attr(db, constraint_id, ATTR_CONSTRAINT_PARAM_FIELDS) {
+                let params = params
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !params.is_empty() {
+                    out.push_str(&format!(" param ({params})"));
+                }
+            }
+            out
         }
         "key" => {
             let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();

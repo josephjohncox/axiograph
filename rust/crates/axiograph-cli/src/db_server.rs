@@ -37,6 +37,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use url::form_urlencoded;
 
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
@@ -90,6 +91,7 @@ struct ServerConfig {
     cert_verify: CertVerifyConfig,
     llm: LlmState,
     world_model: WorldModelState,
+    world_model_workers: usize,
     path_index_lru_capacity: usize,
     path_index_lru_async: bool,
     path_index_lru_queue: usize,
@@ -168,10 +170,44 @@ impl QueryPlanCache {
     }
 }
 
+#[derive(Clone)]
+struct WorldModelExecutor {
+    semaphore: Arc<Semaphore>,
+}
+
+impl WorldModelExecutor {
+    fn new(workers: usize) -> Self {
+        let workers = workers.max(1);
+        Self {
+            semaphore: Arc::new(Semaphore::new(workers)),
+        }
+    }
+
+    async fn run<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce() -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("world model executor closed"))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            f()
+        })
+        .await
+        .map_err(|e| anyhow!("world model task join failed: {e}"))?
+    }
+}
+
 struct ServerState {
     config: ServerConfig,
     loaded: RwLock<LoadedSnapshot>,
     query_cache: Mutex<QueryPlanCache>,
+    world_model_executor: WorldModelExecutor,
 }
 
 fn now_unix_secs() -> u64 {
@@ -419,15 +455,42 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
         llm.model = args.llm_model.clone();
     }
 
-    if (args.world_model_stub as usize) + (args.world_model_plugin.is_some() as usize) > 1 {
+    if (args.world_model_stub as usize)
+        + (args.world_model_plugin.is_some() as usize)
+        + (args.world_model_http.is_some() as usize)
+        + (args.world_model_llm as usize)
+        > 1
+    {
         return Err(anyhow!(
-            "db serve: choose at most one world model backend: `--world-model-stub` or `--world-model-plugin ...`"
+            "db serve: choose at most one world model backend: `--world-model-stub`, `--world-model-plugin ...`, `--world-model-http ...`, or `--world-model-llm`"
         ));
     }
 
     let mut world_model = WorldModelState::default();
     if args.world_model_stub {
         world_model.backend = WorldModelBackend::Stub;
+    } else if let Some(url) = args.world_model_http.as_ref() {
+        world_model.backend = WorldModelBackend::Http { url: url.clone() };
+    } else if args.world_model_llm {
+        let exe = std::env::current_exe()
+            .map_err(|e| anyhow!("db serve: failed to resolve current executable: {e}"))?;
+        let mut args_list = vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
+        let has_model_arg = args
+            .world_model_plugin_arg
+            .iter()
+            .any(|a| a == "--model");
+        if let Some(model) = args.world_model_model.as_ref() {
+            if !has_model_arg {
+                args_list.push("--model".to_string());
+                args_list.push(model.clone());
+            }
+        }
+        args_list.extend(args.world_model_plugin_arg.clone());
+        crate::llm::validate_world_model_llm_backend_arg(&args_list)?;
+        world_model.backend = WorldModelBackend::Command {
+            program: exe,
+            args: args_list,
+        };
     } else if let Some(plugin) = args.world_model_plugin.as_ref() {
         world_model.backend = WorldModelBackend::Command {
             program: plugin.clone(),
@@ -469,6 +532,7 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
         },
         llm,
         world_model,
+        world_model_workers: args.world_model_workers,
         path_index_lru_capacity: args.path_index_lru_capacity,
         path_index_lru_async: args.path_index_lru_async,
         path_index_lru_queue: args.path_index_lru_queue,
@@ -494,6 +558,7 @@ async fn serve_async(config: ServerConfig) -> Result<()> {
         config: config.clone(),
         loaded: RwLock::new(initial),
         query_cache: Mutex::new(QueryPlanCache::default()),
+        world_model_executor: WorldModelExecutor::new(config.world_model_workers),
     });
 
     if config.watch_head {
@@ -931,6 +996,7 @@ fn status_payload(state: &ServerState) -> Result<serde_json::Value> {
         WorldModelBackend::Disabled => "disabled".to_string(),
         WorldModelBackend::Stub => "stub".to_string(),
         WorldModelBackend::Command { program, .. } => format!("command({})", program.display()),
+        WorldModelBackend::Http { url } => format!("http({url})"),
     };
     let verifier_bin = resolve_verifier_bin(&state.config);
     Ok(serde_json::json!({
@@ -1885,7 +1951,7 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
 
     let state2 = state.clone();
     let (mut outcome, accepted_snapshot_id, query_certs, anchor_axi) = tokio::task::spawn_blocking(move || {
-        let (db, meta, embeddings, snapshot_key, accepted_snapshot_id) =
+        let (db, meta, embeddings, snapshot_key, accepted_snapshot_id, pathdb_snapshot_id, snapshot_label) =
             if let Some(snapshot) = snapshot_override.as_deref() {
                 let SnapshotSource::Store { dir, layer, .. } = &state2.config.source else {
                     return Err(anyhow!(
@@ -1899,6 +1965,8 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
                     loaded.embeddings,
                     loaded.snapshot_key,
                     loaded.accepted_snapshot_id,
+                    loaded.pathdb_snapshot_id,
+                    loaded.snapshot_label,
                 )
             } else {
                 let loaded = state2
@@ -1911,6 +1979,8 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
                     loaded.embeddings.clone(),
                     loaded.snapshot_key.clone(),
                     loaded.accepted_snapshot_id.clone(),
+                    loaded.pathdb_snapshot_id.clone(),
+                    loaded.snapshot_label.clone(),
                 )
             };
 
@@ -1975,6 +2045,30 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
             _ => None,
         };
 
+        let world_model_snapshot = match &state2.config.source {
+            SnapshotSource::Axpd(path) => Some(crate::world_model::WorldModelSnapshotRefV1 {
+                kind: "axpd".to_string(),
+                path: path.display().to_string(),
+                snapshot_id: None,
+                accepted_snapshot_id: None,
+            }),
+            SnapshotSource::Store { dir, .. } => Some(crate::world_model::WorldModelSnapshotRefV1 {
+                kind: "store".to_string(),
+                path: dir.display().to_string(),
+                snapshot_id: pathdb_snapshot_id.clone(),
+                accepted_snapshot_id: accepted_snapshot_id.clone(),
+            }),
+        };
+        let world_model_ctx = if matches!(state2.config.world_model.backend, WorldModelBackend::Disabled) {
+            None
+        } else {
+            Some(crate::llm::ToolLoopWorldModelContext {
+                world_model: state2.config.world_model.clone(),
+                snapshot: world_model_snapshot,
+                snapshot_label: snapshot_label.clone(),
+            })
+        };
+
         let outcome = crate::llm::run_tool_loop_with_meta(
             &state2.config.llm,
             &db,
@@ -1982,6 +2076,7 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
             &contexts,
             &snapshot_key,
             store_ctx.as_ref(),
+            world_model_ctx.as_ref(),
             embeddings.as_deref(),
             embed_host,
             &mut query_cache,
@@ -2305,7 +2400,7 @@ async fn handle_world_model_propose(
     let pathdb_snapshot_id_for_input = pathdb_snapshot_id.clone();
 
     let req2 = req.clone();
-    let (trace_id, proposals, guardrail, notes) = tokio::task::spawn_blocking(move || {
+    let (trace_id, proposals, guardrail, notes) = state.world_model_executor.run(move || {
         let guardrail_profile = req2
             .guardrail_profile
             .as_deref()
@@ -2423,9 +2518,7 @@ async fn handle_world_model_propose(
 
         let notes = response.notes.clone();
         Ok::<_, anyhow::Error>((response.trace_id, proposals, guardrail, notes))
-    })
-    .await
-    .map_err(|e| anyhow!("world_model/propose task join failed: {e}"))??;
+    }).await?;
 
     let mut commit: Option<PathdbCommitResponseV1> = None;
     if req.auto_commit {
@@ -2521,7 +2614,7 @@ async fn handle_world_model_plan(
             let guardrail_weights = guardrail_weights.clone();
             let validation_profile = validation_profile.clone();
             let validation_plane = validation_plane.clone();
-            let report_step = tokio::task::spawn_blocking(move || {
+            let report_step = state.world_model_executor.run(move || {
                 let mut base_input = crate::world_model::WorldModelInputV1::default();
                 base_input
                     .notes
@@ -2580,9 +2673,7 @@ async fn handle_world_model_plan(
                     &plan_opts,
                 )
                 .map_err(|e| anyhow!("world_model/plan step failed: {e}"))
-            })
-            .await
-            .map_err(|e| anyhow!("world_model/plan step join failed: {e}"))??;
+            }).await?;
 
             let mut step_report = report_step
                 .steps
@@ -2660,7 +2751,7 @@ async fn handle_world_model_plan(
         let pathdb_snapshot_id_for_input = pathdb_snapshot_id.clone();
 
         let req2 = req.clone();
-        let report = tokio::task::spawn_blocking(move || {
+        let report = state.world_model_executor.run(move || {
             let mut base_input = crate::world_model::WorldModelInputV1::default();
             base_input.notes.push("source=db_server_plan".to_string());
             if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db.as_ref()) {
@@ -2717,9 +2808,7 @@ async fn handle_world_model_plan(
                 &plan_opts,
             )
             .map_err(|e| anyhow!("world_model/plan failed: {e}"))
-        })
-        .await
-        .map_err(|e| anyhow!("world_model/plan task join failed: {e}"))??;
+        }).await?;
 
         if req.auto_commit {
             let accepted_snapshot = req

@@ -173,16 +173,21 @@ Certified subset:
 - symmetry annotations:
   - `constraint symmetric Rel`
   - `constraint symmetric Rel where Rel.field in {A, B, ...}`
+  - optional carrier-field clause: `... on (field0, field1)`
   Semantics: the checker does **not** require inverse tuples to be explicitly present.
   Instead, it checks that the module’s **key/functional** constraints remain consistent
-  under symmetric closure (adding swapped-endpoint tuples).
+  under symmetric closure (adding swapped-endpoint tuples) on the carrier fields.
+  By default the carrier fields are the first two relation fields; `on (field0, field1)`
+  makes the choice explicit.
 - transitivity annotations:
   - `constraint transitive Rel`
+  - optional carrier-field clause: `constraint transitive Rel on (field0, field1)`
   Semantics: the checker does **not** require the transitive closure to be explicitly
   materialized. Instead, it checks that the module’s **key/functional** constraints
-  remain consistent under transitive closure on the relation’s first two fields (the
-  “carrier” fields). If a key/functional constraint refers to non-carrier fields, the
-  certificate check fails (witness construction is out of scope for this certificate).
+  remain consistent under transitive closure on the relation’s carrier fields.
+  By default the carrier fields are the first two relation fields; `on (field0, field1)`
+  makes the choice explicit. If a key/functional constraint refers to non-carrier fields,
+  the certificate check fails (witness construction is out of scope for this certificate).
 - executable typing rules (small builtin set):
   - `constraint typing Rel: preserves_manifold_and_increments_degree`
   - `constraint typing Rel: preserves_manifold_and_adds_degree`
@@ -197,6 +202,8 @@ Notes:
 - Truly unknown constraints (`ConstraintV1.unknown`) are rejected by both:
   - accepted-plane promotion (hard error), and
   - `axi_constraints_ok_v1` (fail-closed).
+- If you have dialect-ish constraint formatting (e.g. multi-line `... where` guards),
+  run `axiograph check fmt --write your_file.axi` to canonicalize the constraint lines.
 
 Shape (sketch):
 

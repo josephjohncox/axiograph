@@ -532,24 +532,74 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
             relation,
             field,
             values,
+            carriers,
+            params,
         } => (
             "symmetric_where_in",
-            vec![
+            {
+                let mut attrs = vec![
                 (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
                 (ATTR_CONSTRAINT_WHERE_FIELD.to_string(), field.clone()),
                 (
                     ATTR_CONSTRAINT_WHERE_IN_VALUES.to_string(),
                     values.join(","),
                 ),
-            ],
+                ];
+                if let Some(c) = carriers.as_ref() {
+                    // Reuse src/dst field attrs as the carrier pair for closure constraints.
+                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+                }
+                if let Some(ps) = params.as_ref() {
+                    attrs.push((
+                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
+                        ps.join(","),
+                    ));
+                }
+                attrs
+            },
         ),
-        ConstraintV1::Symmetric { relation } => (
+        ConstraintV1::Symmetric {
+            relation,
+            carriers,
+            params,
+        } => (
             "symmetric",
-            vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())],
+            {
+                let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
+                if let Some(c) = carriers.as_ref() {
+                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+                }
+                if let Some(ps) = params.as_ref() {
+                    attrs.push((
+                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
+                        ps.join(","),
+                    ));
+                }
+                attrs
+            },
         ),
-        ConstraintV1::Transitive { relation } => (
+        ConstraintV1::Transitive {
+            relation,
+            carriers,
+            params,
+        } => (
             "transitive",
-            vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())],
+            {
+                let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
+                if let Some(c) = carriers.as_ref() {
+                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+                }
+                if let Some(ps) = params.as_ref() {
+                    attrs.push((
+                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
+                        ps.join(","),
+                    ));
+                }
+                attrs
+            },
         ),
         ConstraintV1::Key { relation, fields } => (
             "key",

@@ -10,6 +10,14 @@ set -euo pipefail
 #
 # Run:
 #   ./scripts/world_model_mpc_physics_flow_demo.sh
+#
+# Examples:
+#   WORLD_MODEL_BACKEND=openai OPENAI_API_KEY=... WORLD_MODEL_MODEL=gpt-4o-mini \
+#     ./scripts/world_model_mpc_physics_flow_demo.sh
+#   WORLD_MODEL_BACKEND=anthropic ANTHROPIC_API_KEY=... WORLD_MODEL_MODEL=claude-3-5-sonnet-latest \
+#     ./scripts/world_model_mpc_physics_flow_demo.sh
+#   WORLD_MODEL_BACKEND=ollama OLLAMA_MODEL=llama3.1:8b \
+#     ./scripts/world_model_mpc_physics_flow_demo.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -22,7 +30,15 @@ AXPD_BASE="$OUT_DIR/physics_base.axpd"
 AXPD_OUT="$OUT_DIR/physics_wm.axpd"
 CQ_OUT="$OUT_DIR/physics_cq.json"
 VIZ_OUT="$OUT_DIR/physics_wm_viz.html"
+MODEL_PATH="${WORLD_MODEL_MODEL_PATH:-models/world_model_small.onnx}"
+PYTHON="${PYTHON:-python}"
+if [ -x "$ROOT_DIR/.venv-onnx/bin/python" ]; then
+  PYTHON="$ROOT_DIR/.venv-onnx/bin/python"
+fi
 
+if [ -z "${AXIOGRAPH_DEMO_KEEP:-}" ]; then
+  rm -rf "$PLANE_DIR"
+fi
 mkdir -p "$OUT_DIR"
 
 echo "== Physics world model MPC flow demo =="
@@ -34,25 +50,63 @@ echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"
 make binaries
 
-echo ""
-echo "-- World model backend (real)"
 if [ -z "${WORLD_MODEL_BACKEND:-}" ]; then
-  if [ -n "${OPENAI_API_KEY:-}" ]; then
-    export WORLD_MODEL_BACKEND="openai"
-  elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    export WORLD_MODEL_BACKEND="anthropic"
-  elif [ -n "${OLLAMA_HOST:-}" ] || [ -n "${OLLAMA_MODEL:-}" ]; then
-    export WORLD_MODEL_BACKEND="ollama"
-  else
-    echo "error: no world model backend configured."
-    echo "Set WORLD_MODEL_BACKEND=openai|anthropic|ollama and configure API keys."
-    echo "Examples:"
-    echo "  export WORLD_MODEL_BACKEND=openai OPENAI_API_KEY=... WORLD_MODEL_MODEL=gpt-4o-mini"
-    echo "  export WORLD_MODEL_BACKEND=ollama OLLAMA_HOST=http://127.0.0.1:11434 WORLD_MODEL_MODEL=llama3.1"
+  export WORLD_MODEL_BACKEND="openai"
+fi
+
+WM_REPL_USE="wm use llm"
+WM_DESC="llm"
+WM_MODEL="default"
+
+if [ "$WORLD_MODEL_BACKEND" = "onnx" ]; then
+  if ! "$PYTHON" - <<'PY' >/dev/null 2>&1
+import importlib
+importlib.import_module("onnxruntime")
+importlib.import_module("onnx")
+PY
+  then
+    "$ROOT_DIR/scripts/setup_onnx_runtime.sh"
+    if [ -x "$ROOT_DIR/.venv-onnx/bin/python" ]; then
+      PYTHON="$ROOT_DIR/.venv-onnx/bin/python"
+    fi
+  fi
+
+  if [ ! -f "$MODEL_PATH" ]; then
+    echo "note: building ONNX world model at $MODEL_PATH"
+    "$PYTHON" "$ROOT_DIR/scripts/build_world_model_onnx.py" --out "$MODEL_PATH"
+  fi
+  export WORLD_MODEL_MODEL_PATH="$MODEL_PATH"
+  WM_REPL_USE="wm use command scripts/axiograph_world_model_plugin_onnx.py"
+  WM_DESC="onnx"
+  WM_MODEL="onnx_v1"
+elif [ "$WORLD_MODEL_BACKEND" = "baseline" ]; then
+  WM_REPL_USE="wm use command scripts/axiograph_world_model_plugin_baseline.py --strategy oracle"
+  WM_DESC="baseline"
+  WM_MODEL="baseline_oracle"
+else
+  if [ "$WORLD_MODEL_BACKEND" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "error: OPENAI_API_KEY is required for WORLD_MODEL_BACKEND=openai"
     exit 2
   fi
+  if [ "$WORLD_MODEL_BACKEND" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "error: ANTHROPIC_API_KEY is required for WORLD_MODEL_BACKEND=anthropic"
+    exit 2
+  fi
+  if [ "$WORLD_MODEL_BACKEND" = "ollama" ] && [ -z "${OLLAMA_HOST:-}" ] && [ -z "${OLLAMA_MODEL:-}" ]; then
+    echo "error: OLLAMA_HOST or OLLAMA_MODEL is required for WORLD_MODEL_BACKEND=ollama"
+    exit 2
+  fi
+  WM_MODEL="${WORLD_MODEL_MODEL:-${OPENAI_MODEL:-${ANTHROPIC_MODEL:-${OLLAMA_MODEL:-}}}}"
+  if [ -z "$WM_MODEL" ]; then
+    echo "error: WORLD_MODEL_MODEL (or OPENAI_MODEL / ANTHROPIC_MODEL / OLLAMA_MODEL) is required"
+    exit 2
+  fi
+  export WORLD_MODEL_MODEL="$WM_MODEL"
 fi
-echo "world model backend: $WORLD_MODEL_BACKEND"
+
+echo ""
+echo "-- World model backend: $WORLD_MODEL_BACKEND (mode=$WM_DESC model=$WM_MODEL)"
+echo "World Model Using: $WM_MODEL"
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
@@ -85,7 +139,8 @@ echo "-- D) MPC plan (REPL non-interactive)"
 "$AXIOGRAPH" repl --quiet \
   --cmd "import_axi examples/physics/PhysicsOntology.axi" \
   --cmd "import_axi examples/physics/PhysicsMeasurements.axi" \
-  --cmd "wm use command scripts/axiograph_world_model_plugin_real.py" \
+  --cmd "$WM_REPL_USE" \
+  --cmd "wm model $WM_MODEL" \
   --cmd "wm plan $PLAN_REPORT --steps 2 --rollouts 2 --max 200 --guardrail strict --plane both --goal \"expand physics ontology coverage\" --axi examples/physics/PhysicsOntology.axi --cq-file $CQ_OUT"
 
 if [ ! -f "$PLAN_REPORT" ]; then

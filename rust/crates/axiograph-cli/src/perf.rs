@@ -232,6 +232,14 @@ pub enum PerfCommands {
         #[arg(long)]
         world_model_plugin_arg: Vec<String>,
 
+        /// Optional world model HTTP endpoint (speaks `axiograph_world_model_v1`).
+        #[arg(long)]
+        world_model_http: Option<String>,
+
+        /// Use the built-in LLM-backed world model plugin.
+        #[arg(long)]
+        world_model_llm: bool,
+
         /// Use stub world model backend (emits no proposals).
         #[arg(long)]
         world_model_stub: bool,
@@ -408,6 +416,8 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             input,
             world_model_plugin,
             world_model_plugin_arg,
+            world_model_http,
+            world_model_llm,
             world_model_stub,
             world_model_model,
             horizon_steps,
@@ -429,6 +439,8 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             &input,
             world_model_plugin.as_ref(),
             &world_model_plugin_arg,
+            world_model_http.as_deref(),
+            world_model_llm,
             world_model_stub,
             world_model_model.as_deref(),
             horizon_steps,
@@ -796,6 +808,8 @@ fn cmd_perf_world_model(
     input: &PathBuf,
     world_model_plugin: Option<&PathBuf>,
     world_model_plugin_arg: &[String],
+    world_model_http: Option<&str>,
+    world_model_llm: bool,
     world_model_stub: bool,
     world_model_model: Option<&str>,
     horizon_steps: usize,
@@ -814,14 +828,18 @@ fn cmd_perf_world_model(
     seed: u64,
     out_json: Option<&PathBuf>,
 ) -> Result<()> {
-    if world_model_stub && world_model_plugin.is_some() {
+    let selected = (world_model_stub as usize)
+        + (world_model_plugin.is_some() as usize)
+        + (world_model_http.is_some() as usize)
+        + (world_model_llm as usize);
+    if selected > 1 {
         return Err(anyhow!(
-            "perf world-model: choose at most one backend: --world-model-stub or --world-model-plugin"
+            "perf world-model: choose at most one backend: --world-model-stub, --world-model-plugin, --world-model-http, or --world-model-llm"
         ));
     }
-    if !world_model_stub && world_model_plugin.is_none() {
+    if selected == 0 {
         return Err(anyhow!(
-            "perf world-model: missing backend (use --world-model-plugin or --world-model-stub)"
+            "perf world-model: missing backend (use --world-model-plugin, --world-model-http, --world-model-llm, or --world-model-stub)"
         ));
     }
 
@@ -877,6 +895,26 @@ fn cmd_perf_world_model(
     let mut wm = crate::world_model::WorldModelState::default();
     if world_model_stub {
         wm.backend = crate::world_model::WorldModelBackend::Stub;
+    } else if let Some(url) = world_model_http {
+        wm.backend = crate::world_model::WorldModelBackend::Http {
+            url: url.to_string(),
+        };
+    } else if world_model_llm {
+        let exe = std::env::current_exe()
+            .map_err(|e| anyhow!("perf world-model: failed to resolve current executable: {e}"))?;
+        let mut args_list = vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
+        let has_model_arg = world_model_plugin_arg.iter().any(|a| a == "--model");
+        if let Some(model) = world_model_model {
+            if !has_model_arg {
+                args_list.push("--model".to_string());
+                args_list.push(model.to_string());
+            }
+        }
+        args_list.extend(world_model_plugin_arg.iter().cloned());
+        wm.backend = crate::world_model::WorldModelBackend::Command {
+            program: exe,
+            args: args_list,
+        };
     } else if let Some(plugin) = world_model_plugin {
         wm.backend = crate::world_model::WorldModelBackend::Command {
             program: plugin.clone(),

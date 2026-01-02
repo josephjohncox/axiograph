@@ -273,17 +273,22 @@ pub struct AxiWellTypedProofV1 {
 /// - Rust claims the module satisfies a conservative subset of theory constraints, and
 /// - Lean re-parses the anchored `.axi` module and re-checks the same subset.
 ///
-/// Initial subset (high ROI, low ambiguity):
+/// Certified subset (high ROI, low ambiguity):
 /// - `constraint key Rel(...)`
 /// - `constraint functional Rel.field -> Rel.field`
+/// - `constraint symmetric Rel`
+/// - `constraint symmetric Rel where Rel.field in {A, B, ...}`
+/// - `constraint transitive Rel` (closure-compatibility for keys/functionals on carrier fields)
+/// - `constraint typing Rel: rule_name` (small builtin rule set; see docs)
 ///
-/// We *do not* start by certifying conditional constraints (e.g. `symmetric R where ...`)
-/// or global entailment; the goal is auditable structural sanity checks for
-/// canonical snapshots/modules.
+/// We intentionally do **not** certify global entailment/inference or full
+/// relational-algebra semantics in this first pass. The goal is auditable
+/// structural sanity checks for canonical snapshots/modules that are useful for
+/// query planning and data hygiene under an open-world reading.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AxiConstraintsOkProofV1 {
     pub module_name: String,
-    /// Number of (key|functional) constraints checked (theory-local count).
+    /// Number of constraints checked (theory-local count, within the certified subset).
     pub constraint_count: u32,
     /// Number of instances checked (by schema match).
     pub instance_count: u32,

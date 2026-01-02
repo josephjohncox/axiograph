@@ -275,9 +275,57 @@ impl UnifiedStorage {
                 relation,
                 field,
                 values,
-            } => format!("symmetric {relation} where {relation}.{field} in {{{}}}", values.join(", ")),
-            ConstraintV1::Symmetric { relation } => format!("symmetric {relation}"),
-            ConstraintV1::Transitive { relation } => format!("transitive {relation}"),
+                carriers,
+                params,
+            } => {
+                let mut s = format!(
+                    "symmetric {relation} where {relation}.{field} in {{{}}}",
+                    values.join(", ")
+                );
+                if let Some(c) = carriers.as_ref() {
+                    s.push_str(&format!(" on ({}, {})", c.left_field, c.right_field));
+                }
+                if let Some(ps) = params.as_ref() {
+                    if !ps.is_empty() {
+                        s.push_str(&format!(" param ({})", ps.join(", ")));
+                    }
+                }
+                s
+            }
+            ConstraintV1::Symmetric {
+                relation,
+                carriers,
+                params,
+            } => {
+                let mut s = if let Some(c) = carriers.as_ref() {
+                    format!("symmetric {relation} on ({}, {})", c.left_field, c.right_field)
+                } else {
+                    format!("symmetric {relation}")
+                };
+                if let Some(ps) = params.as_ref() {
+                    if !ps.is_empty() {
+                        s.push_str(&format!(" param ({})", ps.join(", ")));
+                    }
+                }
+                s
+            }
+            ConstraintV1::Transitive {
+                relation,
+                carriers,
+                params,
+            } => {
+                let mut s = if let Some(c) = carriers.as_ref() {
+                    format!("transitive {relation} on ({}, {})", c.left_field, c.right_field)
+                } else {
+                    format!("transitive {relation}")
+                };
+                if let Some(ps) = params.as_ref() {
+                    if !ps.is_empty() {
+                        s.push_str(&format!(" param ({})", ps.join(", ")));
+                    }
+                }
+                s
+            }
             ConstraintV1::Key { relation, fields } => {
                 format!("key {relation} ({})", fields.join(", "))
             }

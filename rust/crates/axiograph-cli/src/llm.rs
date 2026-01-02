@@ -16,7 +16,7 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -29,16 +29,28 @@ use axiograph_ingest_docs::{Chunk, ProposalSourceV1, ProposalV1, ProposalsFileV1
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::PathDB;
 use crate::query_ir::QueryIrV1;
+use crate::world_model::{
+    normalize_world_model_proposals_value, world_model_llm_prompt, WorldModelRequestV1,
+    WorldModelResponseV1,
+};
 
 // Common attribute keys (shared with viz overlays).
 const ATTR_AXI_RELATION: &str = "axi_relation";
 const ATTR_OVERLAY_RELATION_SIGNATURE: &str = "axi_overlay_relation_signature";
 const ATTR_OVERLAY_CONSTRAINTS: &str = "axi_overlay_constraints";
 
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 pub(crate) const AXIOGRAPH_LLM_TIMEOUT_SECS_ENV: &str = "AXIOGRAPH_LLM_TIMEOUT_SECS";
 pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS";
 pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_CAP_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS_CAP";
 pub(crate) const AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV: &str = "AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS";
+pub(crate) const WORLD_MODEL_BACKEND_ENV: &str = "WORLD_MODEL_BACKEND";
 pub(crate) const AXIOGRAPH_LLM_REASONING_EFFORT_ENV: &str = "AXIOGRAPH_LLM_REASONING_EFFORT";
 pub(crate) const AXIOGRAPH_LLM_CHAT_MAX_MESSAGES_ENV: &str = "AXIOGRAPH_LLM_CHAT_MAX_MESSAGES";
 pub(crate) const AXIOGRAPH_LLM_JSON_REPAIR_ENV: &str = "AXIOGRAPH_LLM_JSON_REPAIR";
@@ -610,6 +622,126 @@ impl LlmState {
             _ => Ok(None),
         }
     }
+}
+
+pub(crate) fn world_model_llm_plugin(
+    llm: &LlmState,
+    req: &WorldModelRequestV1,
+) -> Result<WorldModelResponseV1> {
+    let _max_tokens_guard = maybe_bump_llm_max_output_tokens(req);
+    let content = match &llm.backend {
+        LlmBackend::Disabled => {
+            return Err(anyhow!(
+                "world model LLM backend is disabled (configure `--llm-openai/--llm-ollama/--llm-anthropic`)"
+            ))
+        }
+        LlmBackend::Mock => {
+            let proposals = normalize_world_model_proposals_value(&req.trace_id, json!({}));
+            return Ok(WorldModelResponseV1 {
+                protocol: crate::world_model::WORLD_MODEL_PROTOCOL_V1.to_string(),
+                trace_id: req.trace_id.clone(),
+                generated_at_unix_secs: now_unix_secs(),
+                proposals,
+                notes: vec!["mock backend (no proposals)".to_string()],
+                error: None,
+            });
+        }
+        #[cfg(feature = "llm-ollama")]
+        LlmBackend::Ollama { host } => {
+            let Some(model) = llm.model.as_deref() else {
+                return Err(anyhow!(
+                    "no model selected (use WORLD_MODEL_MODEL or set `llm model <ollama_model>`)"
+                ));
+            };
+            let (system, summary) = world_model_llm_prompt(req);
+            let user = serde_json::to_string_pretty(&summary)
+                .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
+            let timeout = llm_timeout(None)?;
+            // `format: "json"` keeps this compatible with more Ollama models.
+            ollama_chat_with_timeout(host, model, &user, Some(&system), Some(json!("json")), timeout)?
+        }
+        #[cfg(feature = "llm-openai")]
+        LlmBackend::OpenAI { base_url } => {
+            let Some(model) = llm.model.as_deref() else {
+                return Err(anyhow!(
+                    "no model selected (use WORLD_MODEL_MODEL or set {OPENAI_MODEL_ENV})"
+                ));
+            };
+            let (system, summary) = world_model_llm_prompt(req);
+            let user = serde_json::to_string_pretty(&summary)
+                .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
+            let timeout = llm_timeout(None)?;
+            let text_format = json!({ "type": "json_object" });
+            openai_chat_with_timeout(base_url, model, &user, Some(&system), Some(text_format), timeout)?
+        }
+        #[cfg(feature = "llm-anthropic")]
+        LlmBackend::Anthropic { base_url } => {
+            let Some(model) = llm.model.as_deref() else {
+                return Err(anyhow!(
+                    "no model selected (use WORLD_MODEL_MODEL or set {ANTHROPIC_MODEL_ENV})"
+                ));
+            };
+            let (system, summary) = world_model_llm_prompt(req);
+            let user = serde_json::to_string_pretty(&summary)
+                .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
+            let timeout = llm_timeout(None)?;
+            anthropic_chat_with_timeout(base_url, model, &user, Some(&system), timeout)?
+        }
+        LlmBackend::Command { .. } => {
+            return Err(anyhow!(
+                "world model LLM backend does not support LLM command plugins (use openai/anthropic/ollama)"
+            ));
+        }
+    };
+
+    let parsed: Value = parse_llm_json_object(&content)?;
+    let proposals = normalize_world_model_proposals_value(&req.trace_id, parsed);
+    Ok(WorldModelResponseV1 {
+        protocol: crate::world_model::WORLD_MODEL_PROTOCOL_V1.to_string(),
+        trace_id: req.trace_id.clone(),
+        generated_at_unix_secs: now_unix_secs(),
+        proposals,
+        notes: Vec::new(),
+        error: None,
+    })
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(prev) = &self.prev {
+            std::env::set_var(self.key, prev);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+fn maybe_bump_llm_max_output_tokens(req: &WorldModelRequestV1) -> Option<EnvVarGuard> {
+    let target = world_model_output_token_budget(req);
+    if target <= DEFAULT_LLM_MAX_OUTPUT_TOKENS {
+        return None;
+    }
+    let prev = std::env::var(AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV).ok();
+    if prev.is_none() {
+        std::env::set_var(AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV, target.to_string());
+        Some(EnvVarGuard {
+            key: AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV,
+            prev,
+        })
+    } else {
+        None
+    }
+}
+
+fn world_model_output_token_budget(req: &WorldModelRequestV1) -> u32 {
+    let max_items = req.options.max_new_proposals.max(1) as u32;
+    let estimate = 800 + max_items.saturating_mul(60);
+    estimate.clamp(DEFAULT_LLM_MAX_OUTPUT_TOKENS, 12000)
 }
 
 fn normalize_generated_query(q: GeneratedQuery) -> GeneratedQuery {
@@ -2589,7 +2721,6 @@ pub(crate) fn ollama_embed_texts_with_timeout(
     Ok(out)
 }
 
-#[cfg(feature = "llm-ollama")]
 pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T> {
     let trimmed = text.trim();
     if let Ok(v) = serde_json::from_str(trimmed) {
@@ -2650,6 +2781,36 @@ pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) ->
     };
 
     serde_json::from_str(candidate).map_err(|e| anyhow!("LLM returned invalid JSON: {e}"))
+}
+
+pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()> {
+    let mut backend: Option<String> = None;
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        if arg == "--backend" {
+            if let Some(val) = iter.peek() {
+                backend = Some((*val).clone());
+            }
+        } else if let Some(rest) = arg.strip_prefix("--backend=") {
+            backend = Some(rest.to_string());
+        }
+    }
+
+    let backend = backend
+        .or_else(|| {
+            std::env::var(WORLD_MODEL_BACKEND_ENV)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "openai".to_string());
+
+    match backend.trim().to_ascii_lowercase().as_str() {
+        "openai" | "anthropic" | "ollama" | "mock" => Ok(()),
+        other => Err(anyhow!(
+            "world model backend `{other}` is not supported by --world-model-llm / `axiograph ingest world-model-plugin-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --world-model-plugin or --world-model-http instead."
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -2865,6 +3026,13 @@ pub(crate) struct ToolLoopStoreContext {
     pub default_layer: String, // "accepted" | "pathdb"
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ToolLoopWorldModelContext {
+    pub world_model: crate::world_model::WorldModelState,
+    pub snapshot: Option<crate::world_model::WorldModelSnapshotRefV1>,
+    pub snapshot_label: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ToolSpecV1 {
     pub name: String,
@@ -2978,6 +3146,8 @@ fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) 
         if step.tool != "propose_relation_proposals"
             && step.tool != "propose_relations_proposals"
             && step.tool != "propose_fact_proposals"
+            && step.tool != "world_model_propose"
+            && step.tool != "world_model_plan"
         {
             continue;
         }
@@ -3307,6 +3477,7 @@ pub(crate) fn run_tool_loop_with_meta(
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
     store: Option<&ToolLoopStoreContext>,
+    world_model: Option<&ToolLoopWorldModelContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
@@ -3317,7 +3488,7 @@ pub(crate) fn run_tool_loop_with_meta(
         Some(m) => SchemaContextV1::from_db_with_meta(db, m),
         None => SchemaContextV1::from_db(db),
     };
-    let tools = tool_loop_tools_schema(store);
+    let tools = tool_loop_tools_schema(store, world_model.is_some());
 
     let mut transcript: Vec<ToolLoopTranscriptItemV1> = Vec::new();
     // RAG-like flow (backend-owned): prefetch a compact overview + semantic-ish
@@ -3606,6 +3777,7 @@ pub(crate) fn run_tool_loop_with_meta(
                 default_contexts,
                 snapshot_key,
                 store,
+                world_model,
                 embeddings,
                 ollama_embed_host,
                 query_cache,
@@ -4018,7 +4190,10 @@ fn is_trivial_model_answer(answer: &str) -> bool {
     }
 }
 
-fn tool_loop_tools_schema(store: Option<&ToolLoopStoreContext>) -> Vec<ToolSpecV1> {
+fn tool_loop_tools_schema(
+    store: Option<&ToolLoopStoreContext>,
+    world_model_enabled: bool,
+) -> Vec<ToolSpecV1> {
     let query_ir_v1_schema = crate::query_ir::query_ir_v1_json_schema();
 
     let mut out = vec![
@@ -4350,6 +4525,47 @@ fn tool_loop_tools_schema(store: Option<&ToolLoopStoreContext>) -> Vec<ToolSpecV
         });
     }
 
+    if world_model_enabled {
+        out.push(ToolSpecV1 {
+            name: "world_model_propose".to_string(),
+            description: "Run the configured world model to propose new evidence-plane facts/relations (untrusted).".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "goals": { "type": "array", "items": { "type": "string" } },
+                    "seed": { "type": "integer", "minimum": 0 },
+                    "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
+                    "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
+                    "guardrail_plane": { "type": "string", "enum": ["meta", "data", "both"] },
+                    "guardrail_weights": { "type": "object" },
+                    "task_costs": { "type": "array", "items": { "type": "object" } },
+                    "horizon_steps": { "type": "integer", "minimum": 1, "maximum": 20 },
+                    "include_guardrail": { "type": "boolean" }
+                }
+            }),
+        });
+        out.push(ToolSpecV1 {
+            name: "world_model_plan".to_string(),
+            description: "Run an MPC-style world model plan (multi-step proposals + guardrail costs).".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "goals": { "type": "array", "items": { "type": "string" } },
+                    "seed": { "type": "integer", "minimum": 0 },
+                    "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
+                    "horizon_steps": { "type": "integer", "minimum": 1, "maximum": 20 },
+                    "rollouts": { "type": "integer", "minimum": 1, "maximum": 10 },
+                    "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
+                    "guardrail_plane": { "type": "string", "enum": ["meta", "data", "both"] },
+                    "guardrail_weights": { "type": "object" },
+                    "task_costs": { "type": "array", "items": { "type": "object" } },
+                    "competency_questions": { "type": "array", "items": { "type": "object" } },
+                    "include_guardrail": { "type": "boolean" }
+                }
+            }),
+        });
+    }
+
     out
 }
 
@@ -4359,6 +4575,7 @@ fn execute_tool_call(
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
     store: Option<&ToolLoopStoreContext>,
+    world_model: Option<&ToolLoopWorldModelContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
@@ -4408,10 +4625,266 @@ fn execute_tool_call(
         "propose_relation_proposals" => tool_propose_relation_proposals(db, default_contexts, &call.args),
         "propose_fact_proposals" => tool_propose_fact_proposals(db, default_contexts, &call.args),
         "propose_relations_proposals" => tool_propose_relations_proposals(db, default_contexts, &call.args),
+        "world_model_propose" => tool_world_model_propose(db, world_model, &call.args),
+        "world_model_plan" => tool_world_model_plan(db, world_model, &call.args),
         "snapshots_list" => tool_snapshots_list(store, &call.args),
         "snapshot_diff" => tool_snapshot_diff(store, &call.args),
         other => Err(anyhow!("unknown tool `{other}`")),
     }
+}
+
+fn export_pathdb_anchor_axi(db: &PathDB) -> Result<(String, String)> {
+    let axi = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(db)?;
+    let digest = axiograph_dsl::digest::axi_digest_v1(&axi);
+    Ok((digest, axi))
+}
+
+fn tool_world_model_propose(
+    db: &PathDB,
+    ctx: Option<&ToolLoopWorldModelContext>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let Some(ctx) = ctx else {
+        return Err(anyhow!("world_model_propose is unavailable (world model disabled)"));
+    };
+
+    #[derive(Deserialize, Default)]
+    struct Args {
+        #[serde(default)]
+        goals: Vec<String>,
+        #[serde(default)]
+        seed: Option<u64>,
+        #[serde(default)]
+        max_new_proposals: Option<usize>,
+        #[serde(default)]
+        guardrail_profile: Option<String>,
+        #[serde(default)]
+        guardrail_plane: Option<String>,
+        #[serde(default)]
+        guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
+        #[serde(default)]
+        task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+        #[serde(default)]
+        horizon_steps: Option<usize>,
+        #[serde(default)]
+        include_guardrail: Option<bool>,
+    }
+
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("world_model_propose: invalid args: {e}"))?;
+
+    let guardrail_profile = a
+        .guardrail_profile
+        .unwrap_or_else(|| "fast".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let guardrail_plane = a
+        .guardrail_plane
+        .unwrap_or_else(|| "both".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let include_guardrail = a.include_guardrail.unwrap_or(true);
+    let guardrail_weights = a
+        .guardrail_weights
+        .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+    let guardrail = if include_guardrail && guardrail_profile != "off" {
+        Some(crate::world_model::compute_guardrail_costs(
+            db,
+            &format!("llm_tool_loop:{}", ctx.snapshot_label),
+            &guardrail_profile,
+            &guardrail_plane,
+            &guardrail_weights,
+        )?)
+    } else {
+        None
+    };
+
+    let mut input = crate::world_model::WorldModelInputV1::default();
+    if guardrail.is_some() {
+        input.guardrail = guardrail.clone();
+    }
+    input.notes.push("source=llm_tool_loop".to_string());
+    if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db) {
+        input.axi_digest_v1 = Some(digest.clone());
+        input.axi_module_text = Some(axi_text.clone());
+        let max_items = a
+            .max_new_proposals
+            .unwrap_or(0)
+            .saturating_mul(20)
+            .min(2000)
+            .max(1000);
+        let export_opts = crate::world_model::JepaExportOptions {
+            instance_filter: None,
+            max_items,
+            mask_fields: 1,
+            seed: 1,
+        };
+        if let Ok(export) =
+            crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+        {
+            input.export = Some(export);
+        }
+    }
+    input.snapshot = ctx.snapshot.clone();
+
+    let max_keep = a.max_new_proposals.unwrap_or(0);
+    let mut options = crate::world_model::WorldModelOptionsV1::default();
+    options.max_new_proposals = max_keep;
+    options.seed = a.seed;
+    options.goals = a.goals;
+    options.task_costs = a.task_costs;
+    options.horizon_steps = a.horizon_steps;
+
+    let req = crate::world_model::make_world_model_request(input.clone(), options);
+    let mut response = ctx.world_model.propose(&req)?;
+    if let Some(err) = response.error.take() {
+        return Err(anyhow!("world model error: {err}"));
+    }
+
+    let guardrail_profile_label = if guardrail_profile == "off" {
+        None
+    } else {
+        Some(guardrail_profile.clone())
+    };
+    let guardrail_plane_label = if guardrail_profile == "off" {
+        None
+    } else {
+        Some(guardrail_plane.clone())
+    };
+
+    let provenance = crate::world_model::WorldModelProvenance {
+        trace_id: response.trace_id.clone(),
+        backend: ctx.world_model.backend_label(),
+        model: ctx.world_model.model.clone(),
+        axi_digest_v1: input.axi_digest_v1.clone(),
+        guardrail_total_cost: guardrail.as_ref().map(|g| g.summary.total_cost),
+        guardrail_profile: guardrail_profile_label,
+        guardrail_plane: guardrail_plane_label,
+    };
+
+    let mut proposals =
+        crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+    if max_keep > 0 && proposals.proposals.len() > max_keep {
+        proposals.proposals.truncate(max_keep);
+    }
+
+    Ok(serde_json::json!({
+        "version": "axiograph_world_model_tool_propose_v1",
+        "trace_id": response.trace_id,
+        "proposals_json": proposals,
+        "guardrail": guardrail,
+        "notes": response.notes,
+    }))
+}
+
+fn tool_world_model_plan(
+    db: &PathDB,
+    ctx: Option<&ToolLoopWorldModelContext>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let Some(ctx) = ctx else {
+        return Err(anyhow!("world_model_plan is unavailable (world model disabled)"));
+    };
+
+    #[derive(Deserialize, Default)]
+    struct Args {
+        #[serde(default)]
+        goals: Vec<String>,
+        #[serde(default)]
+        seed: Option<u64>,
+        #[serde(default)]
+        max_new_proposals: Option<usize>,
+        #[serde(default)]
+        horizon_steps: Option<usize>,
+        #[serde(default)]
+        rollouts: Option<usize>,
+        #[serde(default)]
+        guardrail_profile: Option<String>,
+        #[serde(default)]
+        guardrail_plane: Option<String>,
+        #[serde(default)]
+        guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
+        #[serde(default)]
+        task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+        #[serde(default)]
+        include_guardrail: Option<bool>,
+        #[serde(default)]
+        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    }
+
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("world_model_plan: invalid args: {e}"))?;
+
+    let guardrail_profile = a
+        .guardrail_profile
+        .unwrap_or_else(|| "fast".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let guardrail_plane = a
+        .guardrail_plane
+        .unwrap_or_else(|| "both".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let include_guardrail = a.include_guardrail.unwrap_or(true);
+    let guardrail_weights = a
+        .guardrail_weights
+        .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+    let horizon_steps = a.horizon_steps.unwrap_or(2).max(1);
+    let rollouts = a.rollouts.unwrap_or(2).max(1);
+    let max_new_proposals = a.max_new_proposals.unwrap_or(0);
+
+    let mut base_input = crate::world_model::WorldModelInputV1::default();
+    base_input.notes.push("source=llm_tool_loop".to_string());
+    if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db) {
+        base_input.axi_digest_v1 = Some(digest.clone());
+        base_input.axi_module_text = Some(axi_text.clone());
+        let max_items = max_new_proposals
+            .saturating_mul(20)
+            .min(2000)
+            .max(1000);
+        let export_opts = crate::world_model::JepaExportOptions {
+            instance_filter: None,
+            max_items,
+            mask_fields: 1,
+            seed: 1,
+        };
+        if let Ok(export) =
+            crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+        {
+            base_input.export = Some(export);
+        }
+    }
+    base_input.snapshot = ctx.snapshot.clone();
+
+    let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+        horizon_steps,
+        rollouts,
+        max_new_proposals,
+        seed: a.seed,
+        goals: a.goals,
+        task_costs: a.task_costs,
+        competency_questions: a.competency_questions,
+        guardrail_profile: guardrail_profile.clone(),
+        guardrail_plane: guardrail_plane.clone(),
+        guardrail_weights,
+        include_guardrail,
+        validation_profile: "fast".to_string(),
+        validation_plane: "both".to_string(),
+    };
+
+    let report = crate::world_model::run_world_model_plan(db, &ctx.world_model, &base_input, &plan_opts)?;
+
+    let best = report
+        .steps
+        .iter()
+        .min_by(|a, b| a.total_cost.total_cmp(&b.total_cost))
+        .map(|s| s.proposals.clone());
+
+    Ok(serde_json::json!({
+        "version": "axiograph_world_model_tool_plan_v1",
+        "report": report,
+        "proposals_json": best,
+    }))
 }
 
 fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::Value) -> Result<serde_json::Value> {

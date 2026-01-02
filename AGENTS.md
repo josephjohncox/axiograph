@@ -204,7 +204,7 @@ Deliver a **proof-carrying knowledge backend** where every high-value inference 
 - [x] Docs: keep `docs/explanation/JEPA_INTEGRATION.md`, `OBJECTIVE_DRIVEN_AI.md`, `SELF_SUPERVISED_LEARNING.md` in sync with implementation.
   - Reference: `docs/reference/WORLD_MODEL_PLUGIN.md` (protocol schema + examples).
   - Tutorial: `docs/tutorials/WORLD_MODEL_LOOP.md` (baseline + transformer stub).
-  - CLI (`rust/crates/axiograph-cli`): `axiograph discover jepa-export`, `axiograph discover world-model-propose`, `axiograph ingest world-model`.
+  - CLI (`rust/crates/axiograph-cli`): `axiograph discover jepa-export`, `axiograph ingest world-model`, `axiograph ingest world-model-plugin-llm`.
   - REPL (`rust/crates/axiograph-cli/src/repl.rs`): `wm` subcommand (configure backend + emit proposals + optional WAL commit).
   - Server (`rust/crates/axiograph-cli/src/db_server.rs`): `POST /world_model/propose` (evidence-plane only; optional WAL commit).
   - Docs: add a short “how-to” once the export/propose commands exist.
@@ -353,15 +353,21 @@ These items are “best practices” backed by the related work list in Appendix
   - data-plane lint: dangling references (error),
   - schema constraints (best-effort): key/functional violations (error),
   - context scoping coverage (info, strict profile only).
+- [x] Add a surgical `.axi` formatter for constraint lines:
+  - `axiograph check fmt --write <file.axi>` canonicalizes `constraint ...` syntax while preserving comments and non-constraint lines verbatim.
 - [ ] Expand quality checks to cover more ontology/data hygiene:
   - unused/near-duplicate symbols, ambiguous n-ary field naming,
   - symmetric/transitive closure checks (as info/warn, not “truth”),
   - rewrite-rule lint (unreachable rules, non-terminating orientations heuristics).
 - [x] Make `axiograph db accept promote` optionally run a quality profile (fast/strict) and attach the report to the accepted-plane commit metadata.
+- [x] Make accepted-plane promotion fail-closed on unknown constraints and require the certifiable core constraint gate:
+  - reject `ConstraintV1.unknown` in canonical modules,
+  - require `axi_constraints_ok_v1` and store it in the accepted-plane log + `certs/`.
 - [x] Add a certifiable subset of quality gates:
   - “well-typed module” (already exists),
   - “constraint-satisfied for core constraints” (`axi_constraints_ok_v1`: key/functional + symmetry (incl. guarded) + transitivity (closure-compatibility) + builtin typing rules), and
   - “rewrite derivation validates” (already exists; extend to rule-set soundness later).
+  - closure carrier fields: support optional `... on (field0, field1)` for `symmetric`/`transitive` constraints (Rust+Lean + cert check).
 
 **Docs system (Diataxis)**
 - [ ] Re-organize docs into Diataxis quadrants (Tutorials / How-to / Reference / Explanation), keeping existing content but improving navigation.

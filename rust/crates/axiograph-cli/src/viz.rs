@@ -638,12 +638,51 @@ pub fn extract_viz_graph_with_meta(
                     ..
                 } => parts.push(format!("functional({src_field} -> {dst_field})")),
                 ConstraintDecl::Typing { rule, .. } => parts.push(format!("typing({rule})")),
-                ConstraintDecl::SymmetricWhereIn { field, values, .. } => parts.push(format!(
-                    "symmetric_where_in({field} in {{{}}})",
-                    values.join(", ")
-                )),
-                ConstraintDecl::Symmetric { .. } => parts.push("symmetric".to_string()),
-                ConstraintDecl::Transitive { .. } => parts.push("transitive".to_string()),
+                ConstraintDecl::SymmetricWhereIn {
+                    field,
+                    values,
+                    carriers,
+                    params,
+                    ..
+                } => {
+                    let mut s = format!(
+                        "symmetric_where_in({field} in {{{}}})",
+                        values.join(", ")
+                    );
+                    if let Some((left, right)) = carriers {
+                        s.push_str(&format!(" on ({left}, {right})"));
+                    }
+                    if let Some(ps) = params {
+                        if !ps.is_empty() {
+                            s.push_str(&format!(" param ({})", ps.join(", ")));
+                        }
+                    }
+                    parts.push(s);
+                }
+                ConstraintDecl::Symmetric { carriers, params, .. } => {
+                    let mut s = String::from("symmetric");
+                    if let Some((left, right)) = carriers {
+                        s.push_str(&format!(" on ({left}, {right})"));
+                    }
+                    if let Some(ps) = params {
+                        if !ps.is_empty() {
+                            s.push_str(&format!(" param ({})", ps.join(", ")));
+                        }
+                    }
+                    parts.push(s);
+                }
+                ConstraintDecl::Transitive { carriers, params, .. } => {
+                    let mut s = String::from("transitive");
+                    if let Some((left, right)) = carriers {
+                        s.push_str(&format!(" on ({left}, {right})"));
+                    }
+                    if let Some(ps) = params {
+                        if !ps.is_empty() {
+                            s.push_str(&format!(" param ({})", ps.join(", ")));
+                        }
+                    }
+                    parts.push(s);
+                }
                 ConstraintDecl::Key { fields, .. } => {
                     parts.push(format!("key({})", fields.join(", ")))
                 }

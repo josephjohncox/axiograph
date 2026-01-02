@@ -34,6 +34,7 @@ const ACCEPTED_PLANE_HEAD_FILE: &str = "HEAD";
 const ACCEPTED_PLANE_MODULES_DIR: &str = "modules";
 const ACCEPTED_PLANE_SNAPSHOTS_DIR: &str = "snapshots";
 const ACCEPTED_PLANE_QUALITY_DIR: &str = "quality";
+const ACCEPTED_PLANE_CERTS_DIR: &str = "certs";
 
 const ACCEPTED_PLANE_SNAPSHOT_VERSION_V1: &str = "accepted_plane_snapshot_v1";
 const ACCEPTED_PLANE_EVENT_VERSION_V1: &str = "accepted_plane_event_v1";
@@ -82,6 +83,15 @@ pub struct AcceptedPlaneEventV1 {
     pub quality_warning_count: Option<usize>,
     #[serde(default)]
     pub quality_info_count: Option<usize>,
+    /// Optional path to a stored constraints certificate (relative to the accepted-plane directory).
+    #[serde(default)]
+    pub constraints_cert_path: Option<String>,
+    #[serde(default)]
+    pub constraints_constraint_count: Option<u32>,
+    #[serde(default)]
+    pub constraints_instance_count: Option<u32>,
+    #[serde(default)]
+    pub constraints_check_count: Option<u32>,
 }
 
 /// Initialize the accepted-plane directory layout.
@@ -159,6 +169,34 @@ pub fn promote_reviewed_module(
 
     let module_name = typed.module().module_name.clone();
     let module_digest = axiograph_dsl::digest::axi_digest_v1(&text);
+
+    // Hard gate: accepted-plane promotions must satisfy the conservative,
+    // certificate-checkable constraint subset.
+    //
+    // This complements the quality/lint pass: it is the stable, semantics-driven
+    // check we expect to keep in sync with the Lean trusted checker.
+    let constraints_proof =
+        axiograph_pathdb::axi_module_constraints::check_axi_constraints_ok_v1(typed.module())?;
+    let constraints_cert = axiograph_pathdb::certificate::CertificateV2::axi_constraints_ok_v1(
+        constraints_proof.clone(),
+    )
+    .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1 {
+        axi_digest_v1: module_digest.clone(),
+    });
+
+    // Store the certificate once per module digest (idempotent across snapshots).
+    let constraints_cert_rel_path = PathBuf::from(ACCEPTED_PLANE_CERTS_DIR).join(format!(
+        "{}__{}__axi_constraints_ok_v1.json",
+        sanitize_path_component(&module_name),
+        digest_to_filename(&module_digest)
+    ));
+    let constraints_cert_abs_path = accepted_dir.join(&constraints_cert_rel_path);
+    if !constraints_cert_abs_path.exists() {
+        fs::write(
+            &constraints_cert_abs_path,
+            serde_json::to_string_pretty(&constraints_cert)?,
+        )?;
+    }
 
     // Optional quality gate (untrusted tooling). If enabled, we:
     // - import the module into an in-memory PathDB to get a uniform representation,
@@ -277,6 +315,10 @@ pub fn promote_reviewed_module(
         quality_error_count: quality_counts.map(|(e, _, _)| e),
         quality_warning_count: quality_counts.map(|(_, w, _)| w),
         quality_info_count: quality_counts.map(|(_, _, i)| i),
+        constraints_cert_path: Some(constraints_cert_rel_path.to_string_lossy().to_string()),
+        constraints_constraint_count: Some(constraints_proof.constraint_count),
+        constraints_instance_count: Some(constraints_proof.instance_count),
+        constraints_check_count: Some(constraints_proof.check_count),
     };
     append_event(accepted_dir, &event)?;
 
@@ -340,6 +382,7 @@ fn ensure_layout(accepted_dir: &Path) -> Result<()> {
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_MODULES_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SNAPSHOTS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_QUALITY_DIR))?;
+    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_CERTS_DIR))?;
     // Log is append-only; create it if it doesn't exist.
     let log_path = accepted_dir.join(ACCEPTED_PLANE_LOG_V1);
     if !log_path.exists() {

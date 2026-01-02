@@ -78,8 +78,8 @@ accumulated across steps. This aligns with objective-driven planning and MPC.
 - **Snapshot anchors**: accepted-plane snapshot ids (stable training inputs) and
   optional `axiograph db pathdb export-axi` for derived convenience views.
 - **Training export**: `axiograph discover jepa-export` (canonical full `.axi` -> training pairs).
-- **World model proposals**: `axiograph discover world-model-propose` /
-  `axiograph ingest world-model` (evidence-plane `proposals.json` with provenance),
+- **World model proposals**: `axiograph ingest world-model` (evidence-plane `proposals.json`
+  with provenance) or the built-in LLM plugin `axiograph ingest world-model-plugin-llm`,
   plus REPL `wm` and server `POST /world_model/propose`.
 - **Evidence plane**: `proposals.json` ingestion + WAL overlays.
 - **DocChunks**: existing chunk overlays for textual grounding.

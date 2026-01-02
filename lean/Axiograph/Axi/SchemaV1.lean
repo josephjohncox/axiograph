@@ -58,14 +58,34 @@ structure SchemaV1Schema where
   relations : Array RelationDeclV1
 deriving Repr, DecidableEq
 
+/-!
+Carrier fields for closure-style constraints
+-------------------------------------------
+
+Some theory constraints (e.g. symmetry / transitivity) describe a closure on a
+*binary* relation. In `.axi` we typically treat the first two relation fields
+as that "carrier pair", but when relations have extra fields (context/time,
+evidence, witnesses) it is useful to explicitly name which two fields are the
+endpoints of the closure operation.
+
+Canonical surface syntax:
+
+* `constraint symmetric Rel on (from, to)`
+* `constraint transitive Rel on (from, to)`
+-/
+structure CarrierFieldsV1 where
+  leftField : Name
+  rightField : Name
+deriving Repr, DecidableEq
+
 inductive ConstraintV1 where
   | functional (relation srcField dstField : Name)
   /-- A first-class typing rule annotation for a relation (metadata today). -/
   | typing (relation : Name) (rule : Name)
   /-- Conditional symmetry: only enforce symmetry for tuples whose `field` value is in `values`. -/
-  | symmetricWhereIn (relation field : Name) (values : Array Name)
-  | symmetric (relation : Name)
-  | transitive (relation : Name)
+  | symmetricWhereIn (relation field : Name) (values : Array Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
+  | symmetric (relation : Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
+  | transitive (relation : Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
   | key (relation : Name) (fields : Array Name)
   /-- An opaque, named constraint block (preserved as structured data). -/
   | namedBlock (name : Name) (body : Array String)
@@ -506,36 +526,135 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
       ws
       skipChar '}'
       pure xs
+    let onClauseP : LineParser CarrierFieldsV1 := do
+      ws1
+      skipString "on"
+      ws1
+      skipChar '('
+      ws
+      let left ← identifier
+      ws
+      skipChar ','
+      ws
+      let right ← identifier
+      ws
+      skipChar ')'
+      pure { leftField := left, rightField := right }
+    let paramClauseP : LineParser (Array Name) := do
+      ws1
+      skipString "param"
+      ws1
+      skipChar '('
+      ws
+      let xs ← sepBy1 identifier comma
+      ws
+      skipChar ')'
+      pure xs
+    let closureClausesP : LineParser (Option CarrierFieldsV1 × Option (Array Name)) := do
+      let clause : LineParser (Sum CarrierFieldsV1 (Array Name)) :=
+        (attempt (onClauseP.map Sum.inl)) <|> (attempt (paramClauseP.map Sum.inr))
+      let clauses ← many clause
+      let mut carriers : Option CarrierFieldsV1 := none
+      let mut params : Option (Array Name) := none
+      for c in clauses do
+        match c with
+        | .inl on =>
+            if carriers.isSome then
+              fail "duplicate `on (...)` clause in constraint"
+            carriers := some on
+        | .inr ps =>
+            if params.isSome then
+              fail "duplicate `param (...)` clause in constraint"
+            params := some ps
+      pure (carriers, params)
+
     let p : LineParser ConstraintV1 := do
       skipString "symmetric"
       ws1
       let relation ← identifier
       -- Optional guard:
-      --   `where Rel.field in {A, B, ...}`
-      (attempt do
+      --   `where Rel.field in {A, B, ...}` (canonical)
+      --   `where field in {A, B, ...}` (shorthand; formatter expands)
+      let guarded : LineParser ConstraintV1 := do
+        ws1
+        skipString "where"
+        ws1
+        let (rel2, field) ← (attempt relField) <|> (do
+          let field ← identifier
+          pure (relation, field))
+        if rel2 != relation then
+          pure (.unknown trimmed)
+        else
           ws1
-          skipString "where"
+          skipString "in"
           ws1
-          let (rel2, field) ← relField
-          if rel2 != relation then
-            pure (.unknown trimmed)
-          else
-            ws1
-            skipString "in"
-            ws1
-            let values ← nameSet
-            pure (.symmetricWhereIn relation field values)) <|> pure (.symmetric relation)
+          let values ← nameSet
+          let (carriers, params) ← closureClausesP
+          pure (.symmetricWhereIn relation field values carriers params)
+
+      let unguarded : LineParser ConstraintV1 := do
+        let (carriers, params) ← closureClausesP
+        pure (.symmetric relation carriers params)
+
+      (attempt guarded) <|> unguarded
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
         -- Keep parsing robust across dialect variations.
         return (.unknown trimmed)
   else if startsWith trimmed "transitive " then
+    let comma : LineParser Unit := do
+      ws
+      skipChar ','
+      ws
+      pure ()
+    let onClauseP : LineParser CarrierFieldsV1 := do
+      ws1
+      skipString "on"
+      ws1
+      skipChar '('
+      ws
+      let left ← identifier
+      ws
+      skipChar ','
+      ws
+      let right ← identifier
+      ws
+      skipChar ')'
+      pure { leftField := left, rightField := right }
+    let paramClauseP : LineParser (Array Name) := do
+      ws1
+      skipString "param"
+      ws1
+      skipChar '('
+      ws
+      let xs ← sepBy1 identifier comma
+      ws
+      skipChar ')'
+      pure xs
+    let closureClausesP : LineParser (Option CarrierFieldsV1 × Option (Array Name)) := do
+      let clause : LineParser (Sum CarrierFieldsV1 (Array Name)) :=
+        (attempt (onClauseP.map Sum.inl)) <|> (attempt (paramClauseP.map Sum.inr))
+      let clauses ← many clause
+      let mut carriers : Option CarrierFieldsV1 := none
+      let mut params : Option (Array Name) := none
+      for c in clauses do
+        match c with
+        | .inl on =>
+            if carriers.isSome then
+              fail "duplicate `on (...)` clause in constraint"
+            carriers := some on
+        | .inr ps =>
+            if params.isSome then
+              fail "duplicate `param (...)` clause in constraint"
+            params := some ps
+      pure (carriers, params)
     let p : LineParser ConstraintV1 := do
       skipString "transitive"
       ws1
       let relation ← identifier
-      pure (.transitive relation)
+      let (carriers, params) ← closureClausesP
+      pure (.transitive relation carriers params)
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>

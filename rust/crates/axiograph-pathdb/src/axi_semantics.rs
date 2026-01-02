@@ -35,6 +35,7 @@
 //!   modalities, migrations) anchored to canonical `.axi`.
 
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::Entry;
 
 use anyhow::Result;
 
@@ -104,12 +105,18 @@ pub enum ConstraintDecl {
         relation: String,
         field: String,
         values: Vec<String>,
+        carriers: Option<(String, String)>,
+        params: Option<Vec<String>>,
     },
     Symmetric {
         relation: String,
+        carriers: Option<(String, String)>,
+        params: Option<Vec<String>>,
     },
     Transitive {
         relation: String,
+        carriers: Option<(String, String)>,
+        params: Option<Vec<String>>,
     },
     Key {
         relation: String,
@@ -318,18 +325,96 @@ impl MetaPlaneIndex {
                                 .filter(|s| !s.is_empty())
                                 .map(|s| s.to_string())
                                 .collect::<Vec<_>>();
+                            let carriers =
+                                match (
+                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
+                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
+                                ) {
+                                    (Some(left), Some(right)) => Some((left, right)),
+                                    _ => None,
+                                };
+                            let params = entity_attr_string(db, cid, ATTR_CONSTRAINT_PARAM_FIELDS)
+                                .and_then(|csv| {
+                                    let fields = csv
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string())
+                                        .collect::<Vec<_>>();
+                                    if fields.is_empty() {
+                                        None
+                                    } else {
+                                        Some(fields)
+                                    }
+                                });
                             ConstraintDecl::SymmetricWhereIn {
                                 relation,
                                 field,
                                 values,
+                                carriers,
+                                params,
                             }
                         }
-                        "symmetric" => ConstraintDecl::Symmetric {
-                            relation: rel_name.clone().unwrap_or_default(),
-                        },
-                        "transitive" => ConstraintDecl::Transitive {
-                            relation: rel_name.clone().unwrap_or_default(),
-                        },
+                        "symmetric" => {
+                            let relation = rel_name.clone().unwrap_or_default();
+                            let carriers =
+                                match (
+                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
+                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
+                                ) {
+                                    (Some(left), Some(right)) => Some((left, right)),
+                                    _ => None,
+                                };
+                            let params = entity_attr_string(db, cid, ATTR_CONSTRAINT_PARAM_FIELDS)
+                                .and_then(|csv| {
+                                    let fields = csv
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string())
+                                        .collect::<Vec<_>>();
+                                    if fields.is_empty() {
+                                        None
+                                    } else {
+                                        Some(fields)
+                                    }
+                                });
+                            ConstraintDecl::Symmetric {
+                                relation,
+                                carriers,
+                                params,
+                            }
+                        }
+                        "transitive" => {
+                            let relation = rel_name.clone().unwrap_or_default();
+                            let carriers =
+                                match (
+                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_SRC_FIELD),
+                                    entity_attr_string(db, cid, ATTR_CONSTRAINT_DST_FIELD),
+                                ) {
+                                    (Some(left), Some(right)) => Some((left, right)),
+                                    _ => None,
+                                };
+                            let params = entity_attr_string(db, cid, ATTR_CONSTRAINT_PARAM_FIELDS)
+                                .and_then(|csv| {
+                                    let fields = csv
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string())
+                                        .collect::<Vec<_>>();
+                                    if fields.is_empty() {
+                                        None
+                                    } else {
+                                        Some(fields)
+                                    }
+                                });
+                            ConstraintDecl::Transitive {
+                                relation,
+                                carriers,
+                                params,
+                            }
+                        }
                         "key" => {
                             let relation = rel_name.clone().unwrap_or_default();
                             let fields_csv = entity_attr_string(db, cid, ATTR_CONSTRAINT_FIELDS)
@@ -380,8 +465,8 @@ impl MetaPlaneIndex {
                         ConstraintDecl::Functional { relation, .. } => relation.clone(),
                         ConstraintDecl::Typing { relation, .. } => relation.clone(),
                         ConstraintDecl::SymmetricWhereIn { relation, .. } => relation.clone(),
-                        ConstraintDecl::Symmetric { relation } => relation.clone(),
-                        ConstraintDecl::Transitive { relation } => relation.clone(),
+                        ConstraintDecl::Symmetric { relation, .. } => relation.clone(),
+                        ConstraintDecl::Transitive { relation, .. } => relation.clone(),
                         ConstraintDecl::Key { relation, .. } => relation.clone(),
                         ConstraintDecl::NamedBlock { .. } => String::new(),
                         ConstraintDecl::Unknown { relation, .. } => {
@@ -436,21 +521,26 @@ impl MetaPlaneIndex {
             }
 
             let supertypes_of = compute_supertypes_closure(&object_types, &subtype_decls);
+            let schema_index = SchemaIndex {
+                schema_entity,
+                module_name,
+                object_types,
+                subtype_decls,
+                relation_decls,
+                constraints_by_relation,
+                rewrite_rules_by_theory,
+                named_block_constraints_by_theory,
+                supertypes_of,
+            };
 
-            out.schemas.insert(
-                schema_name.clone(),
-                SchemaIndex {
-                    schema_entity,
-                    module_name,
-                    object_types,
-                    subtype_decls,
-                    relation_decls,
-                    constraints_by_relation,
-                    rewrite_rules_by_theory,
-                    named_block_constraints_by_theory,
-                    supertypes_of,
-                },
-            );
+            match out.schemas.entry(schema_name.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(schema_index);
+                }
+                Entry::Occupied(mut entry) => {
+                    merge_schema_index(entry.get_mut(), schema_index);
+                }
+            }
         }
 
         Ok(out)
@@ -705,4 +795,70 @@ fn compute_supertypes_closure(
         supertypes_of.insert(ty.clone(), supers);
     }
     supertypes_of
+}
+
+fn relation_specificity_score(rel: &RelationDecl) -> usize {
+    let mut score = rel.fields.len();
+    for field in &rel.fields {
+        if field.field_type != "Entity" {
+            score += 2;
+        }
+        if field.field_name != "from" && field.field_name != "to" {
+            score += 1;
+        }
+    }
+    score
+}
+
+fn merge_schema_index(target: &mut SchemaIndex, incoming: SchemaIndex) {
+    if target.module_name != incoming.module_name {
+        target.module_name = None;
+    }
+
+    target.object_types.extend(incoming.object_types);
+    target.subtype_decls.extend(incoming.subtype_decls);
+
+    for (name, rel) in incoming.relation_decls {
+        match target.relation_decls.entry(name) {
+            Entry::Vacant(entry) => {
+                entry.insert(rel);
+            }
+            Entry::Occupied(mut entry) => {
+                // Prefer the most specific signature when multiple modules declare
+                // the same relation name (avoid `from/to` + `Entity` fallbacks).
+                let existing_score = relation_specificity_score(entry.get());
+                let incoming_score = relation_specificity_score(&rel);
+                if incoming_score > existing_score {
+                    entry.insert(rel);
+                }
+            }
+        }
+    }
+
+    for (relation, mut decls) in incoming.constraints_by_relation {
+        target
+            .constraints_by_relation
+            .entry(relation)
+            .or_default()
+            .append(&mut decls);
+    }
+
+    for (theory, mut rules) in incoming.rewrite_rules_by_theory {
+        target
+            .rewrite_rules_by_theory
+            .entry(theory)
+            .or_default()
+            .append(&mut rules);
+    }
+
+    for (theory, mut blocks) in incoming.named_block_constraints_by_theory {
+        target
+            .named_block_constraints_by_theory
+            .entry(theory)
+            .or_default()
+            .append(&mut blocks);
+    }
+
+    target.supertypes_of =
+        compute_supertypes_closure(&target.object_types, &target.subtype_decls);
 }

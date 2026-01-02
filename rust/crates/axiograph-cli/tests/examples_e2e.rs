@@ -94,6 +94,8 @@ fn scenario_query_axql(scenario: &str) -> String {
         "supply_chain_hott" => {
             "select ?to where name(\"RawMetal_A\") -Flow-> ?to limit 10".to_string()
         }
+        "world_model_mpc" => "select ?p where ?p is Person limit 1".to_string(),
+        "world_model_mpc_physics" => "select ?c where ?c is Concept limit 1".to_string(),
         "sql_schema_discovery" => {
             "select ?c where name(\"Users\") -SqlHasColumn-> ?c limit 10".to_string()
         }

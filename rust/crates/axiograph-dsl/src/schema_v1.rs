@@ -62,6 +62,22 @@ pub struct FieldDeclV1 {
     pub ty: Name,
 }
 
+/// Carrier-field pair for closure-style constraints (symmetric/transitive).
+///
+/// By default, Axiograph treats the *first two* fields of a relation declaration
+/// as the carrier pair. When a relation has extra fields (e.g. context/time or
+/// witnesses), authors may want to explicitly name which two fields are the
+/// "endpoints" of the closure operation.
+///
+/// Canonical surface syntax:
+/// - `constraint symmetric Rel on (from, to)`
+/// - `constraint transitive Rel on (from, to)`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CarrierFieldsV1 {
+    pub left_field: Name,
+    pub right_field: Name,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchemaV1Theory {
     pub name: Name,
@@ -109,12 +125,44 @@ pub enum ConstraintV1 {
         relation: Name,
         field: Name,
         values: Vec<Name>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        carriers: Option<CarrierFieldsV1>,
+        /// Optional "fiber" parameter fields for closure-style constraints.
+        ///
+        /// When present, the closure is interpreted as operating on the carrier
+        /// pair **within each fixed assignment** of these parameter fields
+        /// (e.g. `ctx`, `time`), rather than globally.
+        ///
+        /// Canonical surface syntax:
+        /// - `constraint symmetric Rel where Rel.field in {...} param (ctx, time)`
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<Vec<Name>>,
     },
     Symmetric {
         relation: Name,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        carriers: Option<CarrierFieldsV1>,
+        /// Optional "fiber" parameter fields for closure-style constraints.
+        ///
+        /// Canonical surface syntax:
+        /// - `constraint symmetric Rel param (ctx, time)`
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<Vec<Name>>,
     },
     Transitive {
         relation: Name,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        carriers: Option<CarrierFieldsV1>,
+        /// Optional "fiber" parameter fields for transitive closure.
+        ///
+        /// When present, transitivity is interpreted as operating on the carrier
+        /// pair within each fixed assignment of these parameter fields (e.g.
+        /// `ctx`, `time`), rather than globally.
+        ///
+        /// Canonical surface syntax:
+        /// - `constraint transitive Rel param (ctx, time)`
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        params: Option<Vec<Name>>,
     },
     Key {
         relation: Name,
@@ -787,7 +835,118 @@ fn parse_relation_decl(line: &str) -> Result<RelationDeclV1, String> {
 }
 
 fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
+    #[derive(Debug)]
+    enum ClosureClauseV1 {
+        On(CarrierFieldsV1),
+        Param(Vec<Name>),
+    }
+
+    fn peel_closure_clause_suffix(rest: &str) -> Result<Option<(String, ClosureClauseV1)>, String> {
+        let trimmed = rest.trim_end();
+        if !trimmed.ends_with(')') {
+            return Ok(None);
+        }
+
+        let on_idx = trimmed.rfind(" on ");
+        let param_idx = trimmed.rfind(" param ");
+
+        // Prefer the rightmost clause (closest to the end of the string).
+        let (kind, idx) = match (on_idx, param_idx) {
+            (None, None) => return Ok(None),
+            (Some(i), None) => ("on", i),
+            (None, Some(i)) => ("param", i),
+            (Some(i1), Some(i2)) => {
+                if i1 > i2 {
+                    ("on", i1)
+                } else {
+                    ("param", i2)
+                }
+            }
+        };
+
+        let (base, part) = trimmed.split_at(idx);
+        let part = if kind == "on" {
+            part.strip_prefix(" on ").unwrap_or(part)
+        } else {
+            part.strip_prefix(" param ").unwrap_or(part)
+        };
+        let part = part.trim();
+        if !part.starts_with('(') || !part.ends_with(')') {
+            return Ok(None);
+        }
+        let inner = &part[1..part.len() - 1];
+        let fields: Vec<&str> = inner
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        match kind {
+            "on" => {
+                if fields.len() != 2 {
+                    return Err("carrier fields clause expects: `on (field0, field1)`".to_string());
+                }
+                Ok(Some((
+                    base.trim().to_string(),
+                    ClosureClauseV1::On(CarrierFieldsV1 {
+                        left_field: fields[0].to_string(),
+                        right_field: fields[1].to_string(),
+                    }),
+                )))
+            }
+            "param" => {
+                if fields.is_empty() {
+                    return Err(
+                        "param fields clause expects: `param (field0, field1, ...)`".to_string(),
+                    );
+                }
+                Ok(Some((
+                    base.trim().to_string(),
+                    ClosureClauseV1::Param(fields.iter().map(|s| (*s).to_string()).collect()),
+                )))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn split_closure_clauses(
+        rest: &str,
+    ) -> Result<(String, Option<CarrierFieldsV1>, Option<Vec<Name>>), String> {
+        let mut base = rest.trim().to_string();
+        let mut carriers: Option<CarrierFieldsV1> = None;
+        let mut params: Option<Vec<Name>> = None;
+
+        while let Some((b, clause)) = peel_closure_clause_suffix(&base)? {
+            match clause {
+                ClosureClauseV1::On(c) => {
+                    if carriers.is_some() {
+                        return Err("duplicate `on (...)` clause in constraint".to_string());
+                    }
+                    carriers = Some(c);
+                }
+                ClosureClauseV1::Param(p) => {
+                    if params.is_some() {
+                        return Err("duplicate `param (...)` clause in constraint".to_string());
+                    }
+                    params = Some(p);
+                }
+            }
+            base = b;
+        }
+
+        Ok((base.trim().to_string(), carriers, params))
+    }
+
+    let (rest, carriers, params) = split_closure_clauses(rest)?;
     let rest = rest.trim();
+    if (carriers.is_some() || params.is_some())
+        && !(rest.starts_with("symmetric ") || rest.starts_with("transitive "))
+    {
+        return Err(
+            "`on (...)` / `param (...)` are only supported for symmetric/transitive constraints"
+                .to_string(),
+        );
+    }
     if let Some(after) = rest.strip_prefix("functional ").map(str::trim) {
         // Our canonical surface prefers `functional Rel.field -> Rel.field`, but
         // some examples use a more declarative `functional Rel(...)` form.
@@ -850,15 +1009,23 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
                 if let Some((lhs, rhs)) = guard.split_once(" in ") {
                     let lhs = lhs.trim();
                     let rhs = rhs.trim();
-                    if let Ok((rel2, field)) = split_rel_field(lhs) {
-                        if rel2 == relation {
-                            if let Some(values) = parse_name_set_literal(rhs) {
-                                return Ok(ConstraintV1::SymmetricWhereIn {
-                                    relation: relation.to_string(),
-                                    field,
-                                    values,
-                                });
-                            }
+                    // Support both:
+                    // - `Rel.field in {...}` (canonical), and
+                    // - `field in {...}` (shorthand; formatter will expand).
+                    let (rel2, field) = if let Ok((rel2, field)) = split_rel_field(lhs) {
+                        (rel2, field)
+                    } else {
+                        (relation.to_string(), lhs.to_string())
+                    };
+                    if rel2 == relation {
+                        if let Some(values) = parse_name_set_literal(rhs) {
+                            return Ok(ConstraintV1::SymmetricWhereIn {
+                                relation: relation.to_string(),
+                                field,
+                                values,
+                                carriers,
+                                params,
+                            });
                         }
                     }
                 }
@@ -871,6 +1038,8 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
         // Unconditional symmetry.
         return Ok(ConstraintV1::Symmetric {
             relation: after.to_string(),
+            carriers,
+            params,
         });
     }
 
@@ -880,10 +1049,18 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
         }
         return Ok(ConstraintV1::Transitive {
             relation: after.to_string(),
+            carriers,
+            params,
         });
     }
 
     if let Some(after) = rest.strip_prefix("key ").map(str::trim) {
+        if carriers.is_some() || params.is_some() {
+            return Err(
+                "`on (...)` / `param (...)` are only supported for symmetric/transitive constraints"
+                    .to_string(),
+            );
+        }
         let Some(open) = after.find('(') else {
             return Ok(ConstraintV1::Unknown {
                 text: rest.to_string(),
@@ -915,6 +1092,88 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     Ok(ConstraintV1::Unknown {
         text: rest.to_string(),
     })
+}
+
+/// Parse a `constraint ...` line *body* in `axi_schema_v1`.
+///
+/// This takes the text after the `constraint ` keyword.
+///
+/// Notes:
+/// - The parser is intentionally robust: unrecognized/dialect-ish forms are
+///   returned as `ConstraintV1::Unknown` so tooling can surface and repair them.
+pub fn parse_constraint_v1(rest: &str) -> Result<ConstraintV1, String> {
+    parse_constraint(rest)
+}
+
+/// Format a `ConstraintV1` back into canonical `axi_schema_v1` surface syntax.
+///
+/// This returns a single-line `constraint ...` string. Named-block constraints
+/// (`ConstraintV1::NamedBlock`) require multi-line rendering and are **not**
+/// supported by this helper.
+pub fn format_constraint_v1(constraint: &ConstraintV1) -> Result<String, String> {
+    fn on_clause(carriers: &Option<CarrierFieldsV1>) -> String {
+        match carriers {
+            Some(c) => format!(" on ({}, {})", c.left_field, c.right_field),
+            None => String::new(),
+        }
+    }
+    fn param_clause(params: &Option<Vec<Name>>) -> String {
+        match params {
+            Some(p) if !p.is_empty() => format!(" param ({})", p.join(", ")),
+            _ => String::new(),
+        }
+    }
+
+    match constraint {
+        ConstraintV1::Functional {
+            relation,
+            src_field,
+            dst_field,
+        } => Ok(format!(
+            "constraint functional {relation}.{src_field} -> {relation}.{dst_field}"
+        )),
+        ConstraintV1::Typing { relation, rule } => {
+            Ok(format!("constraint typing {relation}: {rule}"))
+        }
+        ConstraintV1::SymmetricWhereIn {
+            relation,
+            field,
+            values,
+            carriers,
+            params,
+        } => Ok(format!(
+            "constraint symmetric {relation} where {relation}.{field} in {{{}}}{}{}",
+            values.join(", "),
+            on_clause(carriers),
+            param_clause(params)
+        )),
+        ConstraintV1::Symmetric {
+            relation,
+            carriers,
+            params,
+        } => Ok(format!(
+            "constraint symmetric {relation}{}{}",
+            on_clause(carriers),
+            param_clause(params)
+        )),
+        ConstraintV1::Transitive {
+            relation,
+            carriers,
+            params,
+        } => Ok(format!(
+            "constraint transitive {relation}{}{}",
+            on_clause(carriers),
+            param_clause(params)
+        )),
+        ConstraintV1::Key { relation, fields } => Ok(format!(
+            "constraint key {relation}({})",
+            fields.join(", ")
+        )),
+        ConstraintV1::Unknown { text } => Ok(format!("constraint {text}")),
+        ConstraintV1::NamedBlock { .. } => Err(
+            "named-block constraints require multi-line rendering; keep the original block".to_string(),
+        ),
+    }
 }
 
 fn split_rel_field(s: &str) -> Result<(Name, Name), String> {

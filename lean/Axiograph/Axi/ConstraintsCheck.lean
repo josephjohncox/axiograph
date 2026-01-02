@@ -53,9 +53,9 @@ structure ConstraintsCheckSummaryV1 where
 private inductive CoreConstraint where
   | key (schema : Name) (relation : Name) (fields : Array Name)
   | functional (schema : Name) (relation : Name) (srcField : Name) (dstField : Name)
-  | symmetric (schema : Name) (relation : Name)
-  | symmetricWhereIn (schema : Name) (relation : Name) (field : Name) (values : Array Name)
-  | transitive (schema : Name) (relation : Name)
+  | symmetric (schema : Name) (relation : Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
+  | symmetricWhereIn (schema : Name) (relation : Name) (field : Name) (values : Array Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
+  | transitive (schema : Name) (relation : Name) (carriers : Option CarrierFieldsV1) (params : Option (Array Name))
   | typing (schema : Name) (relation : Name) (rule : Name)
   deriving Repr, DecidableEq
 
@@ -69,12 +69,12 @@ private def gatherCoreConstraints (m : Axiograph.Axi.AxiV1.AxiV1Module) : Array 
             out := out.push (.key th.schema rel fields)
         | .functional rel src dst =>
             out := out.push (.functional th.schema rel src dst)
-        | .symmetric rel =>
-            out := out.push (.symmetric th.schema rel)
-        | .symmetricWhereIn rel field values =>
-            out := out.push (.symmetricWhereIn th.schema rel field values)
-        | .transitive rel =>
-            out := out.push (.transitive th.schema rel)
+        | .symmetric rel carriers params =>
+            out := out.push (.symmetric th.schema rel carriers params)
+        | .symmetricWhereIn rel field values carriers params =>
+            out := out.push (.symmetricWhereIn th.schema rel field values carriers params)
+        | .transitive rel carriers params =>
+            out := out.push (.transitive th.schema rel carriers params)
         | .typing rel rule =>
             out := out.push (.typing th.schema rel rule)
         | _ =>
@@ -199,6 +199,19 @@ private def listGet!
     | throw s!"instance `{instName}` relation `{relationName}`: internal error (tuple too short)"
   pure v
 
+private def listSet!
+    (instName relationName : Name)
+    (xs : List Name)
+    (idx : Nat)
+    (value : Name) : Except String (List Name) := do
+  let rec go : List Name → Nat → Except String (List Name)
+    | [], _ => throw s!"instance `{instName}` relation `{relationName}`: internal error (tuple too short)"
+    | _ :: xs, 0 => pure (value :: xs)
+    | x :: xs, i + 1 => do
+        let rest ← go xs i
+        pure (x :: rest)
+  go xs idx
+
 private def checkKeyOnTuples
     (instName relationName : Name)
     (relationFields : Array Name)
@@ -245,10 +258,21 @@ private def symmetricClosure
     (instName relationName : Name)
     (relationFields : Array Name)
     (tuplesRaw : Array (Array (Name × Name)))
+    (carriers : Option CarrierFieldsV1)
     (whereField : Option Name)
     (whereValues : Array Name) : Except String (Array (List Name)) := do
   if relationFields.size < 2 then
     throw s!"instance `{instName}` relation `{relationName}`: symmetric constraint requires at least 2 fields"
+
+  let (swapLeftIdx, swapRightIdx) ←
+    match carriers with
+    | none => pure (0, 1)
+    | some c =>
+        let leftIdx ← fieldIndex instName relationName relationFields c.leftField
+        let rightIdx ← fieldIndex instName relationName relationFields c.rightField
+        if leftIdx == rightIdx then
+          throw s!"instance `{instName}` relation `{relationName}`: symmetric carrier fields must be distinct (got `{c.leftField}` twice)"
+        pure (leftIdx, rightIdx)
 
   let condIdx : Option Nat ←
     match whereField with
@@ -276,14 +300,13 @@ private def symmetricClosure
           | some v => whereValues.contains v
           | none => false
     if apply then
-      match vals with
-      | a :: b :: rest =>
-          let swapped := b :: a :: rest
-          if !seen.contains swapped then
-            seen := seen.insert swapped
-            out := out.push swapped
-      | _ =>
-          throw s!"instance `{instName}` relation `{relationName}`: symmetric constraint requires at least 2 fields"
+      let a ← listGet! instName relationName vals swapLeftIdx
+      let b ← listGet! instName relationName vals swapRightIdx
+      let vals1 ← listSet! instName relationName vals swapLeftIdx b
+      let swapped ← listSet! instName relationName vals1 swapRightIdx a
+      if !seen.contains swapped then
+        seen := seen.insert swapped
+        out := out.push swapped
 
   pure out
 
@@ -292,39 +315,138 @@ private def checkSymmetricCompatibleWithKeysAndFunctionals
     (constraints : Array CoreConstraint)
     (inst : SchemaV1Instance)
     (relationName : Name)
+    (carriers : Option CarrierFieldsV1)
+    (params : Option (Array Name))
     (whereField : Option Name)
     (whereValues : Array Name) : Except String Unit := do
-  let relationFields ← relationFieldOrder m inst.schema relationName
+  let relationFieldsFull ← relationFieldOrder m inst.schema relationName
   let tuplesRaw := relationTuples inst relationName
-  let closure ← symmetricClosure inst.name relationName relationFields tuplesRaw whereField whereValues
+
+  if relationFieldsFull.size < 2 then
+    throw s!"instance `{inst.name}` relation `{relationName}`: symmetric constraint requires at least 2 fields"
+
+  let (carrierLeft, carrierRight, _swapLeftIdx, _swapRightIdx) ←
+    match carriers with
+    | none =>
+        pure (relationFieldsFull[0]!, relationFieldsFull[1]!, 0, 1)
+    | some c =>
+        let leftIdx ← fieldIndex inst.name relationName relationFieldsFull c.leftField
+        let rightIdx ← fieldIndex inst.name relationName relationFieldsFull c.rightField
+        if leftIdx == rightIdx then
+          throw s!"instance `{inst.name}` relation `{relationName}`: symmetric carrier fields must be distinct (got `{c.leftField}` twice)"
+        pure (c.leftField, c.rightField, leftIdx, rightIdx)
+
+  let (relationFields, closure) ←
+    match params with
+    | none =>
+        let closure ← symmetricClosure inst.name relationName relationFieldsFull tuplesRaw carriers whereField whereValues
+        pure (relationFieldsFull, closure)
+    | some ps =>
+        -- Validate params (existence + no duplicates + not carriers).
+        for p in ps do
+          if p == carrierLeft || p == carrierRight then
+            throw s!"symmetric `{inst.schema}.{relationName}`: param field `{p}` must not be a carrier field"
+        -- Duplicate check.
+        let mut seen : Std.HashSet Name := {}
+        for p in ps do
+          if seen.contains p then
+            throw s!"symmetric `{inst.schema}.{relationName}`: duplicate param field `{p}`"
+          seen := seen.insert p
+        -- Existence check.
+        for p in ps do
+          let _ ← fieldIndex inst.name relationName relationFieldsFull p
+
+        -- Build projection field order (preserve declared order).
+        let allowed : Array Name := #[carrierLeft, carrierRight] ++ ps
+        let mut projectionFields : Array Name := #[]
+        let mut projectionIdxs : Array Nat := #[]
+        for i in List.range relationFieldsFull.size do
+          let f := relationFieldsFull[i]!
+          if allowed.contains f then
+            projectionFields := projectionFields.push f
+            projectionIdxs := projectionIdxs.push i
+
+        let some swapLeftProj := projectionFields.findIdx? (fun f => f == carrierLeft)
+          | throw "internal error: symmetric carriers missing from projection fields"
+        let some swapRightProj := projectionFields.findIdx? (fun f => f == carrierRight)
+          | throw "internal error: symmetric carriers missing from projection fields"
+
+        let condIdx : Option Nat ←
+          match whereField with
+          | none => pure none
+          | some f => pure (some (← fieldIndex inst.name relationName relationFieldsFull f))
+
+        let mut out : Array (List Name) := #[]
+        let mut seenTups : Std.HashSet (List Name) := {}
+
+        for tupFields in tuplesRaw do
+          let fullVals ← tupleValuesInOrder inst.name relationName tupFields relationFieldsFull
+
+          -- Project to (carrier + params).
+          let mut projVals : List Name := []
+          for idx in projectionIdxs do
+            projVals := projVals.concat (← listGet! inst.name relationName fullVals idx)
+
+          if !seenTups.contains projVals then
+            seenTups := seenTups.insert projVals
+            out := out.push projVals
+
+          let apply :=
+            match condIdx with
+            | none => true
+            | some idx =>
+                match (fullVals.get? idx) with
+                | some v => whereValues.contains v
+                | none => false
+
+          if apply then
+            let a ← listGet! inst.name relationName projVals swapLeftProj
+            let b ← listGet! inst.name relationName projVals swapRightProj
+            let vals1 ← listSet! inst.name relationName projVals swapLeftProj b
+            let swapped ← listSet! inst.name relationName vals1 swapRightProj a
+            if !seenTups.contains swapped then
+              seenTups := seenTups.insert swapped
+              out := out.push swapped
+
+        pure (projectionFields, out)
 
   -- Re-check keys/functionals for this relation on the symmetric closure.
   for c in constraints do
     match c with
     | .key schema rel keyFields =>
         if schema == inst.schema && rel == relationName then
+          if params.isSome then
+            let allowed : Array Name := #[carrierLeft, carrierRight] ++ (params.getD #[])
+            for f in keyFields do
+              if !allowed.contains f then
+                throw s!"symmetric `{inst.schema}.{relationName}`: key constraint mentions non-carrier/non-param field `{f}`"
           checkKeyOnTuples inst.name relationName relationFields closure keyFields
     | .functional schema rel src dst =>
         if schema == inst.schema && rel == relationName then
+          if params.isSome then
+            let allowed : Array Name := #[carrierLeft, carrierRight] ++ (params.getD #[])
+            if !allowed.contains src then
+              throw s!"symmetric `{inst.schema}.{relationName}`: functional src field `{src}` is not a carrier/param field"
+            if !allowed.contains dst then
+              throw s!"symmetric `{inst.schema}.{relationName}`: functional dst field `{dst}` is not a carrier/param field"
           checkFunctionalOnTuples inst.name relationName relationFields closure src dst
     | _ => pure ()
 
 private def transitiveClosurePairs
     (instName relationName : Name)
     (relationFields : Array Name)
-    (tuplesRaw : Array (Array (Name × Name))) : Except String (Array (List Name)) := do
+    (tuplesRaw : Array (Array (Name × Name)))
+    (carrier0Idx carrier1Idx : Nat) : Except String (Array (List Name)) := do
   if relationFields.size < 2 then
     throw s!"instance `{instName}` relation `{relationName}`: transitive constraint requires at least 2 fields"
 
   let mut adj : Std.HashMap Name (Array Name) := {}
   for tupFields in tuplesRaw do
     let vals ← tupleValuesInOrder instName relationName tupFields relationFields
-    match vals with
-    | a :: b :: _ =>
-        let current := adj.getD a #[]
-        adj := adj.insert a (current.push b)
-    | _ =>
-        throw s!"instance `{instName}` relation `{relationName}`: transitive constraint requires at least 2 fields"
+    let a ← listGet! instName relationName vals carrier0Idx
+    let b ← listGet! instName relationName vals carrier1Idx
+    let current := adj.getD a #[]
+    adj := adj.insert a (current.push b)
 
   let mut out : Array (List Name) := #[]
   for (src, neighs) in adj.toList do
@@ -348,13 +470,22 @@ private def checkTransitiveCompatibleWithKeysAndFunctionals
     (m : Axiograph.Axi.AxiV1.AxiV1Module)
     (constraints : Array CoreConstraint)
     (inst : SchemaV1Instance)
-    (relationName : Name) : Except String Unit := do
+    (relationName : Name)
+    (carriers : Option CarrierFieldsV1) : Except String Unit := do
   let relationFields ← relationFieldOrder m inst.schema relationName
   if relationFields.size < 2 then
     throw s!"instance `{inst.name}` relation `{relationName}`: transitive constraint requires at least 2 fields"
 
-  let carrier0 := relationFields[0]!
-  let carrier1 := relationFields[1]!
+  let (carrier0, carrier1, carrier0Idx, carrier1Idx) ←
+    match carriers with
+    | none =>
+        pure (relationFields[0]!, relationFields[1]!, 0, 1)
+    | some c =>
+        let leftIdx ← fieldIndex inst.name relationName relationFields c.leftField
+        let rightIdx ← fieldIndex inst.name relationName relationFields c.rightField
+        if leftIdx == rightIdx then
+          throw s!"instance `{inst.name}` relation `{relationName}`: transitive carrier fields must be distinct (got `{c.leftField}` twice)"
+        pure (c.leftField, c.rightField, leftIdx, rightIdx)
 
   -- We only certify "closure compatibility" when keys/functionals are present,
   -- and only for constraints that talk about the carrier fields.
@@ -380,7 +511,7 @@ private def checkTransitiveCompatibleWithKeysAndFunctionals
     pure ()
   else
     let tuplesRaw := relationTuples inst relationName
-    let closure ← transitiveClosurePairs inst.name relationName relationFields tuplesRaw
+    let closure ← transitiveClosurePairs inst.name relationName relationFields tuplesRaw carrier0Idx carrier1Idx
     let carrierFields : Array Name := #[carrier0, carrier1]
 
     for c in constraints do
@@ -643,18 +774,18 @@ def checkModule (m : Axiograph.Axi.AxiV1.AxiV1Module) : Except String Constraint
           if schema == inst.schema then
             checkCount := checkCount + 1
             checkFunctionalConstraint inst rel src dst
-      | .symmetric schema rel =>
+      | .symmetric schema rel carriers =>
           if schema == inst.schema then
             checkCount := checkCount + 1
-            checkSymmetricCompatibleWithKeysAndFunctionals m constraints inst rel none #[]
-      | .symmetricWhereIn schema rel field values =>
+            checkSymmetricCompatibleWithKeysAndFunctionals m constraints inst rel carriers none #[]
+      | .symmetricWhereIn schema rel field values carriers =>
           if schema == inst.schema then
             checkCount := checkCount + 1
-            checkSymmetricCompatibleWithKeysAndFunctionals m constraints inst rel (some field) values
-      | .transitive schema rel =>
+            checkSymmetricCompatibleWithKeysAndFunctionals m constraints inst rel carriers (some field) values
+      | .transitive schema rel carriers =>
           if schema == inst.schema then
             checkCount := checkCount + 1
-            checkTransitiveCompatibleWithKeysAndFunctionals m constraints inst rel
+            checkTransitiveCompatibleWithKeysAndFunctionals m constraints inst rel carriers
       | .typing schema rel rule =>
           if schema == inst.schema then
             checkCount := checkCount + 1

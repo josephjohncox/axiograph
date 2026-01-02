@@ -104,8 +104,8 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 ## Current CLI / server hooks
 
 - **Training export:** `axiograph discover jepa-export ...` (from full `.axi` modules).
-- **World model proposals:** `axiograph discover world-model-propose ...` or
-  `axiograph ingest world-model ...` (emits `proposals.json` with provenance).
+- **World model proposals:** `axiograph ingest world-model ...` (emits `proposals.json`
+  with provenance) or the built-in LLM plugin `axiograph ingest world-model-plugin-llm`.
 - **REPL:** `wm` subcommand (configure backend, emit proposals, optional WAL commit).
 - **DB server:** `POST /world_model/propose` (evidence plane; optional WAL commit).
 

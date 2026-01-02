@@ -1047,6 +1047,31 @@ fn resolve_path_with_repo_fallback(input: &PathBuf) -> Result<PathBuf> {
     Err(anyhow!("no such file: {}", input.display()))
 }
 
+fn resolve_program_with_repo_fallback(program: &PathBuf) -> PathBuf {
+    if program.exists() {
+        return program.clone();
+    }
+    if program.is_absolute() {
+        return program.clone();
+    }
+
+    // If the user passed a bare command name (no path separators), rely on PATH.
+    // If they passed a repo-relative path (e.g. `scripts/foo.py`), fall back to
+    // the repo root when running from sandboxed tmp dirs in tests.
+    let mut components = program.components();
+    let _first = components.next();
+    if components.next().is_none() {
+        return program.clone();
+    }
+
+    let candidate = repo_root().join(program);
+    if candidate.exists() {
+        candidate
+    } else {
+        program.clone()
+    }
+}
+
 fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
     if !(1..=2).contains(&args.len()) {
         return Err(anyhow!(
@@ -3513,14 +3538,50 @@ fn cmd_schema_constraints(state: &ReplState, args: &[String]) -> Result<()> {
                 ConstraintDecl::Typing { rule, .. } => {
                     println!("    typing({rule})");
                 }
-                ConstraintDecl::SymmetricWhereIn { field, values, .. } => {
-                    println!("    symmetric_where_in({field} in {{{}}})", values.join(", "));
+                ConstraintDecl::SymmetricWhereIn {
+                    field,
+                    values,
+                    carriers,
+                    params,
+                    ..
+                } => {
+                    let mut s =
+                        format!("symmetric_where_in({field} in {{{}}})", values.join(", "));
+                    if let Some((left, right)) = carriers {
+                        s.push_str(&format!(" on ({left}, {right})"));
+                    }
+                    if let Some(ps) = params {
+                        if !ps.is_empty() {
+                            s.push_str(&format!(" param ({})", ps.join(", ")));
+                        }
+                    }
+                    println!("    {s}");
                 }
-                ConstraintDecl::Symmetric { .. } => {
-                    println!("    symmetric");
+                ConstraintDecl::Symmetric { carriers, params, .. } => {
+                    let mut s = String::from("symmetric");
+                    if let Some((left, right)) = carriers {
+                        s.push_str(&format!(" on ({left}, {right})"));
+                    }
+                    if let Some(ps) = params {
+                        if !ps.is_empty() {
+                            s.push_str(&format!(" param ({})", ps.join(", ")));
+                        }
+                    }
+                    println!("    {s}");
                 }
-                ConstraintDecl::Transitive { .. } => {
-                    println!("    transitive");
+                ConstraintDecl::Transitive { carriers, params, .. } => {
+                    let mut s = String::from("transitive");
+                    if let Some((left, right)) = carriers {
+                        s.push_str(&format!(" on ({left}, {right})"));
+                    } else {
+                        // Keep consistent layout with the symmetric printer.
+                    }
+                    if let Some(ps) = params {
+                        if !ps.is_empty() {
+                            s.push_str(&format!(" param ({})", ps.join(", ")));
+                        }
+                    }
+                    println!("    {s}");
                 }
                 ConstraintDecl::NamedBlock { name, .. } => {
                     println!("    named_block({name})");
@@ -4013,6 +4074,7 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                 None,
                 None,
                 None,
+                None,
                 &mut state.query_cache,
                 &question,
                 opts,
@@ -4104,6 +4166,7 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                 state.meta.as_ref(),
                 &contexts,
                 &snapshot_key,
+                None,
                 None,
                 None,
                 None,
@@ -4309,7 +4372,7 @@ fn cmd_world_model(state: &mut ReplState, args: &[String]) -> Result<()> {
         "use" => {
             if args.len() < 2 {
                 return Err(anyhow!(
-                    "usage: wm use stub | wm use command <exe> [args...]"
+                    "usage: wm use stub | wm use llm [args...] | wm use http <url> | wm use command <exe> [args...]"
                 ));
             }
             match args[1].to_ascii_lowercase().as_str() {
@@ -4318,12 +4381,48 @@ fn cmd_world_model(state: &mut ReplState, args: &[String]) -> Result<()> {
                     println!("ok: {}", state.world_model.status_line());
                     Ok(())
                 }
+                "llm" => {
+                    let exe = std::env::current_exe()
+                        .unwrap_or_else(|_| PathBuf::from("bin/axiograph"));
+                    let mut args_list =
+                        vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
+                    if args.len() > 2 {
+                        args_list.extend(args[2..].to_vec());
+                    }
+                    crate::llm::validate_world_model_llm_backend_arg(&args_list)?;
+                    state.world_model.backend = crate::world_model::WorldModelBackend::Command {
+                        program: exe,
+                        args: args_list,
+                    };
+                    if state.world_model.model.is_none() {
+                        let env_model = std::env::var("WORLD_MODEL_MODEL")
+                            .or_else(|_| std::env::var("OPENAI_MODEL"))
+                            .or_else(|_| std::env::var("ANTHROPIC_MODEL"))
+                            .or_else(|_| std::env::var("OLLAMA_MODEL"))
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty());
+                        state.world_model.model = env_model;
+                    }
+                    println!("ok: {}", state.world_model.status_line());
+                    Ok(())
+                }
+                "http" => {
+                    if args.len() < 3 {
+                        return Err(anyhow!("usage: wm use http <url>"));
+                    }
+                    state.world_model.backend = crate::world_model::WorldModelBackend::Http {
+                        url: args[2].clone(),
+                    };
+                    println!("ok: {}", state.world_model.status_line());
+                    Ok(())
+                }
                 "command" => {
                     if args.len() < 3 {
                         return Err(anyhow!("usage: wm use command <exe> [args...]"));
                     }
                     state.world_model.backend = crate::world_model::WorldModelBackend::Command {
-                        program: PathBuf::from(&args[2]),
+                        program: resolve_program_with_repo_fallback(&PathBuf::from(&args[2])),
                         args: args[3..].to_vec(),
                     };
                     println!("ok: {}", state.world_model.status_line());
@@ -4509,6 +4608,7 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     if let Some(path) = export_path.as_ref() {
         export_path_str = Some(path.display().to_string());
     } else if let Some(axi) = axi_path.as_ref() {
+        let axi = resolve_path_with_repo_fallback(axi)?;
         let text = fs::read_to_string(axi)?;
         let opts = crate::world_model::JepaExportOptions {
             instance_filter: None,
@@ -4812,7 +4912,8 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
     let mut competency_questions =
         crate::world_model::parse_competency_questions(&cq_pairs)?;
     for path in &cq_files {
-        let mut loaded = crate::world_model::load_competency_questions(path)?;
+        let path = resolve_path_with_repo_fallback(path)?;
+        let mut loaded = crate::world_model::load_competency_questions(&path)?;
         competency_questions.append(&mut loaded);
     }
 
@@ -4821,6 +4922,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
     if let Some(path) = export_path.as_ref() {
         export_path_str = Some(path.display().to_string());
     } else if let Some(axi) = axi_path.as_ref() {
+        let axi = resolve_path_with_repo_fallback(axi)?;
         let text = fs::read_to_string(axi)?;
         let opts = crate::world_model::JepaExportOptions {
             instance_filter: None,

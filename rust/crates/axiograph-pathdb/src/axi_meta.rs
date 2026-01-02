@@ -98,6 +98,7 @@ pub const ATTR_CONSTRAINT_NAME: &str = "axi_constraint_name";
 pub const ATTR_CONSTRAINT_SRC_FIELD: &str = "axi_constraint_src_field";
 pub const ATTR_CONSTRAINT_DST_FIELD: &str = "axi_constraint_dst_field";
 pub const ATTR_CONSTRAINT_FIELDS: &str = "axi_constraint_fields";
+pub const ATTR_CONSTRAINT_PARAM_FIELDS: &str = "axi_constraint_param_fields";
 pub const ATTR_CONSTRAINT_WHERE_FIELD: &str = "axi_constraint_where_field";
 pub const ATTR_CONSTRAINT_WHERE_IN_VALUES: &str = "axi_constraint_where_in_values";
 pub const ATTR_CONSTRAINT_TEXT: &str = "axi_constraint_text";

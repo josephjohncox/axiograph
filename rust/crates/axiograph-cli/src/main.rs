@@ -11,13 +11,16 @@ use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::env;
 use std::fs;
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 mod accepted_plane;
 mod analyze;
+mod axi_fmt;
 mod axql;
 mod competency_questions;
 mod db_server;
@@ -433,6 +436,22 @@ enum CheckCommands {
         input: PathBuf,
     },
 
+    /// Format a canonical `.axi` module (surgically; preserves comments).
+    ///
+    /// Today this focuses on canonicalizing `constraint ...` syntax so
+    /// unknown/dialect-ish constraint forms are fixable now that the
+    /// certificate/promote gates fail closed.
+    Fmt {
+        /// Input `.axi` file.
+        input: PathBuf,
+        /// Write formatted output to this file (defaults to stdout).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Overwrite the input file in-place.
+        #[arg(long)]
+        write: bool,
+    },
+
     /// Lint/quality checks for `.axi` modules and `.axpd` snapshots.
     ///
     /// This is a practical ontology-engineering helper. It produces a structured
@@ -620,7 +639,8 @@ struct DbServeArgs {
 
     /// Enable world model plugin endpoints for proposal generation.
     ///
-    /// Choose at most one backend: `--world-model-stub` or `--world-model-plugin ...`.
+    /// Choose at most one backend: `--world-model-stub`, `--world-model-plugin ...`,
+    /// `--world-model-http ...`, or `--world-model-llm`.
     #[arg(long)]
     world_model_stub: bool,
 
@@ -632,9 +652,21 @@ struct DbServeArgs {
     #[arg(long)]
     world_model_plugin_arg: Vec<String>,
 
+    /// Optional world model HTTP endpoint (speaks `axiograph_world_model_v1`).
+    #[arg(long)]
+    world_model_http: Option<String>,
+
+    /// Use the built-in LLM-backed world model plugin.
+    #[arg(long)]
+    world_model_llm: bool,
+
     /// Optional world model model name for provenance (free-form).
     #[arg(long)]
     world_model_model: Option<String>,
+
+    /// Number of worker slots reserved for world-model jobs.
+    #[arg(long, default_value_t = 2)]
+    world_model_workers: usize,
 
     /// LRU capacity (number of path signatures) for deeper-than-indexed paths.
     /// `0` disables the LRU cache.
@@ -937,6 +969,10 @@ enum IngestCommands {
 
     /// Run a world model plugin to propose new facts/relations (evidence plane).
     WorldModel(WorldModelProposeArgs),
+
+    /// Built-in world model plugin (LLM-backed). Reads request JSON from stdin and writes a response to stdout.
+    #[command(name = "world-model-plugin-llm")]
+    WorldModelPluginLlm(WorldModelPluginLlmArgs),
 }
 
 #[derive(Subcommand)]
@@ -1303,6 +1339,14 @@ struct WorldModelProposeArgs {
     #[arg(long)]
     world_model_plugin_arg: Vec<String>,
 
+    /// Optional world model HTTP endpoint (speaks `axiograph_world_model_v1`).
+    #[arg(long)]
+    world_model_http: Option<String>,
+
+    /// Use the built-in LLM-backed world model plugin.
+    #[arg(long)]
+    world_model_llm: bool,
+
     /// Use the stub world model backend (emits no proposals).
     #[arg(long)]
     world_model_stub: bool,
@@ -1376,6 +1420,29 @@ struct WorldModelProposeArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+struct WorldModelPluginLlmArgs {
+    /// Backend: openai|anthropic|ollama|mock (defaults to WORLD_MODEL_BACKEND or openai).
+    #[arg(long)]
+    backend: Option<String>,
+
+    /// Optional model name (defaults to WORLD_MODEL_MODEL or provider defaults).
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Optional OpenAI base URL override (defaults to OPENAI_BASE_URL or https://api.openai.com).
+    #[arg(long)]
+    openai_base_url: Option<String>,
+
+    /// Optional Anthropic base URL override (defaults to ANTHROPIC_BASE_URL or https://api.anthropic.com).
+    #[arg(long)]
+    anthropic_base_url: Option<String>,
+
+    /// Optional Ollama host override (defaults to OLLAMA_HOST or http://127.0.0.1:11434).
+    #[arg(long)]
+    ollama_host: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
 struct CompetencyQuestionsArgs {
     /// Input `.axi` or `.axpd` snapshot (for schema + NL query translation).
     input: PathBuf,
@@ -1399,6 +1466,10 @@ struct CompetencyQuestionsArgs {
     /// Exclude relation questions from schema generation.
     #[arg(long)]
     no_relations: bool,
+
+    /// Include generic `Entity` types if present in the schema.
+    #[arg(long)]
+    include_entity: bool,
 
     /// Default minimum rows required to satisfy a CQ.
     #[arg(long, default_value_t = 1)]
@@ -1871,10 +1942,16 @@ fn main() -> Result<()> {
             IngestCommands::WorldModel(args) => {
                 cmd_world_model_propose(&args)?;
             }
+            IngestCommands::WorldModelPluginLlm(args) => {
+                cmd_world_model_plugin_llm(&args)?;
+            }
         },
         Commands::Check { command } => match command {
             CheckCommands::Validate { input } => {
                 cmd_validate(&input)?;
+            }
+            CheckCommands::Fmt { input, out, write } => {
+                axi_fmt::cmd_fmt_axi(&input, out.as_deref(), write)?;
             }
             CheckCommands::Quality {
                 input,
@@ -6460,6 +6537,7 @@ fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<(
     let options = crate::competency_questions::CompetencyQuestionOptions {
         include_types: !args.no_types,
         include_relations: !args.no_relations,
+        include_entity: args.include_entity,
         min_rows: args.min_rows,
         weight: args.weight,
         contexts: args.context.clone(),
@@ -6642,21 +6720,194 @@ fn resolve_llm_state_for_competency_questions(
     Err(anyhow!("no LLM backend configured"))
 }
 
+const WORLD_MODEL_BACKEND_ENV: &str = "WORLD_MODEL_BACKEND";
+const WORLD_MODEL_MODEL_ENV: &str = "WORLD_MODEL_MODEL";
+
+fn resolve_llm_state_for_world_model_plugin(
+    args: &WorldModelPluginLlmArgs,
+) -> Result<crate::llm::LlmState> {
+    let backend = args
+        .backend
+        .clone()
+        .or_else(|| {
+            env::var(WORLD_MODEL_BACKEND_ENV)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "openai".to_string());
+
+    let model = args
+        .model
+        .clone()
+        .or_else(|| {
+            env::var(WORLD_MODEL_MODEL_ENV)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+    let backend_lc = backend.trim().to_ascii_lowercase();
+    let mut llm = crate::llm::LlmState::default();
+    match backend_lc.as_str() {
+        "mock" => {
+            llm.backend = crate::llm::LlmBackend::Mock;
+            llm.model = Some("mock".to_string());
+            Ok(llm)
+        }
+        "ollama" => {
+            #[cfg(feature = "llm-ollama")]
+            {
+                let host = args
+                    .ollama_host
+                    .clone()
+                    .or_else(|| {
+                        env::var("OLLAMA_HOST")
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .unwrap_or_else(crate::llm::default_ollama_host);
+                let model = model
+                    .or_else(|| env::var("OLLAMA_MODEL").ok().filter(|s| !s.trim().is_empty()))
+                    .ok_or_else(|| {
+                        anyhow!("no model selected (use --model, set WORLD_MODEL_MODEL, or set OLLAMA_MODEL)")
+                    })?;
+                llm.backend = crate::llm::LlmBackend::Ollama { host };
+                llm.model = Some(model);
+                Ok(llm)
+            }
+            #[cfg(not(feature = "llm-ollama"))]
+            {
+                Err(anyhow!(
+                    "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+                ))
+            }
+        }
+        "anthropic" => {
+            #[cfg(feature = "llm-anthropic")]
+            {
+                let key = env::var(crate::llm::ANTHROPIC_API_KEY_ENV).unwrap_or_default();
+                if key.trim().is_empty() {
+                    return Err(anyhow!(
+                        "anthropic backend requires {}",
+                        crate::llm::ANTHROPIC_API_KEY_ENV
+                    ));
+                }
+                let base_url = args
+                    .anthropic_base_url
+                    .clone()
+                    .or_else(|| {
+                        env::var(crate::llm::ANTHROPIC_BASE_URL_ENV)
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .unwrap_or_else(crate::llm::default_anthropic_base_url);
+                let model = model
+                    .or_else(|| env::var(crate::llm::ANTHROPIC_MODEL_ENV).ok().filter(|s| !s.trim().is_empty()))
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "no model selected (use --model, set WORLD_MODEL_MODEL, or set {})",
+                            crate::llm::ANTHROPIC_MODEL_ENV
+                        )
+                    })?;
+                llm.backend = crate::llm::LlmBackend::Anthropic { base_url };
+                llm.model = Some(model);
+                Ok(llm)
+            }
+            #[cfg(not(feature = "llm-anthropic"))]
+            {
+                Err(anyhow!(
+                    "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
+                ))
+            }
+        }
+        "openai" => {
+            #[cfg(feature = "llm-openai")]
+            {
+                let key = env::var(crate::llm::OPENAI_API_KEY_ENV).unwrap_or_default();
+                if key.trim().is_empty() {
+                    return Err(anyhow!(
+                        "openai backend requires {}",
+                        crate::llm::OPENAI_API_KEY_ENV
+                    ));
+                }
+                let base_url = args
+                    .openai_base_url
+                    .clone()
+                    .or_else(|| {
+                        env::var(crate::llm::OPENAI_BASE_URL_ENV)
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .unwrap_or_else(crate::llm::default_openai_base_url);
+                let model = model
+                    .or_else(|| env::var(crate::llm::OPENAI_MODEL_ENV).ok().filter(|s| !s.trim().is_empty()))
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "no model selected (use --model, set WORLD_MODEL_MODEL, or set {})",
+                            crate::llm::OPENAI_MODEL_ENV
+                        )
+                    })?;
+                llm.backend = crate::llm::LlmBackend::OpenAI { base_url };
+                llm.model = Some(model);
+                Ok(llm)
+            }
+            #[cfg(not(feature = "llm-openai"))]
+            {
+                Err(anyhow!(
+                    "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+                ))
+            }
+        }
+        other => Err(anyhow!(
+            "world model backend `{other}` is not supported by --world-model-llm / `axiograph ingest world-model-plugin-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --world-model-plugin or --world-model-http instead."
+        )),
+    }
+}
+
 fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
-    if args.world_model_stub && args.world_model_plugin.is_some() {
+    let selected = (args.world_model_stub as usize)
+        + (args.world_model_plugin.is_some() as usize)
+        + (args.world_model_http.is_some() as usize)
+        + (args.world_model_llm as usize);
+    if selected > 1 {
         return Err(anyhow!(
-            "choose at most one world model backend: --world-model-stub or --world-model-plugin"
+            "choose at most one world model backend: --world-model-stub, --world-model-plugin, --world-model-http, or --world-model-llm"
         ));
     }
-    if !args.world_model_stub && args.world_model_plugin.is_none() {
+    if selected == 0 {
         return Err(anyhow!(
-            "world model backend is not configured (use --world-model-plugin or --world-model-stub)"
+            "world model backend is not configured (use --world-model-plugin, --world-model-http, --world-model-llm, or --world-model-stub)"
         ));
     }
 
     let mut wm = crate::world_model::WorldModelState::default();
     if args.world_model_stub {
         wm.backend = crate::world_model::WorldModelBackend::Stub;
+    } else if let Some(url) = args.world_model_http.as_ref() {
+        wm.backend = crate::world_model::WorldModelBackend::Http { url: url.clone() };
+    } else if args.world_model_llm {
+        let exe = std::env::current_exe()
+            .map_err(|e| anyhow!("failed to resolve current executable: {e}"))?;
+        let mut args_list = vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
+        let has_model_arg = args
+            .world_model_plugin_arg
+            .iter()
+            .any(|a| a == "--model");
+        if let Some(model) = args.world_model_model.as_ref() {
+            if !has_model_arg {
+                args_list.push("--model".to_string());
+                args_list.push(model.clone());
+            }
+        }
+        args_list.extend(args.world_model_plugin_arg.clone());
+        wm.backend = crate::world_model::WorldModelBackend::Command {
+            program: exe,
+            args: args_list,
+        };
     } else if let Some(plugin) = args.world_model_plugin.as_ref() {
         wm.backend = crate::world_model::WorldModelBackend::Command {
             program: plugin.clone(),
@@ -6838,6 +7089,23 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+fn cmd_world_model_plugin_llm(args: &WorldModelPluginLlmArgs) -> Result<()> {
+    let mut input = String::new();
+    io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|e| anyhow!("failed to read stdin: {e}"))?;
+    if input.trim().is_empty() {
+        return Err(anyhow!("expected JSON request on stdin"));
+    }
+    let req: crate::world_model::WorldModelRequestV1 =
+        serde_json::from_str(&input).map_err(|e| anyhow!("invalid JSON request: {e}"))?;
+    let llm = resolve_llm_state_for_world_model_plugin(args)?;
+    let resp = crate::llm::world_model_llm_plugin(&llm, &req)?;
+    let json = serde_json::to_string(&resp)?;
+    println!("{json}");
     Ok(())
 }
 

@@ -15,6 +15,9 @@ VIZ_OUT="$OUT_DIR/viz.html"
 PLAN_OUT="$OUT_DIR/plan_response.json"
 ADMIN_TOKEN="demo-token"
 
+if [ -z "${AXIOGRAPH_DEMO_KEEP:-}" ]; then
+  rm -rf "$PLANE_DIR"
+fi
 mkdir -p "$OUT_DIR"
 
 echo "== World model MPC server demo =="
@@ -25,6 +28,43 @@ echo ""
 echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"
 make binaries
+
+if [ -z "${WORLD_MODEL_BACKEND:-}" ]; then
+  export WORLD_MODEL_BACKEND="openai"
+fi
+
+WM_MODEL="default"
+WM_BACKEND_FLAG="--world-model-llm"
+
+if [ "$WORLD_MODEL_BACKEND" = "baseline" ]; then
+  WM_BACKEND_FLAG="--world-model-plugin scripts/axiograph_world_model_plugin_baseline.py --world-model-plugin-arg --strategy --world-model-plugin-arg oracle"
+  WM_MODEL="baseline_oracle"
+elif [ "$WORLD_MODEL_BACKEND" = "onnx" ]; then
+  echo "error: WORLD_MODEL_BACKEND=onnx is not supported in this demo (use physics demos)"
+  exit 2
+else
+  if [ "$WORLD_MODEL_BACKEND" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "error: OPENAI_API_KEY is required for WORLD_MODEL_BACKEND=openai"
+    exit 2
+  fi
+  if [ "$WORLD_MODEL_BACKEND" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "error: ANTHROPIC_API_KEY is required for WORLD_MODEL_BACKEND=anthropic"
+    exit 2
+  fi
+  if [ "$WORLD_MODEL_BACKEND" = "ollama" ] && [ -z "${OLLAMA_HOST:-}" ] && [ -z "${OLLAMA_MODEL:-}" ]; then
+    echo "error: OLLAMA_HOST or OLLAMA_MODEL is required for WORLD_MODEL_BACKEND=ollama"
+    exit 2
+  fi
+  WM_MODEL="${WORLD_MODEL_MODEL:-${OPENAI_MODEL:-${ANTHROPIC_MODEL:-${OLLAMA_MODEL:-}}}}"
+  if [ -z "$WM_MODEL" ]; then
+    echo "error: WORLD_MODEL_MODEL (or OPENAI_MODEL / ANTHROPIC_MODEL / OLLAMA_MODEL) is required"
+    exit 2
+  fi
+  export WORLD_MODEL_MODEL="$WM_MODEL"
+fi
+
+echo ""
+echo "-- World model backend: $WORLD_MODEL_BACKEND (model=$WM_MODEL)"
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
@@ -65,8 +105,8 @@ echo "-- B) Start server (master)"
   --layer pathdb \
   --snapshot head \
   --role master \
-  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py \
-  --world-model-plugin-arg --strategy oracle \
+  $WM_BACKEND_FLAG \
+  --world-model-model "$WM_MODEL" \
   --admin-token "$ADMIN_TOKEN" \
   --listen 127.0.0.1:0 \
   --ready-file "$READY_FILE" \
@@ -133,3 +173,39 @@ echo "Outputs:"
 echo "  $OUT_DIR/server.log"
 echo "  $PLAN_OUT"
 echo "  $VIZ_OUT"
+
+echo ""
+echo "=== Viz UI demo playbook ==="
+echo "Open:"
+echo "  $BASE_URL/viz?focus_name=Alice&plane=both&typed_overlay=true&hops=3&max_nodes=420"
+cat <<'TXT'
+
+Explore tab:
+  - Search for Alice, Bob, or Carol; shift‑click to highlight Parent paths.
+
+Query tab (AxQL):
+  select ?child ?parent where
+    ?child Parent ?parent
+  limit 10
+
+LLM tab (tool loop):
+  - "Who are the parents of Carol?"
+  - "Show me all Parent relations."
+
+World Model tab:
+  - Goals: "predict missing parent links"
+  - Max new proposals: 50
+  - Steps: 2, Rollouts: 2, Guardrail: fast
+  - Click "plan" → review proposals in the Review tab.
+
+Review tab:
+  - Inspect proposals, deselect any you don't want, then commit (requires admin token).
+
+Add tab (manual overlay):
+  - Relation type: Parent
+  - Source: Carol
+  - Target: Alice
+  - Generate → review → commit
+
+Note: Auto‑commit in World Model tab requires the same admin token used by Review/Add.
+TXT

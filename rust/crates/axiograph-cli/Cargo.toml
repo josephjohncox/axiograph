@@ -44,9 +44,10 @@ htmd.workspace = true
 robotstxt.workspace = true
 
 [features]
-default = ["repl-rustyline", "llm-ollama", "llm-openai", "llm-anthropic"]
+default = ["repl-rustyline", "llm-ollama", "llm-openai", "llm-anthropic", "world-model-http"]
 repl-rustyline = ["dep:rustyline"]
 llm-ollama = ["dep:reqwest"]
 llm-openai = ["dep:reqwest"]
 llm-anthropic = ["dep:reqwest"]
 profiling = ["dep:pprof", "dep:signal-hook"]
+world-model-http = ["dep:reqwest"]

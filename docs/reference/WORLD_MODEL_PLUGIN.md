@@ -7,6 +7,12 @@ This protocol lets an **untrusted** world model propose evidence-plane facts
 (`proposals.json`) from grounded Axiograph context.
 
 The plugin reads a JSON request from stdin and writes a JSON response to stdout.
+You can implement this protocol in any language (or behind HTTP), and Axiograph
+also ships a built-in LLM-backed plugin to avoid Python in core flows.
+
+Note: the **LLM prompt** is only used by the built-in LLM plugin. Custom ONNX or
+hierarchical reasoning models receive the raw request and can interpret it
+however they choose.
 
 ---
 
@@ -74,7 +80,7 @@ Notes:
     "schema_hint": null,
     "proposals": [
       {
-        "kind": "relation",
+        "kind": "Relation",
         "proposal_id": "rel::Parent::Alice::Bob",
         "confidence": 0.62,
         "evidence": [],
@@ -96,21 +102,37 @@ Notes:
 
 If the plugin fails, set `"error"` to a human-readable message.
 
+Note: `ProposalV1.kind` must use the enum variants `Entity` or `Relation`
+(`entity`/`relation` will not deserialize).
+
 ---
 
 ## Example plugins
 
-Real model (API-backed; OpenAI/Anthropic/Ollama):  
-`scripts/axiograph_world_model_plugin_real.py`
-
-Environment variables:
+Built-in LLM plugin (no Python, uses OpenAI/Anthropic/Ollama):
 
 ```bash
-export WORLD_MODEL_BACKEND=openai|anthropic|ollama
-export WORLD_MODEL_MODEL=...
+bin/axiograph ingest world-model-plugin-llm --backend openai --model gpt-4o-mini
+```
+
+Environment variables (LLM):
+
+```bash
+export WORLD_MODEL_BACKEND=openai
+export WORLD_MODEL_MODEL=gpt-4o-mini
 export OPENAI_API_KEY=...
-export ANTHROPIC_API_KEY=...
-export OLLAMA_HOST=http://127.0.0.1:11434
+```
+
+Note: the built-in plugin requires a model name; use `WORLD_MODEL_MODEL` or the
+provider-specific env vars (`OPENAI_MODEL`, `ANTHROPIC_MODEL`, `OLLAMA_MODEL`).
+
+Deterministic ONNX model (learned, no randomness):  
+`scripts/axiograph_world_model_plugin_onnx.py`
+
+Environment variables (ONNX):
+
+```bash
+export WORLD_MODEL_MODEL_PATH=models/world_model_small.onnx
 ```
 
 Transformer stub (skeleton for PyTorch):  
@@ -119,15 +141,27 @@ Transformer stub (skeleton for PyTorch):
 Baseline (no ML, deterministic):  
 `scripts/axiograph_world_model_plugin_baseline.py`
 
-Deterministic ONNX model (learned, no randomness):  
-`scripts/axiograph_world_model_plugin_onnx.py`
+API-backed model (LLM-based; optional, untrusted).  
+If `WORLD_MODEL_BACKEND` is unset, it defaults to **OpenAI** when `OPENAI_API_KEY` is available.  
+`scripts/axiograph_world_model_plugin_real.py`
+
+HTTP backend (any language/runtime):
+
+```bash
+axiograph ingest world-model \
+  --input examples/Family.axi \
+  --out build/family_proposals.json \
+  --world-model-http http://127.0.0.1:9999/world_model
+```
 
 ---
 
 ## Integration points
 
-- CLI: `axiograph discover world-model-propose` / `axiograph ingest world-model`
-- REPL: `wm` subcommand
-- Server: `POST /world_model/propose`
+- CLI: `axiograph ingest world-model` (legacy: `axiograph discover world-model-propose`)
+- CLI (built-in plugin): `axiograph ingest world-model-plugin-llm`
+- CLI: `--world-model-llm` and `--world-model-http` (server + propose)
+- REPL: `wm` subcommand (`wm use llm` / `wm use http <url>` / `wm use command ...`)
+- Server: `POST /world_model/propose`, `POST /world_model/plan`
 
 All outputs remain **evidence-plane** until validated and promoted.

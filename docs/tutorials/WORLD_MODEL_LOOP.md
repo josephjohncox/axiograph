@@ -62,39 +62,29 @@ This is the **explicit mask** strategy; the generic approach is just
 
 ---
 
-## 3) Run a real world model (API-backed or local)
+## 3) Run a real world model (LLM-backed; no Python)
 
-Use the real plugin for demos and MPC flows. It dispatches to OpenAI,
-Anthropic, or a local Ollama server depending on environment variables.
-This produces **actual model outputs**, not heuristic stubs.
+By default, the demos use the **built-in** world model plugin
+(`axiograph ingest world-model-plugin-llm`). It supports:
 
-Configure the backend via environment variables:
+- **OpenAI** (default when `WORLD_MODEL_BACKEND` is unset),
+- **Anthropic**, or
+- **Ollama** (local).
+
+Select the backend with environment variables before running the demo.
 
 ```bash
-# Hosted API (OpenAI)
+# OpenAI (default)
 export WORLD_MODEL_BACKEND=openai
 export OPENAI_API_KEY=...
 export WORLD_MODEL_MODEL=gpt-4o-mini
 
-# Hosted API (Anthropic)
-export WORLD_MODEL_BACKEND=anthropic
-export ANTHROPIC_API_KEY=...
-export WORLD_MODEL_MODEL=claude-3-5-sonnet-20240620
-
-# Local (Ollama)
-export WORLD_MODEL_BACKEND=ollama
-export OLLAMA_HOST=http://127.0.0.1:11434
-export WORLD_MODEL_MODEL=llama3.1
-```
-
-```bash
-bin/axiograph discover world-model-propose \
+bin/axiograph ingest world-model \
   --input examples/Family.axi \
   --export build/family_jepa.json \
   --out build/family_proposals.json \
-  --world-model-plugin scripts/axiograph_world_model_plugin_real.py \
-  --guardrail-profile fast \
-  --guardrail-plane both
+  --world-model-llm \
+  --world-model-model "$WORLD_MODEL_MODEL"
 ```
 
 The output is **evidence-plane** `proposals.json`, with provenance metadata
@@ -102,32 +92,18 @@ describing the world model and guardrail costs.
 
 ---
 
-## 4) Run a transformer-style world model (stub)
+## 4) Run a deterministic ONNX world model (offline)
 
-The transformer stub is a skeleton that shows how to wire a PyTorch model.
-Swap in your own checkpoint or training loop.
-
-```bash
-bin/axiograph discover world-model-propose \
-  --input examples/Family.axi \
-  --export build/family_jepa.json \
-  --out build/family_proposals_transformer.json \
-  --world-model-plugin scripts/axiograph_world_model_plugin_transformer_stub.py \
-  --world-model-model transformer_v1
-```
-
----
-
-## 5) Run a deterministic ONNX world model (real, no randomness)
-
-This uses a small learned model exported to ONNX and runs it locally with
-`onnxruntime`. Provide a model path via `WORLD_MODEL_MODEL_PATH`.
+Use this for offline, deterministic runs (no network, no LLM calls).
 
 ```bash
+export WORLD_MODEL_BACKEND=onnx
 export WORLD_MODEL_MODEL_PATH=models/world_model_small.onnx
-pip install onnxruntime
+./scripts/setup_onnx_runtime.sh
+source .venv-onnx/bin/activate
+./scripts/build_world_model_onnx.py --out "$WORLD_MODEL_MODEL_PATH"
 
-bin/axiograph discover world-model-propose \
+bin/axiograph ingest world-model \
   --input examples/Family.axi \
   --export build/family_jepa.json \
   --out build/family_proposals_onnx.json \
@@ -137,7 +113,31 @@ bin/axiograph discover world-model-propose \
 
 ---
 
-## 5) Validate proposals (guardrails + constraints)
+## 5) Run a transformer-style world model (stub)
+
+The transformer stub is a skeleton that shows how to wire a PyTorch model.
+Swap in your own checkpoint or training loop.
+
+```bash
+bin/axiograph ingest world-model \
+  --input examples/Family.axi \
+  --export build/family_jepa.json \
+  --out build/family_proposals_transformer.json \
+  --world-model-plugin scripts/axiograph_world_model_plugin_transformer_stub.py \
+  --world-model-model transformer_v1
+```
+
+---
+
+## 6) Python plugin (optional; legacy)
+
+If you still want a Python-backed LLM proposer, use:
+`scripts/axiograph_world_model_plugin_real.py`. The built-in plugin is now the
+default for demos.
+
+---
+
+## 7) Validate proposals (guardrails + constraints)
 
 ```bash
 bin/axiograph check quality examples/Family.axi --profile fast --plane both
@@ -155,13 +155,23 @@ bin/axiograph db accept pathdb-commit \
 
 ---
 
-## 6) Use the REPL / server loop
+## 8) Use the REPL / server loop
 
 REPL:
 
 ```text
-axiograph> wm use command scripts/axiograph_world_model_plugin_real.py
+axiograph> wm use llm
 axiograph> wm propose build/wm_proposals.json --goal "predict missing parent links"
+```
+
+Note: `wm use llm` reads `WORLD_MODEL_BACKEND` + `WORLD_MODEL_MODEL` (or provider
+model env vars) from the environment.
+
+Optional ONNX plugin (offline):
+
+```text
+axiograph> wm use command scripts/axiograph_world_model_plugin_onnx.py
+axiograph> wm propose build/wm_proposals_onnx.json --goal "draft candidate relations"
 ```
 
 Server:
@@ -174,7 +184,7 @@ curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
 
 ---
 
-## 7) MPC plan -> draft .axi -> promote
+## 9) MPC plan -> draft .axi -> promote
 
 Use the MPC plan endpoint to generate multi-step proposals, then draft and
 promote a canonical module.
@@ -218,14 +228,14 @@ bin/axiograph discover draft-module \
   --infer-constraints
 ```
 
-## 8) Promotion (accepted plane)
+## 10) Promotion (accepted plane)
 
 Once proposals pass guardrails and review, promote into the accepted plane.
 See `docs/howto/ACCEPTED_PLANE.md` for the full workflow.
 
 ---
 
-## 9) Physics-scale demo (larger corpus)
+## 11) Physics-scale demo (larger corpus)
 
 The physics examples include differential geometry, mechanics, QFT, and algebra.
 This flow uses:
@@ -235,19 +245,42 @@ This flow uses:
 End-to-end script (accepted plane → CQs → MPC plan → promote → viz):
 
 ```bash
+# OpenAI (default)
+export WORLD_MODEL_BACKEND=openai
+export OPENAI_API_KEY=...
+export WORLD_MODEL_MODEL=gpt-4o-mini
 ./scripts/world_model_mpc_physics_flow_demo.sh
 ```
 
 REPL-only script:
 
 ```bash
+# Anthropic
+export WORLD_MODEL_BACKEND=anthropic
+export ANTHROPIC_API_KEY=...
+export WORLD_MODEL_MODEL=claude-3-5-sonnet-20240620
 ./scripts/world_model_mpc_physics_repl_demo.sh
 ```
 
 Server + viz demo (stepwise auto-commit):
 
 ```bash
+# Ollama (local)
+export WORLD_MODEL_BACKEND=ollama
+export OLLAMA_HOST=http://127.0.0.1:11434
+export WORLD_MODEL_MODEL=llama3.1
 ./scripts/world_model_mpc_physics_server_demo.sh
+```
+
+Offline deterministic ONNX:
+
+```bash
+export WORLD_MODEL_BACKEND=onnx
+export WORLD_MODEL_MODEL_PATH=models/world_model_small.onnx
+./scripts/setup_onnx_runtime.sh
+source .venv-onnx/bin/activate
+./scripts/build_world_model_onnx.py --out "$WORLD_MODEL_MODEL_PATH"
+./scripts/world_model_mpc_physics_flow_demo.sh
 ```
 
 Generate schema-driven competency questions:
@@ -257,6 +290,12 @@ bin/axiograph discover competency-questions \
   build/physics_base.axpd \
   --out build/physics_cq.json \
   --max-questions 120
+
+# If you see `... is Physics.Entity` in CQs, skip it by default:
+#   (Entity is a synthetic fallback in some exports)
+# bin/axiograph discover competency-questions build/physics_base.axpd --out build/physics_cq.json
+# To include it explicitly:
+#   --include-entity
 ```
 
 Translate natural-language CQs to AxQL (LLM backend required):
@@ -274,7 +313,7 @@ bin/axiograph discover competency-questions \
 - Try guardrail weight overrides and task costs:
 
 ```bash
-bin/axiograph discover world-model-propose \
+bin/axiograph ingest world-model \
   --input examples/Family.axi \
   --export build/family_jepa.json \
   --out build/family_proposals.json \

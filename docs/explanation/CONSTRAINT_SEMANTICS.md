@@ -85,7 +85,12 @@ For `axi_constraints_ok_v1`, the certified semantics of:
 is **not** “the inverse tuple must exist”.
 
 Instead, we treat symmetry as an *admissible closure* on the relation’s first two
-fields (the “endpoints”), and we certify a compatibility property:
+fields (the “endpoints”), and we certify a compatibility property.
+
+Carrier fields:
+- By default, the carrier fields are the **first two** relation fields.
+- For relations with extra fields (context/time/witnesses), authors can be explicit:
+  `constraint symmetric Rel ... on (field0, field1)`.
 
 - if you add the swapped-endpoint tuples (respecting any `where … in {…}` guard),
   the relation’s **key/functional** constraints remain satisfied.
@@ -125,7 +130,8 @@ What we *can* do instead (and what aligns with “untrusted engine, trusted chec
 As a pragmatic ontology-engineering gate, we can also certify a weaker property:
 
 - the module’s **key/functional** constraints remain consistent under transitive
-  closure on the relation’s *carrier fields* (by convention: the first two fields),
+  closure on the relation’s *carrier fields* (by convention: the first two fields;
+  or explicitly via `constraint transitive Rel on (field0, field1)`),
   so “treat this as transitive” won’t contradict your own uniqueness constraints,
   without requiring explicit materialization of the closure.
 
