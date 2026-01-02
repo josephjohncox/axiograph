@@ -119,6 +119,9 @@ Transformer stub (skeleton for PyTorch):
 Baseline (no ML, deterministic):  
 `scripts/axiograph_world_model_plugin_baseline.py`
 
+Deterministic ONNX model (learned, no randomness):  
+`scripts/axiograph_world_model_plugin_onnx.py`
+
 ---
 
 ## Integration points

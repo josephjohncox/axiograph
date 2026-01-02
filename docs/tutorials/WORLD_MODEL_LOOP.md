@@ -118,6 +118,25 @@ bin/axiograph discover world-model-propose \
 
 ---
 
+## 5) Run a deterministic ONNX world model (real, no randomness)
+
+This uses a small learned model exported to ONNX and runs it locally with
+`onnxruntime`. Provide a model path via `WORLD_MODEL_MODEL_PATH`.
+
+```bash
+export WORLD_MODEL_MODEL_PATH=models/world_model_small.onnx
+pip install onnxruntime
+
+bin/axiograph discover world-model-propose \
+  --input examples/Family.axi \
+  --export build/family_jepa.json \
+  --out build/family_proposals_onnx.json \
+  --world-model-plugin scripts/axiograph_world_model_plugin_onnx.py \
+  --world-model-model onnx_v1
+```
+
+---
+
 ## 5) Validate proposals (guardrails + constraints)
 
 ```bash
