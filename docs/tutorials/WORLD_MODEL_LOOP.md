@@ -5,7 +5,7 @@
 
 This tutorial shows how to:
 1) export JEPA training pairs from a full `.axi` module,  
-2) run a world model (baseline or transformer),  
+2) run a world model (real model preferred),  
 3) emit proposals with guardrails, and  
 4) validate/commit/promote.
 
@@ -62,18 +62,37 @@ This is the **explicit mask** strategy; the generic approach is just
 
 ---
 
-## 3) Run a baseline world model (MLP-style)
+## 3) Run a real world model (API-backed or local)
 
-The baseline plugin is **deterministic** and untrained (a stand-in for a small
-MLP or heuristic predictor). It demonstrates the protocol and end-to-end flow.
+Use the real plugin for demos and MPC flows. It dispatches to OpenAI,
+Anthropic, or a local Ollama server depending on environment variables.
+This produces **actual model outputs**, not heuristic stubs.
+
+Configure the backend via environment variables:
+
+```bash
+# Hosted API (OpenAI)
+export WORLD_MODEL_BACKEND=openai
+export OPENAI_API_KEY=...
+export WORLD_MODEL_MODEL=gpt-4o-mini
+
+# Hosted API (Anthropic)
+export WORLD_MODEL_BACKEND=anthropic
+export ANTHROPIC_API_KEY=...
+export WORLD_MODEL_MODEL=claude-3-5-sonnet-20240620
+
+# Local (Ollama)
+export WORLD_MODEL_BACKEND=ollama
+export OLLAMA_HOST=http://127.0.0.1:11434
+export WORLD_MODEL_MODEL=llama3.1
+```
 
 ```bash
 bin/axiograph discover world-model-propose \
   --input examples/Family.axi \
   --export build/family_jepa.json \
   --out build/family_proposals.json \
-  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py \
-  --world-model-plugin-arg --strategy oracle \
+  --world-model-plugin scripts/axiograph_world_model_plugin_real.py \
   --guardrail-profile fast \
   --guardrail-plane both
 ```
@@ -122,7 +141,7 @@ bin/axiograph db accept pathdb-commit \
 REPL:
 
 ```text
-axiograph> wm use stub
+axiograph> wm use command scripts/axiograph_world_model_plugin_real.py
 axiograph> wm propose build/wm_proposals.json --goal "predict missing parent links"
 ```
 
@@ -216,7 +235,7 @@ Generate schema-driven competency questions:
 
 ```bash
 bin/axiograph discover competency-questions \
-  --input build/physics_base.axpd \
+  build/physics_base.axpd \
   --out build/physics_cq.json \
   --max-questions 120
 ```
@@ -225,7 +244,7 @@ Translate natural-language CQs to AxQL (LLM backend required):
 
 ```bash
 bin/axiograph discover competency-questions \
-  --input build/physics_base.axpd \
+  build/physics_base.axpd \
   --from-nl examples/competency_questions/physics_cq_nl.txt \
   --llm-openai --llm-model gpt-4o-mini \
   --out build/physics_cq_structured.json

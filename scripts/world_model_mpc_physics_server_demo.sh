@@ -26,6 +26,26 @@ echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"
 make binaries
 
+echo ""
+echo "-- World model backend (real)"
+if [ -z "${WORLD_MODEL_BACKEND:-}" ]; then
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    export WORLD_MODEL_BACKEND="openai"
+  elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    export WORLD_MODEL_BACKEND="anthropic"
+  elif [ -n "${OLLAMA_HOST:-}" ] || [ -n "${OLLAMA_MODEL:-}" ]; then
+    export WORLD_MODEL_BACKEND="ollama"
+  else
+    echo "error: no world model backend configured."
+    echo "Set WORLD_MODEL_BACKEND=openai|anthropic|ollama and configure API keys."
+    echo "Examples:"
+    echo "  export WORLD_MODEL_BACKEND=openai OPENAI_API_KEY=... WORLD_MODEL_MODEL=gpt-4o-mini"
+    echo "  export WORLD_MODEL_BACKEND=ollama OLLAMA_HOST=http://127.0.0.1:11434 WORLD_MODEL_MODEL=llama3.1"
+    exit 2
+  fi
+fi
+echo "world model backend: $WORLD_MODEL_BACKEND"
+
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
   AXIOGRAPH="$ROOT_DIR/bin/axiograph"
@@ -42,14 +62,31 @@ echo "-- A) Init accepted plane + seed snapshots"
 "$AXIOGRAPH" db accept promote examples/physics/PhysicsMeasurements.axi --dir "$PLANE_DIR" --message "seed physics measurements"
 
 echo ""
+echo "-- A.1) Seed PathDB WAL snapshot (empty overlay)"
+EMPTY_PROPOSALS="$OUT_DIR/empty_proposals.json"
+cat >"$EMPTY_PROPOSALS" <<'JSON'
+{
+  "version": 1,
+  "generated_at": "0",
+  "source": {"source_type": "init", "locator": "empty"},
+  "schema_hint": null,
+  "proposals": []
+}
+JSON
+"$AXIOGRAPH" db accept pathdb-commit \
+  --dir "$PLANE_DIR" \
+  --accepted-snapshot head \
+  --proposals "$EMPTY_PROPOSALS" \
+  --message "init pathdb wal"
+
+echo ""
 echo "-- B) Start server (master)"
 "$AXIOGRAPH" db serve \
   --dir "$PLANE_DIR" \
   --layer pathdb \
   --snapshot head \
   --role master \
-  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py \
-  --world-model-plugin-arg --strategy oracle \
+  --world-model-plugin scripts/axiograph_world_model_plugin_real.py \
   --admin-token "$ADMIN_TOKEN" \
   --listen 127.0.0.1:0 \
   --ready-file "$READY_FILE" \

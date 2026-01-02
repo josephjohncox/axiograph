@@ -20,6 +20,26 @@ echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"
 make binaries
 
+echo ""
+echo "-- World model backend (real)"
+if [ -z "${WORLD_MODEL_BACKEND:-}" ]; then
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    export WORLD_MODEL_BACKEND="openai"
+  elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    export WORLD_MODEL_BACKEND="anthropic"
+  elif [ -n "${OLLAMA_HOST:-}" ] || [ -n "${OLLAMA_MODEL:-}" ]; then
+    export WORLD_MODEL_BACKEND="ollama"
+  else
+    echo "error: no world model backend configured."
+    echo "Set WORLD_MODEL_BACKEND=openai|anthropic|ollama and configure API keys."
+    echo "Examples:"
+    echo "  export WORLD_MODEL_BACKEND=openai OPENAI_API_KEY=... WORLD_MODEL_MODEL=gpt-4o-mini"
+    echo "  export WORLD_MODEL_BACKEND=ollama OLLAMA_HOST=http://127.0.0.1:11434 WORLD_MODEL_MODEL=llama3.1"
+    exit 2
+  fi
+fi
+echo "world model backend: $WORLD_MODEL_BACKEND"
+
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
   AXIOGRAPH="$ROOT_DIR/bin/axiograph"

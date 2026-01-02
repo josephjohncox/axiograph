@@ -100,11 +100,24 @@ If the plugin fails, set `"error"` to a human-readable message.
 
 ## Example plugins
 
-Baseline (no ML, deterministic):  
-`scripts/axiograph_world_model_plugin_baseline.py`
+Real model (API-backed; OpenAI/Anthropic/Ollama):  
+`scripts/axiograph_world_model_plugin_real.py`
+
+Environment variables:
+
+```bash
+export WORLD_MODEL_BACKEND=openai|anthropic|ollama
+export WORLD_MODEL_MODEL=...
+export OPENAI_API_KEY=...
+export ANTHROPIC_API_KEY=...
+export OLLAMA_HOST=http://127.0.0.1:11434
+```
 
 Transformer stub (skeleton for PyTorch):  
 `scripts/axiograph_world_model_plugin_transformer_stub.py`
+
+Baseline (no ML, deterministic):  
+`scripts/axiograph_world_model_plugin_baseline.py`
 
 ---
 

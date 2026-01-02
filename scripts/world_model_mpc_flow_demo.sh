@@ -83,7 +83,7 @@ PY
 echo ""
 echo "-- D) Draft canonical module"
 "$AXIOGRAPH" discover draft-module \
-  --proposals "$MERGED_PROPOSALS" \
+  "$MERGED_PROPOSALS" \
   --out "$DRAFT_AXI" \
   --module FamilyWM \
   --schema Fam \
@@ -93,11 +93,15 @@ echo "-- D) Draft canonical module"
 echo ""
 echo "-- E) Promote + rebuild PathDB"
 "$AXIOGRAPH" db accept promote "$DRAFT_AXI" --dir "$PLANE_DIR" --message "wm plan draft" --quality fast
-"$AXIOGRAPH" db accept pathdb-build --dir "$PLANE_DIR" --snapshot head --out "$AXPD_OUT" --rebuild
+"$AXIOGRAPH" db accept build-pathdb --dir "$PLANE_DIR" --snapshot head --out "$AXPD_OUT"
 
 echo ""
 echo "-- F) Viz"
-"$AXIOGRAPH" tools viz "$AXPD_OUT" --out "$VIZ_OUT" --format html --plane data
+"$AXIOGRAPH" tools viz "$AXPD_OUT" \
+  --out "$VIZ_OUT" \
+  --format html \
+  --plane data \
+  --focus-name Carol
 
 echo ""
 echo "Done."

@@ -34,6 +34,26 @@ echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"
 make binaries
 
+echo ""
+echo "-- World model backend (real)"
+if [ -z "${WORLD_MODEL_BACKEND:-}" ]; then
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    export WORLD_MODEL_BACKEND="openai"
+  elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    export WORLD_MODEL_BACKEND="anthropic"
+  elif [ -n "${OLLAMA_HOST:-}" ] || [ -n "${OLLAMA_MODEL:-}" ]; then
+    export WORLD_MODEL_BACKEND="ollama"
+  else
+    echo "error: no world model backend configured."
+    echo "Set WORLD_MODEL_BACKEND=openai|anthropic|ollama and configure API keys."
+    echo "Examples:"
+    echo "  export WORLD_MODEL_BACKEND=openai OPENAI_API_KEY=... WORLD_MODEL_MODEL=gpt-4o-mini"
+    echo "  export WORLD_MODEL_BACKEND=ollama OLLAMA_HOST=http://127.0.0.1:11434 WORLD_MODEL_MODEL=llama3.1"
+    exit 2
+  fi
+fi
+echo "world model backend: $WORLD_MODEL_BACKEND"
+
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
   AXIOGRAPH="$ROOT_DIR/bin/axiograph"
@@ -51,12 +71,12 @@ echo "-- A) Init accepted plane + seed snapshots"
 
 echo ""
 echo "-- B) Build base PathDB snapshot"
-"$AXIOGRAPH" db accept pathdb-build --dir "$PLANE_DIR" --snapshot head --out "$AXPD_BASE" --rebuild
+"$AXIOGRAPH" db accept build-pathdb --dir "$PLANE_DIR" --snapshot head --out "$AXPD_BASE"
 
 echo ""
 echo "-- C) Generate competency questions (schema-driven)"
 "$AXIOGRAPH" discover competency-questions \
-  --input "$AXPD_BASE" \
+  "$AXPD_BASE" \
   --out "$CQ_OUT" \
   --max-questions 120
 
@@ -65,7 +85,7 @@ echo "-- D) MPC plan (REPL non-interactive)"
 "$AXIOGRAPH" repl --quiet \
   --cmd "import_axi examples/physics/PhysicsOntology.axi" \
   --cmd "import_axi examples/physics/PhysicsMeasurements.axi" \
-  --cmd "wm use command scripts/axiograph_world_model_plugin_baseline.py --strategy oracle" \
+  --cmd "wm use command scripts/axiograph_world_model_plugin_real.py" \
   --cmd "wm plan $PLAN_REPORT --steps 2 --rollouts 2 --max 200 --guardrail strict --plane both --goal \"expand physics ontology coverage\" --axi examples/physics/PhysicsOntology.axi --cq-file $CQ_OUT"
 
 if [ ! -f "$PLAN_REPORT" ]; then
@@ -98,7 +118,7 @@ PY
 echo ""
 echo "-- F) Draft canonical module"
 "$AXIOGRAPH" discover draft-module \
-  --proposals "$MERGED_PROPOSALS" \
+  "$MERGED_PROPOSALS" \
   --out "$DRAFT_AXI" \
   --module PhysicsWM \
   --schema Physics \
@@ -108,11 +128,15 @@ echo "-- F) Draft canonical module"
 echo ""
 echo "-- G) Promote + rebuild PathDB"
 "$AXIOGRAPH" db accept promote "$DRAFT_AXI" --dir "$PLANE_DIR" --message "wm plan draft (physics)" --quality fast
-"$AXIOGRAPH" db accept pathdb-build --dir "$PLANE_DIR" --snapshot head --out "$AXPD_OUT" --rebuild
+"$AXIOGRAPH" db accept build-pathdb --dir "$PLANE_DIR" --snapshot head --out "$AXPD_OUT"
 
 echo ""
 echo "-- H) Viz"
-"$AXIOGRAPH" tools viz "$AXPD_OUT" --out "$VIZ_OUT" --format html --plane data
+"$AXIOGRAPH" tools viz "$AXPD_OUT" \
+  --out "$VIZ_OUT" \
+  --format html \
+  --plane data \
+  --focus-name MinkowskiSpacetime_M4
 
 echo ""
 echo "Done."

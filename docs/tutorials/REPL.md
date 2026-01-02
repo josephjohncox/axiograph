@@ -506,7 +506,7 @@ You can also generate a CQ file from the schema and pass it to `wm plan`:
 
 ```bash
 bin/axiograph discover competency-questions \
-  --input build/family.axpd \
+  build/family.axpd \
   --out build/family_cq.json
 ```
 

@@ -41,6 +41,24 @@ echo "-- A) Init accepted plane + seed snapshot"
 "$AXIOGRAPH" db accept promote examples/Family.axi --dir "$PLANE_DIR" --message "seed family"
 
 echo ""
+echo "-- A.1) Seed PathDB WAL snapshot (empty overlay)"
+EMPTY_PROPOSALS="$OUT_DIR/empty_proposals.json"
+cat >"$EMPTY_PROPOSALS" <<'JSON'
+{
+  "version": 1,
+  "generated_at": "0",
+  "source": {"source_type": "init", "locator": "empty"},
+  "schema_hint": null,
+  "proposals": []
+}
+JSON
+"$AXIOGRAPH" db accept pathdb-commit \
+  --dir "$PLANE_DIR" \
+  --accepted-snapshot head \
+  --proposals "$EMPTY_PROPOSALS" \
+  --message "init pathdb wal"
+
+echo ""
 echo "-- B) Start server (master)"
 "$AXIOGRAPH" db serve \
   --dir "$PLANE_DIR" \
