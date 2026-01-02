@@ -1229,6 +1229,9 @@ high-ROI subset of theory constraints:
 
 * `key(...)`
 * `functional Rel.field -> Rel.field`
+* `symmetric Rel` / `symmetric Rel where ...`
+* `transitive Rel` (closure-compatibility for keys/functionals on carrier fields)
+* `typing Rel: rule_name` (small builtin rule set)
 
 The trusted checker re-runs the constraint checks on the anchored `.axi` module
 and compares the summary payload (counts).

@@ -189,6 +189,23 @@ Deliver a **proof-carrying knowledge backend** where every high-value inference 
 - [ ] Define a discrete distribution interface in Lean (finite, fixed-point) and document how to keep probability analytics outside the trusted checker.
 - [ ] Explore a future “probability in a topos” track (Giry monad / Markov categories) for semantics-level documentation and later certificate-bounded checks.
 
+**Objective-driven AI / JEPA / SSL (implementation plan)**
+- [x] Define a canonical training export (context/target pairs) from full `.axi` modules (schema + theory + instance) anchored to accepted snapshot ids.
+- [x] Add a world-model interface (JEPA-style predictor) in Rust with a pluggable backend.
+- [x] Add a proposal emitter: world-model outputs -> `proposals.json` (evidence plane) with provenance.
+- [x] Implement guardrail costs from constraint checks + rewrite consistency; expose task costs as configurable weights.
+- [ ] Add an MPC-style planner loop (receding horizon) that consumes world-model rollouts + cost module.
+  - Perf harness now has a basic rollout+select MPC loop; runtime integration is still pending.
+- [x] Add evaluation harness: precision/recall on held-out facts, constraint-violation rates, certificate success.
+- [x] Add CLI + server endpoints for JEPA/world-model proposal generation (untrusted).
+- [x] Docs: keep `docs/explanation/JEPA_INTEGRATION.md`, `OBJECTIVE_DRIVEN_AI.md`, `SELF_SUPERVISED_LEARNING.md` in sync with implementation.
+  - Reference: `docs/reference/WORLD_MODEL_PLUGIN.md` (protocol schema + examples).
+  - Tutorial: `docs/tutorials/WORLD_MODEL_LOOP.md` (baseline + transformer stub).
+  - CLI (`rust/crates/axiograph-cli`): `axiograph discover jepa-export`, `axiograph discover world-model-propose`, `axiograph ingest world-model`.
+  - REPL (`rust/crates/axiograph-cli/src/repl.rs`): `wm` subcommand (configure backend + emit proposals + optional WAL commit).
+  - Server (`rust/crates/axiograph-cli/src/db_server.rs`): `POST /world_model/propose` (evidence-plane only; optional WAL commit).
+  - Docs: add a short “how-to” once the export/propose commands exist.
+
 ### Literature-driven roadmap deltas (Appendix C of `docs/explanation/BOOK.md`)
 
 These items are “best practices” backed by the related work list in Appendix C
@@ -340,7 +357,7 @@ These items are “best practices” backed by the related work list in Appendix
 - [x] Make `axiograph db accept promote` optionally run a quality profile (fast/strict) and attach the report to the accepted-plane commit metadata.
 - [x] Add a certifiable subset of quality gates:
   - “well-typed module” (already exists),
-  - “constraint-satisfied for core constraints” (`axi_constraints_ok_v1`: key/functional), and
+  - “constraint-satisfied for core constraints” (`axi_constraints_ok_v1`: key/functional + symmetry (incl. guarded) + transitivity (closure-compatibility) + builtin typing rules), and
   - “rewrite derivation validates” (already exists; extend to rule-set soundness later).
 
 **Docs system (Diataxis)**

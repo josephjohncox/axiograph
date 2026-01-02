@@ -198,6 +198,35 @@ can reason safely and efficiently.
 - Extractor: `rust/crates/axiograph-pathdb/src/learning.rs`
 - Uses schema-scoped typing witnesses: `rust/crates/axiograph-pathdb/src/axi_typed.rs`
 
+### 6.2 JEPA-style predictive embeddings (extension layer)
+
+JEPA (Joint-Embedding Predictive Architecture) is a natural fit for Axiograph's
+evidence plane: it predicts *latent* target embeddings from a context block
+without reconstructing raw data, which is well-aligned with "untrusted engine,
+trusted checker." JEPA outputs should be treated as **proposals** (evidence
+plane), then reconciled/promoted and eventually certificate-checked for
+high-value results.
+
+See the dedicated design note: `docs/explanation/JEPA_INTEGRATION.md`.
+
+### 6.3 Objective-driven planning (world model + costs + MPC)
+
+For longer-horizon discovery and reconciliation, we can frame Axiograph as an
+objective-driven agent: a world model predicts multi-step snapshot trajectories
+and a cost module scores them (guardrail costs + task costs), with MPC-style
+planning selecting actions under a receding horizon. This remains an extension
+layer: all outputs stay in the evidence plane until certified.
+
+See: `docs/explanation/OBJECTIVE_DRIVEN_AI.md`.
+
+### 6.4 Self-supervised learning loops
+
+Self-supervised objectives (masked facts, masked relations, snapshot deltas)
+can be trained against anchored snapshots, with outputs flowing into the
+evidence plane before reconciliation and promotion.
+
+See: `docs/explanation/SELF_SUPERVISED_LEARNING.md`.
+
 This is the Rust analogue of dependent types: the extractor returns *data +
 evidence that it is well-typed under a specific `.axi` schema*, so downstream
 code does not have to re-check.

@@ -66,6 +66,11 @@ pub struct SchemaIndex {
     /// These come from `AxiMetaRewriteRule` nodes linked under:
     /// `schema -> axi_schema_has_theory -> axi_theory_has_rewrite_rule`.
     pub rewrite_rules_by_theory: HashMap<String, Vec<RewriteRuleDecl>>,
+    /// Opaque named-block constraints declared under theories for this schema.
+    ///
+    /// These are preserved as structured data so they can be reviewed in REPL/UI,
+    /// even when they are not yet executable or certifiable.
+    pub named_block_constraints_by_theory: HashMap<String, Vec<NamedBlockConstraintDecl>>,
     pub supertypes_of: HashMap<String, HashSet<String>>,
 }
 
@@ -91,6 +96,15 @@ pub enum ConstraintDecl {
         src_field: String,
         dst_field: String,
     },
+    Typing {
+        relation: String,
+        rule: String,
+    },
+    SymmetricWhereIn {
+        relation: String,
+        field: String,
+        values: Vec<String>,
+    },
     Symmetric {
         relation: String,
     },
@@ -101,10 +115,23 @@ pub enum ConstraintDecl {
         relation: String,
         fields: Vec<String>,
     },
+    NamedBlock {
+        name: String,
+        body: String,
+    },
     Unknown {
         relation: Option<String>,
         text: String,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct NamedBlockConstraintDecl {
+    pub constraint_entity: u32,
+    pub theory_name: String,
+    pub name: String,
+    pub body: String,
+    pub index: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +268,8 @@ impl MetaPlaneIndex {
             // Constraints (from theories attached to this schema).
             let mut constraints_by_relation: HashMap<String, Vec<ConstraintDecl>> = HashMap::new();
             let mut rewrite_rules_by_theory: HashMap<String, Vec<RewriteRuleDecl>> = HashMap::new();
+            let mut named_block_constraints_by_theory: HashMap<String, Vec<NamedBlockConstraintDecl>> =
+                HashMap::new();
             for theory_id in db
                 .follow_one(schema_entity, META_REL_SCHEMA_HAS_THEORY)
                 .iter()
@@ -269,6 +298,32 @@ impl MetaPlaneIndex {
                                 dst_field,
                             }
                         }
+                        "typing" => {
+                            let relation = rel_name.clone().unwrap_or_default();
+                            let rule = entity_attr_string(db, cid, ATTR_CONSTRAINT_TEXT)
+                                .unwrap_or_default();
+                            ConstraintDecl::Typing { relation, rule }
+                        }
+                        "symmetric_where_in" => {
+                            let relation = rel_name.clone().unwrap_or_default();
+                            let field =
+                                entity_attr_string(db, cid, ATTR_CONSTRAINT_WHERE_FIELD)
+                                    .unwrap_or_default();
+                            let values_csv =
+                                entity_attr_string(db, cid, ATTR_CONSTRAINT_WHERE_IN_VALUES)
+                                    .unwrap_or_default();
+                            let values = values_csv
+                                .split(',')
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
+                                .collect::<Vec<_>>();
+                            ConstraintDecl::SymmetricWhereIn {
+                                relation,
+                                field,
+                                values,
+                            }
+                        }
                         "symmetric" => ConstraintDecl::Symmetric {
                             relation: rel_name.clone().unwrap_or_default(),
                         },
@@ -287,6 +342,16 @@ impl MetaPlaneIndex {
                                 .collect::<Vec<_>>();
                             ConstraintDecl::Key { relation, fields }
                         }
+                        "named_block" => {
+                            let name = entity_attr_string(db, cid, ATTR_CONSTRAINT_NAME)
+                                .unwrap_or_else(|| format!("constraint_{cid}"));
+                            let body = entity_attr_string(db, cid, ATTR_CONSTRAINT_TEXT)
+                                .unwrap_or_default();
+                            ConstraintDecl::NamedBlock {
+                                name: name.clone(),
+                                body: body.clone(),
+                            }
+                        }
                         _other => ConstraintDecl::Unknown {
                             relation: rel_name.clone(),
                             text: entity_attr_string(db, cid, ATTR_CONSTRAINT_TEXT)
@@ -294,11 +359,31 @@ impl MetaPlaneIndex {
                         },
                     };
 
+                    // Keep named blocks indexed by theory (not relation-scoped).
+                    if let ConstraintDecl::NamedBlock { name, body } = &decl {
+                        let index = entity_attr_string(db, cid, ATTR_CONSTRAINT_INDEX)
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .unwrap_or(usize::MAX);
+                        named_block_constraints_by_theory
+                            .entry(theory_name.clone())
+                            .or_default()
+                            .push(NamedBlockConstraintDecl {
+                                constraint_entity: cid,
+                                theory_name: theory_name.clone(),
+                                name: name.clone(),
+                                body: body.clone(),
+                                index,
+                            });
+                    }
+
                     let key = match &decl {
                         ConstraintDecl::Functional { relation, .. } => relation.clone(),
+                        ConstraintDecl::Typing { relation, .. } => relation.clone(),
+                        ConstraintDecl::SymmetricWhereIn { relation, .. } => relation.clone(),
                         ConstraintDecl::Symmetric { relation } => relation.clone(),
                         ConstraintDecl::Transitive { relation } => relation.clone(),
                         ConstraintDecl::Key { relation, .. } => relation.clone(),
+                        ConstraintDecl::NamedBlock { .. } => String::new(),
                         ConstraintDecl::Unknown { relation, .. } => {
                             relation.clone().unwrap_or_default()
                         }
@@ -362,6 +447,7 @@ impl MetaPlaneIndex {
                     relation_decls,
                     constraints_by_relation,
                     rewrite_rules_by_theory,
+                    named_block_constraints_by_theory,
                     supertypes_of,
                 },
             );

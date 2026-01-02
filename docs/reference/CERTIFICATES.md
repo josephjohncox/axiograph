@@ -162,12 +162,41 @@ This certificate kind is a conservative ontology-engineering gate:
   subset of theory constraints.
 - Lean re-parses the anchored module and re-checks the same subset (fail-closed).
 
-Certified subset (initial):
+For the design rationale (open-world semantics + what we can/can’t certify as a
+single “module OK” gate), see `docs/explanation/CONSTRAINT_SEMANTICS.md`.
+
+Certified subset:
 - `constraint key Rel(field, ...)`
 - `constraint functional Rel.field -> Rel.field`
-  - Note: multi-field “functional dependency” forms like `constraint functional Rel(a, b, ...)`
-    are **not canonical**; express them as a composite key instead:
-    `constraint key Rel(a, b, ...)`.
+  - Only **unary** FDs are canonical. Multi-field determinism should be written as a
+    composite key: `constraint key Rel(a, b, ...)`.
+- symmetry annotations:
+  - `constraint symmetric Rel`
+  - `constraint symmetric Rel where Rel.field in {A, B, ...}`
+  Semantics: the checker does **not** require inverse tuples to be explicitly present.
+  Instead, it checks that the module’s **key/functional** constraints remain consistent
+  under symmetric closure (adding swapped-endpoint tuples).
+- transitivity annotations:
+  - `constraint transitive Rel`
+  Semantics: the checker does **not** require the transitive closure to be explicitly
+  materialized. Instead, it checks that the module’s **key/functional** constraints
+  remain consistent under transitive closure on the relation’s first two fields (the
+  “carrier” fields). If a key/functional constraint refers to non-carrier fields, the
+  certificate check fails (witness construction is out of scope for this certificate).
+- executable typing rules (small builtin set):
+  - `constraint typing Rel: preserves_manifold_and_increments_degree`
+  - `constraint typing Rel: preserves_manifold_and_adds_degree`
+  - `constraint typing Rel: depends_on_metric_and_dualizes_degree`
+  Semantics: the checker validates consistency against supporting “typing relations”
+  (`FormOn`, `FormDegree`, `MetricOn`, `ManifoldDimension`) and treats output facts as
+  derivable when omitted.
+
+Notes:
+- Opaque named blocks (`constraint Name:` followed by an indented body) are still
+  **preserved**, but are not part of `axi_constraints_ok_v1` yet.
+- Truly unknown constraints (`ConstraintV1.unknown`) are rejected by both:
+  - accepted-plane promotion (hard error), and
+  - `axi_constraints_ok_v1` (fail-closed).
 
 Shape (sketch):
 
@@ -177,10 +206,10 @@ Shape (sketch):
   "anchor": { "axi_digest_v1": "fnv1a64:..." },
   "kind": "axi_constraints_ok_v1",
   "proof": {
-    "module_name": "OntologyRewrites",
-    "constraint_count": 2,
+    "module_name": "ConstraintsOkDemo",
+    "constraint_count": 10,
     "instance_count": 1,
-    "check_count": 2
+    "check_count": 10
   }
 }
 ```

@@ -26,6 +26,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+use axiograph_dsl::schema_v1::ConstraintV1;
+
 const ACCEPTED_PLANE_VERSION_V1: &str = "accepted_plane_v1";
 const ACCEPTED_PLANE_LOG_V1: &str = "accepted_plane.log.jsonl";
 const ACCEPTED_PLANE_HEAD_FILE: &str = "HEAD";
@@ -125,6 +127,35 @@ pub fn promote_reviewed_module(
     // Conservative gate: ensure the module is self-contained and well-typed
     // with respect to its declared schema(s).
     let typed = axiograph_pathdb::axi_module_typecheck::TypedAxiV1Module::new(module)?;
+
+    // Hard gate: accepted/canonical modules must not contain unknown/opaque
+    // constraints. If a constraint is not structured, it cannot participate in
+    // certificate checking or schema-directed tooling, and we don't want silent
+    // semantics drift in the accepted plane.
+    //
+    // If you want to keep richer (not yet executable/certifiable) content in a
+    // canonical module, prefer a `constraint Name:` named-block.
+    let mut unknown: Vec<(String, String)> = Vec::new();
+    for th in &typed.module().theories {
+        for c in &th.constraints {
+            if let ConstraintV1::Unknown { text } = c {
+                unknown.push((th.name.clone(), text.clone()));
+            }
+        }
+    }
+    if !unknown.is_empty() {
+        let mut msg = String::new();
+        msg.push_str("promotion blocked: unknown/unsupported theory constraints found in candidate module.\n");
+        msg.push_str("Fix the module by rewriting constraints into canonical structured forms (or use a named-block constraint).\n");
+        msg.push_str("Unknown constraints:\n");
+        for (i, (th_name, text)) in unknown.iter().take(8).enumerate() {
+            msg.push_str(&format!("  {i}: theory `{th_name}`: {text}\n"));
+        }
+        if unknown.len() > 8 {
+            msg.push_str(&format!("  ... ({} more)\n", unknown.len() - 8));
+        }
+        return Err(anyhow!(msg.trim_end().to_string()));
+    }
 
     let module_name = typed.module().module_name.clone();
     let module_digest = axiograph_dsl::digest::axi_digest_v1(&text);

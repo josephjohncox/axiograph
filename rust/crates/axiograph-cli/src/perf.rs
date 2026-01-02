@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use axiograph_pathdb::axi_meta::{ATTR_AXI_RELATION, ATTR_AXI_SCHEMA};
 use axiograph_pathdb::{PathDB, PathSig};
 use roaring::RoaringBitmap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Subcommand)]
 pub enum PerfCommands {
@@ -216,6 +217,89 @@ pub enum PerfCommands {
         #[arg(long)]
         out_json: Option<PathBuf>,
     },
+
+    /// World model MPC/eval harness (untrusted; evidence-plane rollouts).
+    WorldModel {
+        /// Input `.axi` (preferred for eval) or `.axpd` snapshot.
+        #[arg(long)]
+        input: PathBuf,
+
+        /// World model plugin executable (speaks `axiograph_world_model_v1`).
+        #[arg(long)]
+        world_model_plugin: Option<PathBuf>,
+
+        /// Extra args for `--world-model-plugin` (repeatable).
+        #[arg(long)]
+        world_model_plugin_arg: Vec<String>,
+
+        /// Use stub world model backend (emits no proposals).
+        #[arg(long)]
+        world_model_stub: bool,
+
+        /// Optional world model model name (provenance only).
+        #[arg(long)]
+        world_model_model: Option<String>,
+
+        /// MPC horizon steps.
+        #[arg(long, default_value_t = 3)]
+        horizon_steps: usize,
+
+        /// Number of rollouts per MPC step (best cost is chosen).
+        #[arg(long, default_value_t = 1)]
+        rollouts: usize,
+
+        /// Max proposals to keep per rollout (0 = no cap).
+        #[arg(long, default_value_t = 50)]
+        max_new_proposals: usize,
+
+        /// Guardrail profile: off|fast|strict.
+        #[arg(long, default_value = "fast")]
+        guardrail_profile: String,
+
+        /// Guardrail plane: meta|data|both.
+        #[arg(long, default_value = "both")]
+        guardrail_plane: String,
+
+        /// Override guardrail weights (repeatable): key=value.
+        #[arg(long)]
+        guardrail_weight: Vec<String>,
+
+        /// Task cost terms (repeatable): name=value[:weight[:unit]].
+        #[arg(long)]
+        task_cost: Vec<String>,
+
+        /// JEPA export: instance filter (only for `.axi` inputs).
+        #[arg(long)]
+        export_instance: Option<String>,
+
+        /// JEPA export: max items (0 = no cap).
+        #[arg(long, default_value_t = 0)]
+        export_max_items: usize,
+
+        /// JEPA export: mask fields per tuple.
+        #[arg(long, default_value_t = 1)]
+        export_mask_fields: usize,
+
+        /// JEPA export: RNG seed.
+        #[arg(long, default_value_t = 1)]
+        export_seed: u64,
+
+        /// Holdout fraction for eval (only for `.axi` inputs).
+        #[arg(long, default_value_t = 0.0)]
+        holdout_frac: f64,
+
+        /// Holdout max count (only for `.axi` inputs).
+        #[arg(long, default_value_t = 0)]
+        holdout_max: usize,
+
+        /// RNG seed (deterministic).
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+
+        /// Write a JSON report to this path.
+        #[arg(long)]
+        out_json: Option<PathBuf>,
+    },
 }
 
 pub fn cmd_perf(command: PerfCommands) -> Result<()> {
@@ -317,6 +401,49 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             async_wait_secs,
             verify,
             mutations,
+            seed,
+            out_json.as_ref(),
+        ),
+        PerfCommands::WorldModel {
+            input,
+            world_model_plugin,
+            world_model_plugin_arg,
+            world_model_stub,
+            world_model_model,
+            horizon_steps,
+            rollouts,
+            max_new_proposals,
+            guardrail_profile,
+            guardrail_plane,
+            guardrail_weight,
+            task_cost,
+            export_instance,
+            export_max_items,
+            export_mask_fields,
+            export_seed,
+            holdout_frac,
+            holdout_max,
+            seed,
+            out_json,
+        } => cmd_perf_world_model(
+            &input,
+            world_model_plugin.as_ref(),
+            &world_model_plugin_arg,
+            world_model_stub,
+            world_model_model.as_deref(),
+            horizon_steps,
+            rollouts,
+            max_new_proposals,
+            &guardrail_profile,
+            &guardrail_plane,
+            &guardrail_weight,
+            &task_cost,
+            export_instance.as_deref(),
+            export_max_items,
+            export_mask_fields,
+            export_seed,
+            holdout_frac,
+            holdout_max,
             seed,
             out_json.as_ref(),
         ),
@@ -422,6 +549,497 @@ fn cmd_perf_pathdb(
     );
     println!("  total_hits={total_hits}");
 
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct GuardrailSummaryOut {
+    total_cost: f64,
+    error_count: usize,
+    warning_count: usize,
+    info_count: usize,
+    axi_fact_errors: usize,
+    rewrite_rule_errors: usize,
+    context_errors: usize,
+    modal_errors: usize,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+struct PrecisionRecallOut {
+    tp: usize,
+    fp: usize,
+    fn_count: usize,
+    precision: Option<f64>,
+    recall: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct WorldModelPerfStepV1 {
+    step: usize,
+    rollouts: usize,
+    proposals: usize,
+    guardrail_before: GuardrailSummaryOut,
+    guardrail_after: GuardrailSummaryOut,
+    guardrail_delta: f64,
+    task_cost_total: f64,
+    total_cost: f64,
+    validation_ok: bool,
+    validation_errors: usize,
+    precision_recall: Option<PrecisionRecallOut>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorldModelPerfReportV1 {
+    version: String,
+    input: String,
+    horizon_steps: usize,
+    rollouts: usize,
+    max_new_proposals: usize,
+    guardrail_profile: String,
+    guardrail_plane: String,
+    guardrail_weights: crate::world_model::GuardrailCostWeightsV1,
+    task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+    task_cost_total: f64,
+    holdout_count: usize,
+    steps: Vec<WorldModelPerfStepV1>,
+}
+
+fn guardrail_summary(report: &crate::world_model::GuardrailCostReportV1) -> GuardrailSummaryOut {
+    GuardrailSummaryOut {
+        total_cost: report.summary.total_cost,
+        error_count: report.quality.error_count,
+        warning_count: report.quality.warning_count,
+        info_count: report.quality.info_count,
+        axi_fact_errors: report.checked.axi_fact_errors,
+        rewrite_rule_errors: report.checked.rewrite_rule_errors,
+        context_errors: report.checked.context_errors,
+        modal_errors: report.checked.modal_errors,
+    }
+}
+
+fn proposals_digest(file: &axiograph_ingest_docs::ProposalsFileV1) -> Result<String> {
+    let bytes = serde_json::to_vec(file)
+        .map_err(|e| anyhow!("failed to serialize proposals for digest: {e}"))?;
+    Ok(axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes))
+}
+
+fn apply_proposals(db: &mut PathDB, proposals: &axiograph_ingest_docs::ProposalsFileV1) -> Result<()> {
+    let digest = proposals_digest(proposals)?;
+    let _summary =
+        crate::proposals_import::import_proposals_file_into_pathdb(db, proposals, &digest)?;
+    Ok(())
+}
+
+fn clone_db(db: &PathDB) -> Result<PathDB> {
+    let bytes = db.to_bytes()?;
+    Ok(PathDB::from_bytes(&bytes)?)
+}
+
+fn infer_binary_endpoint_fields(
+    fields: &[axiograph_dsl::schema_v1::FieldDeclV1],
+) -> Option<(String, String)> {
+    let names: Vec<&str> = fields.iter().map(|f| f.field.as_str()).collect();
+    if names.contains(&"from") && names.contains(&"to") {
+        return Some(("from".to_string(), "to".to_string()));
+    }
+    if names.contains(&"source") && names.contains(&"target") {
+        return Some(("source".to_string(), "target".to_string()));
+    }
+    if names.contains(&"lhs") && names.contains(&"rhs") {
+        return Some(("lhs".to_string(), "rhs".to_string()));
+    }
+    if names.contains(&"child") && names.contains(&"parent") {
+        return Some(("child".to_string(), "parent".to_string()));
+    }
+    if fields.len() >= 2 {
+        return Some((
+            fields[0].field.clone(),
+            fields[1].field.clone(),
+        ));
+    }
+    None
+}
+
+fn build_holdout_module(
+    module: &axiograph_dsl::schema_v1::SchemaV1Module,
+    holdout_frac: f64,
+    holdout_max: usize,
+    seed: u64,
+) -> Result<(axiograph_dsl::schema_v1::SchemaV1Module, HashSet<String>)> {
+    if holdout_frac <= 0.0 && holdout_max == 0 {
+        return Ok((module.clone(), HashSet::new()));
+    }
+
+    let mut rel_fields: HashMap<(String, String), (String, String)> = HashMap::new();
+    for schema in &module.schemas {
+        for rel in &schema.relations {
+            if let Some((src, dst)) = infer_binary_endpoint_fields(&rel.fields) {
+                rel_fields.insert((schema.name.clone(), rel.name.clone()), (src, dst));
+            }
+        }
+    }
+
+    let mut candidates: Vec<(String, usize, usize, usize)> = Vec::new();
+    for (inst_idx, inst) in module.instances.iter().enumerate() {
+        for (assign_idx, assign) in inst.assignments.iter().enumerate() {
+            let Some((src_field, dst_field)) =
+                rel_fields.get(&(inst.schema.clone(), assign.name.clone()))
+            else {
+                continue;
+            };
+            for (item_idx, item) in assign.value.items.iter().enumerate() {
+                let axiograph_dsl::schema_v1::SetItemV1::Tuple { fields } = item else {
+                    continue;
+                };
+                let mut map: HashMap<&str, &str> = HashMap::new();
+                for (k, v) in fields {
+                    map.insert(k.as_str(), v.as_str());
+                }
+                let Some(src_val) = map.get(src_field.as_str()) else {
+                    continue;
+                };
+                let Some(dst_val) = map.get(dst_field.as_str()) else {
+                    continue;
+                };
+                let key = format!("{}|{}|{}", assign.name, src_val, dst_val);
+                candidates.push((key, inst_idx, assign_idx, item_idx));
+            }
+        }
+    }
+
+    let mut holdout_count =
+        ((candidates.len() as f64) * holdout_frac).round() as usize;
+    if holdout_max > 0 {
+        holdout_count = holdout_count.min(holdout_max);
+    }
+    holdout_count = holdout_count.min(candidates.len());
+    if holdout_count == 0 {
+        return Ok((module.clone(), HashSet::new()));
+    }
+
+    let mut rng = crate::synthetic_pathdb::XorShift64::new(seed);
+    for i in 0..holdout_count {
+        let j = i + rng.gen_range_usize(candidates.len() - i);
+        candidates.swap(i, j);
+    }
+
+    let mut remove: HashSet<(usize, usize, usize)> = HashSet::new();
+    let mut heldout: HashSet<String> = HashSet::new();
+    for (key, inst_idx, assign_idx, item_idx) in candidates.into_iter().take(holdout_count) {
+        remove.insert((inst_idx, assign_idx, item_idx));
+        heldout.insert(key);
+    }
+
+    let mut out = module.clone();
+    for (inst_idx, inst) in out.instances.iter_mut().enumerate() {
+        for (assign_idx, assign) in inst.assignments.iter_mut().enumerate() {
+            let mut kept: Vec<axiograph_dsl::schema_v1::SetItemV1> = Vec::new();
+            for (item_idx, item) in assign.value.items.iter().enumerate() {
+                if remove.contains(&(inst_idx, assign_idx, item_idx)) {
+                    continue;
+                }
+                kept.push(item.clone());
+            }
+            assign.value.items = kept;
+        }
+    }
+
+    Ok((out, heldout))
+}
+
+fn proposal_relation_keys(file: &axiograph_ingest_docs::ProposalsFileV1) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for p in &file.proposals {
+        if let axiograph_ingest_docs::ProposalV1::Relation {
+            rel_type, source, target, ..
+        } = p
+        {
+            out.insert(format!("{}|{}|{}", rel_type, source, target));
+        }
+    }
+    out
+}
+
+fn precision_recall(
+    proposals: &axiograph_ingest_docs::ProposalsFileV1,
+    truth: &HashSet<String>,
+) -> PrecisionRecallOut {
+    let keys = proposal_relation_keys(proposals);
+    let mut tp = 0usize;
+    for k in &keys {
+        if truth.contains(k) {
+            tp += 1;
+        }
+    }
+    let fp = keys.len().saturating_sub(tp);
+    let fn_count = truth.len().saturating_sub(tp);
+    let precision = if keys.is_empty() {
+        None
+    } else {
+        Some(tp as f64 / keys.len() as f64)
+    };
+    let recall = if truth.is_empty() {
+        None
+    } else {
+        Some(tp as f64 / truth.len() as f64)
+    };
+    PrecisionRecallOut {
+        tp,
+        fp,
+        fn_count,
+        precision,
+        recall,
+    }
+}
+
+fn cmd_perf_world_model(
+    input: &PathBuf,
+    world_model_plugin: Option<&PathBuf>,
+    world_model_plugin_arg: &[String],
+    world_model_stub: bool,
+    world_model_model: Option<&str>,
+    horizon_steps: usize,
+    rollouts: usize,
+    max_new_proposals: usize,
+    guardrail_profile: &str,
+    guardrail_plane: &str,
+    guardrail_weight: &[String],
+    task_cost: &[String],
+    export_instance: Option<&str>,
+    export_max_items: usize,
+    export_mask_fields: usize,
+    export_seed: u64,
+    holdout_frac: f64,
+    holdout_max: usize,
+    seed: u64,
+    out_json: Option<&PathBuf>,
+) -> Result<()> {
+    if world_model_stub && world_model_plugin.is_some() {
+        return Err(anyhow!(
+            "perf world-model: choose at most one backend: --world-model-stub or --world-model-plugin"
+        ));
+    }
+    if !world_model_stub && world_model_plugin.is_none() {
+        return Err(anyhow!(
+            "perf world-model: missing backend (use --world-model-plugin or --world-model-stub)"
+        ));
+    }
+
+    let guardrail_profile = guardrail_profile.trim().to_ascii_lowercase();
+    let guardrail_plane = guardrail_plane.trim().to_ascii_lowercase();
+    let guardrail_weights = if guardrail_weight.is_empty() {
+        crate::world_model::GuardrailCostWeightsV1::defaults()
+    } else {
+        crate::world_model::parse_guardrail_weights(guardrail_weight)?
+    };
+    let task_costs = crate::world_model::parse_task_costs(task_cost)?;
+    let task_cost_total: f64 = task_costs.iter().map(|t| t.value * t.weight).sum();
+
+    let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let mut heldout: HashSet<String> = HashSet::new();
+    let mut axi_text: Option<String> = None;
+    let mut axi_digest: Option<String> = None;
+    let mut jepa_export: Option<crate::world_model::JepaExportFileV1> = None;
+
+    let mut db = if ext.eq_ignore_ascii_case("axi") {
+        let text = fs::read_to_string(input)?;
+        axi_digest = Some(axiograph_dsl::digest::axi_digest_v1(&text));
+        axi_text = Some(text.clone());
+        let module = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
+        let (module, holdout_set) =
+            build_holdout_module(&module, holdout_frac, holdout_max, seed)?;
+        heldout = holdout_set;
+
+        let opts = crate::world_model::JepaExportOptions {
+            instance_filter: export_instance.map(|s| s.to_string()),
+            max_items: export_max_items,
+            mask_fields: export_mask_fields,
+            seed: export_seed,
+        };
+        jepa_export = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
+
+        let mut db = PathDB::new();
+        let _summary =
+            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
+                &mut db, &module,
+            )?;
+        db
+    } else if ext.eq_ignore_ascii_case("axpd") {
+        let bytes = fs::read(input)?;
+        PathDB::from_bytes(&bytes)?
+    } else {
+        return Err(anyhow!(
+            "perf world-model: unsupported input `{}` (expected .axi or .axpd)",
+            input.display()
+        ));
+    };
+
+    let mut wm = crate::world_model::WorldModelState::default();
+    if world_model_stub {
+        wm.backend = crate::world_model::WorldModelBackend::Stub;
+    } else if let Some(plugin) = world_model_plugin {
+        wm.backend = crate::world_model::WorldModelBackend::Command {
+            program: plugin.clone(),
+            args: world_model_plugin_arg.to_vec(),
+        };
+    }
+    wm.model = world_model_model.map(|s| s.to_string());
+
+    let mut steps: Vec<WorldModelPerfStepV1> = Vec::new();
+
+    for step in 0..horizon_steps {
+        let guardrail_before = crate::world_model::compute_guardrail_costs(
+            &db,
+            &format!("perf_world_model:step{step}"),
+            &guardrail_profile,
+            &guardrail_plane,
+            &guardrail_weights,
+        )?;
+
+        let mut best: Option<(
+            axiograph_ingest_docs::ProposalsFileV1,
+            crate::world_model::GuardrailCostReportV1,
+            PrecisionRecallOut,
+            bool,
+            usize,
+            f64,
+        )> = None;
+
+        for rollout in 0..rollouts {
+            let mut input = crate::world_model::WorldModelInputV1::default();
+            input.axi_digest_v1 = axi_digest.clone();
+            input.axi_module_text = axi_text.clone();
+            input.export = jepa_export.clone();
+            input.guardrail = Some(guardrail_before.clone());
+            input.notes.push(format!("source=perf_world_model step={step} rollout={rollout}"));
+
+            let mut options = crate::world_model::WorldModelOptionsV1::default();
+            options.max_new_proposals = max_new_proposals;
+            options.seed = Some(seed.wrapping_add((step as u64) * 1_000 + rollout as u64));
+            options.task_costs = task_costs.clone();
+            options.horizon_steps = Some(horizon_steps);
+
+            let req = crate::world_model::make_world_model_request(input, options);
+            let mut response = wm.propose(&req)?;
+            if let Some(err) = response.error.take() {
+                return Err(anyhow!("world model error: {err}"));
+            }
+
+            let provenance = crate::world_model::WorldModelProvenance {
+                trace_id: response.trace_id.clone(),
+                backend: wm.backend_label(),
+                model: wm.model.clone(),
+                axi_digest_v1: axi_digest.clone(),
+                guardrail_total_cost: Some(guardrail_before.summary.total_cost),
+                guardrail_profile: if guardrail_profile == "off" {
+                    None
+                } else {
+                    Some(guardrail_profile.clone())
+                },
+                guardrail_plane: if guardrail_profile == "off" {
+                    None
+                } else {
+                    Some(guardrail_plane.clone())
+                },
+            };
+            let mut proposals =
+                crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+            if max_new_proposals > 0 && proposals.proposals.len() > max_new_proposals {
+                proposals.proposals.truncate(max_new_proposals);
+            }
+
+            let mut candidate = clone_db(&db)?;
+            apply_proposals(&mut candidate, &proposals)?;
+            let guardrail_after = crate::world_model::compute_guardrail_costs(
+                &candidate,
+                &format!("perf_world_model:step{step}:rollout{rollout}"),
+                &guardrail_profile,
+                &guardrail_plane,
+                &guardrail_weights,
+            )?;
+
+            let validation = crate::proposals_validate::validate_proposals_v1(
+                &db,
+                &proposals,
+                "fast",
+                "both",
+            )?;
+            let validation_ok = validation.ok;
+            let validation_errors = validation.quality_delta.summary.error_count;
+
+            let pr = if !heldout.is_empty() {
+                precision_recall(&proposals, &heldout)
+            } else {
+                PrecisionRecallOut::default()
+            };
+
+            let total_cost = guardrail_after.summary.total_cost + task_cost_total;
+
+            let candidate_tuple = (
+                proposals,
+                guardrail_after,
+                pr,
+                validation_ok,
+                validation_errors,
+                total_cost,
+            );
+
+            let better = match best.as_ref() {
+                None => true,
+                Some((_, _, _, _, _, best_cost)) => total_cost < *best_cost,
+            };
+            if better {
+                best = Some(candidate_tuple);
+            }
+        }
+
+        let (proposals, guardrail_after, pr, validation_ok, validation_errors, total_cost) =
+            best.ok_or_else(|| anyhow!("perf world-model: no rollout produced proposals"))?;
+
+        apply_proposals(&mut db, &proposals)?;
+
+        let step_report = WorldModelPerfStepV1 {
+            step,
+            rollouts,
+            proposals: proposals.proposals.len(),
+            guardrail_before: guardrail_summary(&guardrail_before),
+            guardrail_after: guardrail_summary(&guardrail_after),
+            guardrail_delta: guardrail_after.summary.total_cost - guardrail_before.summary.total_cost,
+            task_cost_total,
+            total_cost,
+            validation_ok,
+            validation_errors,
+            precision_recall: if heldout.is_empty() {
+                None
+            } else {
+                Some(pr)
+            },
+        };
+        steps.push(step_report);
+    }
+
+    let report = WorldModelPerfReportV1 {
+        version: "perf_world_model_v1".to_string(),
+        input: input.display().to_string(),
+        horizon_steps,
+        rollouts,
+        max_new_proposals,
+        guardrail_profile,
+        guardrail_plane,
+        guardrail_weights,
+        task_costs,
+        task_cost_total,
+        holdout_count: heldout.len(),
+        steps,
+    };
+
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = out_json {
+        fs::write(path, &json)?;
+        println!("wrote {}", path.display());
+    } else {
+        println!("{json}");
+    }
     Ok(())
 }
 

@@ -345,6 +345,10 @@ fn dispatch_repl_line_result(state: &mut ReplState, tokens: &[String]) -> Result
             cmd_llm(state, args)?;
             Ok(ReplControl::Continue)
         }
+        "wm" | "world_model" => {
+            cmd_world_model(state, args)?;
+            Ok(ReplControl::Continue)
+        }
         "match_proto_enterprise" => {
             cmd_match_proto_enterprise(state, args)?;
             Ok(ReplControl::Continue)
@@ -362,6 +366,7 @@ struct ReplState {
     db: Option<axiograph_pathdb::PathDB>,
     meta: Option<axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
     llm: crate::llm::LlmState,
+    world_model: crate::world_model::WorldModelState,
     snapshot_key: String,
     contexts: Vec<crate::axql::AxqlContextSpec>,
     query_cache: crate::axql::AxqlPreparedQueryCache,
@@ -487,6 +492,7 @@ fn refresh_completion_data(
         "sql".to_string(),
         "ask".to_string(),
         "llm".to_string(),
+        "wm".to_string(),
         "match_proto_enterprise".to_string(),
         "viz".to_string(),
     ];
@@ -746,6 +752,7 @@ fn print_help() {
   sql <SQL query>                SQL-ish dialect compiled into the same query core
   ask <query>                    Natural-language-ish templates compiled into AxQL
   llm <subcommand>               LLM-assisted query translation / answering
+  wm <subcommand>                World-model proposal generation (untrusted)
   match_proto_enterprise          Add heuristic links from `Service` → `ProtoService` (and reverse), so enterprise graphs can traverse into imported proto surfaces
   viz <out> [options...]         Export a neighborhood visualization (dot/html/json)
                                  Options:
@@ -3503,11 +3510,20 @@ fn cmd_schema_constraints(state: &ReplState, args: &[String]) -> Result<()> {
                 } => {
                     println!("    functional({src_field} -> {dst_field})");
                 }
+                ConstraintDecl::Typing { rule, .. } => {
+                    println!("    typing({rule})");
+                }
+                ConstraintDecl::SymmetricWhereIn { field, values, .. } => {
+                    println!("    symmetric_where_in({field} in {{{}}})", values.join(", "));
+                }
                 ConstraintDecl::Symmetric { .. } => {
                     println!("    symmetric");
                 }
                 ConstraintDecl::Transitive { .. } => {
                     println!("    transitive");
+                }
+                ConstraintDecl::NamedBlock { name, .. } => {
+                    println!("    named_block({name})");
                 }
                 ConstraintDecl::Unknown { text, .. } => {
                     println!("    unknown({text})");
@@ -3517,6 +3533,38 @@ fn cmd_schema_constraints(state: &ReplState, args: &[String]) -> Result<()> {
     }
     if relation_filter.is_some() && !printed_any {
         println!("  (none)");
+    }
+
+    // Named-block constraints are not relation-scoped, so show them separately.
+    if relation_filter.is_none() && !schema.named_block_constraints_by_theory.is_empty() {
+        println!();
+        println!("named blocks {schema_name}");
+        let mut theories: Vec<&str> = schema
+            .named_block_constraints_by_theory
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+        theories.sort();
+        for th in theories {
+            let Some(blocks) = schema.named_block_constraints_by_theory.get(th) else {
+                continue;
+            };
+            let mut blocks = blocks.clone();
+            blocks.sort_by_key(|b| b.index);
+            println!("  {th}");
+            for b in blocks {
+                println!("    {}", b.name);
+                if !b.body.trim().is_empty() {
+                    let lines: Vec<&str> = b.body.lines().collect();
+                    for line in lines.iter().take(12) {
+                        println!("      {line}");
+                    }
+                    if lines.len() > 12 {
+                        println!("      ... ({} more line(s))", lines.len() - 12);
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -4235,6 +4283,645 @@ fn tokenize_repl_line(line: &str) -> Vec<String> {
     }
 
     split_command_line(line)
+}
+
+fn cmd_world_model(state: &mut ReplState, args: &[String]) -> Result<()> {
+    if args.is_empty() || args[0].eq_ignore_ascii_case("status") {
+        println!("{}", state.world_model.status_line());
+        return Ok(());
+    }
+
+    match args[0].to_ascii_lowercase().as_str() {
+        "disable" => {
+            state.world_model.backend = crate::world_model::WorldModelBackend::Disabled;
+            println!("ok: {}", state.world_model.status_line());
+            Ok(())
+        }
+        "model" => {
+            if args.len() == 1 {
+                println!("{}", state.world_model.status_line());
+                return Ok(());
+            }
+            state.world_model.model = Some(args[1..].join(" "));
+            println!("ok: {}", state.world_model.status_line());
+            Ok(())
+        }
+        "use" => {
+            if args.len() < 2 {
+                return Err(anyhow!(
+                    "usage: wm use stub | wm use command <exe> [args...]"
+                ));
+            }
+            match args[1].to_ascii_lowercase().as_str() {
+                "stub" => {
+                    state.world_model.backend = crate::world_model::WorldModelBackend::Stub;
+                    println!("ok: {}", state.world_model.status_line());
+                    Ok(())
+                }
+                "command" => {
+                    if args.len() < 3 {
+                        return Err(anyhow!("usage: wm use command <exe> [args...]"));
+                    }
+                    state.world_model.backend = crate::world_model::WorldModelBackend::Command {
+                        program: PathBuf::from(&args[2]),
+                        args: args[3..].to_vec(),
+                    };
+                    println!("ok: {}", state.world_model.status_line());
+                    Ok(())
+                }
+                other => Err(anyhow!("unknown wm backend `{other}`")),
+            }
+        }
+        "propose" => cmd_world_model_propose_repl(state, &args[1..]),
+        "plan" => cmd_world_model_plan_repl(state, &args[1..]),
+        _ => Err(anyhow!(
+            "unknown wm subcommand (try: wm status | wm use ... | wm propose ... | wm plan ...)"
+        )),
+    }
+}
+
+fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Result<()> {
+    let Some(db) = state.db.as_ref() else {
+        return Err(anyhow!("no db loaded (use `load` or `import_axi`)"));
+    };
+    if args.is_empty() {
+        return Err(anyhow!(
+            "usage: wm propose <out.json> [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--export <file>] [--axi <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
+        ));
+    }
+
+    let mut out: Option<PathBuf> = None;
+    let mut goals: Vec<String> = Vec::new();
+    let mut max_new: usize = 0;
+    let mut guardrail_profile = "fast".to_string();
+    let mut guardrail_plane = "both".to_string();
+    let mut export_path: Option<PathBuf> = None;
+    let mut axi_path: Option<PathBuf> = None;
+    let mut commit_dir: Option<PathBuf> = None;
+    let mut accepted_snapshot = "head".to_string();
+    let mut commit_message: Option<String> = None;
+    let mut validate = true;
+    let mut seed: Option<u64> = None;
+    let mut guardrail_weight_pairs: Vec<String> = Vec::new();
+    let mut task_cost_pairs: Vec<String> = Vec::new();
+    let mut horizon_steps: Option<usize> = None;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let tok = args[i].as_str();
+        match tok {
+            "--goal" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--goal requires a value"));
+                };
+                goals.push(v.to_string());
+            }
+            "--max" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--max requires a value"));
+                };
+                max_new = v.parse::<usize>().map_err(|_| {
+                    anyhow!("invalid --max value `{}` (expected integer)", v)
+                })?;
+            }
+            "--guardrail" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--guardrail requires a value"));
+                };
+                guardrail_profile = v.to_string();
+            }
+            "--plane" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--plane requires a value"));
+                };
+                guardrail_plane = v.to_string();
+            }
+            "--export" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--export requires a path"));
+                };
+                export_path = Some(PathBuf::from(v));
+            }
+            "--axi" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--axi requires a path"));
+                };
+                axi_path = Some(PathBuf::from(v));
+            }
+            "--commit-dir" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--commit-dir requires a path"));
+                };
+                commit_dir = Some(PathBuf::from(v));
+            }
+            "--accepted-snapshot" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--accepted-snapshot requires a value"));
+                };
+                accepted_snapshot = v.to_string();
+            }
+            "--message" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--message requires a value"));
+                };
+                commit_message = Some(v.to_string());
+            }
+            "--no-validate" => {
+                validate = false;
+            }
+            "--seed" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--seed requires a value"));
+                };
+                seed = Some(v.parse::<u64>().map_err(|_| {
+                    anyhow!("invalid --seed value `{}` (expected integer)", v)
+                })?);
+            }
+            "--guardrail-weight" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--guardrail-weight requires key=value"));
+                };
+                guardrail_weight_pairs.push(v.to_string());
+            }
+            "--task-cost" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--task-cost requires name=value[:weight[:unit]]"));
+                };
+                task_cost_pairs.push(v.to_string());
+            }
+            "--horizon-steps" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--horizon-steps requires a value"));
+                };
+                horizon_steps = Some(v.parse::<usize>().map_err(|_| {
+                    anyhow!("invalid --horizon-steps value `{}`", v)
+                })?);
+            }
+            _ => {
+                if out.is_none() {
+                    out = Some(PathBuf::from(tok));
+                } else {
+                    return Err(anyhow!("unknown argument `{}`", tok));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let out = out.ok_or_else(|| anyhow!("wm propose: missing output path"))?;
+
+    let guardrail_profile = guardrail_profile.trim().to_ascii_lowercase();
+    let guardrail_plane = guardrail_plane.trim().to_ascii_lowercase();
+    let guardrail_weights = if guardrail_weight_pairs.is_empty() {
+        crate::world_model::GuardrailCostWeightsV1::defaults()
+    } else {
+        crate::world_model::parse_guardrail_weights(&guardrail_weight_pairs)?
+    };
+    let task_costs = crate::world_model::parse_task_costs(&task_cost_pairs)?;
+
+    let guardrail = if guardrail_profile != "off" {
+        Some(crate::world_model::compute_guardrail_costs(
+            db,
+            "repl",
+            &guardrail_profile,
+            &guardrail_plane,
+            &guardrail_weights,
+        )?)
+    } else {
+        None
+    };
+
+    let mut export_inline: Option<crate::world_model::JepaExportFileV1> = None;
+    let mut export_path_str: Option<String> = None;
+    if let Some(path) = export_path.as_ref() {
+        export_path_str = Some(path.display().to_string());
+    } else if let Some(axi) = axi_path.as_ref() {
+        let text = fs::read_to_string(axi)?;
+        let opts = crate::world_model::JepaExportOptions {
+            instance_filter: None,
+            max_items: 0,
+            mask_fields: 1,
+            seed: 1,
+        };
+        export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
+    }
+
+    let mut input = crate::world_model::WorldModelInputV1::default();
+    input.export = export_inline;
+    input.export_path = export_path_str;
+    if guardrail.is_some() {
+        input.guardrail = guardrail.clone();
+    }
+
+    let mut options = crate::world_model::WorldModelOptionsV1::default();
+    options.max_new_proposals = max_new;
+    options.seed = seed;
+    options.goals = goals;
+    options.task_costs = task_costs.clone();
+    options.horizon_steps = horizon_steps;
+
+    let req = crate::world_model::make_world_model_request(input, options);
+    let mut response = state.world_model.propose(&req)?;
+    if let Some(err) = response.error.take() {
+        return Err(anyhow!("world model error: {err}"));
+    }
+
+    let guardrail_profile_label = if guardrail_profile == "off" {
+        None
+    } else {
+        Some(guardrail_profile.clone())
+    };
+    let guardrail_plane_label = if guardrail_profile == "off" {
+        None
+    } else {
+        Some(guardrail_plane.clone())
+    };
+
+    let provenance = crate::world_model::WorldModelProvenance {
+        trace_id: response.trace_id.clone(),
+        backend: state.world_model.backend_label(),
+        model: state.world_model.model.clone(),
+        axi_digest_v1: None,
+        guardrail_total_cost: guardrail
+            .as_ref()
+            .map(|g| g.summary.total_cost),
+        guardrail_profile: guardrail_profile_label,
+        guardrail_plane: guardrail_plane_label,
+    };
+
+    let mut proposals =
+        crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+
+    if max_new > 0 && proposals.proposals.len() > max_new {
+        proposals.proposals.truncate(max_new);
+    }
+
+    let json = serde_json::to_string_pretty(&proposals)?;
+    fs::write(&out, json)?;
+    println!("wrote {}", out.display());
+
+    if let Some(dir) = commit_dir.as_ref() {
+        if validate {
+            let profile = if guardrail_profile == "off" {
+                "fast"
+            } else {
+                guardrail_profile.as_str()
+            };
+            let plane = if guardrail_profile == "off" {
+                "both"
+            } else {
+                guardrail_plane.as_str()
+            };
+            let validation = crate::proposals_validate::validate_proposals_v1(
+                db,
+                &proposals,
+                profile,
+                plane,
+            )?;
+            if !validation.ok {
+                return Err(anyhow!(
+                    "refusing to commit: proposals validation failed (errors={}, warnings={})",
+                    validation.quality_delta.summary.error_count,
+                    validation.quality_delta.summary.warning_count
+                ));
+            }
+        }
+
+        let res = crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
+            dir,
+            &accepted_snapshot,
+            &[],
+            &[out.clone()],
+            commit_message.as_deref(),
+        )?;
+        println!(
+            "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
+            res.ops_added, res.accepted_snapshot_id, res.snapshot_id
+        );
+    }
+
+    Ok(())
+}
+
+fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<()> {
+    let Some(db) = state.db.as_ref() else {
+        return Err(anyhow!("no db loaded (use `load` or `import_axi`)"));
+    };
+    if args.is_empty() {
+        return Err(anyhow!(
+            "usage: wm plan <out.json> [--steps N] [--rollouts N] [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--export <file>] [--axi <file>] [--cq <name=query>] [--cq-file <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
+        ));
+    }
+
+    let mut out: Option<PathBuf> = None;
+    let mut goals: Vec<String> = Vec::new();
+    let mut max_new: usize = 0;
+    let mut guardrail_profile = "fast".to_string();
+    let mut guardrail_plane = "both".to_string();
+    let mut export_path: Option<PathBuf> = None;
+    let mut axi_path: Option<PathBuf> = None;
+    let mut commit_dir: Option<PathBuf> = None;
+    let mut accepted_snapshot = "head".to_string();
+    let mut commit_message: Option<String> = None;
+    let mut validate = true;
+    let mut seed: Option<u64> = None;
+    let mut guardrail_weight_pairs: Vec<String> = Vec::new();
+    let mut task_cost_pairs: Vec<String> = Vec::new();
+    let mut cq_pairs: Vec<String> = Vec::new();
+    let mut cq_files: Vec<PathBuf> = Vec::new();
+    let mut steps: usize = 3;
+    let mut rollouts: usize = 2;
+    let mut quality = "fast".to_string();
+    let mut quality_plane = "both".to_string();
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let tok = args[i].as_str();
+        match tok {
+            "--goal" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--goal requires a value"));
+                };
+                goals.push(v.to_string());
+            }
+            "--max" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--max requires a value"));
+                };
+                max_new = v.parse::<usize>().map_err(|_| {
+                    anyhow!("invalid --max value `{}` (expected integer)", v)
+                })?;
+            }
+            "--guardrail" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--guardrail requires a value"));
+                };
+                guardrail_profile = v.to_string();
+            }
+            "--plane" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--plane requires a value"));
+                };
+                guardrail_plane = v.to_string();
+            }
+            "--export" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--export requires a path"));
+                };
+                export_path = Some(PathBuf::from(v));
+            }
+            "--axi" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--axi requires a path"));
+                };
+                axi_path = Some(PathBuf::from(v));
+            }
+            "--commit-dir" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--commit-dir requires a path"));
+                };
+                commit_dir = Some(PathBuf::from(v));
+            }
+            "--accepted-snapshot" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--accepted-snapshot requires a value"));
+                };
+                accepted_snapshot = v.to_string();
+            }
+            "--message" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--message requires a value"));
+                };
+                commit_message = Some(v.to_string());
+            }
+            "--no-validate" => {
+                validate = false;
+            }
+            "--seed" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--seed requires a value"));
+                };
+                seed = Some(v.parse::<u64>().map_err(|_| {
+                    anyhow!("invalid --seed value `{}` (expected integer)", v)
+                })?);
+            }
+            "--guardrail-weight" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--guardrail-weight requires key=value"));
+                };
+                guardrail_weight_pairs.push(v.to_string());
+            }
+            "--task-cost" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--task-cost requires name=value[:weight[:unit]]"));
+                };
+                task_cost_pairs.push(v.to_string());
+            }
+            "--steps" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--steps requires a value"));
+                };
+                steps = v.parse::<usize>().map_err(|_| {
+                    anyhow!("invalid --steps value `{}`", v)
+                })?;
+            }
+            "--rollouts" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--rollouts requires a value"));
+                };
+                rollouts = v.parse::<usize>().map_err(|_| {
+                    anyhow!("invalid --rollouts value `{}`", v)
+                })?;
+            }
+            "--quality" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--quality requires a value"));
+                };
+                quality = v.to_string();
+            }
+            "--quality-plane" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--quality-plane requires a value"));
+                };
+                quality_plane = v.to_string();
+            }
+            "--cq" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--cq requires name=query"));
+                };
+                cq_pairs.push(v.to_string());
+            }
+            "--cq-file" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return Err(anyhow!("--cq-file requires a path"));
+                };
+                cq_files.push(PathBuf::from(v));
+            }
+            _ => {
+                if out.is_none() {
+                    out = Some(PathBuf::from(tok));
+                } else {
+                    return Err(anyhow!("unknown argument `{}`", tok));
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let out = out.ok_or_else(|| anyhow!("wm plan: missing output path"))?;
+
+    let guardrail_profile = guardrail_profile.trim().to_ascii_lowercase();
+    let guardrail_plane = guardrail_plane.trim().to_ascii_lowercase();
+    let guardrail_weights = if guardrail_weight_pairs.is_empty() {
+        crate::world_model::GuardrailCostWeightsV1::defaults()
+    } else {
+        crate::world_model::parse_guardrail_weights(&guardrail_weight_pairs)?
+    };
+    let task_costs = crate::world_model::parse_task_costs(&task_cost_pairs)?;
+    let mut competency_questions =
+        crate::world_model::parse_competency_questions(&cq_pairs)?;
+    for path in &cq_files {
+        let mut loaded = crate::world_model::load_competency_questions(path)?;
+        competency_questions.append(&mut loaded);
+    }
+
+    let mut export_inline: Option<crate::world_model::JepaExportFileV1> = None;
+    let mut export_path_str: Option<String> = None;
+    if let Some(path) = export_path.as_ref() {
+        export_path_str = Some(path.display().to_string());
+    } else if let Some(axi) = axi_path.as_ref() {
+        let text = fs::read_to_string(axi)?;
+        let opts = crate::world_model::JepaExportOptions {
+            instance_filter: None,
+            max_items: 0,
+            mask_fields: 1,
+            seed: 1,
+        };
+        export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
+    }
+
+    let mut base_input = crate::world_model::WorldModelInputV1::default();
+    base_input.export = export_inline;
+    base_input.export_path = export_path_str;
+
+    let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+        horizon_steps: steps,
+        rollouts,
+        max_new_proposals: max_new,
+        seed,
+        goals,
+        task_costs,
+        competency_questions,
+        guardrail_profile: guardrail_profile.clone(),
+        guardrail_plane: guardrail_plane.clone(),
+        guardrail_weights,
+        include_guardrail: guardrail_profile != "off",
+        validation_profile: quality.clone(),
+        validation_plane: quality_plane.clone(),
+    };
+
+    let report = crate::world_model::run_world_model_plan(
+        db,
+        &state.world_model,
+        &base_input,
+        &plan_opts,
+    )?;
+
+    let json = serde_json::to_string_pretty(&report)?;
+    fs::write(&out, json)?;
+    println!("wrote {}", out.display());
+
+    if let Some(dir) = commit_dir.as_ref() {
+        let generated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+        let mut merged = axiograph_ingest_docs::ProposalsFileV1 {
+            version: axiograph_ingest_docs::proposals::PROPOSALS_VERSION_V1,
+            generated_at,
+            source: axiograph_ingest_docs::ProposalSourceV1 {
+                source_type: "world_model_plan".to_string(),
+                locator: report.trace_id.clone(),
+            },
+            schema_hint: None,
+            proposals: Vec::new(),
+        };
+        for step in &report.steps {
+            merged.proposals.extend(step.proposals.proposals.clone());
+        }
+
+        if validate {
+            if quality != "off" {
+                let validation = crate::proposals_validate::validate_proposals_v1(
+                    db,
+                    &merged,
+                    &quality,
+                    &quality_plane,
+                )?;
+                if !validation.ok {
+                    return Err(anyhow!(
+                        "refusing to commit: proposals validation failed (errors={}, warnings={})",
+                        validation.quality_delta.summary.error_count,
+                        validation.quality_delta.summary.warning_count
+                    ));
+                }
+            }
+        }
+
+        let tmp_path = std::env::temp_dir().join(format!(
+            "axiograph_wm_plan_{}.json",
+            report.trace_id.replace(':', "_")
+        ));
+        let json = serde_json::to_string_pretty(&merged)?;
+        fs::write(&tmp_path, json)?;
+
+        let res = crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
+            dir,
+            &accepted_snapshot,
+            &[],
+            &[tmp_path.clone()],
+            commit_message.as_deref(),
+        )?;
+        let _ = std::fs::remove_file(&tmp_path);
+        println!(
+            "ok committed {} WAL op(s) on accepted snapshot {} -> pathdb snapshot {}",
+            res.ops_added, res.accepted_snapshot_id, res.snapshot_id
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

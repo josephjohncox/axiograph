@@ -5,8 +5,8 @@
 --
 -- Notes:
 -- - We intentionally keep *rich* content (rules, long explanations, modal
---   specs) inside the `theory` section as **unknown constraints** (preserved
---   verbatim, imported into PathDB meta-plane, and queryable).
+--   specs) inside the `theory` section as **opaque named constraint blocks**
+--   (preserved, imported into PathDB meta-plane, and queryable).
 -- - “Values” like numbers and long strings are modeled as named nodes
 --   (`Scalar`, `Text`) so we stay within the identifier-only v1 instance
 --   surface. The human-readable text is kept adjacent as comments.
@@ -92,7 +92,7 @@ schema MachiningLearning:
 
 theory MachiningLearningContent on MachiningLearning:
   -- ==========================================================================
-  -- Guardrail rules (preserved as “unknown constraints”)
+  -- Guardrail rules (preserved as opaque named constraint blocks)
   -- ==========================================================================
 
   constraint MustHaveMaterial:
@@ -118,7 +118,7 @@ theory MachiningLearningContent on MachiningLearning:
     explains: DeepHoleCoolant
 
   -- ==========================================================================
-  -- Query patterns (stored as unknown constraints for now)
+  -- Query patterns (preserved as opaque named constraint blocks for now)
   -- ==========================================================================
 
   constraint query_titaniumPrerequisites:

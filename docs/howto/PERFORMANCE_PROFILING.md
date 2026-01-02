@@ -1,12 +1,12 @@
 # Performance profiling
 
-This repo includes a few built-in ways to profile “where the time went”. Phase timings are dependency-free; deeper CPU profiling is available behind an optional feature flag.
+This repo includes a few built-in ways to profile "where the time went". Phase timings are dependency-free; deeper CPU profiling is available behind an optional feature flag.
 
 ## Profile PathDB WAL checkout vs rebuild
 
 `axiograph db accept pathdb-build` has two important modes:
 
-- **Checkpoint fast path (default):** if a snapshot checkpoint exists, it “checks out” the `.axpd` by hardlink/copy.
+- **Checkpoint fast path (default):** if a snapshot checkpoint exists, it "checks out" the `.axpd` by hardlink/copy.
 - **Rebuild slow path (`--rebuild`):** rebuilds from accepted `.axi` + replays WAL ops + rebuilds indexes.
 
 Use phase timings (human-readable):
@@ -42,7 +42,7 @@ axiograph db accept pathdb-build \
 
 ### One-command demo script
 
-The easiest way to get both “checkout” and “rebuild” timings:
+The easiest way to get both "checkout" and "rebuild" timings:
 
 ```bash
 ./scripts/profile_pathdb_wal_build.sh
@@ -67,6 +67,24 @@ cd rust
 cargo build -p axiograph-cli --release --features profiling
 ```
 
+---
+
+## World model MPC/eval harness
+
+The perf harness can exercise JEPA/world-model rollouts and report guardrail
+deltas plus basic precision/recall (when running against `.axi` with holdouts).
+
+```bash
+axiograph tools perf world-model \
+  --input examples/Family.axi \
+  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py \
+  --world-model-plugin-arg --strategy oracle \
+  --horizon-steps 3 \
+  --rollouts 2 \
+  --holdout-frac 0.2 \
+  --out-json build/world_model_perf.json
+```
+
 Then run any command with `--profile`:
 
 ```bash
@@ -78,10 +96,10 @@ Then run any command with `--profile`:
 
 Formats:
 
-- `--profile flamegraph` → `<out>.svg`
-- `--profile pprof` → `<out>.pb` (use `go tool pprof -top` for callstack time dumps)
-- `--profile folded` → `<out>.folded` (collapsed stacks)
-- `--profile all` → all of the above
+- `--profile flamegraph` -> `<out>.svg`
+- `--profile pprof` -> `<out>.pb` (use `go tool pprof -top` for callstack time dumps)
+- `--profile folded` -> `<out>.folded` (collapsed stacks)
+- `--profile all` -> all of the above
 
 `--profile` with no value defaults to `flamegraph`.
 
@@ -134,4 +152,4 @@ cargo flamegraph -p axiograph-cli --bin axiograph --release -- \
 ### macOS
 
 `cargo-flamegraph` may require additional privileges (sampling restrictions vary by macOS version).
-If it doesn’t work for you, use Instruments (Time Profiler) to attach to the `axiograph` process.
+If it doesn't work for you, use Instruments (Time Profiler) to attach to the `axiograph` process.

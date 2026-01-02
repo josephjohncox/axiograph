@@ -362,9 +362,27 @@ fn format_constraint(db: &PathDB, constraint_id: u32) -> Result<String> {
             let dst = entity_attr(db, constraint_id, ATTR_CONSTRAINT_DST_FIELD).unwrap_or_default();
             format!("constraint functional {rel}.{src} -> {rel}.{dst}")
         }
+        "typing" => {
+            let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
+            let rule = entity_attr(db, constraint_id, ATTR_CONSTRAINT_TEXT).unwrap_or_default();
+            format!("constraint typing {rel}: {rule}")
+        }
         "symmetric" => {
             let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
             format!("constraint symmetric {rel}")
+        }
+        "symmetric_where_in" => {
+            let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
+            let field =
+                entity_attr(db, constraint_id, ATTR_CONSTRAINT_WHERE_FIELD).unwrap_or_default();
+            let values =
+                entity_attr(db, constraint_id, ATTR_CONSTRAINT_WHERE_IN_VALUES).unwrap_or_default();
+            let values = values
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("constraint symmetric {rel} where {rel}.{field} in {{{values}}}")
         }
         "transitive" => {
             let rel = entity_attr(db, constraint_id, ATTR_CONSTRAINT_RELATION).unwrap_or_default();
@@ -379,6 +397,27 @@ fn format_constraint(db: &PathDB, constraint_id: u32) -> Result<String> {
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("constraint key {rel}({fields})")
+        }
+        "named_block" => {
+            let name = entity_attr(db, constraint_id, ATTR_CONSTRAINT_NAME)
+                .unwrap_or_else(|| "Constraint".to_string());
+            let body = entity_attr(db, constraint_id, ATTR_CONSTRAINT_TEXT).unwrap_or_default();
+            let body = body.trim();
+            if body.is_empty() {
+                format!("constraint {name}:")
+            } else {
+                let mut out = format!("constraint {name}:");
+                for line in body.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    out.push('\n');
+                    out.push_str("    ");
+                    out.push_str(line);
+                }
+                out
+            }
         }
         "unknown" => {
             let text = entity_attr(db, constraint_id, ATTR_CONSTRAINT_TEXT).unwrap_or_default();

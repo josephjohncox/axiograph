@@ -21,7 +21,9 @@ multiple syntaxes without a flag day.
    `rust/crates/axiograph-dsl/src/schema_v1.rs` and should stay structurally
    aligned with this Lean module.
 
-This parser is intentionally conservative: it fails fast on unrecognized lines.
+This parser is intentionally conservative: it fails fast on unrecognized *section lines*.
+For theory constraints, we preserve unsupported forms as explicit `ConstraintV1.unknown`
+(or other opaque variants) so tooling can surface and repair them without breaking parsing.
 -/
 
 namespace Axiograph.Axi.SchemaV1
@@ -58,9 +60,15 @@ deriving Repr, DecidableEq
 
 inductive ConstraintV1 where
   | functional (relation srcField dstField : Name)
+  /-- A first-class typing rule annotation for a relation (metadata today). -/
+  | typing (relation : Name) (rule : Name)
+  /-- Conditional symmetry: only enforce symmetry for tuples whose `field` value is in `values`. -/
+  | symmetricWhereIn (relation field : Name) (values : Array Name)
   | symmetric (relation : Name)
   | transitive (relation : Name)
   | key (relation : Name) (fields : Array Name)
+  /-- An opaque, named constraint block (preserved as structured data). -/
+  | namedBlock (name : Name) (body : Array String)
   | unknown (text : String)
 deriving Repr, DecidableEq
 
@@ -470,21 +478,57 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
         -- For now we keep parsing robust (and keep the text visible) without
         -- making these dialect forms part of the trusted core.
         return (.unknown trimmed)
+  else if startsWith trimmed "typing " then
+    let p : LineParser ConstraintV1 := do
+      skipString "typing"
+      ws1
+      let relation ← identifier
+      ws
+      skipChar ':'
+      ws
+      let rule ← identifier
+      pure (.typing relation rule)
+    match runLineParser p trimmed with
+    | .ok v => return v
+    | .error _msg =>
+        -- Keep parsing robust across dialect variations.
+        return (.unknown trimmed)
   else if startsWith trimmed "symmetric " then
+    let comma : LineParser Unit := do
+      ws
+      skipChar ','
+      ws
+      pure ()
+    let nameSet : LineParser (Array Name) := do
+      skipChar '{'
+      ws
+      let xs ← sepBy1 identifier comma
+      ws
+      skipChar '}'
+      pure xs
     let p : LineParser ConstraintV1 := do
       skipString "symmetric"
       ws1
       let relation ← identifier
-      pure (.symmetric relation)
+      -- Optional guard:
+      --   `where Rel.field in {A, B, ...}`
+      (attempt do
+          ws1
+          skipString "where"
+          ws1
+          let (rel2, field) ← relField
+          if rel2 != relation then
+            pure (.unknown trimmed)
+          else
+            ws1
+            skipString "in"
+            ws1
+            let values ← nameSet
+            pure (.symmetricWhereIn relation field values)) <|> pure (.symmetric relation)
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        -- Keep parsing robust across dialect variations like:
-        --
-        --   `constraint symmetric Rel where ...`
-        --
-        -- We keep the text visible as an unknown constraint so downstream tools
-        -- can surface/repair it, without failing the entire module parse.
+        -- Keep parsing robust across dialect variations.
         return (.unknown trimmed)
   else if startsWith trimmed "transitive " then
     let p : LineParser ConstraintV1 := do
@@ -1028,18 +1072,29 @@ partial def parseSchemaV1 (text : String) : Except ParseError SchemaV1Module := 
 
     | .theory theoryIndex =>
         if let some rest := stripPrefix? line "constraint " then
-          -- Support multi-line constraint “blocks” (e.g. richer guardrails with
-          -- `message:` / `severity:` lines) by preserving them as `unknown`.
-          -- This mirrors the Rust parser behavior in
-          -- `rust/crates/axiograph-dsl/src/schema_v1.rs`.
+          let restTrim := rest.trim
+          if restTrim.endsWith ":" then
+            let name := trimTrailingColon restTrim
+            if name.isEmpty then
+              return (← failAt lineNo "constraint name missing")
+            let (bodyLines, nextIndex) := collectIndentedBlockLines lines (i + 1)
+            let constraint : ConstraintV1 := .namedBlock name bodyLines
+            let some theories :=
+              updateAt? state.moduleAst.theories theoryIndex (fun t =>
+                { t with constraints := t.constraints.push constraint })
+              | return (← failAt lineNo "internal error: theory index out of bounds")
+            state := { state with moduleAst := { state.moduleAst with theories } }
+            i := nextIndex
+            continue
+          -- Support multi-line constraint “blocks” (e.g. `... where` followed by
+          -- a few lines). We join the block and try to parse it as a known
+          -- constraint; otherwise it remains `unknown` (visible to tooling).
           let (extra, nextIndex) := collectIndentedBlock lines (i + 1)
+          let combined := if extra.isEmpty then restTrim else s!"{restTrim} {extra}".trim
           let constraint ←
-            if extra.isEmpty then
-              match parseConstraint rest with
-              | .ok v => pure v
-              | .error msg => return (← failAt lineNo msg)
-            else
-              pure (.unknown s!"{rest.trim} {extra}".trim)
+            match parseConstraint combined with
+            | .ok v => pure v
+            | .error msg => return (← failAt lineNo msg)
           let some theories :=
             updateAt? state.moduleAst.theories theoryIndex (fun t =>
               { t with constraints := t.constraints.push constraint })

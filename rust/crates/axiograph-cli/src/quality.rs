@@ -530,9 +530,20 @@ pub fn run_quality_checks(
                                     }
                                 }
                             }
+                            ConstraintDecl::Typing { .. } => {
+                                // Not yet checked: typing constraints are metadata today.
+                            }
+                            ConstraintDecl::SymmetricWhereIn { .. } => {
+                                // Not yet checked here: can be expensive and many examples
+                                // use conditional forms. We still keep the constraint
+                                // structured (not `unknown`) so other tooling can surface it.
+                            }
                             ConstraintDecl::Symmetric { .. }
                             | ConstraintDecl::Transitive { .. } => {
                                 // Not yet checked here: can be expensive and many examples use conditional forms.
+                            }
+                            ConstraintDecl::NamedBlock { .. } => {
+                                // Not relation-scoped in the schema index today.
                             }
                             ConstraintDecl::Unknown { text, .. } => {
                                 if profile == "strict" {

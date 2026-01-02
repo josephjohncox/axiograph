@@ -1,0 +1,12 @@
+# Axiograph REPL script: world model MPC demo
+#
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/world_model_mpc_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/world_model_mpc_demo.repl
+
+import_axi examples/Family.axi
+wm use command scripts/axiograph_world_model_plugin_baseline.py --strategy oracle
+wm plan build/world_model_mpc_demo_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq "has_parent=select ?p where ?p is Person limit 1"

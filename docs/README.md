@@ -31,6 +31,7 @@ If you only read one thing, read the “book”:
 - `docs/tutorials/TYPE_THEORY_DEMOS.md` — paths, homotopies, dependent structures, certificates (examples-first)
 - `docs/tutorials/SCHEMA_DISCOVERY.md` — automated ontology engineering loop (structured + LLM-assisted)
 - `docs/tutorials/CONTINUOUS_INGEST_AND_DISCOVERY.md` — continuous ingest/discovery prototype loop
+- `docs/tutorials/WORLD_MODEL_LOOP.md` — JEPA/world-model loop with guardrails + promotion
 
 ---
 
@@ -52,12 +53,14 @@ If you only read one thing, read the “book”:
 - `docs/reference/CERTIFICATES.md` — certificate schema, versions, and how the Lean checker validates them
 - `docs/reference/QUERY_LANG.md` — AxQL + SQL-ish dialect reference (and “certified querying” roadmap)
 - `docs/reference/LLM_REPL_PLUGIN.md` — plugin protocol (`axiograph_llm_plugin_v2`)
+- `docs/reference/WORLD_MODEL_PLUGIN.md` — world model plugin protocol (`axiograph_world_model_v1`)
 
 ---
 
 ## Explanation (design + semantics)
 
 - `docs/explanation/ARCHITECTURE.md` — system architecture and trust boundary
+- `docs/explanation/CONSTRAINT_SEMANTICS.md` — open-world constraints and what can be certified
 - `docs/explanation/PATHDB_DESIGN.md` — PathDB storage/index design
 - `docs/explanation/DISTRIBUTED_PATHDB.md` — replication/sharding + snapshot-scoped certificates + reading list
 - `docs/explanation/UNIFIED_STORAGE.md` — storage layers and artifact formats (`.axi`, `.axpd`, WAL, exports)
@@ -71,6 +74,9 @@ If you only read one thing, read the “book”:
 - `docs/explanation/RUST_DEPENDENT_TYPES.md` — “dependent” encodings + branding/typestate patterns in Rust
 - `docs/explanation/SEMANTIC_WEB_INTEROP.md` — RDF/OWL/SHACL/PROV boundary design
 - `docs/explanation/KNOWLEDGE_GENERATION_AND_LEARNING.md` — learning/epistemics direction (extension semantics)
+- `docs/explanation/JEPA_INTEGRATION.md` — JEPA-style architectures and how they map to Axiograph
+- `docs/explanation/OBJECTIVE_DRIVEN_AI.md` — objective-driven AI (world model + costs + MPC) mapping
+- `docs/explanation/SELF_SUPERVISED_LEARNING.md` — self-supervised learning loops on anchored snapshots
 - `docs/explanation/LLM_KG_SYNC.md` — LLM ↔ KG sync direction (untrusted boundary; cert-checked core)
 
 ---

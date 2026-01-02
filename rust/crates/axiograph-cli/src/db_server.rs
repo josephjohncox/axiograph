@@ -44,6 +44,7 @@ use axiograph_pathdb::{read_sidecar_file, IndexSidecarWriter, PathDB};
 
 use crate::accepted_plane::{AcceptedPlaneEventV1, AcceptedPlaneSnapshotV1};
 use crate::llm::{GeneratedQuery, LlmBackend, LlmState, ToolLoopOptions};
+use crate::world_model::{WorldModelBackend, WorldModelState};
 use crate::pathdb_wal::{PathDbSnapshotV1, PathDbWalEventV1};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +89,7 @@ struct ServerConfig {
     ready_file: Option<PathBuf>,
     cert_verify: CertVerifyConfig,
     llm: LlmState,
+    world_model: WorldModelState,
     path_index_lru_capacity: usize,
     path_index_lru_async: bool,
     path_index_lru_queue: usize,
@@ -417,6 +419,23 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
         llm.model = args.llm_model.clone();
     }
 
+    if (args.world_model_stub as usize) + (args.world_model_plugin.is_some() as usize) > 1 {
+        return Err(anyhow!(
+            "db serve: choose at most one world model backend: `--world-model-stub` or `--world-model-plugin ...`"
+        ));
+    }
+
+    let mut world_model = WorldModelState::default();
+    if args.world_model_stub {
+        world_model.backend = WorldModelBackend::Stub;
+    } else if let Some(plugin) = args.world_model_plugin.as_ref() {
+        world_model.backend = WorldModelBackend::Command {
+            program: plugin.clone(),
+            args: args.world_model_plugin_arg.clone(),
+        };
+    }
+    world_model.model = args.world_model_model.clone();
+
     let source = match (&args.axpd, &args.dir) {
         (Some(_), Some(_)) => {
             return Err(anyhow!("db serve: pass only one of --axpd or --dir"));
@@ -449,6 +468,7 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
             },
         },
         llm,
+        world_model,
         path_index_lru_capacity: args.path_index_lru_capacity,
         path_index_lru_async: args.path_index_lru_async,
         path_index_lru_queue: args.path_index_lru_queue,
@@ -641,6 +661,74 @@ async fn handle_request(
                 }
             }
             match handle_llm_agent(&state, parsed).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/world_model/propose") => {
+            let auth_header = req
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let body = req
+                .into_body()
+                .collect()
+                .await?
+                .to_bytes()
+                .to_vec();
+
+            let parsed: WorldModelProposeRequestV1 = match serde_json::from_slice(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(json_error(
+                        StatusCode::BAD_REQUEST,
+                        &format!("failed to parse world_model/propose request JSON: {e}"),
+                    ));
+                }
+            };
+            if parsed.auto_commit {
+                if let Err(resp) =
+                    require_admin_auth_header(auth_header.as_deref(), state.as_ref())
+                {
+                    return Ok(resp);
+                }
+            }
+            match handle_world_model_propose(&state, parsed).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/world_model/plan") => {
+            let auth_header = req
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let body = req
+                .into_body()
+                .collect()
+                .await?
+                .to_bytes()
+                .to_vec();
+
+            let parsed: WorldModelPlanRequestV1 = match serde_json::from_slice(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(json_error(
+                        StatusCode::BAD_REQUEST,
+                        &format!("failed to parse world_model/plan request JSON: {e}"),
+                    ));
+                }
+            };
+            if parsed.auto_commit {
+                if let Err(resp) =
+                    require_admin_auth_header(auth_header.as_deref(), state.as_ref())
+                {
+                    return Ok(resp);
+                }
+            }
+            match handle_world_model_plan(&state, parsed).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
@@ -839,6 +927,11 @@ fn status_payload(state: &ServerState) -> Result<serde_json::Value> {
         LlmBackend::Anthropic { base_url } => format!("anthropic({base_url})"),
         LlmBackend::Command { program, .. } => format!("command({})", program.display()),
     };
+    let world_model_backend = match &state.config.world_model.backend {
+        WorldModelBackend::Disabled => "disabled".to_string(),
+        WorldModelBackend::Stub => "stub".to_string(),
+        WorldModelBackend::Command { program, .. } => format!("command({})", program.display()),
+    };
     let verifier_bin = resolve_verifier_bin(&state.config);
     Ok(serde_json::json!({
         "version": "axiograph_db_server_status_v1",
@@ -858,6 +951,12 @@ fn status_payload(state: &ServerState) -> Result<serde_json::Value> {
             "backend": llm_backend,
             "model": state.config.llm.model.clone(),
             "status": state.config.llm.status_line(),
+        },
+        "world_model": {
+            "enabled": !matches!(state.config.world_model.backend, WorldModelBackend::Disabled),
+            "backend": world_model_backend,
+            "model": state.config.world_model.model.clone(),
+            "status": state.config.world_model.status_line(),
         },
         "certificates": {
             "lean_verifier_available": verifier_bin.is_some(),
@@ -1124,6 +1223,136 @@ struct LlmAgentRequestV1 {
     /// Optional snapshot id override when running in store-backed mode.
     #[serde(default)]
     snapshot: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WorldModelProposeRequestV1 {
+    /// Optional goals/targets for the world model (free-form).
+    #[serde(default)]
+    goals: Vec<String>,
+    /// Optional seed passed to the world model.
+    #[serde(default)]
+    seed: Option<u64>,
+    /// Max new proposals to keep (0 = no cap).
+    #[serde(default)]
+    max_new_proposals: Option<usize>,
+    /// Guardrail profile: off|fast|strict.
+    #[serde(default)]
+    guardrail_profile: Option<String>,
+    /// Guardrail plane: meta|data|both.
+    #[serde(default)]
+    guardrail_plane: Option<String>,
+    /// Optional guardrail weight overrides.
+    #[serde(default)]
+    guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
+    /// Task costs (objective terms) passed to the world model.
+    #[serde(default)]
+    task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+    /// Optional planning horizon (steps) passed to the world model.
+    #[serde(default)]
+    horizon_steps: Option<usize>,
+    /// Include guardrail report in the response (default: true).
+    #[serde(default)]
+    include_guardrail: Option<bool>,
+    /// Auto-commit proposals into the PathDB WAL.
+    #[serde(default)]
+    auto_commit: bool,
+    /// Optional accepted-plane snapshot id override for WAL commits.
+    #[serde(default)]
+    accepted_snapshot: Option<String>,
+    /// Optional message to attach to the WAL commit (audit log).
+    #[serde(default)]
+    commit_message: Option<String>,
+    /// Validate proposals before committing (default: true).
+    #[serde(default)]
+    validate: Option<bool>,
+    /// Validation quality profile: off|fast|strict.
+    #[serde(default)]
+    quality: Option<String>,
+    /// Validation plane: meta|data|both.
+    #[serde(default)]
+    quality_plane: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WorldModelPlanRequestV1 {
+    /// Optional goals/targets for the world model (free-form).
+    #[serde(default)]
+    goals: Vec<String>,
+    /// Optional seed passed to the world model.
+    #[serde(default)]
+    seed: Option<u64>,
+    /// Max new proposals to keep per step (0 = no cap).
+    #[serde(default)]
+    max_new_proposals: Option<usize>,
+    /// Planning horizon (steps).
+    #[serde(default)]
+    horizon_steps: Option<usize>,
+    /// Number of rollouts per step.
+    #[serde(default)]
+    rollouts: Option<usize>,
+    /// Guardrail profile: off|fast|strict.
+    #[serde(default)]
+    guardrail_profile: Option<String>,
+    /// Guardrail plane: meta|data|both.
+    #[serde(default)]
+    guardrail_plane: Option<String>,
+    /// Optional guardrail weight overrides.
+    #[serde(default)]
+    guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
+    /// Task costs (objective terms) passed to the world model.
+    #[serde(default)]
+    task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+    /// Include guardrail report in the world model input (default: true).
+    #[serde(default)]
+    include_guardrail: Option<bool>,
+    /// Optional competency questions (AxQL) for coverage-driven cost.
+    #[serde(default)]
+    competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    /// Auto-commit aggregated proposals into the PathDB WAL.
+    #[serde(default)]
+    auto_commit: bool,
+    /// If true, commit each step separately and reload between steps.
+    #[serde(default)]
+    commit_stepwise: bool,
+    /// Optional accepted-plane snapshot id override for WAL commits.
+    #[serde(default)]
+    accepted_snapshot: Option<String>,
+    /// Optional message to attach to the WAL commit (audit log).
+    #[serde(default)]
+    commit_message: Option<String>,
+    /// Validate proposals before committing (default: true).
+    #[serde(default)]
+    validate: Option<bool>,
+    /// Validation quality profile: off|fast|strict.
+    #[serde(default)]
+    quality: Option<String>,
+    /// Validation plane: meta|data|both.
+    #[serde(default)]
+    quality_plane: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorldModelProposeResponseV1 {
+    version: String,
+    trace_id: String,
+    proposals: axiograph_ingest_docs::ProposalsFileV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guardrail: Option<crate::world_model::GuardrailCostReportV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit: Option<PathdbCommitResponseV1>,
+    #[serde(default)]
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorldModelPlanResponseV1 {
+    version: String,
+    report: crate::world_model::WorldModelPlanReportV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit: Option<PathdbCommitResponseV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit_steps: Option<Vec<PathdbCommitResponseV1>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2045,6 +2274,500 @@ async fn handle_llm_agent(state: &Arc<ServerState>, req: LlmAgentRequestV1) -> R
         out["commit"] = serde_json::to_value(commit).unwrap_or(serde_json::Value::Null);
     }
     Ok(out)
+}
+
+async fn handle_world_model_propose(
+    state: &Arc<ServerState>,
+    req: WorldModelProposeRequestV1,
+) -> Result<serde_json::Value> {
+    if matches!(state.config.world_model.backend, WorldModelBackend::Disabled) {
+        return Err(anyhow!(
+            "world model is disabled for this server (configure --world-model-plugin or --world-model-stub)"
+        ));
+    }
+
+    let config = state.config.clone();
+    let (db, accepted_snapshot_id, pathdb_snapshot_id, snapshot_label) = {
+        let loaded = state
+            .loaded
+            .read()
+            .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
+        (
+            loaded.db.clone(),
+            loaded.accepted_snapshot_id.clone(),
+            loaded.pathdb_snapshot_id.clone(),
+            loaded.snapshot_label.clone(),
+        )
+    };
+
+    let accepted_snapshot_id_for_commit = accepted_snapshot_id.clone();
+    let accepted_snapshot_id_for_input = accepted_snapshot_id.clone();
+    let pathdb_snapshot_id_for_input = pathdb_snapshot_id.clone();
+
+    let req2 = req.clone();
+    let (trace_id, proposals, guardrail, notes) = tokio::task::spawn_blocking(move || {
+        let guardrail_profile = req2
+            .guardrail_profile
+            .as_deref()
+            .unwrap_or("fast")
+            .trim()
+            .to_ascii_lowercase();
+        let guardrail_plane = req2
+            .guardrail_plane
+            .as_deref()
+            .unwrap_or("both")
+            .trim()
+            .to_ascii_lowercase();
+        let include_guardrail = req2.include_guardrail.unwrap_or(true);
+
+        let guardrail_weights = req2
+            .guardrail_weights
+            .clone()
+            .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+        let guardrail = if include_guardrail && guardrail_profile != "off" {
+            Some(crate::world_model::compute_guardrail_costs(
+                db.as_ref(),
+                &format!("db_server:{snapshot_label}"),
+                &guardrail_profile,
+                &guardrail_plane,
+                &guardrail_weights,
+            )?)
+        } else {
+            None
+        };
+
+        let mut input = crate::world_model::WorldModelInputV1::default();
+        if guardrail.is_some() {
+            input.guardrail = guardrail.clone();
+        }
+        input.notes.push("source=db_server".to_string());
+        if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db.as_ref()) {
+            input.axi_digest_v1 = Some(digest.clone());
+            input.axi_module_text = Some(axi_text.clone());
+            let max_items = req2
+                .max_new_proposals
+                .unwrap_or(0)
+                .saturating_mul(20)
+                .min(2000)
+                .max(1000);
+            let export_opts = crate::world_model::JepaExportOptions {
+                instance_filter: None,
+                max_items,
+                mask_fields: 1,
+                seed: 1,
+            };
+            if let Ok(export) =
+                crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+            {
+                input.export = Some(export);
+            }
+        }
+
+        input.snapshot = Some(match &config.source {
+            SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
+                kind: "axpd".to_string(),
+                path: path.display().to_string(),
+                snapshot_id: None,
+                accepted_snapshot_id: None,
+            },
+            SnapshotSource::Store { dir, .. } => crate::world_model::WorldModelSnapshotRefV1 {
+                kind: "store".to_string(),
+                path: dir.display().to_string(),
+                snapshot_id: pathdb_snapshot_id_for_input.clone(),
+                accepted_snapshot_id: accepted_snapshot_id_for_input.clone(),
+            },
+        });
+
+        let max_keep = req2.max_new_proposals.unwrap_or(0);
+        let mut options = crate::world_model::WorldModelOptionsV1::default();
+        options.max_new_proposals = max_keep;
+        options.seed = req2.seed;
+        options.goals = req2.goals.clone();
+        options.task_costs = req2.task_costs.clone();
+        options.horizon_steps = req2.horizon_steps;
+
+        let request = crate::world_model::make_world_model_request(input, options);
+        let mut response = config.world_model.propose(&request)?;
+        if let Some(err) = response.error.take() {
+            return Err(anyhow!("world model error: {err}"));
+        }
+
+        let guardrail_profile_label = if guardrail_profile == "off" {
+            None
+        } else {
+            Some(guardrail_profile.clone())
+        };
+        let guardrail_plane_label = if guardrail_profile == "off" {
+            None
+        } else {
+            Some(guardrail_plane.clone())
+        };
+
+        let provenance = crate::world_model::WorldModelProvenance {
+            trace_id: response.trace_id.clone(),
+            backend: config.world_model.backend_label(),
+            model: config.world_model.model.clone(),
+            axi_digest_v1: None,
+            guardrail_total_cost: guardrail
+                .as_ref()
+                .map(|g| g.summary.total_cost),
+            guardrail_profile: guardrail_profile_label,
+            guardrail_plane: guardrail_plane_label,
+        };
+
+        let mut proposals =
+            crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+        if max_keep > 0 && proposals.proposals.len() > max_keep {
+            proposals.proposals.truncate(max_keep);
+        }
+
+        let notes = response.notes.clone();
+        Ok::<_, anyhow::Error>((response.trace_id, proposals, guardrail, notes))
+    })
+    .await
+    .map_err(|e| anyhow!("world_model/propose task join failed: {e}"))??;
+
+    let mut commit: Option<PathdbCommitResponseV1> = None;
+    if req.auto_commit {
+        let accepted_snapshot = req
+            .accepted_snapshot
+            .clone()
+            .or(accepted_snapshot_id_for_commit)
+            .unwrap_or_else(|| "head".to_string());
+        let commit_req = PathdbCommitRequestV1 {
+            accepted_snapshot: Some(accepted_snapshot),
+            chunks: Vec::new(),
+            proposals: Some(proposals.clone()),
+            validate: req.validate,
+            quality: req.quality.clone(),
+            quality_plane: req.quality_plane.clone(),
+            message: req.commit_message.clone(),
+        };
+        commit = Some(handle_pathdb_commit_req(state, commit_req).await?);
+    }
+
+    Ok(serde_json::json!(WorldModelProposeResponseV1 {
+        version: "axiograph_world_model_propose_v1".to_string(),
+        trace_id,
+        proposals,
+        guardrail,
+        commit,
+        notes,
+    }))
+}
+
+async fn handle_world_model_plan(
+    state: &Arc<ServerState>,
+    req: WorldModelPlanRequestV1,
+) -> Result<serde_json::Value> {
+    if matches!(state.config.world_model.backend, WorldModelBackend::Disabled) {
+        return Err(anyhow!(
+            "world model is disabled for this server (configure --world-model-plugin or --world-model-stub)"
+        ));
+    }
+
+    let config = state.config.clone();
+    let guardrail_profile = req
+        .guardrail_profile
+        .as_deref()
+        .unwrap_or("fast")
+        .trim()
+        .to_ascii_lowercase();
+    let guardrail_plane = req
+        .guardrail_plane
+        .as_deref()
+        .unwrap_or("both")
+        .trim()
+        .to_ascii_lowercase();
+    let include_guardrail = req.include_guardrail.unwrap_or(true);
+    let guardrail_weights = req
+        .guardrail_weights
+        .clone()
+        .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+    let horizon_steps = req.horizon_steps.unwrap_or(3);
+    let rollouts = req.rollouts.unwrap_or(2);
+    let max_new = req.max_new_proposals.unwrap_or(0);
+    let validation_profile = req.quality.clone().unwrap_or_else(|| "fast".to_string());
+    let validation_plane = req
+        .quality_plane
+        .clone()
+        .unwrap_or_else(|| "both".to_string());
+
+    let mut commit: Option<PathdbCommitResponseV1> = None;
+    let mut commit_steps: Option<Vec<PathdbCommitResponseV1>> = None;
+
+    let report = if req.auto_commit && req.commit_stepwise {
+        let plan_trace = format!("wm_plan::{}", now_unix_nanos());
+        let mut steps: Vec<crate::world_model::WorldModelPlanStepV1> = Vec::new();
+        let mut commits: Vec<PathdbCommitResponseV1> = Vec::new();
+
+        for step_idx in 0..horizon_steps {
+            let (db, accepted_snapshot_id, pathdb_snapshot_id) = {
+                let loaded = state
+                    .loaded
+                    .read()
+                    .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
+                (
+                    loaded.db.clone(),
+                    loaded.accepted_snapshot_id.clone(),
+                    loaded.pathdb_snapshot_id.clone(),
+                )
+            };
+
+            let config = config.clone();
+            let req2 = req.clone();
+            let guardrail_profile = guardrail_profile.clone();
+            let guardrail_plane = guardrail_plane.clone();
+            let guardrail_weights = guardrail_weights.clone();
+            let validation_profile = validation_profile.clone();
+            let validation_plane = validation_plane.clone();
+            let report_step = tokio::task::spawn_blocking(move || {
+                let mut base_input = crate::world_model::WorldModelInputV1::default();
+                base_input
+                    .notes
+                    .push(format!("source=db_server_plan step={step_idx}"));
+                if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db.as_ref()) {
+                    base_input.axi_digest_v1 = Some(digest.clone());
+                    base_input.axi_module_text = Some(axi_text.clone());
+                    let max_items = max_new.saturating_mul(20).min(2000).max(1000);
+                    let export_opts = crate::world_model::JepaExportOptions {
+                        instance_filter: None,
+                        max_items,
+                        mask_fields: 1,
+                        seed: 1,
+                    };
+                    if let Ok(export) =
+                        crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+                    {
+                        base_input.export = Some(export);
+                    }
+                }
+                base_input.snapshot = Some(match &config.source {
+                    SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
+                        kind: "axpd".to_string(),
+                        path: path.display().to_string(),
+                        snapshot_id: None,
+                        accepted_snapshot_id: None,
+                    },
+                    SnapshotSource::Store { dir, .. } => crate::world_model::WorldModelSnapshotRefV1 {
+                        kind: "store".to_string(),
+                        path: dir.display().to_string(),
+                        snapshot_id: pathdb_snapshot_id.clone(),
+                        accepted_snapshot_id: accepted_snapshot_id.clone(),
+                    },
+                });
+
+                let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+                    horizon_steps: 1,
+                    rollouts,
+                    max_new_proposals: max_new,
+                    seed: req2.seed,
+                    goals: req2.goals.clone(),
+                    task_costs: req2.task_costs.clone(),
+                    competency_questions: req2.competency_questions.clone(),
+                    guardrail_profile: guardrail_profile.clone(),
+                    guardrail_plane: guardrail_plane.clone(),
+                    guardrail_weights: guardrail_weights.clone(),
+                    include_guardrail,
+                    validation_profile: validation_profile.clone(),
+                    validation_plane: validation_plane.clone(),
+                };
+
+                crate::world_model::run_world_model_plan(
+                    db.as_ref(),
+                    &config.world_model,
+                    &base_input,
+                    &plan_opts,
+                )
+                .map_err(|e| anyhow!("world_model/plan step failed: {e}"))
+            })
+            .await
+            .map_err(|e| anyhow!("world_model/plan step join failed: {e}"))??;
+
+            let mut step_report = report_step
+                .steps
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("world_model/plan step returned no steps"))?;
+            step_report.step = step_idx;
+            steps.push(step_report.clone());
+
+            let accepted_snapshot = req
+                .accepted_snapshot
+                .clone()
+                .or_else(|| {
+                    let loaded = state.loaded.read().ok()?;
+                    loaded.accepted_snapshot_id.clone()
+                })
+                .unwrap_or_else(|| "head".to_string());
+
+            let commit_req = PathdbCommitRequestV1 {
+                accepted_snapshot: Some(accepted_snapshot),
+                chunks: Vec::new(),
+                proposals: Some(step_report.proposals.clone()),
+                validate: req.validate,
+                quality: req.quality.clone(),
+                quality_plane: req.quality_plane.clone(),
+                message: req
+                    .commit_message
+                    .clone()
+                    .map(|m| format!("step {step_idx}: {m}"))
+                    .or_else(|| Some(format!("world_model_plan step {step_idx}"))),
+            };
+            let res = handle_pathdb_commit_req(state, commit_req).await?;
+            commits.push(res);
+
+            let _ = reload_now(state).await;
+        }
+
+        let task_cost_total: f64 = req
+            .task_costs
+            .iter()
+            .map(|t| t.value * t.weight)
+            .sum();
+
+        commit_steps = Some(commits);
+
+        crate::world_model::WorldModelPlanReportV1 {
+            version: "world_model_plan_v1".to_string(),
+            trace_id: plan_trace,
+            generated_at_unix_secs: now_unix_secs(),
+            horizon_steps,
+            rollouts,
+            max_new_proposals: max_new,
+            guardrail_profile: guardrail_profile.clone(),
+            guardrail_plane: guardrail_plane.clone(),
+            guardrail_weights: guardrail_weights.clone(),
+            task_costs: req.task_costs.clone(),
+            task_cost_total,
+            competency_questions: req.competency_questions.clone(),
+            steps,
+        }
+    } else {
+        let (db, accepted_snapshot_id, pathdb_snapshot_id) = {
+            let loaded = state
+                .loaded
+                .read()
+                .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
+            (
+                loaded.db.clone(),
+                loaded.accepted_snapshot_id.clone(),
+                loaded.pathdb_snapshot_id.clone(),
+            )
+        };
+
+        let accepted_snapshot_id_for_commit = accepted_snapshot_id.clone();
+        let pathdb_snapshot_id_for_input = pathdb_snapshot_id.clone();
+
+        let req2 = req.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            let mut base_input = crate::world_model::WorldModelInputV1::default();
+            base_input.notes.push("source=db_server_plan".to_string());
+            if let Ok((digest, axi_text)) = export_pathdb_anchor_axi(db.as_ref()) {
+                base_input.axi_digest_v1 = Some(digest.clone());
+                base_input.axi_module_text = Some(axi_text.clone());
+                let max_items = max_new.saturating_mul(20).min(2000).max(1000);
+                let export_opts = crate::world_model::JepaExportOptions {
+                    instance_filter: None,
+                    max_items,
+                    mask_fields: 1,
+                    seed: 1,
+                };
+                if let Ok(export) =
+                    crate::world_model::build_jepa_export_from_axi_text(&axi_text, &export_opts)
+                {
+                    base_input.export = Some(export);
+                }
+            }
+            base_input.snapshot = Some(match &config.source {
+                SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
+                    kind: "axpd".to_string(),
+                    path: path.display().to_string(),
+                    snapshot_id: None,
+                    accepted_snapshot_id: None,
+                },
+                SnapshotSource::Store { dir, .. } => crate::world_model::WorldModelSnapshotRefV1 {
+                    kind: "store".to_string(),
+                    path: dir.display().to_string(),
+                    snapshot_id: pathdb_snapshot_id_for_input.clone(),
+                    accepted_snapshot_id: accepted_snapshot_id.clone(),
+                },
+            });
+
+            let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+                horizon_steps,
+                rollouts,
+                max_new_proposals: max_new,
+                seed: req2.seed,
+                goals: req2.goals.clone(),
+                task_costs: req2.task_costs.clone(),
+                competency_questions: req2.competency_questions.clone(),
+                guardrail_profile: guardrail_profile.clone(),
+                guardrail_plane: guardrail_plane.clone(),
+                guardrail_weights: guardrail_weights.clone(),
+                include_guardrail,
+                validation_profile: validation_profile.clone(),
+                validation_plane: validation_plane.clone(),
+            };
+
+            crate::world_model::run_world_model_plan(
+                db.as_ref(),
+                &config.world_model,
+                &base_input,
+                &plan_opts,
+            )
+            .map_err(|e| anyhow!("world_model/plan failed: {e}"))
+        })
+        .await
+        .map_err(|e| anyhow!("world_model/plan task join failed: {e}"))??;
+
+        if req.auto_commit {
+            let accepted_snapshot = req
+                .accepted_snapshot
+                .clone()
+                .or(accepted_snapshot_id_for_commit)
+                .unwrap_or_else(|| "head".to_string());
+
+            let generated_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string();
+            let mut merged = axiograph_ingest_docs::ProposalsFileV1 {
+                version: axiograph_ingest_docs::proposals::PROPOSALS_VERSION_V1,
+                generated_at,
+                source: axiograph_ingest_docs::ProposalSourceV1 {
+                    source_type: "world_model_plan".to_string(),
+                    locator: report.trace_id.clone(),
+                },
+                schema_hint: None,
+                proposals: Vec::new(),
+            };
+            for step in &report.steps {
+                merged.proposals.extend(step.proposals.proposals.clone());
+            }
+
+            let commit_req = PathdbCommitRequestV1 {
+                accepted_snapshot: Some(accepted_snapshot),
+                chunks: Vec::new(),
+                proposals: Some(merged),
+                validate: req.validate,
+                quality: req.quality.clone(),
+                quality_plane: req.quality_plane.clone(),
+                message: req.commit_message.clone(),
+            };
+            commit = Some(handle_pathdb_commit_req(state, commit_req).await?);
+        }
+
+        report
+    };
+
+    Ok(serde_json::json!(WorldModelPlanResponseV1 {
+        version: "axiograph_world_model_plan_v1".to_string(),
+        report,
+        commit,
+        commit_steps,
+    }))
 }
 
 async fn handle_entity_describe_get(

@@ -292,7 +292,7 @@ verify-lean-e2e: dirs
 	@echo "━━━ Rust → Lean certificate check ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_reachability_cert > ../$(BUILD_DIR)/reachability_from_rust.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_from_rust.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_from_rust.json ) && \
 		echo "✓ Rust → Lean certificate verified"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -302,7 +302,7 @@ verify-lean-e2e-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (v2 fixed-point) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_reachability_cert_v2 > ../$(BUILD_DIR)/reachability_from_rust_v2.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -312,7 +312,7 @@ verify-lean-e2e-v2-anchored: dirs
 	@echo "━━━ Rust → Lean certificate check (v2 anchored to .axi) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_reachability_cert_v2_anchored -- ../$(BUILD_DIR)/reachability_anchor_v1.axi > ../$(BUILD_DIR)/reachability_from_rust_v2_anchored.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_anchor_v1.axi ../$(BUILD_DIR)/reachability_from_rust_v2_anchored.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_anchor_v1.axi ../$(BUILD_DIR)/reachability_from_rust_v2_anchored.json ) && \
 		echo "✓ Rust → Lean certificate verified (v2 anchored)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -322,7 +322,7 @@ verify-lean-e2e-query-result-v1: dirs
 	@echo "━━━ Rust → Lean certificate check (query_result_v1 anchored) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/anchors/pathdb_export_anchor_v1.axi --lang axql 'select ?y where 0 -r1/r2-> ?y' > ../$(BUILD_DIR)/query_result_from_rust_v1.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/pathdb_export_anchor_v1.axi ../$(BUILD_DIR)/query_result_from_rust_v1.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/pathdb_export_anchor_v1.axi ../$(BUILD_DIR)/query_result_from_rust_v1.json ) && \
 		echo "✓ Rust → Lean certificate verified (query_result_v1)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -332,7 +332,7 @@ verify-lean-e2e-query-result-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (query_result_v2 / disjunction anchored) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/anchors/pathdb_export_anchor_v1.axi --lang axql 'select ?y where 0 -r1-> ?y or 0 -r1/r2-> ?y' > ../$(BUILD_DIR)/query_result_from_rust_v2.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/pathdb_export_anchor_v1.axi ../$(BUILD_DIR)/query_result_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/pathdb_export_anchor_v1.axi ../$(BUILD_DIR)/query_result_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (query_result_v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -342,7 +342,7 @@ verify-lean-e2e-query-result-module-v3: dirs
 	@echo "━━━ Rust → Lean certificate check (query_result_v3 anchored to canonical .axi) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/manufacturing/SupplyChainHoTT.axi --lang axql 'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' --anchor-out ../$(BUILD_DIR)/supply_chain_hott_anchor_export_v1.axi > ../$(BUILD_DIR)/query_result_from_module_v3.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/manufacturing/SupplyChainHoTT.axi ../$(BUILD_DIR)/query_result_from_module_v3.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/manufacturing/SupplyChainHoTT.axi ../$(BUILD_DIR)/query_result_from_module_v3.json ) && \
 		echo "✓ Rust → Lean certificate verified (query_result_v3 from module)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -355,7 +355,7 @@ verify-lean-e2e-axi-well-typed-v1: dirs
 	@echo "━━━ Rust → Lean certificate check (axi_well_typed_v1) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert typecheck ../examples/economics/EconomicFlows.axi --out ../$(BUILD_DIR)/axi_well_typed_from_rust_v1.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/economics/EconomicFlows.axi ../$(BUILD_DIR)/axi_well_typed_from_rust_v1.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/economics/EconomicFlows.axi ../$(BUILD_DIR)/axi_well_typed_from_rust_v1.json ) && \
 		echo "✓ Rust → Lean certificate verified (axi_well_typed_v1)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -364,8 +364,8 @@ verify-lean-e2e-axi-well-typed-v1: dirs
 verify-lean-e2e-axi-constraints-ok-v1: dirs
 	@echo "━━━ Rust → Lean certificate check (axi_constraints_ok_v1) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert constraints ../examples/ontology/OntologyRewrites.axi --out ../$(BUILD_DIR)/axi_constraints_ok_from_rust_v1.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/ontology/OntologyRewrites.axi ../$(BUILD_DIR)/axi_constraints_ok_from_rust_v1.json ) && \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert constraints ../examples/demo_data/ConstraintsOkDemo.axi --out ../$(BUILD_DIR)/axi_constraints_ok_from_rust_v1.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/demo_data/ConstraintsOkDemo.axi ../$(BUILD_DIR)/axi_constraints_ok_from_rust_v1.json ) && \
 		echo "✓ Rust → Lean certificate verified (axi_constraints_ok_v1)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -375,7 +375,7 @@ verify-lean-e2e-resolution-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (resolution v2) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_resolution_cert_v2 > ../$(BUILD_DIR)/resolution_from_rust_v2.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/resolution_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/resolution_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (resolution v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -385,7 +385,7 @@ verify-lean-e2e-normalize-path-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (normalize_path v2) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_normalize_path_cert_v2 > ../$(BUILD_DIR)/normalize_path_from_rust_v2.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/normalize_path_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/normalize_path_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (normalize_path v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -395,7 +395,7 @@ verify-lean-e2e-rewrite-derivation-v3: dirs
 	@echo "━━━ Rust → Lean certificate check (rewrite_derivation v3, .axi rules) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_rewrite_derivation_cert_v3 -- ../examples/anchors/rewrite_rules_anchor_v1.axi > ../$(BUILD_DIR)/rewrite_derivation_from_rust_v3.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/rewrite_rules_anchor_v1.axi ../$(BUILD_DIR)/rewrite_derivation_from_rust_v3.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/rewrite_rules_anchor_v1.axi ../$(BUILD_DIR)/rewrite_derivation_from_rust_v3.json ) && \
 		echo "✓ Rust → Lean certificate verified (rewrite_derivation v3)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -405,7 +405,7 @@ verify-lean-e2e-ontology-rewrites-v3: dirs
 	@echo "━━━ Rust → Lean certificate check (rewrite_derivation v3, domain .axi rules) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_ontology_rewrite_derivation_cert_v3 -- ../examples/ontology/OntologyRewrites.axi > ../$(BUILD_DIR)/ontology_rewrite_derivation_from_rust_v3.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/ontology/OntologyRewrites.axi ../$(BUILD_DIR)/ontology_rewrite_derivation_from_rust_v3.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/ontology/OntologyRewrites.axi ../$(BUILD_DIR)/ontology_rewrite_derivation_from_rust_v3.json ) && \
 		echo "✓ Rust → Lean certificate verified (ontology rewrite_derivation v3)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -415,7 +415,7 @@ verify-lean-e2e-path-equiv-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (path_equiv v2) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_path_equiv_cert_v2 > ../$(BUILD_DIR)/path_equiv_from_rust_v2.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/path_equiv_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/path_equiv_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (path_equiv v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -425,7 +425,7 @@ verify-lean-e2e-path-equiv-congr-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (path_equiv congruence v2) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_path_equiv_congr_cert_v2 > ../$(BUILD_DIR)/path_equiv_congr_from_rust_v2.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/path_equiv_congr_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/path_equiv_congr_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (path_equiv congruence v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -435,7 +435,7 @@ verify-lean-e2e-delta-f-v1: dirs
 	@echo "━━━ Rust → Lean certificate check (delta_f v1) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_delta_f_cert_v1 > ../$(BUILD_DIR)/delta_f_from_rust_v1.json ) && \
-		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/delta_f_from_rust_v1.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/delta_f_from_rust_v1.json ) && \
 		echo "✓ Rust → Lean certificate verified (delta_f v1)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \

@@ -94,9 +94,12 @@ pub const ATTR_SUBTYPE_INCLUSION: &str = "axi_inclusion";
 // Constraint attrs
 pub const ATTR_CONSTRAINT_KIND: &str = "axi_constraint_kind";
 pub const ATTR_CONSTRAINT_RELATION: &str = "axi_constraint_relation";
+pub const ATTR_CONSTRAINT_NAME: &str = "axi_constraint_name";
 pub const ATTR_CONSTRAINT_SRC_FIELD: &str = "axi_constraint_src_field";
 pub const ATTR_CONSTRAINT_DST_FIELD: &str = "axi_constraint_dst_field";
 pub const ATTR_CONSTRAINT_FIELDS: &str = "axi_constraint_fields";
+pub const ATTR_CONSTRAINT_WHERE_FIELD: &str = "axi_constraint_where_field";
+pub const ATTR_CONSTRAINT_WHERE_IN_VALUES: &str = "axi_constraint_where_in_values";
 pub const ATTR_CONSTRAINT_TEXT: &str = "axi_constraint_text";
 pub const ATTR_CONSTRAINT_INDEX: &str = "axi_constraint_index";
 

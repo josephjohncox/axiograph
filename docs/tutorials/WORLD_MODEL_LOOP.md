@@ -1,0 +1,208 @@
+# World Model Loop (JEPA + Guardrails + Promotion)
+
+**Diataxis:** Tutorial  
+**Audience:** users and contributors
+
+This tutorial shows how to:
+1) export JEPA training pairs from a full `.axi` module,  
+2) run a world model (baseline or transformer),  
+3) emit proposals with guardrails, and  
+4) validate/commit/promote.
+
+We'll use the small `examples/Family.axi` dataset.
+
+---
+
+## 0) Build the binaries
+
+```bash
+make binaries
+```
+
+---
+
+## 1) Export JEPA training pairs (generic masked-tuple)
+
+Generic mask strategy: choose a fixed number of fields per tuple.
+
+```bash
+bin/axiograph discover jepa-export examples/Family.axi \
+  --out build/family_jepa.json \
+  --mask-fields 1
+```
+
+This export includes **full schema + theory + instance**, plus a list of masked
+targets. It is anchored to `axi_digest_v1`.
+
+Grounding note:
+- Use full `.axi` modules as training input (schema + theory + instance + contexts + rewrite rules).
+- PathDB `.axpd` exports are derived for query performance, not canonical training truth.
+
+---
+
+## 2) Explicit relation masks (endpoint-focused)
+
+Sometimes you want to always mask a specific field (e.g., `parent`).
+You can post-process the export (or implement this directly in your plugin).
+
+Example JSON snippet (explicit mask list):
+
+```json
+{
+  "schema": "Fam",
+  "instance": "TinyFamily",
+  "relation": "Parent",
+  "fields": [["child","Carol"],["parent","Alice"],["ctx","CensusData"],["time","T2020"]],
+  "mask_fields": ["parent"]
+}
+```
+
+This is the **explicit mask** strategy; the generic approach is just
+`--mask-fields N`.
+
+---
+
+## 3) Run a baseline world model (MLP-style)
+
+The baseline plugin is **deterministic** and untrained (a stand-in for a small
+MLP or heuristic predictor). It demonstrates the protocol and end-to-end flow.
+
+```bash
+bin/axiograph discover world-model-propose \
+  --input examples/Family.axi \
+  --export build/family_jepa.json \
+  --out build/family_proposals.json \
+  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py \
+  --world-model-plugin-arg --strategy oracle \
+  --guardrail-profile fast \
+  --guardrail-plane both
+```
+
+The output is **evidence-plane** `proposals.json`, with provenance metadata
+describing the world model and guardrail costs.
+
+---
+
+## 4) Run a transformer-style world model (stub)
+
+The transformer stub is a skeleton that shows how to wire a PyTorch model.
+Swap in your own checkpoint or training loop.
+
+```bash
+bin/axiograph discover world-model-propose \
+  --input examples/Family.axi \
+  --export build/family_jepa.json \
+  --out build/family_proposals_transformer.json \
+  --world-model-plugin scripts/axiograph_world_model_plugin_transformer_stub.py \
+  --world-model-model transformer_v1
+```
+
+---
+
+## 5) Validate proposals (guardrails + constraints)
+
+```bash
+bin/axiograph check quality examples/Family.axi --profile fast --plane both
+```
+
+Preview validation (proposal overlay):
+
+```bash
+bin/axiograph db accept pathdb-commit \
+  --dir build/accepted_plane \
+  --accepted-snapshot head \
+  --proposals build/family_proposals.json \
+  --message "world model: family proposals"
+```
+
+---
+
+## 6) Use the REPL / server loop
+
+REPL:
+
+```text
+axiograph> wm use stub
+axiograph> wm propose build/wm_proposals.json --goal "predict missing parent links"
+```
+
+Server:
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
+  -H 'Content-Type: application/json' \
+  -d '{"goals":["predict missing parent links"],"max_new_proposals":50}' | jq .
+```
+
+---
+
+## 7) MPC plan -> draft .axi -> promote
+
+Use the MPC plan endpoint to generate multi-step proposals, then draft and
+promote a canonical module.
+
+Plan (REPL example):
+
+```text
+axiograph> wm plan build/wm_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq "has_parent=select ?p where ?p is Person limit 1"
+```
+
+Merge plan proposals into one `proposals.json`:
+
+```bash
+python - <<'PY'
+import json, time
+report = json.load(open("build/wm_plan.json"))
+proposals = []
+for step in report.get("steps", []):
+    proposals.extend(step["proposals"]["proposals"])
+out = {
+    "version": 1,
+    "generated_at": str(int(time.time())),
+    "source": {"source_type": "world_model_plan", "locator": report.get("trace_id", "wm_plan")},
+    "schema_hint": None,
+    "proposals": proposals,
+}
+json.dump(out, open("build/wm_plan_proposals.json", "w"), indent=2)
+print("wrote build/wm_plan_proposals.json")
+PY
+```
+
+Draft a canonical module:
+
+```bash
+bin/axiograph discover draft-module \
+  --proposals build/wm_plan_proposals.json \
+  --out build/wm_plan_draft.axi \
+  --module FamilyWM \
+  --schema Fam \
+  --instance WMPlan \
+  --infer-constraints
+```
+
+## 8) Promotion (accepted plane)
+
+Once proposals pass guardrails and review, promote into the accepted plane.
+See `docs/howto/ACCEPTED_PLANE.md` for the full workflow.
+
+---
+
+## Next steps
+
+- Try guardrail weight overrides and task costs:
+
+```bash
+bin/axiograph discover world-model-propose \
+  --input examples/Family.axi \
+  --export build/family_jepa.json \
+  --out build/family_proposals.json \
+  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py \
+  --guardrail-weight quality_error=20 \
+  --task-cost latency=3.2:0.5:ms \
+  --horizon-steps 4
+```
+
+- Add MPC rollouts: `axiograph tools perf world-model ...`
+- Use server MPC with auto-commit: `POST /world_model/plan` with `auto_commit=true`.
+- Use guardrail weights + task costs to shape the objective.
+- Add domain-specific theory constraints and see how they influence costs.

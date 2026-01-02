@@ -5622,10 +5622,19 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Functional {
                     src_field, dst_field, ..
                 } => format!("functional({src_field} -> {dst_field})"),
+                axiograph_pathdb::axi_semantics::ConstraintDecl::Typing { rule, .. } => {
+                    format!("typing({rule})")
+                }
+                axiograph_pathdb::axi_semantics::ConstraintDecl::SymmetricWhereIn { field, values, .. } => {
+                    format!("symmetric_where_in({field} in {{{}}})", values.join(", "))
+                }
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Symmetric { .. } => "symmetric".to_string(),
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Transitive { .. } => "transitive".to_string(),
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Key { fields, .. } => {
                     format!("key({})", fields.join(", "))
+                }
+                axiograph_pathdb::axi_semantics::ConstraintDecl::NamedBlock { name, .. } => {
+                    format!("named_block({name})")
                 }
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Unknown { text, .. } => {
                     format!("unknown({text})")
@@ -8759,9 +8768,15 @@ impl SchemaContextV1 {
                     C::Functional {
                         src_field, dst_field, ..
                     } => parts.push(format!("functional({src_field} -> {dst_field})")),
+                    C::Typing { rule, .. } => parts.push(format!("typing({rule})")),
+                    C::SymmetricWhereIn { field, values, .. } => parts.push(format!(
+                        "symmetric_where_in({field} in {{{}}})",
+                        values.join(", ")
+                    )),
                     C::Symmetric { .. } => parts.push("symmetric".to_string()),
                     C::Transitive { .. } => parts.push("transitive".to_string()),
                     C::Key { fields, .. } => parts.push(format!("key({})", fields.join(", "))), 
+                    C::NamedBlock { name, .. } => parts.push(format!("named_block({name})")),
                     C::Unknown { text, .. } => parts.push(format!("unknown({text})")),
                 }
             }

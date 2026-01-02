@@ -637,11 +637,17 @@ pub fn extract_viz_graph_with_meta(
                     dst_field,
                     ..
                 } => parts.push(format!("functional({src_field} -> {dst_field})")),
+                ConstraintDecl::Typing { rule, .. } => parts.push(format!("typing({rule})")),
+                ConstraintDecl::SymmetricWhereIn { field, values, .. } => parts.push(format!(
+                    "symmetric_where_in({field} in {{{}}})",
+                    values.join(", ")
+                )),
                 ConstraintDecl::Symmetric { .. } => parts.push("symmetric".to_string()),
                 ConstraintDecl::Transitive { .. } => parts.push("transitive".to_string()),
                 ConstraintDecl::Key { fields, .. } => {
                     parts.push(format!("key({})", fields.join(", ")))
                 }
+                ConstraintDecl::NamedBlock { name, .. } => parts.push(format!("named_block({name})")),
                 ConstraintDecl::Unknown { text, .. } => parts.push(format!("unknown({text})")),
             }
         }

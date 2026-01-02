@@ -38,8 +38,10 @@ Endpoints:
 - `GET /viz` (HTML)
 - `GET /viz.json` (JSON)
 - `GET /viz.dot` (Graphviz DOT)
-- `POST /llm/to_query` (LLM: question → query)
+- `POST /llm/to_query` (LLM: question -> query)
 - `POST /llm/agent` (LLM: tool-loop, recommended)
+- `POST /world_model/propose` (world-model proposals -> evidence-plane `proposals.json`)
+- `POST /world_model/plan` (multi-step MPC plan -> proposals + costs)
 - `POST /discover/draft-axi` (untrusted: draft canonical `.axi` from `proposals.json` content)
 
 ---
@@ -320,12 +322,85 @@ curl -sS -X POST http://127.0.0.1:7878/llm/agent \
   -d '{"question":"find the grandparents of Alice","max_steps":6,"max_rows":25}' | jq .
 ```
 
-Question → query (lower-level helper):
+Question -> query (lower-level helper):
 
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/llm/to_query \
   -H 'Content-Type: application/json' \
   -d '{"question":"list ProtoService"}' | jq .
+```
+
+---
+
+### Enable world model proposals
+
+Stub backend (no proposals; good for wiring/tests):
+
+```bash
+bin/axiograph db serve --axpd build/my_snapshot.axpd --listen 127.0.0.1:7878 --world-model-stub
+```
+
+Command plugin backend:
+
+```bash
+bin/axiograph db serve \
+  --axpd build/my_snapshot.axpd \
+  --listen 127.0.0.1:7878 \
+  --world-model-plugin /path/to/world_model_plugin \
+  --world-model-plugin-arg --some-flag \
+  --world-model-model my_world_model
+```
+
+Call the endpoint:
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
+  -H 'Content-Type: application/json' \
+  -d '{"goals":["predict missing parent links"],"max_new_proposals":50}' | jq .
+```
+
+Plan endpoint (multi-step MPC loop):
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
+  -H 'Content-Type: application/json' \
+  -d '{"horizon_steps":3,"rollouts":2,"max_new_proposals":50,"goals":["fill missing parent links"]}' | jq .
+```
+
+Stepwise auto-commit (commit each step and reload between steps):
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
+  -d '{"horizon_steps":3,"rollouts":2,"max_new_proposals":50,"auto_commit":true,"commit_stepwise":true}' | jq .
+```
+
+The response includes `commit_steps` (one WAL commit per step).
+
+Competency questions (coverage-driven cost):
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
+  -H 'Content-Type: application/json' \
+  -d '{"competency_questions":[{"name":"has_parent","query":"select ?p where ?p is Person limit 1","min_rows":1,"weight":5.0}]}' | jq .
+```
+
+To auto-commit the resulting proposals into the PathDB WAL, include:
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
+  -d '{"goals":["predict missing parent links"],"auto_commit":true,"quality":"fast","quality_plane":"both"}' | jq .
+```
+
+Guardrail weights + task costs:
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
+  -H 'Content-Type: application/json' \
+  -d '{"guardrail_weights":{"quality_error":20,"rewrite_rule_error":8},"task_costs":[{"name":"latency","value":3.2,"weight":0.5,"unit":"ms"}]}' | jq .
 ```
 
 ---

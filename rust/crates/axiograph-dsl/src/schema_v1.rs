@@ -79,6 +79,37 @@ pub enum ConstraintV1 {
         src_field: Name,
         dst_field: Name,
     },
+    /// A first-class *typing rule annotation* for a relation.
+    ///
+    /// Canonical surface syntax:
+    /// - `constraint typing Rel: rule_name`
+    ///
+    /// Notes:
+    /// - Axiograph treats these as *typed semantics hints*. A small builtin set
+    ///   is certificate-checked via `axi_constraints_ok_v1`; other rule names are
+    ///   still parsed/stored for tooling but are not yet executable/certifiable.
+    Typing {
+        relation: Name,
+        rule: Name,
+    },
+    /// Conditional symmetry: the relation must be symmetric only for tuples
+    /// whose `field` value is in `values`.
+    ///
+    /// Canonical surface syntax:
+    /// - `constraint symmetric Rel where Rel.field in {A, B, ...}`
+    ///
+    /// Notes:
+    /// - We intentionally keep the initial guard language small (membership in a
+    ///   finite set of constructor-like names) to stay readable and portable
+    ///   across Rust/Lean.
+    /// - This is part of the initial certifiable constraint subset via
+    ///   `axi_constraints_ok_v1` (it checks compatibility under symmetric
+    ///   closure; it does not require materializing inverse tuples).
+    SymmetricWhereIn {
+        relation: Name,
+        field: Name,
+        values: Vec<Name>,
+    },
     Symmetric {
         relation: Name,
     },
@@ -88,6 +119,19 @@ pub enum ConstraintV1 {
     Key {
         relation: Name,
         fields: Vec<Name>,
+    },
+    /// An opaque, named constraint block that is preserved as structured data.
+    ///
+    /// Canonical surface syntax:
+    /// - `constraint Name:` followed by an indented block (stored verbatim as
+    ///   trimmed lines).
+    ///
+    /// These blocks are used by some examples to record richer rules (deontic,
+    /// epistemic, query patterns, etc.) before they have an executable /
+    /// certifiable semantics.
+    NamedBlock {
+        name: Name,
+        body: Vec<String>,
     },
     Unknown {
         text: String,
@@ -384,28 +428,52 @@ pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError>
             }
             Section::Theory(theory_index) => {
                 if let Some(rest) = line.strip_prefix("constraint ").map(str::trim) {
-                    // Support multi-line constraint blocks (e.g. `... where` followed
-                    // by a few lines). For now we preserve them as `Unknown` so
-                    // "validate" doesn't reject canonical examples that encode richer
-                    // constraints than the v1 parser understands.
-                    let (extra, next_index) = collect_indented_block(lines.as_slice(), i + 1);
-                    if !extra.is_empty() {
+                    let rest = rest.trim();
+                    // Named constraint blocks:
+                    //   `constraint Name:` followed by an indented body.
+                    //
+                    // We keep these as first-class (but opaque) structured data so
+                    // they remain visible to tooling, even when the runtime doesn't
+                    // execute them yet.
+                    if rest.ends_with(':') {
+                        let name = rest.trim_end_matches(':').trim();
+                        if name.is_empty() {
+                            return Err(SchemaV1ParseError::Line {
+                                line: line_no,
+                                message: "constraint name missing".to_string(),
+                            });
+                        }
+                        let (body, next_index) =
+                            collect_indented_block_lines(lines.as_slice(), i + 1);
                         module.theories[theory_index]
                             .constraints
-                            .push(ConstraintV1::Unknown {
-                                text: format!("{rest} {extra}"),
+                            .push(ConstraintV1::NamedBlock {
+                                name: name.to_string(),
+                                body,
                             });
                         i = next_index;
                         continue;
                     }
 
+                    // Support multi-line constraint blocks (e.g. `... where` followed
+                    // by a few lines). We join the block and try to parse it as a
+                    // known constraint; otherwise we preserve the text as `Unknown`
+                    // so examples can record richer (not-yet-executable) constraints
+                    // without failing parsing of the whole module.
+                    let (extra, next_index) = collect_indented_block(lines.as_slice(), i + 1);
+                    let combined = if extra.is_empty() {
+                        rest.to_string()
+                    } else {
+                        format!("{rest} {extra}")
+                    };
+
                     let constraint =
-                        parse_constraint(rest).map_err(|message| SchemaV1ParseError::Line {
+                        parse_constraint(&combined).map_err(|message| SchemaV1ParseError::Line {
                             line: line_no,
                             message,
                         })?;
                     module.theories[theory_index].constraints.push(constraint);
-                    i += 1;
+                    i = if extra.is_empty() { i + 1 } else { next_index };
                     continue;
                 }
 
@@ -746,10 +814,61 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
         });
     }
 
+    if let Some(after) = rest.strip_prefix("typing ").map(str::trim) {
+        // Canonical surface syntax:
+        //   `typing Rel: some_rule_name`
+        if let Some((relation, rule)) = after.split_once(':') {
+            let relation = relation.trim();
+            let rule = rule.trim();
+            if !relation.is_empty() && !rule.is_empty() {
+                return Ok(ConstraintV1::Typing {
+                    relation: relation.to_string(),
+                    rule: rule.to_string(),
+                });
+            }
+        }
+        return Ok(ConstraintV1::Unknown {
+            text: rest.to_string(),
+        });
+    }
+
     if let Some(after) = rest.strip_prefix("symmetric ").map(str::trim) {
         if after.is_empty() {
             return Err("symmetric expects a relation name".to_string());
         }
+        // Support a minimal conditional form:
+        //
+        //   `symmetric Rel where Rel.field in {A, B, ...}`
+        //
+        // This is useful for relations that include a "kind" field (e.g. a
+        // polymorphic `Relationship` relation where only some relTypes are
+        // symmetric).
+        if let Some((relation, guard)) = after.split_once(" where ") {
+            let relation = relation.trim();
+            let guard = guard.trim();
+            if !relation.is_empty() {
+                if let Some((lhs, rhs)) = guard.split_once(" in ") {
+                    let lhs = lhs.trim();
+                    let rhs = rhs.trim();
+                    if let Ok((rel2, field)) = split_rel_field(lhs) {
+                        if rel2 == relation {
+                            if let Some(values) = parse_name_set_literal(rhs) {
+                                return Ok(ConstraintV1::SymmetricWhereIn {
+                                    relation: relation.to_string(),
+                                    field,
+                                    values,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(ConstraintV1::Unknown {
+                text: rest.to_string(),
+            });
+        }
+
+        // Unconditional symmetry.
         return Ok(ConstraintV1::Symmetric {
             relation: after.to_string(),
         });
@@ -808,6 +927,21 @@ fn split_rel_field(s: &str) -> Result<(Name, Name), String> {
         return Err(format!("expected `Rel.field`, got `{s}`"));
     }
     Ok((rel.to_string(), field.to_string()))
+}
+
+fn parse_name_set_literal(s: &str) -> Option<Vec<Name>> {
+    let s = s.trim();
+    let inner = s.strip_prefix('{')?.strip_suffix('}')?.trim();
+    let values = inner
+        .split(',')
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return None;
+    }
+    Some(values)
 }
 
 fn collect_indented_block(lines: &[&str], start_index: usize) -> (String, usize) {

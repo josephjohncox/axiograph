@@ -270,10 +270,23 @@ impl UnifiedStorage {
                 src_field,
                 dst_field,
             } => format!("functional {relation} ({src_field} -> {dst_field})"),
+            ConstraintV1::Typing { relation, rule } => format!("typing {relation}: {rule}"),
+            ConstraintV1::SymmetricWhereIn {
+                relation,
+                field,
+                values,
+            } => format!("symmetric {relation} where {relation}.{field} in {{{}}}", values.join(", ")),
             ConstraintV1::Symmetric { relation } => format!("symmetric {relation}"),
             ConstraintV1::Transitive { relation } => format!("transitive {relation}"),
             ConstraintV1::Key { relation, fields } => {
                 format!("key {relation} ({})", fields.join(", "))
+            }
+            ConstraintV1::NamedBlock { name, body } => {
+                if body.is_empty() {
+                    format!("{name}:")
+                } else {
+                    format!("{name}: {}", body.join(" "))
+                }
             }
             ConstraintV1::Unknown { text } => text.clone(),
         }

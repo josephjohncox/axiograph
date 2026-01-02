@@ -521,6 +521,28 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
                 (ATTR_CONSTRAINT_DST_FIELD.to_string(), dst_field.clone()),
             ],
         ),
+        ConstraintV1::Typing { relation, rule } => (
+            "typing",
+            vec![
+                (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
+                (ATTR_CONSTRAINT_TEXT.to_string(), rule.clone()),
+            ],
+        ),
+        ConstraintV1::SymmetricWhereIn {
+            relation,
+            field,
+            values,
+        } => (
+            "symmetric_where_in",
+            vec![
+                (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
+                (ATTR_CONSTRAINT_WHERE_FIELD.to_string(), field.clone()),
+                (
+                    ATTR_CONSTRAINT_WHERE_IN_VALUES.to_string(),
+                    values.join(","),
+                ),
+            ],
+        ),
         ConstraintV1::Symmetric { relation } => (
             "symmetric",
             vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())],
@@ -534,6 +556,13 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
             vec![
                 (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
                 (ATTR_CONSTRAINT_FIELDS.to_string(), fields.join(",")),
+            ],
+        ),
+        ConstraintV1::NamedBlock { name, body } => (
+            "named_block",
+            vec![
+                (ATTR_CONSTRAINT_NAME.to_string(), name.clone()),
+                (ATTR_CONSTRAINT_TEXT.to_string(), body.join("\n")),
             ],
         ),
         ConstraintV1::Unknown { text } => {

@@ -128,6 +128,26 @@ For “codebase discovery” we can ingest a repo into:
 - lightweight repo edges (definitions/imports/TODOs),
 - and (optionally) protobuf/gRPC API structure from a Buf descriptor set.
 
+### 6. World model proposals (JEPA / objective-driven)
+
+World models are **untrusted** proposal generators that emit evidence-plane
+`proposals.json` overlays. They plug into the same ingest/promote pipeline.
+
+Example (baseline plugin):
+
+```bash
+axiograph discover jepa-export examples/Family.axi --out build/family_jepa.json
+axiograph ingest world-model \
+  --input examples/Family.axi \
+  --export build/family_jepa.json \
+  --out build/family_proposals.json \
+  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py
+```
+
+Note: use full `.axi` modules (schema + theory + instance + contexts) as the
+training/export source. PathDB exports are derived and should only be used for
+query performance.
+
 Offline/local repo:
 
 ```bash
@@ -141,7 +161,7 @@ axiograph ingest github import /path/to/repo --out-dir build/github_import/demo 
   --proto-descriptor examples/proto/large_api/descriptor.json
 ```
 
-### 6. Web pages (scrape/crawl) → evidence artifacts
+### 7. Web pages (scrape/crawl) -> evidence artifacts
 
 Web ingestion is discovery tooling (untrusted):
 

@@ -42,6 +42,7 @@ mod store_sync;
 mod synthetic_pathdb;
 mod viz;
 mod web;
+mod world_model;
 
 #[derive(Parser)]
 #[command(name = "axiograph")]
@@ -616,6 +617,24 @@ struct DbServeArgs {
     #[arg(long)]
     llm_model: Option<String>,
 
+    /// Enable world model plugin endpoints for proposal generation.
+    ///
+    /// Choose at most one backend: `--world-model-stub` or `--world-model-plugin ...`.
+    #[arg(long)]
+    world_model_stub: bool,
+
+    /// Optional world model plugin executable (speaks `axiograph_world_model_v1`).
+    #[arg(long)]
+    world_model_plugin: Option<PathBuf>,
+
+    /// Extra args for `--world-model-plugin` (repeatable).
+    #[arg(long)]
+    world_model_plugin_arg: Vec<String>,
+
+    /// Optional world model model name for provenance (free-form).
+    #[arg(long)]
+    world_model_model: Option<String>,
+
     /// LRU capacity (number of path signatures) for deeper-than-indexed paths.
     /// `0` disables the LRU cache.
     #[arg(long, default_value_t = 0)]
@@ -914,6 +933,9 @@ enum IngestCommands {
         #[arg(long)]
         schema_hint: Option<String>,
     },
+
+    /// Run a world model plugin to propose new facts/relations (evidence plane).
+    WorldModel(WorldModelProposeArgs),
 }
 
 #[derive(Subcommand)]
@@ -1205,6 +1227,148 @@ enum DiscoverCommands {
         #[arg(long)]
         llm_timeout_secs: Option<u64>,
     },
+
+    /// Export JEPA/SSL training pairs from a canonical `.axi` module.
+    ///
+    /// This exports **full** schema+theory+instance context and a list of
+    /// masked targets derived from instance tuples. It is anchored to the
+    /// module's `axi_digest_v1` and is suitable for self-supervised training
+    /// pipelines.
+    JepaExport {
+        /// Input `.axi` module (canonical `axi_v1`)
+        input: PathBuf,
+        /// Output JSON file
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Optional instance name filter (only export targets from this instance)
+        #[arg(long)]
+        instance: Option<String>,
+        /// Max number of target items to emit (0 = all)
+        #[arg(long, default_value_t = 0)]
+        max_items: usize,
+        /// Number of fields to mask per tuple (default: 1)
+        #[arg(long, default_value_t = 1)]
+        mask_fields: usize,
+        /// RNG seed (deterministic)
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+    },
+
+    /// Run a world model plugin to propose new facts/relations (evidence plane).
+    WorldModelPropose(WorldModelProposeArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct WorldModelProposeArgs {
+    /// Input `.axi` or `.axpd` snapshot (used for guardrails / validation).
+    input: PathBuf,
+
+    /// Optional JEPA export JSON (if provided, passed to the world model).
+    #[arg(long)]
+    export: Option<PathBuf>,
+
+    /// Optional output path for a generated JEPA export.
+    #[arg(long)]
+    export_out: Option<PathBuf>,
+
+    /// Instance filter for generated JEPA export (only when `--export` is not set).
+    #[arg(long)]
+    export_instance: Option<String>,
+
+    /// Cap the number of JEPA items generated (0 = no cap).
+    #[arg(long, default_value_t = 0)]
+    export_max_items: usize,
+
+    /// Number of fields to mask per JEPA item.
+    #[arg(long, default_value_t = 1)]
+    export_mask_fields: usize,
+
+    /// Random seed for JEPA export masking.
+    #[arg(long, default_value_t = 1)]
+    export_seed: u64,
+
+    /// Output proposals JSON (Evidence/Proposals schema).
+    #[arg(short, long)]
+    out: PathBuf,
+
+    /// Optional world model plugin executable (speaks `axiograph_world_model_v1`).
+    #[arg(long)]
+    world_model_plugin: Option<PathBuf>,
+
+    /// Extra args for `--world-model-plugin` (repeatable).
+    #[arg(long)]
+    world_model_plugin_arg: Vec<String>,
+
+    /// Use the stub world model backend (emits no proposals).
+    #[arg(long)]
+    world_model_stub: bool,
+
+    /// Optional model name for provenance (free-form).
+    #[arg(long)]
+    world_model_model: Option<String>,
+
+    /// Max new proposals to keep (0 = no cap).
+    #[arg(long, default_value_t = 0)]
+    max_new_proposals: usize,
+
+    /// Optional goal strings passed to the world model (repeatable).
+    #[arg(long)]
+    goal: Vec<String>,
+
+    /// Optional random seed passed to the world model.
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// Guardrail profile: off|fast|strict.
+    #[arg(long, default_value = "fast")]
+    guardrail_profile: String,
+
+    /// Guardrail plane: meta|data|both.
+    #[arg(long, default_value = "both")]
+    guardrail_plane: String,
+
+    /// Override guardrail weights (repeatable): key=value.
+    ///
+    /// Keys: quality_error, quality_warning, quality_info,
+    /// axi_fact_error, rewrite_rule_error, context_error, modal_error.
+    #[arg(long)]
+    guardrail_weight: Vec<String>,
+
+    /// Task cost terms (repeatable): name=value[:weight[:unit]].
+    #[arg(long)]
+    task_cost: Vec<String>,
+
+    /// Optional planning horizon (steps) passed to the world model.
+    #[arg(long)]
+    horizon_steps: Option<usize>,
+
+    /// Optional guardrail report output path.
+    #[arg(long)]
+    guardrail_out: Option<PathBuf>,
+
+    /// Commit proposals into the PathDB WAL under this accepted-plane directory.
+    #[arg(long)]
+    commit_dir: Option<PathBuf>,
+
+    /// Accepted snapshot id for WAL commit (default: head).
+    #[arg(long, default_value = "head")]
+    accepted_snapshot: String,
+
+    /// Commit message for WAL commit.
+    #[arg(long)]
+    commit_message: Option<String>,
+
+    /// Validate proposals before commit (default: true when committing).
+    #[arg(long)]
+    validate: Option<bool>,
+
+    /// Validation quality profile: off|fast|strict.
+    #[arg(long, default_value = "fast")]
+    quality: String,
+
+    /// Validation plane: meta|data|both.
+    #[arg(long, default_value = "both")]
+    quality_plane: String,
 }
 
 #[derive(Subcommand)]
@@ -1618,6 +1782,9 @@ fn main() -> Result<()> {
                     schema_hint.as_deref(),
                 )?;
             }
+            IngestCommands::WorldModel(args) => {
+                cmd_world_model_propose(&args)?;
+            }
         },
         Commands::Check { command } => match command {
             CheckCommands::Validate { input } => {
@@ -1973,6 +2140,26 @@ fn main() -> Result<()> {
 
                 fs::write(&out, draft)?;
                 println!("wrote {}", out.display());
+            }
+            DiscoverCommands::JepaExport {
+                input,
+                out,
+                instance,
+                max_items,
+                mask_fields,
+                seed,
+            } => {
+                cmd_discover_jepa_export(
+                    &input,
+                    &out,
+                    instance.as_deref(),
+                    max_items,
+                    mask_fields,
+                    seed,
+                )?;
+            }
+            DiscoverCommands::WorldModelPropose(args) => {
+                cmd_world_model_propose(&args)?;
             }
         },
         Commands::Accept { command } => {
@@ -6155,6 +6342,224 @@ fn cmd_discover_augment_proposals(
         trace.summary.proposals_added,
         trace.summary.schema_hints_set
     );
+
+    Ok(())
+}
+
+fn cmd_discover_jepa_export(
+    input: &PathBuf,
+    out: &PathBuf,
+    instance_filter: Option<&str>,
+    max_items: usize,
+    mask_fields: usize,
+    seed: u64,
+) -> Result<()> {
+    let opts = crate::world_model::JepaExportOptions {
+        instance_filter: instance_filter.map(|s| s.to_string()),
+        max_items,
+        mask_fields,
+        seed,
+    };
+    crate::world_model::write_jepa_export(input, out, &opts)?;
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
+    if args.world_model_stub && args.world_model_plugin.is_some() {
+        return Err(anyhow!(
+            "choose at most one world model backend: --world-model-stub or --world-model-plugin"
+        ));
+    }
+    if !args.world_model_stub && args.world_model_plugin.is_none() {
+        return Err(anyhow!(
+            "world model backend is not configured (use --world-model-plugin or --world-model-stub)"
+        ));
+    }
+
+    let mut wm = crate::world_model::WorldModelState::default();
+    if args.world_model_stub {
+        wm.backend = crate::world_model::WorldModelBackend::Stub;
+    } else if let Some(plugin) = args.world_model_plugin.as_ref() {
+        wm.backend = crate::world_model::WorldModelBackend::Command {
+            program: plugin.clone(),
+            args: args.world_model_plugin_arg.clone(),
+        };
+    }
+    wm.model = args.world_model_model.clone();
+
+    let input_ext = args
+        .input
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    let mut axi_text: Option<String> = None;
+    let mut axi_digest: Option<String> = None;
+    if input_ext.eq_ignore_ascii_case("axi") {
+        let text = fs::read_to_string(&args.input)?;
+        axi_digest = Some(axiograph_dsl::digest::axi_digest_v1(&text));
+        axi_text = Some(text);
+    }
+
+    let mut export_inline: Option<crate::world_model::JepaExportFileV1> = None;
+    let mut export_path: Option<String> = None;
+    if let Some(export) = args.export.as_ref() {
+        export_path = Some(export.display().to_string());
+    } else if let Some(text) = axi_text.as_ref() {
+        let opts = crate::world_model::JepaExportOptions {
+            instance_filter: args.export_instance.clone(),
+            max_items: args.export_max_items,
+            mask_fields: args.export_mask_fields,
+            seed: args.export_seed,
+        };
+        let export = crate::world_model::build_jepa_export_from_axi_text(text, &opts)?;
+        if let Some(out_path) = args.export_out.as_ref() {
+            let json = serde_json::to_string_pretty(&export)?;
+            fs::write(out_path, json)?;
+            export_path = Some(out_path.display().to_string());
+            println!("wrote {}", out_path.display());
+        } else {
+            export_inline = Some(export);
+        }
+    } else if args.export_out.is_some() {
+        return Err(anyhow!("--export-out requires `.axi` input or --export"));
+    }
+
+    let mut db: Option<axiograph_pathdb::PathDB> = None;
+    let guardrail_profile = args.guardrail_profile.trim().to_ascii_lowercase();
+    let guardrail_plane = args.guardrail_plane.trim().to_ascii_lowercase();
+    let guardrail_weights = if args.guardrail_weight.is_empty() {
+        crate::world_model::GuardrailCostWeightsV1::defaults()
+    } else {
+        crate::world_model::parse_guardrail_weights(&args.guardrail_weight)?
+    };
+
+    let task_costs = crate::world_model::parse_task_costs(&args.task_cost)?;
+
+    let guardrail = if guardrail_profile != "off" {
+        let loaded = crate::load_pathdb_for_cli(&args.input)?;
+        let report = crate::world_model::compute_guardrail_costs(
+            &loaded,
+            &args.input.display().to_string(),
+            &guardrail_profile,
+            &guardrail_plane,
+            &guardrail_weights,
+        )?;
+        db = Some(loaded);
+        if let Some(path) = args.guardrail_out.as_ref() {
+            let json = serde_json::to_string_pretty(&report)?;
+            fs::write(path, json)?;
+            println!("wrote {}", path.display());
+        }
+        Some(report)
+    } else {
+        None
+    };
+
+    let mut input = crate::world_model::WorldModelInputV1::default();
+    input.axi_digest_v1 = axi_digest.clone();
+    input.axi_module_text = axi_text.clone();
+    input.export = export_inline;
+    input.export_path = export_path;
+    if guardrail.is_some() {
+        input.guardrail = guardrail.clone();
+    }
+
+    if input_ext.eq_ignore_ascii_case("axpd") || input_ext.eq_ignore_ascii_case("axi") {
+        let kind = if input_ext.eq_ignore_ascii_case("axpd") {
+            "axpd"
+        } else {
+            "axi"
+        };
+        input.snapshot = Some(crate::world_model::WorldModelSnapshotRefV1 {
+            kind: kind.to_string(),
+            path: args.input.display().to_string(),
+            snapshot_id: None,
+            accepted_snapshot_id: None,
+        });
+    }
+
+    let mut options = crate::world_model::WorldModelOptionsV1::default();
+    options.max_new_proposals = args.max_new_proposals;
+    options.seed = args.seed;
+    options.goals = args.goal.clone();
+    options.task_costs = task_costs.clone();
+    options.horizon_steps = args.horizon_steps;
+
+    let req = crate::world_model::make_world_model_request(input, options);
+    let mut response = wm.propose(&req)?;
+    if let Some(err) = response.error.take() {
+        return Err(anyhow!("world model error: {err}"));
+    }
+
+    let provenance = crate::world_model::WorldModelProvenance {
+        trace_id: response.trace_id.clone(),
+        backend: wm.backend_label(),
+        model: wm.model.clone(),
+        axi_digest_v1: axi_digest.clone(),
+        guardrail_total_cost: guardrail
+            .as_ref()
+            .map(|g| g.summary.total_cost),
+        guardrail_profile: if guardrail_profile == "off" {
+            None
+        } else {
+            Some(guardrail_profile.clone())
+        },
+        guardrail_plane: if guardrail_profile == "off" {
+            None
+        } else {
+            Some(guardrail_plane.clone())
+        },
+    };
+
+    let mut proposals =
+        crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+
+    if args.max_new_proposals > 0 && proposals.proposals.len() > args.max_new_proposals {
+        proposals.proposals.truncate(args.max_new_proposals);
+    }
+
+    let json = serde_json::to_string_pretty(&proposals)?;
+    fs::write(&args.out, &json)?;
+    println!("wrote {}", args.out.display());
+
+    if let Some(dir) = args.commit_dir.as_ref() {
+        let should_validate = args.validate.unwrap_or(true);
+        if should_validate {
+            let base = if let Some(db) = db.as_ref() {
+                db
+            } else {
+                db = Some(crate::load_pathdb_for_cli(&args.input)?);
+                db.as_ref().expect("db loaded")
+            };
+            let validation = crate::proposals_validate::validate_proposals_v1(
+                base,
+                &proposals,
+                &args.quality,
+                &args.quality_plane,
+            )?;
+            if !validation.ok {
+                return Err(anyhow!(
+                    "refusing to commit: proposals validation failed (errors={}, warnings={})",
+                    validation.quality_delta.summary.error_count,
+                    validation.quality_delta.summary.warning_count
+                ));
+            }
+        }
+
+        let res = crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
+            dir,
+            &args.accepted_snapshot,
+            &[],
+            &[args.out.clone()],
+            args.commit_message.as_deref(),
+        )?;
+        println!(
+            "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
+            res.ops_added, res.accepted_snapshot_id, res.snapshot_id
+        );
+    }
 
     Ok(())
 }

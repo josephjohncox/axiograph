@@ -486,6 +486,28 @@ This supports:
 
 See `docs/reference/LLM_REPL_PLUGIN.md` for the plugin protocol.
 
+### 3f) World model proposals (JEPA / objective-driven)
+
+The REPL also supports a **world model** proposal flow (untrusted, evidence-plane):
+
+```text
+axiograph> wm use stub
+axiograph> wm status
+axiograph> wm propose build/wm_proposals.json --goal "predict missing parent links" --max 50
+```
+
+MPC-style planning loop (multi-step):
+
+```text
+axiograph> wm plan build/wm_plan.json --steps 3 --rollouts 2 --goal "fill missing parent links" --cq "has_parent=select ?p where ?p is Person limit 1"
+```
+
+To commit proposals into the PathDB WAL (store-backed workflows), pass `--commit-dir`:
+
+```text
+axiograph> wm propose build/wm_proposals.json --commit-dir build/accepted_plane --message "wm: parent predictions"
+```
+
 Built-in deterministic backend (good for demos/tests):
 
 ```text

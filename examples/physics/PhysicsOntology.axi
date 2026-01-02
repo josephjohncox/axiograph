@@ -195,7 +195,7 @@ theory PhysicsRules on Physics:
   constraint key FormOn(form, manifold)
 
   -- --------------------------------------------------------------------------
-  -- Richer typing rules (currently stored as “unknown” constraints)
+  -- Richer typing rules (stored as first-class *typing constraints*)
   -- --------------------------------------------------------------------------
   --
   -- These are examples of the kind of “dependent typing” we *want* to enforce:
@@ -205,7 +205,7 @@ theory PhysicsRules on Physics:
   --
   -- Today the canonical surface records these as explicit constraints (reviewable),
   -- and the runtime can use them as metadata; later we can:
-  -- - parse these into a structured constraint form, and/or
+  -- - make these executable as part of typed elaboration / query planning, and
   -- - emit certificates that Lean checks against a formal semantics.
   constraint typing ExteriorDerivative: preserves_manifold_and_increments_degree
   constraint typing Wedge: preserves_manifold_and_adds_degree

@@ -1488,6 +1488,31 @@ function renderDetail(id) {
           ["page", attrs.page],
         ]);
       }
+      if (n.entity_type === "AxiMetaTheory") {
+        const cids = outgoing
+          .filter(e => String(e.label || "") === "axi_theory_has_constraint")
+          .map(e => e.target);
+        const blocks = [];
+        for (const cid of cids) {
+          const cn = nodeById.get(cid);
+          if (!cn) continue;
+          const kind = cn.attrs && cn.attrs.axi_constraint_kind ? String(cn.attrs.axi_constraint_kind) : "";
+          if (kind !== "named_block") continue;
+          blocks.push(cn);
+        }
+        blocks.sort((a, b) => String((a.attrs && a.attrs.axi_constraint_name) || a.display_name || "").localeCompare(
+          String((b.attrs && b.attrs.axi_constraint_name) || b.display_name || "")
+        ));
+        if (!blocks.length) return `<div class="muted">(no named-block constraints in this view)</div>`;
+        const rows = blocks.map(b => {
+          const nm = (b.attrs && b.attrs.axi_constraint_name) ? String(b.attrs.axi_constraint_name) : (b.display_name || "");
+          return `<tr><td><a class="link" href="#" data-id="${b.id}">${escapeHtml(nm)}</a></td></tr>`;
+        }).join("");
+        return `
+          <div class="muted" style="margin-bottom:8px;">Named-block constraints are preserved as structured (but opaque) theory content.</div>
+          <table><thead><tr><th>named blocks</th></tr></thead><tbody>${rows}</tbody></table>
+        `;
+      }
       return "";
     })();
     return `
