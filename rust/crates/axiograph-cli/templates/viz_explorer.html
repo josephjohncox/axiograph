@@ -16,6 +16,7 @@ section { overflow: auto; padding: 0; display: grid; grid-template-rows: 420px 1
 input[type="search"] { width: 100%; padding: 8px 10px; font-size: 14px; }
 .serverbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .serverbar select { padding: 6px 8px; font-size: 13px; border: 1px solid #ddd; border-radius: 8px; background: #fff; }
+.serverbar input { padding: 6px 8px; font-size: 13px; border: 1px solid #ddd; border-radius: 8px; background: #fff; }
 .filters select { padding: 6px 8px; font-size: 13px; border: 1px solid #ddd; border-radius: 8px; background: #fff; }
 .btn { padding: 6px 10px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
 .btn:hover { border-color: #bbb; }
@@ -69,6 +70,11 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; font
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 a.link { color: #2b7fff; text-decoration: none; }
 a.link:hover { text-decoration: underline; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 2px solid #999; margin-left: 6px; margin-right: 4px; vertical-align: middle; }
+.swatch.plane-accepted { border-color: #1b5e20; }
+.swatch.plane-evidence { border-color: #b85c00; }
+.swatch.plane-data { border-color: #2b7fff; }
+.swatch.plane-meta { border-color: #777; }
 </style>
 </head>
 <body>
@@ -116,9 +122,14 @@ a.link:hover { text-decoration: underline; }
     </div>
   </details>
   <div class="row" style="margin-top:8px;"><span class="muted">planes:</span>
-    <label><input type="checkbox" id="show_plane_accepted" checked/>accepted</label>
-    <label><input type="checkbox" id="show_plane_evidence" checked/>evidence</label>
-    <label><input type="checkbox" id="show_plane_data" checked/>data</label>
+    <label><input type="checkbox" id="show_plane_accepted" checked/><span class="swatch plane-accepted"></span>accepted</label>
+    <label><input type="checkbox" id="show_plane_evidence" checked/><span class="swatch plane-evidence"></span>evidence</label>
+    <label><input type="checkbox" id="show_plane_data" checked/><span class="swatch plane-data"></span>data</label>
+  </div>
+  <div class="row" style="margin-top:8px;"><span class="muted">runs:</span>
+    <select id="run_filter"></select>
+    <label><input type="checkbox" id="show_only_run"/>only run</label>
+    <button id="run_clear" type="button">clear</button>
   </div>
   <div class="row" style="margin-top:8px;"><span class="muted">context:</span>
     <select id="context_filter"></select>
@@ -372,6 +383,9 @@ let selectedId = null;
 const show_plane_accepted = document.getElementById("show_plane_accepted");
 const show_plane_evidence = document.getElementById("show_plane_evidence");
 const show_plane_data = document.getElementById("show_plane_data");
+const runFilterEl = document.getElementById("run_filter");
+const runOnlyEl = document.getElementById("show_only_run");
+const runClearBtn = document.getElementById("run_clear");
 const layoutAlgoEl = document.getElementById("layout_algo");
 const layoutCenterEl = document.getElementById("layout_center");
 const layoutRefreshBtn = document.getElementById("layout_refresh");
@@ -476,6 +490,8 @@ const ui = {
   pathEdgeIdxs: [],
   pathMessage: "",
   highlightIds: new Set(),
+  activeRunId: null,
+  runMap: new Map(),
   draftOverlay: null,
   draftSelected: new Set(),
   reviewActionStatus: "",
@@ -483,6 +499,8 @@ const ui = {
   layoutCenter: "focus",
   layoutSeed: 0,
   layoutBounds: null,
+  components: null,
+  componentByNode: null,
 };
 
 // Sidebar tabs (keep the UI scannable as tooling grows).
@@ -673,6 +691,122 @@ function selectedContextFilter() {
   return String(contextFilterEl.value || "*");
 }
 
+function setActiveRun(runId) {
+  ui.activeRunId = runId || null;
+  if (!ui.activeRunId) {
+    ui.highlightIds = new Set();
+  } else {
+    const nodes = ui.runMap.get(ui.activeRunId) || [];
+    ui.highlightIds = new Set(nodes);
+    if (nodes.length) selectedId = nodes[0];
+  }
+  rerender();
+}
+
+function initRunFilter() {
+  if (!runFilterEl) return;
+  runFilterEl.innerHTML = "";
+  ui.runMap = new Map();
+  for (const n of (graph.nodes || [])) {
+    const rid = runIdForNode(n);
+    if (!rid) continue;
+    if (!ui.runMap.has(rid)) ui.runMap.set(rid, []);
+    ui.runMap.get(rid).push(n.id);
+  }
+  const runs = Array.from(ui.runMap.keys());
+  if (!runs.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(no runs)";
+    runFilterEl.appendChild(opt);
+    runFilterEl.disabled = true;
+    if (runOnlyEl) runOnlyEl.disabled = true;
+    if (runClearBtn) runClearBtn.disabled = true;
+    return;
+  }
+  runs.sort((a, b) => String(a).localeCompare(String(b)));
+  const allOpt = document.createElement("option");
+  allOpt.value = "";
+  allOpt.textContent = "(all runs)";
+  runFilterEl.appendChild(allOpt);
+  for (const rid of runs) {
+    const opt = document.createElement("option");
+    opt.value = rid;
+    const count = (ui.runMap.get(rid) || []).length;
+    opt.textContent = count ? `${rid} (${count})` : rid;
+    runFilterEl.appendChild(opt);
+  }
+  runFilterEl.disabled = false;
+  if (runOnlyEl) runOnlyEl.disabled = false;
+  if (runClearBtn) runClearBtn.disabled = false;
+
+  runFilterEl.addEventListener("change", () => {
+    const v = String(runFilterEl.value || "");
+    setActiveRun(v);
+  });
+  if (runClearBtn) {
+    runClearBtn.addEventListener("click", () => {
+      runFilterEl.value = "";
+      setActiveRun(null);
+    });
+  }
+}
+
+function computeComponents() {
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  if (!nodes.length) return null;
+  if (nodes.length > 80000 || edges.length > 250000) return null;
+  const adj = new Map();
+  for (const n of nodes) adj.set(n.id, []);
+  for (const e of edges) {
+    if (!adj.has(e.source) || !adj.has(e.target)) continue;
+    adj.get(e.source).push(e.target);
+    adj.get(e.target).push(e.source);
+  }
+  const visited = new Set();
+  const components = [];
+  const componentByNode = new Map();
+  for (const n of nodes) {
+    if (visited.has(n.id)) continue;
+    const comp = [];
+    const stack = [n.id];
+    visited.add(n.id);
+    while (stack.length) {
+      const cur = stack.pop();
+      comp.push(cur);
+      const nbrs = adj.get(cur) || [];
+      for (const nb of nbrs) {
+        if (visited.has(nb)) continue;
+        visited.add(nb);
+        stack.push(nb);
+      }
+    }
+    for (const id of comp) componentByNode.set(id, components.length);
+    components.push(comp);
+  }
+  components.sort((a, b) => b.length - a.length);
+  return { components, componentByNode };
+}
+
+function pickRandomComponentNode(excludeNodeId) {
+  if (!ui.components || !ui.components.length) return null;
+  const excludeIdx = (excludeNodeId != null && ui.componentByNode)
+    ? ui.componentByNode.get(excludeNodeId)
+    : null;
+  const candidates = [];
+  for (let i = 0; i < ui.components.length; i++) {
+    if (excludeIdx != null && i === excludeIdx) continue;
+    candidates.push(i);
+  }
+  const pickFrom = candidates.length ? candidates : ui.components.map((_, i) => i);
+  if (!pickFrom.length) return null;
+  const compIdx = pickFrom[Math.floor(Math.random() * pickFrom.length)];
+  const comp = ui.components[compIdx];
+  if (!comp || !comp.length) return null;
+  return comp[Math.floor(Math.random() * comp.length)];
+}
+
 function clamp01(x) {
   if (!Number.isFinite(x)) return 0;
   if (x < 0) return 0;
@@ -718,6 +852,15 @@ function nodeColor(n) {
   if (n.kind === "homotopy") return "#e9d8fd";
   if (n.kind === "fact") return "#ffe08a";
   return "#9ec5ff";
+}
+
+function planeStrokeColor(n) {
+  const plane = n && n.plane ? String(n.plane) : "";
+  if (plane === "accepted") return "#1b5e20";
+  if (plane === "evidence") return "#b85c00";
+  if (plane === "data") return "#2b7fff";
+  if (plane === "meta") return "#777";
+  return "#666";
 }
 
 function edgeColor(e) {
@@ -767,6 +910,12 @@ function nodeShortLabel(n) {
 function isTupleLike(n) {
   if (!n) return false;
   return n.kind === "fact" || n.kind === "morphism" || n.kind === "homotopy";
+}
+
+function runIdForNode(n) {
+  if (!n || !n.attrs) return "";
+  const raw = n.attrs.meta_axiograph_world_model_trace_id || n.attrs.axiograph_world_model_trace_id;
+  return raw ? String(raw) : "";
 }
 
 function firstOutTargetId(srcId, edgeLabel) {
@@ -957,6 +1106,10 @@ function isNodeVisible(n) {
   if (n.plane === "accepted" && show_plane_accepted && !show_plane_accepted.checked) return false;
   if (n.plane === "evidence" && show_plane_evidence && !show_plane_evidence.checked) return false;
   if (n.plane === "data" && show_plane_data && !show_plane_data.checked) return false;
+  if (runOnlyEl && runOnlyEl.checked) {
+    if (!ui.activeRunId) return false;
+    if (runIdForNode(n) !== ui.activeRunId) return false;
+  }
   const ctx = selectedContextFilter();
   if (ctx !== "*") {
     // Filter facts by context membership.
@@ -1695,6 +1848,12 @@ function escapeHtml(s) {
 
 searchEl.addEventListener("input", rerender);
 renderNodeList("");
+initRunFilter();
+const compInfo = computeComponents();
+if (compInfo) {
+  ui.components = compInfo.components;
+  ui.componentByNode = compInfo.componentByNode;
+}
 
 function bfsDepths(startIds, edgeIdxs) {
   const depth = new Map();
@@ -1941,11 +2100,24 @@ function renderGraph(selectedId) {
     const isSelected = n.id === selectedId;
     const isNeighbor = neighborSet.has(n.id);
     const isHighlighted = ui.highlightIds && ui.highlightIds.has(n.id);
-    circle.setAttribute("r", isSelected ? "12" : (isNeighbor ? "10" : (isHighlighted ? "10" : "9")));
+    const baseR = isSelected ? 12 : (isNeighbor ? 10 : (isHighlighted ? 10 : 9));
+    circle.setAttribute("r", String(baseR));
     circle.setAttribute("fill", nodeColor(n));
-    circle.setAttribute("stroke", isSelected ? "#2b7fff" : (isNeighbor ? "#ff006e" : (isHighlighted ? "#ff9800" : "#444")));
-    circle.setAttribute("stroke-width", isSelected ? "2.5" : (isNeighbor ? "2.0" : (isHighlighted ? "2.0" : "1.2")));
+    circle.setAttribute("stroke", planeStrokeColor(n));
+    circle.setAttribute("stroke-width", "2.0");
     circle.setAttribute("opacity", (selectedId != null && !isSelected && !isNeighbor) ? "0.65" : "1.0");
+
+    if (isSelected || isNeighbor || isHighlighted) {
+      const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      ring.setAttribute("cx", p.x);
+      ring.setAttribute("cy", p.y);
+      ring.setAttribute("r", String(baseR + 3));
+      ring.setAttribute("fill", "none");
+      ring.setAttribute("stroke", isSelected ? "#2b7fff" : (isNeighbor ? "#ff006e" : "#ff9800"));
+      ring.setAttribute("stroke-width", "2.2");
+      ring.setAttribute("opacity", (selectedId != null && !isSelected && !isNeighbor) ? "0.55" : "0.95");
+      gEl.appendChild(ring);
+    }
 
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
     label.setAttribute("x", p.x);
@@ -1985,6 +2157,7 @@ function rerender() {
 for (const el of [
   show_plane_accepted, show_plane_evidence, show_plane_data,
   show_entity, show_fact, show_morphism, show_homotopy, show_meta,
+  runOnlyEl,
   show_edge_relation, show_edge_equivalence, show_edge_meta
 ]) {
   if (!el) continue;
@@ -2005,6 +2178,7 @@ if (clearPathBtn) {
 }
 updatePathStatus();
 initContextFilter();
+if (runOnlyEl) runOnlyEl.addEventListener("change", rerender);
 
 // ---------------------------------------------------------------------------
 // Add data (WAL overlays)
@@ -3795,13 +3969,15 @@ async function initServerControls() {
   if (!(proto === "http:" || proto === "https:")) return;
 
   try {
-    const [statusResp, snapsResp] = await Promise.all([
+    const [statusResp, snapsResp, ctxResp] = await Promise.all([
       fetch("/status", { cache: "no-store" }),
       fetch("/snapshots", { cache: "no-store" }),
+      fetch("/contexts", { cache: "no-store" }),
     ]);
     if (!statusResp.ok || !snapsResp.ok) return;
     const status = await statusResp.json();
     const snaps = await snapsResp.json();
+    const ctxsPayload = ctxResp && ctxResp.ok ? await ctxResp.json() : null;
     try {
       const accepted = status && status.snapshot && status.snapshot.accepted_snapshot_id ? String(status.snapshot.accepted_snapshot_id) : "";
       if (accepted) localStorage.setItem("axiograph_server_accepted_snapshot_id", accepted);
@@ -3917,6 +4093,133 @@ async function initServerControls() {
     serverControlsEl.appendChild(olderBtn);
     serverControlsEl.appendChild(sel);
     serverControlsEl.appendChild(info);
+
+    const params2 = new URLSearchParams(window.location.search || "");
+    const curFocusName = params2.get("focus_name") || "";
+    const curFocusId = params2.get("focus_id") || "";
+    const isAll = ["1", "true", "yes", "on"].includes(String(params2.get("all") || "").toLowerCase());
+
+    function setParams(next) {
+      const p = new URLSearchParams(window.location.search || "");
+      for (const [k, v] of Object.entries(next)) {
+        if (v === null || v === undefined || v === "") p.delete(k);
+        else p.set(k, String(v));
+      }
+      window.location.search = p.toString();
+    }
+
+    const focusLabel = document.createElement("span");
+    focusLabel.textContent = "focus:";
+
+    const focusInput = document.createElement("input");
+    focusInput.placeholder = "name";
+    focusInput.value = curFocusName || "";
+
+    const focusIdInput = document.createElement("input");
+    focusIdInput.placeholder = "id";
+    focusIdInput.value = curFocusId || "";
+    focusIdInput.style.width = "90px";
+
+    const focusNameBtn = document.createElement("button");
+    focusNameBtn.className = "btn";
+    focusNameBtn.textContent = "go name";
+    focusNameBtn.addEventListener("click", () => {
+      const v = (focusInput.value || "").trim();
+      if (!v) return;
+      setParams({ focus_name: v, focus_id: null, all: null });
+    });
+
+    const focusIdBtn = document.createElement("button");
+    focusIdBtn.className = "btn";
+    focusIdBtn.textContent = "go id";
+    focusIdBtn.addEventListener("click", () => {
+      const v = (focusIdInput.value || "").trim();
+      if (!v) return;
+      setParams({ focus_id: v, focus_name: null, all: null });
+    });
+
+    const focusSelectedBtn = document.createElement("button");
+    focusSelectedBtn.className = "btn";
+    focusSelectedBtn.textContent = "focus selected";
+    focusSelectedBtn.addEventListener("click", () => {
+      if (selectedId == null) return;
+      setParams({ focus_id: selectedId, focus_name: null, all: null });
+    });
+
+    const allBtn = document.createElement("button");
+    allBtn.className = "btn";
+    allBtn.textContent = isAll ? "all ✓" : "all";
+    allBtn.addEventListener("click", () => {
+      setParams({ all: "1", focus_name: null, focus_id: null });
+    });
+
+    const neighBtn = document.createElement("button");
+    neighBtn.className = "btn";
+    neighBtn.textContent = "neighborhood";
+    neighBtn.disabled = !isAll;
+    neighBtn.addEventListener("click", () => {
+      setParams({ all: null });
+    });
+
+    const compCount = ui.components ? ui.components.length : 0;
+    const compBtn = document.createElement("button");
+    compBtn.className = "btn";
+    compBtn.textContent = compCount > 1 ? `other component (${compCount})` : "other component";
+    compBtn.disabled = compCount < 2;
+    compBtn.title = compCount < 2
+      ? "No other components (try all view)."
+      : "Jump to a different connected component.";
+    compBtn.addEventListener("click", () => {
+      let focus = null;
+      if (curFocusId) {
+        const n = Number(curFocusId);
+        if (Number.isFinite(n)) focus = n;
+      }
+      if (focus == null && selectedId != null) focus = selectedId;
+      if (focus == null && graph.summary && Array.isArray(graph.summary.focus_ids) && graph.summary.focus_ids.length) {
+        const n = Number(graph.summary.focus_ids[0]);
+        if (Number.isFinite(n)) focus = n;
+      }
+      const nextId = pickRandomComponentNode(focus);
+      if (nextId == null) return;
+      setParams({ focus_id: nextId, focus_name: null, all: null });
+    });
+
+    const ctxSelect = document.createElement("select");
+    const ctxLabel = document.createElement("span");
+    ctxLabel.textContent = "context:";
+    const ctxOpt = document.createElement("option");
+    ctxOpt.value = "";
+    ctxOpt.textContent = "(focus)";
+    ctxSelect.appendChild(ctxOpt);
+    const ctxs = (ctxsPayload && Array.isArray(ctxsPayload.contexts))
+      ? ctxsPayload.contexts
+      : (Array.isArray(graph.contexts) ? graph.contexts : []);
+    for (const ctx of ctxs) {
+      const opt = document.createElement("option");
+      opt.value = String(ctx.id);
+      opt.textContent = ctx.name ? `${ctx.name} (#${ctx.id})` : `Context#${ctx.id}`;
+      ctxSelect.appendChild(opt);
+    }
+    ctxSelect.addEventListener("change", () => {
+      const v = String(ctxSelect.value || "");
+      if (!v) return;
+      setParams({ focus_id: v, focus_name: null, all: null });
+    });
+
+    serverControlsEl.appendChild(focusLabel);
+    serverControlsEl.appendChild(focusInput);
+    serverControlsEl.appendChild(focusNameBtn);
+    serverControlsEl.appendChild(focusIdInput);
+    serverControlsEl.appendChild(focusIdBtn);
+    serverControlsEl.appendChild(focusSelectedBtn);
+    serverControlsEl.appendChild(allBtn);
+    serverControlsEl.appendChild(neighBtn);
+    serverControlsEl.appendChild(compBtn);
+    if (ctxs.length) {
+      serverControlsEl.appendChild(ctxLabel);
+      serverControlsEl.appendChild(ctxSelect);
+    }
   } catch (_e) {
     // ignore: offline or no server endpoints
   }

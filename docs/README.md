@@ -28,6 +28,7 @@ If you only read one thing, read the “book”:
 - `docs/tutorials/REPL.md` — interactive querying, viz, scripts
 - `docs/tutorials/VIZ_EXPLORER.md` — browser-based exploration + LLM-assisted querying (server mode)
 - `docs/tutorials/CERTIFIED_QUERYING_101.md` — minimal Rust→cert→Lean verification walkthrough
+- `docs/tutorials/FIBERED_CLOSURE_CONSTRAINTS.md` — certifiable symmetry/transitivity (`param (...)`) in open world
 - `docs/tutorials/TYPE_THEORY_DEMOS.md` — paths, homotopies, dependent structures, certificates (examples-first)
 - `docs/tutorials/SCHEMA_DISCOVERY.md` — automated ontology engineering loop (structured + LLM-assisted)
 - `docs/tutorials/CONTINUOUS_INGEST_AND_DISCOVERY.md` — continuous ingest/discovery prototype loop
