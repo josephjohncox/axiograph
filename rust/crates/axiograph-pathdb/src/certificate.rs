@@ -847,6 +847,23 @@ impl PathExprV2 {
         }
     }
 
+    /// Apply a v2 rewrite derivation (rule + position steps) to this expression.
+    ///
+    /// This is a small deterministic “replay” utility:
+    /// - Rust uses it for sanity-checking proof payloads in tests,
+    /// - and it is useful for debugging certificates (does this derivation actually
+    ///   rewrite the input to the claimed output?).
+    ///
+    /// Note: v3 derivations (`rule_ref`) require `.axi`-anchored rule lookup and are
+    /// replayed in the Lean checker.
+    pub fn apply_derivation_v2(&self, derivation: &[PathRewriteStepV2]) -> Result<PathExprV2, String> {
+        let mut current = self.clone();
+        for step in derivation {
+            current = PathExprV2::apply_at(&current, &step.pos, &step.rule)?;
+        }
+        Ok(current)
+    }
+
     fn first_applicable_rule(expr: &PathExprV2) -> Option<PathRewriteRuleV2> {
         match expr {
             PathExprV2::Inv { path } => match path.as_ref() {

@@ -978,6 +978,7 @@ impl QueryAtomIrV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn query_ir_v1_compiles_where_clause() -> Result<()> {
@@ -1040,5 +1041,110 @@ mod tests {
         assert_eq!(back.disjuncts.len(), 1);
         assert_eq!(back.disjuncts[0].len(), 2);
         Ok(())
+    }
+
+    fn rel_name_strategy() -> impl Strategy<Value = String> {
+        // Keep relation names in the "identifier-ish" subset of AxQL for stable parsing.
+        "[a-z][a-z0-9_]{0,6}".prop_map(|s| s)
+    }
+
+    fn type_name_strategy() -> impl Strategy<Value = String> {
+        "[A-Z][A-Za-z0-9_]{0,10}".prop_map(|s| s)
+    }
+
+    fn attr_key_strategy() -> impl Strategy<Value = String> {
+        // Attribute keys are rendered as string literals, so we allow a wider set,
+        // but keep it small and ASCII for predictable shrinking.
+        "[a-z][a-z0-9_]{0,10}".prop_map(|s| s)
+    }
+
+    fn attr_value_strategy() -> impl Strategy<Value = String> {
+        // Keep values short; `axql_string_lit` escapes these.
+        // Note: the current AxQL string literal parser does not accept `""`
+        // (empty string), so we avoid generating it here.
+        "[A-Za-z0-9_ \\-]{1,16}".prop_map(|s| s)
+    }
+
+    fn path_expr_strategy() -> impl Strategy<Value = String> {
+        // Generate only simple chains `r0/r1/r2` to avoid grammar edge-cases in proptests.
+        prop::collection::vec(rel_name_strategy(), 1..=4).prop_map(|parts| parts.join("/"))
+    }
+
+    fn query_ir_v1_strategy() -> impl Strategy<Value = QueryIrV1> {
+        // Generate small, parseable `query_ir_v1` values that only use the core atoms:
+        // Type / Edge / AttrEq. This is the subset we expect tool/LLM integrations
+        // to emit most often.
+        prop::collection::hash_set("[a-z]{1,6}", 1..=4).prop_flat_map(|vars_set| {
+            let mut vars: Vec<String> = vars_set.into_iter().map(|v| format!("?{v}")).collect();
+            vars.sort();
+            let var_term = prop::sample::select(vars.clone()).prop_map(QueryTermIrV1::Simple);
+
+            let atom = prop_oneof![
+                (var_term.clone(), type_name_strategy()).prop_map(|(term, type_name)| {
+                    QueryAtomIrV1::Type { term, type_name }
+                }),
+                (
+                    var_term.clone(),
+                    path_expr_strategy(),
+                    var_term.clone(),
+                )
+                    .prop_map(|(left, path, right)| QueryAtomIrV1::Edge { left, path, right }),
+                (var_term.clone(), attr_key_strategy(), attr_value_strategy()).prop_map(
+                    |(term, key, value)| QueryAtomIrV1::AttrEq { term, key, value },
+                ),
+            ];
+
+            let disjunct = prop::collection::vec(atom, 1..=6);
+            let disjuncts = prop::collection::vec(disjunct, 1..=3);
+
+            (Just(vars), disjuncts, 1usize..=50).prop_map(|(vars, disjuncts, limit)| QueryIrV1 {
+                version: QUERY_IR_V1_VERSION,
+                select_vars: vars,
+                where_atoms: None,
+                disjuncts: Some(disjuncts),
+                limit: Some(limit),
+                max_hops: None,
+                min_confidence: None,
+                contexts: Vec::new(),
+            })
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn query_ir_v1_json_roundtrips(q in query_ir_v1_strategy()) {
+            let json = serde_json::to_value(&q).expect("serialize QueryIrV1");
+            let back: QueryIrV1 = serde_json::from_value(json.clone()).expect("deserialize QueryIrV1");
+            let json2 = serde_json::to_value(&back).expect("serialize QueryIrV1");
+            prop_assert_eq!(json, json2);
+        }
+
+        #[test]
+        fn query_ir_v1_to_axql_text_parses(q in query_ir_v1_strategy()) {
+            let text = q.to_axql_text().expect("render query_ir_v1 to AxQL");
+            let parsed = crate::axql::parse_axql_query(&text).expect("AxQL must parse");
+            // Sanity: should always have a body (we always generate disjuncts).
+            prop_assert!(!parsed.disjuncts.is_empty());
+        }
+
+        #[test]
+        fn query_ir_v1_roundtrips_via_axql(q in query_ir_v1_strategy()) {
+            let axql_1 = q.to_axql_query().expect("compile query_ir_v1");
+            let text = render_axql_query(&axql_1);
+            let parsed = crate::axql::parse_axql_query(&text).expect("parse rendered AxQL");
+            prop_assert_eq!(&parsed, &axql_1);
+
+            // `from_axql_query` is best-effort, but for this core subset we expect
+            // semantics-preserving roundtrip.
+            let ir2 = QueryIrV1::from_axql_query(&parsed);
+            let axql_2 = ir2.to_axql_query().expect("compile roundtripped query_ir_v1");
+            prop_assert_eq!(&axql_2, &parsed);
+        }
     }
 }

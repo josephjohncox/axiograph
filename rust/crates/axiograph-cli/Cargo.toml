@@ -51,3 +51,6 @@ llm-openai = ["dep:reqwest"]
 llm-anthropic = ["dep:reqwest"]
 profiling = ["dep:pprof", "dep:signal-hook"]
 world-model-http = ["dep:reqwest"]
+
+[dev-dependencies]
+proptest.workspace = true
