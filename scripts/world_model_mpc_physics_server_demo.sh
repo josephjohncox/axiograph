@@ -12,10 +12,11 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/build/world_model_mpc_physics_server_demo"
 PLANE_DIR="$OUT_DIR/accepted_plane"
 READY_FILE="$OUT_DIR/server_ready.json"
-VIZ_OUT="$OUT_DIR/viz.html"
-VIZ_FULL_OUT="$OUT_DIR/viz_full.html"
+VIZ_DIR="$OUT_DIR/viz"
+VIZ_FULL_DIR="$OUT_DIR/viz_full"
 VIZ_FULL_JSON="$OUT_DIR/viz_full.json"
 PLAN_OUT="$OUT_DIR/plan_response.json"
+AXPD_OUT="$OUT_DIR/server_snapshot.axpd"
 ADMIN_TOKEN="${ADMIN_TOKEN:-demo-token}"
 MODEL_PATH="${WORLD_MODEL_MODEL_PATH:-models/world_model_small.onnx}"
 PYTHON="${PYTHON:-python}"
@@ -206,24 +207,55 @@ curl -sS -X POST "$BASE_URL/world_model/plan" \
   --data-binary @"$OUT_DIR/plan_request.json" >"$PLAN_OUT"
 
 echo ""
-echo "-- E) Fetch viz"
-curl -sS "$BASE_URL/viz" >"$VIZ_OUT"
+echo "-- E) Build local PathDB snapshot for offline viz"
+"$AXIOGRAPH" db accept pathdb-build \
+  --dir "$PLANE_DIR" \
+  --snapshot head \
+  --out "$AXPD_OUT"
 
 echo ""
-echo "-- F) Fetch full viz (all nodes, all planes)"
-curl -sS "$BASE_URL/viz?plane=both&typed_overlay=true&all=1&max_nodes=200000&max_edges=400000" >"$VIZ_FULL_OUT"
-curl -sS "$BASE_URL/viz.json?plane=both&typed_overlay=true&all=1&max_nodes=200000&max_edges=400000" >"$VIZ_FULL_JSON"
+echo "-- F) Viz bundle (offline)"
+"$AXIOGRAPH" tools viz "$AXPD_OUT" \
+  --out "$VIZ_DIR" \
+  --format html \
+  --plane both \
+  --typed-overlay \
+  --max-nodes 1200 \
+  --max-edges 12000
+
+echo ""
+echo "-- G) Full viz bundle (all nodes, all planes)"
+"$AXIOGRAPH" tools viz "$AXPD_OUT" \
+  --out "$VIZ_FULL_DIR" \
+  --format html \
+  --plane both \
+  --typed-overlay \
+  --all \
+  --max-nodes 200000 \
+  --max-edges 400000
+"$AXIOGRAPH" tools viz "$AXPD_OUT" \
+  --out "$VIZ_FULL_JSON" \
+  --format json \
+  --plane both \
+  --typed-overlay \
+  --all \
+  --max-nodes 200000 \
+  --max-edges 400000
 
 echo ""
 echo "Done."
 echo "Outputs:"
 echo "  $OUT_DIR/server.log"
 echo "  $PLAN_OUT"
-echo "  $VIZ_OUT"
-echo "  $VIZ_FULL_OUT"
+echo "  $AXPD_OUT"
+echo "  $VIZ_DIR/index.html"
+echo "  $VIZ_FULL_DIR/index.html"
 echo "  $VIZ_FULL_JSON"
 echo "admin token: $ADMIN_TOKEN"
 
+echo ""
+echo "Server URL:"
+echo "  $BASE_URL/viz"
 echo ""
 echo "=== Viz UI demo playbook ==="
 echo "Open:"

@@ -58,4 +58,12 @@ async function boot() {
   initApp(graph);
 }
 
-boot();
+function bootWhenReady() {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => boot(), { once: true });
+  } else {
+    boot();
+  }
+}
+
+bootWhenReady();

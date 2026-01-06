@@ -1398,12 +1398,46 @@ pub fn write_html_bundle(out: &std::path::Path, html: &str, graph_json: Option<&
             html_out.push_str(&snippet);
         }
     }
+    let dist_root = viz_dist_dir();
+    html_out = inline_viz_script(&html_out, &dist_root).unwrap_or(html_out);
     std::fs::write(out_dir.join("index.html"), html_out)?;
     std::fs::write(
         out_dir.join("README.txt"),
-        "Open index.html (embedded data). Optional: index.html?data=graph.json\n",
+        "Open index.html (offline). Optional: index.html?data=graph.json\n",
     )?;
     Ok(out_dir)
+}
+
+fn inline_viz_script(html: &str, dist_root: &std::path::Path) -> Result<String> {
+    let mut out = html.to_string();
+    let script_tag = "<script";
+    let module_tag = "type=\"module\"";
+    let src_tag = "src=\"";
+    if let Some(start) = out.find(script_tag) {
+        let tail = &out[start..];
+        if let Some(module_idx) = tail.find(module_tag) {
+            let module_tail = &tail[module_idx..];
+            if let Some(src_idx) = module_tail.find(src_tag) {
+                let src_start = start + module_idx + src_idx + src_tag.len();
+                let rest = &out[src_start..];
+                if let Some(end_quote) = rest.find('"') {
+                    let src = &out[src_start..src_start + end_quote];
+                    if let Some(end_tag_rel) = tail.find("</script>") {
+                        let end_tag = start + end_tag_rel + "</script>".len();
+                        let src_trim = src.trim_start_matches("./").trim_start_matches('/');
+                        let js_path = dist_root.join(src_trim);
+                        let js = std::fs::read_to_string(&js_path).with_context(|| {
+                            format!("missing viz asset script at {}", js_path.display())
+                        })?;
+                        let inline = format!("<script>\n{js}\n</script>");
+                        out.replace_range(start..end_tag, &inline);
+                        return Ok(out);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
