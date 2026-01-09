@@ -186,7 +186,7 @@ echo "-- C) Optional: call /llm/agent once (RUN_SAMPLES=$RUN_SAMPLES)"
 if [ "$RUN_SAMPLES" = "1" ]; then
   set +e
   python3 - "$ADDR" "$LLM_HTTP_TIMEOUT_SECS" <<'PY' >"$OUT_DIR/llm_agent_response.json"
-import json, sys, urllib.request
+import json, sys, urllib.request, urllib.error
 addr = sys.argv[1]
 timeout = int(sys.argv[2])
 payload = {
@@ -201,11 +201,17 @@ req = urllib.request.Request(
   headers={"Content-Type": "application/json"},
   method="POST",
 )
-resp = urllib.request.urlopen(req, timeout=timeout)
-print(resp.read().decode("utf-8"))
+try:
+  resp = urllib.request.urlopen(req, timeout=timeout)
+  print(resp.read().decode("utf-8"))
+except urllib.error.HTTPError as e:
+  # Preserve the server-provided JSON error body for debugging.
+  body = e.read().decode("utf-8", errors="replace")
+  print(body)
+  sys.exit(1)
 PY
   if [ $? -ne 0 ]; then
-    echo "warn: /llm/agent sample failed (see $OUT_DIR/server.log)"
+    echo "warn: /llm/agent sample failed (see $OUT_DIR/llm_agent_response.json and $OUT_DIR/server.log)"
   fi
   set -e
 else
@@ -242,4 +248,3 @@ else
   echo "Note: this script stops the server when it exits."
   echo "Tip: keep it running by setting KEEP_RUNNING=1."
 fi
-

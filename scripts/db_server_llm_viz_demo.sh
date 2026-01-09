@@ -253,7 +253,7 @@ echo "-- C) Optional: call LLM endpoints once (RUN_SAMPLES=$RUN_SAMPLES)"
 if [ "$RUN_SAMPLES" = "1" ]; then
   set +e
   python3 - "$ADDR" "$LLM_HTTP_TIMEOUT_SECS" <<'PY' >"$OUT_DIR/llm_to_query_response.json"
-import json, sys, urllib.request
+import json, sys, urllib.request, urllib.error
 addr = sys.argv[1]
 timeout = int(sys.argv[2])
 payload = { "question": "find Person named Alice" }
@@ -264,17 +264,22 @@ req = urllib.request.Request(
   headers={"Content-Type": "application/json"},
   method="POST",
 )
-resp = urllib.request.urlopen(req, timeout=timeout)
-print(resp.read().decode("utf-8"))
+try:
+  resp = urllib.request.urlopen(req, timeout=timeout)
+  print(resp.read().decode("utf-8"))
+except urllib.error.HTTPError as e:
+  body = e.read().decode("utf-8", errors="replace")
+  print(body)
+  sys.exit(1)
 PY
   if [ $? -ne 0 ]; then
-    echo "warn: /llm/to_query sample failed (see $OUT_DIR/server.log)"
+    echo "warn: /llm/to_query sample failed (see $OUT_DIR/llm_to_query_response.json and $OUT_DIR/server.log)"
   fi
 
   # The tool-loop endpoint can take longer (multiple LLM calls). Keep it optional.
   if [ "${RUN_AGENT_SAMPLE:-0}" = "1" ]; then
     python3 - "$ADDR" "$LLM_HTTP_TIMEOUT_SECS" <<'PY' >"$OUT_DIR/llm_agent_response.json"
-import json, sys, urllib.request
+import json, sys, urllib.request, urllib.error
 addr = sys.argv[1]
 timeout = int(sys.argv[2])
 payload = {
@@ -289,11 +294,16 @@ req = urllib.request.Request(
   headers={"Content-Type": "application/json"},
   method="POST",
 )
-resp = urllib.request.urlopen(req, timeout=timeout)
-print(resp.read().decode("utf-8"))
+try:
+  resp = urllib.request.urlopen(req, timeout=timeout)
+  print(resp.read().decode("utf-8"))
+except urllib.error.HTTPError as e:
+  body = e.read().decode("utf-8", errors="replace")
+  print(body)
+  sys.exit(1)
 PY
     if [ $? -ne 0 ]; then
-      echo "warn: /llm/agent sample failed (set RUN_AGENT_SAMPLE=0 to skip)"
+      echo "warn: /llm/agent sample failed (see $OUT_DIR/llm_agent_response.json; set RUN_AGENT_SAMPLE=0 to skip)"
     fi
   fi
   set -e
