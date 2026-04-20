@@ -172,4 +172,3 @@ pub fn cmd_fmt_axi(input: &Path, out: Option<&Path>, write: bool) -> Result<()> 
     print!("{rendered}");
     Ok(())
 }
-

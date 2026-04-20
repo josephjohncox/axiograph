@@ -20,6 +20,13 @@ Axiograph is built on a layered mathematical foundation that unifies:
 
 This document provides the formal foundations and identifies gaps.
 
+Companion doc:
+
+- `docs/explanation/TYPED_ONTOLOGY_ENGINEERING.md` focuses on the practical
+  meaning of typing in Axiograph: denotational semantics, ologs, useful
+  dependent-typing effects, and AI-assisted ontology discovery/grounding/
+  axiomitization.
+
 ---
 
 ## 1. Categorical Semantics

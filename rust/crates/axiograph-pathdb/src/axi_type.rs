@@ -110,4 +110,3 @@ impl TypingEnv {
         })
     }
 }
-

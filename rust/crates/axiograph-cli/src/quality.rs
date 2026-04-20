@@ -256,7 +256,9 @@ pub fn run_quality_checks(
         // `axi_fact_in_context` targets must always be Contexts (or schema-local subtypes).
         if let Some(ctx_rel_id) = db.interner.id_of(REL_AXI_FACT_IN_CONTEXT) {
             let mut allowed_context_types: std::collections::HashSet<String> =
-                ["Context".to_string(), "World".to_string()].into_iter().collect();
+                ["Context".to_string(), "World".to_string()]
+                    .into_iter()
+                    .collect();
             for schema in meta.schemas.values() {
                 for obj in &schema.object_types {
                     if schema.is_subtype(obj, "Context") {
@@ -310,7 +312,8 @@ pub fn run_quality_checks(
         entities_with_proposal_id.sort_unstable();
         entities_with_proposal_id.dedup();
 
-        let mut entities_with_conf: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut entities_with_conf: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
         if let Some(key_id) = proposal_conf_key {
             for entity_id in 0..db.entities.len() as u32 {
                 if db.entities.get_attr(entity_id, key_id).is_some() {
@@ -545,8 +548,9 @@ pub fn run_quality_checks(
                                     let Some(dst) = t.get(dst_field) else {
                                         continue;
                                     };
-                                    let mut key: Vec<u32> =
-                                        Vec::with_capacity(1 + params.as_ref().map_or(0, |p| p.len()));
+                                    let mut key: Vec<u32> = Vec::with_capacity(
+                                        1 + params.as_ref().map_or(0, |p| p.len()),
+                                    );
                                     let mut param_pairs: Vec<(String, u32)> = Vec::new();
                                     key.push(*src);
                                     let mut missing_param = false;

@@ -14,7 +14,7 @@ struct ExportCase {
     rel_types: Vec<String>,
     entities: Vec<(usize, String, Vec<(String, String)>)>, // (type_idx, name, attrs)
     edges: Vec<(usize, usize, usize, u32, Vec<(String, String)>)>, // (rel_idx, src, dst, conf_fp, attrs)
-    equivalences: Vec<(usize, usize, String)>, // (a, b, label)
+    equivalences: Vec<(usize, usize, String)>,                     // (a, b, label)
 }
 
 fn small_string() -> impl Strategy<Value = String> {
@@ -32,11 +32,7 @@ fn export_case_strategy() -> impl Strategy<Value = ExportCase> {
         let rel_types: Vec<String> = (0..n_rels).map(|i| format!("rel_{i}")).collect();
 
         let entities = prop::collection::vec(
-            (
-                0usize..n_types,
-                small_string(),
-                kv_pairs(3),
-            ),
+            (0usize..n_types, small_string(), kv_pairs(3)),
             n_entities..=n_entities,
         );
 
@@ -56,29 +52,33 @@ fn export_case_strategy() -> impl Strategy<Value = ExportCase> {
         } else {
             // Generate distinct (a,b) without rejection.
             prop::collection::vec(
-                (
-                    0usize..n_entities,
-                    0usize..(n_entities - 1),
-                    small_string(),
-                )
-                    .prop_map(|(a, b_off, label)| {
+                (0usize..n_entities, 0usize..(n_entities - 1), small_string()).prop_map(
+                    |(a, b_off, label)| {
                         let b = if b_off >= a { b_off + 1 } else { b_off };
                         (a, b, label)
-                    }),
+                    },
+                ),
                 0..=10,
             )
             .boxed()
         };
 
-        (Just(entity_types), Just(rel_types), entities, edges, equivalences).prop_map(
-            |(entity_types, rel_types, entities, edges, equivalences)| ExportCase {
-                entity_types,
-                rel_types,
-                entities,
-                edges,
-                equivalences,
-            },
+        (
+            Just(entity_types),
+            Just(rel_types),
+            entities,
+            edges,
+            equivalences,
         )
+            .prop_map(|(entity_types, rel_types, entities, edges, equivalences)| {
+                ExportCase {
+                    entity_types,
+                    rel_types,
+                    entities,
+                    edges,
+                    equivalences,
+                }
+            })
     })
 }
 
@@ -103,8 +103,10 @@ fn build_db(case: &ExportCase) -> PathDB {
         let dst = ids[*dst_idx];
         let rel = &case.rel_types[*rel_idx];
         let conf = (*conf_fp as f32) / denom;
-        let attr_refs: Vec<(&str, &str)> =
-            attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let attr_refs: Vec<(&str, &str)> = attrs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         db.add_relation(rel, src, dst, conf, attr_refs);
     }
 

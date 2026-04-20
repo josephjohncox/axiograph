@@ -25,14 +25,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use roaring::RoaringBitmap;
 
-use axiograph_ingest_docs::{Chunk, ProposalSourceV1, ProposalV1, ProposalsFileV1};
-use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
-use axiograph_pathdb::PathDB;
 use crate::query_ir::QueryIrV1;
 use crate::world_model::{
     normalize_world_model_proposals_value, world_model_llm_prompt, WorldModelRequestV1,
     WorldModelResponseV1,
 };
+use axiograph_ingest_docs::{Chunk, ProposalSourceV1, ProposalV1, ProposalsFileV1};
+use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
+use axiograph_pathdb::PathDB;
 
 // Common attribute keys (shared with viz overlays).
 const ATTR_AXI_RELATION: &str = "axi_relation";
@@ -69,7 +69,8 @@ pub(crate) const AXIOGRAPH_LLM_PREFETCH_DESCRIBE_ENTITIES_ENV: &str =
 pub(crate) const AXIOGRAPH_LLM_PREFETCH_DOCCHUNKS_ENV: &str = "AXIOGRAPH_LLM_PREFETCH_DOCCHUNKS";
 pub(crate) const AXIOGRAPH_LLM_PREFETCH_LOOKUP_RELATIONS_ENV: &str =
     "AXIOGRAPH_LLM_PREFETCH_LOOKUP_RELATIONS";
-pub(crate) const AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES_ENV: &str = "AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES";
+pub(crate) const AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES_ENV: &str =
+    "AXIOGRAPH_LLM_PREFETCH_LOOKUP_TYPES";
 
 // External LLM provider env vars (recommended configuration path).
 pub(crate) const OPENAI_API_KEY_ENV: &str = "OPENAI_API_KEY";
@@ -129,9 +130,7 @@ pub(crate) fn llm_default_max_steps() -> Result<usize> {
             Ok(n.max(1))
         }
         Err(std::env::VarError::NotPresent) => Ok(DEFAULT_LLM_MAX_STEPS),
-        Err(e) => Err(anyhow!(
-            "failed to read {AXIOGRAPH_LLM_MAX_STEPS_ENV}: {e}"
-        )),
+        Err(e) => Err(anyhow!("failed to read {AXIOGRAPH_LLM_MAX_STEPS_ENV}: {e}")),
     }
 }
 
@@ -1450,7 +1449,14 @@ Return ONLY the JSON object."#,
         "schema": response_schema
     });
 
-    let content = openai_responses(base_url, &api_key, model, &user, Some(system), Some(text_format))?;
+    let content = openai_responses(
+        base_url,
+        &api_key,
+        model,
+        &user,
+        Some(system),
+        Some(text_format),
+    )?;
     let parsed: PluginResponseV1 = parse_llm_json_object(&content)?;
 
     if let Some(err) = parsed.error {
@@ -1695,7 +1701,9 @@ fn render_entity_name_samples(db: &PathDB, schema: &SchemaContextV1) -> String {
     }
 
     let mut out = String::new();
-    out.push_str("Entity examples (use with `lookup_entity`, `describe_entity`, or `name(\"...\")`):\n");
+    out.push_str(
+        "Entity examples (use with `lookup_entity`, `describe_entity`, or `name(\"...\")`):\n",
+    );
     for l in lines {
         out.push_str(&l);
         out.push('\n');
@@ -1723,7 +1731,14 @@ fn render_quasi_rag_preview(
         "chunk_limit": options.max_doc_chunks.min(8).max(1),
     });
 
-    let Ok(v) = tool_semantic_search(db, &args, snapshot_key, options, embeddings, ollama_embed_host) else {
+    let Ok(v) = tool_semantic_search(
+        db,
+        &args,
+        snapshot_key,
+        options,
+        embeddings,
+        ollama_embed_host,
+    ) else {
         return String::new();
     };
 
@@ -1748,9 +1763,15 @@ fn render_quasi_rag_preview(
     if !entities.is_empty() {
         out.push_str("Entities:\n");
         for hit in entities.iter().take(8) {
-            let ent = hit.get("entity").cloned().unwrap_or_else(|| serde_json::json!({}));
+            let ent = hit
+                .get("entity")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
             let id = ent.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-            let ety = ent.get("entity_type").and_then(|x| x.as_str()).unwrap_or("?");
+            let ety = ent
+                .get("entity_type")
+                .and_then(|x| x.as_str())
+                .unwrap_or("?");
             let name = ent.get("name").and_then(|x| x.as_str()).unwrap_or("");
             if name.is_empty() {
                 out.push_str(&format!("- {ety}#{id}\n"));
@@ -1764,9 +1785,16 @@ fn render_quasi_rag_preview(
         out.push_str("DocChunks:\n");
         for hit in chunks.iter().take(6) {
             let chunk_id = hit.get("chunk_id").and_then(|x| x.as_str()).unwrap_or("?");
-            let doc = hit.get("document_id").and_then(|x| x.as_str()).unwrap_or("");
+            let doc = hit
+                .get("document_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
             let span = hit.get("span_id").and_then(|x| x.as_str()).unwrap_or("");
-            let snippet = hit.get("snippet").and_then(|x| x.as_str()).unwrap_or("").trim();
+            let snippet = hit
+                .get("snippet")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim();
             let mut label = chunk_id.to_string();
             if !doc.is_empty() {
                 label.push_str(&format!(" (doc={doc}"));
@@ -2245,7 +2273,11 @@ fn openai_extract_output_text(v: &serde_json::Value) -> Option<String> {
         if kind != "message" {
             continue;
         }
-        let content = item.get("content").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+        let content = item
+            .get("content")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
         for c in content {
             let ckind = c.get("type").and_then(|x| x.as_str()).unwrap_or("");
             if ckind != "output_text" {
@@ -2525,7 +2557,11 @@ fn anthropic_extract_output_text(v: &serde_json::Value) -> Option<String> {
         }
     }
     let trimmed = out.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 #[cfg(feature = "llm-anthropic")]
@@ -2952,8 +2988,14 @@ mod tests {
     #[test]
     fn semantic_search_token_hnsw_finds_basic_entities() {
         let mut db = axiograph_pathdb::PathDB::new();
-        db.add_entity("Person", vec![("name", "Alice"), ("description", "likes cats")]);
-        db.add_entity("Person", vec![("name", "Bob"), ("description", "likes dogs")]);
+        db.add_entity(
+            "Person",
+            vec![("name", "Alice"), ("description", "likes cats")],
+        );
+        db.add_entity(
+            "Person",
+            vec![("name", "Bob"), ("description", "likes dogs")],
+        );
         db.add_entity(
             "DocChunk",
             vec![
@@ -2991,7 +3033,9 @@ mod tests {
 
         let chunks = out["chunk_hits"].as_array().expect("chunk_hits array");
         assert!(
-            chunks.iter().any(|c| c["chunk_id"].as_str() == Some("chunk_0")),
+            chunks
+                .iter()
+                .any(|c| c["chunk_id"].as_str() == Some("chunk_0")),
             "expected chunk_0 in chunk_hits: {out}"
         );
     }
@@ -3005,7 +3049,10 @@ mod tests {
                 ("chunk_id", "chunk_0"),
                 ("document_id", "doc"),
                 ("span_id", "s0"),
-                ("text", "Alice is Bob's parent. Alice is Bob's parent. Alice is Bob's parent."),
+                (
+                    "text",
+                    "Alice is Bob's parent. Alice is Bob's parent. Alice is Bob's parent.",
+                ),
             ],
         );
         db.build_indexes();
@@ -3203,7 +3250,13 @@ fn tool_loop_extract_artifacts(transcript: &[ToolLoopTranscriptItemV1]) -> ToolL
         .rev()
         .find(|s| s.tool == "draft_axi_from_proposals")
         .map(|s| s.result.clone())
-        .and_then(|v| if v.get("error").is_some() { None } else { Some(v) });
+        .and_then(|v| {
+            if v.get("error").is_some() {
+                None
+            } else {
+                Some(v)
+            }
+        });
 
     ToolLoopArtifactsV1 {
         generated_overlay,
@@ -3211,7 +3264,9 @@ fn tool_loop_extract_artifacts(transcript: &[ToolLoopTranscriptItemV1]) -> ToolL
     }
 }
 
-fn tool_loop_extract_generated_overlay(transcript: &[ToolLoopTranscriptItemV1]) -> Option<serde_json::Value> {
+fn tool_loop_extract_generated_overlay(
+    transcript: &[ToolLoopTranscriptItemV1],
+) -> Option<serde_json::Value> {
     #[derive(Clone, Deserialize)]
     struct OverlayToolResult {
         proposals_json: ProposalsFileV1,
@@ -3484,7 +3539,10 @@ fn finalize_tool_loop_outcome(
     }
 }
 
-fn tool_loop_enrich_final_answer(steps: &[ToolLoopTranscriptItemV1], final_answer: &mut ToolLoopFinalV1) {
+fn tool_loop_enrich_final_answer(
+    steps: &[ToolLoopTranscriptItemV1],
+    final_answer: &mut ToolLoopFinalV1,
+) {
     fn push_unique(out: &mut Vec<String>, seen: &mut HashSet<String>, s: String) {
         let s = s.trim().to_string();
         if s.is_empty() {
@@ -3534,7 +3592,9 @@ fn tool_loop_enrich_final_answer(steps: &[ToolLoopTranscriptItemV1], final_answe
                     }
                 }
             }
-            "propose_relation_proposals" | "propose_relations_proposals" | "propose_fact_proposals" => {
+            "propose_relation_proposals"
+            | "propose_relations_proposals"
+            | "propose_fact_proposals" => {
                 if let Some(chunks) = step.result.get("chunks").and_then(|v| v.as_array()) {
                     for c in chunks.iter().take(12) {
                         if let Some(cid) = c.get("chunk_id").and_then(|v| v.as_str()) {
@@ -3855,7 +3915,6 @@ pub(crate) fn run_tool_loop_with_meta(
             return Ok(finalize_tool_loop_outcome(transcript, final_answer));
         };
 
-
         for tool_call in tool_calls {
             if remaining_steps == 0 {
                 break;
@@ -3939,7 +3998,10 @@ fn fallback_tool_loop_final_answer(
             }
 
             let mut notes = Vec::new();
-            notes.push(format!("auto-finalized: {reason} (max_steps={})", options.max_steps));
+            notes.push(format!(
+                "auto-finalized: {reason} (max_steps={})",
+                options.max_steps
+            ));
             notes.push(format!("question: {question}"));
             notes.push(format!("snapshot_entities={}", db.entities.len()));
 
@@ -3963,7 +4025,10 @@ fn fallback_tool_loop_final_answer(
                 public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
-                notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+                notes: vec![format!(
+                    "auto-finalized: {reason} (max_steps={})",
+                    options.max_steps
+                )],
             };
         }
     }
@@ -3980,7 +4045,10 @@ fn fallback_tool_loop_final_answer(
                 public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
-                notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+                notes: vec![format!(
+                    "auto-finalized: {reason} (max_steps={})",
+                    options.max_steps
+                )],
             };
         }
 
@@ -3998,19 +4066,33 @@ fn fallback_tool_loop_final_answer(
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown type)");
 
-        fn summarize_edge_groups(v: &serde_json::Value, dir: &str, max_groups: usize) -> Vec<String> {
+        fn summarize_edge_groups(
+            v: &serde_json::Value,
+            dir: &str,
+            max_groups: usize,
+        ) -> Vec<String> {
             let mut lines = Vec::new();
             let Some(groups) = v.as_array() else {
                 return lines;
             };
             for g in groups.iter().take(max_groups) {
                 let rel = g.get("rel").and_then(|x| x.as_str()).unwrap_or("?");
-                let edges = g.get("edges").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+                let edges = g
+                    .get("edges")
+                    .and_then(|x| x.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 let mut targets = Vec::new();
                 for e in edges.iter().take(6) {
-                    let ent = e.get("entity").cloned().unwrap_or_else(|| serde_json::json!({}));
+                    let ent = e
+                        .get("entity")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}));
                     let ename = ent.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                    let ety = ent.get("entity_type").and_then(|x| x.as_str()).unwrap_or("");
+                    let ety = ent
+                        .get("entity_type")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
                     let id = ent.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
                     if !ename.is_empty() {
                         targets.push(format!("{ename}#{id}"));
@@ -4073,12 +4155,19 @@ fn fallback_tool_loop_final_answer(
                 public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
-                notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+                notes: vec![format!(
+                    "auto-finalized: {reason} (max_steps={})",
+                    options.max_steps
+                )],
             };
         }
 
         let summary = item.result.get("summary").cloned().unwrap_or_default();
-        let proposals = item.result.get("proposals_json").cloned().unwrap_or_default();
+        let proposals = item
+            .result
+            .get("proposals_json")
+            .cloned()
+            .unwrap_or_default();
         let mut lines = Vec::new();
         lines.push("Generated a reviewable `proposals.json` overlay (untrusted).".to_string());
         if let Some(rel) = summary.get("rel_type").and_then(|v| v.as_str()) {
@@ -4098,7 +4187,9 @@ fn fallback_tool_loop_final_answer(
                     .map(|a| a.len())
                     .unwrap_or(0);
                 if let Some(ctx) = ctx {
-                    lines.push(format!("Proposed: {rel} for {sources}×{targets} (context={ctx})"));
+                    lines.push(format!(
+                        "Proposed: {rel} for {sources}×{targets} (context={ctx})"
+                    ));
                 } else {
                     lines.push(format!("Proposed: {rel} for {sources}×{targets}"));
                 }
@@ -4173,12 +4264,23 @@ fn fallback_tool_loop_final_answer(
                 public_rationale: None,
                 citations: Vec::new(),
                 queries: Vec::new(),
-                notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+                notes: vec![format!(
+                    "auto-finalized: {reason} (max_steps={})",
+                    options.max_steps
+                )],
             };
         }
 
-        let entities = item.result.get("entities").and_then(|v| v.as_u64()).unwrap_or(0);
-        let relations = item.result.get("relations").and_then(|v| v.as_u64()).unwrap_or(0);
+        let entities = item
+            .result
+            .get("entities")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let relations = item
+            .result
+            .get("relations")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let doc_chunks_loaded = item
             .result
             .get("doc_chunks_loaded")
@@ -4192,7 +4294,10 @@ fn fallback_tool_loop_final_answer(
         if doc_chunks_loaded {
             lines.push("Document chunks are loaded (the assistant can cite them as evidence when answering).".to_string());
         } else {
-            lines.push("No document chunks are loaded (answers are based only on graph structure).".to_string());
+            lines.push(
+                "No document chunks are loaded (answers are based only on graph structure)."
+                    .to_string(),
+            );
         }
 
         if let Some(ctxs) = item.result.get("contexts").and_then(|v| v.as_array()) {
@@ -4268,7 +4373,10 @@ fn fallback_tool_loop_final_answer(
         public_rationale: None,
         citations: Vec::new(),
         queries: Vec::new(),
-        notes: vec![format!("auto-finalized: {reason} (max_steps={})", options.max_steps)],
+        notes: vec![format!(
+            "auto-finalized: {reason} (max_steps={})",
+            options.max_steps
+        )],
     }
 }
 
@@ -4677,16 +4785,14 @@ fn execute_tool_call(
 ) -> Result<serde_json::Value> {
     match call.name.as_str() {
         "db_summary" => tool_db_summary(db, &call.args),
-        "semantic_search" => {
-            tool_semantic_search(
-                db,
-                &call.args,
-                snapshot_key,
-                options,
-                embeddings,
-                ollama_embed_host,
-            )
-        }
+        "semantic_search" => tool_semantic_search(
+            db,
+            &call.args,
+            snapshot_key,
+            options,
+            embeddings,
+            ollama_embed_host,
+        ),
         "lookup_entity" => tool_lookup_entity(db, &call.args),
         "describe_entity" => describe_entity_v1(db, &call.args),
         "lookup_type" => tool_lookup_type(db, meta, &call.args),
@@ -4715,9 +4821,13 @@ fn execute_tool_call(
         "quality_report" => tool_quality_report(db, &call.args),
         "propose_axi_patch" => tool_propose_axi_patch(&call.args),
         "draft_axi_from_proposals" => tool_draft_axi_from_proposals(&call.args),
-        "propose_relation_proposals" => tool_propose_relation_proposals(db, default_contexts, &call.args),
+        "propose_relation_proposals" => {
+            tool_propose_relation_proposals(db, default_contexts, &call.args)
+        }
         "propose_fact_proposals" => tool_propose_fact_proposals(db, default_contexts, &call.args),
-        "propose_relations_proposals" => tool_propose_relations_proposals(db, default_contexts, &call.args),
+        "propose_relations_proposals" => {
+            tool_propose_relations_proposals(db, default_contexts, &call.args)
+        }
         "world_model_propose" => tool_world_model_propose(db, world_model, &call.args),
         "world_model_plan" => tool_world_model_plan(db, world_model, &call.args),
         "snapshots_list" => tool_snapshots_list(store, &call.args),
@@ -4732,7 +4842,9 @@ fn tool_world_model_propose(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let Some(ctx) = ctx else {
-        return Err(anyhow!("world_model_propose is unavailable (world model disabled)"));
+        return Err(anyhow!(
+            "world_model_propose is unavailable (world model disabled)"
+        ));
     };
 
     #[derive(Deserialize, Default)]
@@ -4806,7 +4918,9 @@ fn tool_world_model_propose(
     input.axi_module_text = Some(exported.axi_text.clone());
     input.axi_input_kind = Some(exported.kind.as_str().to_string());
     input.axi_input_module = exported.selected_module_name.clone();
-    input.notes.push(format!("axi_input_kind={}", exported.kind.as_str()));
+    input
+        .notes
+        .push(format!("axi_input_kind={}", exported.kind.as_str()));
     if let Some(m) = exported.selected_module_name.as_ref() {
         input.notes.push(format!("axi_input_module={m}"));
     }
@@ -4816,34 +4930,32 @@ fn tool_world_model_propose(
     ) {
         input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
     }
-        let max_items = a
-            .max_new_proposals
-            .unwrap_or(0)
-            .saturating_mul(20)
-            .min(2000)
-            .max(1000);
-        let exclude_relations = if matches!(
-            exported.kind,
-            crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-        ) {
-            vec!["interned_string".to_string()]
-        } else {
-            Vec::new()
-        };
-        let export_opts = crate::world_model::JepaExportOptions {
-            instance_filter: None,
-            max_items,
-            mask_fields: 1,
-            seed: 1,
-            exclude_relations,
-        };
-        if let Ok(export) = crate::world_model::build_jepa_export_from_axi_text(
-            &exported.axi_text,
-            &export_opts,
-        )
-        {
-            input.export = Some(export);
-        }
+    let max_items = a
+        .max_new_proposals
+        .unwrap_or(0)
+        .saturating_mul(20)
+        .min(2000)
+        .max(1000);
+    let exclude_relations = if matches!(
+        exported.kind,
+        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+    ) {
+        vec!["interned_string".to_string()]
+    } else {
+        Vec::new()
+    };
+    let export_opts = crate::world_model::JepaExportOptions {
+        instance_filter: None,
+        max_items,
+        mask_fields: 1,
+        seed: 1,
+        exclude_relations,
+    };
+    if let Ok(export) =
+        crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
+    {
+        input.export = Some(export);
+    }
     input.snapshot = ctx.snapshot.clone();
 
     let max_keep = a.max_new_proposals.unwrap_or(0);
@@ -4871,15 +4983,23 @@ fn tool_world_model_propose(
         Some(guardrail_plane.clone())
     };
 
-    let provenance = crate::world_model::WorldModelProvenance {
-        trace_id: response.trace_id.clone(),
-        backend: ctx.world_model.backend_label(),
-        model: ctx.world_model.model.clone(),
-        axi_digest_v1: input.axi_digest_v1.clone(),
-        guardrail_total_cost: guardrail.as_ref().map(|g| g.summary.total_cost),
-        guardrail_profile: guardrail_profile_label,
-        guardrail_plane: guardrail_plane_label,
-    };
+    let provenance = crate::world_model::build_world_model_provenance(
+        &response,
+        ctx.world_model.backend_label(),
+        ctx.world_model.model.clone(),
+        input.axi_digest_v1.clone(),
+        input
+            .snapshot
+            .as_ref()
+            .and_then(|snap| snap.snapshot_id.clone()),
+        input
+            .snapshot
+            .as_ref()
+            .and_then(|snap| snap.accepted_snapshot_id.clone()),
+        guardrail.as_ref().map(|g| g.summary.total_cost),
+        guardrail_profile_label,
+        guardrail_plane_label,
+    )?;
 
     let mut proposals =
         crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
@@ -4902,7 +5022,9 @@ fn tool_world_model_plan(
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let Some(ctx) = ctx else {
-        return Err(anyhow!("world_model_plan is unavailable (world model disabled)"));
+        return Err(anyhow!(
+            "world_model_plan is unavailable (world model disabled)"
+        ));
     };
 
     #[derive(Deserialize, Default)]
@@ -4981,32 +5103,27 @@ fn tool_world_model_plan(
     ) {
         base_input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
     }
-        let max_items = max_new_proposals
-            .saturating_mul(20)
-            .min(2000)
-            .max(1000);
-        let exclude_relations = if matches!(
-            exported.kind,
-            crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-        ) {
-            vec!["interned_string".to_string()]
-        } else {
-            Vec::new()
-        };
-        let export_opts = crate::world_model::JepaExportOptions {
-            instance_filter: None,
-            max_items,
-            mask_fields: 1,
-            seed: 1,
-            exclude_relations,
-        };
-        if let Ok(export) = crate::world_model::build_jepa_export_from_axi_text(
-            &exported.axi_text,
-            &export_opts,
-        )
-        {
-            base_input.export = Some(export);
-        }
+    let max_items = max_new_proposals.saturating_mul(20).min(2000).max(1000);
+    let exclude_relations = if matches!(
+        exported.kind,
+        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
+    ) {
+        vec!["interned_string".to_string()]
+    } else {
+        Vec::new()
+    };
+    let export_opts = crate::world_model::JepaExportOptions {
+        instance_filter: None,
+        max_items,
+        mask_fields: 1,
+        seed: 1,
+        exclude_relations,
+    };
+    if let Ok(export) =
+        crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
+    {
+        base_input.export = Some(export);
+    }
     base_input.snapshot = ctx.snapshot.clone();
 
     let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
@@ -5025,7 +5142,8 @@ fn tool_world_model_plan(
         validation_plane: "both".to_string(),
     };
 
-    let report = crate::world_model::run_world_model_plan(db, &ctx.world_model, &base_input, &plan_opts)?;
+    let report =
+        crate::world_model::run_world_model_plan(db, &ctx.world_model, &base_input, &plan_opts)?;
 
     let best = report
         .steps
@@ -5040,7 +5158,10 @@ fn tool_world_model_plan(
     }))
 }
 
-fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::Value) -> Result<serde_json::Value> {
+fn tool_snapshots_list(
+    store: Option<&ToolLoopStoreContext>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
     let Some(store) = store else {
         return Err(anyhow!(
             "snapshots_list requires a store-backed server (`axiograph db serve --dir ...`)"
@@ -5054,8 +5175,8 @@ fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::
         #[serde(default)]
         limit: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("snapshots_list: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("snapshots_list: invalid args: {e}"))?;
 
     let mut want_layer = a
         .layer
@@ -5080,15 +5201,17 @@ fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::
             if line.is_empty() {
                 continue;
             }
-            if let Ok(ev) = serde_json::from_str::<crate::accepted_plane::AcceptedPlaneEventV1>(line) {
+            if let Ok(ev) =
+                serde_json::from_str::<crate::accepted_plane::AcceptedPlaneEventV1>(line)
+            {
                 if let Some(msg) = ev.message {
-                    out.insert(ev.snapshot_id, msg);
+                    out.insert(ev.snapshot_id.to_string(), msg);
                 }
                 continue;
             }
             if let Ok(ev) = serde_json::from_str::<crate::pathdb_wal::PathDbWalEventV1>(line) {
                 if let Some(msg) = ev.message {
-                    out.insert(ev.snapshot_id, msg);
+                    out.insert(ev.snapshot_id.to_string(), msg);
                 }
                 continue;
             }
@@ -5130,14 +5253,16 @@ fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(snap) = serde_json::from_str::<crate::accepted_plane::AcceptedPlaneSnapshotV1>(&text) else {
+            let Ok(snap) =
+                serde_json::from_str::<crate::accepted_plane::AcceptedPlaneSnapshotV1>(&text)
+            else {
                 continue;
             };
             entries.push(SnapshotEntryV1 {
-                snapshot_id: snap.snapshot_id.clone(),
-                previous_snapshot_id: snap.previous_snapshot_id.clone(),
+                snapshot_id: snap.snapshot_id.to_string(),
+                previous_snapshot_id: snap.previous_snapshot_id.map(|id| id.to_string()),
                 created_at_unix_secs: snap.created_at_unix_secs,
-                message: messages.get(&snap.snapshot_id).cloned(),
+                message: messages.get(snap.snapshot_id.as_str()).cloned(),
                 accepted_snapshot_id: None,
                 modules_count: Some(snap.modules.len()),
                 ops_count: None,
@@ -5162,15 +5287,16 @@ fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(snap) = serde_json::from_str::<crate::pathdb_wal::PathDbSnapshotV1>(&text) else {
+            let Ok(snap) = serde_json::from_str::<crate::pathdb_wal::PathDbSnapshotV1>(&text)
+            else {
                 continue;
             };
             entries.push(SnapshotEntryV1 {
-                snapshot_id: snap.snapshot_id.clone(),
-                previous_snapshot_id: snap.previous_snapshot_id.clone(),
+                snapshot_id: snap.snapshot_id.to_string(),
+                previous_snapshot_id: snap.previous_snapshot_id.map(|id| id.to_string()),
                 created_at_unix_secs: snap.created_at_unix_secs,
-                message: messages.get(&snap.snapshot_id).cloned(),
-                accepted_snapshot_id: Some(snap.accepted_snapshot_id.clone()),
+                message: messages.get(snap.snapshot_id.as_str()).cloned(),
+                accepted_snapshot_id: Some(snap.accepted_snapshot_id.to_string()),
                 modules_count: None,
                 ops_count: Some(snap.ops.len()),
             });
@@ -5190,7 +5316,10 @@ fn tool_snapshots_list(store: Option<&ToolLoopStoreContext>, args: &serde_json::
     }))
 }
 
-fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::Value) -> Result<serde_json::Value> {
+fn tool_snapshot_diff(
+    store: Option<&ToolLoopStoreContext>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
     let Some(store) = store else {
         return Err(anyhow!(
             "snapshot_diff requires a store-backed server (`axiograph db serve --dir ...`)"
@@ -5208,8 +5337,8 @@ fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::V
         #[serde(default)]
         limit: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("snapshot_diff: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("snapshot_diff: invalid args: {e}"))?;
 
     let mut layer = a
         .layer
@@ -5223,7 +5352,11 @@ fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::V
         ));
     }
 
-    let rel_filter = a.axi_relation.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let rel_filter = a
+        .axi_relation
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let limit = a.limit.unwrap_or(20).clamp(1, 200);
 
     fn write_temp_path(ext: &str) -> Result<PathBuf> {
@@ -5250,18 +5383,22 @@ fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::V
         db: PathDB,
     }
 
-    fn load_store_snapshot(dir: &std::path::Path, layer: &str, snapshot: &str) -> Result<LoadedStoreSnapshot> {
+    fn load_store_snapshot(
+        dir: &std::path::Path,
+        layer: &str,
+        snapshot: &str,
+    ) -> Result<LoadedStoreSnapshot> {
         match layer {
             "accepted" => {
                 let id = crate::accepted_plane::resolve_snapshot_id_for_cli(dir, snapshot)?;
                 let tmp = write_temp_path("axpd")?;
-                crate::accepted_plane::build_pathdb_from_snapshot(dir, &id, &tmp)?;
+                crate::accepted_plane::build_pathdb_from_snapshot(dir, id.as_str(), &tmp)?;
                 let bytes = std::fs::read(&tmp)?;
                 let _ = std::fs::remove_file(&tmp);
                 let db = PathDB::from_bytes(&bytes)?;
                 Ok(LoadedStoreSnapshot {
-                    snapshot_id: id.clone(),
-                    accepted_snapshot_id: Some(id),
+                    snapshot_id: id.to_string(),
+                    accepted_snapshot_id: Some(id.to_string()),
                     pathdb_snapshot_id: None,
                     db,
                 })
@@ -5271,14 +5408,18 @@ fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::V
                 let pathdb_id = snap.snapshot_id.clone();
                 let accepted_id = snap.accepted_snapshot_id.clone();
                 let tmp = write_temp_path("axpd")?;
-                crate::pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, &pathdb_id, &tmp)?;
+                crate::pathdb_wal::build_pathdb_from_pathdb_snapshot(
+                    dir,
+                    pathdb_id.as_str(),
+                    &tmp,
+                )?;
                 let bytes = std::fs::read(&tmp)?;
                 let _ = std::fs::remove_file(&tmp);
                 let db = PathDB::from_bytes(&bytes)?;
                 Ok(LoadedStoreSnapshot {
-                    snapshot_id: pathdb_id.clone(),
-                    accepted_snapshot_id: Some(accepted_id),
-                    pathdb_snapshot_id: Some(pathdb_id),
+                    snapshot_id: pathdb_id.to_string(),
+                    accepted_snapshot_id: Some(accepted_id.to_string()),
+                    pathdb_snapshot_id: Some(pathdb_id.to_string()),
                     db,
                 })
             }
@@ -5294,13 +5435,25 @@ fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::V
         axi_fact_id: String,
     }
 
-    fn collect_fact_index(db: &PathDB, rel_filter: Option<&str>) -> Result<std::collections::HashMap<String, FactInfo>> {
+    fn collect_fact_index(
+        db: &PathDB,
+        rel_filter: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, FactInfo>> {
         let mut out: std::collections::HashMap<String, FactInfo> = std::collections::HashMap::new();
         let n = db.entities.len() as u32;
         for id in 0..n {
-            let Some(view) = db.get_entity(id) else { continue };
-            let Some(fact_id) = view.attrs.get(axiograph_pathdb::axi_meta::ATTR_AXI_FACT_ID) else { continue };
-            let Some(rel) = view.attrs.get(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION) else { continue };
+            let Some(view) = db.get_entity(id) else {
+                continue;
+            };
+            let Some(fact_id) = view.attrs.get(axiograph_pathdb::axi_meta::ATTR_AXI_FACT_ID) else {
+                continue;
+            };
+            let Some(rel) = view
+                .attrs
+                .get(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION)
+            else {
+                continue;
+            };
             if let Some(want) = rel_filter {
                 if rel != want {
                     continue;
@@ -5431,12 +5584,20 @@ fn tool_snapshot_diff(store: Option<&ToolLoopStoreContext>, args: &serde_json::V
     let examples_added: Vec<serde_json::Value> = added
         .iter()
         .take(limit)
-        .filter_map(|fid| b_facts.get(fid).map(|info| fact_preview(&b_loaded.db, info)))
+        .filter_map(|fid| {
+            b_facts
+                .get(fid)
+                .map(|info| fact_preview(&b_loaded.db, info))
+        })
         .collect();
     let examples_removed: Vec<serde_json::Value> = removed
         .iter()
         .take(limit)
-        .filter_map(|fid| a_facts.get(fid).map(|info| fact_preview(&a_loaded.db, info)))
+        .filter_map(|fid| {
+            a_facts
+                .get(fid)
+                .map(|info| fact_preview(&a_loaded.db, info))
+        })
         .collect();
 
     Ok(serde_json::json!({
@@ -5611,7 +5772,10 @@ fn tool_lookup_entity(db: &PathDB, args: &serde_json::Value) -> Result<serde_jso
     }))
 }
 
-pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::Value> {
+pub(crate) fn describe_entity_v1(
+    db: &PathDB,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
     #[derive(Deserialize)]
     struct Args {
         #[serde(default)]
@@ -5629,8 +5793,8 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         #[serde(default)]
         in_limit: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("describe_entity: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("describe_entity: invalid args: {e}"))?;
 
     fn resolve_entity_id_by_name(db: &PathDB, name: &str, want_type: Option<&str>) -> Result<u32> {
         let name = name.trim();
@@ -5707,7 +5871,11 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     let entity_id = if let Some(id) = a.id {
         id
     } else if let Some(name) = a.name.as_deref() {
-        let want_type = a.type_name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let want_type = a
+            .type_name
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
         resolve_entity_id_by_name(db, name, want_type)?
     } else {
         return Err(anyhow!("describe_entity: expected `id` or `name`"));
@@ -5745,7 +5913,10 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     }
 
     let contexts = db
-        .follow_one(entity_id, axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT)
+        .follow_one(
+            entity_id,
+            axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT,
+        )
         .iter()
         .take(24)
         .map(|id| EntityViewV1::from_id(db, id))
@@ -5754,7 +5925,10 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     let mut equivalences = Vec::new();
     if let Some(eqs) = db.equivalences.get(&entity_id) {
         for (other, ty_id) in eqs.iter().take(24) {
-            let ty = db.interner.lookup(*ty_id).unwrap_or_else(|| "?".to_string());
+            let ty = db
+                .interner
+                .lookup(*ty_id)
+                .unwrap_or_else(|| "?".to_string());
             equivalences.push(serde_json::json!({
                 "other": EntityViewV1::from_id(db, *other),
                 "kind": ty
@@ -5781,11 +5955,18 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         per_rel: usize,
         dir: &str,
     ) -> Vec<serde_json::Value> {
-        let mut groups: std::collections::HashMap<String, Vec<(u32, f32)>> = std::collections::HashMap::new();
+        let mut groups: std::collections::HashMap<String, Vec<(u32, f32)>> =
+            std::collections::HashMap::new();
         for r in rels {
-            let label = db.interner.lookup(r.rel_type).unwrap_or_else(|| "?".to_string());
+            let label = db
+                .interner
+                .lookup(r.rel_type)
+                .unwrap_or_else(|| "?".to_string());
             let endpoint = if dir == "out" { r.target } else { r.source };
-            groups.entry(label).or_default().push((endpoint, r.confidence));
+            groups
+                .entry(label)
+                .or_default()
+                .push((endpoint, r.confidence));
         }
 
         let mut keys: Vec<String> = groups.keys().cloned().collect();
@@ -5817,20 +5998,8 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
     let outgoing_raw = db.relations.outgoing_any(entity_id);
     let incoming_raw = db.relations.incoming_any(entity_id);
 
-    let outgoing = group(
-        db,
-        outgoing_raw.clone(),
-        max_rel_types,
-        out_limit,
-        "out",
-    );
-    let incoming = group(
-        db,
-        incoming_raw.clone(),
-        max_rel_types,
-        in_limit,
-        "in",
-    );
+    let outgoing = group(db, outgoing_raw.clone(), max_rel_types, out_limit, "out");
+    let incoming = group(db, incoming_raw.clone(), max_rel_types, in_limit, "in");
 
     fn parse_signature_field_order(signature: &str) -> Vec<String> {
         let Some(l) = signature.find('(') else {
@@ -5880,15 +6049,14 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
         }
 
         let axi_relation = view.attrs.get(ATTR_AXI_RELATION).cloned();
-        let signature = view
-            .attrs
-            .get(ATTR_OVERLAY_RELATION_SIGNATURE)
-            .cloned();
+        let signature = view.attrs.get(ATTR_OVERLAY_RELATION_SIGNATURE).cloned();
         let constraints = view.attrs.get(ATTR_OVERLAY_CONSTRAINTS).cloned();
 
         let pretty = match kind {
             "fact" => {
-                let rel_name = axi_relation.clone().unwrap_or_else(|| view.entity_type.clone());
+                let rel_name = axi_relation
+                    .clone()
+                    .unwrap_or_else(|| view.entity_type.clone());
 
                 // Collect outgoing edges as "fields".
                 let mut field_values: BTreeMap<String, Vec<EntityViewV1>> = BTreeMap::new();
@@ -5980,7 +6148,11 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
                 match (from, to) {
                     (Some(from), Some(to)) => {
                         if repr.trim().is_empty() {
-                            format!("PathWitness(from={}, to={})", entity_label(&from), entity_label(&to))
+                            format!(
+                                "PathWitness(from={}, to={})",
+                                entity_label(&from),
+                                entity_label(&to)
+                            )
                         } else {
                             format!(
                                 "PathWitness(from={}, to={}, repr={:?})",
@@ -6049,7 +6221,9 @@ pub(crate) fn describe_entity_v1(db: &PathDB, args: &serde_json::Value) -> Resul
                     .iter()
                     .next()
                     .map(|id| EntityViewV1::from_id(db, id));
-                let rel = axi_relation.clone().unwrap_or_else(|| view.entity_type.clone());
+                let rel = axi_relation
+                    .clone()
+                    .unwrap_or_else(|| view.entity_type.clone());
                 match (from, to) {
                     (Some(from), Some(to)) => format!(
                         "Morphism({rel}: {} -> {})",
@@ -6127,8 +6301,8 @@ fn tool_lookup_type(
         #[serde(rename = "type")]
         type_name: String,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("lookup_type: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("lookup_type: invalid args: {e}"))?;
 
     let type_name = a.type_name.trim();
     if type_name.is_empty() {
@@ -6183,21 +6357,28 @@ fn tool_lookup_type(
     }))
 }
 
-fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value) -> Result<serde_json::Value> {
+fn tool_lookup_relation(
+    meta: Option<&MetaPlaneIndex>,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
     #[derive(Deserialize)]
     struct Args {
         relation: String,
         #[serde(default)]
         schema: Option<String>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("lookup_relation: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("lookup_relation: invalid args: {e}"))?;
 
     let rel = a.relation.trim();
     if rel.is_empty() {
         return Err(anyhow!("lookup_relation: relation must be non-empty"));
     }
-    let schema_hint = a.schema.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let schema_hint = a
+        .schema
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
 
     let Some(meta) = meta else {
         return Err(anyhow!(
@@ -6208,7 +6389,11 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
     fn infer_endpoint_fields_from_decl(
         rel_decl: &axiograph_pathdb::axi_semantics::RelationDecl,
     ) -> (String, String) {
-        let names: Vec<&str> = rel_decl.fields.iter().map(|f| f.field_name.as_str()).collect();
+        let names: Vec<&str> = rel_decl
+            .fields
+            .iter()
+            .map(|f| f.field_name.as_str())
+            .collect();
         if names.contains(&"from") && names.contains(&"to") {
             return ("from".to_string(), "to".to_string());
         }
@@ -6230,7 +6415,9 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
         ("from".to_string(), "to".to_string())
     }
 
-    if let Some(resolved) = crate::relation_resolution::resolve_schema_relation(meta, schema_hint, rel) {
+    if let Some(resolved) =
+        crate::relation_resolution::resolve_schema_relation(meta, schema_hint, rel)
+    {
         let mut fields = resolved.rel_decl.fields.clone();
         fields.sort_by_key(|f| f.field_index);
         let (src_field, dst_field) = infer_endpoint_fields_from_decl(resolved.rel_decl);
@@ -6246,7 +6433,9 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
             .iter()
             .map(|c| match c {
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Functional {
-                    src_field, dst_field, ..
+                    src_field,
+                    dst_field,
+                    ..
                 } => format!("functional({src_field} -> {dst_field})"),
                 axiograph_pathdb::axi_semantics::ConstraintDecl::AtMost {
                     src_field,
@@ -6266,11 +6455,19 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Typing { rule, .. } => {
                     format!("typing({rule})")
                 }
-                axiograph_pathdb::axi_semantics::ConstraintDecl::SymmetricWhereIn { field, values, .. } => {
+                axiograph_pathdb::axi_semantics::ConstraintDecl::SymmetricWhereIn {
+                    field,
+                    values,
+                    ..
+                } => {
                     format!("symmetric_where_in({field} in {{{}}})", values.join(", "))
                 }
-                axiograph_pathdb::axi_semantics::ConstraintDecl::Symmetric { .. } => "symmetric".to_string(),
-                axiograph_pathdb::axi_semantics::ConstraintDecl::Transitive { .. } => "transitive".to_string(),
+                axiograph_pathdb::axi_semantics::ConstraintDecl::Symmetric { .. } => {
+                    "symmetric".to_string()
+                }
+                axiograph_pathdb::axi_semantics::ConstraintDecl::Transitive { .. } => {
+                    "transitive".to_string()
+                }
                 axiograph_pathdb::axi_semantics::ConstraintDecl::Key { fields, .. } => {
                     format!("key({})", fields.join(", "))
                 }
@@ -6319,10 +6516,12 @@ fn tool_lookup_relation(meta: Option<&MetaPlaneIndex>, args: &serde_json::Value)
     matches.sort_by(|a, b| {
         let aschema = a.get("schema").and_then(|v| v.as_str()).unwrap_or("");
         let bschema = b.get("schema").and_then(|v| v.as_str()).unwrap_or("");
-        aschema.cmp(bschema)
-            .then_with(|| a.get("relation").and_then(|v| v.as_str()).unwrap_or("").cmp(
-                b.get("relation").and_then(|v| v.as_str()).unwrap_or("")
-            ))
+        aschema.cmp(bschema).then_with(|| {
+            a.get("relation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .cmp(b.get("relation").and_then(|v| v.as_str()).unwrap_or(""))
+        })
     });
 
     Ok(serde_json::json!({
@@ -6352,9 +6551,21 @@ fn tool_lookup_rewrite_rule(
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("lookup_rewrite_rule: invalid args: {e}"))?;
 
-    let schema_filter = a.schema.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let theory_filter = a.theory.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let rule_filter = a.rule.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let schema_filter = a
+        .schema
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let theory_filter = a
+        .theory
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let rule_filter = a
+        .rule
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
     let limit = a.limit.unwrap_or(20).clamp(1, 50);
 
     let Some(meta) = meta else {
@@ -6453,8 +6664,8 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
         #[serde(default)]
         max_relation_samples: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("db_summary: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("db_summary: invalid args: {e}"))?;
 
     let max_types = a.max_types.unwrap_or(12).clamp(1, 50);
     let max_relations = a.max_relations.unwrap_or(12).clamp(1, 50);
@@ -6571,8 +6782,10 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
 
     let mut rel_counts: std::collections::HashMap<axiograph_pathdb::StrId, usize> =
         std::collections::HashMap::new();
-    let mut rel_samples: std::collections::HashMap<axiograph_pathdb::StrId, Vec<serde_json::Value>> =
-        std::collections::HashMap::new();
+    let mut rel_samples: std::collections::HashMap<
+        axiograph_pathdb::StrId,
+        Vec<serde_json::Value>,
+    > = std::collections::HashMap::new();
     for rel_id in 0..db.relations.len() as u32 {
         let Some(rel) = db.relations.get_relation(rel_id) else {
             continue;
@@ -6684,7 +6897,9 @@ struct TokenHashAnnIndex {
 }
 
 static TOKEN_HASH_ANN_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<TokenHashAnnIndex>>>>,
+    std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<TokenHashAnnIndex>>>,
+    >,
 > = std::sync::OnceLock::new();
 
 fn token_hash_ann_cache() -> &'static std::sync::Mutex<
@@ -6695,7 +6910,9 @@ fn token_hash_ann_cache() -> &'static std::sync::Mutex<
 
 fn build_entity_graph_text_for_token_hash(db: &PathDB, id: u32) -> Option<String> {
     let view = db.get_entity(id)?;
-    if view.entity_type.starts_with("AxiMeta") || view.entity_type == "DocChunk" || view.entity_type == "Document"
+    if view.entity_type.starts_with("AxiMeta")
+        || view.entity_type == "DocChunk"
+        || view.entity_type == "Document"
     {
         return None;
     }
@@ -6816,7 +7033,10 @@ fn get_or_build_token_hash_ann_index(
         None
     };
 
-    let built = std::sync::Arc::new(std::sync::Mutex::new(TokenHashAnnIndex { entities, docchunks }));
+    let built = std::sync::Arc::new(std::sync::Mutex::new(TokenHashAnnIndex {
+        entities,
+        docchunks,
+    }));
 
     // Store in cache (best-effort). Keep the cache bounded to avoid unbounded memory growth.
     if let Ok(mut cache) = token_hash_ann_cache().lock() {
@@ -6884,7 +7104,8 @@ fn tool_semantic_search(
                 let sim = token_hash_dot(&qv, &ann.entities.vectors[idx]);
                 det_entity_scores.push((sim, id));
             }
-            det_entity_scores.sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
+            det_entity_scores
+                .sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
             det_entity_scores.truncate(entity_limit);
 
             // DocChunks.
@@ -6902,9 +7123,8 @@ fn tool_semantic_search(
                     let sim = token_hash_dot(&qv, &chunks.vectors[idx]);
                     det_chunk_scores.push((sim, id));
                 }
-                det_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
-                    sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                });
+                det_chunk_scores
+                    .sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
                 det_chunk_scores.truncate(chunk_limit);
             }
         }
@@ -6924,7 +7144,8 @@ fn tool_semantic_search(
                 let ev = token_hash_embed_text(&text);
                 det_entity_scores.push((token_hash_dot(&qv, &ev), id));
             }
-            det_entity_scores.sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
+            det_entity_scores
+                .sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
             det_entity_scores.truncate(entity_limit);
 
             // DocChunks fallback (token index candidate set).
@@ -6939,9 +7160,8 @@ fn tool_semantic_search(
                     let ev = token_hash_embed_text(&text);
                     det_chunk_scores.push((token_hash_dot(&qv, &ev), id));
                 }
-                det_chunk_scores.sort_by(|(sa, ia), (sb, ib)| {
-                    sb.total_cmp(sa).then_with(|| ia.cmp(ib))
-                });
+                det_chunk_scores
+                    .sort_by(|(sa, ia), (sb, ib)| sb.total_cmp(sa).then_with(|| ia.cmp(ib)));
                 det_chunk_scores.truncate(chunk_limit);
             }
         }
@@ -6956,40 +7176,40 @@ fn tool_semantic_search(
         if let Err(e) = idx.assert_in_db(db) {
             notes.push(format!("embeddings skipped: {e}"));
         } else {
-        fn normalize_vec(v: &mut [f32]) {
-            let mut norm2 = 0.0f32;
-            for x in v.iter() {
-                norm2 += x * x;
+            fn normalize_vec(v: &mut [f32]) {
+                let mut norm2 = 0.0f32;
+                for x in v.iter() {
+                    norm2 += x * x;
+                }
+                if norm2 <= 0.0 {
+                    return;
+                }
+                let inv = 1.0f32 / norm2.sqrt();
+                for x in v.iter_mut() {
+                    *x *= inv;
+                }
             }
-            if norm2 <= 0.0 {
-                return;
-            }
-            let inv = 1.0f32 / norm2.sqrt();
-            for x in v.iter_mut() {
-                *x *= inv;
-            }
-        }
 
-        fn dot_vec(a: &[f32], b: &[f32]) -> f32 {
-            let mut s = 0.0f32;
-            let n = a.len().min(b.len());
-            for i in 0..n {
-                s += a[i] * b[i];
+            fn dot_vec(a: &[f32], b: &[f32]) -> f32 {
+                let mut s = 0.0f32;
+                let n = a.len().min(b.len());
+                for i in 0..n {
+                    s += a[i] * b[i];
+                }
+                s
             }
-            s
-        }
 
-        let timeout = llm_timeout(None)?;
+            let timeout = llm_timeout(None)?;
 
-        // Entities.
-        if let Some(t) = idx.entities.as_ref() {
-            match t.backend.as_str() {
-                "ollama" => {
-                    if let Some(host) = ollama_embed_host {
-                        #[cfg(feature = "llm-ollama")]
-                        {
-                            let q = vec![query.to_string()];
-                            match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
+            // Entities.
+            if let Some(t) = idx.entities.as_ref() {
+                match t.backend.as_str() {
+                    "ollama" => {
+                        if let Some(host) = ollama_embed_host {
+                            #[cfg(feature = "llm-ollama")]
+                            {
+                                let q = vec![query.to_string()];
+                                match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
                                 Ok(mut qv) if qv.len() == 1 => {
                                     let mut qv = qv.remove(0);
                                     normalize_vec(&mut qv);
@@ -7021,27 +7241,28 @@ fn tool_semantic_search(
                                 ),
                                 Err(e) => notes.push(format!("embeddings skipped: {e}")),
                             }
-                        }
-                        #[cfg(not(feature = "llm-ollama"))]
-                        {
-                            let _ = host;
+                            }
+                            #[cfg(not(feature = "llm-ollama"))]
+                            {
+                                let _ = host;
+                                notes.push(
+                                    "embeddings unavailable (compiled without `llm-ollama`)"
+                                        .to_string(),
+                                );
+                            }
+                        } else {
                             notes.push(
-                                "embeddings unavailable (compiled without `llm-ollama`)".to_string(),
+                                "embeddings skipped: ollama host not configured for this tool-loop"
+                                    .to_string(),
                             );
                         }
-                    } else {
-                        notes.push(
-                            "embeddings skipped: ollama host not configured for this tool-loop"
-                                .to_string(),
-                        );
                     }
-                }
-                "openai" => {
-                    #[cfg(feature = "llm-openai")]
-                    {
-                        let base_url = default_openai_base_url();
-                        let q = vec![query.to_string()];
-                        match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
+                    "openai" => {
+                        #[cfg(feature = "llm-openai")]
+                        {
+                            let base_url = default_openai_base_url();
+                            let q = vec![query.to_string()];
+                            match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
                             Ok(mut qv) if qv.len() == 1 => {
                                 let mut qv = qv.remove(0);
                                 normalize_vec(&mut qv);
@@ -7073,30 +7294,30 @@ fn tool_semantic_search(
                             ),
                             Err(e) => notes.push(format!("embeddings skipped: {e}")),
                         }
+                        }
+                        #[cfg(not(feature = "llm-openai"))]
+                        {
+                            notes.push(
+                                "embeddings unavailable (compiled without `llm-openai`)"
+                                    .to_string(),
+                            );
+                        }
                     }
-                    #[cfg(not(feature = "llm-openai"))]
-                    {
-                        notes.push(
-                            "embeddings unavailable (compiled without `llm-openai`)".to_string(),
-                        );
+                    other => {
+                        notes.push(format!("embeddings skipped: backend {} (entities)", other))
                     }
                 }
-                other => notes.push(format!(
-                    "embeddings skipped: backend {} (entities)",
-                    other
-                )),
             }
-        }
 
-        // DocChunks.
-        if let Some(t) = idx.docchunks.as_ref() {
-            match t.backend.as_str() {
-                "ollama" => {
-                    if let Some(host) = ollama_embed_host {
-                        #[cfg(feature = "llm-ollama")]
-                        {
-                            let q = vec![query.to_string()];
-                            match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
+            // DocChunks.
+            if let Some(t) = idx.docchunks.as_ref() {
+                match t.backend.as_str() {
+                    "ollama" => {
+                        if let Some(host) = ollama_embed_host {
+                            #[cfg(feature = "llm-ollama")]
+                            {
+                                let q = vec![query.to_string()];
+                                match ollama_embed_texts_with_timeout(host, &t.model, &q, timeout) {
                                 Ok(mut qv) if qv.len() == 1 => {
                                     let mut qv = qv.remove(0);
                                     normalize_vec(&mut qv);
@@ -7128,27 +7349,28 @@ fn tool_semantic_search(
                                 ),
                                 Err(e) => notes.push(format!("embeddings skipped: {e}")),
                             }
-                        }
-                        #[cfg(not(feature = "llm-ollama"))]
-                        {
-                            let _ = host;
+                            }
+                            #[cfg(not(feature = "llm-ollama"))]
+                            {
+                                let _ = host;
+                                notes.push(
+                                    "embeddings unavailable (compiled without `llm-ollama`)"
+                                        .to_string(),
+                                );
+                            }
+                        } else {
                             notes.push(
-                                "embeddings unavailable (compiled without `llm-ollama`)".to_string(),
+                                "embeddings skipped: ollama host not configured for this tool-loop"
+                                    .to_string(),
                             );
                         }
-                    } else {
-                        notes.push(
-                            "embeddings skipped: ollama host not configured for this tool-loop"
-                                .to_string(),
-                        );
                     }
-                }
-                "openai" => {
-                    #[cfg(feature = "llm-openai")]
-                    {
-                        let base_url = default_openai_base_url();
-                        let q = vec![query.to_string()];
-                        match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
+                    "openai" => {
+                        #[cfg(feature = "llm-openai")]
+                        {
+                            let base_url = default_openai_base_url();
+                            let q = vec![query.to_string()];
+                            match openai_embed_texts_with_timeout(&base_url, &t.model, &q, timeout) {
                             Ok(mut qv) if qv.len() == 1 => {
                                 let mut qv = qv.remove(0);
                                 normalize_vec(&mut qv);
@@ -7180,20 +7402,20 @@ fn tool_semantic_search(
                             ),
                             Err(e) => notes.push(format!("embeddings skipped: {e}")),
                         }
+                        }
+                        #[cfg(not(feature = "llm-openai"))]
+                        {
+                            notes.push(
+                                "embeddings unavailable (compiled without `llm-openai`)"
+                                    .to_string(),
+                            );
+                        }
                     }
-                    #[cfg(not(feature = "llm-openai"))]
-                    {
-                        notes.push(
-                            "embeddings unavailable (compiled without `llm-openai`)".to_string(),
-                        );
+                    other => {
+                        notes.push(format!("embeddings skipped: backend {} (docchunks)", other))
                     }
                 }
-                other => notes.push(format!(
-                    "embeddings skipped: backend {} (docchunks)",
-                    other
-                )),
             }
-        }
         }
     }
 
@@ -7264,8 +7486,7 @@ fn tool_semantic_search(
 
     let mut chunk_hits: Vec<serde_json::Value> = Vec::new();
     for (sim, id, tok, emb) in chunk_ranked.into_iter().take(chunk_limit) {
-        let chunk_id =
-            db_entity_attr_string(db, id, "chunk_id").unwrap_or_else(|| id.to_string());
+        let chunk_id = db_entity_attr_string(db, id, "chunk_id").unwrap_or_else(|| id.to_string());
         let doc = db_entity_attr_string(db, id, "document_id").unwrap_or_default();
         let span = db_entity_attr_string(db, id, "span_id").unwrap_or_default();
         let text = db_entity_attr_string(db, id, "text").unwrap_or_default();
@@ -7302,8 +7523,8 @@ fn tool_fts_chunks(
         #[serde(default)]
         limit: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("fts_chunks: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("fts_chunks: invalid args: {e}"))?;
 
     let limit = a.limit.unwrap_or(options.max_doc_chunks).clamp(1, 50);
     let query = a.query.trim();
@@ -7312,11 +7533,13 @@ fn tool_fts_chunks(
     }
 
     let Some(chunks) = db.find_by_type("DocChunk") else {
-        return Ok(serde_json::json!({ "hits": [], "note": "no DocChunk loaded (answer from the graph via db_summary / describe_entity / axql_run)" }));
+        return Ok(
+            serde_json::json!({ "hits": [], "note": "no DocChunk loaded (answer from the graph via db_summary / describe_entity / axql_run)" }),
+        );
     };
 
-    let mut candidates =
-        db.entities_with_attr_fts_any("text", query) | db.entities_with_attr_fts_any("search_text", query);
+    let mut candidates = db.entities_with_attr_fts_any("text", query)
+        | db.entities_with_attr_fts_any("search_text", query);
     candidates &= chunks.clone();
 
     let mut out = Vec::new();
@@ -7386,7 +7609,9 @@ fn tool_docchunk_get(
             return Err(anyhow!("docchunk_get: db has no `chunk_id` attribute"));
         };
         let Some(value_id) = db.interner.id_of(chunk_id) else {
-            return Err(anyhow!("docchunk_get: no DocChunk with chunk_id={chunk_id:?}"));
+            return Err(anyhow!(
+                "docchunk_get: no DocChunk with chunk_id={chunk_id:?}"
+            ));
         };
 
         let mut ids = db.entities.entities_with_attr_value(key_id, value_id);
@@ -7394,7 +7619,9 @@ fn tool_docchunk_get(
             ids &= bm.clone();
         }
         if ids.is_empty() {
-            return Err(anyhow!("docchunk_get: no DocChunk with chunk_id={chunk_id:?}"));
+            return Err(anyhow!(
+                "docchunk_get: no DocChunk with chunk_id={chunk_id:?}"
+            ));
         }
         ids.iter().next().unwrap_or(0)
     } else {
@@ -7444,16 +7671,13 @@ fn tool_axql_elaborate(
 
     // We run the full prepare pipeline so we can return a plan (join order,
     // index hints, etc). This is untrusted tooling output, not a certificate.
-    let key = crate::axql::axql_query_cache_key(snapshot_key, &query);
-    let prepared = if let Some(p) = query_cache.get_mut(&key) {
-        p
-    } else {
-        let p = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
-        query_cache.insert(key.clone(), p);
-        query_cache
-            .get_mut(&key)
-            .expect("query cache insert")
-    };
+    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+        db,
+        &query,
+        meta,
+        snapshot_key,
+        query_cache,
+    )?;
 
     let report = prepared.elaboration_report();
     let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
@@ -7486,14 +7710,13 @@ fn tool_axql_run(
 
     // Always run the full prepare pipeline (meta-plane typecheck/elaboration +
     // plan) so the REPL/UI can show what was inferred and how the engine ran.
-    let key = crate::axql::axql_query_cache_key(snapshot_key, &query);
-    let prepared = if let Some(p) = query_cache.get_mut(&key) {
-        p
-    } else {
-        let p = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
-        query_cache.insert(key.clone(), p);
-        query_cache.get_mut(&key).expect("query cache insert")
-    };
+    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+        db,
+        &query,
+        meta,
+        snapshot_key,
+        query_cache,
+    )?;
 
     let elaborated = prepared.elaborated_query_text();
     let report = prepared.elaboration_report().clone();
@@ -7535,8 +7758,8 @@ fn tool_viz_render(
         #[serde(default)]
         max_edges: Option<usize>,
     }
-    let a: Args =
-        serde_json::from_value(args.clone()).map_err(|e| anyhow!("viz_render: invalid args: {e}"))?;
+    let a: Args = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow!("viz_render: invalid args: {e}"))?;
 
     let focus = a.focus_name.trim();
     if focus.is_empty() {
@@ -7548,7 +7771,10 @@ fn tool_viz_render(
     };
 
     let hops = a.hops.unwrap_or(2).min(6);
-    let plane = a.plane.unwrap_or_else(|| "both".to_string()).to_ascii_lowercase();
+    let plane = a
+        .plane
+        .unwrap_or_else(|| "both".to_string())
+        .to_ascii_lowercase();
     let (include_meta_plane, include_data_plane) = match plane.as_str() {
         "data" => (false, true),
         "meta" => (true, false),
@@ -7581,7 +7807,11 @@ fn tool_viz_render(
 
     let out_dir = repo_root().join("build/llm_agent");
     std::fs::create_dir_all(&out_dir)?;
-    let filename = format!("viz_{}_{}.html", sanitize_filename(focus), axiograph_dsl::digest::axi_digest_v1(focus));
+    let filename = format!(
+        "viz_{}_{}.html",
+        sanitize_filename(focus),
+        axiograph_dsl::digest::axi_digest_v1(focus)
+    );
     let out_path = out_dir.join(filename);
     std::fs::write(&out_path, html)?;
 
@@ -7635,7 +7865,9 @@ fn tool_propose_axi_patch(args: &serde_json::Value) -> Result<serde_json::Value>
 
     let proposals_path = a.proposals_path.trim();
     if proposals_path.is_empty() {
-        return Err(anyhow!("propose_axi_patch: proposals_path must be non-empty"));
+        return Err(anyhow!(
+            "propose_axi_patch: proposals_path must be non-empty"
+        ));
     }
 
     let path = PathBuf::from(proposals_path);
@@ -7647,7 +7879,9 @@ fn tool_propose_axi_patch(args: &serde_json::Value) -> Result<serde_json::Value>
     let opts = crate::schema_discovery::DraftAxiModuleOptions {
         module_name: a.module_name.unwrap_or_else(|| "DraftModule".to_string()),
         schema_name: a.schema_name.unwrap_or_else(|| "DraftSchema".to_string()),
-        instance_name: a.instance_name.unwrap_or_else(|| "DraftInstance".to_string()),
+        instance_name: a
+            .instance_name
+            .unwrap_or_else(|| "DraftInstance".to_string()),
         infer_constraints: a.infer_constraints.unwrap_or(true),
     };
     let axi = crate::schema_discovery::draft_axi_module_from_proposals(&file, &opts)?;
@@ -7683,13 +7917,16 @@ fn tool_draft_axi_from_proposals(args: &serde_json::Value) -> Result<serde_json:
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("draft_axi_from_proposals: invalid args: {e}"))?;
 
-    let proposals: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_value(a.proposals_json)
-        .map_err(|e| anyhow!("draft_axi_from_proposals: invalid proposals_json: {e}"))?;
+    let proposals: axiograph_ingest_docs::ProposalsFileV1 =
+        serde_json::from_value(a.proposals_json)
+            .map_err(|e| anyhow!("draft_axi_from_proposals: invalid proposals_json: {e}"))?;
 
     let opts = crate::schema_discovery::DraftAxiModuleOptions {
         module_name: a.module_name.unwrap_or_else(|| "DraftModule".to_string()),
         schema_name: a.schema_name.unwrap_or_else(|| "DraftSchema".to_string()),
-        instance_name: a.instance_name.unwrap_or_else(|| "DraftInstance".to_string()),
+        instance_name: a
+            .instance_name
+            .unwrap_or_else(|| "DraftInstance".to_string()),
         infer_constraints: a.infer_constraints.unwrap_or(true),
     };
     let axi_text = crate::schema_discovery::draft_axi_module_from_proposals(&proposals, &opts)?;
@@ -7956,7 +8193,10 @@ fn tool_propose_relations_proposals(
     }))
 }
 
-fn parse_query_from_tool_args(args: &serde_json::Value, tool: &str) -> Result<crate::axql::AxqlQuery> {
+fn parse_query_from_tool_args(
+    args: &serde_json::Value,
+    tool: &str,
+) -> Result<crate::axql::AxqlQuery> {
     #[derive(Deserialize)]
     struct Args {
         #[serde(default)]
@@ -8037,8 +8277,7 @@ fn extract_identifier_like_terms(question: &str, max_terms: usize) -> Vec<String
     }
 
     for c in question.chars() {
-        let ok = c.is_ascii_alphanumeric()
-            || matches!(c, '_' | '.' | ':' | '/' | '-' | '~');
+        let ok = c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '/' | '-' | '~');
         if ok {
             cur.push(c);
         } else if !cur.is_empty() {
@@ -8085,7 +8324,10 @@ fn truncate_json_for_prompt(
             if depth >= limits.max_depth {
                 let mut out = Map::new();
                 out.insert("_truncated".to_string(), Value::Bool(true));
-                out.insert("_note".to_string(), Value::String("depth limit".to_string()));
+                out.insert(
+                    "_note".to_string(),
+                    Value::String("depth limit".to_string()),
+                );
                 return Value::Object(out);
             }
 
@@ -8126,7 +8368,10 @@ fn truncate_json_for_prompt(
                     break;
                 }
                 if let Some(v) = m.get(k) {
-                    out.insert(k.to_string(), truncate_json_for_prompt(v, depth + 1, limits));
+                    out.insert(
+                        k.to_string(),
+                        truncate_json_for_prompt(v, depth + 1, limits),
+                    );
                     kept.insert(k.to_string());
                 }
             }
@@ -8142,7 +8387,10 @@ fn truncate_json_for_prompt(
                         continue;
                     }
                     if let Some(v) = m.get(k) {
-                        out.insert(k.to_string(), truncate_json_for_prompt(v, depth + 1, limits));
+                        out.insert(
+                            k.to_string(),
+                            truncate_json_for_prompt(v, depth + 1, limits),
+                        );
                     }
                 }
             }
@@ -8346,7 +8594,8 @@ fn mock_tool_loop_step(
 
             // Best-effort: if the utterance looks like “X is a child/son/daughter of Y”,
             // interpret it as Parent(child=X, parent=Y).
-            let looks_like_child_of = q_lc.contains(" child ") || q_lc.contains(" son ") || q_lc.contains(" daughter ");
+            let looks_like_child_of =
+                q_lc.contains(" child ") || q_lc.contains(" son ") || q_lc.contains(" daughter ");
             let has_of = q_lc.split_whitespace().any(|t| t == "of");
             if !looks_like_child_of || !has_of {
                 return None;
@@ -8356,12 +8605,18 @@ fn mock_tool_loop_step(
             if tokens.len() < 4 {
                 return None;
             }
-            let child = tokens.get(1)?.trim().trim_matches(|c: char| !c.is_alphanumeric());
+            let child = tokens
+                .get(1)?
+                .trim()
+                .trim_matches(|c: char| !c.is_alphanumeric());
             if child.is_empty() {
                 return None;
             }
             let of_pos = tokens.iter().rposition(|t| t.eq_ignore_ascii_case("of"))?;
-            let parent = tokens.get(of_pos + 1)?.trim().trim_matches(|c: char| !c.is_alphanumeric());
+            let parent = tokens
+                .get(of_pos + 1)?
+                .trim()
+                .trim_matches(|c: char| !c.is_alphanumeric());
             if parent.is_empty() {
                 return None;
             }
@@ -8416,16 +8671,15 @@ fn mock_tool_loop_step(
                 #[serde(default)]
                 query: Option<String>,
             }
-            let payload: ResultsPayload = serde_json::from_value(last.result.clone()).unwrap_or(
-                ResultsPayload {
+            let payload: ResultsPayload =
+                serde_json::from_value(last.result.clone()).unwrap_or(ResultsPayload {
                     results: PluginResultsV1 {
                         vars: Vec::new(),
                         rows: Vec::new(),
                         truncated: false,
                     },
                     query: None,
-                },
-            );
+                });
 
             let mut lines = Vec::new();
             if payload.results.rows.is_empty() {
@@ -8435,10 +8689,7 @@ fn mock_tool_loop_step(
                 for (i, row) in payload.results.rows.iter().enumerate().take(6) {
                     let mut parts = Vec::new();
                     for (k, v) in row {
-                        let label = v
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| v.id.to_string());
+                        let label = v.name.clone().unwrap_or_else(|| v.id.to_string());
                         parts.push(format!("{k}={label}"));
                     }
                     lines.push(format!("row {i}: {}", parts.join(", ")));
@@ -8541,7 +8792,8 @@ fn render_tool_loop_user_prompt(
     ollama_embed_host: Option<&str>,
     options: ToolLoopOptions,
 ) -> Result<String> {
-    let grounding = render_doc_grounding(db, question, options.max_doc_chunks, options.max_doc_chars);
+    let grounding =
+        render_doc_grounding(db, question, options.max_doc_chunks, options.max_doc_chars);
     let db_summary = if transcript.is_empty() {
         tool_db_summary(
             db,
@@ -9131,7 +9383,10 @@ fn parse_tool_loop_response_json(
             .or_else(|| call_v.get("tool"))
             .and_then(|x| x.as_str())
         {
-            let mut args = call_v.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+            let mut args = call_v
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
             if name == "axql_run" || name == "axql_elaborate" {
                 maybe_convert_axql_args_to_query_ir(&mut args);
             }
@@ -9153,7 +9408,10 @@ fn parse_tool_loop_response_json(
         .or_else(|| v.get("tool"))
         .and_then(|x| x.as_str())
     {
-        let mut args = v.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        let mut args = v
+            .get("args")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
         if name == "axql_run" || name == "axql_elaborate" {
             maybe_convert_axql_args_to_query_ir(&mut args);
         }
@@ -9172,7 +9430,10 @@ fn parse_tool_loop_response_json(
     if v.get("axql").is_some() || v.get("query_ir_v1").is_some() {
         let mut args = serde_json::Map::new();
         if let Some(axql) = v.get("axql").and_then(|x| x.as_str()) {
-            args.insert("axql".to_string(), serde_json::Value::String(axql.to_string()));
+            args.insert(
+                "axql".to_string(),
+                serde_json::Value::String(axql.to_string()),
+            );
         }
         if let Some(ir) = v.get("query_ir_v1").cloned() {
             args.insert("query_ir_v1".to_string(), ir);
@@ -9281,7 +9542,8 @@ struct SchemaContextV1 {
 
 impl SchemaContextV1 {
     fn from_db(db: &PathDB) -> Self {
-        let mut type_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut type_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for entity_id in 0..db.entities.len() as u32 {
             let Some(type_id) = db.entities.get_type(entity_id) else {
                 continue;
@@ -9297,7 +9559,8 @@ impl SchemaContextV1 {
             *type_counts.entry(name).or_insert(0) += 1;
         }
 
-        let mut relation_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut relation_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for rel_id in 0..db.relations.len() as u32 {
             let Some(rel) = db.relations.get_relation(rel_id) else {
                 continue;
@@ -9324,7 +9587,10 @@ impl SchemaContextV1 {
         let contexts = sample_names(db, "Context", 16);
         let times = sample_names(db, "Time", 16);
 
-        fn top_by_count(mut m: std::collections::HashMap<String, usize>, max: usize) -> Vec<String> {
+        fn top_by_count(
+            mut m: std::collections::HashMap<String, usize>,
+            max: usize,
+        ) -> Vec<String> {
             let mut v: Vec<(usize, String)> = m.drain().map(|(k, c)| (c, k)).collect();
             v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
             v.into_iter().take(max).map(|(_, k)| k).collect()
@@ -9379,8 +9645,14 @@ impl SchemaContextV1 {
         schema_names.sort();
         out.schemas = schema_names.into_iter().take(32).collect();
 
-        fn infer_endpoint_fields_from_decl(rel_decl: &axiograph_pathdb::axi_semantics::RelationDecl) -> (String, String) {
-            let names: Vec<&str> = rel_decl.fields.iter().map(|f| f.field_name.as_str()).collect();
+        fn infer_endpoint_fields_from_decl(
+            rel_decl: &axiograph_pathdb::axi_semantics::RelationDecl,
+        ) -> (String, String) {
+            let names: Vec<&str> = rel_decl
+                .fields
+                .iter()
+                .map(|f| f.field_name.as_str())
+                .collect();
             if names.contains(&"from") && names.contains(&"to") {
                 return ("from".to_string(), "to".to_string());
             }
@@ -9408,7 +9680,9 @@ impl SchemaContextV1 {
                 use axiograph_pathdb::axi_semantics::ConstraintDecl as C;
                 match c {
                     C::Functional {
-                        src_field, dst_field, ..
+                        src_field,
+                        dst_field,
+                        ..
                     } => parts.push(format!("functional({src_field} -> {dst_field})")),
                     C::AtMost {
                         src_field,
@@ -9432,7 +9706,7 @@ impl SchemaContextV1 {
                     )),
                     C::Symmetric { .. } => parts.push("symmetric".to_string()),
                     C::Transitive { .. } => parts.push("transitive".to_string()),
-                    C::Key { fields, .. } => parts.push(format!("key({})", fields.join(", "))), 
+                    C::Key { fields, .. } => parts.push(format!("key({})", fields.join(", "))),
                     C::NamedBlock { name, .. } => parts.push(format!("named_block({name})")),
                     C::Unknown { text, .. } => parts.push(format!("unknown({text})")),
                 }
@@ -9445,42 +9719,47 @@ impl SchemaContextV1 {
 
         // Rank relation signatures by observed fact-node count, so the prompt
         // stays compact even on large graphs while still covering "common" facts.
-        let mut ranked: Vec<(usize, String, &axiograph_pathdb::axi_semantics::SchemaIndex, &axiograph_pathdb::axi_semantics::RelationDecl)> =
-            Vec::new();
+        let mut ranked: Vec<(
+            usize,
+            String,
+            &axiograph_pathdb::axi_semantics::SchemaIndex,
+            &axiograph_pathdb::axi_semantics::RelationDecl,
+        )> = Vec::new();
         for (schema_name, schema) in &meta.schemas {
             for rel in schema.relation_decls.values() {
                 let count = db.find_by_type(&rel.name).map(|bm| bm.len()).unwrap_or(0) as usize;
                 ranked.push((count, schema_name.clone(), schema, rel));
             }
         }
-        ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.3.name.cmp(&b.3.name)));
+        ranked.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.3.name.cmp(&b.3.name))
+        });
 
         for (_count, schema_name, schema, rel) in ranked.into_iter().take(120) {
-                let mut fields = rel.fields.clone();
-                fields.sort_by_key(|f| f.field_index);
-                let fields_text = fields
-                    .iter()
-                    .map(|f| format!("{}: {}", f.field_name, f.field_type))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+            let mut fields = rel.fields.clone();
+            fields.sort_by_key(|f| f.field_index);
+            let fields_text = fields
+                .iter()
+                .map(|f| format!("{}: {}", f.field_name, f.field_type))
+                .collect::<Vec<_>>()
+                .join(", ");
 
-                let (src_field, dst_field) = infer_endpoint_fields_from_decl(rel);
-                sigs.push(format!(
+            let (src_field, dst_field) = infer_endpoint_fields_from_decl(rel);
+            sigs.push(format!(
                     "{schema_name}.{}({fields_text})  (source_field={src_field}, target_field={dst_field})",
                     rel.name
                 ));
 
-                if let Some(cs) = schema.constraints_by_relation.get(&rel.name) {
-                    if !cs.is_empty() {
-                        let rendered = render_constraints(cs);
-                        if !rendered.trim().is_empty() {
-                            constraint_lines.push(format!(
-                                "{schema_name}.{}: {rendered}",
-                                rel.name
-                            ));
-                        }
+            if let Some(cs) = schema.constraints_by_relation.get(&rel.name) {
+                if !cs.is_empty() {
+                    let rendered = render_constraints(cs);
+                    if !rendered.trim().is_empty() {
+                        constraint_lines.push(format!("{schema_name}.{}: {rendered}", rel.name));
                     }
                 }
+            }
         }
 
         out.relation_signatures = sigs.into_iter().take(80).collect();

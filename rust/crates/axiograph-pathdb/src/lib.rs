@@ -18,7 +18,10 @@
 //! This crate is designed for provable correctness:
 //! - **Lean**: trusted checker/spec for certificates (`lean/Axiograph/*`)
 //! - **Verus**: additive runtime invariant hardening (`rust/verus/` + `verified.rs`)
-//! - **Shared binary format**: v2 `.axpd` with modal/probabilistic extensions
+//! - **Shared binary format**:
+//!   - production runtime format is currently `.axpd` v1,
+//!   - sectioned `.axpd` v2 work exists in `verified.rs` but is not yet the
+//!     end-to-end runtime format
 //!
 //! ## Module Organization
 //!
@@ -28,6 +31,7 @@
 
 #![allow(unused_variables)]
 
+pub mod anchor;
 pub mod axi_export;
 pub mod axi_meta;
 pub mod axi_module_constraints;
@@ -38,12 +42,14 @@ pub mod axi_semantics;
 pub mod axi_type;
 pub mod axi_typed;
 pub mod branding;
-pub mod checked_db;
 pub mod certificate;
+pub mod checked_db;
 pub mod fact_index;
-mod index_sidecar;
 pub mod guardrails;
+mod index_sidecar;
+pub mod kernel_ir;
 pub mod learning;
+pub mod lifecycle;
 pub mod migration;
 pub mod modal;
 pub mod optimizer;
@@ -64,6 +70,14 @@ use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::Duration;
 
 // Re-export key types
+pub use anchor::{
+    AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, ContextId, PathdbSnapshotId, ProposalDigest,
+    SchemaId, StableFactId, TheoryId, WorldModelRunId,
+};
+pub use axi_module_typecheck::{
+    review_axi_v1_module, validate_axi_v1_module, Module, ReviewStamp, WellTypedModuleState,
+};
+pub use axi_type::{AxiType, TypingEnv};
 pub use branding::{DbBranded, DbToken, DbTokenMismatch};
 pub use certificate::{
     AxiAnchorV1, AxiConstraintsOkProofV1, AxiWellTypedProofV1, Certificate, CertificateV2,
@@ -72,13 +86,13 @@ pub use certificate::{
     RewriteDerivationProofV2, RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION,
     CERTIFICATE_VERSION_V2, FIXED_POINT_DENOMINATOR, FIXED_PROB_PRECISION,
 };
-pub use axi_type::{AxiType, TypingEnv};
+pub use checked_db::{CheckedDb, CheckedDbMut, CheckedDbReport, TypedFactBuilder};
+pub use guardrails::{GuardrailEngine, GuardrailRule, GuardrailViolation, Severity};
 pub use index_sidecar::{
     read_sidecar_file, write_sidecar_file, IndexSidecarWriter, LruSnapshot, PathDbIndexSidecarV1,
     PATHDB_INDEX_SIDECAR_VERSION_V1,
 };
-pub use checked_db::{CheckedDb, CheckedDbMut, CheckedDbReport, TypedFactBuilder};
-pub use guardrails::{GuardrailEngine, GuardrailRule, GuardrailViolation, Severity};
+pub use lifecycle::{Accepted, Certified, LifecycleState, Parsed, Reviewed, Validated};
 pub use migration::{
     ArrowDeclV1, ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1, Name,
     ObjectElementsV1, ObjectMappingV1, SchemaMorphismV1, SchemaV1, SigmaFMigrationProofV1,
@@ -628,9 +642,14 @@ enum IndexUpdate {
         start: u32,
         targets: RoaringBitmap,
     },
-    Touch { path_sig: PathSig },
+    Touch {
+        path_sig: PathSig,
+    },
     SetCapacity(usize),
-    Load { capacity: usize, order: Vec<PathSig> },
+    Load {
+        capacity: usize,
+        order: Vec<PathSig>,
+    },
     Clear,
     Snapshot(mpsc::Sender<LruWorkerSnapshot>),
     Flush(mpsc::Sender<()>),
@@ -656,7 +675,11 @@ impl LruWorkerState {
         }
     }
 
-    fn set_capacity(&mut self, capacity: usize, entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>) {
+    fn set_capacity(
+        &mut self,
+        capacity: usize,
+        entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>,
+    ) {
         self.capacity = capacity;
         if self.capacity == 0 {
             entries.clear();
@@ -705,7 +728,11 @@ impl LruWorkerState {
         }
     }
 
-    fn load_order(&mut self, order: Vec<PathSig>, entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>) {
+    fn load_order(
+        &mut self,
+        order: Vec<PathSig>,
+        entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>,
+    ) {
         self.order.clear();
         for sig in order {
             if entries.contains_key(&sig) {
@@ -776,7 +803,12 @@ impl PathIndex {
     }
 
     fn mark_sidecar_dirty(&self) {
-        if let Some(writer) = self.sidecar.lock().expect("path index sidecar poisoned").as_ref() {
+        if let Some(writer) = self
+            .sidecar
+            .lock()
+            .expect("path index sidecar poisoned")
+            .as_ref()
+        {
             writer.mark_dirty();
         }
     }
@@ -1286,7 +1318,10 @@ impl PathDB {
     }
 
     /// Snapshot durable indexes into a sidecar payload.
-    pub fn snapshot_index_sidecar(&self, snapshot_id: Option<String>) -> PathDbIndexSidecarV1 {
+    pub fn snapshot_index_sidecar(
+        &self,
+        snapshot_id: Option<PathdbSnapshotId>,
+    ) -> PathDbIndexSidecarV1 {
         let fact_gen = self.fact_index.generation();
         let text_gen = self.text_index.generation();
         let mut sidecar = PathDbIndexSidecarV1::new(snapshot_id);
@@ -1540,7 +1575,8 @@ impl PathDB {
         }
 
         if path_len > max_depth && !current.is_empty() {
-            self.path_index.cache_result(path_sig, start, current.clone());
+            self.path_index
+                .cache_result(path_sig, start, current.clone());
         }
         current
     }
@@ -1840,11 +1876,13 @@ impl PathDB {
         };
         self.fact_index.with_index_or_fallback(
             self,
-            |db| db.fact_nodes_by_context_schema_relation_scan(
-                context_entity_id,
-                schema_id,
-                relation_id,
-            ),
+            |db| {
+                db.fact_nodes_by_context_schema_relation_scan(
+                    context_entity_id,
+                    schema_id,
+                    relation_id,
+                )
+            },
             |idx| {
                 idx.facts_by_context_schema_relation(context_entity_id, schema_id, relation_id)
                     .cloned()

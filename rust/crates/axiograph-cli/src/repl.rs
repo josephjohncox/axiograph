@@ -4,7 +4,9 @@
 //! A minimal stdin-based fallback exists behind `--no-default-features`.
 
 use anyhow::{anyhow, Result};
+use axiograph_pathdb::AcceptedSnapshotId;
 use colored::Colorize;
+use roaring::RoaringBitmap;
 #[cfg(feature = "repl-rustyline")]
 use std::collections::BTreeSet;
 use std::fs;
@@ -14,7 +16,6 @@ use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use roaring::RoaringBitmap;
 
 pub fn cmd_repl(initial_axpd: Option<&PathBuf>) -> Result<()> {
     #[cfg(feature = "repl-rustyline")]
@@ -470,6 +471,7 @@ fn refresh_completion_data(
         "export_axi_module".to_string(),
         "build_indexes".to_string(),
         "add_entity".to_string(),
+        "add_fact".to_string(),
         "add_edge".to_string(),
         "add_equiv".to_string(),
         "ctx".to_string(),
@@ -725,8 +727,10 @@ fn print_help() {
   build_indexes                  Build PathDB indexes for the current DB
   add_entity <Type> <name> [k=v...]
                                  Mutate the current DB by adding an entity
+  add_fact <Schema.Relation|Schema Relation> <field=value...> [confidence <c>]
+                                 Mutate the current DB by adding a typed tuple fact
   add_edge <rel> <src> <dst> [confidence <c>] [k=v...]
-                                 Mutate the current DB by adding a relation edge
+                                 Mutate the current DB by adding a generic relation edge
                                  (`src`/`dst` may be numeric ids or `name` strings)
   add_equiv <left> <right> <equiv_type>
                                  Mutate the current DB by adding an equivalence (dashed in viz)
@@ -976,53 +980,44 @@ fn cmd_import_axi(state: &mut ReplState, path: &PathBuf) -> Result<()> {
     let path = resolve_path_with_repo_fallback(path)?;
     let text = fs::read_to_string(&path)?;
     let module_digest = axiograph_dsl::digest::axi_digest_v1(&text);
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
-
-    let is_snapshot = m
-        .schemas
-        .iter()
-        .any(|s| s.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1)
-        && m.instances.iter().any(|i| {
-            i.schema == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1
-                && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
-        });
-
-    if is_snapshot {
-        let db = axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?;
-        state.db = Some(db);
-        set_snapshot_key(state, module_digest);
-        refresh_meta_plane_index(state)?;
-        println!("imported PathDB snapshot {}", path.display());
-        return Ok(());
+    match crate::axi_input::classify_axi_text(&text)? {
+        crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => {
+            let db = module.import_pathdb()?;
+            state.db = Some(db);
+            set_snapshot_key(state, module_digest);
+            refresh_meta_plane_index(state)?;
+            println!("imported PathDB snapshot {}", path.display());
+            Ok(())
+        }
+        crate::axi_input::ClassifiedAxiModule::Canonical(module) => {
+            let summary = {
+                let db = state.db.get_or_insert_with(axiograph_pathdb::PathDB::new);
+                let summary = module.import_into_pathdb(db)?;
+                db.build_indexes();
+                summary
+            };
+            let next_key = if state.snapshot_key.is_empty() {
+                module_digest
+            } else {
+                chain_snapshot_key(&state.snapshot_key, "import_axi", &module_digest)
+            };
+            set_snapshot_key(state, next_key);
+            refresh_meta_plane_index(state)?;
+            println!(
+                "imported axi_schema_v1 module {} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
+                path.display(),
+                summary.meta_entities_added,
+                summary.meta_relations_added,
+                summary.instances_imported,
+                summary.entities_added,
+                summary.entity_type_upgrades,
+                summary.tuple_entities_added,
+                summary.relations_added,
+                summary.derived_edges_added
+            );
+            Ok(())
+        }
     }
-
-    let summary = {
-        let db = state.db.get_or_insert_with(axiograph_pathdb::PathDB::new);
-        let summary =
-            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(db, &m)?;
-        db.build_indexes();
-        summary
-    };
-    let next_key = if state.snapshot_key.is_empty() {
-        module_digest
-    } else {
-        chain_snapshot_key(&state.snapshot_key, "import_axi", &module_digest)
-    };
-    set_snapshot_key(state, next_key);
-    refresh_meta_plane_index(state)?;
-    println!(
-        "imported axi_schema_v1 module {} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
-        path.display(),
-        summary.meta_entities_added,
-        summary.meta_relations_added,
-        summary.instances_imported,
-        summary.entities_added,
-        summary.entity_type_upgrades,
-        summary.tuple_entities_added,
-        summary.relations_added,
-        summary.derived_edges_added
-    );
-    Ok(())
 }
 
 fn repo_root() -> PathBuf {
@@ -1114,8 +1109,11 @@ fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
         proposals: ingest.proposals,
     };
 
-    let proposals_summary =
-        crate::proposals_import::import_proposals_file_into_pathdb(db, &proposals_file, &ingest_digest)?;
+    let proposals_summary = crate::proposals_import::import_proposals_file_into_pathdb(
+        db,
+        &proposals_file,
+        &ingest_digest,
+    )?;
     db.build_indexes();
 
     println!(
@@ -1993,15 +1991,25 @@ fn cmd_add_fact(state: &mut ReplState, args: &[String]) -> Result<()> {
         ));
     }
 
-    let (schema_name, relation_name, field_tokens) = if let Some((schema, rel)) = args[0].split_once('.') {
-        (schema.trim().to_string(), rel.trim().to_string(), &args[1..])
+    let (schema_name, relation_name, field_tokens) = if let Some((schema, rel)) =
+        args[0].split_once('.')
+    {
+        (
+            schema.trim().to_string(),
+            rel.trim().to_string(),
+            &args[1..],
+        )
     } else {
         if args.len() < 3 {
             return Err(anyhow!(
                 "usage: add_fact <Schema.Relation|Schema Relation> <field=value...> [confidence <c>]"
             ));
         }
-        (args[0].trim().to_string(), args[1].trim().to_string(), &args[2..])
+        (
+            args[0].trim().to_string(),
+            args[1].trim().to_string(),
+            &args[2..],
+        )
     };
 
     if schema_name.is_empty() || relation_name.is_empty() {
@@ -2132,10 +2140,7 @@ fn cmd_add_edge(state: &mut ReplState, args: &[String]) -> Result<()> {
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
 
-    let use_checked_edge_path = state
-        .meta
-        .as_ref()
-        .is_some_and(|m| !m.schemas.is_empty());
+    let use_checked_edge_path = state.meta.as_ref().is_some_and(|m| !m.schemas.is_empty());
 
     let (src, dst, already) = {
         let db = require_db_mut(state)?;
@@ -2516,7 +2521,8 @@ fn entity_plane(view: &axiograph_pathdb::EntityView) -> &'static str {
 }
 
 fn is_fact_node(view: &axiograph_pathdb::EntityView) -> bool {
-    view.attrs.contains_key(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION)
+    view.attrs
+        .contains_key(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION)
 }
 
 fn truncate_value(s: &str, max_chars: usize) -> String {
@@ -2625,7 +2631,10 @@ fn cmd_describe(state: &ReplState, args: &[String]) -> Result<()> {
     }
 
     // Context scoping
-    let ctxs = db.follow_one(entity_id, axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT);
+    let ctxs = db.follow_one(
+        entity_id,
+        axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT,
+    );
     if !ctxs.is_empty() {
         println!("contexts ({}):", ctxs.len());
         for id in ctxs.iter().take(12) {
@@ -2641,7 +2650,10 @@ fn cmd_describe(state: &ReplState, args: &[String]) -> Result<()> {
         if !eqs.is_empty() {
             println!("equivalences ({}):", eqs.len());
             for (other, ty_id) in eqs.iter().take(12) {
-                let ty = db.interner.lookup(*ty_id).unwrap_or_else(|| "?".to_string());
+                let ty = db
+                    .interner
+                    .lookup(*ty_id)
+                    .unwrap_or_else(|| "?".to_string());
                 println!("  - {}  ({ty})", describe_entity(db, *other));
             }
             if eqs.len() > 12 {
@@ -2678,9 +2690,15 @@ fn cmd_describe(state: &ReplState, args: &[String]) -> Result<()> {
 
         let mut groups: HashMap<String, Vec<(u32, f32)>> = HashMap::new();
         for r in rels {
-            let label = db.interner.lookup(r.rel_type).unwrap_or_else(|| "?".to_string());
+            let label = db
+                .interner
+                .lookup(r.rel_type)
+                .unwrap_or_else(|| "?".to_string());
             let endpoint = if dir == "out" { r.target } else { r.source };
-            groups.entry(label).or_default().push((endpoint, r.confidence));
+            groups
+                .entry(label)
+                .or_default()
+                .push((endpoint, r.confidence));
         }
 
         let mut keys: Vec<String> = groups.keys().cloned().collect();
@@ -2703,9 +2721,15 @@ fn cmd_describe(state: &ReplState, args: &[String]) -> Result<()> {
             for (j, (id, conf)) in edges.iter().take(per_rel).enumerate() {
                 let prefix = if j == 0 { "    " } else { "    " };
                 if *id == entity_id {
-                    println!("{prefix}{} (confidence={conf:.3})", describe_entity(db, *id));
+                    println!(
+                        "{prefix}{} (confidence={conf:.3})",
+                        describe_entity(db, *id)
+                    );
                 } else {
-                    println!("{prefix}{} (confidence={conf:.3})", describe_entity(db, *id));
+                    println!(
+                        "{prefix}{} (confidence={conf:.3})",
+                        describe_entity(db, *id)
+                    );
                 }
             }
             if edges.len() > per_rel {
@@ -2997,17 +3021,23 @@ fn cmd_open(state: &mut ReplState, args: &[String]) -> Result<()> {
 
 fn cmd_diff(state: &ReplState, args: &[String]) -> Result<()> {
     if args.is_empty() {
-        return Err(anyhow!("usage: diff ctx <c1> <c2> [rel <RelName>] [limit N]"));
+        return Err(anyhow!(
+            "usage: diff ctx <c1> <c2> [rel <RelName>] [limit N]"
+        ));
     }
     match args[0].as_str() {
         "ctx" => cmd_diff_ctx(state, &args[1..]),
-        other => Err(anyhow!("unknown diff subcommand `{other}` (try: diff ctx ...)")),
+        other => Err(anyhow!(
+            "unknown diff subcommand `{other}` (try: diff ctx ...)"
+        )),
     }
 }
 
 fn cmd_diff_ctx(state: &ReplState, args: &[String]) -> Result<()> {
     if args.len() < 2 {
-        return Err(anyhow!("usage: diff ctx <c1> <c2> [rel <RelName>] [limit N]"));
+        return Err(anyhow!(
+            "usage: diff ctx <c1> <c2> [rel <RelName>] [limit N]"
+        ));
     }
     let db = require_db(state)?;
 
@@ -3069,7 +3099,12 @@ fn cmd_diff_ctx(state: &ReplState, args: &[String]) -> Result<()> {
         only_b.len()
     );
 
-    fn print_facts(db: &axiograph_pathdb::PathDB, label: &str, facts: &RoaringBitmap, limit: usize) {
+    fn print_facts(
+        db: &axiograph_pathdb::PathDB,
+        label: &str,
+        facts: &RoaringBitmap,
+        limit: usize,
+    ) {
         if facts.is_empty() {
             return;
         }
@@ -3078,7 +3113,11 @@ fn cmd_diff_ctx(state: &ReplState, args: &[String]) -> Result<()> {
             let desc = describe_entity(db, id);
             let rel = db
                 .get_entity(id)
-                .and_then(|v| v.attrs.get(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION).cloned())
+                .and_then(|v| {
+                    v.attrs
+                        .get(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION)
+                        .cloned()
+                })
                 .unwrap_or_else(|| "?".to_string());
             println!("  - {desc}  (axi_relation={rel})");
         }
@@ -3404,71 +3443,48 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
     if query.contexts.is_empty() && !state.contexts.is_empty() {
         query.contexts = state.contexts.clone();
     }
-    let key = crate::axql::axql_query_cache_key(&state.snapshot_key, &query);
-
     let start = Instant::now();
-    let mut cache_hit = false;
-    let result = if let Some(prepared) = state.query_cache.get_mut(&key) {
-        cache_hit = true;
-        if show_elaboration {
-            let report = prepared.elaboration_report();
-            println!("elaborated: {}", prepared.elaborated_query_text());
-            if !report.inferred_types.is_empty() {
-                println!("inferred types:");
-                for (var, tys) in &report.inferred_types {
-                    println!("  {var}: {}", tys.join(", "));
-                }
-            }
-            if !report.notes.is_empty() {
-                println!("notes:");
-                for note in &report.notes {
-                    println!("  - {note}");
-                }
-            }
-            let plan_lines = prepared.explain_plan_lines();
-            if !plan_lines.is_empty() {
-                println!("plan:");
-                for l in plan_lines {
-                    println!("  {l}");
-                }
-            }
-            if typecheck_only {
-                return Ok(());
+    let cache_hit = state
+        .query_cache
+        .get_mut(&crate::axql::axql_query_cache_key(
+            &state.snapshot_key,
+            &query,
+        ))
+        .is_some();
+    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+        db,
+        &query,
+        meta,
+        &state.snapshot_key,
+        &mut state.query_cache,
+    )?;
+    if show_elaboration {
+        let report = prepared.elaboration_report();
+        println!("elaborated: {}", prepared.elaborated_query_text());
+        if !report.inferred_types.is_empty() {
+            println!("inferred types:");
+            for (var, tys) in &report.inferred_types {
+                println!("  {var}: {}", tys.join(", "));
             }
         }
-        prepared.execute(db, meta)?
-    } else {
-        let prepared = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
-        state.query_cache.insert(key.clone(), prepared);
-        let prepared = state.query_cache.get_mut(&key).expect("query cache insert");
-        if show_elaboration {
-            let report = prepared.elaboration_report();
-            println!("elaborated: {}", prepared.elaborated_query_text());
-            if !report.inferred_types.is_empty() {
-                println!("inferred types:");
-                for (var, tys) in &report.inferred_types {
-                    println!("  {var}: {}", tys.join(", "));
-                }
-            }
-            if !report.notes.is_empty() {
-                println!("notes:");
-                for note in &report.notes {
-                    println!("  - {note}");
-                }
-            }
-            let plan_lines = prepared.explain_plan_lines();
-            if !plan_lines.is_empty() {
-                println!("plan:");
-                for l in plan_lines {
-                    println!("  {l}");
-                }
-            }
-            if typecheck_only {
-                return Ok(());
+        if !report.notes.is_empty() {
+            println!("notes:");
+            for note in &report.notes {
+                println!("  - {note}");
             }
         }
-        prepared.execute(db, meta)?
-    };
+        let plan_lines = prepared.explain_plan_lines();
+        if !plan_lines.is_empty() {
+            println!("plan:");
+            for l in plan_lines {
+                println!("  {l}");
+            }
+        }
+        if typecheck_only {
+            return Ok(());
+        }
+    }
+    let result = prepared.execute(db, meta)?;
     let dt = start.elapsed();
     println!(
         "cache={} ({:?})",
@@ -3584,8 +3600,7 @@ fn cmd_schema_constraints(state: &ReplState, args: &[String]) -> Result<()> {
                     params,
                     ..
                 } => {
-                    let mut s =
-                        format!("symmetric_where_in({field} in {{{}}})", values.join(", "));
+                    let mut s = format!("symmetric_where_in({field} in {{{}}})", values.join(", "));
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
                     }
@@ -3596,7 +3611,9 @@ fn cmd_schema_constraints(state: &ReplState, args: &[String]) -> Result<()> {
                     }
                     println!("    {s}");
                 }
-                ConstraintDecl::Symmetric { carriers, params, .. } => {
+                ConstraintDecl::Symmetric {
+                    carriers, params, ..
+                } => {
                     let mut s = String::from("symmetric");
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
@@ -3608,7 +3625,9 @@ fn cmd_schema_constraints(state: &ReplState, args: &[String]) -> Result<()> {
                     }
                     println!("    {s}");
                 }
-                ConstraintDecl::Transitive { carriers, params, .. } => {
+                ConstraintDecl::Transitive {
+                    carriers, params, ..
+                } => {
                     let mut s = String::from("transitive");
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
@@ -3812,19 +3831,14 @@ fn cmd_sqlish(state: &mut ReplState, args: &[String]) -> Result<()> {
     if query.contexts.is_empty() && !state.contexts.is_empty() {
         query.contexts = state.contexts.clone();
     }
-    let key = crate::axql::axql_query_cache_key(&state.snapshot_key, &query);
-
-    let result = if let Some(prepared) = state.query_cache.get_mut(&key) {
-        prepared.execute(db, meta)?
-    } else {
-        let prepared = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
-        state.query_cache.insert(key.clone(), prepared);
-        state
-            .query_cache
-            .get_mut(&key)
-            .expect("query cache insert")
-            .execute(db, meta)?
-    };
+    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+        db,
+        &query,
+        meta,
+        &state.snapshot_key,
+        &mut state.query_cache,
+    )?;
+    let result = prepared.execute(db, meta)?;
 
     let vars = if result.selected_vars.is_empty() {
         "(no selected vars)".to_string()
@@ -3872,19 +3886,14 @@ fn cmd_ask(state: &mut ReplState, args: &[String]) -> Result<()> {
     }
     println!("axql: {}", crate::nlq::render_axql_query(&query));
 
-    let key = crate::axql::axql_query_cache_key(&state.snapshot_key, &query);
-
-    let result = if let Some(prepared) = state.query_cache.get_mut(&key) {
-        prepared.execute(db, meta)?
-    } else {
-        let prepared = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
-        state.query_cache.insert(key.clone(), prepared);
-        state
-            .query_cache
-            .get_mut(&key)
-            .expect("query cache insert")
-            .execute(db, meta)?
-    };
+    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+        db,
+        &query,
+        meta,
+        &state.snapshot_key,
+        &mut state.query_cache,
+    )?;
+    let result = prepared.execute(db, meta)?;
 
     let vars = if result.selected_vars.is_empty() {
         "(no selected vars)".to_string()
@@ -4099,10 +4108,9 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
             let contexts = state.contexts.clone();
             let snapshot_key = state.snapshot_key.clone();
 
-            let db = state
-                .db
-                .take()
-                .ok_or_else(|| anyhow!("no database loaded (use `load`, `import_axi`, or `gen`)"))?;
+            let db = state.db.take().ok_or_else(|| {
+                anyhow!("no database loaded (use `load`, `import_axi`, or `gen`)")
+            })?;
 
             let outcome = crate::llm::run_tool_loop_with_meta(
                 &state.llm,
@@ -4194,10 +4202,9 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
             let contexts = state.contexts.clone();
             let snapshot_key = state.snapshot_key.clone();
 
-            let db = state
-                .db
-                .take()
-                .ok_or_else(|| anyhow!("no database loaded (use `load`, `import_axi`, or `gen`)"))?;
+            let db = state.db.take().ok_or_else(|| {
+                anyhow!("no database loaded (use `load`, `import_axi`, or `gen`)")
+            })?;
 
             let outcome = crate::llm::run_tool_loop_with_meta(
                 &state.llm,
@@ -4217,8 +4224,8 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
             state.db = Some(db);
 
             fn truncate_json(v: &serde_json::Value, max_chars: usize) -> String {
-                let s = serde_json::to_string_pretty(v)
-                    .unwrap_or_else(|_| "<unprintable>".to_string());
+                let s =
+                    serde_json::to_string_pretty(v).unwrap_or_else(|_| "<unprintable>".to_string());
                 if s.chars().count() <= max_chars {
                     return s;
                 }
@@ -4421,8 +4428,8 @@ fn cmd_world_model(state: &mut ReplState, args: &[String]) -> Result<()> {
                     Ok(())
                 }
                 "llm" => {
-                    let exe = std::env::current_exe()
-                        .unwrap_or_else(|_| PathBuf::from("bin/axiograph"));
+                    let exe =
+                        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("bin/axiograph"));
                     let mut args_list =
                         vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
                     if args.len() > 2 {
@@ -4496,7 +4503,7 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     let mut export_path: Option<PathBuf> = None;
     let mut axi_path: Option<PathBuf> = None;
     let mut commit_dir: Option<PathBuf> = None;
-    let mut accepted_snapshot = "head".to_string();
+    let mut accepted_snapshot: Option<AcceptedSnapshotId> = None;
     let mut commit_message: Option<String> = None;
     let mut validate = true;
     let mut seed: Option<u64> = None;
@@ -4520,9 +4527,9 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--max requires a value"));
                 };
-                max_new = v.parse::<usize>().map_err(|_| {
-                    anyhow!("invalid --max value `{}` (expected integer)", v)
-                })?;
+                max_new = v
+                    .parse::<usize>()
+                    .map_err(|_| anyhow!("invalid --max value `{}` (expected integer)", v))?;
             }
             "--guardrail" => {
                 i += 1;
@@ -4564,7 +4571,12 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--accepted-snapshot requires a value"));
                 };
-                accepted_snapshot = v.to_string();
+                accepted_snapshot =
+                    if matches!(v.trim().to_ascii_lowercase().as_str(), "head" | "latest") {
+                        None
+                    } else {
+                        Some(AcceptedSnapshotId::new(v.to_string()))
+                    };
             }
             "--message" => {
                 i += 1;
@@ -4581,9 +4593,10 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--seed requires a value"));
                 };
-                seed = Some(v.parse::<u64>().map_err(|_| {
-                    anyhow!("invalid --seed value `{}` (expected integer)", v)
-                })?);
+                seed = Some(
+                    v.parse::<u64>()
+                        .map_err(|_| anyhow!("invalid --seed value `{}` (expected integer)", v))?,
+                );
             }
             "--guardrail-weight" => {
                 i += 1;
@@ -4604,9 +4617,10 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--horizon-steps requires a value"));
                 };
-                horizon_steps = Some(v.parse::<usize>().map_err(|_| {
-                    anyhow!("invalid --horizon-steps value `{}`", v)
-                })?);
+                horizon_steps = Some(
+                    v.parse::<usize>()
+                        .map_err(|_| anyhow!("invalid --horizon-steps value `{}`", v))?,
+                );
             }
             _ => {
                 if out.is_none() {
@@ -4656,7 +4670,9 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
             seed: 1,
             exclude_relations: Vec::new(),
         };
-        export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
+        export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(
+            &text, &opts,
+        )?);
     }
 
     let mut input = crate::world_model::WorldModelInputV1::default();
@@ -4690,17 +4706,17 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
         Some(guardrail_plane.clone())
     };
 
-    let provenance = crate::world_model::WorldModelProvenance {
-        trace_id: response.trace_id.clone(),
-        backend: state.world_model.backend_label(),
-        model: state.world_model.model.clone(),
-        axi_digest_v1: None,
-        guardrail_total_cost: guardrail
-            .as_ref()
-            .map(|g| g.summary.total_cost),
-        guardrail_profile: guardrail_profile_label,
-        guardrail_plane: guardrail_plane_label,
-    };
+    let provenance = crate::world_model::build_world_model_provenance(
+        &response,
+        state.world_model.backend_label(),
+        state.world_model.model.clone(),
+        None,
+        None,
+        None,
+        guardrail.as_ref().map(|g| g.summary.total_cost),
+        guardrail_profile_label,
+        guardrail_plane_label,
+    )?;
 
     let mut proposals =
         crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
@@ -4725,12 +4741,8 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
             } else {
                 guardrail_plane.as_str()
             };
-            let validation = crate::proposals_validate::validate_proposals_v1(
-                db,
-                &proposals,
-                profile,
-                plane,
-            )?;
+            let validation =
+                crate::proposals_validate::validate_proposals_v1(db, &proposals, profile, plane)?;
             if !validation.ok {
                 return Err(anyhow!(
                     "refusing to commit: proposals validation failed (errors={}, warnings={})",
@@ -4740,13 +4752,23 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
             }
         }
 
-        let res = crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
-            dir,
-            &accepted_snapshot,
-            &[],
-            &[out.clone()],
-            commit_message.as_deref(),
-        )?;
+        let res = if let Some(accepted_snapshot_id) = accepted_snapshot.as_ref() {
+            crate::pathdb_wal::commit_pathdb_snapshot_on_accepted_snapshot_with_overlays(
+                dir,
+                accepted_snapshot_id,
+                &[],
+                &[out.clone()],
+                commit_message.as_deref(),
+            )?
+        } else {
+            crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
+                dir,
+                "head",
+                &[],
+                &[out.clone()],
+                commit_message.as_deref(),
+            )?
+        };
         println!(
             "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
             res.ops_added, res.accepted_snapshot_id, res.snapshot_id
@@ -4774,7 +4796,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
     let mut export_path: Option<PathBuf> = None;
     let mut axi_path: Option<PathBuf> = None;
     let mut commit_dir: Option<PathBuf> = None;
-    let mut accepted_snapshot = "head".to_string();
+    let mut accepted_snapshot: Option<AcceptedSnapshotId> = None;
     let mut commit_message: Option<String> = None;
     let mut validate = true;
     let mut seed: Option<u64> = None;
@@ -4803,9 +4825,9 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--max requires a value"));
                 };
-                max_new = v.parse::<usize>().map_err(|_| {
-                    anyhow!("invalid --max value `{}` (expected integer)", v)
-                })?;
+                max_new = v
+                    .parse::<usize>()
+                    .map_err(|_| anyhow!("invalid --max value `{}` (expected integer)", v))?;
             }
             "--guardrail" => {
                 i += 1;
@@ -4847,7 +4869,12 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--accepted-snapshot requires a value"));
                 };
-                accepted_snapshot = v.to_string();
+                accepted_snapshot =
+                    if matches!(v.trim().to_ascii_lowercase().as_str(), "head" | "latest") {
+                        None
+                    } else {
+                        Some(AcceptedSnapshotId::new(v.to_string()))
+                    };
             }
             "--message" => {
                 i += 1;
@@ -4864,9 +4891,10 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--seed requires a value"));
                 };
-                seed = Some(v.parse::<u64>().map_err(|_| {
-                    anyhow!("invalid --seed value `{}` (expected integer)", v)
-                })?);
+                seed = Some(
+                    v.parse::<u64>()
+                        .map_err(|_| anyhow!("invalid --seed value `{}` (expected integer)", v))?,
+                );
             }
             "--guardrail-weight" => {
                 i += 1;
@@ -4887,18 +4915,18 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--steps requires a value"));
                 };
-                steps = v.parse::<usize>().map_err(|_| {
-                    anyhow!("invalid --steps value `{}`", v)
-                })?;
+                steps = v
+                    .parse::<usize>()
+                    .map_err(|_| anyhow!("invalid --steps value `{}`", v))?;
             }
             "--rollouts" => {
                 i += 1;
                 let Some(v) = args.get(i) else {
                     return Err(anyhow!("--rollouts requires a value"));
                 };
-                rollouts = v.parse::<usize>().map_err(|_| {
-                    anyhow!("invalid --rollouts value `{}`", v)
-                })?;
+                rollouts = v
+                    .parse::<usize>()
+                    .map_err(|_| anyhow!("invalid --rollouts value `{}`", v))?;
             }
             "--quality" => {
                 i += 1;
@@ -4949,8 +4977,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
         crate::world_model::parse_guardrail_weights(&guardrail_weight_pairs)?
     };
     let task_costs = crate::world_model::parse_task_costs(&task_cost_pairs)?;
-    let mut competency_questions =
-        crate::world_model::parse_competency_questions(&cq_pairs)?;
+    let mut competency_questions = crate::world_model::parse_competency_questions(&cq_pairs)?;
     for path in &cq_files {
         let path = resolve_path_with_repo_fallback(path)?;
         let mut loaded = crate::world_model::load_competency_questions(&path)?;
@@ -4971,7 +4998,9 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
             seed: 1,
             exclude_relations: Vec::new(),
         };
-        export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
+        export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(
+            &text, &opts,
+        )?);
     }
 
     let mut base_input = crate::world_model::WorldModelInputV1::default();
@@ -4994,12 +5023,8 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
         validation_plane: quality_plane.clone(),
     };
 
-    let report = crate::world_model::run_world_model_plan(
-        db,
-        &state.world_model,
-        &base_input,
-        &plan_opts,
-    )?;
+    let report =
+        crate::world_model::run_world_model_plan(db, &state.world_model, &base_input, &plan_opts)?;
 
     let json = serde_json::to_string_pretty(&report)?;
     fs::write(&out, json)?;
@@ -5016,7 +5041,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
             generated_at,
             source: axiograph_ingest_docs::ProposalSourceV1 {
                 source_type: "world_model_plan".to_string(),
-                locator: report.trace_id.clone(),
+                locator: report.trace_id.to_string(),
             },
             schema_hint: None,
             proposals: Vec::new(),
@@ -5045,18 +5070,28 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
 
         let tmp_path = std::env::temp_dir().join(format!(
             "axiograph_wm_plan_{}.json",
-            report.trace_id.replace(':', "_")
+            report.trace_id.as_str().replace(':', "_")
         ));
         let json = serde_json::to_string_pretty(&merged)?;
         fs::write(&tmp_path, json)?;
 
-        let res = crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
-            dir,
-            &accepted_snapshot,
-            &[],
-            &[tmp_path.clone()],
-            commit_message.as_deref(),
-        )?;
+        let res = if let Some(accepted_snapshot_id) = accepted_snapshot.as_ref() {
+            crate::pathdb_wal::commit_pathdb_snapshot_on_accepted_snapshot_with_overlays(
+                dir,
+                accepted_snapshot_id,
+                &[],
+                &[tmp_path.clone()],
+                commit_message.as_deref(),
+            )?
+        } else {
+            crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
+                dir,
+                "head",
+                &[],
+                &[tmp_path.clone()],
+                commit_message.as_deref(),
+            )?
+        };
         let _ = std::fs::remove_file(&tmp_path);
         println!(
             "ok committed {} WAL op(s) on accepted snapshot {} -> pathdb snapshot {}",
@@ -5095,6 +5130,23 @@ mod repl_tokenize_tests {
         assert_eq!(
             tokens[2],
             r#"select ?x where name("Alice") -Parent-> ?x limit 3"#
+        );
+    }
+}
+
+#[cfg(all(test, feature = "repl-rustyline"))]
+mod repl_completion_tests {
+    use super::*;
+
+    #[test]
+    fn completion_commands_include_add_fact() {
+        let data = std::sync::Arc::new(std::sync::RwLock::new(CompletionData::default()));
+        let state = ReplState::default();
+        refresh_completion_data(&data, &state);
+        let completion = data.read().expect("completion lock poisoned");
+        assert!(
+            completion.commands.contains(&"add_fact".to_string()),
+            "typed fact authoring should be discoverable in REPL completion"
         );
     }
 }

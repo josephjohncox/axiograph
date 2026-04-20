@@ -77,8 +77,14 @@ fn test_async_fact_and_text_builds() {
     assert!(hits.contains(e1));
 
     let name_id = db.interner.id_of("name").unwrap();
-    assert!(wait_for(|| db.snapshot_index_sidecar(None).fact_index.is_some()));
-    assert!(wait_for(|| db.snapshot_index_sidecar(None).text_indexes.contains_key(&name_id)));
+    assert!(wait_for(|| db
+        .snapshot_index_sidecar(None)
+        .fact_index
+        .is_some()));
+    assert!(wait_for(|| db
+        .snapshot_index_sidecar(None)
+        .text_indexes
+        .contains_key(&name_id)));
 }
 
 #[test]
@@ -100,7 +106,7 @@ fn test_index_sidecar_roundtrip_with_lru() {
     assert!(targets.contains(c));
     assert!(wait_for(|| db.path_index_lru_contains(&sig_r1_r1)));
 
-    let sidecar = db.snapshot_index_sidecar(Some("snap".to_string()));
+    let sidecar = db.snapshot_index_sidecar(Some("snap".to_string().into()));
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&sidecar, &mut buf).unwrap();
     let sidecar: axiograph_pathdb::PathDbIndexSidecarV1 =

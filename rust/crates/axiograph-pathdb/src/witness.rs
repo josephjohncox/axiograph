@@ -7,8 +7,8 @@
 //! Note: the brand token is not serialized; persistence identity is handled by
 //! `.axi` anchors in `CertificateV2`.
 
-use crate::branding::DbBranded;
 use crate::axi_meta::{ATTR_AXI_FACT_ID, META_ATTR_NAME};
+use crate::branding::DbBranded;
 use crate::certificate::{FixedPointProbability, ReachabilityProofV2, ReachabilityProofV3};
 use crate::PathDB;
 use anyhow::{anyhow, Result};
@@ -119,9 +119,7 @@ fn relation_axi_fact_id_v1(db: &PathDB, rel_id: u32) -> Result<String> {
         )
     })?;
     db.interner.lookup(src_fact).ok_or_else(|| {
-        anyhow!(
-            "internal error: missing string interner entry for entity attr value {src_fact:?}"
-        )
+        anyhow!("internal error: missing string interner entry for entity attr value {src_fact:?}")
     })
 }
 
@@ -172,10 +170,12 @@ pub fn reachability_proof_v3_from_relation_ids(
             .get_relation(rel_id)
             .ok_or_else(|| anyhow!("missing relation {rel_id} in RelationStore"))?;
         let rel_confidence_fp = FixedPointProbability::from_f32(rel.confidence);
-        let rel_name = db
-            .interner
-            .lookup(rel.rel_type)
-            .ok_or_else(|| anyhow!("internal error: missing rel_type name for {}", rel.rel_type.raw()))?;
+        let rel_name = db.interner.lookup(rel.rel_type).ok_or_else(|| {
+            anyhow!(
+                "internal error: missing rel_type name for {}",
+                rel.rel_type.raw()
+            )
+        })?;
 
         rest = ReachabilityProofV3::Step {
             from: stable_entity_id_v1(db, rel.source)?,

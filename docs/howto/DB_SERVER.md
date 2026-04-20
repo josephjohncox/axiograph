@@ -33,7 +33,7 @@ Endpoints:
 - `GET /snapshots` (store-backed only; list snapshots for time travel)
 - `GET /anchor.axi` (export the loaded snapshot as a PathDBExportV1 `.axi` anchor)
 - `GET /entity/describe?id=<id>` (on-demand full-snapshot entity details for UIs/LLM grounding)
-- `POST /query` (AxQL)
+- `POST /query` (AxQL or `query_ir_v1`)
 - `POST /cert/reachability` (emit a reachability certificate for a directed relation-id chain)
 - `GET /viz` (HTML)
 - `GET /viz.json` (JSON)
@@ -52,7 +52,7 @@ CLI HTML exports now write a directory with `index.html`, `graph.json`, and
 
 ---
 
-## Query over HTTP (AxQL)
+## Query over HTTP (AxQL or `query_ir_v1`)
 
 ```bash
 curl -sS http://127.0.0.1:7878/status | jq .
@@ -62,6 +62,25 @@ curl -sS http://127.0.0.1:7878/status | jq .
 curl -sS -X POST http://127.0.0.1:7878/query \
   -H 'Content-Type: application/json' \
   -d '{"query":"select ?gc where name(\"Alice\") -Grandparent-> ?gc limit 10","show_elaboration":true}'
+```
+
+Structured query IR (preferred for tooling/LLMs):
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "lang":"query_ir_v1",
+        "query_ir_v1":{
+          "version":1,
+          "select":["?gc"],
+          "where":[
+            {"kind":"edge","left":"name(\"Alice\")","path":"Grandparent","right":"?gc"}
+          ],
+          "limit":10
+        },
+        "show_elaboration":true
+      }'
 ```
 
 Default contexts/worlds (applied only when the query text has no explicit `in ...`):
@@ -80,6 +99,12 @@ curl -sS -X POST http://127.0.0.1:7878/query \
   -H 'Content-Type: application/json' \
   -d '{"snapshot":"<snapshot_id>","query":"select ?gc where name(\"Alice\") -Grandparent-> ?gc limit 10","show_elaboration":true}'
 ```
+
+When `show_elaboration:true`, the response includes:
+
+- `compiled_query_ir_v1`: the normalized structured query surface,
+- `elaborated_query`: the best-effort elaborated AxQL text,
+- `inferred_types`, `notes`, and `plan` when available.
 
 Certified queries (optional)
 

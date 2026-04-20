@@ -58,7 +58,10 @@ impl TextIndexCache {
         self.generation.load(Ordering::SeqCst)
     }
     pub(crate) fn attach_async_source(&self, source: Weak<PathDB>) {
-        let mut guard = self.async_source.lock().expect("text index source poisoned");
+        let mut guard = self
+            .async_source
+            .lock()
+            .expect("text index source poisoned");
         *guard = Some(source);
     }
 

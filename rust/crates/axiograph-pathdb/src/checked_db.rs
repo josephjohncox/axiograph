@@ -141,37 +141,14 @@ impl<'db> CheckedDb<'db> {
     }
 }
 
-fn infer_binary_endpoint_fields(rel_decl: &RelationDecl) -> Option<(&str, &str)> {
-    let names: Vec<&str> = rel_decl.fields.iter().map(|f| f.field_name.as_str()).collect();
-    if names.contains(&"from") && names.contains(&"to") {
-        return Some(("from", "to"));
-    }
-    if names.contains(&"source") && names.contains(&"target") {
-        return Some(("source", "target"));
-    }
-    if names.contains(&"lhs") && names.contains(&"rhs") {
-        return Some(("lhs", "rhs"));
-    }
-    if names.contains(&"child") && names.contains(&"parent") {
-        return Some(("child", "parent"));
-    }
-    if rel_decl.fields.len() >= 2 {
-        return Some((
-            rel_decl.fields[0].field_name.as_str(),
-            rel_decl.fields[1].field_name.as_str(),
-        ));
-    }
-    None
-}
-
 fn check_rewrite_rules(db: &PathDB, meta: &MetaPlaneIndex) -> RewriteRuleTypecheckReport {
     use axiograph_dsl::schema_v1::{parse_path_expr_v3, PathExprV3, RewriteVarTypeV1};
     use std::collections::HashMap;
 
     #[derive(Debug, Clone)]
     struct RewriteTypingEnv {
-        object_vars: HashMap<String, String>,          // x -> Ty
-        path_vars: HashMap<String, (String, String)>,  // p -> (from_term, to_term)
+        object_vars: HashMap<String, String>,         // x -> Ty
+        path_vars: HashMap<String, (String, String)>, // p -> (from_term, to_term)
     }
 
     fn infer_expr_endpoints(
@@ -201,26 +178,23 @@ fn check_rewrite_rules(db: &PathDB, meta: &MetaPlaneIndex) -> RewriteRuleTypeche
                 }
 
                 let rel_name = rel.to_string();
-                let Some(rel_decl) = schema.relation_decls.get(&rel_name) else {
+                let Some(_rel_decl) = schema.relation_decls.get(&rel_name) else {
                     return Err(format!("unknown relation `{schema_name}.{rel_name}`"));
                 };
-                let Some((src_field, dst_field)) = infer_binary_endpoint_fields(rel_decl) else {
+                let Some(rel_semantics) = schema.compiled_relation_semantics(&rel_name) else {
                     return Err(format!(
-                        "relation `{schema_name}.{rel_name}` has fewer than 2 fields (cannot infer step endpoints)"
+                        "relation `{schema_name}.{rel_name}` is missing compiled schema semantics"
                     ));
                 };
-                let src_ty = rel_decl
-                    .fields
-                    .iter()
-                    .find(|f| f.field_name == src_field)
-                    .map(|f| f.field_type.as_str())
-                    .unwrap_or("");
-                let dst_ty = rel_decl
-                    .fields
-                    .iter()
-                    .find(|f| f.field_name == dst_field)
-                    .map(|f| f.field_type.as_str())
-                    .unwrap_or("");
+                let Some((src_role, dst_role)) = rel_semantics.carrier_roles() else {
+                    return Err(format!(
+                        "relation `{schema_name}.{rel_name}` does not expose a compiled binary carrier"
+                    ));
+                };
+                let src_field = src_role.name.as_str();
+                let dst_field = dst_role.name.as_str();
+                let src_ty = src_role.target_type.as_str();
+                let dst_ty = dst_role.target_type.as_str();
 
                 let from_ty = env
                     .object_vars
@@ -287,7 +261,9 @@ fn check_rewrite_rules(db: &PathDB, meta: &MetaPlaneIndex) -> RewriteRuleTypeche
                 let mut pending_paths: Vec<(String, String, String)> = Vec::new();
                 for v in &rule.vars {
                     let var_name = v.name.to_string();
-                    if env.object_vars.contains_key(&var_name) || env.path_vars.contains_key(&var_name) {
+                    if env.object_vars.contains_key(&var_name)
+                        || env.path_vars.contains_key(&var_name)
+                    {
                         report.errors.push(format!(
                             "{schema_name}.{theory_name}.{}: duplicate var `{var_name}`",
                             rule.name
@@ -416,7 +392,9 @@ fn check_context_invariants(db: &PathDB, meta: &MetaPlaneIndex) -> ContextInvari
     // subtypes of `Context`). This keeps the invariant robust when domains extend
     // the context/world model.
     let mut allowed_context_types: std::collections::HashSet<String> =
-        ["Context".to_string(), "World".to_string()].into_iter().collect();
+        ["Context".to_string(), "World".to_string()]
+            .into_iter()
+            .collect();
     for schema in meta.schemas.values() {
         for obj in &schema.object_types {
             if schema.is_subtype(obj, "Context") {
@@ -637,7 +615,10 @@ fn check_modal_invariants(db: &PathDB) -> ModalInvariantReport {
     for (i, r) in db.relations.relations.iter().enumerate() {
         report.checked_edges += 1;
         if !r.confidence.is_finite() || !(0.0..=1.0).contains(&r.confidence) {
-            let rel_name = db.interner.lookup(r.rel_type).unwrap_or_else(|| "<rel?>".to_string());
+            let rel_name = db
+                .interner
+                .lookup(r.rel_type)
+                .unwrap_or_else(|| "<rel?>".to_string());
             report.errors.push(format!(
                 "edge#{i} {src} -{rel_name}-> {dst}: invalid confidence {} (expected finite number in [0,1])",
                 r.confidence,
@@ -781,7 +762,8 @@ impl<'db> CheckedDbMut<'db> {
             return Ok(false);
         }
 
-        self.db.add_relation(rel_type, source, target, confidence, attrs);
+        self.db
+            .add_relation(rel_type, source, target, confidence, attrs);
         Ok(true)
     }
 
@@ -935,11 +917,7 @@ impl<'db> TypedFactBuilder<'db> {
             ));
         }
 
-        if self
-            .field_values
-            .insert(field.to_string(), value)
-            .is_some()
-        {
+        if self.field_values.insert(field.to_string(), value).is_some() {
             return Err(anyhow!(
                 "duplicate assignment for field `{field}` in relation `{}`",
                 self.relation
@@ -990,15 +968,27 @@ impl<'db> TypedFactBuilder<'db> {
         let mut attrs: Vec<(String, String)> = Vec::new();
         attrs.push(("name".to_string(), default_name));
         attrs.push((ATTR_AXI_SCHEMA.to_string(), self.schema_name.clone()));
-        attrs.push((crate::axi_meta::ATTR_AXI_RELATION.to_string(), self.relation.clone()));
+        attrs.push((
+            crate::axi_meta::ATTR_AXI_RELATION.to_string(),
+            self.relation.clone(),
+        ));
         attrs.extend(self.fact_attrs.drain(..));
-        let attrs_ref: Vec<(&str, &str)> = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let attrs_ref: Vec<(&str, &str)> = attrs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
 
         let fact = self.db.add_entity(&tuple_type, attrs_ref);
         self.db.mark_virtual_type(fact, "FactNode")?;
 
         // Link fact node to its relation declaration (meta-plane).
-        self.db.add_relation(META_REL_FACT_OF, fact, self.decl.relation_entity, 1.0, vec![]);
+        self.db.add_relation(
+            META_REL_FACT_OF,
+            fact,
+            self.decl.relation_entity,
+            1.0,
+            vec![],
+        );
 
         // Field edges + derived uniform context edge.
         for f in &self.decl.fields {
@@ -1203,12 +1193,20 @@ instance I of S:
         let alice = db
             .find_by_axi_type("S", "Person")
             .iter()
-            .find(|id| db.get_entity(*id).map(|e| e.attrs.get("name").is_some_and(|n| n == "Alice")).unwrap_or(false))
+            .find(|id| {
+                db.get_entity(*id)
+                    .map(|e| e.attrs.get("name").is_some_and(|n| n == "Alice"))
+                    .unwrap_or(false)
+            })
             .ok_or_else(|| anyhow!("missing Alice"))?;
         let bob = db
             .find_by_axi_type("S", "Person")
             .iter()
-            .find(|id| db.get_entity(*id).map(|e| e.attrs.get("name").is_some_and(|n| n == "Bob")).unwrap_or(false))
+            .find(|id| {
+                db.get_entity(*id)
+                    .map(|e| e.attrs.get("name").is_some_and(|n| n == "Bob"))
+                    .unwrap_or(false)
+            })
             .ok_or_else(|| anyhow!("missing Bob"))?;
 
         let mut checked = CheckedDbMut::new(&mut db)?;
@@ -1256,7 +1254,10 @@ instance I of S:
         db.build_indexes();
 
         let meta = MetaPlaneIndex::from_db(&db)?;
-        let schema = meta.schemas.get("S").ok_or_else(|| anyhow!("missing schema S"))?;
+        let schema = meta
+            .schemas
+            .get("S")
+            .ok_or_else(|| anyhow!("missing schema S"))?;
         let rules = schema
             .rewrite_rules_by_theory
             .get("T")
@@ -1306,6 +1307,43 @@ instance I of S:
                 .iter()
                 .any(|e| e.contains("unknown endpoint `y`")),
             "expected unknown endpoint error, got: {:?}",
+            report.rewrite_rule_typecheck.errors
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checked_db_typechecks_rewrite_steps_against_meta_plane_carrier() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module RouteWitnesses
+
+schema S:
+  object World
+  object Route
+  object Context
+  relation RouteWitness(from: World, to: World, route1: Route, route2: Route, ctx: Context)
+
+theory T on S:
+  rewrite witness_refl:
+    orientation: forward
+    vars: r1: Route, r2: Route
+    lhs: step(r1, RouteWitness, r2)
+    rhs: step(r1, RouteWitness, r2)
+
+instance I of S:
+  World = {A, B}
+  Route = {R1, R2}
+  Context = {C0}
+  RouteWitness = {(from=A, to=B, route1=R1, route2=R2, ctx=C0)}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+
+        let report = CheckedDb::check(&db)?;
+        assert!(
+            report.rewrite_rule_typecheck.errors.is_empty(),
+            "expected compiled carrier semantics to typecheck RouteWitness rewrite steps, got: {:?}",
             report.rewrite_rule_typecheck.errors
         );
         Ok(())

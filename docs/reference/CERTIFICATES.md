@@ -8,6 +8,9 @@ This repo follows **untrusted engine / trusted checker**:
 - **Rust** computes results and emits a **certificate** (witness).
 - **Lean** checks the certificate against the formal semantics.
 
+For the exact boundary of what the Lean side is trusted to mean, see
+`docs/reference/TRUSTED_KERNEL.md`.
+
 Certificates are currently JSON for ease of inspection. The intent is to keep the
 shape **stable and versioned**, and later add CBOR once the schema settles.
 

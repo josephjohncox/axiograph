@@ -33,6 +33,8 @@ use axiograph_dsl::schema_v1::{
 };
 
 use crate::axi_meta::*;
+use crate::axi_module_typecheck::{validate_axi_v1_module, Module, WellTypedModuleState};
+use crate::kernel_ir::{compile_schema_ir, CompiledSchemaIr};
 use crate::PathDB;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -53,10 +55,47 @@ pub fn import_axi_schema_v1_into_pathdb(
 ) -> Result<AxiSchemaV1ImportSummary> {
     let module =
         parse_schema_v1(text).map_err(|e| anyhow!("failed to parse axi_schema_v1 module: {e}"))?;
+    let module = validate_axi_v1_module(module)
+        .map_err(|e| anyhow!("failed to validate axi_schema_v1 module: {e}"))?;
     import_axi_schema_v1_module_into_pathdb(db, &module)
 }
 
-pub fn import_axi_schema_v1_module_into_pathdb(
+/// Import a lifecycle-typed canonical `.axi` module into PathDB.
+///
+/// This boundary accepts only modules that already carry a Rust-side
+/// well-typedness witness (`Module<Validated>` or `Module<Reviewed>`). Use
+/// [`validate_axi_v1_module`] first, or [`import_axi_schema_v1_into_pathdb`] to
+/// parse, validate, and import text in one step.
+///
+/// ```compile_fail
+/// use axiograph_dsl::axi_v1::parse_axi_v1;
+/// use axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb;
+/// use axiograph_pathdb::PathDB;
+///
+/// let raw = parse_axi_v1(
+///     r#"
+/// module Demo
+///
+/// schema S:
+///   object Person
+///
+/// instance I of S:
+///   Person = {Alice}
+/// "#,
+/// )
+/// .unwrap();
+///
+/// let mut db = PathDB::new();
+/// let _ = import_axi_schema_v1_module_into_pathdb(&mut db, &raw);
+/// ```
+pub fn import_axi_schema_v1_module_into_pathdb<S: WellTypedModuleState>(
+    db: &mut PathDB,
+    module: &Module<S>,
+) -> Result<AxiSchemaV1ImportSummary> {
+    import_axi_schema_v1_module_into_pathdb_impl(db, module.module())
+}
+
+fn import_axi_schema_v1_module_into_pathdb_impl(
     db: &mut PathDB,
     module: &SchemaV1Module,
 ) -> Result<AxiSchemaV1ImportSummary> {
@@ -105,16 +144,15 @@ pub fn import_axi_schema_v1_module_into_pathdb(
 
         let schema_index = SchemaIndex::new(schema);
         let schema_handles = handles.schemas.get(&schema.name).cloned();
-        let mut ctx =
-            InstanceImportContext::new(
-                db,
-                module,
-                inst,
-                schema,
-                schema_index,
-                schema_handles,
-                &relation_name_counts,
-            );
+        let mut ctx = InstanceImportContext::new(
+            db,
+            module,
+            inst,
+            schema,
+            schema_index,
+            schema_handles,
+            &relation_name_counts,
+        );
         ctx.import_instance_data()?;
         summary.instances_imported += 1;
         summary.entities_added += ctx.summary.entities_added;
@@ -527,24 +565,18 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
             dst_field,
             max,
             params,
-        } => (
-            "at_most",
-            {
-                let mut attrs = vec![
-                    (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
-                    (ATTR_CONSTRAINT_SRC_FIELD.to_string(), src_field.clone()),
-                    (ATTR_CONSTRAINT_DST_FIELD.to_string(), dst_field.clone()),
-                    (ATTR_CONSTRAINT_MAX.to_string(), max.to_string()),
-                ];
-                if let Some(ps) = params.as_ref() {
-                    attrs.push((
-                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
-                        ps.join(","),
-                    ));
-                }
-                attrs
-            },
-        ),
+        } => ("at_most", {
+            let mut attrs = vec![
+                (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
+                (ATTR_CONSTRAINT_SRC_FIELD.to_string(), src_field.clone()),
+                (ATTR_CONSTRAINT_DST_FIELD.to_string(), dst_field.clone()),
+                (ATTR_CONSTRAINT_MAX.to_string(), max.to_string()),
+            ];
+            if let Some(ps) = params.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_PARAM_FIELDS.to_string(), ps.join(",")));
+            }
+            attrs
+        }),
         ConstraintV1::Typing { relation, rule } => (
             "typing",
             vec![
@@ -558,73 +590,55 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
             values,
             carriers,
             params,
-        } => (
-            "symmetric_where_in",
-            {
-                let mut attrs = vec![
+        } => ("symmetric_where_in", {
+            let mut attrs = vec![
                 (ATTR_CONSTRAINT_RELATION.to_string(), relation.clone()),
                 (ATTR_CONSTRAINT_WHERE_FIELD.to_string(), field.clone()),
                 (
                     ATTR_CONSTRAINT_WHERE_IN_VALUES.to_string(),
                     values.join(","),
                 ),
-                ];
-                if let Some(c) = carriers.as_ref() {
-                    // Reuse src/dst field attrs as the carrier pair for closure constraints.
-                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
-                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
-                }
-                if let Some(ps) = params.as_ref() {
-                    attrs.push((
-                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
-                        ps.join(","),
-                    ));
-                }
-                attrs
-            },
-        ),
+            ];
+            if let Some(c) = carriers.as_ref() {
+                // Reuse src/dst field attrs as the carrier pair for closure constraints.
+                attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+            }
+            if let Some(ps) = params.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_PARAM_FIELDS.to_string(), ps.join(",")));
+            }
+            attrs
+        }),
         ConstraintV1::Symmetric {
             relation,
             carriers,
             params,
-        } => (
-            "symmetric",
-            {
-                let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
-                if let Some(c) = carriers.as_ref() {
-                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
-                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
-                }
-                if let Some(ps) = params.as_ref() {
-                    attrs.push((
-                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
-                        ps.join(","),
-                    ));
-                }
-                attrs
-            },
-        ),
+        } => ("symmetric", {
+            let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
+            if let Some(c) = carriers.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+            }
+            if let Some(ps) = params.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_PARAM_FIELDS.to_string(), ps.join(",")));
+            }
+            attrs
+        }),
         ConstraintV1::Transitive {
             relation,
             carriers,
             params,
-        } => (
-            "transitive",
-            {
-                let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
-                if let Some(c) = carriers.as_ref() {
-                    attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
-                    attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
-                }
-                if let Some(ps) = params.as_ref() {
-                    attrs.push((
-                        ATTR_CONSTRAINT_PARAM_FIELDS.to_string(),
-                        ps.join(","),
-                    ));
-                }
-                attrs
-            },
-        ),
+        } => ("transitive", {
+            let mut attrs = vec![(ATTR_CONSTRAINT_RELATION.to_string(), relation.clone())];
+            if let Some(c) = carriers.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_SRC_FIELD.to_string(), c.left_field.clone()));
+                attrs.push((ATTR_CONSTRAINT_DST_FIELD.to_string(), c.right_field.clone()));
+            }
+            if let Some(ps) = params.as_ref() {
+                attrs.push((ATTR_CONSTRAINT_PARAM_FIELDS.to_string(), ps.join(",")));
+            }
+            attrs
+        }),
         ConstraintV1::Key { relation, fields } => (
             "key",
             vec![
@@ -711,6 +725,7 @@ fn extract_relation_from_unknown_constraint(text: &str) -> Option<String> {
 struct SchemaIndex {
     objects: HashSet<String>,
     relations: AHashMap<String, RelationDeclV1>,
+    compiled_ir: CompiledSchemaIr,
     supertypes_of: AHashMap<String, HashSet<String>>,
     subtypes_of: AHashMap<String, HashSet<String>>,
 }
@@ -779,6 +794,7 @@ impl SchemaIndex {
         Self {
             objects,
             relations,
+            compiled_ir: compile_schema_ir(schema),
             supertypes_of,
             subtypes_of,
         }
@@ -792,16 +808,20 @@ impl SchemaIndex {
         self.relations.get(name)
     }
 
+    fn relation_semantics(&self, name: &str) -> Option<&crate::kernel_ir::RelationSemanticsIr> {
+        self.compiled_ir.relation(name)
+    }
+
     fn tuple_entity_type_name(&self, relation_name: &str) -> String {
-        // If the schema also declares an object with the same name, keep tuple
-        // entities distinct so we don't conflate:
-        // - `LawCategory` (the category object)
-        // - `LawCategory(law, category)` (the relation tuples)
-        if self.is_object_type(relation_name) {
-            format!("{relation_name}Fact")
-        } else {
-            relation_name.to_string()
-        }
+        self.relation_semantics(relation_name)
+            .map(|rel| rel.tuple_type_name.clone())
+            .unwrap_or_else(|| {
+                if self.is_object_type(relation_name) {
+                    format!("{relation_name}Fact")
+                } else {
+                    relation_name.to_string()
+                }
+            })
     }
 
     fn canonical_entity_type_for_axi_type(&self, axi_type: &str) -> Result<String> {
@@ -1084,6 +1104,11 @@ impl<'a> InstanceImportContext<'a> {
                 self.schema.name
             ));
         };
+        let relation_semantics = self
+            .schema_index
+            .relation_semantics(relation_name)
+            .cloned()
+            .ok_or_else(|| anyhow!("missing compiled semantics for relation `{relation_name}`"))?;
 
         for it in items {
             let SetItemV1::Tuple { fields } = it else {
@@ -1232,7 +1257,8 @@ impl<'a> InstanceImportContext<'a> {
             // Treat certain “equivalence” relations as homotopy witnesses so
             // users can query them generically (not only by the domain-specific
             // relation name).
-            let homotopy_sides = derive_homotopy_sides(relation_name, &values_by_field);
+            let homotopy_sides =
+                resolve_relation_pair(relation_semantics.homotopy_field_names(), &values_by_field);
             if let Some((lhs, rhs)) = homotopy_sides {
                 self.mark_virtual_type(tuple_entity_id, "Homotopy");
                 self.add_edge_if_missing_with_attrs(
@@ -1253,7 +1279,10 @@ impl<'a> InstanceImportContext<'a> {
             // This is a lightweight bridge toward the HoTT/groupoid view where
             // arrows are first-class and can be inspected in the REPL.
             if homotopy_sides.is_none() {
-                if let Some((from, to)) = derive_morphism_endpoints(&decl, &values_by_field) {
+                if let Some((from, to)) = resolve_relation_pair(
+                    relation_semantics.morphism_field_names(),
+                    &values_by_field,
+                ) {
                     self.mark_virtual_type(tuple_entity_id, "Morphism");
                     self.add_edge_if_missing_with_attrs(
                         "from",
@@ -1271,7 +1300,9 @@ impl<'a> InstanceImportContext<'a> {
             }
 
             // Derived binary edge (convenience traversal).
-            if let Some((src, dst)) = derive_binary_endpoints(&decl, &values_by_field) {
+            if let Some((src, dst)) =
+                resolve_relation_pair(relation_semantics.carrier_field_names(), &values_by_field)
+            {
                 let derived_label = if self
                     .relation_name_counts
                     .get(relation_name)
@@ -1326,7 +1357,11 @@ impl<'a> InstanceImportContext<'a> {
             for (k, v) in attrs {
                 let k_id = self.db.interner.intern(k);
                 let v_id = self.db.interner.intern(v);
-                if !rel_mut.attrs.iter().any(|(kk, vv)| *kk == k_id && *vv == v_id) {
+                if !rel_mut
+                    .attrs
+                    .iter()
+                    .any(|(kk, vv)| *kk == k_id && *vv == v_id)
+                {
                     rel_mut.attrs.push((k_id, v_id));
                 }
             }
@@ -1339,106 +1374,10 @@ impl<'a> InstanceImportContext<'a> {
     }
 }
 
-fn derive_binary_endpoints(
-    decl: &RelationDeclV1,
+fn resolve_relation_pair(
+    pair: Option<(&str, &str)>,
     values_by_field: &HashMap<String, u32>,
 ) -> Option<(u32, u32)> {
-    // Canonical derived edge rule (for convenience traversal + certificates):
-    //
-    // 1) If the relation is "primary binary" after dropping context/time metadata,
-    //    derive a single edge in schema-declared order.
-    //
-    // 2) Otherwise, fall back to a small, *explicit* set of conventional endpoint
-    //    field pairs (from/to, lhs/rhs, path1/path2, ...).
-    //
-    // This is intentionally deterministic: the Lean checker can re-run the same
-    // endpoint selection when validating `.axi`-anchored query certificates.
-
-    let primary_fields: Vec<&str> = decl
-        .fields
-        .iter()
-        .map(|f| f.field.as_str())
-        .filter(|f| *f != "ctx" && *f != "time")
-        .collect();
-
-    if primary_fields.len() == 2 {
-        let a = values_by_field.get(primary_fields[0])?;
-        let b = values_by_field.get(primary_fields[1])?;
-        return Some((*a, *b));
-    }
-
-    // Prefer “equivalence sides” over endpoints when present. For many canonical
-    // examples, `from/to` are metadata about the endpoints of the *paths*, but
-    // the equivalence itself relates *path objects* (e.g. `route1/route2`).
-    for (src, dst) in [
-        ("lhs", "rhs"),
-        ("route1", "route2"),
-        ("path1", "path2"),
-        ("rel1", "rel2"),
-        ("i1", "i2"),
-        ("s1", "s2"),
-        ("left", "right"),
-        ("child", "parent"),
-        ("from", "to"),
-        ("source", "target"),
-        ("src", "dst"),
-    ] {
-        if let (Some(a), Some(b)) = (values_by_field.get(src), values_by_field.get(dst)) {
-            return Some((*a, *b));
-        }
-    }
-
-    None
-}
-
-fn derive_morphism_endpoints(
-    decl: &RelationDeclV1,
-    values_by_field: &HashMap<String, u32>,
-) -> Option<(u32, u32)> {
-    // If it is already binary, use the declared field order.
-    if decl.fields.len() == 2 {
-        let a = values_by_field.get(&decl.fields[0].field)?;
-        let b = values_by_field.get(&decl.fields[1].field)?;
-        return Some((*a, *b));
-    }
-
-    // For n-ary relations, prefer explicit endpoint field names.
-    for (src, dst) in [
-        ("from", "to"),
-        ("source", "target"),
-        ("src", "dst"),
-        ("child", "parent"),
-    ] {
-        if let (Some(a), Some(b)) = (values_by_field.get(src), values_by_field.get(dst)) {
-            return Some((*a, *b));
-        }
-    }
-
-    None
-}
-
-fn derive_homotopy_sides(
-    relation_name: &str,
-    values_by_field: &HashMap<String, u32>,
-) -> Option<(u32, u32)> {
-    // Heuristic: relations whose names include “Equiv/Equivalence” are treated
-    // as 2-cells/homotopies when we can find a reasonable “lhs/rhs”-like pair.
-    if !(relation_name.contains("Equiv") || relation_name.contains("Equivalence")) {
-        return None;
-    }
-
-    for (lhs, rhs) in [
-        ("lhs", "rhs"),
-        ("route1", "route2"),
-        ("path1", "path2"),
-        ("rel1", "rel2"),
-        ("i1", "i2"),
-        ("s1", "s2"),
-        ("left", "right"),
-    ] {
-        if let (Some(a), Some(b)) = (values_by_field.get(lhs), values_by_field.get(rhs)) {
-            return Some((*a, *b));
-        }
-    }
-    None
+    let (left, right) = pair?;
+    Some((*values_by_field.get(left)?, *values_by_field.get(right)?))
 }

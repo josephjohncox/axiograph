@@ -21,6 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod accepted_plane;
 mod analyze;
 mod axi_fmt;
+mod axi_input;
 mod axql;
 mod competency_questions;
 mod db_server;
@@ -36,8 +37,8 @@ mod proposal_gen;
 mod proposals_import;
 mod proposals_validate;
 mod proto;
-mod query_ir;
 mod quality;
+mod query_ir;
 mod relation_resolution;
 mod repl;
 mod schema_discovery;
@@ -1817,7 +1818,207 @@ fn main() -> Result<()> {
                 IngestCommands::Sql { input, out, chunks } => {
                     cmd_sql(&input, &out, chunks.as_ref())?;
                 }
-            IngestCommands::Doc {
+                IngestCommands::Doc {
+                    input,
+                    out,
+                    chunks,
+                    facts,
+                    machining,
+                    domain,
+                } => {
+                    cmd_doc(
+                        &input,
+                        &out,
+                        chunks.as_ref(),
+                        facts.as_ref(),
+                        machining,
+                        &domain,
+                    )?;
+                }
+                IngestCommands::Conversation {
+                    input,
+                    out,
+                    chunks,
+                    facts,
+                    format,
+                } => {
+                    cmd_conversation(&input, &out, chunks.as_ref(), facts.as_ref(), &format)?;
+                }
+                IngestCommands::Confluence {
+                    input,
+                    out,
+                    space,
+                    chunks,
+                    facts,
+                } => {
+                    cmd_confluence(&input, &out, &space, chunks.as_ref(), facts.as_ref())?;
+                }
+                IngestCommands::Json { input, out, chunks } => {
+                    cmd_json(&input, &out, chunks.as_ref())?;
+                }
+                IngestCommands::Readings {
+                    input,
+                    out,
+                    chunks,
+                    format,
+                } => {
+                    cmd_readings(&input, &out, chunks.as_ref(), &format)?;
+                }
+                IngestCommands::Proto { command } => {
+                    proto::cmd_proto(command)?;
+                }
+                IngestCommands::Repo { command } => match command {
+                    RepoCommands::Index {
+                        root,
+                        out,
+                        chunks,
+                        edges,
+                        max_file_bytes,
+                        max_files,
+                        lines_per_chunk,
+                    } => {
+                        cmd_repo_index(
+                            &root,
+                            &out,
+                            chunks.as_ref(),
+                            edges.as_ref(),
+                            max_file_bytes,
+                            max_files,
+                            lines_per_chunk,
+                        )?;
+                    }
+                    RepoCommands::Watch {
+                        root,
+                        out,
+                        chunks,
+                        edges,
+                        trace,
+                        interval_secs,
+                        max_suggestions,
+                    } => {
+                        cmd_repo_watch(
+                            &root,
+                            &out,
+                            chunks.as_ref(),
+                            edges.as_ref(),
+                            trace.as_ref(),
+                            interval_secs,
+                            max_suggestions,
+                        )?;
+                    }
+                },
+                IngestCommands::Github { command } => {
+                    github::cmd_github(command)?;
+                }
+                IngestCommands::Web { command } => {
+                    web::cmd_web(command)?;
+                }
+                IngestCommands::Dir {
+                    root,
+                    out_dir,
+                    confluence_space,
+                    domain,
+                    chunks,
+                    facts,
+                    proposals,
+                    max_file_bytes,
+                    max_files,
+                } => {
+                    cmd_ingest_dir(
+                        &root,
+                        &out_dir,
+                        &confluence_space,
+                        &domain,
+                        chunks.as_ref(),
+                        facts.as_ref(),
+                        proposals.as_ref(),
+                        max_file_bytes,
+                        max_files,
+                    )?;
+                }
+                IngestCommands::Merge {
+                    proposals,
+                    chunks,
+                    out,
+                    chunks_out,
+                    schema_hint,
+                } => {
+                    cmd_ingest_merge(
+                        &proposals,
+                        &chunks,
+                        &out,
+                        chunks_out.as_ref(),
+                        schema_hint.as_deref(),
+                    )?;
+                }
+                IngestCommands::WorldModel(args) => {
+                    cmd_world_model_propose(&args)?;
+                }
+                IngestCommands::WorldModelPluginLlm(args) => {
+                    cmd_world_model_plugin_llm(&args)?;
+                }
+            },
+            Commands::Check { command } => match command {
+                CheckCommands::Validate { input } => {
+                    cmd_validate(&input)?;
+                }
+                CheckCommands::Fmt { input, out, write } => {
+                    axi_fmt::cmd_fmt_axi(&input, out.as_deref(), write)?;
+                }
+                CheckCommands::Quality {
+                    input,
+                    out,
+                    format,
+                    profile,
+                    plane,
+                    no_fail,
+                } => {
+                    quality::cmd_quality(&input, out.as_ref(), &format, &profile, &plane, no_fail)?;
+                }
+            },
+            Commands::Cert { command } => match command {
+                CertCommands::Query {
+                    input,
+                    lang,
+                    query,
+                    out,
+                    anchor_out,
+                } => {
+                    cmd_query_cert(&input, &lang, &query, out.as_ref(), anchor_out.as_ref())?;
+                }
+                CertCommands::Typecheck { input, out } => {
+                    cmd_typecheck_cert(&input, out.as_ref())?;
+                }
+                CertCommands::Constraints { input, out } => {
+                    cmd_constraints_cert(&input, out.as_ref())?;
+                }
+            },
+            Commands::Tools { command } => match command {
+                ToolsCommands::Viz(args) => {
+                    cmd_viz_from_args(&args)?;
+                }
+                ToolsCommands::Analyze { command } => {
+                    analyze::cmd_analyze(command)?;
+                }
+                ToolsCommands::Perf { command } => {
+                    perf::cmd_perf(command)?;
+                }
+            },
+            Commands::Db { command } => match command {
+                DbCommands::Accept { command } => {
+                    cmd_accept(command)?;
+                }
+                DbCommands::Pathdb { command } => {
+                    cmd_pathdb(command)?;
+                }
+                DbCommands::Serve(args) => {
+                    db_server::cmd_db_serve(args)?;
+                }
+            },
+            Commands::Sql { input, out } => {
+                cmd_sql(&input, &out, None)?;
+            }
+            Commands::Doc {
                 input,
                 out,
                 chunks,
@@ -1825,9 +2026,16 @@ fn main() -> Result<()> {
                 machining,
                 domain,
             } => {
-                cmd_doc(&input, &out, chunks.as_ref(), facts.as_ref(), machining, &domain)?;
+                cmd_doc(
+                    &input,
+                    &out,
+                    chunks.as_ref(),
+                    facts.as_ref(),
+                    machining,
+                    &domain,
+                )?;
             }
-            IngestCommands::Conversation {
+            Commands::Conversation {
                 input,
                 out,
                 chunks,
@@ -1836,7 +2044,7 @@ fn main() -> Result<()> {
             } => {
                 cmd_conversation(&input, &out, chunks.as_ref(), facts.as_ref(), &format)?;
             }
-            IngestCommands::Confluence {
+            Commands::Confluence {
                 input,
                 out,
                 space,
@@ -1845,10 +2053,10 @@ fn main() -> Result<()> {
             } => {
                 cmd_confluence(&input, &out, &space, chunks.as_ref(), facts.as_ref())?;
             }
-            IngestCommands::Json { input, out, chunks } => {
-                cmd_json(&input, &out, chunks.as_ref())?;
+            Commands::Json { input, out } => {
+                cmd_json(&input, &out, None)?;
             }
-            IngestCommands::Readings {
+            Commands::Readings {
                 input,
                 out,
                 chunks,
@@ -1856,10 +2064,13 @@ fn main() -> Result<()> {
             } => {
                 cmd_readings(&input, &out, chunks.as_ref(), &format)?;
             }
-            IngestCommands::Proto { command } => {
-                proto::cmd_proto(command)?;
+            Commands::Pathdb { command } => {
+                cmd_pathdb(command)?;
             }
-            IngestCommands::Repo { command } => match command {
+            Commands::Validate { input } => {
+                cmd_validate(&input)?;
+            }
+            Commands::Repo { command } => match command {
                 RepoCommands::Index {
                     root,
                     out,
@@ -1899,13 +2110,242 @@ fn main() -> Result<()> {
                     )?;
                 }
             },
-            IngestCommands::Github { command } => {
+            Commands::Github { command } => {
                 github::cmd_github(command)?;
             }
-            IngestCommands::Web { command } => {
+            Commands::Web { command } => {
                 web::cmd_web(command)?;
             }
-            IngestCommands::Dir {
+            Commands::Discover { command } => match command {
+                DiscoverCommands::SuggestLinks {
+                    chunks,
+                    edges,
+                    out,
+                    max_proposals,
+                } => {
+                    cmd_discover_suggest_links(&chunks, &edges, &out, max_proposals)?;
+                }
+                DiscoverCommands::PromoteProposals {
+                    proposals,
+                    out_dir,
+                    trace,
+                    min_confidence,
+                    domains,
+                } => {
+                    cmd_discover_promote_proposals(
+                        &proposals,
+                        &out_dir,
+                        trace.as_ref(),
+                        min_confidence,
+                        &domains,
+                    )?;
+                }
+                DiscoverCommands::AugmentProposals {
+                    proposals,
+                    out,
+                    trace,
+                    chunks,
+                    llm_plugin,
+                    llm_plugin_arg,
+                    llm_ollama,
+                    llm_ollama_host,
+                    llm_openai,
+                    llm_openai_base_url,
+                    llm_anthropic,
+                    llm_anthropic_base_url,
+                    llm_model,
+                    llm_timeout_secs,
+                    llm_add_proposals,
+                    max_new_proposals,
+                    overwrite_schema_hints,
+                    no_roles,
+                    no_todo_symbol,
+                    no_infer_hints,
+                } => {
+                    cmd_discover_augment_proposals(
+                        &proposals,
+                        &out,
+                        trace.as_ref(),
+                        chunks.as_ref(),
+                        llm_plugin.as_ref(),
+                        &llm_plugin_arg,
+                        llm_ollama,
+                        llm_ollama_host.as_deref(),
+                        llm_openai,
+                        llm_openai_base_url.as_deref(),
+                        llm_anthropic,
+                        llm_anthropic_base_url.as_deref(),
+                        llm_model.as_deref(),
+                        llm_timeout_secs,
+                        llm_add_proposals,
+                        axiograph_ingest_docs::AugmentOptionsV1 {
+                            infer_schema_hints: !no_infer_hints,
+                            add_mention_role_entities: !no_roles,
+                            add_todo_mentions_symbol: !no_todo_symbol,
+                            max_new_proposals,
+                            overwrite_schema_hints,
+                        },
+                    )?;
+                }
+                DiscoverCommands::DraftModule {
+                    proposals,
+                    out,
+                    module,
+                    schema,
+                    instance,
+                    infer_constraints,
+                    llm_ollama,
+                    llm_ollama_host,
+                    llm_openai,
+                    llm_openai_base_url,
+                    llm_anthropic,
+                    llm_anthropic_base_url,
+                    llm_model,
+                    llm_timeout_secs,
+                } => {
+                    let text = fs::read_to_string(&proposals)?;
+                    let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
+
+                    let options = crate::schema_discovery::DraftAxiModuleOptions {
+                        module_name: module,
+                        schema_name: schema,
+                        instance_name: instance,
+                        infer_constraints,
+                    };
+
+                    let base_draft =
+                        crate::schema_discovery::draft_axi_module_from_proposals(&file, &options)?;
+
+                    let llm_selected =
+                        (llm_ollama as usize) + (llm_openai as usize) + (llm_anthropic as usize);
+                    if llm_selected > 1 {
+                        return Err(anyhow!(
+                        "choose at most one LLM integration: either `--llm-ollama`, `--llm-openai`, or `--llm-anthropic`"
+                    ));
+                    }
+
+                    let suggestions = {
+                        let timeout = crate::llm::llm_timeout(llm_timeout_secs)?;
+                        if llm_ollama {
+                            #[cfg(feature = "llm-ollama")]
+                            {
+                                let model = llm_model.as_deref().ok_or_else(|| {
+                                anyhow!("missing `--llm-model` (example: --llm-model nemotron-3-nano)")
+                            })?;
+                                let host = llm_ollama_host
+                                    .as_deref()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(crate::llm::default_ollama_host);
+                                Some(ollama_suggest_schema_structure(
+                                    &host,
+                                    model,
+                                    &base_draft,
+                                    &options.schema_name,
+                                    timeout,
+                                )?)
+                            }
+                            #[cfg(not(feature = "llm-ollama"))]
+                            {
+                                let _ = timeout;
+                                return Err(anyhow!(
+                                "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
+                            ));
+                            }
+                        } else if llm_openai {
+                            #[cfg(feature = "llm-openai")]
+                            {
+                                let model = llm_model.as_deref().ok_or_else(|| {
+                                    anyhow!(
+                                        "missing `--llm-model` (example: --llm-model gpt-4o-mini)"
+                                    )
+                                })?;
+                                let base_url = llm_openai_base_url
+                                    .as_deref()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(crate::llm::default_openai_base_url);
+                                Some(openai_suggest_schema_structure(
+                                    &base_url,
+                                    model,
+                                    &base_draft,
+                                    &options.schema_name,
+                                    timeout,
+                                )?)
+                            }
+                            #[cfg(not(feature = "llm-openai"))]
+                            {
+                                let _ = timeout;
+                                return Err(anyhow!(
+                                "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
+                            ));
+                            }
+                        } else if llm_anthropic {
+                            #[cfg(feature = "llm-anthropic")]
+                            {
+                                let model = llm_model.as_deref().ok_or_else(|| {
+                                anyhow!("missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)")
+                            })?;
+                                let base_url = llm_anthropic_base_url
+                                    .as_deref()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(crate::llm::default_anthropic_base_url);
+                                Some(anthropic_suggest_schema_structure(
+                                    &base_url,
+                                    model,
+                                    &base_draft,
+                                    &options.schema_name,
+                                    timeout,
+                                )?)
+                            }
+                            #[cfg(not(feature = "llm-anthropic"))]
+                            {
+                                let _ = timeout;
+                                return Err(anyhow!(
+                                "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
+                            ));
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    let draft =
+                        crate::schema_discovery::draft_axi_module_from_proposals_with_suggestions(
+                            &file,
+                            &options,
+                            suggestions.as_ref(),
+                        )?;
+
+                    fs::write(&out, draft)?;
+                    println!("wrote {}", out.display());
+                }
+                DiscoverCommands::JepaExport {
+                    input,
+                    out,
+                    instance,
+                    max_items,
+                    mask_fields,
+                    seed,
+                } => {
+                    cmd_discover_jepa_export(
+                        &input,
+                        &out,
+                        instance.as_deref(),
+                        max_items,
+                        mask_fields,
+                        seed,
+                    )?;
+                }
+                DiscoverCommands::CompetencyQuestions(args) => {
+                    cmd_discover_competency_questions(&args)?;
+                }
+                DiscoverCommands::WorldModelPropose(args) => {
+                    cmd_world_model_propose(&args)?;
+                }
+            },
+            Commands::Accept { command } => {
+                cmd_accept(command)?;
+            }
+            Commands::IngestDir {
                 root,
                 out_dir,
                 confluence_space,
@@ -1928,36 +2368,16 @@ fn main() -> Result<()> {
                     max_files,
                 )?;
             }
-            IngestCommands::Merge {
-                proposals,
-                chunks,
-                out,
-                chunks_out,
-                schema_hint,
-            } => {
-                cmd_ingest_merge(
-                    &proposals,
-                    &chunks,
-                    &out,
-                    chunks_out.as_ref(),
-                    schema_hint.as_deref(),
-                )?;
+            Commands::Perf { command } => {
+                perf::cmd_perf(command)?;
             }
-            IngestCommands::WorldModel(args) => {
-                cmd_world_model_propose(&args)?;
+            Commands::Viz(args) => {
+                cmd_viz_from_args(&args)?;
             }
-            IngestCommands::WorldModelPluginLlm(args) => {
-                cmd_world_model_plugin_llm(&args)?;
+            Commands::Analyze { command } => {
+                analyze::cmd_analyze(command)?;
             }
-        },
-        Commands::Check { command } => match command {
-            CheckCommands::Validate { input } => {
-                cmd_validate(&input)?;
-            }
-            CheckCommands::Fmt { input, out, write } => {
-                axi_fmt::cmd_fmt_axi(&input, out.as_deref(), write)?;
-            }
-            CheckCommands::Quality {
+            Commands::Quality {
                 input,
                 out,
                 format,
@@ -1967,9 +2387,26 @@ fn main() -> Result<()> {
             } => {
                 quality::cmd_quality(&input, out.as_ref(), &format, &profile, &plane, no_fail)?;
             }
-        },
-        Commands::Cert { command } => match command {
-            CertCommands::Query {
+            Commands::Repl {
+                axpd,
+                script,
+                cmd,
+                continue_on_error,
+                quiet,
+            } => {
+                if script.is_some() || !cmd.is_empty() {
+                    repl::cmd_repl_script(
+                        axpd.as_ref(),
+                        script.as_ref(),
+                        &cmd,
+                        continue_on_error,
+                        quiet,
+                    )?;
+                } else {
+                    repl::cmd_repl(axpd.as_ref())?;
+                }
+            }
+            Commands::QueryCert {
                 input,
                 lang,
                 query,
@@ -1978,439 +2415,12 @@ fn main() -> Result<()> {
             } => {
                 cmd_query_cert(&input, &lang, &query, out.as_ref(), anchor_out.as_ref())?;
             }
-            CertCommands::Typecheck { input, out } => {
+            Commands::TypecheckCert { input, out } => {
                 cmd_typecheck_cert(&input, out.as_ref())?;
             }
-            CertCommands::Constraints { input, out } => {
+            Commands::ConstraintsCert { input, out } => {
                 cmd_constraints_cert(&input, out.as_ref())?;
             }
-        },
-        Commands::Tools { command } => match command {
-            ToolsCommands::Viz(args) => {
-                cmd_viz_from_args(&args)?;
-            }
-            ToolsCommands::Analyze { command } => {
-                analyze::cmd_analyze(command)?;
-            }
-            ToolsCommands::Perf { command } => {
-                perf::cmd_perf(command)?;
-            }
-        },
-        Commands::Db { command } => match command {
-            DbCommands::Accept { command } => {
-                cmd_accept(command)?;
-            }
-            DbCommands::Pathdb { command } => {
-                cmd_pathdb(command)?;
-            }
-            DbCommands::Serve(args) => {
-                db_server::cmd_db_serve(args)?;
-            }
-        },
-        Commands::Sql { input, out } => {
-            cmd_sql(&input, &out, None)?;
-        }
-        Commands::Doc {
-            input,
-            out,
-            chunks,
-            facts,
-            machining,
-            domain,
-        } => {
-            cmd_doc(
-                &input,
-                &out,
-                chunks.as_ref(),
-                facts.as_ref(),
-                machining,
-                &domain,
-            )?;
-        }
-        Commands::Conversation {
-            input,
-            out,
-            chunks,
-            facts,
-            format,
-        } => {
-            cmd_conversation(&input, &out, chunks.as_ref(), facts.as_ref(), &format)?;
-        }
-        Commands::Confluence {
-            input,
-            out,
-            space,
-            chunks,
-            facts,
-        } => {
-            cmd_confluence(&input, &out, &space, chunks.as_ref(), facts.as_ref())?;
-        }
-        Commands::Json { input, out } => {
-            cmd_json(&input, &out, None)?;
-        }
-        Commands::Readings {
-            input,
-            out,
-            chunks,
-            format,
-        } => {
-            cmd_readings(&input, &out, chunks.as_ref(), &format)?;
-        }
-        Commands::Pathdb { command } => {
-            cmd_pathdb(command)?;
-        }
-        Commands::Validate { input } => {
-            cmd_validate(&input)?;
-        }
-        Commands::Repo { command } => match command {
-            RepoCommands::Index {
-                root,
-                out,
-                chunks,
-                edges,
-                max_file_bytes,
-                max_files,
-                lines_per_chunk,
-            } => {
-                cmd_repo_index(
-                    &root,
-                    &out,
-                    chunks.as_ref(),
-                    edges.as_ref(),
-                    max_file_bytes,
-                    max_files,
-                    lines_per_chunk,
-                )?;
-            }
-            RepoCommands::Watch {
-                root,
-                out,
-                chunks,
-                edges,
-                trace,
-                interval_secs,
-                max_suggestions,
-            } => {
-                cmd_repo_watch(
-                    &root,
-                    &out,
-                    chunks.as_ref(),
-                    edges.as_ref(),
-                    trace.as_ref(),
-                    interval_secs,
-                    max_suggestions,
-                )?;
-            }
-        },
-        Commands::Github { command } => {
-            github::cmd_github(command)?;
-        }
-        Commands::Web { command } => {
-            web::cmd_web(command)?;
-        }
-        Commands::Discover { command } => match command {
-            DiscoverCommands::SuggestLinks {
-                chunks,
-                edges,
-                out,
-                max_proposals,
-            } => {
-                cmd_discover_suggest_links(&chunks, &edges, &out, max_proposals)?;
-            }
-            DiscoverCommands::PromoteProposals {
-                proposals,
-                out_dir,
-                trace,
-                min_confidence,
-                domains,
-            } => {
-                cmd_discover_promote_proposals(
-                    &proposals,
-                    &out_dir,
-                    trace.as_ref(),
-                    min_confidence,
-                    &domains,
-                )?;
-            }
-            DiscoverCommands::AugmentProposals {
-                proposals,
-                out,
-                trace,
-                chunks,
-                llm_plugin,
-                llm_plugin_arg,
-                llm_ollama,
-                llm_ollama_host,
-                llm_openai,
-                llm_openai_base_url,
-                llm_anthropic,
-                llm_anthropic_base_url,
-                llm_model,
-                llm_timeout_secs,
-                llm_add_proposals,
-                max_new_proposals,
-                overwrite_schema_hints,
-                no_roles,
-                no_todo_symbol,
-                no_infer_hints,
-            } => {
-                cmd_discover_augment_proposals(
-                    &proposals,
-                    &out,
-                    trace.as_ref(),
-                    chunks.as_ref(),
-                    llm_plugin.as_ref(),
-                    &llm_plugin_arg,
-                    llm_ollama,
-                    llm_ollama_host.as_deref(),
-                    llm_openai,
-                    llm_openai_base_url.as_deref(),
-                    llm_anthropic,
-                    llm_anthropic_base_url.as_deref(),
-                    llm_model.as_deref(),
-                    llm_timeout_secs,
-                    llm_add_proposals,
-                    axiograph_ingest_docs::AugmentOptionsV1 {
-                        infer_schema_hints: !no_infer_hints,
-                        add_mention_role_entities: !no_roles,
-                        add_todo_mentions_symbol: !no_todo_symbol,
-                        max_new_proposals,
-                        overwrite_schema_hints,
-                    },
-                )?;
-            }
-            DiscoverCommands::DraftModule {
-                proposals,
-                out,
-                module,
-                schema,
-                instance,
-                infer_constraints,
-                llm_ollama,
-                llm_ollama_host,
-                llm_openai,
-                llm_openai_base_url,
-                llm_anthropic,
-                llm_anthropic_base_url,
-                llm_model,
-                llm_timeout_secs,
-            } => {
-                let text = fs::read_to_string(&proposals)?;
-                let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
-
-                let options = crate::schema_discovery::DraftAxiModuleOptions {
-                    module_name: module,
-                    schema_name: schema,
-                    instance_name: instance,
-                    infer_constraints,
-                };
-
-                let base_draft =
-                    crate::schema_discovery::draft_axi_module_from_proposals(&file, &options)?;
-
-                let llm_selected =
-                    (llm_ollama as usize) + (llm_openai as usize) + (llm_anthropic as usize);
-                if llm_selected > 1 {
-                    return Err(anyhow!(
-                        "choose at most one LLM integration: either `--llm-ollama`, `--llm-openai`, or `--llm-anthropic`"
-                    ));
-                }
-
-                let suggestions = {
-                    let timeout = crate::llm::llm_timeout(llm_timeout_secs)?;
-                    if llm_ollama {
-                        #[cfg(feature = "llm-ollama")]
-                        {
-                            let model = llm_model.as_deref().ok_or_else(|| {
-                                anyhow!("missing `--llm-model` (example: --llm-model nemotron-3-nano)")
-                            })?;
-                            let host = llm_ollama_host
-                                .as_deref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(crate::llm::default_ollama_host);
-                            Some(ollama_suggest_schema_structure(
-                                &host,
-                                model,
-                                &base_draft,
-                                &options.schema_name,
-                                timeout,
-                            )?)
-                        }
-                        #[cfg(not(feature = "llm-ollama"))]
-                        {
-                            let _ = timeout;
-                            return Err(anyhow!(
-                                "ollama support not compiled (enable `axiograph-cli` feature `llm-ollama`)"
-                            ));
-                        }
-                    } else if llm_openai {
-                        #[cfg(feature = "llm-openai")]
-                        {
-                            let model = llm_model.as_deref().ok_or_else(|| {
-                                anyhow!("missing `--llm-model` (example: --llm-model gpt-4o-mini)")
-                            })?;
-                            let base_url = llm_openai_base_url
-                                .as_deref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(crate::llm::default_openai_base_url);
-                            Some(openai_suggest_schema_structure(
-                                &base_url,
-                                model,
-                                &base_draft,
-                                &options.schema_name,
-                                timeout,
-                            )?)
-                        }
-                        #[cfg(not(feature = "llm-openai"))]
-                        {
-                            let _ = timeout;
-                            return Err(anyhow!(
-                                "openai support not compiled (enable `axiograph-cli` feature `llm-openai`)"
-                            ));
-                        }
-                    } else if llm_anthropic {
-                        #[cfg(feature = "llm-anthropic")]
-                        {
-                            let model = llm_model.as_deref().ok_or_else(|| {
-                                anyhow!("missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)")
-                            })?;
-                            let base_url = llm_anthropic_base_url
-                                .as_deref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(crate::llm::default_anthropic_base_url);
-                            Some(anthropic_suggest_schema_structure(
-                                &base_url,
-                                model,
-                                &base_draft,
-                                &options.schema_name,
-                                timeout,
-                            )?)
-                        }
-                        #[cfg(not(feature = "llm-anthropic"))]
-                        {
-                            let _ = timeout;
-                            return Err(anyhow!(
-                                "anthropic support not compiled (enable `axiograph-cli` feature `llm-anthropic`)"
-                            ));
-                        }
-                    } else {
-                        None
-                    }
-                };
-
-                let draft =
-                    crate::schema_discovery::draft_axi_module_from_proposals_with_suggestions(
-                        &file,
-                        &options,
-                        suggestions.as_ref(),
-                    )?;
-
-                fs::write(&out, draft)?;
-                println!("wrote {}", out.display());
-            }
-            DiscoverCommands::JepaExport {
-                input,
-                out,
-                instance,
-                max_items,
-                mask_fields,
-                seed,
-            } => {
-                cmd_discover_jepa_export(
-                    &input,
-                    &out,
-                    instance.as_deref(),
-                    max_items,
-                    mask_fields,
-                    seed,
-                )?;
-            }
-            DiscoverCommands::CompetencyQuestions(args) => {
-                cmd_discover_competency_questions(&args)?;
-            }
-            DiscoverCommands::WorldModelPropose(args) => {
-                cmd_world_model_propose(&args)?;
-            }
-        },
-        Commands::Accept { command } => {
-            cmd_accept(command)?;
-        }
-        Commands::IngestDir {
-            root,
-            out_dir,
-            confluence_space,
-            domain,
-            chunks,
-            facts,
-            proposals,
-            max_file_bytes,
-            max_files,
-        } => {
-            cmd_ingest_dir(
-                &root,
-                &out_dir,
-                &confluence_space,
-                &domain,
-                chunks.as_ref(),
-                facts.as_ref(),
-                proposals.as_ref(),
-                max_file_bytes,
-                max_files,
-            )?;
-        }
-        Commands::Perf { command } => {
-            perf::cmd_perf(command)?;
-        }
-        Commands::Viz(args) => {
-            cmd_viz_from_args(&args)?;
-        }
-        Commands::Analyze { command } => {
-            analyze::cmd_analyze(command)?;
-        }
-        Commands::Quality {
-            input,
-            out,
-            format,
-            profile,
-            plane,
-            no_fail,
-        } => {
-            quality::cmd_quality(&input, out.as_ref(), &format, &profile, &plane, no_fail)?;
-        }
-        Commands::Repl {
-            axpd,
-            script,
-            cmd,
-            continue_on_error,
-            quiet,
-        } => {
-            if script.is_some() || !cmd.is_empty() {
-                repl::cmd_repl_script(
-                    axpd.as_ref(),
-                    script.as_ref(),
-                    &cmd,
-                    continue_on_error,
-                    quiet,
-                )?;
-            } else {
-                repl::cmd_repl(axpd.as_ref())?;
-            }
-        }
-        Commands::QueryCert {
-            input,
-            lang,
-            query,
-            out,
-            anchor_out,
-        } => {
-            cmd_query_cert(&input, &lang, &query, out.as_ref(), anchor_out.as_ref())?;
-        }
-        Commands::TypecheckCert { input, out } => {
-            cmd_typecheck_cert(&input, out.as_ref())?;
-        }
-        Commands::ConstraintsCert { input, out } => {
-            cmd_constraints_cert(&input, out.as_ref())?;
-        }
             Commands::Proto { command } => {
                 proto::cmd_proto(command)?;
             }
@@ -2501,8 +2511,12 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             message,
             quality,
         } => {
-            let snapshot_id =
-                accepted_plane::promote_reviewed_module(&input, &dir, message.as_deref(), &quality)?;
+            let snapshot_id = accepted_plane::promote_reviewed_module(
+                &input,
+                &dir,
+                message.as_deref(),
+                &quality,
+            )?;
             eprintln!(
                 "{} promoted module to accepted snapshot {}",
                 "ok".green().bold(),
@@ -2521,7 +2535,11 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
         }
         AcceptedCommands::BuildPathdb { dir, snapshot, out } => {
             accepted_plane::build_pathdb_from_snapshot(&dir, &snapshot, &out)?;
-            eprintln!("{} {}", "wrote".green().bold(), out.display().to_string().bold());
+            eprintln!(
+                "{} {}",
+                "wrote".green().bold(),
+                out.display().to_string().bold()
+            );
         }
         AcceptedCommands::PathdbCommit {
             dir,
@@ -2590,7 +2608,11 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
                     update_checkpoint,
                 },
             )?;
-            eprintln!("{} {}", "wrote".green().bold(), out.display().to_string().bold());
+            eprintln!(
+                "{} {}",
+                "wrote".green().bold(),
+                out.display().to_string().bold()
+            );
         }
         AcceptedCommands::PathdbEmbed {
             dir,
@@ -2684,7 +2706,8 @@ fn format_age_compact(created_at_unix_secs: u64) -> String {
     }
 }
 
-fn short_snapshot_id(id: &str) -> String {
+fn short_snapshot_id(id: impl AsRef<str>) -> String {
+    let id = id.as_ref();
     let (prefix, rest) = id.split_once(':').unwrap_or(("", id));
     let rest = rest.chars().take(12).collect::<String>();
     if prefix.is_empty() {
@@ -2694,7 +2717,8 @@ fn short_snapshot_id(id: &str) -> String {
     }
 }
 
-fn format_snapshot_id(id: &str, full: bool) -> String {
+fn format_snapshot_id(id: impl AsRef<str>, full: bool) -> String {
+    let id = id.as_ref();
     if full {
         id.to_string()
     } else {
@@ -2702,7 +2726,8 @@ fn format_snapshot_id(id: &str, full: bool) -> String {
     }
 }
 
-fn snapshot_id_filename(id: &str) -> String {
+fn snapshot_id_filename(id: impl AsRef<str>) -> String {
+    let id = id.as_ref();
     id.replace(':', "_")
 }
 
@@ -2764,11 +2789,17 @@ fn cmd_accept_list(dir: &PathBuf, layer: &str, limit: usize, full: bool) -> Resu
         for s in snaps.into_iter().take(limit) {
             let mark = head
                 .as_deref()
-                .map(|h| if h == s.snapshot_id { "*" } else { " " })
+                .map(|h| {
+                    if h == s.snapshot_id.as_str() {
+                        "*"
+                    } else {
+                        " "
+                    }
+                })
                 .unwrap_or(" ");
             let prev = s
                 .previous_snapshot_id
-                .as_deref()
+                .as_ref()
                 .map(|p| format_snapshot_id(p, full))
                 .unwrap_or_else(|| "(none)".to_string());
             println!(
@@ -2799,11 +2830,17 @@ fn cmd_accept_list(dir: &PathBuf, layer: &str, limit: usize, full: bool) -> Resu
         for s in snaps.into_iter().take(limit) {
             let mark = head
                 .as_deref()
-                .map(|h| if h == s.snapshot_id { "*" } else { " " })
+                .map(|h| {
+                    if h == s.snapshot_id.as_str() {
+                        "*"
+                    } else {
+                        " "
+                    }
+                })
                 .unwrap_or(" ");
             let prev = s
                 .previous_snapshot_id
-                .as_deref()
+                .as_ref()
                 .map(|p| format_snapshot_id(p, full))
                 .unwrap_or_else(|| "(none)".to_string());
             println!(
@@ -2845,7 +2882,7 @@ fn cmd_accept_show(
             println!(
                 "  prev: {}",
                 snap.previous_snapshot_id
-                    .as_deref()
+                    .as_ref()
                     .map(|p| format_snapshot_id(p, full))
                     .unwrap_or_else(|| "(none)".to_string())
             );
@@ -2875,7 +2912,7 @@ fn cmd_accept_show(
             println!(
                 "  prev: {}",
                 snap.previous_snapshot_id
-                    .as_deref()
+                    .as_ref()
                     .map(|p| format_snapshot_id(p, full))
                     .unwrap_or_else(|| "(none)".to_string())
             );
@@ -3028,7 +3065,7 @@ fn cmd_accept_status(dir: &PathBuf) -> Result<()> {
 
     if let (Some(accepted_id), Some(pathdb_snap)) = (accepted_head.as_deref(), pathdb_head_snapshot)
     {
-        if pathdb_snap.accepted_snapshot_id != accepted_id {
+        if pathdb_snap.accepted_snapshot_id.as_str() != accepted_id {
             println!(
                 "note: pathdb WAL HEAD is based on an older accepted snapshot (base={} head={}).",
                 short_snapshot_id(&pathdb_snap.accepted_snapshot_id),
@@ -3092,7 +3129,7 @@ fn cmd_accept_log(dir: &PathBuf, layer: &str, limit: usize) -> Result<()> {
                                 e.module_name,
                                 short_snapshot_id(&e.snapshot_id),
                                 e.previous_snapshot_id
-                                    .as_deref()
+                                    .as_ref()
                                     .map(short_snapshot_id)
                                     .unwrap_or_else(|| "(none)".to_string())
                             );
@@ -3105,7 +3142,7 @@ fn cmd_accept_log(dir: &PathBuf, layer: &str, limit: usize) -> Result<()> {
                                 e.module_name,
                                 short_snapshot_id(&e.snapshot_id),
                                 e.previous_snapshot_id
-                                    .as_deref()
+                                    .as_ref()
                                     .map(short_snapshot_id)
                                     .unwrap_or_else(|| "(none)".to_string()),
                                 msg
@@ -3145,7 +3182,7 @@ fn cmd_accept_log(dir: &PathBuf, layer: &str, limit: usize) -> Result<()> {
                                 short_snapshot_id(&e.accepted_snapshot_id),
                                 ops,
                                 e.previous_snapshot_id
-                                    .as_deref()
+                                    .as_ref()
                                     .map(short_snapshot_id)
                                     .unwrap_or_else(|| "(none)".to_string())
                             );
@@ -3159,7 +3196,7 @@ fn cmd_accept_log(dir: &PathBuf, layer: &str, limit: usize) -> Result<()> {
                                 short_snapshot_id(&e.accepted_snapshot_id),
                                 ops,
                                 e.previous_snapshot_id
-                                    .as_deref()
+                                    .as_ref()
                                     .map(short_snapshot_id)
                                     .unwrap_or_else(|| "(none)".to_string()),
                                 msg
@@ -3237,7 +3274,7 @@ fn cmd_accept_pathdb_embed(
         // Rare path: no checkpoint present; rebuild into a temp `.axpd` file.
         fs::create_dir_all(dir.join("pathdb").join("tmp"))?;
         let tmp = dir.join("pathdb").join("tmp").join("embed_tmp.axpd");
-        pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, &base.snapshot_id, &tmp)?;
+        pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, base.snapshot_id.as_str(), &tmp)?;
         let bytes = fs::read(&tmp)?;
         let _ = fs::remove_file(&tmp);
         bytes
@@ -3413,7 +3450,7 @@ fn cmd_accept_pathdb_embed(
             embed_backend,
             embed_model
         );
-    let vectors = embed_batches(
+        let vectors = embed_batches(
             &embed_backend,
             &embed_model,
             resolved_ollama_host.as_deref(),
@@ -3454,10 +3491,13 @@ fn cmd_accept_pathdb_embed(
             target: EmbeddingTargetKindV1::DocChunks,
             items,
             metadata: std::collections::HashMap::from([
-                ("base_pathdb_snapshot".to_string(), base.snapshot_id.clone()),
+                (
+                    "base_pathdb_snapshot".to_string(),
+                    base.snapshot_id.to_string(),
+                ),
                 (
                     "base_accepted_snapshot".to_string(),
-                    base.accepted_snapshot_id.clone(),
+                    base.accepted_snapshot_id.to_string(),
                 ),
             ]),
         };
@@ -3470,7 +3510,9 @@ fn cmd_accept_pathdb_embed(
         let mut digests: Vec<String> = Vec::new();
 
         for id in 0..(db.entities.len() as u32) {
-            let Some(view) = db.get_entity(id) else { continue };
+            let Some(view) = db.get_entity(id) else {
+                continue;
+            };
             if view.entity_type == "DocChunk"
                 || view.entity_type == "Document"
                 || view.entity_type.starts_with("AxiMeta")
@@ -3523,7 +3565,7 @@ fn cmd_accept_pathdb_embed(
             embed_backend,
             embed_model
         );
-    let vectors = embed_batches(
+        let vectors = embed_batches(
             &embed_backend,
             &embed_model,
             resolved_ollama_host.as_deref(),
@@ -3564,10 +3606,13 @@ fn cmd_accept_pathdb_embed(
             target: EmbeddingTargetKindV1::Entities,
             items,
             metadata: std::collections::HashMap::from([
-                ("base_pathdb_snapshot".to_string(), base.snapshot_id.clone()),
+                (
+                    "base_pathdb_snapshot".to_string(),
+                    base.snapshot_id.to_string(),
+                ),
                 (
                     "base_accepted_snapshot".to_string(),
-                    base.accepted_snapshot_id.clone(),
+                    base.accepted_snapshot_id.to_string(),
                 ),
             ]),
         };
@@ -3576,7 +3621,7 @@ fn cmd_accept_pathdb_embed(
 
     let result = pathdb_wal::commit_pathdb_snapshot_with_embedding_bytes(
         dir,
-        &base.snapshot_id,
+        base.snapshot_id.as_str(),
         &blobs,
         message,
     )?;
@@ -3599,47 +3644,32 @@ fn cmd_query_cert(
     anchor_out: Option<&PathBuf>,
 ) -> Result<()> {
     let axi_text = fs::read_to_string(input)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
+    let (db, anchor_digest, is_pathdb_export_anchor) =
+        match crate::axi_input::classify_axi_text(&axi_text)? {
+            crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => {
+                (module.import_pathdb()?, module.digest().clone(), true)
+            }
+            crate::axi_input::ClassifiedAxiModule::Canonical(module) => {
+                let mut db = axiograph_pathdb::PathDB::new();
+                let anchor_digest = module.digest().clone();
+                let _summary = module.import_into_pathdb(&mut db)?;
+                db.build_indexes();
+                if let Some(anchor_path) = anchor_out {
+                    // Optional convenience export for debugging / legacy workflows.
+                    // Certificates are still anchored to the canonical `.axi` digest.
+                    let anchor_text = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
+                    let anchor_digest = axiograph_dsl::digest::axi_digest_v1(&anchor_text);
+                    fs::write(anchor_path, anchor_text)?;
+                    eprintln!(
+                        "wrote derived PathDBExportV1 export {} (digest={})",
+                        anchor_path.display(),
+                        anchor_digest
+                    );
+                }
 
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&axi_text)?;
-
-    let is_snapshot = m
-        .schemas
-        .iter()
-        .any(|s| s.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1)
-        && m.instances.iter().any(|i| {
-            i.schema == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1
-                && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
-        });
-
-    let (db, anchor_digest, is_pathdb_export_anchor) = if is_snapshot {
-        (
-            axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?,
-            digest,
-            true,
-        )
-    } else {
-        let mut db = axiograph_pathdb::PathDB::new();
-        let _summary =
-            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
-                &mut db, &m,
-            )?;
-        db.build_indexes();
-        if let Some(anchor_path) = anchor_out {
-            // Optional convenience export for debugging / legacy workflows.
-            // Certificates are still anchored to the canonical `.axi` digest.
-            let anchor_text = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
-            let anchor_digest = axiograph_dsl::digest::axi_digest_v1(&anchor_text);
-            fs::write(anchor_path, anchor_text)?;
-            eprintln!(
-                "wrote derived PathDBExportV1 export {} (digest={})",
-                anchor_path.display(),
-                anchor_digest
-            );
-        }
-
-        (db, digest, false)
-    };
+                (db, anchor_digest, false)
+            }
+        };
     let query = match lang {
         "axql" => crate::axql::parse_axql_query(query_text)?,
         "sql" => crate::sqlish::parse_sqlish_query(query_text)?,
@@ -3654,11 +3684,16 @@ fn cmd_query_cert(
         crate::axql::certify_axql_query(&db, &query)?
     } else {
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
-        crate::axql::certify_axql_query_v3_with_meta(&db, &query, Some(&meta), &anchor_digest)?
+        crate::axql::certify_axql_query_v3_with_meta(
+            &db,
+            &query,
+            Some(&meta),
+            anchor_digest.as_str(),
+        )?
     }
-    .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1 {
-        axi_digest_v1: anchor_digest,
-    });
+    .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(
+        anchor_digest,
+    ));
 
     let json = serde_json::to_string_pretty(&cert)?;
     match out {
@@ -3676,17 +3711,12 @@ fn cmd_query_cert(
 
 fn cmd_typecheck_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     let axi_text = fs::read_to_string(input)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
+    let typed = crate::axi_input::require_canonical_axi_text(&axi_text)?;
+    let digest = typed.digest().clone();
+    let (_m, proof) = typed.module().clone().into_parts();
 
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&axi_text)?;
-    let (_m, proof) =
-        axiograph_pathdb::axi_module_typecheck::TypedAxiV1Module::new(m)?.into_parts();
-
-    let cert = axiograph_pathdb::certificate::CertificateV2::axi_well_typed_v1(proof).with_anchor(
-        axiograph_pathdb::certificate::AxiAnchorV1 {
-            axi_digest_v1: digest,
-        },
-    );
+    let cert = axiograph_pathdb::certificate::CertificateV2::axi_well_typed_v1(proof)
+        .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
 
     let json = serde_json::to_string_pretty(&cert)?;
     match out {
@@ -3704,17 +3734,13 @@ fn cmd_typecheck_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
 
 fn cmd_constraints_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     let axi_text = fs::read_to_string(input)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
-
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&axi_text)?;
-    let typed = axiograph_pathdb::axi_module_typecheck::TypedAxiV1Module::new(m)?;
+    let typed = crate::axi_input::require_canonical_axi_text(&axi_text)?;
+    let digest = typed.digest().clone();
     let proof =
         axiograph_pathdb::axi_module_constraints::check_axi_constraints_ok_v1(typed.module())?;
 
     let cert = axiograph_pathdb::certificate::CertificateV2::axi_constraints_ok_v1(proof)
-        .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1 {
-            axi_digest_v1: digest,
-        });
+        .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
 
     let json = serde_json::to_string_pretty(&cert)?;
     match out {
@@ -3730,16 +3756,6 @@ fn cmd_constraints_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn is_pathdb_export_v1_module(m: &axiograph_dsl::schema_v1::SchemaV1Module) -> bool {
-    m.schemas
-        .iter()
-        .any(|s| s.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1)
-        && m.instances.iter().any(|i| {
-            i.schema == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1
-                && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
-        })
-}
-
 pub(crate) fn load_pathdb_for_cli(input: &PathBuf) -> Result<axiograph_pathdb::PathDB> {
     let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
     if ext.eq_ignore_ascii_case("axpd") {
@@ -3748,17 +3764,17 @@ pub(crate) fn load_pathdb_for_cli(input: &PathBuf) -> Result<axiograph_pathdb::P
     }
     if ext.eq_ignore_ascii_case("axi") {
         let text = fs::read_to_string(input)?;
-        let m = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
-        if is_pathdb_export_v1_module(&m) {
-            return Ok(axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?);
-        }
-        let mut db = axiograph_pathdb::PathDB::new();
-        let _summary =
-            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
-                &mut db, &m,
-            )?;
-        db.build_indexes();
-        return Ok(db);
+        return match crate::axi_input::classify_axi_text(&text)? {
+            crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => {
+                Ok(module.import_pathdb()?)
+            }
+            crate::axi_input::ClassifiedAxiModule::Canonical(module) => {
+                let mut db = axiograph_pathdb::PathDB::new();
+                let _summary = module.import_into_pathdb(&mut db)?;
+                db.build_indexes();
+                Ok(db)
+            }
+        };
     }
     Err(anyhow!(
         "unsupported input `{}` (expected .axpd or .axi)",
@@ -3820,7 +3836,8 @@ fn cmd_viz(
     if !all {
         if focus.is_empty() {
             if let Some(name) = focus_name {
-                if let Some(id) = crate::viz::resolve_focus_by_name_and_type(&db, name, focus_type)? {
+                if let Some(id) = crate::viz::resolve_focus_by_name_and_type(&db, name, focus_type)?
+                {
                     focus.push(id);
                 } else {
                     return Err(anyhow!(
@@ -4283,7 +4300,11 @@ fn proposals_from_json_schema(
                     meta: ProposalMetaV1 {
                         proposal_id: rel_id.clone(),
                         confidence: 0.75,
-                        evidence: evidence_for_field(chunks, evidence_locator.as_ref(), &field_name),
+                        evidence: evidence_for_field(
+                            chunks,
+                            evidence_locator.as_ref(),
+                            &field_name,
+                        ),
                         public_rationale: "Heuristic: field type matches another inferred object."
                             .to_string(),
                         metadata: HashMap::new(),
@@ -4318,9 +4339,11 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
         .to_string();
 
     // Also emit DocChunks for RAG grounding (default: alongside the proposals output).
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
 
     let locator = input.to_string_lossy().to_string();
@@ -4424,9 +4447,11 @@ fn cmd_doc(
     println!("  {} {}", "→".cyan(), out.display());
     println!("  {} {} facts extracted", "→".yellow(), result.facts.len());
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
     fs::write(&chunks_out, &chunks_json)?;
@@ -4488,9 +4513,11 @@ fn cmd_conversation(
         result.facts.len()
     );
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
     fs::write(&chunks_out, &chunks_json)?;
@@ -4552,9 +4579,11 @@ fn cmd_confluence(
         result.facts.len()
     );
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
     fs::write(&chunks_out, &chunks_json)?;
@@ -4582,9 +4611,11 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
         .to_string();
 
     // Also emit DocChunks for RAG grounding (default: alongside the proposals output).
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
 
     fn chunk_by_lines(text: &str, max_chars: usize) -> Vec<String> {
@@ -4692,9 +4723,11 @@ fn cmd_readings(
         &stem,
     );
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&extraction)?;
     fs::write(&chunks_out, &chunks_json)?;
@@ -4815,44 +4848,35 @@ fn cmd_pathdb_import_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
     );
 
     let text = fs::read_to_string(input)?;
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
-
-    let is_snapshot = m
-        .schemas
-        .iter()
-        .any(|s| s.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1)
-        && m.instances.iter().any(|i| {
-            i.schema == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1
-                && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
-        });
-
-    let mut db = if is_snapshot {
-        axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&m)?
-    } else {
-        let mut db = axiograph_pathdb::PathDB::new();
-        let summary = axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
-            &mut db, &m,
-        )?;
-        println!(
-            "  {} imported module={} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
-            "→".cyan(),
-            m.module_name,
-            summary.meta_entities_added,
-            summary.meta_relations_added,
-            summary.instances_imported,
-            summary.entities_added,
-            summary.entity_type_upgrades,
-            summary.tuple_entities_added,
-            summary.relations_added,
-            summary.derived_edges_added
-        );
-        db
+    let (mut db, module_chunk_id) = match crate::axi_input::classify_axi_text(&text)? {
+        crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => {
+            (module.import_pathdb()?, module.module_name().to_string())
+        }
+        crate::axi_input::ClassifiedAxiModule::Canonical(module) => {
+            let mut db = axiograph_pathdb::PathDB::new();
+            let summary = module.import_into_pathdb(&mut db)?;
+            println!(
+                "  {} imported module={} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
+                "→".cyan(),
+                module.module().module().module_name,
+                summary.meta_entities_added,
+                summary.meta_relations_added,
+                summary.instances_imported,
+                summary.entities_added,
+                summary.entity_type_upgrades,
+                summary.tuple_entities_added,
+                summary.relations_added,
+                summary.derived_edges_added
+            );
+            (db, module.module().module().module_name.clone())
+        }
     };
 
     // Grounding always has evidence: embed the `.axi` module text as an untrusted
     // DocChunk so LLM/UIs can cite and open it even when no external docs exist.
     let digest = axiograph_dsl::digest::axi_digest_v1(&text);
-    let module_chunk = crate::doc_chunks::chunk_from_axi_module_text(&m.module_name, &digest, &text);
+    let module_chunk =
+        crate::doc_chunks::chunk_from_axi_module_text(&module_chunk_id, &digest, &text);
     let _ = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &[module_chunk]);
 
     db.build_indexes();
@@ -4934,7 +4958,8 @@ fn cmd_validate(input: &PathBuf) -> Result<()> {
     println!("{} {}", "Validating".green().bold(), input.display());
 
     let text = fs::read_to_string(input)?;
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
+    let typed = crate::axi_input::require_canonical_axi_text(&text)?;
+    let m = typed.module().module();
 
     println!("  Dialect: {}", "axi_v1 (schema/theory/instance)".cyan());
     println!("  Module: {}", m.module_name.cyan());
@@ -4975,9 +5000,11 @@ fn cmd_repo_index(
 
     let result = axiograph_ingest_docs::index_repo(root, &options)?;
 
-    let chunks_out = chunks_path
-        .cloned()
-        .unwrap_or_else(|| out.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+        out.parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("chunks.json")
+    });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = serde_json::to_string_pretty(&result.extraction.chunks)?;
     fs::write(&chunks_out, &chunks_json)?;
@@ -5548,7 +5575,10 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
                 }
             }
             other => {
-                return Err(anyhow!("unsupported llm backend `{}` for augment-proposals", other));
+                return Err(anyhow!(
+                    "unsupported llm backend `{}` for augment-proposals",
+                    other
+                ));
             }
         };
 
@@ -5755,7 +5785,10 @@ If you have no good suggestions, return empty arrays."#
             }
         }
         other => {
-            return Err(anyhow!("unsupported llm backend `{}` for augment-proposals", other));
+            return Err(anyhow!(
+                "unsupported llm backend `{}` for augment-proposals",
+                other
+            ));
         }
     };
     let parsed: LlmAugmentResponseV1 =
@@ -5816,7 +5849,10 @@ If you have no good suggestions, return empty arrays."#
         let entity_id = llm_entity_id(entity_type, name);
         let confidence = clamp01(ent.confidence.unwrap_or(0.55));
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert("derived_from".to_string(), format!("{llm_backend}_augment_proposals_v1"));
+        metadata.insert(
+            "derived_from".to_string(),
+            format!("{llm_backend}_augment_proposals_v1"),
+        );
         metadata.insert("llm_model".to_string(), model.to_string());
 
         let schema_hint = ent
@@ -5879,7 +5915,10 @@ If you have no good suggestions, return empty arrays."#
         let relation_id = llm_relation_id(rel_type, &source, &target);
         let confidence = clamp01(rel.confidence.unwrap_or(0.55));
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert("derived_from".to_string(), format!("{llm_backend}_augment_proposals_v1"));
+        metadata.insert(
+            "derived_from".to_string(),
+            format!("{llm_backend}_augment_proposals_v1"),
+        );
         metadata.insert("llm_model".to_string(), model.to_string());
 
         let schema_hint = rel
@@ -6121,7 +6160,13 @@ If you have no good suggestions, return empty arrays."#
         "anthropic" => {
             #[cfg(feature = "llm-anthropic")]
             {
-                crate::llm::anthropic_chat_with_timeout(endpoint, model, &user, Some(system), timeout)?
+                crate::llm::anthropic_chat_with_timeout(
+                    endpoint,
+                    model,
+                    &user,
+                    Some(system),
+                    timeout,
+                )?
             }
             #[cfg(not(feature = "llm-anthropic"))]
             {
@@ -6197,7 +6242,14 @@ fn openai_suggest_schema_structure(
     schema_name: &str,
     timeout: Option<Duration>,
 ) -> Result<crate::schema_discovery::DraftAxiModuleSuggestions> {
-    llm_suggest_schema_structure("openai", base_url, model, base_draft_axi, schema_name, timeout)
+    llm_suggest_schema_structure(
+        "openai",
+        base_url,
+        model,
+        base_draft_axi,
+        schema_name,
+        timeout,
+    )
 }
 
 #[cfg(feature = "llm-anthropic")]
@@ -6416,7 +6468,9 @@ fn cmd_discover_augment_proposals(
             #[cfg(feature = "llm-anthropic")]
             {
                 let model = llm_model.ok_or_else(|| {
-                    anyhow!("missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)")
+                    anyhow!(
+                        "missing `--llm-model` (example: --llm-model claude-3-5-sonnet-20241022)"
+                    )
                 })?;
                 let base_url = llm_anthropic_base_url
                     .map(|s| s.to_string())
@@ -6648,9 +6702,10 @@ fn resolve_llm_state_for_competency_questions(
                 .clone()
                 .unwrap_or_else(crate::llm::default_ollama_host);
             llm.backend = crate::llm::LlmBackend::Ollama { host };
-            let model = args.llm_model.clone().ok_or_else(|| {
-                anyhow!("`--llm-ollama` requires `--llm-model <model>`")
-            })?;
+            let model = args
+                .llm_model
+                .clone()
+                .ok_or_else(|| anyhow!("`--llm-ollama` requires `--llm-model <model>`"))?;
             llm.model = Some(model);
             return Ok(llm);
         }
@@ -6681,7 +6736,11 @@ fn resolve_llm_state_for_competency_questions(
             let model = args.llm_model.clone().or_else(|| {
                 let env = std::env::var(crate::llm::OPENAI_MODEL_ENV).unwrap_or_default();
                 let env = env.trim().to_string();
-                if env.is_empty() { None } else { Some(env) }
+                if env.is_empty() {
+                    None
+                } else {
+                    Some(env)
+                }
             });
             let model = model.ok_or_else(|| {
                 anyhow!(
@@ -6703,8 +6762,7 @@ fn resolve_llm_state_for_competency_questions(
     if args.llm_anthropic {
         #[cfg(feature = "llm-anthropic")]
         {
-            let key =
-                std::env::var(crate::llm::ANTHROPIC_API_KEY_ENV).unwrap_or_default();
+            let key = std::env::var(crate::llm::ANTHROPIC_API_KEY_ENV).unwrap_or_default();
             if key.trim().is_empty() {
                 return Err(anyhow!(
                     "anthropic backend requires {}",
@@ -6718,10 +6776,13 @@ fn resolve_llm_state_for_competency_questions(
                     .unwrap_or_else(crate::llm::default_anthropic_base_url),
             };
             let model = args.llm_model.clone().or_else(|| {
-                let env =
-                    std::env::var(crate::llm::ANTHROPIC_MODEL_ENV).unwrap_or_default();
+                let env = std::env::var(crate::llm::ANTHROPIC_MODEL_ENV).unwrap_or_default();
                 let env = env.trim().to_string();
-                if env.is_empty() { None } else { Some(env) }
+                if env.is_empty() {
+                    None
+                } else {
+                    Some(env)
+                }
             });
             let model = model.ok_or_else(|| {
                 anyhow!(
@@ -6760,15 +6821,12 @@ fn resolve_llm_state_for_world_model_plugin(
         })
         .unwrap_or_else(|| "openai".to_string());
 
-    let model = args
-        .model
-        .clone()
-        .or_else(|| {
-            env::var(WORLD_MODEL_MODEL_ENV)
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
+    let model = args.model.clone().or_else(|| {
+        env::var(WORLD_MODEL_MODEL_ENV)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
 
     let backend_lc = backend.trim().to_ascii_lowercase();
     let mut llm = crate::llm::LlmState::default();
@@ -6916,10 +6974,7 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         let exe = std::env::current_exe()
             .map_err(|e| anyhow!("failed to resolve current executable: {e}"))?;
         let mut args_list = vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
-        let has_model_arg = args
-            .world_model_plugin_arg
-            .iter()
-            .any(|a| a == "--model");
+        let has_model_arg = args.world_model_plugin_arg.iter().any(|a| a == "--model");
         if let Some(model) = args.world_model_model.as_ref() {
             if !has_model_arg {
                 args_list.push("--model".to_string());
@@ -6946,10 +7001,10 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         .unwrap_or("");
 
     let mut axi_text: Option<String> = None;
-    let mut axi_digest: Option<String> = None;
+    let mut axi_digest: Option<axiograph_pathdb::AxiDigest> = None;
     if input_ext.eq_ignore_ascii_case("axi") {
         let text = fs::read_to_string(&args.input)?;
-        axi_digest = Some(axiograph_dsl::digest::axi_digest_v1(&text));
+        axi_digest = Some(axiograph_pathdb::AxiDigest::from_axi_text(&text));
         axi_text = Some(text);
     }
 
@@ -7039,31 +7094,36 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
     options.task_costs = task_costs.clone();
     options.horizon_steps = args.horizon_steps;
 
+    let input_snapshot = input.snapshot.clone();
     let req = crate::world_model::make_world_model_request(input, options);
     let mut response = wm.propose(&req)?;
     if let Some(err) = response.error.take() {
         return Err(anyhow!("world model error: {err}"));
     }
 
-    let provenance = crate::world_model::WorldModelProvenance {
-        trace_id: response.trace_id.clone(),
-        backend: wm.backend_label(),
-        model: wm.model.clone(),
-        axi_digest_v1: axi_digest.clone(),
-        guardrail_total_cost: guardrail
+    let provenance = crate::world_model::build_world_model_provenance(
+        &response,
+        wm.backend_label(),
+        wm.model.clone(),
+        axi_digest.clone(),
+        input_snapshot
             .as_ref()
-            .map(|g| g.summary.total_cost),
-        guardrail_profile: if guardrail_profile == "off" {
+            .and_then(|snap| snap.snapshot_id.clone()),
+        input_snapshot
+            .as_ref()
+            .and_then(|snap| snap.accepted_snapshot_id.clone()),
+        guardrail.as_ref().map(|g| g.summary.total_cost),
+        if guardrail_profile == "off" {
             None
         } else {
             Some(guardrail_profile.clone())
         },
-        guardrail_plane: if guardrail_profile == "off" {
+        if guardrail_profile == "off" {
             None
         } else {
             Some(guardrail_plane.clone())
         },
-    };
+    )?;
 
     let mut proposals =
         crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
@@ -7107,10 +7167,19 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
             &[args.out.clone()],
             args.commit_message.as_deref(),
         )?;
+        let run_record = crate::world_model::build_world_model_run_record(
+            &provenance,
+            &proposals,
+            Some(res.snapshot_id.clone()),
+            Some(res.accepted_snapshot_id.clone()),
+            Vec::new(),
+        )?;
+        let run_path = crate::accepted_plane::persist_world_model_run_record(dir, &run_record)?;
         println!(
             "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
             res.ops_added, res.accepted_snapshot_id, res.snapshot_id
         );
+        println!("ok persisted world-model run record {}", run_path.display());
     }
 
     Ok(())
@@ -7314,8 +7383,7 @@ fn cmd_ingest_dir(
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
                     let schema = axiograph_ingest_json::infer_schema(&value, "Root");
                     let doc_id = rel_path.to_string_lossy().to_string();
-                    let doc_digest =
-                        axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
+                    let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
                     let pretty = serde_json::to_string_pretty(&value).unwrap_or(text.clone());
                     let parts = chunk_by_lines(&pretty, 2_500);
 
@@ -7363,16 +7431,7 @@ fn cmd_ingest_dir(
         // For RDF/OWL, also try to preserve a text chunk for grounding (best-effort).
         if matches!(
             ext.as_str(),
-            "nt"
-                | "ntriples"
-                | "ttl"
-                | "turtle"
-                | "nq"
-                | "nquads"
-                | "trig"
-                | "rdf"
-                | "owl"
-                | "xml"
+            "nt" | "ntriples" | "ttl" | "turtle" | "nq" | "nquads" | "trig" | "rdf" | "owl" | "xml"
         ) {
             if let Ok(text) = fs::read_to_string(path) {
                 let doc_id = rel_path.to_string_lossy().to_string();
@@ -7447,7 +7506,9 @@ fn cmd_ingest_merge(
     schema_hint_override: Option<&str>,
 ) -> Result<()> {
     if proposals_paths.is_empty() {
-        return Err(anyhow!("ingest merge requires at least one --proposals <file.json>"));
+        return Err(anyhow!(
+            "ingest merge requires at least one --proposals <file.json>"
+        ));
     }
 
     let mut merged_proposals: Vec<axiograph_ingest_docs::ProposalV1> = Vec::new();
@@ -7464,7 +7525,8 @@ fn cmd_ingest_merge(
 
     // Deduplicate by proposal_id (stable identifiers).
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut deduped: Vec<axiograph_ingest_docs::ProposalV1> = Vec::with_capacity(merged_proposals.len());
+    let mut deduped: Vec<axiograph_ingest_docs::ProposalV1> =
+        Vec::with_capacity(merged_proposals.len());
     for p in merged_proposals {
         let id = match &p {
             axiograph_ingest_docs::ProposalV1::Entity { meta, .. } => meta.proposal_id.clone(),
@@ -7475,9 +7537,7 @@ fn cmd_ingest_merge(
         }
     }
 
-    let schema_hint = schema_hint_override
-        .map(|s| s.to_string())
-        .or(schema_hint);
+    let schema_hint = schema_hint_override.map(|s| s.to_string()).or(schema_hint);
 
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -7523,9 +7583,12 @@ fn cmd_ingest_merge(
             }
         }
 
-        let out_path = out_chunks
-            .cloned()
-            .unwrap_or_else(|| out_proposals.parent().unwrap_or(std::path::Path::new(".")).join("chunks.json"));
+        let out_path = out_chunks.cloned().unwrap_or_else(|| {
+            out_proposals
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("chunks.json")
+        });
         fs::create_dir_all(out_path.parent().unwrap_or(std::path::Path::new(".")))?;
         fs::write(&out_path, serde_json::to_string_pretty(&deduped)?)?;
         println!("wrote {}", out_path.display());

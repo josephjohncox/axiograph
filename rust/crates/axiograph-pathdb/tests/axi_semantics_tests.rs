@@ -1,5 +1,8 @@
 use axiograph_pathdb::axi_semantics::{AxiTypeCheckError, MetaPlaneIndex};
+use axiograph_pathdb::kernel_ir::{compile_schema_ir, CarrierSource, WitnessViewIr};
 use axiograph_pathdb::PathDB;
+use std::fs;
+use std::path::PathBuf;
 
 #[test]
 fn meta_plane_index_builds_and_typechecks_valid_instance() {
@@ -18,8 +21,7 @@ instance I of S:
 "#;
 
     let mut db = PathDB::new();
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
-    axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(&mut db, &m)
+    axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, text)
         .expect("import module");
     db.build_indexes();
 
@@ -50,8 +52,7 @@ instance I of S:
 "#;
 
     let mut db = PathDB::new();
-    let m = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
-    axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(&mut db, &m)
+    axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, text)
         .expect("import module");
 
     // Add a deliberately ill-typed fact node:
@@ -88,4 +89,115 @@ instance I of S:
         "expected FieldTypeMismatch error, got {:?}",
         report.errors
     );
+}
+
+#[test]
+fn meta_plane_compiled_ir_matches_schema_ast_for_endpoint_and_homotopy_semantics() {
+    let text = r#"
+module TestSemantics
+
+schema S:
+  object Person
+  object World
+  object Route
+  relation Parent(parent: Person, child: Person, scope: World)
+  relation RouteWitness(from: World, to: World, route1: Route, route2: Route)
+
+instance I of S:
+  Person = {Alice, Bob}
+  World = {W0, W1}
+  Route = {R1, R2}
+  Parent = {(parent=Bob, child=Alice, scope=W0)}
+  RouteWitness = {(from=W0, to=W1, route1=R1, route2=R2)}
+"#;
+
+    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let schema_ast = module
+        .schemas
+        .iter()
+        .find(|schema| schema.name == "S")
+        .expect("schema S");
+    let expected_ir = compile_schema_ir(schema_ast);
+
+    let mut db = PathDB::new();
+    axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, text)
+        .expect("import module");
+    db.build_indexes();
+
+    let meta = MetaPlaneIndex::from_db(&db).expect("build meta index");
+    let reconstructed_ir = meta.compiled_schema_ir("S").expect("compiled schema ir");
+
+    assert_eq!(
+        reconstructed_ir, expected_ir,
+        "meta-plane reconstruction should stay in lockstep with schema-AST kernel IR compilation"
+    );
+
+    let parent = reconstructed_ir
+        .relation("Parent")
+        .expect("parent relation semantics");
+    assert_eq!(parent.carrier_field_names(), None);
+
+    let route_witness = reconstructed_ir
+        .relation("RouteWitness")
+        .expect("route witness semantics");
+    assert_eq!(
+        route_witness.carrier_field_names(),
+        Some(("route1", "route2"))
+    );
+    assert_eq!(
+        route_witness.witness_view,
+        WitnessViewIr::Homotopy {
+            lhs_role: 2,
+            rhs_role: 3,
+        }
+    );
+    assert_eq!(
+        route_witness.carrier.as_ref().map(|carrier| carrier.source),
+        Some(CarrierSource::HomotopyConvention)
+    );
+    assert_eq!(
+        route_witness
+            .carrier
+            .as_ref()
+            .map(|carrier| carrier.fiber_roles.clone()),
+        Some(Vec::new())
+    );
+}
+
+#[test]
+fn canonical_examples_compiled_ir_match_meta_plane_ir() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("canonicalize repo root");
+
+    let fixtures = [
+        repo_root.join("examples/economics/EconomicFlows.axi"),
+        repo_root.join("examples/ontology/SchemaEvolution.axi"),
+    ];
+
+    for fixture in fixtures {
+        let text = fs::read_to_string(&fixture).expect("read canonical fixture");
+        let module = axiograph_dsl::axi_v1::parse_axi_v1(&text).expect("parse canonical fixture");
+
+        let mut db = PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, &text)
+            .expect("import canonical fixture");
+        db.build_indexes();
+
+        let meta = MetaPlaneIndex::from_db(&db).expect("build meta index");
+        for schema_ast in &module.schemas {
+            let expected_ir = compile_schema_ir(schema_ast);
+            let reconstructed_ir = meta
+                .compiled_schema_ir(&schema_ast.name)
+                .expect("compiled schema ir");
+            assert_eq!(
+                reconstructed_ir,
+                expected_ir,
+                "fixture={} schema={}",
+                fixture.display(),
+                schema_ast.name
+            );
+        }
+    }
 }

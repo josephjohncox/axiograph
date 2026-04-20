@@ -528,11 +528,12 @@ pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError>
                         format!("{rest} {extra}")
                     };
 
-                    let constraint =
-                        parse_constraint(&combined).map_err(|message| SchemaV1ParseError::Line {
+                    let constraint = parse_constraint(&combined).map_err(|message| {
+                        SchemaV1ParseError::Line {
                             line: line_no,
                             message,
-                        })?;
+                        }
+                    })?;
                     module.theories[theory_index].constraints.push(constraint);
                     i = if extra.is_empty() { i + 1 } else { next_index };
                     continue;
@@ -910,7 +911,7 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
             "param" => {
                 if fields.is_empty() {
                     return Err(
-                        "param fields clause expects: `param (field0, field1, ...)`".to_string(),
+                        "param fields clause expects: `param (field0, field1, ...)`".to_string()
                     );
                 }
                 Ok(Some((
@@ -953,7 +954,9 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     let (rest, carriers, params) = split_closure_clauses(rest)?;
     let rest = rest.trim();
     if carriers.is_some() && !(rest.starts_with("symmetric ") || rest.starts_with("transitive ")) {
-        return Err("`on (...)` is only supported for symmetric/transitive constraints".to_string());
+        return Err(
+            "`on (...)` is only supported for symmetric/transitive constraints".to_string(),
+        );
     }
     if params.is_some()
         && !(rest.starts_with("symmetric ")
@@ -1237,13 +1240,13 @@ pub fn format_constraint_v1(constraint: &ConstraintV1) -> Result<String, String>
             on_clause(carriers),
             param_clause(params)
         )),
-        ConstraintV1::Key { relation, fields } => Ok(format!(
-            "constraint key {relation}({})",
-            fields.join(", ")
-        )),
+        ConstraintV1::Key { relation, fields } => {
+            Ok(format!("constraint key {relation}({})", fields.join(", ")))
+        }
         ConstraintV1::Unknown { text } => Ok(format!("constraint {text}")),
         ConstraintV1::NamedBlock { .. } => Err(
-            "named-block constraints require multi-line rendering; keep the original block".to_string(),
+            "named-block constraints require multi-line rendering; keep the original block"
+                .to_string(),
         ),
     }
 }

@@ -295,7 +295,10 @@ mod tests {
         assert_eq!(decoded.dim, 2);
         assert_eq!(decoded.target, EmbeddingTargetKindV1::DocChunks);
         assert_eq!(decoded.items.len(), 1);
-        assert_eq!(decoded.metadata.get("note").map(|s| s.as_str()), Some("test"));
+        assert_eq!(
+            decoded.metadata.get("note").map(|s| s.as_str()),
+            Some("test")
+        );
     }
 
     #[test]

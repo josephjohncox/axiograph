@@ -38,6 +38,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::accepted_plane::AcceptedPlaneSnapshotV1;
+use axiograph_pathdb::{AcceptedSnapshotId, AxiDigest, PathdbSnapshotId};
 
 const PATHDB_WAL_DIR: &str = "pathdb";
 const PATHDB_WAL_LOG_V1: &str = "pathdb_wal.log.jsonl";
@@ -53,10 +54,10 @@ const PATHDB_WAL_VERSION_V1: &str = "pathdb_wal_v1";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PathDbSnapshotV1 {
     pub version: String,
-    pub snapshot_id: String,
-    pub previous_snapshot_id: Option<String>,
+    pub snapshot_id: PathdbSnapshotId,
+    pub previous_snapshot_id: Option<PathdbSnapshotId>,
     /// Accepted-plane snapshot id this PathDB snapshot is derived from.
-    pub accepted_snapshot_id: String,
+    pub accepted_snapshot_id: AcceptedSnapshotId,
     pub created_at_unix_secs: u64,
     /// Cumulative list of ops applied to the base accepted snapshot.
     pub ops: Vec<PathDbWalOpV1>,
@@ -102,17 +103,17 @@ pub struct PathDbWalEventV1 {
     pub version: String,
     pub created_at_unix_secs: u64,
     pub action: String,
-    pub snapshot_id: String,
-    pub previous_snapshot_id: Option<String>,
-    pub accepted_snapshot_id: String,
+    pub snapshot_id: PathdbSnapshotId,
+    pub previous_snapshot_id: Option<PathdbSnapshotId>,
+    pub accepted_snapshot_id: AcceptedSnapshotId,
     pub ops_appended: Vec<PathDbWalOpV1>,
     #[serde(default)]
     pub message: Option<String>,
 }
 
 pub struct PathDbCommitResult {
-    pub snapshot_id: String,
-    pub accepted_snapshot_id: String,
+    pub snapshot_id: PathdbSnapshotId,
+    pub accepted_snapshot_id: AcceptedSnapshotId,
     pub ops_added: usize,
 }
 
@@ -217,6 +218,42 @@ pub fn commit_pathdb_snapshot_with_overlays(
     )
 }
 
+pub fn commit_pathdb_snapshot_on_accepted_snapshot_with_overlays(
+    accepted_dir: &Path,
+    accepted_snapshot_id: &AcceptedSnapshotId,
+    chunks: &[PathBuf],
+    proposals: &[PathBuf],
+    message: Option<&str>,
+) -> Result<PathDbCommitResult> {
+    commit_pathdb_snapshot_on_accepted_snapshot_with_overlays_with_options(
+        accepted_dir,
+        accepted_snapshot_id,
+        chunks,
+        proposals,
+        message,
+        PathdbCommitOptions::default(),
+    )
+}
+
+pub fn commit_pathdb_snapshot_on_accepted_snapshot_with_overlays_with_options(
+    accepted_dir: &Path,
+    accepted_snapshot_id: &AcceptedSnapshotId,
+    chunks: &[PathBuf],
+    proposals: &[PathBuf],
+    message: Option<&str>,
+    options: PathdbCommitOptions,
+) -> Result<PathDbCommitResult> {
+    ensure_layout(accepted_dir)?;
+    commit_pathdb_snapshot_with_resolved_accepted_snapshot(
+        accepted_dir,
+        accepted_snapshot_id.clone(),
+        chunks,
+        proposals,
+        message,
+        options,
+    )
+}
+
 pub fn commit_pathdb_snapshot_with_overlays_with_options(
     accepted_dir: &Path,
     accepted_snapshot_id_or_latest: &str,
@@ -226,7 +263,26 @@ pub fn commit_pathdb_snapshot_with_overlays_with_options(
     options: PathdbCommitOptions,
 ) -> Result<PathDbCommitResult> {
     ensure_layout(accepted_dir)?;
+    let accepted_snapshot_id =
+        resolve_accepted_snapshot_id(accepted_dir, accepted_snapshot_id_or_latest)?;
+    commit_pathdb_snapshot_with_resolved_accepted_snapshot(
+        accepted_dir,
+        accepted_snapshot_id,
+        chunks,
+        proposals,
+        message,
+        options,
+    )
+}
 
+fn commit_pathdb_snapshot_with_resolved_accepted_snapshot(
+    accepted_dir: &Path,
+    accepted_snapshot_id: AcceptedSnapshotId,
+    chunks: &[PathBuf],
+    proposals: &[PathBuf],
+    message: Option<&str>,
+    options: PathdbCommitOptions,
+) -> Result<PathDbCommitResult> {
     let mut timings = if options.timings || options.timings_json.is_some() {
         Some(PathdbOperationTimingsV1 {
             version: "pathdb_timings_v1".to_string(),
@@ -240,21 +296,18 @@ pub fn commit_pathdb_snapshot_with_overlays_with_options(
     } else {
         None
     };
-
-    let phase_start = Instant::now();
-    let accepted_snapshot_id =
-        resolve_accepted_snapshot_id(accepted_dir, accepted_snapshot_id_or_latest)?;
     if let Some(t) = timings.as_mut() {
+        let phase_start = Instant::now();
         t.phases.push(PhaseTimingV1 {
             name: "resolve_accepted_snapshot".to_string(),
             millis: phase_start.elapsed().as_millis(),
         });
-        t.accepted_snapshot_id = Some(accepted_snapshot_id.clone());
+        t.accepted_snapshot_id = Some(accepted_snapshot_id.to_string());
     }
 
     let phase_start = Instant::now();
     let previous_snapshot_id = read_pathdb_head(accepted_dir)?;
-    let previous_snapshot = match previous_snapshot_id.as_deref() {
+    let previous_snapshot = match previous_snapshot_id.as_ref() {
         Some(prev) => Some(read_pathdb_snapshot(accepted_dir, prev)?),
         None => None,
     };
@@ -263,7 +316,7 @@ pub fn commit_pathdb_snapshot_with_overlays_with_options(
             name: "load_previous_snapshot".to_string(),
             millis: phase_start.elapsed().as_millis(),
         });
-        if let Some(prev_id) = previous_snapshot_id.as_deref() {
+        if let Some(prev_id) = previous_snapshot_id.as_ref() {
             t.notes.push(format!("previous_snapshot_id={prev_id}"));
         } else {
             t.notes.push("previous_snapshot_id=(none)".to_string());
@@ -368,7 +421,7 @@ pub fn commit_pathdb_snapshot_with_overlays_with_options(
     }
 
     let snapshot_id = pathdb_snapshot_id_v1(
-        previous_snapshot_id.as_deref(),
+        previous_snapshot_id.as_ref(),
         &accepted_snapshot_id,
         &ops_total,
     );
@@ -383,7 +436,7 @@ pub fn commit_pathdb_snapshot_with_overlays_with_options(
 
     write_pathdb_snapshot(accepted_dir, &snapshot)?;
     if let Some(t) = timings.as_mut() {
-        t.snapshot_id = Some(snapshot_id.clone());
+        t.snapshot_id = Some(snapshot_id.to_string());
     }
 
     let phase_start = Instant::now();
@@ -454,7 +507,9 @@ pub(crate) fn commit_pathdb_snapshot_with_embedding_bytes(
     ensure_layout(accepted_dir)?;
 
     if embedding_blobs.is_empty() {
-        return Err(anyhow!("commit embeddings requires at least one embedding blob"));
+        return Err(anyhow!(
+            "commit embeddings requires at least one embedding blob"
+        ));
     }
 
     let base_snapshot_id = resolve_pathdb_snapshot_id(accepted_dir, base_snapshot_id_or_latest)?;
@@ -565,7 +620,7 @@ pub fn build_pathdb_from_pathdb_snapshot_with_options(
             name: "resolve_pathdb_snapshot".to_string(),
             millis: phase_start.elapsed().as_millis(),
         });
-        t.snapshot_id = Some(snapshot_id.clone());
+        t.snapshot_id = Some(snapshot_id.to_string());
     }
 
     let force_rebuild =
@@ -632,7 +687,7 @@ pub fn build_pathdb_from_pathdb_snapshot_with_options(
             name: "read_snapshot_manifest".to_string(),
             millis: phase_start.elapsed().as_millis(),
         });
-        t.accepted_snapshot_id = Some(snapshot.accepted_snapshot_id.clone());
+        t.accepted_snapshot_id = Some(snapshot.accepted_snapshot_id.to_string());
         t.notes.push(format!("ops_total={}", snapshot.ops.len()));
     }
 
@@ -735,7 +790,7 @@ fn digest_to_filename(digest: &str) -> String {
 fn resolve_accepted_snapshot_id(
     accepted_dir: &Path,
     snapshot_id_or_latest: &str,
-) -> Result<String> {
+) -> Result<AcceptedSnapshotId> {
     crate::accepted_plane::resolve_snapshot_id_for_cli(accepted_dir, snapshot_id_or_latest)
 }
 
@@ -743,7 +798,7 @@ fn pathdb_dir(accepted_dir: &Path) -> PathBuf {
     accepted_dir.join(PATHDB_WAL_DIR)
 }
 
-fn read_pathdb_head(accepted_dir: &Path) -> Result<Option<String>> {
+fn read_pathdb_head(accepted_dir: &Path) -> Result<Option<PathdbSnapshotId>> {
     let path = pathdb_dir(accepted_dir).join(PATHDB_WAL_HEAD_FILE);
     if !path.exists() {
         return Ok(None);
@@ -753,11 +808,11 @@ fn read_pathdb_head(accepted_dir: &Path) -> Result<Option<String>> {
     if id.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(id))
+        Ok(Some(PathdbSnapshotId::new(id)))
     }
 }
 
-fn write_pathdb_head(accepted_dir: &Path, snapshot_id: &str) -> Result<()> {
+fn write_pathdb_head(accepted_dir: &Path, snapshot_id: &PathdbSnapshotId) -> Result<()> {
     fs::write(
         pathdb_dir(accepted_dir).join(PATHDB_WAL_HEAD_FILE),
         format!("{snapshot_id}\n"),
@@ -765,7 +820,10 @@ fn write_pathdb_head(accepted_dir: &Path, snapshot_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn resolve_pathdb_snapshot_id(accepted_dir: &Path, snapshot_id_or_latest: &str) -> Result<String> {
+fn resolve_pathdb_snapshot_id(
+    accepted_dir: &Path,
+    snapshot_id_or_latest: &str,
+) -> Result<PathdbSnapshotId> {
     let s = snapshot_id_or_latest.trim();
     if s.eq_ignore_ascii_case("latest") || s.eq_ignore_ascii_case("head") {
         return read_pathdb_head(accepted_dir)?
@@ -774,7 +832,7 @@ fn resolve_pathdb_snapshot_id(accepted_dir: &Path, snapshot_id_or_latest: &str) 
 
     // Fast path: full id (manifest exists).
     if snapshot_manifest_path(accepted_dir, s).exists() {
-        return Ok(s.to_string());
+        return Ok(PathdbSnapshotId::new(s));
     }
 
     fn matches_snapshot_id(query: &str, id: &str) -> bool {
@@ -808,7 +866,7 @@ fn resolve_pathdb_snapshot_id(accepted_dir: &Path, snapshot_id_or_latest: &str) 
         )
     })?;
 
-    let mut matches: Vec<String> = Vec::new();
+    let mut matches: Vec<PathdbSnapshotId> = Vec::new();
     for entry in rd {
         let Ok(entry) = entry else {
             continue;
@@ -823,7 +881,7 @@ fn resolve_pathdb_snapshot_id(accepted_dir: &Path, snapshot_id_or_latest: &str) 
         let Ok(snap) = serde_json::from_str::<PathDbSnapshotV1>(&text) else {
             continue;
         };
-        if matches_snapshot_id(s, &snap.snapshot_id) {
+        if matches_snapshot_id(s, snap.snapshot_id.as_str()) {
             matches.push(snap.snapshot_id);
         }
     }
@@ -840,7 +898,7 @@ fn resolve_pathdb_snapshot_id(accepted_dir: &Path, snapshot_id_or_latest: &str) 
         let preview = matches
             .iter()
             .take(8)
-            .cloned()
+            .map(|id| id.to_string())
             .collect::<Vec<_>>()
             .join(", ");
         return Err(anyhow!(
@@ -859,8 +917,11 @@ fn snapshot_manifest_path(accepted_dir: &Path, snapshot_id: &str) -> PathBuf {
         .join(file)
 }
 
-fn read_pathdb_snapshot(accepted_dir: &Path, snapshot_id: &str) -> Result<PathDbSnapshotV1> {
-    let path = snapshot_manifest_path(accepted_dir, snapshot_id);
+fn read_pathdb_snapshot(
+    accepted_dir: &Path,
+    snapshot_id: &PathdbSnapshotId,
+) -> Result<PathDbSnapshotV1> {
+    let path = snapshot_manifest_path(accepted_dir, snapshot_id.as_str());
     let text = fs::read_to_string(&path).map_err(|e| {
         anyhow!(
             "failed to read pathdb snapshot manifest `{}`: {e}",
@@ -868,7 +929,7 @@ fn read_pathdb_snapshot(accepted_dir: &Path, snapshot_id: &str) -> Result<PathDb
         )
     })?;
     let snapshot: PathDbSnapshotV1 = serde_json::from_str(&text)?;
-    if snapshot.snapshot_id != snapshot_id {
+    if snapshot.snapshot_id != *snapshot_id {
         return Err(anyhow!(
             "pathdb snapshot manifest `{}` has mismatched id: expected={} got={}",
             path.display(),
@@ -880,7 +941,7 @@ fn read_pathdb_snapshot(accepted_dir: &Path, snapshot_id: &str) -> Result<PathDb
 }
 
 fn write_pathdb_snapshot(accepted_dir: &Path, snapshot: &PathDbSnapshotV1) -> Result<()> {
-    let path = snapshot_manifest_path(accepted_dir, &snapshot.snapshot_id);
+    let path = snapshot_manifest_path(accepted_dir, snapshot.snapshot_id.as_str());
     if path.exists() {
         // Idempotency: if it already exists, it must match.
         let existing = read_pathdb_snapshot(accepted_dir, &snapshot.snapshot_id)?;
@@ -898,21 +959,25 @@ fn write_pathdb_snapshot(accepted_dir: &Path, snapshot: &PathDbSnapshotV1) -> Re
     Ok(())
 }
 
-fn checkpoint_path(accepted_dir: &Path, snapshot_id: &str) -> PathBuf {
-    let file = format!("{}.axpd", digest_to_filename(snapshot_id));
+fn checkpoint_path(accepted_dir: &Path, snapshot_id: &PathdbSnapshotId) -> PathBuf {
+    let file = format!("{}.axpd", digest_to_filename(snapshot_id.as_str()));
     pathdb_dir(accepted_dir)
         .join(PATHDB_WAL_CHECKPOINTS_DIR)
         .join(file)
 }
 
-pub fn checkpoint_sidecar_path(accepted_dir: &Path, snapshot_id: &str) -> PathBuf {
-    let file = format!("{}.axpd.idx.cbor", digest_to_filename(snapshot_id));
+pub fn checkpoint_sidecar_path(accepted_dir: &Path, snapshot_id: &PathdbSnapshotId) -> PathBuf {
+    let file = format!("{}.axpd.idx.cbor", digest_to_filename(snapshot_id.as_str()));
     pathdb_dir(accepted_dir)
         .join(PATHDB_WAL_CHECKPOINTS_DIR)
         .join(file)
 }
 
-fn write_checkpoint_if_missing(accepted_dir: &Path, snapshot_id: &str, bytes: &[u8]) -> Result<()> {
+fn write_checkpoint_if_missing(
+    accepted_dir: &Path,
+    snapshot_id: &PathdbSnapshotId,
+    bytes: &[u8],
+) -> Result<()> {
     let path = checkpoint_path(accepted_dir, snapshot_id);
     if path.exists() {
         return Ok(());
@@ -921,7 +986,11 @@ fn write_checkpoint_if_missing(accepted_dir: &Path, snapshot_id: &str, bytes: &[
     Ok(())
 }
 
-fn write_checkpoint_force(accepted_dir: &Path, snapshot_id: &str, bytes: &[u8]) -> Result<()> {
+fn write_checkpoint_force(
+    accepted_dir: &Path,
+    snapshot_id: &PathdbSnapshotId,
+    bytes: &[u8],
+) -> Result<()> {
     let path = checkpoint_path(accepted_dir, snapshot_id);
     let tmp = path.with_extension("axpd.tmp");
     fs::write(&tmp, bytes)?;
@@ -931,7 +1000,7 @@ fn write_checkpoint_force(accepted_dir: &Path, snapshot_id: &str, bytes: &[u8]) 
 
 fn try_load_checkpoint(
     accepted_dir: &Path,
-    snapshot_id: &str,
+    snapshot_id: &PathdbSnapshotId,
 ) -> Result<Option<axiograph_pathdb::PathDB>> {
     let path = checkpoint_path(accepted_dir, snapshot_id);
     if !path.exists() {
@@ -966,15 +1035,21 @@ fn append_event(accepted_dir: &Path, event: &PathDbWalEventV1) -> Result<()> {
 // =============================================================================
 
 fn pathdb_snapshot_id_v1(
-    previous_snapshot_id: Option<&str>,
-    accepted_snapshot_id: &str,
+    previous_snapshot_id: Option<&PathdbSnapshotId>,
+    accepted_snapshot_id: &AcceptedSnapshotId,
     ops: &[PathDbWalOpV1],
-) -> String {
+) -> PathdbSnapshotId {
     use std::fmt::Write as _;
 
     let mut s = String::new();
     let _ = write!(&mut s, "{PATHDB_WAL_VERSION_V1};");
-    let _ = write!(&mut s, "prev={};", previous_snapshot_id.unwrap_or("(none)"));
+    let _ = write!(
+        &mut s,
+        "prev={};",
+        previous_snapshot_id
+            .map(|id| id.as_str())
+            .unwrap_or("(none)")
+    );
     let _ = write!(&mut s, "accepted={accepted_snapshot_id};");
     for op in ops {
         match op {
@@ -1007,7 +1082,7 @@ fn pathdb_snapshot_id_v1(
             }
         }
     }
-    axiograph_dsl::digest::axi_digest_v1(&s)
+    PathdbSnapshotId::new(axiograph_dsl::digest::axi_digest_v1(&s))
 }
 
 fn store_chunks_blob(accepted_dir: &Path, chunks_path: &Path) -> Result<PathDbWalOpV1> {
@@ -1240,7 +1315,7 @@ fn apply_op(
                 db,
                 &file,
                 proposals_digest,
-                )?;
+            )?;
             Ok(())
         }
         PathDbWalOpV1::ImportEmbeddingsV1 {
@@ -1272,7 +1347,7 @@ fn apply_op(
 
 fn rebuild_from_accepted_and_ops(
     accepted_dir: &Path,
-    accepted_snapshot_id: &str,
+    accepted_snapshot_id: &AcceptedSnapshotId,
     ops: &[PathDbWalOpV1],
 ) -> Result<axiograph_pathdb::PathDB> {
     let mut db = build_base_from_accepted(accepted_dir, accepted_snapshot_id)?;
@@ -1284,7 +1359,7 @@ fn rebuild_from_accepted_and_ops(
 
 fn build_base_from_accepted(
     accepted_dir: &Path,
-    accepted_snapshot_id: &str,
+    accepted_snapshot_id: &AcceptedSnapshotId,
 ) -> Result<axiograph_pathdb::PathDB> {
     let snapshot = read_accepted_snapshot(accepted_dir, accepted_snapshot_id)?;
     let mut db = axiograph_pathdb::PathDB::new();
@@ -1300,7 +1375,7 @@ fn build_base_from_accepted(
             )
         })?;
 
-        let digest = axiograph_dsl::digest::axi_digest_v1(&text);
+        let digest = AxiDigest::from_axi_text(&text);
         if digest != module_ref.module_digest {
             return Err(anyhow!(
                 "module `{}` digest mismatch: manifest={} file={}",
@@ -1310,14 +1385,16 @@ fn build_base_from_accepted(
             ));
         }
 
-        let module = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
+        let module = crate::axi_input::require_canonical_axi_text(&text)?
+            .into_parts()
+            .1;
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
             &mut db, &module,
         )?;
 
         module_chunks.push(crate::doc_chunks::chunk_from_axi_module_text(
             module_name,
-            &digest,
+            digest.as_str(),
             &text,
         ));
     }
@@ -1328,9 +1405,9 @@ fn build_base_from_accepted(
 
 fn read_accepted_snapshot(
     accepted_dir: &Path,
-    snapshot_id: &str,
+    snapshot_id: &AcceptedSnapshotId,
 ) -> Result<AcceptedPlaneSnapshotV1> {
-    let file = format!("{}.json", digest_to_filename(snapshot_id));
+    let file = format!("{}.json", digest_to_filename(snapshot_id.as_str()));
     let path = accepted_dir.join("snapshots").join(file);
     let text = fs::read_to_string(&path).map_err(|e| {
         anyhow!(
@@ -1339,7 +1416,7 @@ fn read_accepted_snapshot(
         )
     })?;
     let snapshot: AcceptedPlaneSnapshotV1 = serde_json::from_str(&text)?;
-    if snapshot.snapshot_id != snapshot_id {
+    if snapshot.snapshot_id != *snapshot_id {
         return Err(anyhow!(
             "accepted snapshot manifest `{}` has mismatched id: expected={} got={}",
             path.display(),
@@ -1352,6 +1429,7 @@ fn read_accepted_snapshot(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1432,7 +1510,7 @@ instance I of S:
 
         let res = commit_pathdb_snapshot_with_overlays(
             accepted_dir,
-            &accepted_snapshot_id,
+            accepted_snapshot_id.as_str(),
             &[chunks_path],
             &[],
             Some("test: commit chunks"),
@@ -1447,7 +1525,11 @@ instance I of S:
             if let PathDbWalOpV1::ImportChunksV1 { stored_path, .. } = op {
                 saw_chunks_op = true;
                 let json_path = accepted_dir.join(stored_path);
-                assert!(json_path.exists(), "expected chunks blob at {}", json_path.display());
+                assert!(
+                    json_path.exists(),
+                    "expected chunks blob at {}",
+                    json_path.display()
+                );
                 let cbor_path = json_path.with_extension("cbor");
                 assert!(
                     cbor_path.exists(),
@@ -1459,7 +1541,7 @@ instance I of S:
         assert!(saw_chunks_op, "expected ImportChunksV1 op in snapshot");
 
         let out_axpd = accepted_dir.join("out.axpd");
-        build_pathdb_from_pathdb_snapshot(accepted_dir, &res.snapshot_id, &out_axpd)
+        build_pathdb_from_pathdb_snapshot(accepted_dir, res.snapshot_id.as_str(), &out_axpd)
             .expect("build pathdb from wal snapshot");
 
         let bytes = fs::read(&out_axpd).expect("read out.axpd");
@@ -1538,7 +1620,7 @@ instance I of S:
 
         let res = commit_pathdb_snapshot_with_overlays(
             accepted_dir,
-            &accepted_snapshot_id,
+            accepted_snapshot_id.as_str(),
             &[],
             &[proposals_path],
             Some("test: commit proposals"),
@@ -1565,6 +1647,172 @@ instance I of S:
                 );
             }
         }
-        assert!(saw_proposals_op, "expected ImportProposalsV1 op in snapshot");
+        assert!(
+            saw_proposals_op,
+            "expected ImportProposalsV1 op in snapshot"
+        );
+    }
+
+    #[test]
+    fn commit_pathdb_snapshot_rejects_pathdb_snapshot_id_where_accepted_snapshot_is_required() {
+        use std::collections::HashMap;
+
+        let tmp = TempDirGuard::new("axiograph_pathdb_wal_reject_pathdb_as_accepted");
+        let accepted_dir = &tmp.path;
+
+        let axi_path = accepted_dir.join("Test.axi");
+        fs::write(
+            &axi_path,
+            r#"module Test
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {
+    (parent=Alice, child=Bob)
+  }
+"#,
+        )
+        .expect("write .axi");
+
+        let accepted_snapshot_id = crate::accepted_plane::promote_reviewed_module(
+            &axi_path,
+            accepted_dir,
+            Some("test: promote"),
+            "off",
+        )
+        .expect("promote accepted snapshot");
+
+        let proposals = axiograph_ingest_docs::ProposalsFileV1 {
+            version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
+            generated_at: "0".to_string(),
+            source: axiograph_ingest_docs::ProposalSourceV1 {
+                source_type: "test".to_string(),
+                locator: "pathdb_wal.rs".to_string(),
+            },
+            schema_hint: None,
+            proposals: vec![axiograph_ingest_docs::ProposalV1::Relation {
+                meta: axiograph_ingest_docs::ProposalMetaV1 {
+                    proposal_id: "rel::Parent::Alice::Bob".to_string(),
+                    confidence: 0.9,
+                    evidence: Vec::new(),
+                    public_rationale: "test relation".to_string(),
+                    metadata: HashMap::new(),
+                    schema_hint: None,
+                },
+                relation_id: "rel::Parent::Alice::Bob".to_string(),
+                rel_type: "Parent".to_string(),
+                source: "Alice".to_string(),
+                target: "Bob".to_string(),
+                attributes: HashMap::new(),
+            }],
+        };
+
+        let proposals_path = accepted_dir.join("proposals.json");
+        fs::write(
+            &proposals_path,
+            serde_json::to_string_pretty(&proposals).unwrap_or_default(),
+        )
+        .expect("write proposals.json");
+
+        let first = commit_pathdb_snapshot_with_overlays(
+            accepted_dir,
+            accepted_snapshot_id.as_str(),
+            &[],
+            std::slice::from_ref(&proposals_path),
+            Some("test: first commit"),
+        )
+        .expect("initial pathdb commit");
+
+        let err = match commit_pathdb_snapshot_with_overlays(
+            accepted_dir,
+            first.snapshot_id.as_str(),
+            &[],
+            std::slice::from_ref(&proposals_path),
+            Some("test: invalid accepted snapshot selector"),
+        ) {
+            Ok(_) => panic!("pathdb snapshot id must not resolve as an accepted snapshot id"),
+            Err(err) => err,
+        };
+
+        let msg = err.to_string();
+        assert!(msg.contains("unknown accepted-plane snapshot"));
+        assert!(msg.contains(first.snapshot_id.as_str()));
+    }
+
+    #[test]
+    fn build_base_from_accepted_rejects_stored_pathdb_export_modules() {
+        let tmp = TempDirGuard::new("axiograph_pathdb_wal_reject_stored_pathdb_export");
+        let accepted_dir = &tmp.path;
+        crate::accepted_plane::init_accepted_plane_dir(accepted_dir).expect("init accepted dir");
+
+        let canonical = r#"module Demo
+
+schema S:
+  object A
+  relation R(from: A, to: A)
+
+instance I of S:
+  A = {x, y}
+  R = {(from=x, to=y)}
+"#;
+
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, canonical)
+            .expect("import canonical module");
+        db.build_indexes();
+        let snapshot_export = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)
+            .expect("export pathdb snapshot");
+        let digest = AxiDigest::from_axi_text(&snapshot_export);
+
+        let stored_rel = format!("modules/Forged/{}.axi", digest_to_filename(digest.as_str()));
+        let stored_abs = accepted_dir.join(&stored_rel);
+        fs::create_dir_all(stored_abs.parent().expect("stored parent")).expect("mkdir");
+        fs::write(&stored_abs, &snapshot_export).expect("write forged stored module");
+
+        let accepted_snapshot_id = AcceptedSnapshotId::new("fnv1a64:forgedaccepted");
+        let snapshot = crate::accepted_plane::AcceptedPlaneSnapshotV1 {
+            version: "accepted_plane_snapshot_v1".to_string(),
+            snapshot_id: accepted_snapshot_id.clone(),
+            previous_snapshot_id: None,
+            created_at_unix_secs: 1,
+            modules: BTreeMap::from([(
+                "Forged".to_string(),
+                crate::accepted_plane::AcceptedModuleRefV1 {
+                    module_digest: digest,
+                    stored_path: stored_rel,
+                },
+            )]),
+        };
+
+        let snapshots_dir = accepted_dir.join("snapshots");
+        fs::create_dir_all(&snapshots_dir).expect("snapshots dir");
+        let snap_path = snapshots_dir.join(format!(
+            "{}.json",
+            digest_to_filename(accepted_snapshot_id.as_str())
+        ));
+        fs::write(
+            &snap_path,
+            serde_json::to_string_pretty(&snapshot).expect("serialize snapshot"),
+        )
+        .expect("write snapshot manifest");
+        fs::write(
+            accepted_dir.join("HEAD"),
+            format!("{accepted_snapshot_id}\n"),
+        )
+        .expect("write accepted head");
+
+        let err = match build_base_from_accepted(accepted_dir, &accepted_snapshot_id) {
+            Ok(_) => {
+                panic!("stored PathDBExportV1 module must be rejected during WAL base rebuild")
+            }
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("expected a canonical .axi module, but input is a PathDBExportV1 snapshot"));
     }
 }

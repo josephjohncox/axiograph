@@ -154,3 +154,5 @@ bin/
 .envrc.local
 *.envrc
 !.envrc
+
+*.stderr

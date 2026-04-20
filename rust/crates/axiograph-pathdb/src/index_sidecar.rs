@@ -12,7 +12,7 @@ use ahash::AHashMap;
 
 use crate::fact_index::FactIndex;
 use crate::text_index::InvertedIndex;
-use crate::{PathDB, PathSig, StrId};
+use crate::{PathDB, PathSig, PathdbSnapshotId, StrId};
 
 pub const PATHDB_INDEX_SIDECAR_VERSION_V1: &str = "pathdb_index_sidecar_v1";
 
@@ -27,7 +27,7 @@ pub struct LruSnapshot {
 pub struct PathDbIndexSidecarV1 {
     pub version: String,
     #[serde(default)]
-    pub snapshot_id: Option<String>,
+    pub snapshot_id: Option<PathdbSnapshotId>,
     #[serde(default)]
     pub fact_index: Option<FactIndex>,
     #[serde(default)]
@@ -37,7 +37,7 @@ pub struct PathDbIndexSidecarV1 {
 }
 
 impl PathDbIndexSidecarV1 {
-    pub fn new(snapshot_id: Option<String>) -> Self {
+    pub fn new(snapshot_id: Option<PathdbSnapshotId>) -> Self {
         Self {
             version: PATHDB_INDEX_SIDECAR_VERSION_V1.to_string(),
             snapshot_id,
@@ -61,7 +61,7 @@ enum IndexSidecarCommand {
 }
 
 impl IndexSidecarWriter {
-    pub fn new(path: PathBuf, db: Weak<PathDB>, snapshot_id: Option<String>) -> Self {
+    pub fn new(path: PathBuf, db: Weak<PathDB>, snapshot_id: Option<PathdbSnapshotId>) -> Self {
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("axiograph_index_sidecar".to_string())
@@ -102,7 +102,11 @@ impl IndexSidecarWriter {
     }
 }
 
-fn write_sidecar(path: &Path, db: &Weak<PathDB>, snapshot_id: Option<&String>) -> Result<()> {
+fn write_sidecar(
+    path: &Path,
+    db: &Weak<PathDB>,
+    snapshot_id: Option<&PathdbSnapshotId>,
+) -> Result<()> {
     let Some(db) = db.upgrade() else {
         return Ok(());
     };
@@ -125,4 +129,56 @@ pub fn read_sidecar_file(path: &Path) -> Result<PathDbIndexSidecarV1> {
     let f = fs::File::open(path)?;
     let sidecar: PathDbIndexSidecarV1 = ciborium::de::from_reader(f)?;
     Ok(sidecar)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[derive(Debug, Serialize)]
+    struct LegacyPathDbIndexSidecarV1 {
+        version: String,
+        snapshot_id: Option<String>,
+        fact_index: Option<FactIndex>,
+        text_indexes: std::collections::HashMap<StrId, InvertedIndex>,
+        path_lru: Option<LruSnapshot>,
+    }
+
+    #[test]
+    fn sidecar_file_round_trips_typed_snapshot_id() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("sidecar.cbor");
+        let sidecar = PathDbIndexSidecarV1::new(Some(PathdbSnapshotId::new("pathdb:snap-42")));
+
+        write_sidecar_file(&path, &sidecar).expect("sidecar should write");
+        let round_trip = read_sidecar_file(&path).expect("sidecar should read");
+
+        assert_eq!(
+            round_trip.snapshot_id,
+            Some(PathdbSnapshotId::new("pathdb:snap-42"))
+        );
+    }
+
+    #[test]
+    fn sidecar_reader_accepts_legacy_string_snapshot_id_payload() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("legacy-sidecar.cbor");
+        let legacy = LegacyPathDbIndexSidecarV1 {
+            version: PATHDB_INDEX_SIDECAR_VERSION_V1.to_string(),
+            snapshot_id: Some("pathdb:legacy".to_string()),
+            fact_index: None,
+            text_indexes: std::collections::HashMap::new(),
+            path_lru: None,
+        };
+
+        let mut file = fs::File::create(&path).expect("legacy sidecar file");
+        ciborium::ser::into_writer(&legacy, &mut file).expect("legacy sidecar should serialize");
+
+        let decoded = read_sidecar_file(&path).expect("typed reader should accept legacy payload");
+        assert_eq!(
+            decoded.snapshot_id,
+            Some(PathdbSnapshotId::new("pathdb:legacy"))
+        );
+    }
 }

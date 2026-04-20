@@ -4,6 +4,7 @@
 //! by a trusted checker (Lean during migration).
 
 use crate::migration::DeltaFMigrationProofV1;
+use crate::AxiDigest;
 use crate::ReachabilityProof;
 use axiograph_dsl::schema_v1::PathExprV3 as AxiPathExprV3;
 use serde::{Deserialize, Serialize};
@@ -247,7 +248,15 @@ pub struct CertificateV2 {
 /// - `axi_digest_v1 = "fnv1a64:<16 lowercase hex digits>"`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AxiAnchorV1 {
-    pub axi_digest_v1: String,
+    pub axi_digest_v1: AxiDigest,
+}
+
+impl AxiAnchorV1 {
+    pub fn new(axi_digest_v1: impl Into<AxiDigest>) -> Self {
+        Self {
+            axi_digest_v1: axi_digest_v1.into(),
+        }
+    }
 }
 
 /// Certificate proof: canonical `.axi` module well-typedness (v1).
@@ -857,7 +866,10 @@ impl PathExprV2 {
     ///
     /// Note: v3 derivations (`rule_ref`) require `.axi`-anchored rule lookup and are
     /// replayed in the Lean checker.
-    pub fn apply_derivation_v2(&self, derivation: &[PathRewriteStepV2]) -> Result<PathExprV2, String> {
+    pub fn apply_derivation_v2(
+        &self,
+        derivation: &[PathRewriteStepV2],
+    ) -> Result<PathExprV2, String> {
         let mut current = self.clone();
         for step in derivation {
             current = PathExprV2::apply_at(&current, &step.pos, &step.rule)?;
@@ -1159,13 +1171,17 @@ pub struct QueryResultProofV2 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueryTermV3 {
-    Var { name: String },
+    Var {
+        name: String,
+    },
     /// Constant entity identifier (stable within the anchored `.axi` meaning-plane).
     ///
     /// For `.axi`-anchored certificates we treat entity IDs as:
     /// - object element names (e.g. `"Alice"`), or
     /// - tuple fact ids (`"factfnv1a64:..."`) when referring to fact nodes.
-    Const { entity: String },
+    Const {
+        entity: String,
+    },
 }
 
 /// Regular-path query (RPQ) expression over relation labels (v3).
@@ -1282,6 +1298,42 @@ pub struct QueryResultProofV3 {
 #[cfg(test)]
 mod normalize_path_v2_tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn axi_anchor_v1_round_trips_typed_digest_with_stable_wire_shape() {
+        let anchor = AxiAnchorV1::new("fnv1a64:0123456789abcdef");
+        let value = serde_json::to_value(&anchor).expect("anchor should serialize");
+        assert_eq!(
+            value,
+            json!({ "axi_digest_v1": "fnv1a64:0123456789abcdef" })
+        );
+
+        let round_trip: AxiAnchorV1 =
+            serde_json::from_value(value).expect("anchor should deserialize");
+        assert_eq!(
+            round_trip.axi_digest_v1,
+            AxiDigest::new("fnv1a64:0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn certificate_v2_round_trips_typed_anchor() {
+        let cert = CertificateV2::reachability(ReachabilityProofV2::Reflexive { entity: 7 })
+            .with_anchor(AxiAnchorV1::new("fnv1a64:feedfacecafebeef"));
+
+        let json = serde_json::to_string(&cert).expect("certificate should serialize");
+        let round_trip: CertificateV2 =
+            serde_json::from_str(&json).expect("certificate should deserialize");
+
+        assert_eq!(
+            round_trip
+                .anchor
+                .expect("anchor should be present")
+                .axi_digest_v1,
+            AxiDigest::new("fnv1a64:feedfacecafebeef")
+        );
+    }
 
     #[test]
     fn normalize_with_derivation_replays_to_target() {

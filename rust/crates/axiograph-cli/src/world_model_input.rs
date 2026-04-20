@@ -11,7 +11,7 @@
 //! so the behavior cannot drift.
 
 use anyhow::{anyhow, Result};
-use axiograph_pathdb::PathDB;
+use axiograph_pathdb::{AxiDigest, PathDB};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorldModelAxiInputKindV1 {
@@ -31,7 +31,7 @@ impl WorldModelAxiInputKindV1 {
 #[derive(Debug, Clone)]
 pub(crate) struct WorldModelAxiInputV1 {
     pub(crate) kind: WorldModelAxiInputKindV1,
-    pub(crate) axi_digest_v1: String,
+    pub(crate) axi_digest_v1: AxiDigest,
     pub(crate) axi_text: String,
     pub(crate) selected_module_name: Option<String>,
 }
@@ -71,7 +71,10 @@ fn choose_module_name(db: &PathDB, module_names: &[String]) -> Option<String> {
 
     // Pick the module that dominates the snapshot by entity count, falling back to
     // stable lexical order.
-    match db.interner.id_of(axiograph_pathdb::axi_meta::ATTR_AXI_MODULE) {
+    match db
+        .interner
+        .id_of(axiograph_pathdb::axi_meta::ATTR_AXI_MODULE)
+    {
         Some(key_id) => {
             let mut counts: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
@@ -128,7 +131,7 @@ pub(crate) fn export_pathdb_world_model_axi(
             module_name,
         ) {
             Ok(axi_text) => {
-                let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
+                let digest = AxiDigest::from_axi_text(&axi_text);
                 return Ok(WorldModelAxiInputV1 {
                     kind: WorldModelAxiInputKindV1::CanonicalModuleExport,
                     axi_digest_v1: digest,
@@ -153,7 +156,7 @@ pub(crate) fn export_pathdb_world_model_axi(
     // Fallback: reversible snapshot export (`PathDBExportV1`). This is not ideal as an
     // LLM/world-model input, but can be useful for debugging.
     let axi_text = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(db)?;
-    let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
+    let digest = AxiDigest::from_axi_text(&axi_text);
     Ok(WorldModelAxiInputV1 {
         kind: WorldModelAxiInputKindV1::PathdbExportFallback,
         axi_digest_v1: digest,
@@ -187,8 +190,10 @@ instance DemoInst of Demo:
             module_name: None,
             require_canonical: true,
         };
-        let out = export_pathdb_world_model_axi(&db, &opts).expect("export canonical world-model axi");
+        let out =
+            export_pathdb_world_model_axi(&db, &opts).expect("export canonical world-model axi");
         assert_eq!(out.kind, WorldModelAxiInputKindV1::CanonicalModuleExport);
+        assert!(out.axi_digest_v1.has_v1_prefix());
         assert!(
             !out.axi_text.contains("InternedString"),
             "should not include PathDB export intern tables"
@@ -229,4 +234,3 @@ instance DemoInst of Demo:
         assert!(err.to_string().contains("no canonical"));
     }
 }
-

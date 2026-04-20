@@ -15,9 +15,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-use axiograph_ingest_docs::{Chunk, EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1};
-use axiograph_pathdb::PathDB;
+use axiograph_ingest_docs::{
+    Chunk, EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1,
+};
 use axiograph_pathdb::axi_semantics::{MetaPlaneIndex, RelationDecl};
+use axiograph_pathdb::PathDB;
 
 use crate::axql::AxqlContextSpec;
 use crate::relation_resolution::{EndpointOrientation, ResolvedSchemaRelation};
@@ -216,7 +218,9 @@ pub fn propose_relation_proposals_v1(
 ) -> Result<ProposeRelationOutputV1> {
     let rel_type_input = input.rel_type.trim().to_string();
     if rel_type_input.is_empty() {
-        return Err(anyhow!("propose_relation_proposals: rel_type must be non-empty"));
+        return Err(anyhow!(
+            "propose_relation_proposals: rel_type must be non-empty"
+        ));
     }
     let source_name_input = input.source_name.trim().to_string();
     if source_name_input.is_empty() {
@@ -237,7 +241,9 @@ pub fn propose_relation_proposals_v1(
 
     let confidence = input.confidence.unwrap_or(0.9).clamp(0.0, 1.0);
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let now_secs = now.as_secs();
     let nonce = now.as_nanos();
 
@@ -348,7 +354,9 @@ pub fn propose_relation_proposals_v1(
         let spec = ctxs.first()?;
         match spec {
             AxqlContextSpec::Name(name) => Some(name.clone()),
-            AxqlContextSpec::EntityId(id) => attr_string(db, *id, "name").or_else(|| Some(id.to_string())),
+            AxqlContextSpec::EntityId(id) => {
+                attr_string(db, *id, "name").or_else(|| Some(id.to_string()))
+            }
         }
     }
 
@@ -422,7 +430,8 @@ pub fn propose_relation_proposals_v1(
             }
         }
 
-        best.map(|(_, name)| name).unwrap_or_else(|| format!("T{now_secs}"))
+        best.map(|(_, name)| name)
+            .unwrap_or_else(|| format!("T{now_secs}"))
     }
 
     let mut context = input
@@ -569,7 +578,8 @@ pub fn propose_relation_proposals_v1(
                             "relation `{rel_type}`: source_field and target_field must be different (got {sf:?})"
                         ));
                     }
-                    let has_field = |name: &str| rel_decl.fields.iter().any(|f| f.field_name == name);
+                    let has_field =
+                        |name: &str| rel_decl.fields.iter().any(|f| f.field_name == name);
                     if !has_field(sf) {
                         return Err(anyhow!(
                             "relation `{rel_type}`: unknown source_field `{sf}`"
@@ -678,7 +688,10 @@ pub fn propose_relation_proposals_v1(
         .unwrap_or_else(|| target_name.to_string());
 
     // Optional evidence chunk (conversation / UI).
-    let evidence_text = input.evidence_text.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let evidence_text = input
+        .evidence_text
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let evidence_locator = input
         .evidence_locator
         .map(|s| s.trim().to_string())
@@ -877,7 +890,11 @@ pub fn propose_relation_proposals_v1(
 }
 
 fn infer_endpoint_fields(rel_decl: &RelationDecl) -> Result<(String, String)> {
-    let names: Vec<&str> = rel_decl.fields.iter().map(|f| f.field_name.as_str()).collect();
+    let names: Vec<&str> = rel_decl
+        .fields
+        .iter()
+        .map(|f| f.field_name.as_str())
+        .collect();
     if names.contains(&"from") && names.contains(&"to") {
         return Ok(("from".to_string(), "to".to_string()));
     }
@@ -909,7 +926,9 @@ pub fn propose_relations_proposals_v1(
 ) -> Result<ProposeRelationsOutputV1> {
     let rel_type = input.rel_type.trim();
     if rel_type.is_empty() {
-        return Err(anyhow!("propose_relations_proposals: rel_type must be non-empty"));
+        return Err(anyhow!(
+            "propose_relations_proposals: rel_type must be non-empty"
+        ));
     }
 
     let sources: Vec<String> = input
@@ -968,7 +987,9 @@ pub fn propose_relations_proposals_v1(
 
     let confidence = input.confidence.unwrap_or(0.9).clamp(0.0, 1.0);
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let now_secs = now.as_secs();
     let nonce = now.as_nanos();
 
@@ -1106,7 +1127,9 @@ pub fn propose_fact_proposals_v1(
 
     let mut rel_type = input.rel_type.trim().to_string();
     if rel_type.is_empty() {
-        return Err(anyhow!("propose_fact_proposals: rel_type must be non-empty"));
+        return Err(anyhow!(
+            "propose_fact_proposals: rel_type must be non-empty"
+        ));
     }
 
     let mut schema_hint = input

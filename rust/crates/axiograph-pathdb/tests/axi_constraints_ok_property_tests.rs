@@ -5,7 +5,13 @@ use axiograph_dsl::schema_v1::{
     SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1, SetLiteralV1,
 };
 use axiograph_pathdb::axi_module_constraints::check_axi_constraints_ok_v1;
+use axiograph_pathdb::axi_module_typecheck::validate_axi_v1_module;
 use proptest::prelude::*;
+
+fn constraints_ok(module: SchemaV1Module) -> bool {
+    let typed = validate_axi_v1_module(module).expect("generated module should typecheck");
+    check_axi_constraints_ok_v1(&typed).is_ok()
+}
 
 fn build_single_relation_module(
     relation_fields: &[String],
@@ -59,23 +65,23 @@ fn build_single_relation_module(
         });
     }
 
-    assignments.push(InstanceAssignmentV1 {
-        name: relation_name,
-        value: SetLiteralV1 {
-            items: tuples
-                .iter()
-                .map(|vals| {
-                    SetItemV1::Tuple {
+    if !tuples.is_empty() {
+        assignments.push(InstanceAssignmentV1 {
+            name: relation_name,
+            value: SetLiteralV1 {
+                items: tuples
+                    .iter()
+                    .map(|vals| SetItemV1::Tuple {
                         fields: relation_fields
                             .iter()
                             .cloned()
                             .zip(vals.iter().cloned())
                             .collect(),
-                    }
-                })
-                .collect(),
-        },
-    });
+                    })
+                    .collect(),
+            },
+        });
+    }
 
     let inst = SchemaV1Instance {
         name: "Demo".to_string(),
@@ -91,11 +97,7 @@ fn build_single_relation_module(
     }
 }
 
-fn key_ok(
-    ordered_fields: &[String],
-    tuples: &[Vec<String>],
-    key_fields: &[String],
-) -> bool {
+fn key_ok(ordered_fields: &[String], tuples: &[Vec<String>], key_fields: &[String]) -> bool {
     let mut idxs: Vec<usize> = Vec::with_capacity(key_fields.len());
     for f in key_fields {
         let Some(idx) = ordered_fields.iter().position(|x| x == f) else {
@@ -166,8 +168,7 @@ fn symmetric_closure(
             .expect("where_field exists")
     });
 
-    let (closure_fields, projection_idxs, swap_left_proj, swap_right_proj) = if let Some(p) =
-        params
+    let (closure_fields, projection_idxs, swap_left_proj, swap_right_proj) = if let Some(p) = params
     {
         let allowed: HashSet<&str> = [carrier_left, carrier_right]
             .into_iter()
@@ -401,7 +402,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "a", "b");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 
@@ -454,7 +455,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "a", "b");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 
@@ -517,7 +518,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "a", "b");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 
@@ -577,7 +578,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "from", "to");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 
@@ -618,7 +619,7 @@ proptest! {
             functional_ok(&closure_fields, &closure_tuples, "from", "to");
 
         let expected_ok = original_ok && closure_ok;
-        let got_ok = check_axi_constraints_ok_v1(&module).is_ok();
+        let got_ok = constraints_ok(module);
         prop_assert_eq!(got_ok, expected_ok);
     }
 }

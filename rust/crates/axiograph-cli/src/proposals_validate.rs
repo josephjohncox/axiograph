@@ -170,13 +170,18 @@ pub fn validate_proposals_v1(
     let digest = proposals_digest(proposals)?;
 
     let mut preview = clone_db(base)?;
-    let import_summary =
-        crate::proposals_import::import_proposals_file_into_pathdb(&mut preview, proposals, &digest)?;
+    let import_summary = crate::proposals_import::import_proposals_file_into_pathdb(
+        &mut preview,
+        proposals,
+        &digest,
+    )?;
 
     let axi_typecheck = typecheck_preview(&preview);
     let quality_delta = quality_delta_report(base, &preview, quality_profile, quality_plane)?;
 
-    let ok = (!axi_typecheck.skipped && axi_typecheck.errors.is_empty() && quality_delta.summary.error_count == 0)
+    let ok = (!axi_typecheck.skipped
+        && axi_typecheck.errors.is_empty()
+        && quality_delta.summary.error_count == 0)
         || (axi_typecheck.skipped && quality_delta.summary.error_count == 0);
 
     Ok(ProposalsValidationV1 {
@@ -225,7 +230,10 @@ mod tests {
         assert!(!out.summary.swapped_endpoints);
 
         let validation = validate_proposals_v1(&base, &out.proposals, "fast", "both")?;
-        assert!(!validation.axi_typecheck.skipped, "expected meta-plane typecheck");
+        assert!(
+            !validation.axi_typecheck.skipped,
+            "expected meta-plane typecheck"
+        );
         assert!(
             validation.axi_typecheck.errors.is_empty(),
             "unexpected typecheck errors: {:?}",
@@ -270,12 +278,20 @@ mod tests {
         let mut preview = PathDB::from_bytes(&bytes)?;
         let digest_bytes = serde_json::to_vec(&out.proposals)?;
         let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&digest_bytes);
-        crate::proposals_import::import_proposals_file_into_pathdb(&mut preview, &out.proposals, &digest)?;
+        crate::proposals_import::import_proposals_file_into_pathdb(
+            &mut preview,
+            &out.proposals,
+            &digest,
+        )?;
 
         fn find_named_entity(db: &PathDB, type_name: &str, name: &str) -> Option<u32> {
             let name = name.trim();
-            let Some(name_key) = db.interner.id_of("name") else { return None };
-            let Some(val_id) = db.interner.id_of(name) else { return None };
+            let Some(name_key) = db.interner.id_of("name") else {
+                return None;
+            };
+            let Some(val_id) = db.interner.id_of(name) else {
+                return None;
+            };
             let ids = db.entities.entities_with_attr_value(name_key, val_id);
             for id in ids.iter() {
                 if let Some(v) = db.get_entity(id) {
@@ -355,7 +371,8 @@ instance EconInst of Econ:
         .err()
         .ok_or_else(|| anyhow!("expected propose_relation_proposals_v1 to fail without amount"))?;
         assert!(
-            err.to_string().contains("requires additional field `amount`"),
+            err.to_string()
+                .contains("requires additional field `amount`"),
             "unexpected error: {err}"
         );
 

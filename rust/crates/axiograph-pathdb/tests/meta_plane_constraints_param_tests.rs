@@ -27,8 +27,7 @@ instance Demo of S:
 "#;
 
     let mut db = PathDB::new();
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
-    axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(&mut db, &module)
+    axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, text)
         .expect("import module");
     db.build_indexes();
 
@@ -52,9 +51,11 @@ instance Demo of S:
         "expected Transitive params in meta-plane, got {decls:?}"
     );
 
-    let exported =
-        axiograph_pathdb::axi_module_export::export_axi_schema_v1_module_from_pathdb(&db, "MetaPlaneParamRoundtrip")
-            .expect("export");
+    let exported = axiograph_pathdb::axi_module_export::export_axi_schema_v1_module_from_pathdb(
+        &db,
+        "MetaPlaneParamRoundtrip",
+    )
+    .expect("export");
     assert!(
         exported.contains("constraint symmetric Accessible on (from, to) param (ctx, time)"),
         "export missing symmetric param clause:\n{exported}"
@@ -64,4 +65,3 @@ instance Demo of S:
         "export missing transitive param clause:\n{exported}"
     );
 }
-

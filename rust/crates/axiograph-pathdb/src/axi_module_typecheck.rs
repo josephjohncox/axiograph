@@ -18,6 +18,7 @@
 //! `AxiWellTypedProofV1` summary that can be re-checked in Lean.
 
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 
 use anyhow::{anyhow, Result};
 
@@ -26,30 +27,51 @@ use axiograph_dsl::schema_v1::{
 };
 
 use crate::certificate::AxiWellTypedProofV1;
+use crate::lifecycle::{LifecycleState, Reviewed, Validated};
+
+/// Marker trait for lifecycle states that carry a conservative Rust-side
+/// well-typedness witness.
+///
+/// ```compile_fail
+/// use axiograph_pathdb::{Accepted, Module, WellTypedModuleState};
+///
+/// fn require_well_typed<S: WellTypedModuleState>(_module: &Module<S>) {}
+///
+/// let _boundary: fn(&Module<Accepted>) = require_well_typed::<Accepted>;
+/// ```
+pub trait WellTypedModuleState: LifecycleState {}
+
+impl WellTypedModuleState for Validated {}
+impl WellTypedModuleState for Reviewed {}
+
+/// Optional review metadata carried when a validated module is promoted to the
+/// reviewed lifecycle state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReviewStamp {
+    pub reviewer: Option<String>,
+    pub note: Option<String>,
+}
 
 /// A canonical `.axi` module packaged together with a Rust-side well-typedness witness.
 ///
 /// This is the Rust analogue of Lean's `TypedModule` wrapper:
 ///
 /// - construction is *checked* (fail-closed),
-/// - downstream code can accept a `TypedAxiV1Module` instead of a raw AST,
+/// - downstream code can accept a `Module<Validated>` or `Module<Reviewed>`
+///   instead of a raw AST,
 /// - and we avoid a large class of “forgot to typecheck this input” bugs.
 ///
 /// Note: this is an internal Rust safety/convenience tool. The trusted gate is
 /// still the Lean checker (`axi_well_typed_v1` certificates).
 #[derive(Debug, Clone)]
-pub struct TypedAxiV1Module {
+pub struct Module<S> {
     module: SchemaV1Module,
     proof: AxiWellTypedProofV1,
+    review: Option<ReviewStamp>,
+    _state: PhantomData<S>,
 }
 
-impl TypedAxiV1Module {
-    /// Validate and wrap a parsed canonical module.
-    pub fn new(module: SchemaV1Module) -> Result<Self> {
-        let proof = typecheck_axi_v1_module(&module)?;
-        Ok(Self { module, proof })
-    }
-
+impl<S: WellTypedModuleState> Module<S> {
     pub fn module(&self) -> &SchemaV1Module {
         &self.module
     }
@@ -60,6 +82,48 @@ impl TypedAxiV1Module {
 
     pub fn into_parts(self) -> (SchemaV1Module, AxiWellTypedProofV1) {
         (self.module, self.proof)
+    }
+}
+
+impl<S: WellTypedModuleState> AsRef<SchemaV1Module> for Module<S> {
+    fn as_ref(&self) -> &SchemaV1Module {
+        self.module()
+    }
+}
+
+impl Module<Validated> {
+    /// Validate and wrap a parsed canonical module.
+    pub fn new(module: SchemaV1Module) -> Result<Self> {
+        validate_axi_v1_module(module)
+    }
+
+    pub fn into_reviewed(self, stamp: ReviewStamp) -> Module<Reviewed> {
+        review_axi_v1_module(self, stamp)
+    }
+}
+
+impl Module<Reviewed> {
+    pub fn review_stamp(&self) -> Option<&ReviewStamp> {
+        self.review.as_ref()
+    }
+}
+
+pub fn validate_axi_v1_module(module: SchemaV1Module) -> Result<Module<Validated>> {
+    let proof = typecheck_axi_v1_module(&module)?;
+    Ok(Module {
+        module,
+        proof,
+        review: None,
+        _state: PhantomData,
+    })
+}
+
+pub fn review_axi_v1_module(module: Module<Validated>, stamp: ReviewStamp) -> Module<Reviewed> {
+    Module {
+        module: module.module,
+        proof: module.proof,
+        review: Some(stamp),
+        _state: PhantomData,
     }
 }
 

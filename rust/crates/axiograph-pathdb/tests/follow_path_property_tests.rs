@@ -19,45 +19,40 @@ struct GraphCase {
 }
 
 fn graph_case_strategy() -> impl Strategy<Value = GraphCase> {
-    (1usize..=MAX_ENTITIES, 1usize..=MAX_REL_TYPES).prop_flat_map(|(entity_count, rel_count)| {
-        let rel_names = (0..rel_count).map(|i| format!("r{i}")).collect::<Vec<_>>();
-        (
-            Just(entity_count),
-            Just(rel_names),
-            prop::collection::vec(
-                (
-                    0usize..rel_count,
-                    0usize..entity_count,
-                    0usize..entity_count,
-                    0u32..=axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR,
+    (1usize..=MAX_ENTITIES, 1usize..=MAX_REL_TYPES)
+        .prop_flat_map(|(entity_count, rel_count)| {
+            let rel_names = (0..rel_count).map(|i| format!("r{i}")).collect::<Vec<_>>();
+            (
+                Just(entity_count),
+                Just(rel_names),
+                prop::collection::vec(
+                    (
+                        0usize..rel_count,
+                        0usize..entity_count,
+                        0usize..entity_count,
+                        0u32..=axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR,
+                    ),
+                    0..=MAX_EDGES,
                 ),
-                0..=MAX_EDGES,
-            ),
-            0usize..entity_count,
-            prop::collection::vec(0usize..rel_count, 0..=MAX_PATH_LEN),
-            0u32..=axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR,
-            0u32..=axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR,
+                0usize..entity_count,
+                prop::collection::vec(0usize..rel_count, 0..=MAX_PATH_LEN),
+                0u32..=axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR,
+                0u32..=axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR,
+            )
+        })
+        .prop_map(
+            |(entity_count, rel_names, edges, start_idx, path, min_conf_a_fp, min_conf_b_fp)| {
+                GraphCase {
+                    entity_count,
+                    rel_names,
+                    edges,
+                    start_idx,
+                    path,
+                    min_conf_a_fp,
+                    min_conf_b_fp,
+                }
+            },
         )
-    })
-    .prop_map(
-        |(
-            entity_count,
-            rel_names,
-            edges,
-            start_idx,
-            path,
-            min_conf_a_fp,
-            min_conf_b_fp,
-        )| GraphCase {
-            entity_count,
-            rel_names,
-            edges,
-            start_idx,
-            path,
-            min_conf_a_fp,
-            min_conf_b_fp,
-        },
-    )
 }
 
 fn build_db(case: &GraphCase) -> (PathDB, Vec<u32>) {

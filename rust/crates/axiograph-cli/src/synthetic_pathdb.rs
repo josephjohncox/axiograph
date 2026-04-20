@@ -642,7 +642,11 @@ fn build_enterprise_scenario_named(
         &mut b,
         scenario_name,
         description,
-        &[("Service", key_service.as_str()), ("Person", "person_0_0"), ("Doc", "doc_0_0")],
+        &[
+            ("Service", key_service.as_str()),
+            ("Person", "person_0_0"),
+            ("Doc", "doc_0_0"),
+        ],
         Vec::new(),
     )?;
 
@@ -1982,7 +1986,12 @@ fn build_proto_api_scenario(
             span_id: format!("proto_service_{svc_i}"),
             text: format!(
                 "Proto service: {service_fqn}\nRPCs: {}",
-                rpc_fqns.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+                rpc_fqns
+                    .iter()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             bbox: None,
             metadata: HashMap::from([
@@ -2171,7 +2180,14 @@ fn build_proto_api_business_scenario(
             domain: "orders",
             service_name: "OrderService",
             resource_name: "Order",
-            dependencies: &["users", "catalog", "pricing", "inventory", "payments", "shipping"],
+            dependencies: &[
+                "users",
+                "catalog",
+                "pricing",
+                "inventory",
+                "payments",
+                "shipping",
+            ],
         },
         BusinessServiceSpec {
             domain: "payments",
@@ -2296,26 +2312,33 @@ fn build_proto_api_business_scenario(
         let mut rpc_method_names: Vec<String> = Vec::new();
 
         if domain == "payments" {
-            rpc_method_names.extend([
-                "AuthorizePayment",
-                "CapturePayment",
-                "RefundPayment",
-                "GetPayment",
-            ].into_iter().map(|s| s.to_string()));
+            rpc_method_names.extend(
+                [
+                    "AuthorizePayment",
+                    "CapturePayment",
+                    "RefundPayment",
+                    "GetPayment",
+                ]
+                .into_iter()
+                .map(|s| s.to_string()),
+            );
         } else if domain == "orders" {
-            rpc_method_names.extend([
-                "CreateOrder",
-                "GetOrder",
-                "CancelOrder",
-                "ListOrders",
-            ].into_iter().map(|s| s.to_string()));
+            rpc_method_names.extend(
+                ["CreateOrder", "GetOrder", "CancelOrder", "ListOrders"]
+                    .into_iter()
+                    .map(|s| s.to_string()),
+            );
         } else if domain == "shipping" {
-            rpc_method_names.extend([
-                "CreateShipment",
-                "TrackShipment",
-                "GetQuote",
-                "CancelShipment",
-            ].into_iter().map(|s| s.to_string()));
+            rpc_method_names.extend(
+                [
+                    "CreateShipment",
+                    "TrackShipment",
+                    "GetQuote",
+                    "CancelShipment",
+                ]
+                .into_iter()
+                .map(|s| s.to_string()),
+            );
         } else {
             rpc_method_names.extend([
                 format!("Create{resource_name}"),
@@ -2389,7 +2412,9 @@ fn build_proto_api_business_scenario(
         for method in &rpc_method_names {
             let req_name = format!("{method}Request");
             let resp_name = format!("{method}Response");
-            let req_id = *named_message_ids.get(&req_name).expect("request message exists");
+            let req_id = *named_message_ids
+                .get(&req_name)
+                .expect("request message exists");
             let req_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{req_name}.id"),
@@ -2440,7 +2465,11 @@ fn build_proto_api_business_scenario(
             let request_fqn = format!("{package_name}.{method_name}Request");
             let response_fqn = format!("{package_name}.{method_name}Response");
 
-            let http_method = if method_name.starts_with("Get") || method_name.starts_with("List") || method_name == "TrackShipment" || method_name == "GetQuote" {
+            let http_method = if method_name.starts_with("Get")
+                || method_name.starts_with("List")
+                || method_name == "TrackShipment"
+                || method_name == "GetQuote"
+            {
                 "GET"
             } else if method_name.starts_with("Delete") || method_name.starts_with("Cancel") {
                 "DELETE"
@@ -2571,7 +2600,10 @@ fn build_proto_api_business_scenario(
         let order_homotopy_id = builder.add_named_entity(
             "Homotopy",
             format!("homotopy_Create_to_Get_{domain}"),
-            vec![("repr".to_string(), "workflow_suggests_order ~ observed_next".to_string())],
+            vec![(
+                "repr".to_string(),
+                "workflow_suggests_order ~ observed_next".to_string(),
+            )],
         );
 
         bundles.push(ServiceBundle {
@@ -2626,7 +2658,12 @@ fn build_proto_api_business_scenario(
 
         // message → fields
         for field in &bundle.field_specs {
-            builder.rel("proto_message_has_field", field.message_id, field.field_id, 0.98);
+            builder.rel(
+                "proto_message_has_field",
+                field.message_id,
+                field.field_id,
+                0.98,
+            );
             if let Some(type_msg) = field.field_type_message {
                 builder.rel("proto_field_type_message", field.field_id, type_msg, 0.98);
             }
@@ -2642,13 +2679,38 @@ fn build_proto_api_business_scenario(
 
         for rpc in &bundle.rpcs {
             builder.rel("proto_service_has_rpc", bundle.service_id, rpc.rpc_id, 0.98);
-            builder.rel("proto_rpc_request", rpc.rpc_id, rpc.request_message_id, 0.98);
-            builder.rel("proto_rpc_response", rpc.rpc_id, rpc.response_message_id, 0.98);
-            builder.rel("proto_rpc_http_endpoint", rpc.rpc_id, rpc.http_endpoint_id, 0.98);
-            builder.rel("proto_http_endpoint_of_rpc", rpc.http_endpoint_id, rpc.rpc_id, 0.98);
+            builder.rel(
+                "proto_rpc_request",
+                rpc.rpc_id,
+                rpc.request_message_id,
+                0.98,
+            );
+            builder.rel(
+                "proto_rpc_response",
+                rpc.rpc_id,
+                rpc.response_message_id,
+                0.98,
+            );
+            builder.rel(
+                "proto_rpc_http_endpoint",
+                rpc.rpc_id,
+                rpc.http_endpoint_id,
+                0.98,
+            );
+            builder.rel(
+                "proto_http_endpoint_of_rpc",
+                rpc.http_endpoint_id,
+                rpc.rpc_id,
+                0.98,
+            );
 
             // include in workflow (tacit)
-            builder.rel("workflow_includes_rpc", bundle.workflow_id, rpc.rpc_id, 0.60);
+            builder.rel(
+                "workflow_includes_rpc",
+                bundle.workflow_id,
+                rpc.rpc_id,
+                0.60,
+            );
         }
 
         // Pick a deterministic “primary” rpc for doc mentions:
@@ -2669,8 +2731,14 @@ fn build_proto_api_business_scenario(
         );
 
         // Heuristic order: Create* -> Get* (when present).
-        let create_rpc = bundle.rpcs.iter().find(|r| r.method_name.starts_with("Create"));
-        let get_rpc = bundle.rpcs.iter().find(|r| r.method_name.starts_with("Get"));
+        let create_rpc = bundle
+            .rpcs
+            .iter()
+            .find(|r| r.method_name.starts_with("Create"));
+        let get_rpc = bundle
+            .rpcs
+            .iter()
+            .find(|r| r.method_name.starts_with("Get"));
         if let (Some(create), Some(get)) = (create_rpc, get_rpc) {
             builder.rel("workflow_suggests_order", create.rpc_id, get.rpc_id, 0.55);
             builder.rel("observed_next", create.rpc_id, get.rpc_id, 0.70);
@@ -2683,8 +2751,18 @@ fn build_proto_api_business_scenario(
 
             builder.rel("from", bundle.order_homotopy_id, create.rpc_id, 1.0);
             builder.rel("to", bundle.order_homotopy_id, get.rpc_id, 1.0);
-            builder.rel("lhs", bundle.order_homotopy_id, bundle.order_suggested_path_id, 1.0);
-            builder.rel("rhs", bundle.order_homotopy_id, bundle.order_observed_path_id, 1.0);
+            builder.rel(
+                "lhs",
+                bundle.order_homotopy_id,
+                bundle.order_suggested_path_id,
+                1.0,
+            );
+            builder.rel(
+                "rhs",
+                bundle.order_homotopy_id,
+                bundle.order_observed_path_id,
+                1.0,
+            );
             builder.equiv(
                 bundle.order_suggested_path_id,
                 bundle.order_observed_path_id,
@@ -2698,12 +2776,27 @@ fn build_proto_api_business_scenario(
 
         builder.rel("from", bundle.doc_via_http_path_id, bundle.doc_id, 1.0);
         builder.rel("to", bundle.doc_via_http_path_id, primary_rpc.rpc_id, 1.0);
-        builder.rel("via", bundle.doc_via_http_path_id, primary_rpc.http_endpoint_id, 1.0);
+        builder.rel(
+            "via",
+            bundle.doc_via_http_path_id,
+            primary_rpc.http_endpoint_id,
+            1.0,
+        );
 
         builder.rel("from", bundle.doc_homotopy_id, bundle.doc_id, 1.0);
         builder.rel("to", bundle.doc_homotopy_id, primary_rpc.rpc_id, 1.0);
-        builder.rel("lhs", bundle.doc_homotopy_id, bundle.doc_direct_path_id, 1.0);
-        builder.rel("rhs", bundle.doc_homotopy_id, bundle.doc_via_http_path_id, 1.0);
+        builder.rel(
+            "lhs",
+            bundle.doc_homotopy_id,
+            bundle.doc_direct_path_id,
+            1.0,
+        );
+        builder.rel(
+            "rhs",
+            bundle.doc_homotopy_id,
+            bundle.doc_via_http_path_id,
+            1.0,
+        );
         builder.equiv(
             bundle.doc_direct_path_id,
             bundle.doc_via_http_path_id,
@@ -2753,11 +2846,7 @@ fn build_proto_api_business_scenario(
             .and_then(|v| v.attrs.get("name").cloned())
             .unwrap_or_else(|| "<unknown>".to_string());
 
-        let rpc_fqns = b
-            .rpcs
-            .iter()
-            .map(|r| r.rpc_fqn.clone())
-            .collect::<Vec<_>>();
+        let rpc_fqns = b.rpcs.iter().map(|r| r.rpc_fqn.clone()).collect::<Vec<_>>();
 
         extra_chunks.push(axiograph_ingest_docs::Chunk {
             chunk_id: format!("doc_proto_business_service_{svc_i}"),

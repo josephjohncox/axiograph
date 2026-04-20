@@ -48,7 +48,8 @@ fn naive_fact_nodes_by_relation(db: &PathDB, relation_name: &str) -> RoaringBitm
     let Some(relation_id) = db.interner.id_of(relation_name) else {
         return RoaringBitmap::new();
     };
-    db.entities.entities_with_attr_value(rel_attr_id, relation_id)
+    db.entities
+        .entities_with_attr_value(rel_attr_id, relation_id)
 }
 
 fn naive_fact_nodes_by_schema_relation(db: &PathDB, schema: &str, relation: &str) -> RoaringBitmap {
@@ -60,7 +61,9 @@ fn naive_fact_nodes_by_schema_relation(db: &PathDB, schema: &str, relation: &str
     };
 
     let facts = naive_fact_nodes_by_relation(db, relation);
-    let in_schema = db.entities.entities_with_attr_value(schema_attr_id, schema_id);
+    let in_schema = db
+        .entities
+        .entities_with_attr_value(schema_attr_id, schema_id);
     facts & in_schema
 }
 

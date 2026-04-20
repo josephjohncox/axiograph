@@ -16,7 +16,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 
-use crate::axql::{parse_axql_path_expr, AxqlAtom, AxqlContextSpec, AxqlQuery, AxqlTerm};
+use crate::axql::PreparedQueryHandle;
+use crate::axql::{
+    parse_axql_path_expr, AxqlAtom, AxqlContextSpec, AxqlQuery, AxqlResult, AxqlTerm,
+    PreparedQueryIntrospection, QueryCertifiability,
+};
+
+use axiograph_pathdb::certificate::CertificateV2;
 
 pub const QUERY_IR_V1_VERSION: u32 = 1;
 
@@ -296,6 +302,110 @@ fn default_query_ir_v1_version() -> u32 {
 }
 
 impl QueryIrV1 {
+    /// Compile, typecheck, and prepare this query against the given database.
+    ///
+    /// The returned value is a typed execution handle for this exact IR instance:
+    /// it owns both the parsed `AxqlQuery` and the prepared execution plan.
+    #[allow(dead_code)]
+    pub fn prepare_with_meta(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<PreparedQueryV1> {
+        let query = self.to_axql_query()?;
+        let handle = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
+        Ok(PreparedQueryV1 { query, handle })
+    }
+
+    /// Classify whether this query can be executed in the current certified subset.
+    ///
+    /// Returns a parsing or validation error only if the IR itself is invalid for
+    /// this compilation path (e.g. bad version or malformed shape).
+    #[allow(dead_code)]
+    pub fn certifiability(&self) -> Result<QueryCertifiability> {
+        let query = self.to_axql_query()?;
+        Ok(query.certifiability())
+    }
+
+    /// Backwards-compatible lower-level access to the prepared query handle.
+    ///
+    /// This keeps the existing execution surface available for internal callers
+    /// that do not need the typed wrapper.
+    #[allow(dead_code)]
+    pub fn prepare_handle_with_meta(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<PreparedQueryHandle> {
+        crate::axql::prepare_query_ir_handle_with_meta(db, self, meta)
+    }
+
+    /// Render the IR as an AxQL query string (best-effort, for debugging).
+    pub fn to_axql_text(&self) -> Result<String> {
+        let q = self.to_axql_query()?;
+        Ok(render_axql_query(&q))
+    }
+}
+
+/// A prepared query wrapper that keeps IR-level provenance with a concrete prepared plan.
+///
+/// This is the intended typed execution currency for typed flows (`query_ir_v1` ->
+/// prepared -> execute/certify), while keeping the internal `PreparedQueryHandle`
+/// as an implementation detail.
+#[allow(dead_code)]
+pub struct PreparedQueryV1 {
+    query: AxqlQuery,
+    handle: PreparedQueryHandle,
+}
+
+#[allow(dead_code)]
+impl PreparedQueryV1 {
+    /// Return a borrowed AxQL view of the compiled query.
+    pub fn as_query(&self) -> &AxqlQuery {
+        &self.query
+    }
+
+    /// Execute the prepared query.
+    pub fn execute(
+        &mut self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<AxqlResult> {
+        self.handle.execute(db, meta)
+    }
+
+    /// Return the fully elaborated plan shape as human-readable text.
+    pub fn explain_plan_lines(&self) -> Vec<String> {
+        self.handle.explain_plan_lines()
+    }
+
+    /// Return a short explainable summary of the prepared query shape and trust class.
+    pub fn introspection(&self) -> PreparedQueryIntrospection {
+        self.handle.introspection()
+    }
+
+    /// Classification of what this prepared query can be certified under.
+    pub fn certifiability(&self) -> QueryCertifiability {
+        self.handle.certifiability()
+    }
+
+    /// Emit a query-result certificate for this prepared query.
+    pub fn certify(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<CertificateV2> {
+        self.handle.certify(db, &self.query, meta)
+    }
+
+    /// Unwrap the low-level prepared execution handle for callers that need
+    /// direct access to `axql::PreparedQueryHandle`.
+    pub fn into_handle(self) -> PreparedQueryHandle {
+        self.handle
+    }
+}
+
+impl QueryIrV1 {
     /// Convert an AxQL query into the typed JSON IR.
     ///
     /// This is primarily used to keep the LLM/tooling pipeline “typed” even if
@@ -430,7 +540,10 @@ impl QueryIrV1 {
         let contexts = query.contexts.iter().map(ctx_ir).collect::<Vec<_>>();
 
         let (where_atoms, disjuncts) = if disjuncts_ir.len() <= 1 {
-            (Some(disjuncts_ir.into_iter().next().unwrap_or_default()), None)
+            (
+                Some(disjuncts_ir.into_iter().next().unwrap_or_default()),
+                None,
+            )
         } else {
             (None, Some(disjuncts_ir))
         };
@@ -510,12 +623,6 @@ impl QueryIrV1 {
             max_hops: self.max_hops,
             min_confidence,
         })
-    }
-
-    /// Render the IR as an AxQL query string (best-effort, for debugging).
-    pub fn to_axql_text(&self) -> Result<String> {
-        let q = self.to_axql_query()?;
-        Ok(render_axql_query(&q))
     }
 }
 
@@ -664,7 +771,10 @@ fn render_path_expr(p: &crate::axql::AxqlPathExpr) -> String {
             AxqlRegex::Rel(r) => r.clone(),
             AxqlRegex::Seq(parts) => parts.iter().map(render_re).collect::<Vec<_>>().join("/"),
             AxqlRegex::Alt(parts) => {
-                format!("({})", parts.iter().map(render_re).collect::<Vec<_>>().join("|"))
+                format!(
+                    "({})",
+                    parts.iter().map(render_re).collect::<Vec<_>>().join("|")
+                )
             }
             AxqlRegex::Star(inner) => format!("{}*", render_re(inner)),
             AxqlRegex::Plus(inner) => format!("{}+", render_re(inner)),
@@ -943,10 +1053,8 @@ impl QueryAtomIrV1 {
                 rels: rels.clone(),
             },
             QueryAtomIrV1::Attrs { term, pairs } => {
-                let mut out_pairs: Vec<(String, String)> = pairs
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
+                let mut out_pairs: Vec<(String, String)> =
+                    pairs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 out_pairs.sort_by(|a, b| a.0.cmp(&b.0));
                 AxqlAtom::Attrs {
                     term: term.to_axql_term()?,
@@ -959,10 +1067,8 @@ impl QueryAtomIrV1 {
                 rels,
                 attrs,
             } => {
-                let mut out_attrs: Vec<(String, String)> = attrs
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
+                let mut out_attrs: Vec<(String, String)> =
+                    attrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 out_attrs.sort_by(|a, b| a.0.cmp(&b.0));
                 AxqlAtom::Shape {
                     term: term.to_axql_term()?,
@@ -1043,6 +1149,131 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn query_ir_v1_prepare_with_meta_builds_prepared_handle() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema S:
+  object Node
+
+instance I of S:
+  Node = {a}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"}
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        assert_eq!(prepared.certifiability(), QueryCertifiability::Certifiable);
+        let introspection = prepared.introspection();
+        assert_eq!(introspection.disjunct_count, 1);
+        assert_eq!(introspection.selected_vars, vec!["?x"]);
+        assert_eq!(introspection.limit, 10);
+        assert_eq!(introspection.context_count, 0);
+        assert!(prepared
+            .explain_plan_lines()
+            .iter()
+            .any(|line| line.contains("join order")));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_prepare_with_meta_marks_execution_only() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema S:
+  object Node
+
+instance I of S:
+  Node = {a}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"},
+                {"kind": "attr_contains", "term": "?x", "key": "name", "needle": "a"}
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let cert = prepared.certifiability();
+        assert!(
+            matches!(cert, QueryCertifiability::ExecutionOnly { .. }),
+            "contains(...) should force execution-only classification"
+        );
+        assert!(cert.reasons().iter().any(|r| r.contains("contains")));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_prepare_with_meta_marks_mixed_certifiability() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "disjuncts": [
+                [
+                  {"kind": "type", "term": "?x", "type": "Node"}
+                ],
+                [
+                  {"kind": "attr_contains", "term": "?x", "key": "name", "needle": "a"}
+                ]
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        let cert = q.certifiability()?;
+        let (certifiable, execution_only) = cert.mixed_disjunct_counts();
+        assert_eq!(certifiable, 1);
+        assert_eq!(execution_only, 1);
+        assert!(
+            matches!(cert, QueryCertifiability::Mixed { .. }),
+            "disjunction with one certifiable and one execution-only branch should be mixed"
+        );
+        assert!(cert.reasons().iter().any(|r| r.contains("cannot certify")));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_certifiability_from_ir_only_is_available() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"}
+              ],
+              "limit": 10
+            }"#,
+        )?;
+        assert_eq!(q.certifiability()?, QueryCertifiability::Certifiable);
+        Ok(())
+    }
+
     fn rel_name_strategy() -> impl Strategy<Value = String> {
         // Keep relation names in the "identifier-ish" subset of AxQL for stable parsing.
         "[a-z][a-z0-9_]{0,6}".prop_map(|s| s)
@@ -1080,18 +1311,12 @@ mod tests {
             let var_term = prop::sample::select(vars.clone()).prop_map(QueryTermIrV1::Simple);
 
             let atom = prop_oneof![
-                (var_term.clone(), type_name_strategy()).prop_map(|(term, type_name)| {
-                    QueryAtomIrV1::Type { term, type_name }
-                }),
-                (
-                    var_term.clone(),
-                    path_expr_strategy(),
-                    var_term.clone(),
-                )
+                (var_term.clone(), type_name_strategy())
+                    .prop_map(|(term, type_name)| { QueryAtomIrV1::Type { term, type_name } }),
+                (var_term.clone(), path_expr_strategy(), var_term.clone(),)
                     .prop_map(|(left, path, right)| QueryAtomIrV1::Edge { left, path, right }),
-                (var_term.clone(), attr_key_strategy(), attr_value_strategy()).prop_map(
-                    |(term, key, value)| QueryAtomIrV1::AttrEq { term, key, value },
-                ),
+                (var_term.clone(), attr_key_strategy(), attr_value_strategy())
+                    .prop_map(|(term, key, value)| QueryAtomIrV1::AttrEq { term, key, value },),
             ];
 
             let disjunct = prop::collection::vec(atom, 1..=6);

@@ -313,7 +313,10 @@ impl UnifiedStorage {
                 params,
             } => {
                 let mut s = if let Some(c) = carriers.as_ref() {
-                    format!("symmetric {relation} on ({}, {})", c.left_field, c.right_field)
+                    format!(
+                        "symmetric {relation} on ({}, {})",
+                        c.left_field, c.right_field
+                    )
                 } else {
                     format!("symmetric {relation}")
                 };
@@ -330,7 +333,10 @@ impl UnifiedStorage {
                 params,
             } => {
                 let mut s = if let Some(c) = carriers.as_ref() {
-                    format!("transitive {relation} on ({}, {})", c.left_field, c.right_field)
+                    format!(
+                        "transitive {relation} on ({}, {})",
+                        c.left_field, c.right_field
+                    )
                 } else {
                     format!("transitive {relation}")
                 };

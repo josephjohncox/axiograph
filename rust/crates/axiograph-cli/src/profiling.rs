@@ -113,8 +113,7 @@ mod enabled {
                 return Ok(None);
             }
 
-            let hz = i32::try_from(args.profile_hz.max(1))
-                .unwrap_or(i32::MAX);
+            let hz = i32::try_from(args.profile_hz.max(1)).unwrap_or(i32::MAX);
             let guard = pprof::ProfilerGuard::new(hz)
                 .map_err(|e| anyhow!("failed to start profiler: {e}"))?;
 
@@ -175,9 +174,13 @@ mod enabled {
         }
 
         fn spawn_worker(&mut self, args: &ProfileArgs) -> Result<()> {
-            let interval = args
-                .profile_interval
-                .and_then(|secs| if secs > 0 { Some(Duration::from_secs(secs)) } else { None });
+            let interval = args.profile_interval.and_then(|secs| {
+                if secs > 0 {
+                    Some(Duration::from_secs(secs))
+                } else {
+                    None
+                }
+            });
             let want_signal = args.profile_signal;
 
             if self.live_format == ProfileFormat::Off || (interval.is_none() && !want_signal) {
@@ -199,41 +202,39 @@ mod enabled {
             let format = self.live_format;
             let counter = Arc::clone(&self.counter);
 
-            let worker = thread::spawn(move || {
-                loop {
-                    let recv_result = match interval {
-                        Some(dur) => rx.recv_timeout(dur),
-                        None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
-                    };
+            let worker = thread::spawn(move || loop {
+                let recv_result = match interval {
+                    Some(dur) => rx.recv_timeout(dur),
+                    None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                };
 
-                    match recv_result {
-                        Ok(SnapshotRequest::Stop) => break,
-                        Ok(SnapshotRequest::Signal) => {
+                match recv_result {
+                    Ok(SnapshotRequest::Stop) => break,
+                    Ok(SnapshotRequest::Signal) => {
+                        if let Err(err) = write_snapshot(
+                            &guard,
+                            &out_base,
+                            format,
+                            &counter,
+                            SnapshotKind::Signal,
+                        ) {
+                            eprintln!("profile: {err}");
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if interval.is_some() {
                             if let Err(err) = write_snapshot(
                                 &guard,
                                 &out_base,
                                 format,
                                 &counter,
-                                SnapshotKind::Signal,
+                                SnapshotKind::Interval,
                             ) {
                                 eprintln!("profile: {err}");
                             }
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            if interval.is_some() {
-                                if let Err(err) = write_snapshot(
-                                    &guard,
-                                    &out_base,
-                                    format,
-                                    &counter,
-                                    SnapshotKind::Interval,
-                                ) {
-                                    eprintln!("profile: {err}");
-                                }
-                            }
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             });
 
@@ -490,7 +491,7 @@ mod disabled {
     }
 }
 
-#[cfg(feature = "profiling")]
-pub use enabled::*;
 #[cfg(not(feature = "profiling"))]
 pub use disabled::*;
+#[cfg(feature = "profiling")]
+pub use enabled::*;

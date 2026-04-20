@@ -275,7 +275,10 @@ impl FactIndexCache {
         self.generation.load(Ordering::SeqCst)
     }
     pub(crate) fn attach_async_source(&self, source: Weak<PathDB>) {
-        let mut guard = self.async_source.lock().expect("fact index source poisoned");
+        let mut guard = self
+            .async_source
+            .lock()
+            .expect("fact index source poisoned");
         *guard = Some(source);
     }
 
@@ -338,9 +341,7 @@ impl FactIndexCache {
                         writer.mark_dirty();
                     }
                 }
-                cache
-                    .building_generation
-                    .store(u64::MAX, Ordering::SeqCst);
+                cache.building_generation.store(u64::MAX, Ordering::SeqCst);
             })
             .expect("failed to spawn fact index build thread");
         true

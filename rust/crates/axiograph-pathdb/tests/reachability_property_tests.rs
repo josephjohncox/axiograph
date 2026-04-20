@@ -1,4 +1,6 @@
-use axiograph_pathdb::certificate::{FixedPointProbability, ReachabilityProofV2, FIXED_POINT_DENOMINATOR};
+use axiograph_pathdb::certificate::{
+    FixedPointProbability, ReachabilityProofV2, FIXED_POINT_DENOMINATOR,
+};
 use proptest::prelude::*;
 
 const MAX_PATH_LEN: usize = 12;
@@ -11,40 +13,41 @@ fn reachability_proof_v2_strategy(
     // - a well-formed reachability proof (a chain of steps ending in Reflexive),
     // - the per-edge confidences (in order),
     // - the visited entity ids (nodes[0]..nodes[n]) for easy checking.
-    (0usize..=MAX_PATH_LEN).prop_flat_map(|len| {
-        (
-            prop::collection::vec(0u32..=MAX_ENTITY_ID, len + 1),
-            prop::collection::vec(0u32..=MAX_REL_TYPE_ID, len),
-            prop::collection::vec(0u32..=FIXED_POINT_DENOMINATOR, len),
-        )
-    })
-    .prop_map(|(nodes, rel_types, conf_nums)| {
-        let confs: Vec<FixedPointProbability> = conf_nums
-            .into_iter()
-            .map(|n| FixedPointProbability::try_new(n).expect("n is within bounds"))
-            .collect();
+    (0usize..=MAX_PATH_LEN)
+        .prop_flat_map(|len| {
+            (
+                prop::collection::vec(0u32..=MAX_ENTITY_ID, len + 1),
+                prop::collection::vec(0u32..=MAX_REL_TYPE_ID, len),
+                prop::collection::vec(0u32..=FIXED_POINT_DENOMINATOR, len),
+            )
+        })
+        .prop_map(|(nodes, rel_types, conf_nums)| {
+            let confs: Vec<FixedPointProbability> = conf_nums
+                .into_iter()
+                .map(|n| FixedPointProbability::try_new(n).expect("n is within bounds"))
+                .collect();
 
-        let mut proof = ReachabilityProofV2::Reflexive {
-            entity: *nodes.last().unwrap_or(&0),
-        };
-
-        for i in (0..rel_types.len()).rev() {
-            let from = nodes[i];
-            let to = nodes[i + 1];
-            let rel_type = rel_types[i];
-            let rel_confidence_fp = confs[i];
-            proof = ReachabilityProofV2::Step {
-                from,
-                rel_type,
-                to,
-                rel_confidence_fp,
-                relation_id: None,
-                rest: Box::new(proof),
+            let mut proof = ReachabilityProofV2::Reflexive {
+                entity: *nodes.last().unwrap_or(&0),
             };
-        }
 
-        (proof, confs, nodes)
-    })
+            for i in (0..rel_types.len()).rev() {
+                let from = nodes[i];
+                let to = nodes[i + 1];
+                let rel_type = rel_types[i];
+                let rel_confidence_fp = confs[i];
+                proof = ReachabilityProofV2::Step {
+                    from,
+                    rel_type,
+                    to,
+                    rel_confidence_fp,
+                    relation_id: None,
+                    rest: Box::new(proof),
+                };
+            }
+
+            (proof, confs, nodes)
+        })
 }
 
 proptest! {

@@ -41,20 +41,18 @@ use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axiograph_dsl::schema_v1::{parse_path_expr_v3, PathExprV3};
-use axiograph_pathdb::axi_meta::{
-    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, REL_AXI_FACT_IN_CONTEXT,
-};
+use axiograph_pathdb::axi_meta::{ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, REL_AXI_FACT_IN_CONTEXT};
 use axiograph_pathdb::axi_meta::{
     ATTR_REWRITE_RULE_LHS, ATTR_REWRITE_RULE_ORIENTATION, ATTR_REWRITE_RULE_RHS,
     ATTR_REWRITE_RULE_VARS, META_ATTR_ID, META_TYPE_REWRITE_RULE,
 };
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::certificate::{
-    CertificatePayloadV2, CertificateV2, FixedPointProbability, QueryAtomV1, QueryAtomWitnessV1,
-    QueryBindingV1, QueryRegexV1, QueryResultProofV1, QueryResultProofV2, QueryRowV1, QueryRowV2,
-    QueryTermV1, QueryV1, QueryV2, ReachabilityProofV2,
-    QueryAtomV3, QueryAtomWitnessV3, QueryBindingV3, QueryRegexV3, QueryResultProofV3, QueryRowV3,
-    QueryTermV3, QueryV3, PathRewriteStepV3, RewriteDerivationProofV3,
+    CertificatePayloadV2, CertificateV2, FixedPointProbability, PathRewriteStepV3, QueryAtomV1,
+    QueryAtomV3, QueryAtomWitnessV1, QueryAtomWitnessV3, QueryBindingV1, QueryBindingV3,
+    QueryRegexV1, QueryRegexV3, QueryResultProofV1, QueryResultProofV2, QueryResultProofV3,
+    QueryRowV1, QueryRowV2, QueryRowV3, QueryTermV1, QueryTermV3, QueryV1, QueryV2, QueryV3,
+    ReachabilityProofV2, RewriteDerivationProofV3,
 };
 use axiograph_pathdb::witness;
 use axiograph_pathdb::{DbToken, DbTokenMismatch};
@@ -281,6 +279,154 @@ pub struct AxqlResult {
     pub truncated: bool,
 }
 
+/// Whether a query can be fully handled by certificate-generating execution,
+/// or if it is execution-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryCertifiability {
+    /// The query body is compatible with current certificate generation.
+    Certifiable,
+    /// The query is partially certifiable (disjunction with mixed trusted vs
+    /// execution-only branches).
+    ///
+    /// This preserves the disjunction meaning while preserving precise trust
+    /// metadata for callers that need to separate execution-only branches.
+    Mixed {
+        certifiable_disjuncts: usize,
+        execution_only_disjuncts: usize,
+        reasons: Vec<String>,
+    },
+    /// Parts of the query are execution-only (typically approximate atoms
+    /// or unsupported context combinations).
+    ExecutionOnly { reasons: Vec<String> },
+}
+
+impl QueryCertifiability {
+    /// Returns `true` iff the query is certifiable as-is.
+    pub const fn is_certifiable(&self) -> bool {
+        matches!(self, Self::Certifiable)
+    }
+
+    /// Returns disjunct witness counts for mixed trust classification.
+    ///
+    /// For non-mixed results, this returns `(0, 0)`.
+    pub fn mixed_disjunct_counts(&self) -> (usize, usize) {
+        match self {
+            Self::Mixed {
+                certifiable_disjuncts,
+                execution_only_disjuncts,
+                ..
+            } => (*certifiable_disjuncts, *execution_only_disjuncts),
+            _ => (0, 0),
+        }
+    }
+
+    fn from_reasons(mut reasons: Vec<String>) -> Self {
+        reasons.sort();
+        reasons.dedup();
+        reasons.retain(|r| !r.is_empty());
+        if reasons.is_empty() {
+            Self::Certifiable
+        } else {
+            Self::ExecutionOnly { reasons }
+        }
+    }
+
+    pub fn reasons(&self) -> &[String] {
+        match self {
+            Self::Certifiable => &[],
+            Self::Mixed { reasons, .. } => reasons,
+            Self::ExecutionOnly { reasons } => reasons,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedQueryIntrospection {
+    pub disjunct_count: usize,
+    pub selected_vars: Vec<String>,
+    pub limit: usize,
+    pub context_count: usize,
+    pub certifiability: QueryCertifiability,
+}
+
+impl AxqlQuery {
+    /// Classify how much of this query can be sent through the certificate path.
+    pub fn certifiability(&self) -> QueryCertifiability {
+        if self.disjuncts.is_empty() {
+            return QueryCertifiability::ExecutionOnly {
+                reasons: vec!["query must contain at least one disjunct".to_string()],
+            };
+        }
+
+        let mut certifiable_disjuncts = 0usize;
+        let mut execution_only_disjuncts = 0usize;
+        let mut execution_only_reasons = Vec::new();
+        let multi_context = self.contexts.len() > 1;
+
+        for disjunct in &self.disjuncts {
+            let mut disjunct_reasons = Vec::new();
+            if multi_context {
+                disjunct_reasons.push(
+                    "cannot certify multi-context scoping yet; use a single `in <context>`"
+                        .to_string(),
+                );
+            }
+
+            for atom in disjunct {
+                match atom {
+                    AxqlAtom::AttrContains { .. } => {
+                        disjunct_reasons.push(
+                            "cannot certify `contains(...)` atoms (approximate querying is not in the certified core)"
+                                .to_string(),
+                        );
+                    }
+                    AxqlAtom::AttrFts { .. } => {
+                        disjunct_reasons.push(
+                            "cannot certify `fts(...)` atoms (approximate querying is not in the certified core)"
+                                .to_string(),
+                        );
+                    }
+                    AxqlAtom::AttrFuzzy { .. } => {
+                        disjunct_reasons.push(
+                            "cannot certify `fuzzy(...)` atoms (approximate querying is not in the certified core)"
+                                .to_string(),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            match QueryCertifiability::from_reasons(disjunct_reasons.clone()) {
+                QueryCertifiability::Certifiable => {
+                    certifiable_disjuncts += 1;
+                }
+                _ => {
+                    execution_only_disjuncts += 1;
+                    execution_only_reasons.extend(disjunct_reasons);
+                }
+            }
+        }
+
+        let deduped_reasons = QueryCertifiability::from_reasons(execution_only_reasons)
+            .reasons()
+            .to_vec();
+
+        if certifiable_disjuncts > 0 && execution_only_disjuncts > 0 {
+            QueryCertifiability::Mixed {
+                certifiable_disjuncts,
+                execution_only_disjuncts,
+                reasons: deduped_reasons,
+            }
+        } else if execution_only_disjuncts > 0 {
+            QueryCertifiability::ExecutionOnly {
+                reasons: deduped_reasons,
+            }
+        } else {
+            QueryCertifiability::Certifiable
+        }
+    }
+}
+
 pub fn parse_axql_query(input: &str) -> Result<AxqlQuery> {
     let (_, mut q) = all_consuming(ws(axql_query))(input)
         .map_err(|e| anyhow!("failed to parse axql query: {e:?}"))?;
@@ -359,7 +505,7 @@ pub(crate) struct AxqlQueryCacheKey {
 }
 
 pub(crate) struct AxqlPreparedQueryCache {
-    entries: HashMap<AxqlQueryCacheKey, PreparedAxqlQueryExpr>,
+    entries: HashMap<AxqlQueryCacheKey, PreparedQueryHandle>,
     lru: std::collections::VecDeque<AxqlQueryCacheKey>,
     max_entries: usize,
 }
@@ -387,10 +533,7 @@ impl AxqlPreparedQueryCache {
         self.lru.push_back(key.clone());
     }
 
-    pub(crate) fn get_mut(
-        &mut self,
-        key: &AxqlQueryCacheKey,
-    ) -> Option<&mut PreparedAxqlQueryExpr> {
+    pub(crate) fn get_mut(&mut self, key: &AxqlQueryCacheKey) -> Option<&mut PreparedQueryHandle> {
         if self.entries.contains_key(key) {
             self.touch(key);
             return self.entries.get_mut(key);
@@ -398,7 +541,7 @@ impl AxqlPreparedQueryCache {
         None
     }
 
-    pub(crate) fn insert(&mut self, key: AxqlQueryCacheKey, value: PreparedAxqlQueryExpr) {
+    pub(crate) fn insert(&mut self, key: AxqlQueryCacheKey, value: PreparedQueryHandle) {
         self.entries.insert(key.clone(), value);
         self.touch(&key);
 
@@ -435,16 +578,7 @@ pub(crate) fn execute_axql_query_cached(
     snapshot_key: &str,
     cache: &mut AxqlPreparedQueryCache,
 ) -> Result<AxqlResult> {
-    let key = axql_query_cache_key(snapshot_key, query);
-    if let Some(prepared) = cache.get_mut(&key) {
-        return prepared.execute(db, meta);
-    }
-    let prepared = prepare_axql_query_with_meta(db, query, meta)?;
-    cache.insert(key.clone(), prepared);
-    cache
-        .get_mut(&key)
-        .expect("query cache insert")
-        .execute(db, meta)
+    get_or_prepare_axql_query_handle_mut(db, query, meta, snapshot_key, cache)?.execute(db, meta)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -484,8 +618,14 @@ pub(crate) struct PreparedAxqlQuery {
 }
 
 /// A compiled AxQL query that may contain disjunction (OR).
-pub(crate) struct PreparedAxqlQueryExpr {
+struct PreparedAxqlQueryExpr {
     inner: PreparedAxqlQueryExprInner,
+}
+
+pub(crate) struct PreparedQueryHandle {
+    inner: PreparedAxqlQueryExpr,
+    certifiability: QueryCertifiability,
+    context_count: usize,
 }
 
 enum PreparedAxqlQueryExprInner {
@@ -638,11 +778,9 @@ impl TypecheckedAxqlQueryExpr {
         limit: usize,
     ) -> Result<PreparedAxqlQueryExpr> {
         match self {
-            TypecheckedAxqlQueryExpr::Conjunction(q) => {
-                Ok(PreparedAxqlQueryExpr {
-                    inner: PreparedAxqlQueryExprInner::Conjunction(q.prepare(db, meta)?),
-                })
-            }
+            TypecheckedAxqlQueryExpr::Conjunction(q) => Ok(PreparedAxqlQueryExpr {
+                inner: PreparedAxqlQueryExprInner::Conjunction(q.prepare(db, meta)?),
+            }),
             TypecheckedAxqlQueryExpr::Disjunction(disjuncts) => {
                 let mut prepared: Vec<PreparedAxqlQuery> = Vec::with_capacity(disjuncts.len());
                 let mut merged = AxqlElaborationReport::default();
@@ -805,7 +943,9 @@ impl PreparedAxqlQuery {
             match re {
                 AxqlRegex::Epsilon => "ε".to_string(),
                 AxqlRegex::Rel(r) => r.clone(),
-                AxqlRegex::Seq(parts) => parts.iter().map(render_regex).collect::<Vec<_>>().join("/"),
+                AxqlRegex::Seq(parts) => {
+                    parts.iter().map(render_regex).collect::<Vec<_>>().join("/")
+                }
                 AxqlRegex::Alt(parts) => {
                     format!(
                         "({})",
@@ -955,27 +1095,27 @@ impl PreparedAxqlQuery {
     }
 }
 
-impl PreparedAxqlQueryExpr {
+impl PreparedQueryHandle {
     pub(crate) fn execute(
         &mut self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&MetaPlaneIndex>,
     ) -> Result<AxqlResult> {
-        match &mut self.inner {
+        match &mut self.inner.inner {
             PreparedAxqlQueryExprInner::Conjunction(q) => q.execute(db, meta),
             PreparedAxqlQueryExprInner::Disjunction(q) => q.execute(db, meta),
         }
     }
 
     pub(crate) fn elaborated_query_text(&self) -> String {
-        match &self.inner {
+        match &self.inner.inner {
             PreparedAxqlQueryExprInner::Conjunction(q) => q.elaborated_query_text(),
             PreparedAxqlQueryExprInner::Disjunction(q) => q.elaborated_query_text(),
         }
     }
 
     pub(crate) fn elaboration_report(&self) -> &AxqlElaborationReport {
-        match &self.inner {
+        match &self.inner.inner {
             PreparedAxqlQueryExprInner::Conjunction(q) => q.elaboration_report(),
             PreparedAxqlQueryExprInner::Disjunction(q) => &q.elaboration,
         }
@@ -983,7 +1123,7 @@ impl PreparedAxqlQueryExpr {
 
     /// Human-readable plan/debug output for `q --explain`.
     pub(crate) fn explain_plan_lines(&self) -> Vec<String> {
-        match &self.inner {
+        match &self.inner.inner {
             PreparedAxqlQueryExprInner::Conjunction(q) => q.explain_plan_lines(None),
             PreparedAxqlQueryExprInner::Disjunction(q) => {
                 let mut out: Vec<String> = Vec::new();
@@ -995,6 +1135,47 @@ impl PreparedAxqlQueryExpr {
                 out
             }
         }
+    }
+
+    pub(crate) fn certifiability(&self) -> QueryCertifiability {
+        self.certifiability.clone()
+    }
+
+    pub(crate) fn introspection(&self) -> PreparedQueryIntrospection {
+        let mut out = match &self.inner.inner {
+            PreparedAxqlQueryExprInner::Conjunction(q) => PreparedQueryIntrospection {
+                disjunct_count: 1,
+                selected_vars: q.lowered.select_vars.clone(),
+                limit: q.lowered.limit,
+                context_count: self.context_count,
+                certifiability: self.certifiability.clone(),
+            },
+            PreparedAxqlQueryExprInner::Disjunction(q) => PreparedQueryIntrospection {
+                disjunct_count: q.disjuncts.len(),
+                selected_vars: q.select_vars.clone(),
+                limit: q.limit,
+                context_count: self.context_count,
+                certifiability: self.certifiability.clone(),
+            },
+        };
+
+        out.context_count = self.context_count;
+        out.certifiability = self.certifiability.clone();
+        out
+    }
+
+    pub(crate) fn certify(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        query: &AxqlQuery,
+        meta: Option<&MetaPlaneIndex>,
+    ) -> Result<CertificateV2> {
+        if query.contexts.len() > 1 {
+            return Err(anyhow!(
+                "cannot certify multi-context scoping yet; use a single `in <context>`"
+            ));
+        }
+        TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?.certify(db, meta, query.limit)
     }
 }
 
@@ -1052,13 +1233,43 @@ pub(crate) fn prepare_axql_query_with_meta(
     db: &axiograph_pathdb::PathDB,
     query: &AxqlQuery,
     meta: Option<&MetaPlaneIndex>,
-) -> Result<PreparedAxqlQueryExpr> {
-    TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?.prepare(
-        db,
-        meta,
-        query.select_vars.clone(),
-        query.limit,
-    )
+) -> Result<PreparedQueryHandle> {
+    Ok(PreparedQueryHandle {
+        inner: TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?.prepare(
+            db,
+            meta,
+            query.select_vars.clone(),
+            query.limit,
+        )?,
+        certifiability: query.certifiability(),
+        context_count: query.contexts.len(),
+    })
+}
+
+pub(crate) fn prepare_query_ir_handle_with_meta(
+    db: &axiograph_pathdb::PathDB,
+    query_ir: &crate::query_ir::QueryIrV1,
+    meta: Option<&MetaPlaneIndex>,
+) -> Result<PreparedQueryHandle> {
+    let query = query_ir.to_axql_query()?;
+    prepare_axql_query_with_meta(db, &query, meta)
+}
+
+pub(crate) fn get_or_prepare_axql_query_handle_mut<'a>(
+    db: &axiograph_pathdb::PathDB,
+    query: &AxqlQuery,
+    meta: Option<&MetaPlaneIndex>,
+    snapshot_key: &str,
+    cache: &'a mut AxqlPreparedQueryCache,
+) -> Result<&'a mut PreparedQueryHandle> {
+    let key = axql_query_cache_key(snapshot_key, query);
+    if !cache.entries.contains_key(&key) {
+        let prepared = prepare_axql_query_with_meta(db, query, meta)?;
+        cache.insert(key.clone(), prepared);
+    }
+    cache
+        .get_mut(&key)
+        .ok_or_else(|| anyhow!("query cache insert failed"))
 }
 
 /// Execute an AxQL query with an optional precomputed meta-plane index.
@@ -1080,12 +1291,7 @@ pub fn certify_axql_query_with_meta(
     query: &AxqlQuery,
     meta: Option<&MetaPlaneIndex>,
 ) -> Result<CertificateV2> {
-    if query.contexts.len() > 1 {
-        return Err(anyhow!(
-            "cannot certify multi-context scoping yet; use a single `in <context>`"
-        ));
-    }
-    TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?.certify(db, meta, query.limit)
+    prepare_axql_query_with_meta(db, query, meta)?.certify(db, query, meta)
 }
 
 /// Emit a `query_result_v3` certificate (name-based, `.axi`-anchored) with an
@@ -1244,10 +1450,7 @@ fn certify_disjunctive_query_v3(
         let q = d.lowered.to_query_ir_v3_disjunct(db)?;
         if i == 0 {
             max_hops = d.lowered.max_hops;
-            min_confidence_fp = d
-                .lowered
-                .min_confidence
-                .map(fixed_prob_from_confidence);
+            min_confidence_fp = d.lowered.min_confidence.map(fixed_prob_from_confidence);
         } else {
             if d.lowered.max_hops != max_hops {
                 return Err(anyhow!(
@@ -1285,7 +1488,9 @@ fn certify_disjunctive_query_v3(
         let remaining = limit - rows.len();
         d.lowered.limit = remaining;
 
-        let cert = d.lowered.certify_v3(db, meta, axi_digest_v1, &d.elaboration)?;
+        let cert = d
+            .lowered
+            .certify_v3(db, meta, axi_digest_v1, &d.elaboration)?;
         let proof = match cert.payload {
             CertificatePayloadV2::QueryResultV3 { proof } => proof,
             other => {
@@ -2629,7 +2834,9 @@ fn collect_chain_rewrite_rules(
 
     let mut rules = Vec::new();
     for rid in rule_ids.iter() {
-        let Some(view) = db.get_entity(rid) else { continue };
+        let Some(view) = db.get_entity(rid) else {
+            continue;
+        };
         let orientation = view
             .attrs
             .get(ATTR_REWRITE_RULE_ORIENTATION)
@@ -2647,9 +2854,15 @@ fn collect_chain_rewrite_rules(
                     continue;
                 }
                 // Format: axi_meta_rewrite_rule:<module>:<theory>:<rule>
-                let Some(_module_name) = parts.next() else { continue };
-                let Some(theory_name) = parts.next() else { continue };
-                let Some(rule_name) = parts.next() else { continue };
+                let Some(_module_name) = parts.next() else {
+                    continue;
+                };
+                let Some(theory_name) = parts.next() else {
+                    continue;
+                };
+                let Some(rule_name) = parts.next() else {
+                    continue;
+                };
                 if parts.next().is_some() {
                     continue;
                 }
@@ -2783,11 +2996,7 @@ fn collect_chain_rewrite_rules(
     rules
 }
 
-fn entity_matches_type(
-    meta: Option<&MetaPlaneIndex>,
-    entity_type: &str,
-    required: &str,
-) -> bool {
+fn entity_matches_type(meta: Option<&MetaPlaneIndex>, entity_type: &str, required: &str) -> bool {
     if entity_type == required {
         return true;
     }
@@ -2815,7 +3024,9 @@ fn term_satisfies_type(
     };
     match term {
         LoweredTerm::Var(idx) => {
-            let Some(name) = vars.get(*idx) else { return true };
+            let Some(name) = vars.get(*idx) else {
+                return true;
+            };
             let Some(types) = inferred.get(name) else {
                 return true;
             };
@@ -2836,7 +3047,10 @@ fn term_name_for_elaboration_rewrite_expr(
     vars: &[String],
 ) -> String {
     match term {
-        LoweredTerm::Var(idx) => vars.get(*idx).cloned().unwrap_or_else(|| format!("?v{idx}")),
+        LoweredTerm::Var(idx) => vars
+            .get(*idx)
+            .cloned()
+            .unwrap_or_else(|| format!("?v{idx}")),
         LoweredTerm::Const(id) => witness::stable_entity_id_v1(db, *id).unwrap_or_else(|_| {
             // Fallback for non-.axi anchored graphs (these rewrites are optional).
             id.to_string()
@@ -3207,29 +3421,28 @@ impl LoweredQuery {
 
         // Helper: add (or validate) `attr(term, "axi_schema", schema_name)`.
         let mut schema_filter_atoms: Vec<LoweredAtom> = Vec::new();
-        let mut require_schema =
-            |term: &LoweredTerm, schema_name: &str| -> Result<()> {
-                let want = schema_name.trim();
-                if want.is_empty() {
-                    return Err(anyhow!("empty schema name in schema-qualified identifier"));
-                }
-                if let Some(existing) = schema_constraint_by_term.get(term) {
-                    if existing != want {
-                        return Err(anyhow!(
+        let mut require_schema = |term: &LoweredTerm, schema_name: &str| -> Result<()> {
+            let want = schema_name.trim();
+            if want.is_empty() {
+                return Err(anyhow!("empty schema name in schema-qualified identifier"));
+            }
+            if let Some(existing) = schema_constraint_by_term.get(term) {
+                if existing != want {
+                    return Err(anyhow!(
                             "conflicting schema constraints: attr(..., \"{ATTR_AXI_SCHEMA}\", \"{existing}\") vs schema-qualified `{want}`"
                         ));
-                    }
-                    return Ok(());
                 }
+                return Ok(());
+            }
 
-                schema_constraint_by_term.insert(term.clone(), want.to_string());
-                schema_filter_atoms.push(LoweredAtom::AttrEq {
-                    term: term.clone(),
-                    key: ATTR_AXI_SCHEMA.to_string(),
-                    value: want.to_string(),
-                });
-                Ok(())
-            };
+            schema_constraint_by_term.insert(term.clone(), want.to_string());
+            schema_filter_atoms.push(LoweredAtom::AttrEq {
+                term: term.clone(),
+                key: ATTR_AXI_SCHEMA.to_string(),
+                value: want.to_string(),
+            });
+            Ok(())
+        };
 
         // Helper: resolve a relation label used in an edge/path atom.
         //
@@ -3327,8 +3540,7 @@ impl LoweredQuery {
                 }
                 LoweredAtom::AttrEq { term, key, value } => {
                     if key == ATTR_AXI_RELATION {
-                        if let Some((schema_name, rel_name)) =
-                            split_schema_qualified_simple(&value)
+                        if let Some((schema_name, rel_name)) = split_schema_qualified_simple(&value)
                         {
                             let Some(schema) = meta.schemas.get(schema_name) else {
                                 return Err(anyhow!(
@@ -3685,9 +3897,8 @@ impl LoweredQuery {
         // - `?x -ZRel-> ?y` becomes `?x -S1.ZRel-> ?y` when `?x/?y` are known to be in schema `S1`.
         // - If schema cannot be determined, we fall back to an RPQ alternation
         //   `-(S1.ZRel|S2.ZRel)->` so the query still has a predictable “union” meaning.
-        let relation_name_count = |rel: &str| -> usize {
-            schemas_by_relation.get(rel).map(|v| v.len()).unwrap_or(0)
-        };
+        let relation_name_count =
+            |rel: &str| -> usize { schemas_by_relation.get(rel).map(|v| v.len()).unwrap_or(0) };
 
         // Expand ambiguous unqualified relation names inside existing RPQs.
         fn rewrite_rpq_regex_for_schema_collisions(
@@ -3700,8 +3911,7 @@ impl LoweredQuery {
                 AxqlRegex::Epsilon => {}
                 AxqlRegex::Rel(label) => {
                     let original = label.clone();
-                    if let Some((schema_name, rel_name)) =
-                        split_schema_qualified_simple(&original)
+                    if let Some((schema_name, rel_name)) = split_schema_qualified_simple(&original)
                     {
                         if meta
                             .schemas
@@ -3709,8 +3919,10 @@ impl LoweredQuery {
                             .map(|s| s.relation_decls.contains_key(rel_name))
                             .unwrap_or(false)
                         {
-                            let count =
-                                schemas_by_relation.get(rel_name).map(|v| v.len()).unwrap_or(0);
+                            let count = schemas_by_relation
+                                .get(rel_name)
+                                .map(|v| v.len())
+                                .unwrap_or(0);
                             *re = AxqlRegex::Rel(if count > 1 {
                                 format!("{schema_name}.{rel_name}")
                             } else {
@@ -3848,7 +4060,11 @@ impl LoweredQuery {
                 rpq_index.insert(alt, id);
                 id
             };
-            new_atoms.push(LoweredAtom::Rpq { left, rpq_id, right });
+            new_atoms.push(LoweredAtom::Rpq {
+                left,
+                rpq_id,
+                right,
+            });
             ambiguous_edge_labels_used.insert(rel);
         }
         self.atoms = new_atoms;
@@ -3978,136 +4194,129 @@ impl LoweredQuery {
         let mut extra_atoms: Vec<LoweredAtom> = Vec::new();
         let mut inferred_atoms: usize = 0;
 
-        let mut apply_implied_types =
-            |term: &LoweredTerm, implied: Vec<String>| -> Result<()> {
-                for ty in implied {
-                    if existing_types.insert((term.clone(), ty.clone())) {
-                        extra_atoms.push(LoweredAtom::Type {
-                            term: term.clone(),
-                            type_name: ty.clone(),
-                        });
-                        inferred_atoms += 1;
-                        if let LoweredTerm::Var(var_id) = term {
-                            if let Some(var_name) = self.vars.get(*var_id).cloned() {
-                                report.inferred_types.entry(var_name).or_default().push(ty);
-                            }
+        let mut apply_implied_types = |term: &LoweredTerm, implied: Vec<String>| -> Result<()> {
+            for ty in implied {
+                if existing_types.insert((term.clone(), ty.clone())) {
+                    extra_atoms.push(LoweredAtom::Type {
+                        term: term.clone(),
+                        type_name: ty.clone(),
+                    });
+                    inferred_atoms += 1;
+                    if let LoweredTerm::Var(var_id) = term {
+                        if let Some(var_name) = self.vars.get(*var_id).cloned() {
+                            report.inferred_types.entry(var_name).or_default().push(ty);
                         }
                     }
                 }
-                Ok(())
-            };
+            }
+            Ok(())
+        };
 
         // Helper: resolve implied endpoint types for a single relation name.
-        let mut relation_endpoints_implied_types =
-            |relation_label: &str| -> Result<Option<(Vec<String>, Vec<String>)>> {
-                // Schema-qualified relation label: infer endpoints directly from that schema.
-                if let Some((schema_name, rel_name)) =
-                    split_schema_qualified_simple(relation_label)
-                {
-                    if let Some(schema) = meta.schemas.get(schema_name) {
-                        if let Some(rel_decl) = schema.relation_decls.get(rel_name) {
-                            let Some((src_field_type, dst_field_type)) =
-                                derive_endpoints_field_types(rel_decl)
-                            else {
-                                return Ok(None);
-                            };
+        let mut relation_endpoints_implied_types = |relation_label: &str| -> Result<
+            Option<(Vec<String>, Vec<String>)>,
+        > {
+            // Schema-qualified relation label: infer endpoints directly from that schema.
+            if let Some((schema_name, rel_name)) = split_schema_qualified_simple(relation_label) {
+                if let Some(schema) = meta.schemas.get(schema_name) {
+                    if let Some(rel_decl) = schema.relation_decls.get(rel_name) {
+                        let Some((src_field_type, dst_field_type)) =
+                            derive_endpoints_field_types(rel_decl)
+                        else {
+                            return Ok(None);
+                        };
 
-                            let Some(src_type) =
-                                canonical_entity_type_for_axi_type(schema, &src_field_type)
-                            else {
-                                return Ok(None);
-                            };
-                            let Some(dst_type) =
-                                canonical_entity_type_for_axi_type(schema, &dst_field_type)
-                            else {
-                                return Ok(None);
-                            };
+                        let Some(src_type) =
+                            canonical_entity_type_for_axi_type(schema, &src_field_type)
+                        else {
+                            return Ok(None);
+                        };
+                        let Some(dst_type) =
+                            canonical_entity_type_for_axi_type(schema, &dst_field_type)
+                        else {
+                            return Ok(None);
+                        };
 
-                            let mut src_implied: Vec<String> = Vec::new();
-                            if let Some(supers) = schema.supertypes_of.get(&src_type) {
-                                src_implied.extend(supers.iter().cloned());
-                            } else {
-                                src_implied.push(src_type.clone());
-                            }
-                            src_implied.sort();
-                            src_implied.dedup();
-
-                            let mut dst_implied: Vec<String> = Vec::new();
-                            if let Some(supers) = schema.supertypes_of.get(&dst_type) {
-                                dst_implied.extend(supers.iter().cloned());
-                            } else {
-                                dst_implied.push(dst_type.clone());
-                            }
-                            dst_implied.sort();
-                            dst_implied.dedup();
-
-                            return Ok(Some((src_implied, dst_implied)));
+                        let mut src_implied: Vec<String> = Vec::new();
+                        if let Some(supers) = schema.supertypes_of.get(&src_type) {
+                            src_implied.extend(supers.iter().cloned());
+                        } else {
+                            src_implied.push(src_type.clone());
                         }
+                        src_implied.sort();
+                        src_implied.dedup();
+
+                        let mut dst_implied: Vec<String> = Vec::new();
+                        if let Some(supers) = schema.supertypes_of.get(&dst_type) {
+                            dst_implied.extend(supers.iter().cloned());
+                        } else {
+                            dst_implied.push(dst_type.clone());
+                        }
+                        dst_implied.sort();
+                        dst_implied.dedup();
+
+                        return Ok(Some((src_implied, dst_implied)));
                     }
                 }
+            }
 
-                let candidate_schemas: Vec<&str> = if let Some(sole) = sole_schema_name {
-                    vec![sole]
-                } else {
-                    schemas_by_relation
-                        .get(relation_label)
-                        .cloned()
-                        .unwrap_or_default()
-                };
-                if candidate_schemas.is_empty() {
-                    return Ok(None);
-                }
-                if candidate_schemas.len() > 1 {
-                    // We avoid guessing a schema here; edge atoms don’t currently
-                    // have an explicit schema qualifier.
-                    edge_rel_ambiguity.insert(relation_label.to_string());
-                    return Ok(None);
-                }
-
-                let schema_name = candidate_schemas[0];
-                let Some(schema) = meta.schemas.get(schema_name) else {
-                    return Ok(None);
-                };
-                let Some(rel_decl) = schema.relation_decls.get(relation_label) else {
-                    return Ok(None);
-                };
-                let Some((src_field_type, dst_field_type)) =
-                    derive_endpoints_field_types(rel_decl)
-                else {
-                    return Ok(None);
-                };
-
-                let Some(src_type) =
-                    canonical_entity_type_for_axi_type(schema, &src_field_type)
-                else {
-                    return Ok(None);
-                };
-                let Some(dst_type) =
-                    canonical_entity_type_for_axi_type(schema, &dst_field_type)
-                else {
-                    return Ok(None);
-                };
-
-                let mut src_implied: Vec<String> = Vec::new();
-                if let Some(supers) = schema.supertypes_of.get(&src_type) {
-                    src_implied.extend(supers.iter().cloned());
-                } else {
-                    src_implied.push(src_type.clone());
-                }
-                src_implied.sort();
-                src_implied.dedup();
-
-                let mut dst_implied: Vec<String> = Vec::new();
-                if let Some(supers) = schema.supertypes_of.get(&dst_type) {
-                    dst_implied.extend(supers.iter().cloned());
-                } else {
-                    dst_implied.push(dst_type.clone());
-                }
-                dst_implied.sort();
-                dst_implied.dedup();
-
-                Ok(Some((src_implied, dst_implied)))
+            let candidate_schemas: Vec<&str> = if let Some(sole) = sole_schema_name {
+                vec![sole]
+            } else {
+                schemas_by_relation
+                    .get(relation_label)
+                    .cloned()
+                    .unwrap_or_default()
             };
+            if candidate_schemas.is_empty() {
+                return Ok(None);
+            }
+            if candidate_schemas.len() > 1 {
+                // We avoid guessing a schema here; edge atoms don’t currently
+                // have an explicit schema qualifier.
+                edge_rel_ambiguity.insert(relation_label.to_string());
+                return Ok(None);
+            }
+
+            let schema_name = candidate_schemas[0];
+            let Some(schema) = meta.schemas.get(schema_name) else {
+                return Ok(None);
+            };
+            let Some(rel_decl) = schema.relation_decls.get(relation_label) else {
+                return Ok(None);
+            };
+            let Some((src_field_type, dst_field_type)) = derive_endpoints_field_types(rel_decl)
+            else {
+                return Ok(None);
+            };
+
+            let Some(src_type) = canonical_entity_type_for_axi_type(schema, &src_field_type) else {
+                return Ok(None);
+            };
+            let Some(dst_type) = canonical_entity_type_for_axi_type(schema, &dst_field_type) else {
+                return Ok(None);
+            };
+
+            let mut src_implied: Vec<String> = Vec::new();
+            if let Some(supers) = schema.supertypes_of.get(&src_type) {
+                src_implied.extend(supers.iter().cloned());
+            } else {
+                src_implied.push(src_type.clone());
+            }
+            src_implied.sort();
+            src_implied.dedup();
+
+            let mut dst_implied: Vec<String> = Vec::new();
+            if let Some(supers) = schema.supertypes_of.get(&dst_type) {
+                dst_implied.extend(supers.iter().cloned());
+            } else {
+                dst_implied.push(dst_type.clone());
+            }
+            dst_implied.sort();
+            dst_implied.dedup();
+
+            Ok(Some((src_implied, dst_implied)))
+        };
 
         // Helper: resolve canonical (schema, src_type, dst_type) for a single relation label.
         //
@@ -4115,8 +4324,7 @@ impl LoweredQuery {
         let relation_endpoints_canonical_types =
             |relation_label: &str| -> Result<Option<(String, String, String)>> {
                 // Schema-qualified relation label.
-                if let Some((schema_name, rel_name)) =
-                    split_schema_qualified_simple(relation_label)
+                if let Some((schema_name, rel_name)) = split_schema_qualified_simple(relation_label)
                 {
                     let Some(schema) = meta.schemas.get(schema_name) else {
                         return Ok(None);
@@ -4161,18 +4369,15 @@ impl LoweredQuery {
                 let Some(rel_decl) = schema.relation_decls.get(relation_label) else {
                     return Ok(None);
                 };
-                let Some((src_field_type, dst_field_type)) =
-                    derive_endpoints_field_types(rel_decl)
+                let Some((src_field_type, dst_field_type)) = derive_endpoints_field_types(rel_decl)
                 else {
                     return Ok(None);
                 };
-                let Some(src_type) =
-                    canonical_entity_type_for_axi_type(schema, &src_field_type)
+                let Some(src_type) = canonical_entity_type_for_axi_type(schema, &src_field_type)
                 else {
                     return Ok(None);
                 };
-                let Some(dst_type) =
-                    canonical_entity_type_for_axi_type(schema, &dst_field_type)
+                let Some(dst_type) = canonical_entity_type_for_axi_type(schema, &dst_field_type)
                 else {
                     return Ok(None);
                 };
@@ -4187,7 +4392,11 @@ impl LoweredQuery {
                         apply_implied_types(right, dst)?;
                     }
                 }
-                LoweredAtom::Rpq { left, rpq_id, right } => {
+                LoweredAtom::Rpq {
+                    left,
+                    rpq_id,
+                    right,
+                } => {
                     let Some(regex) = self.rpqs.get(*rpq_id) else {
                         return Err(anyhow!("invalid rpq_id {rpq_id}"));
                     };
@@ -4227,7 +4436,8 @@ impl LoweredQuery {
                                     let mut candidate_types: Vec<String> =
                                         schema.object_types.iter().cloned().collect();
                                     for rel_name in schema.relation_decls.keys() {
-                                        candidate_types.push(tuple_entity_type_name(schema, rel_name));
+                                        candidate_types
+                                            .push(tuple_entity_type_name(schema, rel_name));
                                     }
                                     candidate_types.sort();
                                     candidate_types.dedup();
@@ -4238,7 +4448,9 @@ impl LoweredQuery {
 
                                         let mut ok = false;
                                         for t in &candidate_types {
-                                            if schema.is_subtype(t, dst_a) && schema.is_subtype(t, src_b) {
+                                            if schema.is_subtype(t, dst_a)
+                                                && schema.is_subtype(t, src_b)
+                                            {
                                                 ok = true;
                                                 break;
                                             }
@@ -4259,14 +4471,10 @@ impl LoweredQuery {
                             // - `right` from the destination endpoint type of `rn`
                             //
                             // We do not currently infer intermediate types for the hidden join vars.
-                            if let Some((src0, _dst0)) =
-                                relation_endpoints_implied_types(first)?
-                            {
+                            if let Some((src0, _dst0)) = relation_endpoints_implied_types(first)? {
                                 apply_implied_types(left, src0)?;
                             }
-                            if let Some((_srcn, dstn)) =
-                                relation_endpoints_implied_types(last)?
-                            {
+                            if let Some((_srcn, dstn)) = relation_endpoints_implied_types(last)? {
                                 apply_implied_types(right, dstn)?;
                             }
                         }
@@ -4333,10 +4541,8 @@ impl LoweredQuery {
         for atom in self.atoms.drain(..) {
             match atom {
                 LoweredAtom::Edge { left, rel, right } => {
-                    let left_name =
-                        term_name_for_elaboration_rewrite_expr(db, &left, &self.vars);
-                    let right_name =
-                        term_name_for_elaboration_rewrite_expr(db, &right, &self.vars);
+                    let left_name = term_name_for_elaboration_rewrite_expr(db, &left, &self.vars);
+                    let right_name = term_name_for_elaboration_rewrite_expr(db, &right, &self.vars);
                     let mut chain = vec![rel];
                     for _ in 0..16 {
                         if let Some(rule) = apply_chain_rewrites(
@@ -4349,65 +4555,9 @@ impl LoweredQuery {
                             db,
                             Some(meta),
                         ) {
-                            report.elaboration_rewrites.push(AxqlElaborationRewriteStepV1 {
-                                theory_name: rule.theory_name.clone(),
-                                rule_name: rule.rule_name.clone(),
-                                input: substitute_rewrite_endpoints_v3(
-                                    &rule.from_expr,
-                                    &rule.start_var,
-                                    &left_name,
-                                    &rule.end_var,
-                                    &right_name,
-                                ),
-                                output: substitute_rewrite_endpoints_v3(
-                                    &rule.to_expr,
-                                    &rule.start_var,
-                                    &left_name,
-                                    &rule.end_var,
-                                    &right_name,
-                                ),
-                            });
-                            chain = rule.to.clone();
-                            rewrites += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    if chain.len() == 1 {
-                        new_atoms.push(LoweredAtom::Edge {
-                            left,
-                            rel: chain[0].clone(),
-                            right,
-                        });
-                    } else {
-                        let regex = AxqlRegex::Seq(
-                            chain.into_iter().map(AxqlRegex::Rel).collect(),
-                        );
-                        let rpq_id = intern_rpq(regex, &mut rpq_index, &mut new_rpqs);
-                        new_atoms.push(LoweredAtom::Rpq { left, rpq_id, right });
-                    }
-                }
-                LoweredAtom::Rpq { left, rpq_id, right } => {
-                    let left_name =
-                        term_name_for_elaboration_rewrite_expr(db, &left, &self.vars);
-                    let right_name =
-                        term_name_for_elaboration_rewrite_expr(db, &right, &self.vars);
-                    let Some(regex) = old_rpqs.get(rpq_id).cloned() else {
-                        return Err(anyhow!("invalid rpq_id {rpq_id}"));
-                    };
-                    if let Some(mut chain) = simple_chain(&regex) {
-                        for _ in 0..16 {
-                            if let Some(rule) = apply_chain_rewrites(
-                                &chain,
-                                &rules,
-                                &left,
-                                &right,
-                                &self.vars,
-                                &report.inferred_types,
-                                db,
-                                Some(meta),
-                            ) {
-                                report.elaboration_rewrites.push(AxqlElaborationRewriteStepV1 {
+                            report
+                                .elaboration_rewrites
+                                .push(AxqlElaborationRewriteStepV1 {
                                     theory_name: rule.theory_name.clone(),
                                     rule_name: rule.rule_name.clone(),
                                     input: substitute_rewrite_endpoints_v3(
@@ -4425,6 +4575,70 @@ impl LoweredQuery {
                                         &right_name,
                                     ),
                                 });
+                            chain = rule.to.clone();
+                            rewrites += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if chain.len() == 1 {
+                        new_atoms.push(LoweredAtom::Edge {
+                            left,
+                            rel: chain[0].clone(),
+                            right,
+                        });
+                    } else {
+                        let regex = AxqlRegex::Seq(chain.into_iter().map(AxqlRegex::Rel).collect());
+                        let rpq_id = intern_rpq(regex, &mut rpq_index, &mut new_rpqs);
+                        new_atoms.push(LoweredAtom::Rpq {
+                            left,
+                            rpq_id,
+                            right,
+                        });
+                    }
+                }
+                LoweredAtom::Rpq {
+                    left,
+                    rpq_id,
+                    right,
+                } => {
+                    let left_name = term_name_for_elaboration_rewrite_expr(db, &left, &self.vars);
+                    let right_name = term_name_for_elaboration_rewrite_expr(db, &right, &self.vars);
+                    let Some(regex) = old_rpqs.get(rpq_id).cloned() else {
+                        return Err(anyhow!("invalid rpq_id {rpq_id}"));
+                    };
+                    if let Some(mut chain) = simple_chain(&regex) {
+                        for _ in 0..16 {
+                            if let Some(rule) = apply_chain_rewrites(
+                                &chain,
+                                &rules,
+                                &left,
+                                &right,
+                                &self.vars,
+                                &report.inferred_types,
+                                db,
+                                Some(meta),
+                            ) {
+                                report
+                                    .elaboration_rewrites
+                                    .push(AxqlElaborationRewriteStepV1 {
+                                        theory_name: rule.theory_name.clone(),
+                                        rule_name: rule.rule_name.clone(),
+                                        input: substitute_rewrite_endpoints_v3(
+                                            &rule.from_expr,
+                                            &rule.start_var,
+                                            &left_name,
+                                            &rule.end_var,
+                                            &right_name,
+                                        ),
+                                        output: substitute_rewrite_endpoints_v3(
+                                            &rule.to_expr,
+                                            &rule.start_var,
+                                            &left_name,
+                                            &rule.end_var,
+                                            &right_name,
+                                        ),
+                                    });
                                 chain = rule.to.clone();
                                 rewrites += 1;
                             } else {
@@ -4438,15 +4652,22 @@ impl LoweredQuery {
                                 right,
                             });
                         } else {
-                            let regex = AxqlRegex::Seq(
-                                chain.into_iter().map(AxqlRegex::Rel).collect(),
-                            );
+                            let regex =
+                                AxqlRegex::Seq(chain.into_iter().map(AxqlRegex::Rel).collect());
                             let rpq_id = intern_rpq(regex, &mut rpq_index, &mut new_rpqs);
-                            new_atoms.push(LoweredAtom::Rpq { left, rpq_id, right });
+                            new_atoms.push(LoweredAtom::Rpq {
+                                left,
+                                rpq_id,
+                                right,
+                            });
                         }
                     } else {
                         let rpq_id = intern_rpq(regex, &mut rpq_index, &mut new_rpqs);
-                        new_atoms.push(LoweredAtom::Rpq { left, rpq_id, right });
+                        new_atoms.push(LoweredAtom::Rpq {
+                            left,
+                            rpq_id,
+                            right,
+                        });
                     }
                 }
                 other => new_atoms.push(other),
@@ -4534,9 +4755,7 @@ impl LoweredQuery {
 
         let truncated = if self.vars.is_empty() {
             // Boolean query: either 0 or 1 row, with no bindings.
-            if let Some(witnesses) =
-                self.witnesses_for_assignment_v3(db, &[], &mut rpq, meta)?
-            {
+            if let Some(witnesses) = self.witnesses_for_assignment_v3(db, &[], &mut rpq, meta)? {
                 rows.push(QueryRowV3 {
                     disjunct: 0,
                     bindings: Vec::new(),
@@ -4705,7 +4924,11 @@ impl LoweredQuery {
     ) -> Result<QueryTermV3> {
         Ok(match term {
             LoweredTerm::Var(v) => QueryTermV3::Var {
-                name: self.vars.get(*v).cloned().unwrap_or_else(|| format!("?v{v}")),
+                name: self
+                    .vars
+                    .get(*v)
+                    .cloned()
+                    .unwrap_or_else(|| format!("?v{v}")),
             },
             LoweredTerm::Const(entity) => QueryTermV3::Const {
                 entity: witness::stable_entity_id_v1(db, *entity)?,
@@ -4789,10 +5012,7 @@ impl LoweredQuery {
             | LoweredAtom::AttrContains { term, .. }
             | LoweredAtom::AttrFts { term, .. }
             | LoweredAtom::AttrFuzzy { term, .. } => match term {
-                LoweredTerm::Var(v) => candidates
-                    .get(*v)
-                    .map(|c| c.len() as usize)
-                    .unwrap_or(0),
+                LoweredTerm::Var(v) => candidates.get(*v).map(|c| c.len() as usize).unwrap_or(0),
                 LoweredTerm::Const(_) => 1,
             },
             LoweredAtom::Edge { left, rel, right } => {
@@ -7060,7 +7280,9 @@ fn follow_simple_chain_reverse(
         for entity in current.iter() {
             next |= match min_confidence {
                 None => db.relations.sources(entity, rel_id),
-                Some(min) => db.relations.sources_with_min_confidence(entity, rel_id, min),
+                Some(min) => db
+                    .relations
+                    .sources_with_min_confidence(entity, rel_id, min),
             };
         }
         current = next;
@@ -7089,7 +7311,9 @@ fn follow_chain_direct(
         for entity in current.iter() {
             next |= match min_confidence {
                 None => db.relations.targets(entity, rel_id),
-                Some(min) => db.relations.targets_with_min_confidence(entity, rel_id, min),
+                Some(min) => db
+                    .relations
+                    .targets_with_min_confidence(entity, rel_id, min),
             };
         }
         current = next;
@@ -7535,10 +7759,7 @@ instance CensusInst of Census:
         let q = parse_axql_query(r#"select ?p where Carol -Parent-> ?p limit 10"#)?;
         let mut prepared = prepare_axql_query_with_meta(&db, &q, Some(&meta))?;
         let report = prepared.elaboration_report();
-        assert!(report
-            .notes
-            .iter()
-            .any(|n| n.contains("treated as union")));
+        assert!(report.notes.iter().any(|n| n.contains("treated as union")));
 
         let res = prepared.execute(&db, Some(&meta))?;
         assert_eq!(res.rows.len(), 2);
@@ -7548,8 +7769,9 @@ instance CensusInst of Census:
     #[test]
     fn axql_schema_qualified_fact_atom_adds_schema_filter() -> Result<()> {
         let db = db_with_multi_schema_parent_collision();
-        let q =
-            parse_axql_query(r#"select ?f where ?f = Fam.Parent(child=Carol, parent=Alice) limit 10"#)?;
+        let q = parse_axql_query(
+            r#"select ?f where ?f = Fam.Parent(child=Carol, parent=Alice) limit 10"#,
+        )?;
         let res = execute_axql_query(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         Ok(())
@@ -7667,7 +7889,9 @@ instance I2 of S2:
 
         let q = parse_axql_query(r#"select ?dst where a -rel_0-> ?dst limit 10"#)?;
         let mut prepared = prepare_axql_query_with_meta(&db1, &q, None)?;
-        let err = prepared.execute(&db2, None).expect_err("expected db token mismatch");
+        let err = prepared
+            .execute(&db2, None)
+            .expect_err("expected db token mismatch");
         assert!(err.to_string().contains("db token mismatch"));
         Ok(())
     }
@@ -8131,9 +8355,7 @@ instance I2 of S2:
         assert_eq!(row.witnesses.len(), 1);
 
         let rid_chain = match &row.witnesses[0] {
-            QueryAtomWitnessV1::Path {
-                proof,
-            } => {
+            QueryAtomWitnessV1::Path { proof } => {
                 let mut ids: Vec<u32> = Vec::new();
                 let mut cur = proof;
                 loop {
@@ -8148,8 +8370,7 @@ instance I2 of S2:
                             cur = rest;
                         }
                         ReachabilityProofV2::Step {
-                            relation_id: None,
-                            ..
+                            relation_id: None, ..
                         } => return Err(anyhow!("expected relation_id in reachability proof")),
                     }
                 }
@@ -8210,37 +8431,40 @@ instance I2 of S2:
 
     fn graph_case_strategy() -> impl Strategy<Value = GraphCase> {
         let denom = axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR;
-        (1usize..=MAX_ENTITIES, 1usize..=MAX_REL_TYPES).prop_flat_map(move |(entity_count, rel_count)| {
-            let rel_names = (0..rel_count).map(|i| format!("r{i}")).collect::<Vec<_>>();
-            (
-                Just(entity_count),
-                Just(rel_names),
-                prop::collection::vec(
-                    (
-                        0usize..rel_count,
-                        0usize..entity_count,
-                        0usize..entity_count,
-                        0u32..=denom,
+        (1usize..=MAX_ENTITIES, 1usize..=MAX_REL_TYPES)
+            .prop_flat_map(move |(entity_count, rel_count)| {
+                let rel_names = (0..rel_count).map(|i| format!("r{i}")).collect::<Vec<_>>();
+                (
+                    Just(entity_count),
+                    Just(rel_names),
+                    prop::collection::vec(
+                        (
+                            0usize..rel_count,
+                            0usize..entity_count,
+                            0usize..entity_count,
+                            0u32..=denom,
+                        ),
+                        0..=MAX_EDGES,
                     ),
-                    0..=MAX_EDGES,
-                ),
-                0usize..entity_count,
-                prop::collection::vec(0usize..rel_count, 1..=MAX_PATH_LEN),
-                prop::collection::vec(0usize..rel_count, 1..=MAX_PATH_LEN),
-                0u32..=denom,
+                    0usize..entity_count,
+                    prop::collection::vec(0usize..rel_count, 1..=MAX_PATH_LEN),
+                    prop::collection::vec(0usize..rel_count, 1..=MAX_PATH_LEN),
+                    0u32..=denom,
+                )
+            })
+            .prop_map(
+                |(entity_count, rel_names, edges, start_idx, path_a, path_b, min_conf_fp)| {
+                    GraphCase {
+                        entity_count,
+                        rel_names,
+                        edges,
+                        start_idx,
+                        path_a,
+                        path_b,
+                        min_conf_fp,
+                    }
+                },
             )
-        })
-        .prop_map(
-            |(entity_count, rel_names, edges, start_idx, path_a, path_b, min_conf_fp)| GraphCase {
-                entity_count,
-                rel_names,
-                edges,
-                start_idx,
-                path_a,
-                path_b,
-                min_conf_fp,
-            },
-        )
     }
 
     fn build_db(case: &GraphCase) -> (axiograph_pathdb::PathDB, Vec<u32>) {

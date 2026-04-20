@@ -52,7 +52,11 @@ If you only read one thing, read the “book”:
 ## Reference (formats, protocols, languages)
 
 - `docs/reference/CERTIFICATES.md` — certificate schema, versions, and how the Lean checker validates them
+- `docs/reference/TRUSTED_KERNEL.md` — exact boundary of the Lean trusted kernel and certificate trust classes
+- `docs/reference/KERNEL_IR.md` — canonical schema/category IR target spec
+- `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle state + anchor-aware artifact model
 - `docs/reference/QUERY_LANG.md` — AxQL + SQL-ish dialect reference (and “certified querying” roadmap)
+- `docs/reference/SEMANTIC_VCS.md` — semantic refs/commits/reconciliation/world-model lineage spec
 - `docs/reference/LLM_REPL_PLUGIN.md` — plugin protocol (`axiograph_llm_plugin_v2`)
 - `docs/reference/WORLD_MODEL_PLUGIN.md` — world model plugin protocol (`axiograph_world_model_v1`)
 
@@ -69,6 +73,7 @@ If you only read one thing, read the “book”:
 - `docs/explanation/RECONCILIATION.md` — reconciliation workflow + semantics direction
 - `docs/explanation/PATH_VERIFICATION.md` — path verification and witness design
 - `docs/explanation/MATHEMATICAL_FOUNDATIONS.md` — core math notes (category theory, HoTT/groupoids, etc.)
+- `docs/explanation/TYPED_ONTOLOGY_ENGINEERING.md` — practical type theory + denotational semantics + ologs + AI-assisted ontology discovery/axiomitization
 - `docs/explanation/HOTT_FOR_KNOWLEDGE_GRAPHS.md` — HoTT framing (paths/groupoids for KGs)
 - `docs/explanation/TYPE_THEORY_DESIGN.md` — the type-theory surface for `.axi` and PathDB
 - `docs/explanation/TOPOS_THEORY.md` — topos/sheaf semantics roadmap for contexts/modalities (explanation-level)
@@ -87,3 +92,4 @@ If you only read one thing, read the “book”:
 - `docs/roadmaps/ROADMAP_PRODUCTION_READINESS.md`
 - `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`
 - `docs/roadmaps/ROADMAP_MATHEMATICAL.md`
+- `docs/roadmaps/ROADMAP_SEMANTIC_KERNEL_AND_VCS.md`

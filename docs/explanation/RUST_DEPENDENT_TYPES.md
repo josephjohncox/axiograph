@@ -20,6 +20,11 @@ useful *dependent-typing effects* using a combination of:
 This document is the concrete Rust-side design we converge on while tightening
 the Lean-checked semantics/certificate boundary.
 
+For the target stable API/state surface, see:
+
+- `docs/reference/RUST_LIFECYCLE_TYPES.md`
+- `docs/reference/KERNEL_IR.md`
+
 ## Design goals
 
 1. **Make illegal states unrepresentable (when practical).**

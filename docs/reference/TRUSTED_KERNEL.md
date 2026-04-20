@@ -1,0 +1,203 @@
+# Trusted Kernel
+
+**Diataxis:** Reference  
+**Audience:** contributors
+
+This document defines the target boundary of Axiograph's trusted semantics.
+
+The core rule is simple:
+
+- **Rust** computes and may be clever.
+- **Lean** checks the semantic justification for the narrow set of things we trust.
+- Everything else is either:
+  - an optimization,
+  - an adapter,
+  - a heuristic,
+  - or explanation-level theory.
+
+## Kernel Claim
+
+The intended product-facing claim is:
+
+> Axiograph has a Lean-checked core for typed rewrite/path witnesses and
+> conservative ontology gates, with a roadmap toward richer categorical
+> ontology semantics.
+
+Claims to avoid:
+
+- “Axiograph already has a full HoTT ontology kernel.”
+- “Rust is the trusted semantics layer.”
+- “PathDB storage format defines ontology meaning.”
+- “Certified query answers are complete.”
+
+## Kernel Boundary
+
+The trusted kernel is the import closure of the executable verifier target,
+not the whole Lean tree.
+
+Today that means the code path centered on:
+
+- `lean/Axiograph/VerifyMain.lean`
+- `lean/Axiograph/Certificate/Format.lean`
+- `lean/Axiograph/Certificate/Check.lean`
+- `lean/Axiograph/Prob/Verified.lean`
+- `lean/Axiograph/Axi/AxiV1.lean`
+- `lean/Axiograph/Axi/TypeCheck.lean`
+- `lean/Axiograph/Axi/ConstraintsCheck.lean`
+- `lean/Axiograph/Axi/PathDBExportV1.lean`
+
+Adjacent theorem-bearing modules are important, but they are not automatically
+part of the shipped runtime kernel unless imported by the verifier target.
+
+## Trust Classes
+
+### Runtime kernel
+
+These modules participate directly in shipped certificate/module verification.
+
+| Module | Role | Trust class |
+| --- | --- | --- |
+| `Axiograph.VerifyMain` | CLI/runtime verifier entrypoint | runtime kernel |
+| `Axiograph.Certificate.Format` | certificate syntax and versioned shapes | runtime kernel |
+| `Axiograph.Certificate.Check` | certificate replay / checking | runtime kernel |
+| `Axiograph.Prob.Verified` | fixed-point probability algebra | runtime kernel |
+| `Axiograph.Axi.AxiV1` | canonical `.axi` parser for trusted gates | runtime kernel |
+| `Axiograph.Axi.TypeCheck` | conservative `.axi` typechecking gate | runtime kernel |
+| `Axiograph.Axi.ConstraintsCheck` | conservative certifiable constraint gate | runtime kernel |
+| `Axiograph.Axi.PathDBExportV1` | transitional snapshot/export anchor parser | runtime kernel |
+
+### Theorem support
+
+These modules provide strong mathematical support and should stay rigorous, but
+they are distinct from the runtime kernel boundary unless imported by
+`VerifyMain`.
+
+| Module | Role | Trust class |
+| --- | --- | --- |
+| `Axiograph.HoTT.FreeGroupoid` | typed path denotation into free groupoid | theorem support |
+| `Axiograph.Certificate.PathRewriteSoundness` | rewrite preservation via typed retyping | theorem support |
+| `Axiograph.HoTT.PathCongruence` | congruence support for path equalities | theorem support |
+
+### Explanation-level / roadmap theory
+
+These are useful design guides, but should not be cited as the current shipped
+trusted semantics.
+
+| Module | Role | Trust class |
+| --- | --- | --- |
+| `Axiograph.HoTT.Core` | foundational HoTT scaffold with axiomatized pieces | explanation / support |
+| `Axiograph.HoTT.KnowledgeGraph` | higher-level path/knowledge graph scaffold | explanation / support |
+| `Axiograph.HoTT.PathAlgebraProofs` | additional proof scaffolding | explanation / support |
+| `Axiograph.Topos.Overview` | topos/sheaf explanation layer | explanation / roadmap |
+
+## What The Kernel Must Check
+
+The kernel is responsible for a small number of semantic tasks:
+
+1. Parsing anchored canonical `.axi` inputs.
+2. Checking a conservative well-typedness gate for canonical `.axi` modules.
+3. Checking a conservative certifiable constraint subset.
+4. Checking typed path/rewrite certificates.
+5. Checking fixed-point confidence/probability arithmetic used by certificates.
+6. Checking anchored membership of referenced facts/relations inside the chosen
+   anchor format.
+
+## What The Kernel Must Not Own
+
+The kernel must not become the place where all semantics-related code goes.
+
+Keep these outside:
+
+- query planning
+- join ordering
+- PathDB byte layout
+- Rust-side lifecycle/anchor/kernel-IR modules such as
+  `rust/crates/axiograph-pathdb/src/anchor.rs`,
+  `rust/crates/axiograph-pathdb/src/lifecycle.rs`,
+  `rust/crates/axiograph-pathdb/src/kernel_ir.rs`, and the fail-closed `.axi`
+  import/typecheck wrappers
+- WAL replay mechanics
+- heuristic reconciliation
+- LLM/world-model scoring
+- embedding search
+- general RDF/OWL entailment
+- explanation-level topos/sheaf/modal machinery
+- storage/index performance logic
+
+## Certificate Status Model
+
+Each certificate kind should be classified using one of these statuses:
+
+- `theorem-backed`
+  - Lean checks a witness against a semantic model with a real preservation
+    theorem behind the replay.
+- `decision-procedure`
+  - Lean decides a conservative gate directly.
+- `replay-only`
+  - Lean checks a structured witness chain but the broader semantics are still
+    intentionally narrow.
+- `recompute-scaffold`
+  - Lean currently recomputes or rederives enough to guard the result, but the
+    long-term semantic story is not yet fully internalized.
+
+Current target classification:
+
+| Certificate kind | Status | Notes |
+| --- | --- | --- |
+| `reachability_v1` | replay-only | transitional float-based form |
+| `reachability_v2` | replay-only | fixed-point arithmetic is stronger; anchor story still transitional |
+| `axi_well_typed_v1` | decision-procedure | conservative `.axi` module gate |
+| `axi_constraints_ok_v1` | decision-procedure | conservative certifiable subset only |
+| `normalize_path_v2` | replay-only | valid narrow kernel slice |
+| `path_equiv_v2` | replay-only | narrow typed path equality slice |
+| `rewrite_derivation_v3` | replay-only moving toward theorem-backed | should consume checked rewrite rules |
+| `query_result_v3` | replay-only / partial | row soundness only, not completeness |
+| `delta_f_v1` | recompute-scaffold | not yet a final semantic story |
+
+## Accepted Rewrite Rules
+
+User-authored rewrite rules are not supposed to be “proved from pure
+foundations” inside the kernel. They are accepted ontology inputs that the
+kernel must validate conservatively before allowing certificates to use them.
+
+The target checked-rewrite layer should ensure:
+
+- declared variables are well-scoped,
+- endpoints are preserved,
+- schema sorts line up,
+- referenced arrows/roles are valid,
+- and compiled checked rules are what certificates consume.
+
+This is the correct trust boundary for ontology work:
+
+- user-authored rewrite rules live in the accepted meaning plane,
+- Lean checks they are well-formed enough to be trusted inputs,
+- certificates may then cite them.
+
+## Soundness Contract
+
+When the verifier accepts a certificate or gate, the intended contract is:
+
+- the claimed result is **sound with respect to the narrow checked semantics**,
+- the result is **anchored** to a declared input,
+- and any untrusted runtime optimization has been reduced to a checkable witness.
+
+The verifier does **not** imply:
+
+- query completeness,
+- closed-world truth,
+- full ontology closure,
+- or correctness of the entire storage/query engine.
+
+## Planned Tightening
+
+The next concrete tightening steps are:
+
+1. Add a CI/import audit for the verifier target so the runtime kernel boundary
+   stays explicit.
+2. Add a checked rewrite-rule compilation layer in Lean and route
+   `rewrite_derivation_v3` through it.
+3. Prefer canonical accepted-plane anchors over `PathDBExportV1` for more
+   certificate flows.
+4. Move query/cert semantics off binary-projection heuristics and onto the
+   future kernel IR.

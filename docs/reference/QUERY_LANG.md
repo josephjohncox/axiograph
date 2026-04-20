@@ -15,6 +15,22 @@ All of these should share the same *meaning* and be able to run in:
 - **fast mode** (proof-irrelevant execution)
 - **certified mode** (proof-producing execution; Lean checks certificates)
 
+Operational note:
+
+- `axiograph db serve` now accepts either raw AxQL or structured `query_ir_v1`
+  at `POST /query`, and can echo the canonical compiled `query_ir_v1` alongside
+  elaboration output.
+- `query_ir_v1` is now the preferred execution seam for tooling: `QueryIrV1::prepare_with_meta`
+  returns a typed prepared query handle (`PreparedQueryV1`) that exposes:
+  - execution via prepared statement
+  - elaborated plan output (`explain_plan_lines`)
+  - prepared-query introspection (`disjunct_count`, `selected_vars`, `limit`, `context_count`)
+  - trust-class classification (`certifiable`, `execution-only`, or `mixed`)
+  - direct certificate request (`certify`) against the same prepared state
+
+`PreparedQueryV1` keeps the parsed AxQL body with the prepared low-level runtime handle
+so callers don’t have to re-parse or rely on raw strings for repeated execution.
+
 For hands-on demos (scenario generation + proof-relevant certificates), see
 `docs/tutorials/TYPE_THEORY_DEMOS.md`.
 
@@ -234,6 +250,24 @@ AxQL/SQL-ish queries can be run in a **proof-producing mode**:
 
 This certificate is intentionally **soundness-only** (no completeness claim): it
 proves “these rows satisfy the query”, not “these are all the satisfying rows”.
+
+Certifiability in this seam is explicit:
+
+- `certifiable`: all disjuncts are in the currently supported certificate subset
+- `execution-only`: every disjunct has unsupported operators
+  (approximate string operators, multi-context union, etc.)
+- `mixed`: some disjuncts are certifiable while others are execution-only
+
+For mixed queries, the prepared query introspection includes the mixed trust class
+and per-branch classification counts so callers can choose whether to:
+
+- run only certifiable branches through the certificate path, or
+- execute whole query in untrusted mode and report trust caveats explicitly.
+
+The runtime currently marks `contains(...)`, `fts(...)`, and `fuzzy(...)` as
+execution-only even if other parts of the query are certifiable. `query_result_v2`
+certificates are therefore only emitted for fully certifiable fragments or for whole
+queries that avoid those operators and unsupported context shapes.
 
 Important: approximate query atoms (`contains`, `fuzzy`, future similarity
 operators) are **not** part of the certified kernel. They are treated as

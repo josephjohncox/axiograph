@@ -21,7 +21,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use axiograph_pathdb::axi_meta::{
-    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, ATTR_CONSTRAINT_RELATION, ATTR_FIELD_TYPE, REL_AXI_FACT_IN_CONTEXT,
+    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, ATTR_CONSTRAINT_RELATION, ATTR_FIELD_TYPE,
+    REL_AXI_FACT_IN_CONTEXT,
 };
 use axiograph_pathdb::axi_semantics::{ConstraintDecl, MetaPlaneIndex, SchemaIndex};
 use axiograph_pathdb::PathDB;
@@ -317,7 +318,11 @@ fn db_entity_short_label(db: &PathDB, id: u32) -> String {
     format!("{}#{}", view.entity_type, id)
 }
 
-fn type_label_for_node(entity_type: &str, kind: &str, attrs: &BTreeMap<String, String>) -> Option<String> {
+fn type_label_for_node(
+    entity_type: &str,
+    kind: &str,
+    attrs: &BTreeMap<String, String>,
+) -> Option<String> {
     if matches!(kind, "fact" | "morphism" | "homotopy") {
         if let Some(r) = attrs.get(ATTR_AXI_RELATION) {
             let r = r.trim();
@@ -340,7 +345,11 @@ fn display_name_for_record_from_decl(
     for f in &rel_decl.fields {
         let targets = db.follow_one(tuple_id, &f.field_name);
         if let Some(tid) = targets.iter().next() {
-            parts.push(format!("{}={}", f.field_name, db_entity_short_label(db, tid)));
+            parts.push(format!(
+                "{}={}",
+                f.field_name,
+                db_entity_short_label(db, tid)
+            ));
         }
     }
     if parts.is_empty() {
@@ -419,7 +428,9 @@ fn display_name_for_node(
         if let Some(meta) = meta {
             if let Some(schema) = schema_for_entity(meta, attrs) {
                 if let Some(rel_decl) = schema.relation_decls.get(&rel) {
-                    if let Some(summary) = display_name_for_record_from_decl(db, node_id, &rel, rel_decl) {
+                    if let Some(summary) =
+                        display_name_for_record_from_decl(db, node_id, &rel, rel_decl)
+                    {
                         return Some(summary);
                     }
                 }
@@ -464,7 +475,11 @@ fn display_name_for_node(
     }
 
     if entity_type == "Document" {
-        if let Some(doc) = attrs.get("document_id").map(|s| short_locator(s)).filter(|s| !s.is_empty()) {
+        if let Some(doc) = attrs
+            .get("document_id")
+            .map(|s| short_locator(s))
+            .filter(|s| !s.is_empty())
+        {
             return Some(format!("doc {doc}"));
         }
     }
@@ -687,10 +702,7 @@ pub fn extract_viz_graph_with_meta(
                     params,
                     ..
                 } => {
-                    let mut s = format!(
-                        "symmetric_where_in({field} in {{{}}})",
-                        values.join(", ")
-                    );
+                    let mut s = format!("symmetric_where_in({field} in {{{}}})", values.join(", "));
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
                     }
@@ -701,7 +713,9 @@ pub fn extract_viz_graph_with_meta(
                     }
                     parts.push(s);
                 }
-                ConstraintDecl::Symmetric { carriers, params, .. } => {
+                ConstraintDecl::Symmetric {
+                    carriers, params, ..
+                } => {
                     let mut s = String::from("symmetric");
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
@@ -713,7 +727,9 @@ pub fn extract_viz_graph_with_meta(
                     }
                     parts.push(s);
                 }
-                ConstraintDecl::Transitive { carriers, params, .. } => {
+                ConstraintDecl::Transitive {
+                    carriers, params, ..
+                } => {
                     let mut s = String::from("transitive");
                     if let Some((left, right)) = carriers {
                         s.push_str(&format!(" on ({left}, {right})"));
@@ -728,7 +744,9 @@ pub fn extract_viz_graph_with_meta(
                 ConstraintDecl::Key { fields, .. } => {
                     parts.push(format!("key({})", fields.join(", ")))
                 }
-                ConstraintDecl::NamedBlock { name, .. } => parts.push(format!("named_block({name})")),
+                ConstraintDecl::NamedBlock { name, .. } => {
+                    parts.push(format!("named_block({name})"))
+                }
                 ConstraintDecl::Unknown { text, .. } => parts.push(format!("unknown({text})")),
             }
         }
@@ -796,8 +814,15 @@ pub fn extract_viz_graph_with_meta(
 
         let plane = node_plane(&view.entity_type, kind.as_str(), &attrs).to_string();
         let type_label = type_label_for_node(&view.entity_type, kind.as_str(), &attrs);
-        let display_name =
-            display_name_for_node(db, *id, &view.entity_type, kind.as_str(), name.as_deref(), &attrs, meta);
+        let display_name = display_name_for_node(
+            db,
+            *id,
+            &view.entity_type,
+            kind.as_str(),
+            name.as_deref(),
+            &attrs,
+            meta,
+        );
 
         kind_by_id.insert(*id, kind.clone());
         node_views.push(VizNode {
@@ -1375,7 +1400,11 @@ pub fn viz_index_path() -> PathBuf {
     viz_dist_dir().join("index.html")
 }
 
-pub fn write_html_bundle(out: &std::path::Path, html: &str, graph_json: Option<&str>) -> Result<PathBuf> {
+pub fn write_html_bundle(
+    out: &std::path::Path,
+    html: &str,
+    graph_json: Option<&str>,
+) -> Result<PathBuf> {
     let out_dir = if out.extension().is_some_and(|e| e == "html") {
         out.with_extension("")
     } else {

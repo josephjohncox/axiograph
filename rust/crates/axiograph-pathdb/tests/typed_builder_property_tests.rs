@@ -1,4 +1,6 @@
-use axiograph_pathdb::axi_meta::{ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT};
+use axiograph_pathdb::axi_meta::{
+    ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT,
+};
 use axiograph_pathdb::{CheckedDb, CheckedDbMut, PathDB};
 use proptest::prelude::*;
 
@@ -217,4 +219,3 @@ proptest! {
         }
     }
 }
-

@@ -52,8 +52,16 @@ pub fn generate_from_schema(
     let mut schema_names: Vec<String> = meta.schemas.keys().cloned().collect();
     schema_names.sort();
 
-    let min_rows = if options.min_rows == 0 { 1 } else { options.min_rows };
-    let weight = if options.weight <= 0.0 { 1.0 } else { options.weight };
+    let min_rows = if options.min_rows == 0 {
+        1
+    } else {
+        options.min_rows
+    };
+    let weight = if options.weight <= 0.0 {
+        1.0
+    } else {
+        options.weight
+    };
 
     let mut out: Vec<CompetencyQuestionV1> = Vec::new();
 
@@ -164,7 +172,11 @@ pub fn prompts_to_competency_questions(
     } else {
         defaults.min_rows
     };
-    let weight_default = if defaults.weight <= 0.0 { 1.0 } else { defaults.weight };
+    let weight_default = if defaults.weight <= 0.0 {
+        1.0
+    } else {
+        defaults.weight
+    };
 
     for (idx, prompt) in prompts.iter().enumerate() {
         let name = prompt
@@ -273,7 +285,10 @@ fn prompt_from_value(value: &Value) -> Result<CompetencyQuestionPrompt> {
                 .get("query")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let min_rows = map.get("min_rows").and_then(|v| v.as_u64()).map(|v| v as usize);
+            let min_rows = map
+                .get("min_rows")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
             let weight = map.get("weight").and_then(|v| v.as_f64());
             let contexts = match map.get("contexts") {
                 Some(Value::Array(items)) => items

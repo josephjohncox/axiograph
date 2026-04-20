@@ -635,7 +635,10 @@ fn proposals_digest(file: &axiograph_ingest_docs::ProposalsFileV1) -> Result<Str
     Ok(axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes))
 }
 
-fn apply_proposals(db: &mut PathDB, proposals: &axiograph_ingest_docs::ProposalsFileV1) -> Result<()> {
+fn apply_proposals(
+    db: &mut PathDB,
+    proposals: &axiograph_ingest_docs::ProposalsFileV1,
+) -> Result<()> {
     let digest = proposals_digest(proposals)?;
     let _summary =
         crate::proposals_import::import_proposals_file_into_pathdb(db, proposals, &digest)?;
@@ -664,10 +667,7 @@ fn infer_binary_endpoint_fields(
         return Some(("child".to_string(), "parent".to_string()));
     }
     if fields.len() >= 2 {
-        return Some((
-            fields[0].field.clone(),
-            fields[1].field.clone(),
-        ));
+        return Some((fields[0].field.clone(), fields[1].field.clone()));
     }
     None
 }
@@ -719,8 +719,7 @@ fn build_holdout_module(
         }
     }
 
-    let mut holdout_count =
-        ((candidates.len() as f64) * holdout_frac).round() as usize;
+    let mut holdout_count = ((candidates.len() as f64) * holdout_frac).round() as usize;
     if holdout_max > 0 {
         holdout_count = holdout_count.min(holdout_max);
     }
@@ -763,7 +762,10 @@ fn proposal_relation_keys(file: &axiograph_ingest_docs::ProposalsFileV1) -> Hash
     let mut out = HashSet::new();
     for p in &file.proposals {
         if let axiograph_ingest_docs::ProposalV1::Relation {
-            rel_type, source, target, ..
+            rel_type,
+            source,
+            target,
+            ..
         } = p
         {
             out.insert(format!("{}|{}|{}", rel_type, source, target));
@@ -856,16 +858,16 @@ fn cmd_perf_world_model(
     let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
     let mut heldout: HashSet<String> = HashSet::new();
     let mut axi_text: Option<String> = None;
-    let mut axi_digest: Option<String> = None;
+    let mut axi_digest: Option<axiograph_pathdb::AxiDigest> = None;
     let mut jepa_export: Option<crate::world_model::JepaExportFileV1> = None;
 
     let mut db = if ext.eq_ignore_ascii_case("axi") {
         let text = fs::read_to_string(input)?;
-        axi_digest = Some(axiograph_dsl::digest::axi_digest_v1(&text));
+        let canonical = crate::axi_input::require_canonical_axi_text(&text)?;
+        axi_digest = Some(canonical.digest().clone());
         axi_text = Some(text.clone());
-        let module = axiograph_dsl::axi_v1::parse_axi_v1(&text)?;
         let (module, holdout_set) =
-            build_holdout_module(&module, holdout_frac, holdout_max, seed)?;
+            build_holdout_module(canonical.module().module(), holdout_frac, holdout_max, seed)?;
         heldout = holdout_set;
 
         let opts = crate::world_model::JepaExportOptions {
@@ -875,9 +877,12 @@ fn cmd_perf_world_model(
             seed: export_seed,
             exclude_relations: Vec::new(),
         };
-        jepa_export = Some(crate::world_model::build_jepa_export_from_axi_text(&text, &opts)?);
+        jepa_export = Some(crate::world_model::build_jepa_export_from_axi_text(
+            &text, &opts,
+        )?);
 
         let mut db = PathDB::new();
+        let module = axiograph_pathdb::validate_axi_v1_module(module)?;
         let _summary =
             axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
                 &mut db, &module,
@@ -950,7 +955,9 @@ fn cmd_perf_world_model(
             input.axi_module_text = axi_text.clone();
             input.export = jepa_export.clone();
             input.guardrail = Some(guardrail_before.clone());
-            input.notes.push(format!("source=perf_world_model step={step} rollout={rollout}"));
+            input.notes.push(format!(
+                "source=perf_world_model step={step} rollout={rollout}"
+            ));
 
             let mut options = crate::world_model::WorldModelOptionsV1::default();
             options.max_new_proposals = max_new_proposals;
@@ -964,23 +971,25 @@ fn cmd_perf_world_model(
                 return Err(anyhow!("world model error: {err}"));
             }
 
-            let provenance = crate::world_model::WorldModelProvenance {
-                trace_id: response.trace_id.clone(),
-                backend: wm.backend_label(),
-                model: wm.model.clone(),
-                axi_digest_v1: axi_digest.clone(),
-                guardrail_total_cost: Some(guardrail_before.summary.total_cost),
-                guardrail_profile: if guardrail_profile == "off" {
+            let provenance = crate::world_model::build_world_model_provenance(
+                &response,
+                wm.backend_label(),
+                wm.model.clone(),
+                axi_digest.clone(),
+                None,
+                None,
+                Some(guardrail_before.summary.total_cost),
+                if guardrail_profile == "off" {
                     None
                 } else {
                     Some(guardrail_profile.clone())
                 },
-                guardrail_plane: if guardrail_profile == "off" {
+                if guardrail_profile == "off" {
                     None
                 } else {
                     Some(guardrail_plane.clone())
                 },
-            };
+            )?;
             let mut proposals =
                 crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
             if max_new_proposals > 0 && proposals.proposals.len() > max_new_proposals {
@@ -997,12 +1006,8 @@ fn cmd_perf_world_model(
                 &guardrail_weights,
             )?;
 
-            let validation = crate::proposals_validate::validate_proposals_v1(
-                &db,
-                &proposals,
-                "fast",
-                "both",
-            )?;
+            let validation =
+                crate::proposals_validate::validate_proposals_v1(&db, &proposals, "fast", "both")?;
             let validation_ok = validation.ok;
             let validation_errors = validation.quality_delta.summary.error_count;
 
@@ -1043,16 +1048,13 @@ fn cmd_perf_world_model(
             proposals: proposals.proposals.len(),
             guardrail_before: guardrail_summary(&guardrail_before),
             guardrail_after: guardrail_summary(&guardrail_after),
-            guardrail_delta: guardrail_after.summary.total_cost - guardrail_before.summary.total_cost,
+            guardrail_delta: guardrail_after.summary.total_cost
+                - guardrail_before.summary.total_cost,
             task_cost_total,
             total_cost,
             validation_ok,
             validation_errors,
-            precision_recall: if heldout.is_empty() {
-                None
-            } else {
-                Some(pr)
-            },
+            precision_recall: if heldout.is_empty() { None } else { Some(pr) },
         };
         steps.push(step_report);
     }
@@ -1279,7 +1281,11 @@ fn cmd_perf_indexes(
     let async_indexes = match index_mode.to_ascii_lowercase().as_str() {
         "async" => true,
         "sync" => false,
-        other => return Err(anyhow!("unknown --index-mode `{other}` (expected: async, sync)")),
+        other => {
+            return Err(anyhow!(
+                "unknown --index-mode `{other}` (expected: async, sync)"
+            ))
+        }
     };
 
     println!("perf/indexes");
@@ -1292,12 +1298,9 @@ fn cmd_perf_indexes(
         lru_capacity, lru_async, lru_queue, if async_indexes { "async" } else { "sync" }, async_wait_secs, verify, mutations
     );
 
-    let relation_type_names: Vec<String> =
-        (0..rel_types).map(|i| format!("rel_{i}")).collect();
+    let relation_type_names: Vec<String> = (0..rel_types).map(|i| format!("rel_{i}")).collect();
     let schema_count = rel_types.clamp(1, 4);
-    let schema_names: Vec<String> = (0..schema_count)
-        .map(|i| format!("schema_{i}"))
-        .collect();
+    let schema_names: Vec<String> = (0..schema_count).map(|i| format!("schema_{i}")).collect();
     let tokens = [
         "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "kappa", "lambda",
     ];
@@ -1453,10 +1456,7 @@ fn cmd_perf_indexes(
                 db.add_relation(rel, source, id, 0.9, Vec::new());
                 mutation_relations_added += 1;
                 ids.push(id);
-                ids_by_rel
-                    .entry(rel.to_string())
-                    .or_default()
-                    .push(id);
+                ids_by_rel.entry(rel.to_string()).or_default().push(id);
                 ids_by_schema_rel
                     .entry((schema.to_string(), rel.to_string()))
                     .or_default()

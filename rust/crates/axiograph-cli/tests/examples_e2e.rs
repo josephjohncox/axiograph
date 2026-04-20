@@ -174,7 +174,7 @@ fn typecheck_cert_smoke() {
     assert_eq!(cert.version, 2);
     let anchor = cert.anchor.expect("expected anchor");
     assert!(
-        anchor.axi_digest_v1.starts_with("fnv1a64:"),
+        anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
         "unexpected digest format: {}",
         anchor.axi_digest_v1
     );
@@ -220,7 +220,7 @@ fn constraints_cert_smoke() {
     assert_eq!(cert.version, 2);
     let anchor = cert.anchor.expect("expected anchor");
     assert!(
-        anchor.axi_digest_v1.starts_with("fnv1a64:"),
+        anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
         "unexpected digest format: {}",
         anchor.axi_digest_v1
     );
@@ -234,6 +234,204 @@ fn constraints_cert_smoke() {
         }
         other => panic!("expected axi_constraints_ok_v1 certificate, got {other:?}"),
     }
+}
+
+#[test]
+fn canonical_only_cert_commands_reject_pathdb_export_snapshots() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+
+    let run_dir = unique_run_dir(&repo_root, "canonical_only_certs_reject_snapshot");
+    let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
+    let axpd = run_dir.join("build/snapshot.axpd");
+    let export_axi = run_dir.join("build/snapshot_export.axi");
+
+    let import_status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("pathdb")
+        .arg("import-axi")
+        .arg(&input)
+        .arg("--out")
+        .arg(&axpd)
+        .status()
+        .expect("run axiograph db pathdb import-axi");
+    assert!(
+        import_status.success(),
+        "db pathdb import-axi failed (exit={})",
+        import_status.code().unwrap_or(-1)
+    );
+
+    let export_status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("pathdb")
+        .arg("export-axi")
+        .arg(&axpd)
+        .arg("--out")
+        .arg(&export_axi)
+        .status()
+        .expect("run axiograph db pathdb export-axi");
+    assert!(
+        export_status.success(),
+        "db pathdb export-axi failed (exit={})",
+        export_status.code().unwrap_or(-1)
+    );
+
+    let expected = "expected a canonical .axi module, but input is a PathDBExportV1 snapshot";
+
+    let typecheck = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("cert")
+        .arg("typecheck")
+        .arg(&export_axi)
+        .output()
+        .expect("run axiograph cert typecheck on snapshot export");
+    assert!(
+        !typecheck.status.success(),
+        "expected cert typecheck to reject PathDBExportV1 snapshot"
+    );
+    let typecheck_stderr = String::from_utf8_lossy(&typecheck.stderr);
+    assert!(
+        typecheck_stderr.contains(expected),
+        "expected typecheck stderr to mention canonical-only rejection, got: {typecheck_stderr}"
+    );
+
+    let constraints = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("cert")
+        .arg("constraints")
+        .arg(&export_axi)
+        .output()
+        .expect("run axiograph cert constraints on snapshot export");
+    assert!(
+        !constraints.status.success(),
+        "expected cert constraints to reject PathDBExportV1 snapshot"
+    );
+    let constraints_stderr = String::from_utf8_lossy(&constraints.stderr);
+    assert!(
+        constraints_stderr.contains(expected),
+        "expected constraints stderr to mention canonical-only rejection, got: {constraints_stderr}"
+    );
+}
+
+#[test]
+fn accept_promote_rejects_pathdb_export_snapshot_without_mutating_store() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+
+    let run_dir = unique_run_dir(&repo_root, "accept_promote_rejects_snapshot");
+    let accepted_dir = run_dir.join("build/accepted_plane");
+    fs::create_dir_all(&accepted_dir).expect("create accepted dir");
+
+    let base_axi = run_dir.join("build/Base.axi");
+    fs::write(
+        &base_axi,
+        r#"module Base
+
+schema Base:
+  object Seed
+
+instance BaseInst of Base:
+  Seed = {seed0}
+"#,
+    )
+    .expect("write base module");
+
+    let base_promote = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("accept")
+        .arg("promote")
+        .arg(&base_axi)
+        .arg("--dir")
+        .arg(&accepted_dir)
+        .arg("--message")
+        .arg("test: base snapshot")
+        .status()
+        .expect("run base accept promote");
+    assert!(
+        base_promote.success(),
+        "base accept promote failed (exit={})",
+        base_promote.code().unwrap_or(-1)
+    );
+
+    let head_before = fs::read_to_string(accepted_dir.join("HEAD")).expect("read HEAD before");
+    let log_before = fs::read_to_string(accepted_dir.join("accepted_plane.log.jsonl"))
+        .expect("read accepted plane log before");
+
+    let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
+    let axpd = run_dir.join("build/snapshot.axpd");
+    let export_axi = run_dir.join("build/snapshot_export.axi");
+
+    let import_status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("pathdb")
+        .arg("import-axi")
+        .arg(&input)
+        .arg("--out")
+        .arg(&axpd)
+        .status()
+        .expect("run axiograph db pathdb import-axi");
+    assert!(
+        import_status.success(),
+        "db pathdb import-axi failed (exit={})",
+        import_status.code().unwrap_or(-1)
+    );
+
+    let export_status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("pathdb")
+        .arg("export-axi")
+        .arg(&axpd)
+        .arg("--out")
+        .arg(&export_axi)
+        .status()
+        .expect("run axiograph db pathdb export-axi");
+    assert!(
+        export_status.success(),
+        "db pathdb export-axi failed (exit={})",
+        export_status.code().unwrap_or(-1)
+    );
+
+    let promote = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("accept")
+        .arg("promote")
+        .arg(&export_axi)
+        .arg("--dir")
+        .arg(&accepted_dir)
+        .arg("--message")
+        .arg("test: should reject snapshot export")
+        .output()
+        .expect("run accept promote on snapshot export");
+    assert!(
+        !promote.status.success(),
+        "expected accept promote to reject PathDBExportV1 snapshot"
+    );
+    let stderr = String::from_utf8_lossy(&promote.stderr);
+    assert!(
+        stderr.contains("snapshot")
+            || stderr.contains("PathDBExportV1")
+            || stderr.contains("unsupported"),
+        "expected stderr to mention snapshot/canonical rejection, got: {stderr}"
+    );
+
+    let head_after = fs::read_to_string(accepted_dir.join("HEAD")).expect("read HEAD after");
+    assert_eq!(
+        head_after, head_before,
+        "HEAD should not advance when promote rejects a snapshot export"
+    );
+
+    let log_after = fs::read_to_string(accepted_dir.join("accepted_plane.log.jsonl"))
+        .expect("read accepted plane log after");
+    assert_eq!(
+        log_after, log_before,
+        "accepted_plane.log.jsonl should not gain a new event on rejected promote"
+    );
 }
 
 #[test]
@@ -367,7 +565,10 @@ instance WalBaseInst of WalBase:
     let b_name = db.interner.id_of("b").expect("interned b");
     let c_name = db.interner.id_of("c").expect("interned c");
     let g_plan_name = db.interner.id_of("g_plan").expect("interned g_plan");
-    let g_observed_name = db.interner.id_of("g_observed").expect("interned g_observed");
+    let g_observed_name = db
+        .interner
+        .id_of("g_observed")
+        .expect("interned g_observed");
 
     let a_id = db
         .entities
@@ -591,7 +792,10 @@ fn accepted_plane_promote_and_build_pathdb_smoke() {
         .find_by_type("DocChunk")
         .map(|bm| !bm.is_empty())
         .unwrap_or(false);
-    assert!(has_chunks, "expected at least one DocChunk in accepted build");
+    assert!(
+        has_chunks,
+        "expected at least one DocChunk in accepted build"
+    );
 }
 
 #[test]
@@ -694,10 +898,7 @@ fn accepted_plane_pathdb_wal_commit_and_build_smoke() {
     let bytes = fs::read(&out_axpd).expect("read pathdb wal axpd");
     let db = axiograph_pathdb::PathDB::from_bytes(&bytes).expect("parse pathdb wal axpd");
 
-    let chunk_id_key = db
-        .interner
-        .id_of("chunk_id")
-        .expect("chunk_id attr key id");
+    let chunk_id_key = db.interner.id_of("chunk_id").expect("chunk_id attr key id");
     let want = db.interner.id_of("chunk0").expect("chunk0 value id");
     let mut found = false;
     if let Some(chunks) = db.find_by_type("DocChunk") {
@@ -708,7 +909,10 @@ fn accepted_plane_pathdb_wal_commit_and_build_smoke() {
             }
         }
     }
-    assert!(found, "expected committed DocChunk chunk_id=chunk0 after wal commit");
+    assert!(
+        found,
+        "expected committed DocChunk chunk_id=chunk0 after wal commit"
+    );
 }
 
 #[test]
@@ -859,7 +1063,7 @@ fn repl_scripts_export_and_querycert_smoke() {
         assert_eq!(cert.version, 2);
         let anchor = cert.anchor.expect("expected snapshot anchor");
         assert!(
-            anchor.axi_digest_v1.starts_with("fnv1a64:"),
+            anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
             "unexpected digest format: {}",
             anchor.axi_digest_v1
         );
@@ -1306,7 +1510,7 @@ fn querycert_canonical_axi_v3_smoke() {
     assert_eq!(cert.version, 2);
     let anchor = cert.anchor.expect("expected anchor");
     assert!(
-        anchor.axi_digest_v1.starts_with("fnv1a64:"),
+        anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
         "unexpected digest format: {}",
         anchor.axi_digest_v1
     );
