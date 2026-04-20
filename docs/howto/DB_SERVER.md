@@ -48,7 +48,7 @@ CLI HTML exports now write a directory with `index.html`, `graph.json`, and
 - `POST /llm/agent` (LLM: tool-loop, recommended)
 - `POST /world_model/propose` (world-model proposals -> evidence-plane `proposals.json`)
 - `POST /world_model/plan` (multi-step MPC plan -> proposals + costs)
-- `POST /discover/draft-axi` (untrusted: draft canonical `.axi` from `proposals.json` content)
+- `POST /discover/draft-axi` (untrusted draft canonical `.axi` from `proposals.json` content, now with a typed-authoring lifecycle/trust summary so callers can distinguish `draft_only` from `validated` drafts)
 
 ---
 
@@ -105,6 +105,11 @@ When `show_elaboration:true`, the response includes:
 - `compiled_query_ir_v1`: the normalized structured query surface,
 - `elaborated_query`: the best-effort elaborated AxQL text,
 - `inferred_types`, `notes`, and `plan` when available.
+- `trust`: a uniform trust contract for the response:
+  - `trust_class`: `certifiable`, `mixed`, or `execution_only`
+  - `soundness`: whether row soundness is only available, emitted as a certificate, or Lean-verified
+  - `coverage`: whether the response trust applies to the whole query or only a mixed/runtime-only execution mode
+  - `scope`: currently always snapshot-scoped, with explicit context mode (`unscoped`, `single_context`, `multi_context`)
 
 Certified queries (optional)
 
@@ -125,6 +130,12 @@ curl -sS -X POST http://127.0.0.1:7878/query \
   -H 'Content-Type: application/json' \
   -d '{"query":"select ?gc where name(\"Alice\") -Grandparent-> ?gc limit 10","certify":true,"verify":true}' | jq .
 ```
+
+The response still remains a **soundness-oriented** surface:
+
+- `trust.soundness = lean_verified_row_soundness` means the returned rows are backed by a verified certificate,
+- it does **not** mean the server has proved query completeness or full ontology closure,
+- and mixed/runtime-only query forms continue to report their caveats explicitly in `trust`.
 
 ---
 

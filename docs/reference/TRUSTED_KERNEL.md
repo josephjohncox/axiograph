@@ -30,6 +30,32 @@ Claims to avoid:
 - “PathDB storage format defines ontology meaning.”
 - “Certified query answers are complete.”
 
+## When A Stronger Claim Becomes Honest
+
+The phrase “dependently typed ontology engine” should be reserved for a more
+specific state than “there is some theorem-bearing Lean code in the repo”.
+
+In this repo, the stronger claim becomes justified only when:
+
+- the verifier checks the certifiable semantic acceptance boundary for canonical
+  `.axi`, checked rewrite rules, and narrow query/migration/certificate
+  obligations;
+- compiled schema/category IR objects are the stable semantic references that
+  certificates and prepared queries cite;
+- Rust operational handles are indexed by accepted anchors, lifecycle state, and
+  schema/theory/context ids rather than raw strings alone;
+- and authoring/query/migration/certification surfaces all reduce to the same
+  typed semantic objects.
+
+This still does **not** mean:
+
+- all execution moves into Lean,
+- every query is complete,
+- or the storage/query engine itself becomes part of the trusted kernel.
+
+It means the semantics-bearing seams are typed, anchored, and checked at a small
+explicit boundary.
+
 ## Kernel Boundary
 
 The trusted kernel is the import closure of the executable verifier target,
@@ -101,6 +127,10 @@ The kernel is responsible for a small number of semantic tasks:
 5. Checking fixed-point confidence/probability arithmetic used by certificates.
 6. Checking anchored membership of referenced facts/relations inside the chosen
    anchor format.
+7. Checking the certifiable well-formedness of the compiled schema/category IR
+   slice that prepared queries, migrations, and certificates cite.
+8. Checking narrow typed query and migration witnesses for explicitly supported
+   fragments, with soundness scope stated conservatively.
 
 ## What The Kernel Must Not Own
 
@@ -197,7 +227,11 @@ The next concrete tightening steps are:
    stays explicit.
 2. Add a checked rewrite-rule compilation layer in Lean and route
    `rewrite_derivation_v3` through it.
-3. Prefer canonical accepted-plane anchors over `PathDBExportV1` for more
+3. Add a certifiable schema/category IR well-formedness boundary so prepared
+   queries and certificates stop depending on runtime-only heuristic naming.
+4. Add narrow typed query/migration witness checking over that IR for clearly
+   stated certifiable fragments.
+5. Prefer canonical accepted-plane anchors over `PathDBExportV1` for more
    certificate flows.
-4. Move query/cert semantics off binary-projection heuristics and onto the
+6. Move query/cert semantics off binary-projection heuristics and onto the
    future kernel IR.

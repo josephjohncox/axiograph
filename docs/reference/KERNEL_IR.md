@@ -37,6 +37,27 @@ Current implemented slice (2026-04):
    - property-graph projection,
    - and `Δ/Σ/Π` migration machinery.
 
+## Why This IR Is The Hinge
+
+The IR matters because “becoming a dependently typed ontology engine” is not
+primarily about adding more category-theory terminology. It is about making one
+compiled semantic object do real operational work.
+
+In this repo, the IR is the hinge only if all of the following become true:
+
+- authoring deltas and olog edits are expressed over stable IR ids;
+- prepared queries elaborate against `SchemaCoreIr` / `TheoryIr` rather than
+  raw runtime strings alone;
+- migration previews name schema morphisms and transport obligations over the
+  same objects and arrows;
+- certificates cite the same module / schema / relation / role identifiers that
+  the rest of the toolchain uses;
+- and semantic diff / merge operate over these objects instead of storage-local
+  artifacts.
+
+That is the operational point of the IR: one semantic spine for authoring,
+query, migration, certification, and review.
+
 ## Top-Level Shape
 
 ```rust
@@ -386,3 +407,7 @@ The first implementation cut for this spec should:
 3. Replace endpoint heuristics with `TraversalView`.
 4. Rebase migration/category scaffolding on `SchemaCoreIr`.
 5. Keep PathDB storage layout stable while changing the semantic lowering path.
+6. Add prepared-query and migration-preview forms that cite IR-level ids rather
+   than raw surface names alone.
+7. Make certificate payloads and semantic diffs name the same stable IR objects
+   used by authoring and query tooling.

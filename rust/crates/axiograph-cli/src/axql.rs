@@ -301,6 +301,14 @@ pub enum QueryCertifiability {
 }
 
 impl QueryCertifiability {
+    pub const fn trust_class(&self) -> &'static str {
+        match self {
+            Self::Certifiable => "certifiable",
+            Self::Mixed { .. } => "mixed",
+            Self::ExecutionOnly { .. } => "execution_only",
+        }
+    }
+
     /// Returns `true` iff the query is certifiable as-is.
     pub const fn is_certifiable(&self) -> bool {
         matches!(self, Self::Certifiable)

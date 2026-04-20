@@ -80,11 +80,11 @@ pub use axi_module_typecheck::{
 pub use axi_type::{AxiType, TypingEnv};
 pub use branding::{DbBranded, DbToken, DbTokenMismatch};
 pub use certificate::{
-    AxiAnchorV1, AxiConstraintsOkProofV1, AxiWellTypedProofV1, Certificate, CertificateV2,
+    AxiAnchorV1, AxiConstraintsOkProofV1, AxiWellTypedProofV1, CertificateV2,
     FixedPointProbability, FixedProb, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
     PathRewriteStepV3, ReachabilityProofV2, ResolutionDecisionV2, ResolutionProofV2,
-    RewriteDerivationProofV2, RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION,
-    CERTIFICATE_VERSION_V2, FIXED_POINT_DENOMINATOR, FIXED_PROB_PRECISION,
+    RewriteDerivationProofV2, RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION_V2,
+    FIXED_POINT_DENOMINATOR,
 };
 pub use checked_db::{CheckedDb, CheckedDbMut, CheckedDbReport, TypedFactBuilder};
 pub use guardrails::{GuardrailEngine, GuardrailRule, GuardrailViolation, Severity};

@@ -1,6 +1,7 @@
 //! Competency question generation and translation helpers.
 
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -227,6 +228,157 @@ pub fn prompts_to_competency_questions(
     Ok(out)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompetencyQuestionTrustV1 {
+    pub trust_class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<String>,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_coverage: Option<crate::trust_contract::SemanticCoverageSummaryV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<crate::trust_contract::TrustGapV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompetencyQuestionEvaluationV1 {
+    pub name: String,
+    pub rows: usize,
+    pub min_rows: usize,
+    pub satisfied: bool,
+    pub weight: f64,
+    pub cost: f64,
+    pub trust: CompetencyQuestionTrustV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompetencyCoverageWithTrustV1 {
+    pub total: usize,
+    pub satisfied: usize,
+    pub coverage: f64,
+    pub cost: f64,
+    #[serde(default)]
+    pub questions: Vec<CompetencyQuestionEvaluationV1>,
+}
+
+fn normalized_competency_query(
+    q: &CompetencyQuestionV1,
+) -> Result<(crate::axql::AxqlQuery, usize, f64)> {
+    let mut query = crate::axql::parse_axql_query(&q.query)?;
+    if !q.contexts.is_empty() {
+        let mut ctxs: Vec<crate::axql::AxqlContextSpec> = Vec::new();
+        for raw in &q.contexts {
+            if let Ok(id) = raw.parse::<u32>() {
+                ctxs.push(crate::axql::AxqlContextSpec::EntityId(id));
+            } else {
+                ctxs.push(crate::axql::AxqlContextSpec::Name(raw.to_string()));
+            }
+        }
+        query.contexts = ctxs;
+    }
+    let min_rows = if q.min_rows == 0 { 1 } else { q.min_rows };
+    let limit = min_rows.min(1000);
+    if query.limit == 0 || query.limit > limit {
+        query.limit = limit;
+    }
+    let weight = if q.weight <= 0.0 { 1.0 } else { q.weight };
+    Ok((query, min_rows, weight))
+}
+
+pub fn evaluate_competency_questions(
+    db: &PathDB,
+    questions: &[CompetencyQuestionV1],
+) -> Result<crate::world_model::CompetencyCoverageSummaryV1> {
+    let eval = evaluate_competency_questions_with_trust(db, questions)?;
+    Ok(crate::world_model::CompetencyCoverageSummaryV1 {
+        total: eval.total,
+        satisfied: eval.satisfied,
+        coverage: eval.coverage,
+        cost: eval.cost,
+        questions: eval
+            .questions
+            .into_iter()
+            .map(|q| crate::world_model::CompetencyQuestionResultV1 {
+                name: q.name,
+                rows: q.rows,
+                min_rows: q.min_rows,
+                satisfied: q.satisfied,
+                weight: q.weight,
+                cost: q.cost,
+            })
+            .collect(),
+    })
+}
+
+pub fn evaluate_competency_questions_with_trust(
+    db: &PathDB,
+    questions: &[CompetencyQuestionV1],
+) -> Result<CompetencyCoverageWithTrustV1> {
+    if questions.is_empty() {
+        return Ok(CompetencyCoverageWithTrustV1::default());
+    }
+
+    let meta = MetaPlaneIndex::from_db(db).ok();
+    let mut results: Vec<CompetencyQuestionEvaluationV1> = Vec::new();
+    let mut satisfied = 0usize;
+    let mut total_cost = 0.0;
+
+    for q in questions {
+        let (query, min_rows, weight) = normalized_competency_query(q)?;
+        let mut prepared = crate::axql::prepare_axql_query_with_meta(db, &query, meta.as_ref())?;
+        let trust = crate::trust_contract::query_user_visible_trust_contract_with_meta(
+            &query,
+            &prepared.certifiability(),
+            false,
+            None,
+            meta.as_ref(),
+        );
+        let res = prepared.execute(db, meta.as_ref())?;
+        let rows = res.rows.len();
+        let ok = rows >= min_rows;
+        if ok {
+            satisfied += 1;
+        }
+        let cost = if ok { 0.0 } else { weight };
+        total_cost += cost;
+
+        results.push(CompetencyQuestionEvaluationV1 {
+            name: q.name.clone(),
+            rows,
+            min_rows,
+            satisfied: ok,
+            weight,
+            cost,
+            trust: CompetencyQuestionTrustV1 {
+                trust_class: trust.trust_class,
+                coverage: Some(trust.coverage),
+                reasons: trust.reasons,
+                notes: trust.notes,
+                semantic_coverage: trust.semantic_coverage,
+                gaps: trust.gaps,
+            },
+        });
+    }
+
+    let total = questions.len();
+    let coverage = if total == 0 {
+        0.0
+    } else {
+        satisfied as f64 / total as f64
+    };
+
+    Ok(CompetencyCoverageWithTrustV1 {
+        total,
+        satisfied,
+        coverage,
+        cost: total_cost,
+        questions: results,
+    })
+}
+
 fn prompts_from_json(value: Value) -> Result<Vec<CompetencyQuestionPrompt>> {
     let value = match value {
         Value::Object(mut map) => {
@@ -317,5 +469,43 @@ fn prompt_from_value(value: &Value) -> Result<CompetencyQuestionPrompt> {
             "unsupported competency question item (expected string or object, got {})",
             other
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn evaluate_competency_questions_with_trust_carries_semantic_coverage() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+        let eval = evaluate_competency_questions_with_trust(
+            &db,
+            &[CompetencyQuestionV1 {
+                name: "jamison_parent".to_string(),
+                question: Some("Jamison should have Bob as a parent".to_string()),
+                query:
+                    "select ?f where ?f = Fam.Parent(child=Jamison, parent=Bob, ctx=FamilyTree, time=?t) limit 1"
+                        .to_string(),
+                min_rows: 1,
+                weight: 1.0,
+                contexts: Vec::new(),
+            }],
+        )?;
+
+        let trust = &eval.questions[0].trust;
+        assert_eq!(trust.trust_class, "certifiable");
+        assert_eq!(trust.coverage.as_deref(), Some("full_query"));
+        assert!(trust.semantic_coverage.is_some());
+        assert!(trust
+            .notes
+            .iter()
+            .any(|note| note.contains("full ontology closure")));
+        Ok(())
     }
 }

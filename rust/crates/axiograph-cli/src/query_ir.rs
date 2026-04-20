@@ -21,10 +21,16 @@ use crate::axql::{
     parse_axql_path_expr, AxqlAtom, AxqlContextSpec, AxqlQuery, AxqlResult, AxqlTerm,
     PreparedQueryIntrospection, QueryCertifiability,
 };
+use crate::trust_contract::{
+    query_user_visible_trust_contract, query_user_visible_trust_contract_with_meta,
+    QueryTrustContractV1,
+};
 
 use axiograph_pathdb::certificate::CertificateV2;
 
 pub const QUERY_IR_V1_VERSION: u32 = 1;
+
+pub type QueryTrustContract = QueryTrustContractV1;
 
 /// JSON schema for `QueryIrV1` (for tooling/LLMs).
 ///
@@ -314,7 +320,18 @@ impl QueryIrV1 {
     ) -> Result<PreparedQueryV1> {
         let query = self.to_axql_query()?;
         let handle = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
-        Ok(PreparedQueryV1 { query, handle })
+        let trust = query_user_visible_trust_contract_with_meta(
+            &query,
+            &handle.certifiability(),
+            false,
+            None,
+            meta,
+        );
+        Ok(PreparedQueryV1 {
+            query,
+            handle,
+            trust,
+        })
     }
 
     /// Classify whether this query can be executed in the current certified subset.
@@ -325,6 +342,38 @@ impl QueryIrV1 {
     pub fn certifiability(&self) -> Result<QueryCertifiability> {
         let query = self.to_axql_query()?;
         Ok(query.certifiability())
+    }
+
+    /// Return a structured trust contract for the current IR without touching the
+    /// execution engine.
+    ///
+    /// This makes the soundness boundary explicit: the contract is about returned
+    /// rows within the current snapshot/context scope and does not claim complete
+    /// answers or full ontology closure.
+    #[allow(dead_code)]
+    pub fn trust_contract(&self) -> Result<QueryTrustContract> {
+        Ok(query_user_visible_trust_contract(
+            &self.to_axql_query()?,
+            &self.certifiability()?,
+            false,
+            None,
+        ))
+    }
+
+    /// Return structured trust metadata enriched with ontology/business-rule
+    /// coverage when meta-plane data is available.
+    #[allow(dead_code)]
+    pub fn trust_contract_with_meta(
+        &self,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<QueryTrustContract> {
+        Ok(query_user_visible_trust_contract_with_meta(
+            &self.to_axql_query()?,
+            &self.certifiability()?,
+            false,
+            None,
+            meta,
+        ))
     }
 
     /// Backwards-compatible lower-level access to the prepared query handle.
@@ -356,6 +405,7 @@ impl QueryIrV1 {
 pub struct PreparedQueryV1 {
     query: AxqlQuery,
     handle: PreparedQueryHandle,
+    trust: QueryTrustContract,
 }
 
 #[allow(dead_code)]
@@ -377,6 +427,49 @@ impl PreparedQueryV1 {
     /// Return the fully elaborated plan shape as human-readable text.
     pub fn explain_plan_lines(&self) -> Vec<String> {
         self.handle.explain_plan_lines()
+    }
+
+    /// Return structured trust metadata for this prepared query.
+    pub fn trust_contract(&self) -> QueryTrustContract {
+        self.trust.clone()
+    }
+
+    /// Return structured trust metadata enriched with ontology/business-rule
+    /// coverage when meta-plane data is available.
+    pub fn trust_contract_with_meta(
+        &self,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> QueryTrustContract {
+        if meta.is_none() || self.trust.semantic_coverage.is_some() {
+            return self.trust.clone();
+        }
+        query_user_visible_trust_contract_with_meta(
+            &self.query,
+            &self.certifiability(),
+            false,
+            None,
+            meta,
+        )
+    }
+
+    /// Return the semantic claims currently attached to this prepared query.
+    ///
+    /// This is a typed/runtime-friendly surface for agent tooling and
+    /// business-rule checks: if the query was prepared with meta-plane data,
+    /// the returned claims describe which ontology surfaces are in scope.
+    pub fn semantic_claims(&self) -> &[crate::trust_contract::SemanticClaimSummaryV1] {
+        &self.trust.semantic_claims
+    }
+
+    /// Return semantic-coverage metadata attached to this prepared query, if
+    /// available.
+    pub fn semantic_coverage(&self) -> Option<&crate::trust_contract::SemanticCoverageSummaryV1> {
+        self.trust.semantic_coverage.as_ref()
+    }
+
+    /// Return explicit trust gaps attached to this prepared query.
+    pub fn trust_gaps(&self) -> &[crate::trust_contract::TrustGapV1] {
+        &self.trust.gaps
     }
 
     /// Return a short explainable summary of the prepared query shape and trust class.
@@ -1183,6 +1276,13 @@ instance I of S:
         assert_eq!(introspection.selected_vars, vec!["?x"]);
         assert_eq!(introspection.limit, 10);
         assert_eq!(introspection.context_count, 0);
+        assert_eq!(prepared.trust_contract().trust_class, "certifiable");
+        assert!(prepared.semantic_coverage().is_some());
+        assert!(prepared
+            .semantic_claims()
+            .iter()
+            .any(|claim| claim.kind == "declared_object_type"));
+        assert!(prepared.trust_gaps().is_empty());
         assert!(prepared
             .explain_plan_lines()
             .iter()
@@ -1225,6 +1325,165 @@ instance I of S:
             "contains(...) should force execution-only classification"
         );
         assert!(cert.reasons().iter().any(|r| r.contains("contains")));
+        let trust = prepared.trust_contract();
+        assert_eq!(trust.trust_class, "execution_only");
+        assert!(trust.semantic_coverage.is_some());
+        assert!(!prepared.trust_gaps().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_prepare_without_meta_can_be_enriched_later() -> Result<()> {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+            });
+        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["f"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Fam.Parent",
+                  "fields": {
+                    "child": "Jamison",
+                    "parent": "Bob",
+                    "ctx": "FamilyTree",
+                    "time": "?t"
+                  }
+                }
+              ],
+              "limit": 1
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, None)?;
+        assert!(prepared.semantic_coverage().is_none());
+        assert!(prepared.semantic_claims().is_empty());
+
+        let enriched = prepared.trust_contract_with_meta(Some(&meta));
+        assert!(enriched.semantic_coverage.is_some());
+        assert!(enriched
+            .semantic_claims
+            .iter()
+            .any(|claim| claim.kind == "declared_relation"));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_trust_contract_for_certifiable_query() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"}
+              ],
+              "limit": 10
+            }"#,
+        )?;
+        let contract = q.trust_contract()?;
+        assert_eq!(contract.trust_class, "certifiable");
+        assert_eq!(contract.coverage, "full_query");
+        assert_eq!(contract.soundness, "certificate_available_but_not_emitted");
+        assert_eq!(
+            contract.claim_scope,
+            "returned_rows_within_snapshot_and_context"
+        );
+        assert_eq!(contract.completeness_claim, "not_claimed");
+        assert_eq!(contract.ontology_closure_claim, "not_claimed");
+        assert_eq!(contract.scope.context, "unscoped");
+        assert_eq!(contract.certifiable_disjuncts, None);
+        assert_eq!(contract.execution_only_disjuncts, None);
+        assert!(contract.reasons.is_empty());
+        assert!(contract
+            .notes
+            .iter()
+            .any(|note| note.contains("not a claim that all satisfying rows were returned")));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_trust_contract_for_mixed_query() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "disjuncts": [
+                [
+                  {"kind": "type", "term": "?x", "type": "Node"}
+                ],
+                [
+                  {"kind": "attr_contains", "term": "?x", "key": "name", "needle": "a"}
+                ]
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let contract = q.trust_contract()?;
+        assert_eq!(contract.trust_class, "mixed");
+        assert_eq!(contract.coverage, "mixed_union_of_branches");
+        assert_eq!(contract.completeness_claim, "not_claimed");
+        assert_eq!(contract.ontology_closure_claim, "not_claimed");
+        assert_eq!(contract.certifiable_disjuncts, Some(1));
+        assert_eq!(contract.execution_only_disjuncts, Some(1));
+        assert!(contract
+            .reasons
+            .iter()
+            .any(|r| r.contains("cannot certify")));
+        assert!(contract
+            .notes
+            .iter()
+            .any(|note| note
+                .contains("Mixed queries combine certifiable and execution-only branches")));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_trust_contract_with_meta_surfaces_semantic_coverage() -> Result<()> {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+            });
+        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["f"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Fam.Parent",
+                  "fields": {
+                    "child": "Jamison",
+                    "parent": "Bob",
+                    "ctx": "FamilyTree",
+                    "time": "?t"
+                  }
+                }
+              ],
+              "limit": 1
+            }"#,
+        )?;
+
+        let contract = q.trust_contract_with_meta(Some(&meta))?;
+        assert!(contract.semantic_coverage.is_some());
+        assert!(contract
+            .semantic_claims
+            .iter()
+            .any(|claim| claim.kind == "declared_relation"));
+        assert_eq!(contract.completeness_claim, "not_claimed");
         Ok(())
     }
 

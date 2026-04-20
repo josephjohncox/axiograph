@@ -27,6 +27,7 @@ mod competency_questions;
 mod db_server;
 mod doc_chunks;
 mod embeddings;
+mod evolution_preview;
 mod github;
 mod llm;
 mod nlq;
@@ -42,9 +43,12 @@ mod query_ir;
 mod relation_resolution;
 mod repl;
 mod schema_discovery;
+mod semantic_claim;
 mod sqlish;
 mod store_sync;
 mod synthetic_pathdb;
+mod trust_contract;
+mod typed_authoring;
 mod viz;
 mod web;
 mod world_model;
@@ -1643,6 +1647,15 @@ enum AcceptedCommands {
         /// - `strict`: run additional expensive lints (still untrusted tooling)
         #[arg(long, default_value = "off")]
         quality: String,
+        /// Optional JSON file containing competency questions to compare before/after promotion.
+        #[arg(long)]
+        competency_questions: Option<PathBuf>,
+        /// Fail promotion if any previously satisfied competency question regresses.
+        #[arg(long)]
+        cq_fail_on_regression: bool,
+        /// Fail promotion unless all supplied competency questions are satisfied after preview.
+        #[arg(long)]
+        cq_fail_on_unsatisfied_after: bool,
     },
 
     /// Rebuild a `.axpd` PathDB snapshot from an accepted-plane snapshot id.
@@ -2510,18 +2523,39 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             dir,
             message,
             quality,
+            competency_questions,
+            cq_fail_on_regression,
+            cq_fail_on_unsatisfied_after,
         } => {
-            let snapshot_id = accepted_plane::promote_reviewed_module(
+            let competency_questions = if let Some(path) = competency_questions.as_ref() {
+                crate::world_model::load_competency_questions(path)?
+            } else {
+                Vec::new()
+            };
+            let result = accepted_plane::promote_reviewed_module_with_options(
                 &input,
                 &dir,
-                message.as_deref(),
-                &quality,
+                &accepted_plane::PromoteReviewedModuleOptionsV1 {
+                    message,
+                    quality_profile: quality,
+                    quality_plane: "both".to_string(),
+                    competency_questions,
+                    competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                        fail_on_regression: cq_fail_on_regression,
+                        fail_on_unsatisfied_after: cq_fail_on_unsatisfied_after,
+                    },
+                    persist_validation_report: true,
+                },
             )?;
+            let snapshot_id = result.snapshot_id;
             eprintln!(
                 "{} promoted module to accepted snapshot {}",
                 "ok".green().bold(),
                 snapshot_id
             );
+            if let Some(report) = result.validation_report_path.as_ref() {
+                eprintln!("validation report: {}", report.bold());
+            }
             eprintln!(
                 "next: {}",
                 format!(
@@ -2568,12 +2602,31 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
                     path_index_depth,
                 },
             )?;
+            let semantic_commit = accepted_plane::persist_pathdb_semantic_commit(
+                &dir,
+                &result.accepted_snapshot_id,
+                &result.snapshot_id,
+                &accepted_plane::PathdbSemanticCommitOptionsV1 {
+                    message: message.clone(),
+                    proposal_digests: proposal_digests_from_paths(&proposals)?,
+                    ..accepted_plane::PathdbSemanticCommitOptionsV1::default()
+                },
+            )?;
+            let _ = accepted_plane::persist_semantic_ref(
+                &dir,
+                "heads/evidence/manual",
+                &semantic_commit.commit_id,
+            )?;
             eprintln!(
                 "{} committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
                 "ok".green().bold(),
                 result.ops_added,
                 result.accepted_snapshot_id,
                 result.snapshot_id
+            );
+            eprintln!(
+                "semantic commit: {}",
+                semantic_commit.commit_id.to_string().bold()
             );
             eprintln!(
                 "next: {}",
@@ -2729,6 +2782,26 @@ fn format_snapshot_id(id: impl AsRef<str>, full: bool) -> String {
 fn snapshot_id_filename(id: impl AsRef<str>) -> String {
     let id = id.as_ref();
     id.replace(':', "_")
+}
+
+fn proposal_digests_from_paths(paths: &[PathBuf]) -> Result<Vec<axiograph_pathdb::ProposalDigest>> {
+    let mut out: BTreeSet<axiograph_pathdb::ProposalDigest> = BTreeSet::new();
+    for path in paths {
+        let text = fs::read_to_string(path)
+            .map_err(|e| anyhow!("failed to read proposals `{}`: {e}", path.display()))?;
+        let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)
+            .map_err(|e| anyhow!("failed to parse proposals `{}`: {e}", path.display()))?;
+        let bytes = serde_json::to_vec(&file).map_err(|e| {
+            anyhow!(
+                "failed to serialize proposals `{}` for digesting: {e}",
+                path.display()
+            )
+        })?;
+        out.insert(axiograph_pathdb::ProposalDigest::new(
+            axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes),
+        ));
+    }
+    Ok(out.into_iter().collect())
 }
 
 fn cmd_accept_init(dir: &PathBuf) -> Result<()> {
@@ -7175,11 +7248,38 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
             Vec::new(),
         )?;
         let run_path = crate::accepted_plane::persist_world_model_run_record(dir, &run_record)?;
+        let semantic_commit = crate::accepted_plane::persist_pathdb_semantic_commit(
+            dir,
+            &res.accepted_snapshot_id,
+            &res.snapshot_id,
+            &crate::accepted_plane::PathdbSemanticCommitOptionsV1 {
+                message: args.commit_message.clone(),
+                proposal_digests: vec![run_record.proposals_digest.clone()],
+                world_model_run_id: Some(run_record.run_id.clone()),
+                ..crate::accepted_plane::PathdbSemanticCommitOptionsV1::default()
+            },
+        )?;
+        let wm_ref = format!(
+            "heads/wm/{}",
+            run_record
+                .run_id
+                .as_str()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                })
+                .collect::<String>()
+        );
+        let _ =
+            crate::accepted_plane::persist_semantic_ref(dir, &wm_ref, &semantic_commit.commit_id)?;
         println!(
             "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
             res.ops_added, res.accepted_snapshot_id, res.snapshot_id
         );
         println!("ok persisted world-model run record {}", run_path.display());
+        println!("ok persisted semantic commit {}", semantic_commit.commit_id);
     }
 
     Ok(())

@@ -36,6 +36,7 @@ use crate::axi_input::require_canonical_axi_text;
 const ACCEPTED_PLANE_VERSION_V1: &str = "accepted_plane_v1";
 const ACCEPTED_PLANE_LOG_V1: &str = "accepted_plane.log.jsonl";
 const ACCEPTED_PLANE_HEAD_FILE: &str = "HEAD";
+const ACCEPTED_PLANE_SEM_HEAD_FILE: &str = "sem/HEAD";
 const ACCEPTED_PLANE_MODULES_DIR: &str = "modules";
 const ACCEPTED_PLANE_SNAPSHOTS_DIR: &str = "snapshots";
 const ACCEPTED_PLANE_QUALITY_DIR: &str = "quality";
@@ -43,8 +44,13 @@ const ACCEPTED_PLANE_CERTS_DIR: &str = "certs";
 const ACCEPTED_PLANE_SEM_DIR: &str = "sem";
 const ACCEPTED_PLANE_SEM_COMMITS_DIR: &str = "sem/commits";
 const ACCEPTED_PLANE_SEM_RECONCILIATIONS_DIR: &str = "sem/reconciliations";
+#[allow(dead_code)]
+const ACCEPTED_PLANE_SEM_HEADS_MAIN_FILE: &str = "sem/refs/heads/main";
+const ACCEPTED_PLANE_SEM_HEADS_MAIN_REF: &str = "heads/main";
 const ACCEPTED_PLANE_SEM_REFS_DIR: &str = "sem/refs";
 const ACCEPTED_PLANE_SEM_HEADS_DIR: &str = "sem/refs/heads";
+const ACCEPTED_PLANE_SEM_HEADS_REVIEW_DIR: &str = "sem/refs/heads/review";
+const ACCEPTED_PLANE_SEM_HEADS_EVIDENCE_DIR: &str = "sem/refs/heads/evidence";
 const ACCEPTED_PLANE_SEM_HEADS_WM_DIR: &str = "sem/refs/heads/wm";
 const ACCEPTED_PLANE_SEM_TAGS_DIR: &str = "sem/refs/tags";
 const ACCEPTED_PLANE_SEM_VALIDATIONS_DIR: &str = "sem/validations";
@@ -52,6 +58,11 @@ const ACCEPTED_PLANE_SEM_WORLD_MODEL_RUNS_DIR: &str = "sem/world_model_runs";
 
 const ACCEPTED_PLANE_SNAPSHOT_VERSION_V1: &str = "accepted_plane_snapshot_v1";
 const ACCEPTED_PLANE_EVENT_VERSION_V1: &str = "accepted_plane_event_v1";
+const ACCEPTED_PLANE_PROMOTION_PREVIEW_VERSION_V1: &str = "accepted_plane_promotion_preview_v1";
+const ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1: &str = "accepted_plane_semantic_commit_v1";
+const ACCEPTED_PLANE_SEM_REF_POINTER_VERSION_V1: &str = "accepted_plane_sem_ref_pointer_v1";
+#[allow(dead_code)]
+const ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1: &str = "accepted_plane_sem_reconciliation_v1";
 #[cfg_attr(not(test), allow(dead_code))]
 const WORLD_MODEL_RUN_RECORD_VERSION_V1: &str = "world_model_run_record_v1";
 
@@ -108,6 +119,383 @@ pub struct AcceptedPlaneEventV1 {
     pub constraints_instance_count: Option<u32>,
     #[serde(default)]
     pub constraints_check_count: Option<u32>,
+    /// Optional path to a stored promotion preview/validation report (relative to the accepted-plane directory).
+    #[serde(default)]
+    pub validation_report_path: Option<String>,
+    #[serde(default)]
+    pub validation_ok: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromotionPreviewOptionsV1 {
+    pub quality_profile: String,
+    pub quality_plane: String,
+    #[serde(default)]
+    pub competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    #[serde(default)]
+    pub competency_gate: crate::proposals_validate::CompetencyGatePolicyV1,
+}
+
+impl Default for PromotionPreviewOptionsV1 {
+    fn default() -> Self {
+        Self {
+            quality_profile: "off".to_string(),
+            quality_plane: "both".to_string(),
+            competency_questions: Vec::new(),
+            competency_gate: crate::proposals_validate::CompetencyGatePolicyV1::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromotionPreviewReportV1 {
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_snapshot_id: Option<AcceptedSnapshotId>,
+    pub candidate_module_name: String,
+    pub candidate_axi_digest_v1: AxiDigest,
+    pub import_summary: PromotionImportSummaryV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evolution_preview: Option<crate::evolution_preview::EvolutionPreviewV1>,
+    pub quality_delta: crate::quality::QualityReportV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub competency_gate: Option<crate::proposals_validate::CompetencyGateReportV1>,
+    pub trust: crate::proposals_validate::ProposalValidationTrustContractV1,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_report_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PromotionImportSummaryV1 {
+    pub meta_entities_added: usize,
+    pub meta_relations_added: usize,
+    pub instances_imported: usize,
+    pub entities_added: usize,
+    pub tuple_entities_added: usize,
+    pub relations_added: usize,
+    pub derived_edges_added: usize,
+    pub entity_type_upgrades: usize,
+}
+
+impl From<axiograph_pathdb::axi_module_import::AxiSchemaV1ImportSummary>
+    for PromotionImportSummaryV1
+{
+    fn from(value: axiograph_pathdb::axi_module_import::AxiSchemaV1ImportSummary) -> Self {
+        Self {
+            meta_entities_added: value.meta_entities_added,
+            meta_relations_added: value.meta_relations_added,
+            instances_imported: value.instances_imported,
+            entities_added: value.entities_added,
+            tuple_entities_added: value.tuple_entities_added,
+            relations_added: value.relations_added,
+            derived_edges_added: value.derived_edges_added,
+            entity_type_upgrades: value.entity_type_upgrades,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromoteReviewedModuleOptionsV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub quality_profile: String,
+    pub quality_plane: String,
+    #[serde(default)]
+    pub competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    #[serde(default)]
+    pub competency_gate: crate::proposals_validate::CompetencyGatePolicyV1,
+    #[serde(default = "default_persist_validation_report")]
+    pub persist_validation_report: bool,
+}
+
+fn default_persist_validation_report() -> bool {
+    true
+}
+
+impl Default for PromoteReviewedModuleOptionsV1 {
+    fn default() -> Self {
+        Self {
+            message: None,
+            quality_profile: "off".to_string(),
+            quality_plane: "both".to_string(),
+            competency_questions: Vec::new(),
+            competency_gate: crate::proposals_validate::CompetencyGatePolicyV1::default(),
+            persist_validation_report: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromoteReviewedModuleResultV1 {
+    pub snapshot_id: AcceptedSnapshotId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_report_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemCommitV1 {
+    pub version: String,
+    pub commit_id: AxiDigest,
+    #[serde(default)]
+    pub parent_commit_id: Option<AxiDigest>,
+    #[serde(default)]
+    pub kind: SemCommitKindV1,
+    pub created_at_unix_secs: u64,
+    pub author: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub action: String,
+    #[serde(default)]
+    pub provenance: SemCommitProvenanceV1,
+    #[serde(default)]
+    pub state: SemStateRefV1,
+    #[serde(default)]
+    pub delta: SemDeltaV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_summary: Option<crate::evolution_preview::SemGateSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciliation_id: Option<AxiDigest>,
+    pub accepted_snapshot_id: AcceptedSnapshotId,
+    #[serde(default)]
+    pub accepted_parent_snapshot_id: Option<AcceptedSnapshotId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    #[serde(default)]
+    pub proposal_digests: Vec<ProposalDigest>,
+    pub policy: String,
+    pub module_name: String,
+    pub module_digest: AxiDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_report_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints_cert_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_report_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_ok: Option<bool>,
+    #[serde(default)]
+    pub world_model_run_id: Option<WorldModelRunId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SemCommitKindV1 {
+    #[default]
+    Promote,
+    EvidenceCommit,
+    Merge,
+    Validation,
+    WorldModelRun,
+    TagMove,
+    Admin,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SemCommitProvenanceV1 {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_commit: Option<AxiDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world_model_run_id: Option<WorldModelRunId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SemStateRefV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_snapshot_id_before: Option<AcceptedSnapshotId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_snapshot_id_after: Option<AcceptedSnapshotId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pathdb_snapshot_id_before: Option<PathdbSnapshotId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pathdb_snapshot_id_after: Option<PathdbSnapshotId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_tree_digest: Option<AxiDigest>,
+    #[serde(default)]
+    pub evidence_digests: Vec<ProposalDigest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SemDeltaV1 {
+    #[serde(default)]
+    pub module_digests_added: Vec<AxiDigest>,
+    #[serde(default)]
+    pub module_digests_removed: Vec<AxiDigest>,
+    #[serde(default)]
+    pub evidence_blobs_added: Vec<ProposalDigest>,
+    #[serde(default)]
+    pub certificate_refs_added: Vec<String>,
+    #[serde(default)]
+    pub quality_report_refs_added: Vec<String>,
+    #[serde(default)]
+    pub validation_report_refs_added: Vec<String>,
+    #[serde(default)]
+    pub lifecycle_events: Vec<SemLifecycleEventV1>,
+    #[serde(default)]
+    pub world_model_run_refs: Vec<WorldModelRunId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemLifecycleEventV1 {
+    pub artifact: ArtifactRefV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<LifecycleStageV1>,
+    pub to: LifecycleStageV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactRefV1 {
+    pub artifact_kind: String,
+    pub artifact_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleStageV1 {
+    Proposed,
+    Validated,
+    Reviewed,
+    Accepted,
+    Certified,
+    Superseded,
+    Retracted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemRefPointerV1 {
+    pub version: String,
+    pub ref_name: String,
+    pub commit_id: AxiDigest,
+    pub updated_at_unix_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_summary: Option<crate::evolution_preview::SemGateSummaryV1>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SemRefNameV1 {
+    Main,
+    WorldModel { name: String },
+    Review { name: String },
+    Generic { ref_name: String },
+}
+
+impl SemRefNameV1 {
+    fn main() -> Self {
+        Self::Main
+    }
+
+    fn world_model(name: impl Into<String>) -> Result<Self> {
+        Ok(Self::WorldModel {
+            name: validate_sem_ref_suffix(name.into(), "world-model branch")?,
+        })
+    }
+
+    fn review(name: impl Into<String>) -> Result<Self> {
+        Ok(Self::Review {
+            name: validate_sem_ref_suffix(name.into(), "review branch")?,
+        })
+    }
+
+    fn parse(ref_name: &str) -> Result<Self> {
+        let trimmed = ref_name.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("semantic ref name must not be empty"));
+        }
+        if trimmed == ACCEPTED_PLANE_SEM_HEADS_MAIN_REF {
+            return Ok(Self::Main);
+        }
+        if let Some(name) = trimmed.strip_prefix("heads/wm/") {
+            return Self::world_model(name);
+        }
+        if let Some(name) = trimmed.strip_prefix("heads/review/") {
+            return Self::review(name);
+        }
+        Ok(Self::Generic {
+            ref_name: trimmed.to_string(),
+        })
+    }
+
+    fn as_ref_name(&self) -> String {
+        match self {
+            Self::Main => ACCEPTED_PLANE_SEM_HEADS_MAIN_REF.to_string(),
+            Self::WorldModel { name } => format!("heads/wm/{name}"),
+            Self::Review { name } => format!("heads/review/{name}"),
+            Self::Generic { ref_name } => ref_name.clone(),
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemReconciliationV1 {
+    pub version: String,
+    pub reconciliation_id: AxiDigest,
+    #[serde(default)]
+    pub created_at_unix_secs: u64,
+    pub base_commit_id: AxiDigest,
+    pub left_commit_id: AxiDigest,
+    pub right_commit_id: AxiDigest,
+    pub policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ref_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_commit_id: Option<AxiDigest>,
+    #[serde(default)]
+    pub conflicts: Vec<SemConflictRecordV1>,
+    #[serde(default)]
+    pub decisions: Vec<SemDecisionRecordV1>,
+    #[serde(default)]
+    pub certificate_refs: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemConflictRecordV1 {
+    pub artifact: ArtifactRefV1,
+    pub detail: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemDecisionRecordV1 {
+    pub artifact: ArtifactRefV1,
+    pub resolution: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PathdbSemanticCommitOptionsV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub proposal_digests: Vec<ProposalDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_summary: Option<crate::evolution_preview::SemGateSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world_model_run_id: Option<WorldModelRunId>,
+    #[serde(default = "default_pathdb_semantic_commit_policy")]
+    pub policy: String,
+    #[serde(default = "default_semantic_commit_author")]
+    pub author: String,
+}
+
+fn default_pathdb_semantic_commit_policy() -> String {
+    "evidence_plane".to_string()
+}
+
+fn default_semantic_commit_author() -> String {
+    "axiograph-cli".to_string()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,12 +567,30 @@ pub(crate) fn read_snapshot_for_cli(
     read_snapshot(accepted_dir, &snapshot_id)
 }
 
+#[allow(dead_code)]
 pub fn promote_reviewed_module(
     candidate_axi: &Path,
     accepted_dir: &Path,
     message: Option<&str>,
     quality_profile: &str,
 ) -> Result<AcceptedSnapshotId> {
+    Ok(promote_reviewed_module_with_options(
+        candidate_axi,
+        accepted_dir,
+        &PromoteReviewedModuleOptionsV1 {
+            message: message.map(str::to_owned),
+            quality_profile: quality_profile.to_string(),
+            ..PromoteReviewedModuleOptionsV1::default()
+        },
+    )?
+    .snapshot_id)
+}
+
+pub fn promote_reviewed_module_with_options(
+    candidate_axi: &Path,
+    accepted_dir: &Path,
+    options: &PromoteReviewedModuleOptionsV1,
+) -> Result<PromoteReviewedModuleResultV1> {
     ensure_layout(accepted_dir)?;
 
     let text = fs::read_to_string(candidate_axi)?;
@@ -195,7 +601,7 @@ pub fn promote_reviewed_module(
         validated,
         axiograph_pathdb::axi_module_typecheck::ReviewStamp {
             reviewer: None,
-            note: message.map(str::to_owned),
+            note: options.message.clone(),
         },
     );
 
@@ -263,7 +669,12 @@ pub fn promote_reviewed_module(
     // - import the module into an in-memory PathDB to get a uniform representation,
     // - run lints + constraint checks,
     // - and attach the resulting report to the accepted-plane event.
-    let quality_profile = quality_profile.trim().to_ascii_lowercase();
+    let quality_profile = options.quality_profile.trim().to_ascii_lowercase();
+    let quality_plane = if options.quality_plane.trim().is_empty() {
+        "both".to_string()
+    } else {
+        options.quality_plane.trim().to_ascii_lowercase()
+    };
     let quality_report = if quality_profile != "off" {
         if !matches!(quality_profile.as_str(), "fast" | "strict") {
             return Err(anyhow!(
@@ -281,7 +692,7 @@ pub fn promote_reviewed_module(
             &db,
             &candidate_axi.to_path_buf(),
             &quality_profile,
-            "both",
+            &quality_plane,
         )?;
         if report.summary.error_count > 0 {
             return Err(anyhow!(
@@ -301,6 +712,38 @@ pub fn promote_reviewed_module(
     } else {
         None
     };
+
+    let preview = preview_reviewed_module_from_reviewed(
+        accepted_dir,
+        previous_snapshot.as_ref(),
+        &reviewed,
+        &text,
+        &module_digest,
+        &PromotionPreviewOptionsV1 {
+            quality_profile: quality_profile.clone(),
+            quality_plane: quality_plane.clone(),
+            competency_questions: options.competency_questions.clone(),
+            competency_gate: options.competency_gate.clone(),
+        },
+    )?;
+    if !preview.ok {
+        let mut msg = format!(
+            "promotion preview blocked for module `{}`",
+            preview.candidate_module_name
+        );
+        if let Some(cq) = preview.competency_gate.as_ref() {
+            msg.push_str(&format!(
+                ": competency gate failed (regressions={}, satisfied_after={}/{})",
+                cq.regressions, cq.satisfied_after, cq.total
+            ));
+        } else if preview.quality_delta.summary.error_count > 0 {
+            msg.push_str(&format!(
+                ": preview quality delta introduced {} error(s)",
+                preview.quality_delta.summary.error_count
+            ));
+        }
+        return Err(anyhow!(msg));
+    }
 
     let stored_rel_path = store_module_if_needed(
         accepted_dir,
@@ -332,6 +775,16 @@ pub fn promote_reviewed_module(
     };
     write_snapshot(accepted_dir, &snapshot)?;
     write_head(accepted_dir, &snapshot_id)?;
+
+    let validation_report_path = if options.persist_validation_report {
+        Some(persist_promotion_preview_report(
+            accepted_dir,
+            &snapshot_id,
+            &preview,
+        )?)
+    } else {
+        None
+    };
 
     // Store the quality report (if present) in the accepted-plane directory.
     let (quality_report_path, quality_counts) = if let Some(report) = quality_report.as_ref() {
@@ -365,7 +818,7 @@ pub fn promote_reviewed_module(
         module_name,
         module_digest,
         stored_module_path: stored_rel_path,
-        message: message.map(|s| s.to_string()),
+        message: options.message.clone(),
         quality_profile: if quality_profile == "off" {
             None
         } else {
@@ -379,10 +832,25 @@ pub fn promote_reviewed_module(
         constraints_constraint_count: Some(constraints_proof.constraint_count),
         constraints_instance_count: Some(constraints_proof.instance_count),
         constraints_check_count: Some(constraints_proof.check_count),
+        validation_report_path: validation_report_path.clone(),
+        validation_ok: Some(preview.ok),
     };
     append_event(accepted_dir, &event)?;
 
-    Ok(snapshot_id)
+    let semantic_commit = semantic_commit_from_promotion(
+        &event,
+        read_sem_head_commit_id(accepted_dir)?,
+        &snapshot,
+        preview.evolution_preview.as_ref(),
+    )?;
+    write_semantic_commit(accepted_dir, &semantic_commit)?;
+    write_sem_head_commit_id(accepted_dir, &semantic_commit.commit_id)?;
+    write_sem_ref_pointer_for_main(accepted_dir, &semantic_commit.commit_id)?;
+
+    Ok(PromoteReviewedModuleResultV1 {
+        snapshot_id,
+        validation_report_path,
+    })
 }
 
 pub fn build_pathdb_from_snapshot(
@@ -438,6 +906,261 @@ pub fn build_pathdb_from_snapshot(
     Ok(())
 }
 
+#[allow(dead_code)]
+pub fn preview_reviewed_module_v1(
+    candidate_axi: &Path,
+    accepted_dir: &Path,
+    options: &PromotionPreviewOptionsV1,
+) -> Result<PromotionPreviewReportV1> {
+    ensure_layout(accepted_dir)?;
+    let text = fs::read_to_string(candidate_axi)?;
+    let validated = require_canonical_axi_text(&text)?.into_parts().1;
+    let reviewed = axiograph_pathdb::axi_module_typecheck::review_axi_v1_module(
+        validated,
+        axiograph_pathdb::axi_module_typecheck::ReviewStamp::default(),
+    );
+    let module_digest = AxiDigest::from_axi_text(&text);
+    let previous_snapshot_id = read_head(accepted_dir)?;
+    let previous_snapshot = if let Some(prev) = previous_snapshot_id.as_ref() {
+        Some(read_snapshot(accepted_dir, prev)?)
+    } else {
+        None
+    };
+    preview_reviewed_module_from_reviewed(
+        accepted_dir,
+        previous_snapshot.as_ref(),
+        &reviewed,
+        &text,
+        &module_digest,
+        options,
+    )
+}
+
+fn preview_reviewed_module_from_reviewed(
+    accepted_dir: &Path,
+    previous_snapshot: Option<&AcceptedPlaneSnapshotV1>,
+    reviewed: &axiograph_pathdb::Module<axiograph_pathdb::Reviewed>,
+    text: &str,
+    module_digest: &AxiDigest,
+    options: &PromotionPreviewOptionsV1,
+) -> Result<PromotionPreviewReportV1> {
+    let before_db = build_pathdb_for_snapshot_state(accepted_dir, previous_snapshot, None)?.0;
+    let (after_db, import_summary) =
+        build_pathdb_for_snapshot_state(accepted_dir, previous_snapshot, Some(reviewed))?;
+
+    let quality_profile = options.quality_profile.trim().to_ascii_lowercase();
+    let quality_plane = if options.quality_plane.trim().is_empty() {
+        "both".to_string()
+    } else {
+        options.quality_plane.trim().to_ascii_lowercase()
+    };
+    let quality_delta = if quality_profile == "off" {
+        empty_quality_delta_report("accepted_plane:promotion_preview", &quality_plane)
+    } else {
+        crate::proposals_validate::quality_delta_report_v1(
+            &before_db,
+            &after_db,
+            &quality_profile,
+            &quality_plane,
+        )?
+    };
+    let competency_gate = if options.competency_questions.is_empty() {
+        None
+    } else {
+        Some(crate::proposals_validate::competency_gate_report_v1(
+            &before_db,
+            &after_db,
+            &options.competency_questions,
+            &options.competency_gate,
+        )?)
+    };
+    let ok = quality_delta.summary.error_count == 0
+        && competency_gate
+            .as_ref()
+            .map(|gate| gate.gate_passed)
+            .unwrap_or(true);
+
+    let mut reasons = vec![
+        "preview compares the current accepted snapshot against the would-be accepted snapshot"
+            .to_string(),
+        "soundness covers Rust-side typing, conservative constraint gates, and preview checks; not completeness".to_string(),
+    ];
+    if let Some(base) = previous_snapshot {
+        reasons.push(format!("base accepted snapshot: {}", base.snapshot_id));
+    } else {
+        reasons.push("base accepted snapshot: (none)".to_string());
+    }
+    reasons.push(format!(
+        "candidate module `{}` with digest {}",
+        reviewed.module().module_name,
+        module_digest
+    ));
+    if !text.is_empty() {
+        reasons
+            .push("candidate module text was parsed as canonical .axi before preview".to_string());
+    }
+    if let Some(cq) = competency_gate.as_ref() {
+        reasons.push(format!(
+            "competency coverage compared {} question(s) before and after promotion preview",
+            cq.total
+        ));
+    }
+
+    let trust = crate::proposals_validate::ProposalValidationTrustContractV1 {
+        trust_class: "accepted_promotion_preview".to_string(),
+        soundness: "candidate_module_typechecked_constraints_checked_and_previewed".to_string(),
+        coverage: if options.competency_questions.is_empty() {
+            "accepted_snapshot_delta_only".to_string()
+        } else {
+            "accepted_snapshot_delta_plus_competency_questions".to_string()
+        },
+        scope: "accepted_snapshot_scoped_preview".to_string(),
+        reasons,
+    };
+    let after_meta =
+        axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&after_db).unwrap_or_default();
+    let import_summary: PromotionImportSummaryV1 = import_summary.unwrap_or_default().into();
+    let evolution_preview = crate::evolution_preview::build_evolution_preview_v1(
+        "accepted_promotion_preview",
+        previous_snapshot.map(|s| s.snapshot_id.clone()),
+        reviewed.module().module_name.clone(),
+        crate::evolution_preview::promotion_typed_change_summary(
+            &reviewed.module().module_name,
+            module_digest,
+            &import_summary,
+        ),
+        &quality_delta,
+        competency_gate.as_ref(),
+        &trust,
+        Some(crate::semantic_claim::runtime_semantic_summary_for_preview(
+            &after_meta,
+            &trust,
+            competency_gate.as_ref(),
+            quality_delta.summary.error_count,
+        )),
+        std::iter::empty::<String>(),
+        ok,
+    );
+
+    Ok(PromotionPreviewReportV1 {
+        version: ACCEPTED_PLANE_PROMOTION_PREVIEW_VERSION_V1.to_string(),
+        base_snapshot_id: previous_snapshot.map(|s| s.snapshot_id.clone()),
+        candidate_module_name: reviewed.module().module_name.clone(),
+        candidate_axi_digest_v1: module_digest.clone(),
+        import_summary,
+        evolution_preview: Some(evolution_preview),
+        quality_delta,
+        competency_gate,
+        trust,
+        ok,
+        stored_report_path: None,
+    })
+}
+
+fn empty_quality_delta_report(input: &str, plane: &str) -> crate::quality::QualityReportV1 {
+    crate::quality::QualityReportV1 {
+        version: "quality_report_v1".to_string(),
+        generated_at_unix_secs: now_unix_secs(),
+        input: input.to_string(),
+        profile: "off".to_string(),
+        plane: plane.to_string(),
+        summary: crate::quality::QualitySummaryV1::default(),
+        findings: Vec::new(),
+    }
+}
+
+fn build_pathdb_for_snapshot_state(
+    accepted_dir: &Path,
+    snapshot: Option<&AcceptedPlaneSnapshotV1>,
+    candidate: Option<&axiograph_pathdb::Module<axiograph_pathdb::Reviewed>>,
+) -> Result<(
+    axiograph_pathdb::PathDB,
+    Option<axiograph_pathdb::axi_module_import::AxiSchemaV1ImportSummary>,
+)> {
+    let mut db = axiograph_pathdb::PathDB::new();
+    let candidate_name = candidate.map(|m| m.module().module_name.as_str());
+    let mut candidate_summary = None;
+
+    if let Some(snapshot) = snapshot {
+        for (module_name, module_ref) in &snapshot.modules {
+            if Some(module_name.as_str()) == candidate_name {
+                continue;
+            }
+            let path = accepted_dir.join(&module_ref.stored_path);
+            let text = fs::read_to_string(&path).map_err(|e| {
+                anyhow!(
+                    "failed to read module `{}` at `{}`: {e}",
+                    module_name,
+                    path.display()
+                )
+            })?;
+            let digest = AxiDigest::from_axi_text(&text);
+            if digest != module_ref.module_digest {
+                return Err(anyhow!(
+                    "module `{}` digest mismatch: manifest={} file={}",
+                    module_name,
+                    module_ref.module_digest,
+                    digest
+                ));
+            }
+            let module = require_canonical_axi_text(&text)?.into_parts().1;
+            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
+                &mut db, &module,
+            )?;
+        }
+    }
+
+    if let Some(candidate) = candidate {
+        candidate_summary = Some(
+            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
+                &mut db, candidate,
+            )?,
+        );
+    }
+
+    db.build_indexes();
+    Ok((db, candidate_summary))
+}
+
+fn promotion_preview_report_path(
+    accepted_dir: &Path,
+    snapshot_id: &AcceptedSnapshotId,
+    module_name: &str,
+    module_digest: &AxiDigest,
+) -> PathBuf {
+    let file = format!(
+        "{}__{}__{}.json",
+        digest_to_filename(snapshot_id.as_str()),
+        sanitize_path_component(module_name),
+        digest_to_filename(module_digest)
+    );
+    accepted_dir
+        .join(ACCEPTED_PLANE_SEM_VALIDATIONS_DIR)
+        .join(file)
+}
+
+fn persist_promotion_preview_report(
+    accepted_dir: &Path,
+    snapshot_id: &AcceptedSnapshotId,
+    report: &PromotionPreviewReportV1,
+) -> Result<String> {
+    let abs_path = promotion_preview_report_path(
+        accepted_dir,
+        snapshot_id,
+        &report.candidate_module_name,
+        &report.candidate_axi_digest_v1,
+    );
+    let rel_path = abs_path
+        .strip_prefix(accepted_dir)
+        .unwrap_or(&abs_path)
+        .to_string_lossy()
+        .to_string();
+    let mut stored = report.clone();
+    stored.stored_report_path = Some(rel_path.clone());
+    fs::write(&abs_path, serde_json::to_string_pretty(&stored)?)?;
+    Ok(rel_path)
+}
+
 pub fn persist_world_model_run_record(
     accepted_dir: &Path,
     record: &WorldModelRunRecordV1,
@@ -458,6 +1181,29 @@ pub fn persist_world_model_run_record(
     let json = serde_json::to_string_pretty(record)?;
     fs::write(&path, json)?;
     Ok(path)
+}
+
+pub fn persist_pathdb_semantic_commit(
+    accepted_dir: &Path,
+    accepted_snapshot_id: &AcceptedSnapshotId,
+    pathdb_snapshot_id: &PathdbSnapshotId,
+    options: &PathdbSemanticCommitOptionsV1,
+) -> Result<SemCommitV1> {
+    ensure_layout(accepted_dir)?;
+    let accepted_snapshot = read_snapshot(accepted_dir, accepted_snapshot_id)?;
+    let _pathdb_snapshot =
+        crate::pathdb_wal::read_pathdb_snapshot_for_cli(accepted_dir, pathdb_snapshot_id.as_str())?;
+
+    let parent_commit_id = read_sem_head_commit_id(accepted_dir)?;
+    let commit = semantic_commit_from_pathdb_overlay(
+        &accepted_snapshot,
+        pathdb_snapshot_id,
+        parent_commit_id,
+        options,
+    );
+    write_semantic_commit(accepted_dir, &commit)?;
+    write_sem_head_commit_id(accepted_dir, &commit.commit_id)?;
+    Ok(commit)
 }
 
 pub fn read_world_model_run_record(
@@ -493,6 +1239,8 @@ fn ensure_layout(accepted_dir: &Path) -> Result<()> {
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_RECONCILIATIONS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_DIR))?;
+    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_REVIEW_DIR))?;
+    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_EVIDENCE_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_WM_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_TAGS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_VALIDATIONS_DIR))?;
@@ -526,6 +1274,21 @@ fn sanitize_path_component(s: &str) -> String {
     } else {
         out
     }
+}
+
+fn validate_sem_ref_suffix(name: String, label: &str) -> Result<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("{label} name must not be empty"));
+    }
+    for segment in trimmed.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(anyhow!(
+                "{label} name `{trimmed}` has an invalid path segment"
+            ));
+        }
+    }
+    Ok(trimmed.to_string())
 }
 
 fn digest_to_filename(digest: impl AsRef<str>) -> String {
@@ -722,6 +1485,606 @@ fn write_snapshot(accepted_dir: &Path, snapshot: &AcceptedPlaneSnapshotV1) -> Re
     Ok(())
 }
 
+fn sem_ref_pointer_path(accepted_dir: &Path, ref_name: &str) -> PathBuf {
+    let mut ref_path = PathBuf::from(ACCEPTED_PLANE_SEM_REFS_DIR);
+    for segment in ref_name.split('/') {
+        ref_path.push(segment);
+    }
+    accepted_dir.join(ref_path)
+}
+
+fn sem_head_path(accepted_dir: &Path) -> PathBuf {
+    accepted_dir.join(ACCEPTED_PLANE_SEM_HEAD_FILE)
+}
+
+#[allow(dead_code)]
+fn sem_main_ref_path(accepted_dir: &Path) -> PathBuf {
+    accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_MAIN_FILE)
+}
+
+fn sem_commit_path(accepted_dir: &Path, commit_id: &AxiDigest) -> PathBuf {
+    accepted_dir
+        .join(ACCEPTED_PLANE_SEM_COMMITS_DIR)
+        .join(format!("{}.json", digest_to_filename(commit_id.as_str())))
+}
+
+#[allow(dead_code)]
+#[allow(dead_code)]
+fn sem_reconciliation_path(accepted_dir: &Path, reconciliation_id: &AxiDigest) -> PathBuf {
+    accepted_dir
+        .join(ACCEPTED_PLANE_SEM_RECONCILIATIONS_DIR)
+        .join(format!(
+            "{}.json",
+            digest_to_filename(reconciliation_id.as_str())
+        ))
+}
+
+fn sem_commit_id_v1(
+    parent_commit_id: Option<&AxiDigest>,
+    event: &AcceptedPlaneEventV1,
+) -> AxiDigest {
+    use std::fmt::Write as _;
+    let mut material = String::new();
+    let _ = write!(
+        &mut material,
+        "{};snapshot={};parent={};action={};module={};module_digest={};",
+        ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1,
+        event.snapshot_id,
+        parent_commit_id.map(|id| id.as_str()).unwrap_or("(none)"),
+        event.action,
+        event.module_name,
+        event.module_digest
+    );
+    AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
+}
+
+fn promotion_gate_summary(
+    event: &AcceptedPlaneEventV1,
+    preview: Option<&crate::evolution_preview::EvolutionPreviewV1>,
+) -> Option<crate::evolution_preview::SemGateSummaryV1> {
+    let summary = preview.map(crate::evolution_preview::sem_gate_summary_from_evolution_preview)?;
+    let rule = crate::evolution_preview::SemRuleSummaryV1 {
+        constraint_count: event.constraints_constraint_count.unwrap_or(0),
+        instance_count: event.constraints_instance_count.unwrap_or(0),
+        check_count: event.constraints_check_count.unwrap_or(0),
+    };
+    Some(summary.with_rule_summary(rule))
+}
+
+fn semantic_commit_from_promotion(
+    event: &AcceptedPlaneEventV1,
+    parent_commit_id: Option<AxiDigest>,
+    snapshot: &AcceptedPlaneSnapshotV1,
+    preview: Option<&crate::evolution_preview::EvolutionPreviewV1>,
+) -> Result<SemCommitV1> {
+    let commit_id = sem_commit_id_v1(parent_commit_id.as_ref(), event);
+    Ok(SemCommitV1 {
+        version: ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1.to_string(),
+        commit_id,
+        parent_commit_id,
+        kind: SemCommitKindV1::Promote,
+        created_at_unix_secs: now_unix_secs(),
+        author: "axiograph-cli".to_string(),
+        message: event.message.clone(),
+        action: event.action.clone(),
+        provenance: SemCommitProvenanceV1 {
+            source: "accepted_plane".to_string(),
+            command: Some("axiograph db accept promote".to_string()),
+            source_commit: None,
+            world_model_run_id: None,
+        },
+        state: SemStateRefV1 {
+            accepted_snapshot_id_before: snapshot.previous_snapshot_id.clone(),
+            accepted_snapshot_id_after: Some(snapshot.snapshot_id.clone()),
+            pathdb_snapshot_id_before: None,
+            pathdb_snapshot_id_after: None,
+            accepted_tree_digest: None,
+            evidence_digests: Vec::new(),
+        },
+        delta: SemDeltaV1 {
+            module_digests_added: vec![event.module_digest.clone()],
+            module_digests_removed: Vec::new(),
+            evidence_blobs_added: Vec::new(),
+            certificate_refs_added: event.constraints_cert_path.clone().into_iter().collect(),
+            quality_report_refs_added: event.quality_report_path.clone().into_iter().collect(),
+            validation_report_refs_added: event
+                .validation_report_path
+                .clone()
+                .into_iter()
+                .collect(),
+            lifecycle_events: vec![SemLifecycleEventV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "module".to_string(),
+                    artifact_id: event.module_digest.to_string(),
+                },
+                from: Some(LifecycleStageV1::Reviewed),
+                to: LifecycleStageV1::Accepted,
+                reason: event.message.clone(),
+            }],
+            world_model_run_refs: Vec::new(),
+        },
+        gate_summary: promotion_gate_summary(event, preview),
+        reconciliation_id: None,
+        accepted_snapshot_id: snapshot.snapshot_id.clone(),
+        accepted_parent_snapshot_id: snapshot.previous_snapshot_id.clone(),
+        pathdb_snapshot_id: None,
+        proposal_digests: Vec::new(),
+        policy: "conservative".to_string(),
+        module_name: event.module_name.clone(),
+        module_digest: event.module_digest.clone(),
+        quality_report_path: event.quality_report_path.clone(),
+        constraints_cert_path: event.constraints_cert_path.clone(),
+        validation_report_path: event.validation_report_path.clone(),
+        validation_ok: event.validation_ok,
+        world_model_run_id: None,
+    })
+}
+
+fn pathdb_overlay_digest_v1(
+    accepted_snapshot_id: &AcceptedSnapshotId,
+    pathdb_snapshot_id: &PathdbSnapshotId,
+    proposal_digests: &[ProposalDigest],
+    world_model_run_id: Option<&WorldModelRunId>,
+) -> AxiDigest {
+    use std::fmt::Write as _;
+
+    let mut material = String::new();
+    let _ = write!(
+        &mut material,
+        "{};accepted={};pathdb={};",
+        ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1, accepted_snapshot_id, pathdb_snapshot_id
+    );
+    for digest in proposal_digests {
+        let _ = write!(&mut material, "proposal={};", digest);
+    }
+    let _ = write!(
+        &mut material,
+        "wm_run={};",
+        world_model_run_id.map(|id| id.as_str()).unwrap_or("(none)")
+    );
+    AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
+}
+
+fn sem_commit_id_for_pathdb_overlay_v1(
+    parent_commit_id: Option<&AxiDigest>,
+    accepted_snapshot_id: &AcceptedSnapshotId,
+    pathdb_snapshot_id: &PathdbSnapshotId,
+    proposal_digests: &[ProposalDigest],
+    world_model_run_id: Option<&WorldModelRunId>,
+) -> AxiDigest {
+    use std::fmt::Write as _;
+
+    let mut material = String::new();
+    let _ = write!(
+        &mut material,
+        "{};action=pathdb_commit;accepted={};pathdb={};parent={};",
+        ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1,
+        accepted_snapshot_id,
+        pathdb_snapshot_id,
+        parent_commit_id.map(|id| id.as_str()).unwrap_or("(none)")
+    );
+    for digest in proposal_digests {
+        let _ = write!(&mut material, "proposal={};", digest);
+    }
+    let _ = write!(
+        &mut material,
+        "wm_run={};",
+        world_model_run_id.map(|id| id.as_str()).unwrap_or("(none)")
+    );
+    AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
+}
+
+fn semantic_commit_from_pathdb_overlay(
+    accepted_snapshot: &AcceptedPlaneSnapshotV1,
+    pathdb_snapshot_id: &PathdbSnapshotId,
+    parent_commit_id: Option<AxiDigest>,
+    options: &PathdbSemanticCommitOptionsV1,
+) -> SemCommitV1 {
+    let commit_id = sem_commit_id_for_pathdb_overlay_v1(
+        parent_commit_id.as_ref(),
+        &accepted_snapshot.snapshot_id,
+        pathdb_snapshot_id,
+        &options.proposal_digests,
+        options.world_model_run_id.as_ref(),
+    );
+    SemCommitV1 {
+        version: ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1.to_string(),
+        commit_id,
+        parent_commit_id,
+        kind: if options.world_model_run_id.is_some() {
+            SemCommitKindV1::WorldModelRun
+        } else {
+            SemCommitKindV1::EvidenceCommit
+        },
+        created_at_unix_secs: now_unix_secs(),
+        author: options.author.clone(),
+        message: options.message.clone(),
+        action: "pathdb_commit".to_string(),
+        provenance: SemCommitProvenanceV1 {
+            source: if options.world_model_run_id.is_some() {
+                "world_model".to_string()
+            } else {
+                "pathdb_wal".to_string()
+            },
+            command: Some("axiograph db accept pathdb-commit".to_string()),
+            source_commit: None,
+            world_model_run_id: options.world_model_run_id.clone(),
+        },
+        state: SemStateRefV1 {
+            accepted_snapshot_id_before: Some(accepted_snapshot.snapshot_id.clone()),
+            accepted_snapshot_id_after: Some(accepted_snapshot.snapshot_id.clone()),
+            pathdb_snapshot_id_before: None,
+            pathdb_snapshot_id_after: Some(pathdb_snapshot_id.clone()),
+            accepted_tree_digest: None,
+            evidence_digests: options.proposal_digests.clone(),
+        },
+        delta: SemDeltaV1 {
+            module_digests_added: Vec::new(),
+            module_digests_removed: Vec::new(),
+            evidence_blobs_added: options.proposal_digests.clone(),
+            certificate_refs_added: Vec::new(),
+            quality_report_refs_added: Vec::new(),
+            validation_report_refs_added: Vec::new(),
+            lifecycle_events: options
+                .proposal_digests
+                .iter()
+                .map(|digest| SemLifecycleEventV1 {
+                    artifact: ArtifactRefV1 {
+                        artifact_kind: "proposal_set".to_string(),
+                        artifact_id: digest.to_string(),
+                    },
+                    from: Some(LifecycleStageV1::Proposed),
+                    to: LifecycleStageV1::Validated,
+                    reason: options.message.clone(),
+                })
+                .collect(),
+            world_model_run_refs: options.world_model_run_id.clone().into_iter().collect(),
+        },
+        gate_summary: options.gate_summary.clone(),
+        reconciliation_id: None,
+        accepted_snapshot_id: accepted_snapshot.snapshot_id.clone(),
+        accepted_parent_snapshot_id: accepted_snapshot.previous_snapshot_id.clone(),
+        pathdb_snapshot_id: Some(pathdb_snapshot_id.clone()),
+        proposal_digests: options.proposal_digests.clone(),
+        policy: options.policy.clone(),
+        module_name: "(pathdb_overlay)".to_string(),
+        module_digest: pathdb_overlay_digest_v1(
+            &accepted_snapshot.snapshot_id,
+            pathdb_snapshot_id,
+            &options.proposal_digests,
+            options.world_model_run_id.as_ref(),
+        ),
+        quality_report_path: None,
+        constraints_cert_path: None,
+        validation_report_path: None,
+        validation_ok: None,
+        world_model_run_id: options.world_model_run_id.clone(),
+    }
+}
+
+fn write_sem_head_commit_id(accepted_dir: &Path, commit_id: &AxiDigest) -> Result<()> {
+    fs::write(sem_head_path(accepted_dir), format!("{commit_id}\n"))?;
+    Ok(())
+}
+
+fn read_sem_head_commit_id(accepted_dir: &Path) -> Result<Option<AxiDigest>> {
+    let path = sem_head_path(accepted_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path)?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(AxiDigest::new(trimmed.to_string())))
+    }
+}
+
+fn write_sem_ref_pointer_for_main(accepted_dir: &Path, commit_id: &AxiDigest) -> Result<PathBuf> {
+    write_sem_ref_pointer_for_target(accepted_dir, &SemRefNameV1::main(), commit_id)
+}
+
+fn sem_gate_summary_for_commit(
+    accepted_dir: &Path,
+    commit_id: &AxiDigest,
+) -> Option<crate::evolution_preview::SemGateSummaryV1> {
+    read_semantic_commit(accepted_dir, commit_id)
+        .ok()
+        .and_then(|commit| commit.gate_summary)
+}
+
+fn write_sem_ref_pointer_for_target(
+    accepted_dir: &Path,
+    target: &SemRefNameV1,
+    commit_id: &AxiDigest,
+) -> Result<PathBuf> {
+    let ref_name = target.as_ref_name();
+    write_sem_ref_pointer(
+        accepted_dir,
+        &ref_name,
+        SemRefPointerV1 {
+            version: ACCEPTED_PLANE_SEM_REF_POINTER_VERSION_V1.to_string(),
+            ref_name: ref_name.clone(),
+            commit_id: commit_id.clone(),
+            updated_at_unix_secs: now_unix_secs(),
+            gate_summary: sem_gate_summary_for_commit(accepted_dir, commit_id),
+        },
+    )
+}
+
+pub fn write_sem_ref_pointer(
+    accepted_dir: &Path,
+    ref_name: &str,
+    pointer: SemRefPointerV1,
+) -> Result<PathBuf> {
+    let path = sem_ref_pointer_path(accepted_dir, ref_name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(&pointer)?;
+    fs::write(&path, json)?;
+    Ok(path)
+}
+
+#[allow(dead_code)]
+pub fn read_sem_ref_pointer(accepted_dir: &Path, ref_name: &str) -> Result<SemRefPointerV1> {
+    let path = sem_ref_pointer_path(accepted_dir, ref_name);
+    let text = fs::read_to_string(&path)
+        .map_err(|e| anyhow!("failed to read semantic ref `{}`: {e}", path.display()))?;
+    let pointer: SemRefPointerV1 = serde_json::from_str(&text)?;
+    if pointer.ref_name != ref_name {
+        return Err(anyhow!(
+            "malformed semantic ref pointer `{}`: expected={} got={}",
+            path.display(),
+            ref_name,
+            pointer.ref_name
+        ));
+    }
+    Ok(pointer)
+}
+
+pub fn persist_semantic_ref(
+    accepted_dir: &Path,
+    ref_name: &str,
+    commit_id: &AxiDigest,
+) -> Result<SemRefPointerV1> {
+    let target = SemRefNameV1::parse(ref_name)?;
+    persist_semantic_ref_target(accepted_dir, &target, commit_id)
+}
+
+pub fn persist_semantic_ref_target(
+    accepted_dir: &Path,
+    target: &SemRefNameV1,
+    commit_id: &AxiDigest,
+) -> Result<SemRefPointerV1> {
+    ensure_layout(accepted_dir)?;
+    let ref_name = target.as_ref_name();
+    let pointer = SemRefPointerV1 {
+        version: ACCEPTED_PLANE_SEM_REF_POINTER_VERSION_V1.to_string(),
+        ref_name: ref_name.clone(),
+        commit_id: commit_id.clone(),
+        updated_at_unix_secs: now_unix_secs(),
+        gate_summary: sem_gate_summary_for_commit(accepted_dir, commit_id),
+    };
+    write_sem_ref_pointer(accepted_dir, &ref_name, pointer.clone())?;
+    Ok(pointer)
+}
+
+#[allow(dead_code)]
+#[allow(dead_code)]
+pub fn read_sem_ref_pointer_target(
+    accepted_dir: &Path,
+    target: &SemRefNameV1,
+) -> Result<SemRefPointerV1> {
+    read_sem_ref_pointer(accepted_dir, &target.as_ref_name())
+}
+
+#[allow(dead_code)]
+fn read_sem_ref_pointer_main(accepted_dir: &Path) -> Result<Option<SemRefPointerV1>> {
+    let path = sem_main_ref_path(accepted_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    if !path.is_file() {
+        return Err(anyhow!("semantic ref `{}` is not a file", path.display()));
+    }
+    let text = fs::read_to_string(&path)?;
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let pointer: SemRefPointerV1 = serde_json::from_str(&text)?;
+    Ok(Some(pointer))
+}
+
+fn sem_delta_is_empty(delta: &SemDeltaV1) -> bool {
+    delta.module_digests_added.is_empty()
+        && delta.module_digests_removed.is_empty()
+        && delta.evidence_blobs_added.is_empty()
+        && delta.certificate_refs_added.is_empty()
+        && delta.quality_report_refs_added.is_empty()
+        && delta.validation_report_refs_added.is_empty()
+        && delta.lifecycle_events.is_empty()
+        && delta.world_model_run_refs.is_empty()
+}
+
+fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
+    if commit.action == "pathdb_commit" {
+        commit.kind = if commit.world_model_run_id.is_some() {
+            SemCommitKindV1::WorldModelRun
+        } else {
+            SemCommitKindV1::EvidenceCommit
+        };
+    }
+
+    if commit.provenance.source.is_empty() {
+        commit.provenance = SemCommitProvenanceV1 {
+            source: if commit.action == "pathdb_commit" {
+                if commit.world_model_run_id.is_some() {
+                    "world_model".to_string()
+                } else {
+                    "pathdb_wal".to_string()
+                }
+            } else {
+                "accepted_plane".to_string()
+            },
+            command: if commit.action == "pathdb_commit" {
+                Some("axiograph db accept pathdb-commit".to_string())
+            } else {
+                Some("axiograph db accept promote".to_string())
+            },
+            source_commit: None,
+            world_model_run_id: commit.world_model_run_id.clone(),
+        };
+    }
+
+    if commit.state.accepted_snapshot_id_before.is_none() {
+        commit.state.accepted_snapshot_id_before = commit.accepted_parent_snapshot_id.clone();
+    }
+    if commit.state.accepted_snapshot_id_after.is_none() {
+        commit.state.accepted_snapshot_id_after = Some(commit.accepted_snapshot_id.clone());
+    }
+    if commit.state.pathdb_snapshot_id_after.is_none() {
+        commit.state.pathdb_snapshot_id_after = commit.pathdb_snapshot_id.clone();
+    }
+    if commit.state.evidence_digests.is_empty() && !commit.proposal_digests.is_empty() {
+        commit.state.evidence_digests = commit.proposal_digests.clone();
+    }
+
+    if sem_delta_is_empty(&commit.delta) {
+        commit.delta = if commit.action == "pathdb_commit" {
+            SemDeltaV1 {
+                module_digests_added: Vec::new(),
+                module_digests_removed: Vec::new(),
+                evidence_blobs_added: commit.proposal_digests.clone(),
+                certificate_refs_added: Vec::new(),
+                quality_report_refs_added: Vec::new(),
+                validation_report_refs_added: Vec::new(),
+                lifecycle_events: commit
+                    .proposal_digests
+                    .iter()
+                    .map(|digest| SemLifecycleEventV1 {
+                        artifact: ArtifactRefV1 {
+                            artifact_kind: "proposal_set".to_string(),
+                            artifact_id: digest.to_string(),
+                        },
+                        from: Some(LifecycleStageV1::Proposed),
+                        to: LifecycleStageV1::Validated,
+                        reason: commit.message.clone(),
+                    })
+                    .collect(),
+                world_model_run_refs: commit.world_model_run_id.clone().into_iter().collect(),
+            }
+        } else {
+            SemDeltaV1 {
+                module_digests_added: vec![commit.module_digest.clone()],
+                module_digests_removed: Vec::new(),
+                evidence_blobs_added: Vec::new(),
+                certificate_refs_added: commit.constraints_cert_path.clone().into_iter().collect(),
+                quality_report_refs_added: commit.quality_report_path.clone().into_iter().collect(),
+                validation_report_refs_added: commit
+                    .validation_report_path
+                    .clone()
+                    .into_iter()
+                    .collect(),
+                lifecycle_events: vec![SemLifecycleEventV1 {
+                    artifact: ArtifactRefV1 {
+                        artifact_kind: "module".to_string(),
+                        artifact_id: commit.module_digest.to_string(),
+                    },
+                    from: Some(LifecycleStageV1::Reviewed),
+                    to: LifecycleStageV1::Accepted,
+                    reason: commit.message.clone(),
+                }],
+                world_model_run_refs: Vec::new(),
+            }
+        };
+    }
+
+    commit
+}
+
+fn read_semantic_commit(accepted_dir: &Path, commit_id: &AxiDigest) -> Result<SemCommitV1> {
+    let path = sem_commit_path(accepted_dir, commit_id);
+    let text = fs::read_to_string(&path)
+        .map_err(|e| anyhow!("failed to read semantic commit `{}`: {e}", path.display()))?;
+    let commit = normalize_semantic_commit(serde_json::from_str(&text)?);
+    if commit.commit_id != *commit_id {
+        return Err(anyhow!(
+            "semantic commit `{}` has mismatched id: expected={} got={}",
+            path.display(),
+            commit_id,
+            commit.commit_id
+        ));
+    }
+    Ok(commit)
+}
+
+fn write_semantic_commit(accepted_dir: &Path, commit: &SemCommitV1) -> Result<PathBuf> {
+    let commit = normalize_semantic_commit(commit.clone());
+    let path = sem_commit_path(accepted_dir, &commit.commit_id);
+    if path.exists() {
+        let existing = read_semantic_commit(accepted_dir, &commit.commit_id)?;
+        if existing != commit {
+            return Err(anyhow!(
+                "semantic commit id collision `{}`: existing commit differs",
+                commit.commit_id
+            ));
+        }
+        return Ok(path);
+    }
+    let json = serde_json::to_string_pretty(&commit)?;
+    fs::write(&path, json)?;
+    Ok(path)
+}
+
+#[allow(dead_code)]
+#[allow(dead_code)]
+pub fn persist_reconciliation(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+) -> Result<PathBuf> {
+    ensure_layout(accepted_dir)?;
+    let path = sem_reconciliation_path(accepted_dir, &reconciliation.reconciliation_id);
+    if path.exists() {
+        let existing = read_reconciliation(accepted_dir, &reconciliation.reconciliation_id)?;
+        if existing != *reconciliation {
+            return Err(anyhow!(
+                "semantic reconciliation id collision `{}`: existing reconciliation differs",
+                reconciliation.reconciliation_id
+            ));
+        }
+        return Ok(path);
+    }
+    fs::write(&path, serde_json::to_string_pretty(reconciliation)?)?;
+    Ok(path)
+}
+
+#[allow(dead_code)]
+#[allow(dead_code)]
+pub fn read_reconciliation(
+    accepted_dir: &Path,
+    reconciliation_id: &AxiDigest,
+) -> Result<SemReconciliationV1> {
+    let path = sem_reconciliation_path(accepted_dir, reconciliation_id);
+    let text = fs::read_to_string(&path).map_err(|e| {
+        anyhow!(
+            "failed to read semantic reconciliation `{}`: {e}",
+            path.display()
+        )
+    })?;
+    let reconciliation: SemReconciliationV1 = serde_json::from_str(&text)?;
+    if reconciliation.reconciliation_id != *reconciliation_id {
+        return Err(anyhow!(
+            "semantic reconciliation `{}` has mismatched id: expected={} got={}",
+            path.display(),
+            reconciliation_id,
+            reconciliation.reconciliation_id
+        ));
+    }
+    Ok(reconciliation)
+}
+
 fn store_module_if_needed(
     accepted_dir: &Path,
     module_name: &str,
@@ -802,6 +2165,125 @@ mod tests {
         path
     }
 
+    fn sample_runtime_semantics() -> crate::semantic_claim::RuntimeSemanticSummaryV1 {
+        crate::semantic_claim::RuntimeSemanticSummaryV1 {
+            version: crate::semantic_claim::RUNTIME_SEMANTIC_SUMMARY_VERSION_V1.to_string(),
+            trust_class: "accepted_promotion_preview".to_string(),
+            soundness: "candidate_module_typechecked_constraints_checked_and_previewed".to_string(),
+            coverage: "accepted_snapshot_delta_plus_competency_questions".to_string(),
+            scope: "accepted_snapshot_scoped_preview".to_string(),
+            completeness_claim: "not_claimed".to_string(),
+            ontology_closure_claim: "not_claimed".to_string(),
+            rule_inventory: crate::semantic_claim::SemanticRuleInventoryV1 {
+                total_rules: 4,
+                relation_constraints: 3,
+                rewrite_rules: 1,
+                named_block_constraints: 0,
+                runtime_checkable_rules: 3,
+                runtime_visible_rules: 4,
+                review_only_rules: 0,
+                relations_with_rules: 1,
+                theories_with_rules: 1,
+                relation_names: vec!["Edge".to_string()],
+                theory_names: vec!["DemoTheory".to_string()],
+                notes: Vec::new(),
+            },
+            semantic_coverage: crate::semantic_claim::SemanticCoverageSummaryV1 {
+                typed_fact_surface: "schema_scoped_fact_typing_present".to_string(),
+                structured_constraint_surface: "partial_runtime_enforced_structured_constraints"
+                    .to_string(),
+                rewrite_surface: "declared_runtime_visible".to_string(),
+                named_block_surface: "none_declared".to_string(),
+                competency_surface: "cq_gated_preview".to_string(),
+                quality_surface: "preview_quality_delta".to_string(),
+                gaps: vec![
+                    "rewrite rules still need broader runtime/certificate alignment".to_string(),
+                ],
+            },
+            notes: vec!["runtime semantic claims remain soundness-scoped".to_string()],
+        }
+    }
+
+    fn sample_evolution_preview() -> crate::evolution_preview::EvolutionPreviewV1 {
+        crate::evolution_preview::EvolutionPreviewV1 {
+            version: crate::evolution_preview::EVOLUTION_PREVIEW_VERSION_V1.to_string(),
+            kind: "accepted_promotion_preview".to_string(),
+            base_snapshot_id: Some(AcceptedSnapshotId::new("fnv1a64:promotion-parent")),
+            candidate_label: "PromotionDemo".to_string(),
+            typed_change: crate::evolution_preview::TypedChangeSummaryV1 {
+                kind: "accepted_module_delta".to_string(),
+                subjects: vec!["PromotionDemo".to_string()],
+                counts: BTreeMap::from([("relations_added".to_string(), 1usize)]),
+                notes: Vec::new(),
+                schema: crate::evolution_preview::TypedChangeBucketV1 {
+                    added: 1,
+                    ..crate::evolution_preview::TypedChangeBucketV1::default()
+                },
+                theory: crate::evolution_preview::TypedChangeBucketV1::default(),
+                instance: crate::evolution_preview::TypedChangeBucketV1 {
+                    added: 2,
+                    ..crate::evolution_preview::TypedChangeBucketV1::default()
+                },
+                context: crate::evolution_preview::TypedChangeBucketV1::default(),
+            },
+            quality_delta: crate::quality::QualityReportV1 {
+                version: "quality_report_v1".to_string(),
+                generated_at_unix_secs: 1,
+                input: "PromotionDemo".to_string(),
+                profile: "strict".to_string(),
+                plane: "both".to_string(),
+                summary: crate::quality::QualitySummaryV1 {
+                    error_count: 0,
+                    warning_count: 1,
+                    info_count: 0,
+                },
+                findings: Vec::new(),
+            },
+            competency_gate: Some(crate::proposals_validate::CompetencyGateReportV1 {
+                total: 2,
+                satisfied_before: 1,
+                satisfied_after: 2,
+                coverage_before: 0.5,
+                coverage_after: 1.0,
+                cost_before: 1.0,
+                cost_after: 0.0,
+                regressions: 0,
+                improvements: 1,
+                gate_passed: true,
+                policy: crate::proposals_validate::CompetencyGatePolicyV1 {
+                    fail_on_regression: true,
+                    fail_on_unsatisfied_after: true,
+                },
+                questions: Vec::new(),
+            }),
+            trust: crate::proposals_validate::ProposalValidationTrustContractV1 {
+                trust_class: "accepted_promotion_preview".to_string(),
+                soundness: "candidate_module_typechecked_constraints_checked_and_previewed"
+                    .to_string(),
+                coverage: "accepted_snapshot_delta_plus_competency_questions".to_string(),
+                scope: "accepted_snapshot_scoped_preview".to_string(),
+                reasons: vec!["preview is scoped to the accepted snapshot delta".to_string()],
+            },
+            runtime_semantics: Some(sample_runtime_semantics()),
+            trust_delta: crate::evolution_preview::TrustDeltaV1 {
+                preview_trust_class: "accepted_promotion_preview".to_string(),
+                preview_soundness: "candidate_module_typechecked_constraints_checked_and_previewed"
+                    .to_string(),
+                preview_coverage: "accepted_snapshot_delta_plus_competency_questions".to_string(),
+                preview_scope: "accepted_snapshot_scoped_preview".to_string(),
+                competency_coverage_before: Some(0.5),
+                competency_coverage_after: Some(1.0),
+                regressions: 0,
+                improvements: 1,
+                changed_questions: 0,
+                questions: Vec::new(),
+                notes: Vec::new(),
+            },
+            residual_obligations: Vec::new(),
+            ok: true,
+        }
+    }
+
     #[test]
     fn snapshot_manifest_round_trips_typed_module_digest() {
         let accepted_dir = temp_test_dir("snapshot-roundtrip");
@@ -855,6 +2337,8 @@ mod tests {
             constraints_constraint_count: Some(3),
             constraints_instance_count: Some(4),
             constraints_check_count: Some(5),
+            validation_report_path: Some("sem/validations/report.json".to_string()),
+            validation_ok: Some(true),
         };
 
         let json = serde_json::to_string(&event).expect("event should serialize");
@@ -1060,6 +2544,901 @@ instance I of S:
         let msg = format!("{err:#}");
         assert!(msg.contains("world-model run id collision"));
         assert!(msg.contains("wm::shared"));
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn promote_with_options_blocks_competency_regressions() {
+        let accepted_dir = temp_test_dir("promotion-cq-regression");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let baseline_axi = accepted_dir.join("PromoBaseline.axi");
+        fs::write(
+            &baseline_axi,
+            r#"module Promo
+
+schema Fam:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance I of Fam:
+  Person = {Alice, Bob, Carol}
+  Parent = {(child=Carol, parent=Bob)}
+"#,
+        )
+        .expect("write baseline");
+        let baseline_snapshot =
+            promote_reviewed_module(&baseline_axi, &accepted_dir, Some("baseline"), "off")
+                .expect("promote baseline");
+
+        let candidate_axi = accepted_dir.join("PromoCandidate.axi");
+        fs::write(
+            &candidate_axi,
+            r#"module Promo
+
+schema Fam:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance I of Fam:
+  Person = {Alice, Bob, Carol}
+"#,
+        )
+        .expect("write candidate");
+
+        let err = promote_reviewed_module_with_options(
+            &candidate_axi,
+            &accepted_dir,
+            &PromoteReviewedModuleOptionsV1 {
+                message: Some("candidate".to_string()),
+                quality_profile: "off".to_string(),
+                quality_plane: "both".to_string(),
+                competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
+                    name: "carol_parent".to_string(),
+                    question: Some("Carol should still have Bob as a parent".to_string()),
+                    query: "select ?f where ?f = Fam.Parent(child=Carol, parent=Bob) limit 1"
+                        .to_string(),
+                    min_rows: 1,
+                    weight: 1.0,
+                    contexts: Vec::new(),
+                }],
+                competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                    fail_on_regression: true,
+                    fail_on_unsatisfied_after: false,
+                },
+                persist_validation_report: true,
+            },
+        )
+        .expect_err("promotion should fail on CQ regression");
+        assert!(
+            err.to_string().contains("competency gate failed"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            read_head(&accepted_dir)
+                .expect("read head")
+                .expect("head exists after failed promotion"),
+            baseline_snapshot,
+            "failed promotion must not advance accepted HEAD"
+        );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn promote_with_options_persists_validation_report() {
+        let accepted_dir = temp_test_dir("promotion-preview-report");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let baseline_axi = accepted_dir.join("PromoBaselineEmpty.axi");
+        fs::write(
+            &baseline_axi,
+            r#"module Promo
+
+schema Fam:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance I of Fam:
+  Person = {Alice, Bob, Carol}
+"#,
+        )
+        .expect("write baseline");
+        promote_reviewed_module(&baseline_axi, &accepted_dir, Some("baseline"), "off")
+            .expect("promote baseline");
+
+        let candidate_axi = accepted_dir.join("PromoCandidateFilled.axi");
+        fs::write(
+            &candidate_axi,
+            r#"module Promo
+
+schema Fam:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance I of Fam:
+  Person = {Alice, Bob, Carol}
+  Parent = {(child=Carol, parent=Bob)}
+"#,
+        )
+        .expect("write candidate");
+
+        let result = promote_reviewed_module_with_options(
+            &candidate_axi,
+            &accepted_dir,
+            &PromoteReviewedModuleOptionsV1 {
+                message: Some("candidate".to_string()),
+                quality_profile: "off".to_string(),
+                quality_plane: "both".to_string(),
+                competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
+                    name: "carol_parent".to_string(),
+                    question: Some("Carol should gain Bob as a parent".to_string()),
+                    query: "select ?f where ?f = Fam.Parent(child=Carol, parent=Bob) limit 1"
+                        .to_string(),
+                    min_rows: 1,
+                    weight: 1.0,
+                    contexts: Vec::new(),
+                }],
+                competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                    fail_on_regression: true,
+                    fail_on_unsatisfied_after: true,
+                },
+                persist_validation_report: true,
+            },
+        )
+        .expect("promotion should pass");
+
+        let rel_path = result
+            .validation_report_path
+            .clone()
+            .expect("validation report should be persisted");
+        let abs_path = accepted_dir.join(&rel_path);
+        assert!(
+            abs_path.exists(),
+            "expected persisted report at {}",
+            abs_path.display()
+        );
+
+        let report_text = fs::read_to_string(&abs_path).expect("read validation report");
+        let report: PromotionPreviewReportV1 =
+            serde_json::from_str(&report_text).expect("parse validation report");
+        assert!(report.ok);
+        assert_eq!(
+            report.stored_report_path.as_deref(),
+            Some(rel_path.as_str())
+        );
+        let gate = report
+            .competency_gate
+            .as_ref()
+            .expect("competency gate report");
+        assert_eq!(gate.total, 1);
+        assert_eq!(gate.improvements, 1);
+        assert_eq!(gate.regressions, 0);
+        let evolution = report
+            .evolution_preview
+            .as_ref()
+            .expect("shared evolution preview");
+        assert_eq!(evolution.kind, "accepted_promotion_preview");
+        assert_eq!(evolution.typed_change.kind, "accepted_module_delta");
+        assert!(evolution.typed_change.schema.added > 0);
+        assert!(evolution.typed_change.instance.added > 0);
+        assert_eq!(
+            evolution
+                .runtime_semantics
+                .as_ref()
+                .expect("runtime semantic summary")
+                .completeness_claim,
+            "not_claimed"
+        );
+        assert_eq!(evolution.trust_delta.competency_coverage_before, Some(0.0));
+        assert_eq!(evolution.trust_delta.competency_coverage_after, Some(1.0));
+        assert_eq!(evolution.trust_delta.improvements, 1);
+        assert_eq!(evolution.trust_delta.regressions, 0);
+        assert_eq!(evolution.trust_delta.changed_questions, 0);
+        assert_eq!(evolution.trust_delta.questions.len(), 1);
+        assert!(
+            evolution.residual_obligations.is_empty(),
+            "successful promotion preview should not leave residual obligations: {:?}",
+            evolution.residual_obligations
+        );
+        let sem_head = read_sem_head_commit_id(&accepted_dir)
+            .expect("read sem head")
+            .expect("promotion should write semantic head");
+        let commit = read_semantic_commit(&accepted_dir, &sem_head).expect("read semantic commit");
+        let gate_summary = commit.gate_summary.as_ref().expect("commit gate summary");
+        assert_eq!(gate_summary.kind, "accepted_promotion_preview");
+        assert_eq!(gate_summary.candidate_label, "Promo");
+        assert_eq!(
+            gate_summary
+                .runtime_semantics
+                .as_ref()
+                .expect("runtime semantics")
+                .completeness_claim,
+            "not_claimed"
+        );
+        assert!(
+            gate_summary.rule.is_some(),
+            "promotion gate summary should carry persisted rule-count metadata"
+        );
+        let main_pointer = read_sem_ref_pointer_main(&accepted_dir)
+            .expect("read main pointer")
+            .expect("main pointer exists");
+        assert_eq!(main_pointer.gate_summary, commit.gate_summary);
+
+        let log_text = fs::read_to_string(accepted_dir.join(ACCEPTED_PLANE_LOG_V1))
+            .expect("read accepted plane log");
+        let last_line = log_text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .last()
+            .expect("last event line");
+        let event: AcceptedPlaneEventV1 =
+            serde_json::from_str(last_line).expect("parse last event");
+        assert_eq!(event.snapshot_id, result.snapshot_id);
+        assert_eq!(
+            event.validation_report_path.as_deref(),
+            Some(rel_path.as_str())
+        );
+        assert_eq!(event.validation_ok, Some(true));
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn sem_ref_and_commit_round_trip() {
+        let accepted_dir = temp_test_dir("sem-commit-roundtrip");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let event = AcceptedPlaneEventV1 {
+            version: ACCEPTED_PLANE_EVENT_VERSION_V1.to_string(),
+            created_at_unix_secs: 1_700_000_000,
+            action: "promote".to_string(),
+            snapshot_id: AcceptedSnapshotId::new("fnv1a64:sem-snapshot-a"),
+            previous_snapshot_id: None,
+            module_name: "Axi".to_string(),
+            module_digest: AxiDigest::new("fnv1a64:module-a"),
+            stored_module_path: "modules/Axi/demo.axi".to_string(),
+            message: Some("seed".to_string()),
+            quality_profile: Some("off".to_string()),
+            quality_report_path: None,
+            quality_error_count: None,
+            quality_warning_count: None,
+            quality_info_count: None,
+            constraints_cert_path: Some("certs/module-a.json".to_string()),
+            constraints_constraint_count: Some(1),
+            constraints_instance_count: Some(2),
+            constraints_check_count: Some(3),
+            validation_report_path: None,
+            validation_ok: Some(true),
+        };
+        let snapshot = AcceptedPlaneSnapshotV1 {
+            version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
+            snapshot_id: event.snapshot_id.clone(),
+            previous_snapshot_id: None,
+            created_at_unix_secs: 1_700_000_000,
+            modules: BTreeMap::new(),
+        };
+
+        let commit =
+            semantic_commit_from_promotion(&event, None, &snapshot, None).expect("build commit");
+        let path = write_semantic_commit(&accepted_dir, &commit).expect("persist commit");
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(&digest_to_filename(commit.commit_id.as_str())),
+            "unexpected commit path {}",
+            path.display()
+        );
+
+        let round_trip =
+            read_semantic_commit(&accepted_dir, &commit.commit_id).expect("read commit");
+        assert_eq!(round_trip, commit);
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn sem_commit_parent_chain_round_trip() {
+        let accepted_dir = temp_test_dir("sem-commit-parent-chain");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let snapshot_a = AcceptedPlaneSnapshotV1 {
+            version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
+            snapshot_id: AcceptedSnapshotId::new("fnv1a64:sem-snapshot-a"),
+            previous_snapshot_id: None,
+            created_at_unix_secs: 1,
+            modules: BTreeMap::new(),
+        };
+        let event_a = AcceptedPlaneEventV1 {
+            version: ACCEPTED_PLANE_EVENT_VERSION_V1.to_string(),
+            created_at_unix_secs: 1,
+            action: "promote".to_string(),
+            snapshot_id: snapshot_a.snapshot_id.clone(),
+            previous_snapshot_id: None,
+            module_name: "Axi".to_string(),
+            module_digest: AxiDigest::new("fnv1a64:module-a"),
+            stored_module_path: "modules/Axi/a.axi".to_string(),
+            message: Some("a".to_string()),
+            quality_profile: Some("off".to_string()),
+            quality_report_path: None,
+            quality_error_count: None,
+            quality_warning_count: None,
+            quality_info_count: None,
+            constraints_cert_path: None,
+            constraints_constraint_count: None,
+            constraints_instance_count: None,
+            constraints_check_count: None,
+            validation_report_path: None,
+            validation_ok: Some(true),
+        };
+        let commit_a =
+            semantic_commit_from_promotion(&event_a, None, &snapshot_a, None).expect("seed commit");
+        write_semantic_commit(&accepted_dir, &commit_a).expect("write seed commit");
+        write_sem_head_commit_id(&accepted_dir, &commit_a.commit_id).expect("write sem head");
+        write_sem_ref_pointer_for_main(&accepted_dir, &commit_a.commit_id).expect("write main ref");
+
+        let snapshot_b = AcceptedPlaneSnapshotV1 {
+            version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
+            snapshot_id: AcceptedSnapshotId::new("fnv1a64:sem-snapshot-b"),
+            previous_snapshot_id: Some(snapshot_a.snapshot_id.clone()),
+            created_at_unix_secs: 2,
+            modules: BTreeMap::new(),
+        };
+        let event_b = AcceptedPlaneEventV1 {
+            version: ACCEPTED_PLANE_EVENT_VERSION_V1.to_string(),
+            created_at_unix_secs: 2,
+            action: "promote".to_string(),
+            snapshot_id: snapshot_b.snapshot_id.clone(),
+            previous_snapshot_id: Some(snapshot_a.snapshot_id),
+            module_name: "Axi".to_string(),
+            module_digest: AxiDigest::new("fnv1a64:module-b"),
+            stored_module_path: "modules/Axi/b.axi".to_string(),
+            message: Some("b".to_string()),
+            quality_profile: Some("off".to_string()),
+            quality_report_path: None,
+            quality_error_count: None,
+            quality_warning_count: None,
+            quality_info_count: None,
+            constraints_cert_path: None,
+            constraints_constraint_count: None,
+            constraints_instance_count: None,
+            constraints_check_count: None,
+            validation_report_path: None,
+            validation_ok: Some(true),
+        };
+
+        let commit_b = semantic_commit_from_promotion(
+            &event_b,
+            Some(commit_a.commit_id.clone()),
+            &snapshot_b,
+            None,
+        )
+        .expect("child commit");
+        write_semantic_commit(&accepted_dir, &commit_b).expect("write child commit");
+
+        let round_trip_b =
+            read_semantic_commit(&accepted_dir, &commit_b.commit_id).expect("read child");
+        assert_eq!(
+            round_trip_b.parent_commit_id,
+            Some(commit_a.commit_id.clone())
+        );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn sem_head_and_main_ref_persist() {
+        let accepted_dir = temp_test_dir("sem-head-main-ref");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let commit_id = AxiDigest::new("fnv1a64:manual-commit");
+        write_sem_head_commit_id(&accepted_dir, &commit_id).expect("write sem head");
+        write_sem_ref_pointer_for_main(&accepted_dir, &commit_id).expect("write main ref");
+
+        let head = read_sem_head_commit_id(&accepted_dir).expect("read sem head");
+        assert_eq!(head, Some(commit_id.clone()));
+
+        let pointer = read_sem_ref_pointer_main(&accepted_dir)
+            .expect("read main ref")
+            .expect("main ref exists");
+        assert_eq!(pointer.ref_name, ACCEPTED_PLANE_SEM_HEADS_MAIN_REF);
+        assert_eq!(pointer.commit_id, commit_id);
+        assert_eq!(
+            sem_main_ref_path(&accepted_dir),
+            accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_MAIN_FILE)
+        );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn semantic_branch_refs_round_trip_for_wm_and_review() {
+        let accepted_dir = temp_test_dir("sem-branch-refs");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let wm_commit = AxiDigest::new("fnv1a64:wm-commit");
+        let review_commit = AxiDigest::new("fnv1a64:review-commit");
+        persist_semantic_ref(&accepted_dir, "heads/wm/demo_run", &wm_commit).expect("wm ref");
+        persist_semantic_ref(&accepted_dir, "heads/review/fam-parent", &review_commit)
+            .expect("review ref");
+
+        assert_eq!(
+            read_sem_ref_pointer(&accepted_dir, "heads/wm/demo_run")
+                .expect("read wm ref")
+                .commit_id,
+            wm_commit
+        );
+        assert_eq!(
+            read_sem_ref_pointer(&accepted_dir, "heads/review/fam-parent")
+                .expect("read review ref")
+                .commit_id,
+            review_commit
+        );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn semantic_reconciliation_round_trips() {
+        let accepted_dir = temp_test_dir("sem-reconciliation");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconciliation"),
+            created_at_unix_secs: 42,
+            base_commit_id: AxiDigest::new("fnv1a64:base"),
+            left_commit_id: AxiDigest::new("fnv1a64:left"),
+            right_commit_id: AxiDigest::new("fnv1a64:right"),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/fam-parent".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: Some("heads/main".to_string()),
+            outcome_commit_id: Some(AxiDigest::new("fnv1a64:merge")),
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "module".to_string(),
+                    artifact_id: "fnv1a64:module".to_string(),
+                },
+                detail: "parent relation changed incompatibly".to_string(),
+            }],
+            decisions: vec![SemDecisionRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "module".to_string(),
+                    artifact_id: "fnv1a64:module".to_string(),
+                },
+                resolution: "prefer_left".to_string(),
+            }],
+            certificate_refs: vec!["certs/family_merge.json".to_string()],
+        };
+
+        let path = persist_reconciliation(&accepted_dir, &reconciliation).expect("persist");
+        assert!(path.exists(), "reconciliation should be written");
+        let round_trip =
+            read_reconciliation(&accepted_dir, &reconciliation.reconciliation_id).expect("read");
+        assert_eq!(round_trip, reconciliation);
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn semantic_ref_targets_round_trip_for_main_wm_and_review() {
+        let accepted_dir = temp_test_dir("sem-ref-targets");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let commit_id = AxiDigest::new("fnv1a64:target-commit");
+        let main = SemRefNameV1::parse("heads/main").expect("parse main");
+        let wm = SemRefNameV1::parse("heads/wm/demo-run").expect("parse wm");
+        let review = SemRefNameV1::parse("heads/review/schema-a").expect("parse review");
+
+        assert_eq!(main, SemRefNameV1::main());
+        assert_eq!(
+            wm,
+            SemRefNameV1::world_model("demo-run").expect("wm target")
+        );
+        assert_eq!(
+            review,
+            SemRefNameV1::review("schema-a").expect("review target")
+        );
+
+        let main_pointer =
+            persist_semantic_ref_target(&accepted_dir, &main, &commit_id).expect("write main");
+        let wm_pointer =
+            persist_semantic_ref_target(&accepted_dir, &wm, &commit_id).expect("write wm");
+        let review_pointer =
+            persist_semantic_ref_target(&accepted_dir, &review, &commit_id).expect("write review");
+
+        assert_eq!(
+            read_sem_ref_pointer_target(&accepted_dir, &main).expect("read main"),
+            main_pointer
+        );
+        assert_eq!(
+            read_sem_ref_pointer_target(&accepted_dir, &wm).expect("read wm"),
+            wm_pointer
+        );
+        assert_eq!(
+            read_sem_ref_pointer_target(&accepted_dir, &review).expect("read review"),
+            review_pointer
+        );
+        assert!(
+            accepted_dir.join("sem/refs/heads/wm/demo-run").exists(),
+            "wm branch ref should persist at sem/refs/heads/wm/<name>"
+        );
+        assert!(
+            accepted_dir.join("sem/refs/heads/review/schema-a").exists(),
+            "review branch ref should persist at sem/refs/heads/review/<name>"
+        );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn semantic_reconciliation_round_trips_from_sem_directory() {
+        let accepted_dir = temp_test_dir("sem-reconciliation");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-a"),
+            created_at_unix_secs: 1_700_000_123,
+            base_commit_id: AxiDigest::new("fnv1a64:base"),
+            left_commit_id: AxiDigest::new("fnv1a64:left"),
+            right_commit_id: AxiDigest::new("fnv1a64:right"),
+            policy: "prefer_review".to_string(),
+            source_ref_name: Some("heads/wm/demo-run".to_string()),
+            target_ref_name: Some("heads/review/schema-a".to_string()),
+            resolved_ref_name: Some("heads/main".to_string()),
+            outcome_commit_id: Some(AxiDigest::new("fnv1a64:merged")),
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "module".to_string(),
+                    artifact_id: "fnv1a64:module-a".to_string(),
+                },
+                detail: "schema conflict".to_string(),
+            }],
+            decisions: vec![SemDecisionRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "module".to_string(),
+                    artifact_id: "fnv1a64:module-a".to_string(),
+                },
+                resolution: "take review branch".to_string(),
+            }],
+            certificate_refs: vec!["certs/reconcile-a.json".to_string()],
+        };
+
+        let path =
+            persist_reconciliation(&accepted_dir, &reconciliation).expect("persist reconcile");
+        assert!(
+            path.ends_with("sem/reconciliations/fnv1a64_reconcile-a.json"),
+            "unexpected reconciliation path: {}",
+            path.display()
+        );
+
+        let round_trip = read_reconciliation(&accepted_dir, &reconciliation.reconciliation_id)
+            .expect("read reconciliation");
+        assert_eq!(round_trip, reconciliation);
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn promotion_semantic_commit_populates_state_and_delta() {
+        let event = AcceptedPlaneEventV1 {
+            version: ACCEPTED_PLANE_EVENT_VERSION_V1.to_string(),
+            created_at_unix_secs: 11,
+            action: "promote".to_string(),
+            snapshot_id: AcceptedSnapshotId::new("fnv1a64:promotion-snapshot"),
+            previous_snapshot_id: Some(AcceptedSnapshotId::new("fnv1a64:promotion-parent")),
+            module_name: "PromotionDemo".to_string(),
+            module_digest: AxiDigest::new("fnv1a64:promotion-module"),
+            stored_module_path: "modules/PromotionDemo/demo.axi".to_string(),
+            message: Some("promote it".to_string()),
+            quality_profile: Some("strict".to_string()),
+            quality_report_path: Some("quality/promotion.json".to_string()),
+            quality_error_count: Some(0),
+            quality_warning_count: Some(1),
+            quality_info_count: Some(2),
+            constraints_cert_path: Some("certs/promotion.json".to_string()),
+            constraints_constraint_count: Some(3),
+            constraints_instance_count: Some(4),
+            constraints_check_count: Some(5),
+            validation_report_path: Some("sem/validations/promotion.json".to_string()),
+            validation_ok: Some(true),
+        };
+        let snapshot = AcceptedPlaneSnapshotV1 {
+            version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
+            snapshot_id: event.snapshot_id.clone(),
+            previous_snapshot_id: event.previous_snapshot_id.clone(),
+            created_at_unix_secs: 12,
+            modules: BTreeMap::new(),
+        };
+
+        let preview = sample_evolution_preview();
+        let commit = semantic_commit_from_promotion(&event, None, &snapshot, Some(&preview))
+            .expect("promotion");
+        assert_eq!(commit.kind, SemCommitKindV1::Promote);
+        assert_eq!(commit.provenance.source, "accepted_plane");
+        assert_eq!(
+            commit.state.accepted_snapshot_id_before,
+            Some(AcceptedSnapshotId::new("fnv1a64:promotion-parent"))
+        );
+        assert_eq!(
+            commit.state.accepted_snapshot_id_after,
+            Some(AcceptedSnapshotId::new("fnv1a64:promotion-snapshot"))
+        );
+        assert!(commit.state.pathdb_snapshot_id_after.is_none());
+        assert_eq!(
+            commit.delta.module_digests_added,
+            vec![AxiDigest::new("fnv1a64:promotion-module")]
+        );
+        assert_eq!(
+            commit.delta.certificate_refs_added,
+            vec!["certs/promotion.json".to_string()]
+        );
+        assert_eq!(
+            commit.delta.quality_report_refs_added,
+            vec!["quality/promotion.json".to_string()]
+        );
+        assert_eq!(
+            commit.delta.validation_report_refs_added,
+            vec!["sem/validations/promotion.json".to_string()]
+        );
+        assert_eq!(commit.delta.lifecycle_events.len(), 1);
+        assert_eq!(
+            commit.delta.lifecycle_events[0].to,
+            LifecycleStageV1::Accepted
+        );
+        let gate_summary = commit.gate_summary.as_ref().expect("gate summary");
+        assert_eq!(gate_summary.trust.trust_class, "accepted_promotion_preview");
+        assert_eq!(
+            gate_summary
+                .competency
+                .as_ref()
+                .expect("competency")
+                .improvements,
+            1
+        );
+        assert_eq!(
+            gate_summary
+                .rule
+                .as_ref()
+                .expect("rule summary")
+                .constraint_count,
+            3
+        );
+        assert_eq!(
+            gate_summary
+                .runtime_semantics
+                .as_ref()
+                .expect("runtime semantics")
+                .coverage,
+            "accepted_snapshot_delta_plus_competency_questions"
+        );
+    }
+
+    #[test]
+    fn pathdb_semantic_commit_populates_state_and_delta() {
+        let accepted_snapshot = AcceptedPlaneSnapshotV1 {
+            version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
+            snapshot_id: AcceptedSnapshotId::new("fnv1a64:accepted-overlay"),
+            previous_snapshot_id: Some(AcceptedSnapshotId::new("fnv1a64:accepted-parent")),
+            created_at_unix_secs: 20,
+            modules: BTreeMap::new(),
+        };
+        let commit = semantic_commit_from_pathdb_overlay(
+            &accepted_snapshot,
+            &PathdbSnapshotId::new("fnv1a64:pathdb-overlay"),
+            Some(AxiDigest::new("fnv1a64:parent-commit")),
+            &PathdbSemanticCommitOptionsV1 {
+                message: Some("overlay".to_string()),
+                proposal_digests: vec![ProposalDigest::new("fnv1a64:proposal-a")],
+                gate_summary: Some(
+                    crate::evolution_preview::sem_gate_summary_from_evolution_preview(
+                        &sample_evolution_preview(),
+                    ),
+                ),
+                world_model_run_id: Some(WorldModelRunId::new("wm::run-a")),
+                ..PathdbSemanticCommitOptionsV1::default()
+            },
+        );
+
+        assert_eq!(commit.kind, SemCommitKindV1::WorldModelRun);
+        assert_eq!(commit.provenance.source, "world_model");
+        assert_eq!(
+            commit.state.accepted_snapshot_id_before,
+            Some(AcceptedSnapshotId::new("fnv1a64:accepted-overlay"))
+        );
+        assert_eq!(
+            commit.state.accepted_snapshot_id_after,
+            Some(AcceptedSnapshotId::new("fnv1a64:accepted-overlay"))
+        );
+        assert_eq!(
+            commit.state.pathdb_snapshot_id_after,
+            Some(PathdbSnapshotId::new("fnv1a64:pathdb-overlay"))
+        );
+        assert_eq!(
+            commit.state.evidence_digests,
+            vec![ProposalDigest::new("fnv1a64:proposal-a")]
+        );
+        assert!(commit.delta.module_digests_added.is_empty());
+        assert_eq!(
+            commit.delta.evidence_blobs_added,
+            vec![ProposalDigest::new("fnv1a64:proposal-a")]
+        );
+        assert_eq!(
+            commit.delta.world_model_run_refs,
+            vec![WorldModelRunId::new("wm::run-a")]
+        );
+        assert_eq!(commit.delta.lifecycle_events.len(), 1);
+        assert_eq!(
+            commit.delta.lifecycle_events[0].artifact.artifact_kind,
+            "proposal_set"
+        );
+        assert_eq!(
+            commit
+                .gate_summary
+                .as_ref()
+                .expect("gate summary")
+                .trust
+                .trust_class,
+            "accepted_promotion_preview"
+        );
+    }
+
+    #[test]
+    fn promote_reviewed_module_emits_semantic_commit() {
+        let accepted_dir = temp_test_dir("sem-promotion-emits-commit");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let base_axi = accepted_dir.join("Baseline.axi");
+        fs::write(
+            &base_axi,
+            r#"module WorldModelDemo
+
+schema Demo:
+  object Node
+  relation Edge(from: Node, to: Node)
+
+instance I of Demo:
+  Node = {a, b}
+  Edge = {(from=a, to=b)}
+"#,
+        )
+        .expect("write baseline module");
+
+        let result_snapshot =
+            promote_reviewed_module(&base_axi, &accepted_dir, Some("semantic-promotion"), "off")
+                .expect("promote baseline");
+
+        let sem_head = read_sem_head_commit_id(&accepted_dir).expect("read sem head");
+        assert!(sem_head.is_some(), "promotion must write sem/HEAD");
+
+        let main_pointer = read_sem_ref_pointer_main(&accepted_dir)
+            .expect("read main pointer")
+            .expect("main pointer exists");
+
+        let sem_commit_id = sem_head.expect("sem head present");
+        assert_eq!(main_pointer.commit_id, sem_commit_id);
+
+        let commit =
+            read_semantic_commit(&accepted_dir, &sem_commit_id).expect("read semantic commit");
+        assert_eq!(commit.accepted_snapshot_id, result_snapshot);
+        assert_eq!(commit.action, "promote");
+        assert_eq!(commit.kind, SemCommitKindV1::Promote);
+        assert_eq!(commit.module_name, "WorldModelDemo");
+        assert_eq!(commit.parent_commit_id, None);
+        assert_eq!(
+            commit.state.accepted_snapshot_id_after,
+            Some(result_snapshot.clone())
+        );
+        assert_eq!(commit.delta.module_digests_added.len(), 1);
+        assert!(
+            commit.gate_summary.is_some(),
+            "promotion commits should persist gate summary"
+        );
+        assert_eq!(main_pointer.gate_summary, commit.gate_summary);
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn pathdb_semantic_commit_advances_sem_head_without_moving_main() {
+        let accepted_dir = temp_test_dir("sem-pathdb-overlay-commit");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let base_axi = accepted_dir.join("Baseline.axi");
+        fs::write(
+            &base_axi,
+            r#"module EvidenceWorld
+
+schema Demo:
+  object Node
+  relation Edge(from: Node, to: Node)
+
+instance I of Demo:
+  Node = {a, b}
+  Edge = {(from=a, to=b)}
+"#,
+        )
+        .expect("write baseline module");
+
+        let accepted_snapshot_id =
+            promote_reviewed_module(&base_axi, &accepted_dir, Some("semantic-promotion"), "off")
+                .expect("promote baseline");
+
+        let promote_head = read_sem_head_commit_id(&accepted_dir)
+            .expect("read sem head after promotion")
+            .expect("promotion should seed sem head");
+        let main_pointer_before = read_sem_ref_pointer_main(&accepted_dir)
+            .expect("read main pointer")
+            .expect("main pointer exists");
+        assert_eq!(main_pointer_before.commit_id, promote_head);
+
+        let pathdb_commit =
+            crate::pathdb_wal::commit_pathdb_snapshot_on_accepted_snapshot_with_overlays(
+                &accepted_dir,
+                &accepted_snapshot_id,
+                &[],
+                &[],
+                Some("evidence overlay"),
+            )
+            .expect("commit pathdb overlay");
+
+        let overlay_commit = persist_pathdb_semantic_commit(
+            &accepted_dir,
+            &accepted_snapshot_id,
+            &pathdb_commit.snapshot_id,
+            &PathdbSemanticCommitOptionsV1 {
+                message: Some("overlay".to_string()),
+                proposal_digests: vec![ProposalDigest::new("fnv1a64:proposal-a")],
+                world_model_run_id: Some(WorldModelRunId::new("wm::overlay-run")),
+                ..PathdbSemanticCommitOptionsV1::default()
+            },
+        )
+        .expect("persist semantic overlay commit");
+
+        let sem_head_after = read_sem_head_commit_id(&accepted_dir)
+            .expect("read sem head after overlay")
+            .expect("overlay must update sem head");
+        assert_eq!(sem_head_after, overlay_commit.commit_id);
+        assert_eq!(overlay_commit.parent_commit_id, Some(promote_head.clone()));
+        assert_eq!(overlay_commit.action, "pathdb_commit");
+        assert_eq!(overlay_commit.kind, SemCommitKindV1::WorldModelRun);
+        assert_eq!(
+            overlay_commit.pathdb_snapshot_id,
+            Some(pathdb_commit.snapshot_id.clone())
+        );
+        assert_eq!(
+            overlay_commit.proposal_digests,
+            vec![ProposalDigest::new("fnv1a64:proposal-a")]
+        );
+        assert_eq!(
+            overlay_commit.world_model_run_id,
+            Some(WorldModelRunId::new("wm::overlay-run"))
+        );
+        assert_eq!(
+            overlay_commit.state.pathdb_snapshot_id_after,
+            Some(pathdb_commit.snapshot_id.clone())
+        );
+        assert_eq!(
+            overlay_commit.delta.world_model_run_refs,
+            vec![WorldModelRunId::new("wm::overlay-run")]
+        );
+        assert!(overlay_commit.gate_summary.is_none());
+
+        let main_pointer_after = read_sem_ref_pointer_main(&accepted_dir)
+            .expect("read main pointer after overlay")
+            .expect("main pointer exists");
+        assert_eq!(
+            main_pointer_after.commit_id, promote_head,
+            "evidence-plane pathdb commits must not advance refs/heads/main"
+        );
+        assert_eq!(
+            main_pointer_after.gate_summary, main_pointer_before.gate_summary,
+            "evidence-plane commits must not rewrite main's promotion gate summary"
+        );
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }

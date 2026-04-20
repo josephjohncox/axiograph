@@ -16,17 +16,20 @@ shape **stable and versioned**, and later add CBOR once the schema settles.
 
 ## Versions
 
-### v1: reachability (float confidences)
+### Historical v1: reachability (float confidences)
 
-Rust:
-- `rust/crates/axiograph-pathdb/src/certificate.rs` (`Certificate`, version 1)
+This is retained only as historical/trusted-checker continuity material. The
+active Rust runtime should emit `CertificateV2`/later typed certificates rather
+than the old float-on-the-wire wrapper.
+
+Rust (historical support only):
 - `rust/crates/axiograph-pathdb/src/verified.rs` (`ReachabilityProof`)
 
 Lean:
 - `lean/Axiograph/Certificate/Format.lean` (`ReachabilityProof`, `Certificate.reachabilityV1`)
 - `lean/Axiograph/Certificate/Check.lean` (`verifyReachabilityProof`)
 
-Shape:
+Historical shape:
 
 ```json
 {

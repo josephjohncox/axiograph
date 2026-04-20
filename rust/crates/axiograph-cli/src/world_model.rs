@@ -1469,7 +1469,7 @@ pub fn run_world_model_plan(
         let competency_before = if options.competency_questions.is_empty() {
             None
         } else {
-            Some(compute_competency_coverage(
+            Some(crate::competency_questions::evaluate_competency_questions(
                 &planning_db,
                 &options.competency_questions,
             )?)
@@ -1568,7 +1568,7 @@ pub fn run_world_model_plan(
             let competency_after = if options.competency_questions.is_empty() {
                 None
             } else {
-                Some(compute_competency_coverage(
+                Some(crate::competency_questions::evaluate_competency_questions(
                     &candidate,
                     &options.competency_questions,
                 )?)
@@ -1661,73 +1661,6 @@ pub fn run_world_model_plan(
         task_cost_total,
         competency_questions: options.competency_questions.clone(),
         steps,
-    })
-}
-
-fn compute_competency_coverage(
-    db: &PathDB,
-    questions: &[CompetencyQuestionV1],
-) -> Result<CompetencyCoverageSummaryV1> {
-    if questions.is_empty() {
-        return Ok(CompetencyCoverageSummaryV1::default());
-    }
-
-    let mut results: Vec<CompetencyQuestionResultV1> = Vec::new();
-    let mut satisfied = 0usize;
-    let mut total_cost = 0.0;
-
-    for q in questions {
-        let mut query = crate::axql::parse_axql_query(&q.query)?;
-        if !q.contexts.is_empty() {
-            let mut ctxs: Vec<crate::axql::AxqlContextSpec> = Vec::new();
-            for raw in &q.contexts {
-                if let Ok(id) = raw.parse::<u32>() {
-                    ctxs.push(crate::axql::AxqlContextSpec::EntityId(id));
-                } else {
-                    ctxs.push(crate::axql::AxqlContextSpec::Name(raw.to_string()));
-                }
-            }
-            query.contexts = ctxs;
-        }
-        let min_rows = if q.min_rows == 0 { 1 } else { q.min_rows };
-        let limit = min_rows.min(1000);
-        if query.limit == 0 || query.limit > limit {
-            query.limit = limit;
-        }
-
-        let res = crate::axql::execute_axql_query(db, &query)?;
-        let rows = res.rows.len();
-        let ok = rows >= min_rows;
-        if ok {
-            satisfied += 1;
-        }
-        let weight = if q.weight <= 0.0 { 1.0 } else { q.weight };
-        let cost = if ok { 0.0 } else { weight };
-        total_cost += cost;
-
-        results.push(CompetencyQuestionResultV1 {
-            name: q.name.clone(),
-            rows,
-            min_rows,
-            satisfied: ok,
-            weight,
-            cost,
-        });
-    }
-
-    let total = questions.len();
-    let coverage = if total == 0 {
-        0.0
-    } else {
-        satisfied as f64 / total as f64
-    };
-
-    Ok(CompetencyCoverageSummaryV1 {
-        total,
-        satisfied,
-        coverage,
-        cost: total_cost,
-        questions: results,
     })
 }
 

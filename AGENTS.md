@@ -41,10 +41,17 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - checked builders,
   - limited typestate,
   - compiled-semantics hooks.
+- Trust contracts on user-facing outputs are currently a language for
+  `trust_class` / soundness / coverage / scope under stated anchors.
+  - They are not completeness claims.
+  - They are not ontology-closure claims.
 - The next high-value move remains a canonical schema/category IR plus APIs indexed by lifecycle state, anchor, and schema.
 - PathDB is a strong engine, but it is not yet the ontology kernel.
   - The intended kernel is accepted `.axi` plus compiled schema/category IR.
   - Keep relation-as-object + projection arrows canonical internally; treat RDF / LPG / quad stores as lowerings.
+- Semantic VCS is still a first slice, not the universal lifecycle backbone.
+  - `sem/commits`, `sem/refs`, `sem/validations`, and `sem/world_model_runs` exist in the accepted-plane layer.
+  - accepted-plane promotion and evidence-plane overlay commits still do not flow through one universal ancestry-driven semantic-commit path.
 - Important mismatch still open:
   - `axiograph-pathdb` contains a sectioned “verified” `.axpd` v2 story in `verified.rs`,
   - but the live runtime still serializes/deserializes a simpler v1 blob in `lib.rs`.
@@ -52,38 +59,101 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - “Axiograph has a Lean-checked core for typed rewrite/path witnesses and ontology gates, with a roadmap toward categorical ontology semantics.”
   - Do not describe the current system as a full HoTT/topos ontology engine.
 
+### What “making it one” means operationally
+
+- Reserve the phrase “full dependently typed ontology engine” for a concrete repo state, not for aspiration-level theory.
+- In this repo, the stronger claim becomes honest only when all of the following are true:
+  - the Lean verifier checks more than replay-shaped witnesses:
+    - canonical accepted `.axi` typing,
+    - checked rewrite-rule admissibility,
+    - and certifiable schema/category/query/migration obligations for explicitly stated fragments;
+  - one compiled schema/category IR is the common semantic currency for:
+    - authoring,
+    - query elaboration,
+    - migration,
+    - certification,
+    - and semantic diff / merge;
+  - Rust public APIs make the semantic indices difficult to ignore:
+    - lifecycle state,
+    - accepted snapshot / module anchors,
+    - schema / theory / context ids,
+    - prepared query handles,
+    - migration preview handles,
+    - and certified-answer handles;
+  - typed authoring surfaces (including olog-oriented ones) emit canonical `.axi` deltas over stable object / arrow / role ids with provenance, CQ attachments, and trust metadata;
+  - semantic VCS history records state anchors plus explicit semantic deltas, so review / merge / promotion operate over typed ontology objects rather than opaque storage diffs.
+- This does **not** mean “all runtime logic moves into Lean”.
+  - It means every semantics-bearing seam reduces to typed, anchored artifacts with a small checked kernel boundary and explicit soundness scope.
+- Until those conditions hold, keep using the current workbench framing above.
+
 ### Active priorities (2026-04)
 
 - Keep docs and agent notes aligned with the actual trusted kernel boundary; avoid present-tense claims for roadmap-only HoTT/topos/query semantics.
-- Make the compiler/typechecker a first-class ontology service:
-  - compiled schema/category IR,
-  - prepared/typechecked query handles,
-  - elaboration/type info/rewrite traces,
-  - certifiability classification (`certifiable`, `execution-only`, `mixed`),
-  - repair-oriented diagnostics.
-- Make typed ontology authoring/exploration useful to operators:
-  - schema-aware completion,
-  - competency-question regression and gap discovery,
-  - semantic diff / migration preview,
-  - context/world/provenance visibility everywhere,
-  - olog-fragment and candidate-constraint synthesis from grounded evidence.
-- Add high-priority usefulness backlog:
-  - [ ] add a typed olog authoring/edit surface that emits reviewable `.axi` deltas with explicit anchors and trusted provenance fields,
-  - [ ] add CQ-driven migration previews and CQ regression gating for schema proposals,
-  - [ ] require all proposal previews and suggestion bundles to carry `AxiDigest`, source/snapshot/context anchors, and trust-class labels,
-  - [ ] expose a single trust contract in API responses (`soundness`, `coverage`, `scope`, `trust class`) across query/certify/migrate paths,
-  - [ ] add a concrete backlog item for proof-carrying migration witnesses (not only path/query certificates) before broader CQL migration rollout.
-- Keep AI and world-model tooling evidence-plane only, but make lineage first-class:
+- Highest-value TODOs while the repo is still a proof-carrying ontology workbench:
+  - [ ] compile one canonical schema/category IR with deterministic ids for schema/theory/instance/context objects, relation-objects, projection arrows, rewrite rules, and anchors shared by Rust, Lean, semantic diff, migration preview, and certificates.
+  - [ ] make typed authoring and ontology exploration return one preview contract:
+    - canonical `.axi` deltas over stable ids,
+    - provenance/evidence/context anchors,
+    - CQ attachments and trust metadata,
+    - and fix-oriented repair suggestions instead of ad hoc notes or raw strings.
+  - [ ] keep typed query and certification first-class across REPL, server, and tooling:
+    - `query_ir_v1` / prepared query handles as the common execution currency,
+    - structured elaboration diagnostics and repair data,
+    - anchor-aware answers and uniform trust contracts,
+    - and certification language scoped to row soundness under explicit anchors.
+  - [ ] make CQ-gated evolution a shared primitive rather than a proposal-preview-only slice:
+    - one preview object for proposal review, accepted-plane promotion, migration preview, and semantic merge,
+    - schema/theory/instance/context deltas plus before/after CQ status and expected answer-shape refs,
+    - and fail-closed policy hooks before accepted-plane mutation.
+  - [ ] make semantic VCS the reviewable unit of ontology change without overstating what exists today:
+    - semantic commits / refs / validations should carry typed deltas and anchors,
+    - review/evidence/world-model branches should be explicit,
+    - and ancestry/reconciliation should become the default path for high-value changes.
+  - [ ] require AI/world-model outputs to remain evidence-plane but richly typed:
+    - typed run/proposal/snapshot anchors,
+    - proposal-set digests and grounded evidence links,
+    - candidate schema/theory/olog deltas,
+    - and explicit preview failures instead of silent coercion.
+  - [ ] keep verification language pinned to the live-byte truth boundary:
+    - only claim what is checked against accepted `.axi` anchors and the actual production `.axpd` bytes/checkpoints,
+    - and keep the verified-v2 `.axpd` story clearly separate until production serialization converges.
+- Current slices to build on rather than re-invent:
+  - [x] typed anchors/lifecycle wrappers and an initial `kernel_ir.rs` / compiled-semantics scaffold already exist in Rust.
+  - [x] `/query`, query-result certification, and proposal preview validation already expose a first trust-language slice with explicit non-claims around completeness and ontology closure.
+  - [x] CQ-gated proposal preview is real today for evidence-plane overlays.
+  - [x] accepted-plane code already knows about `sem/commits`, `sem/refs`, `sem/validations`, and `sem/world_model_runs`; the gap is universal workflow use, not directory invention.
+- Keep AI/world-model tooling in evidence-plane, but make lineage first-class where usefulness is consumed:
   - typed run/proposal/snapshot anchors,
   - proposal digests,
-  - grounded evidence links,
-  - previewable typed deltas before review/promotion.
-- Converge the `.axpd` production format and the “verified” format story, and keep verification claims scoped to the real live bytes until that lands.
+  - grounded source/context links,
+  - explicit preview failure modes rather than silent coercion.
+- Raise semantic-VCS/world-model lifecycle coupling to high priority:
+  - persist proposal/review bundles under `sem/validations/` with stable proposal-set and run anchors,
+  - require CQ-gated merge/review transitions from review branches before accepted-plane promotion,
+  - and emit previewable semantic diffs/cq-impact reports before any `accepted` snapshot mutation.
+- Continue to align the runtime with the `.axpd` live-byte truth boundary:
+  - only claim what is checked against live serialized bytes,
+  - scope verification language to that seam until verified-v2 `axpd` emission is live.
 
-### Migration constraints (non-negotiable)
+High-level service direction (not exhaustive):
 
-- **No feature loss**: all existing functionality remains available during the transition.
-- **Examples keep working**: `axiograph_v6/examples/` and the Rust+Lean test suites must continue to pass.
+- compiler/typechecker should be an ontology-service interface, not a validation-only phase;
+- compiler output should include classification (`certifiable`, `mixed`, `execution-only`) plus repair guidance;
+- schema-aware completion should drive authoring and proposal drafting before execution.
+- the same compiled schema/category IR should be shared by authoring, query, migration, certification, and semantic diff rather than duplicated across tools.
+
+### Change policy (greenfield default)
+
+- Backward compatibility is **not** a default goal in this repo.
+  - Prefer the cleaner semantic/runtime design when a change improves the canonical IR, typed authoring/query surfaces, semantic VCS, or trusted-boundary clarity.
+- Keep compatibility only when there is a concrete reason, for example:
+  - trust/soundness continuity across certificate or verifier boundaries,
+  - the live-byte `.axpd` truth boundary,
+  - accepted-plane anchor semantics,
+  - or an explicit operational/runtime contract we have chosen to preserve.
+- Examples, demos, and tests should be updated intentionally to match the current design.
+  - They are not required to remain unchanged.
+  - What matters is that the repo keeps a coherent, truthful set of examples and verification checks for the surfaces we currently claim.
 
 ### Docs (canonical references)
 
@@ -138,7 +208,7 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - keep univalence isolated and non-essential to currently shipped certificate checks.
 
 **Certificates**
-- [x] Cert v1 (JSON): reachability witness + Lean checker.
+- [x] Historical cert v1 (JSON): reachability witness remains understood by Lean for verifier continuity, but the Rust runtime no longer treats the old float-wrapper as an active emission surface.
 - [x] Cert v2 (JSON): fixed-point reachability witness (`rel_confidence_fp`) + Lean checker.
 - [x] Cert v2: reconciliation decision (`resolution_v2`) + Lean checker.
 - [x] Cert v2: normalization (`normalize_path_v2`) + Lean checker.
@@ -146,8 +216,9 @@ This file is a shared context note for humans/agents working in this repo. It ca
 - [x] Extend `normalize_path_v2` to groupoid rewrite derivations (assoc/inv/cancel + explicit step list).
 - [ ] Extend cert v2 rewrite derivations beyond normalization (reconciliation proofs, domain rewrites).
 - [ ] Anchor certificates to canonical `.axi` inputs (stable module hash + extracted facts).
-- [x] Keep backward compatibility: accept v1 certificates during transition.
-  - Spec notes: `docs/reference/CERTIFICATES.md`
+- [ ] Continue removing legacy certificate surfaces unless they are still needed for trusted-checker continuity or explicit fixture coverage.
+  - Current state: Rust-side standalone v1 reachability emission has been removed; verifier-side historical support remains explicit in `docs/reference/CERTIFICATES.md`.
+  - Highest-value next removal: collapse `query_result_v1` / `query_result_v2` toward `query_result_v3` as the only active query-certificate family once remaining fixtures/tooling are migrated.
 - [ ] Keep certificate scope explicit and conservative:
   - certify soundness of returned rows / derivations / migrations,
   - do not imply completeness of query results or full ontology-theoretic closure unless explicitly proved.
@@ -243,8 +314,8 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - so REPL / server / LLM tooling stop executing from raw query strings and raw ASTs.
 - [x] `db serve /query` now accepts structured `query_ir_v1` in addition to raw AxQL, and can echo canonical compiled query IR alongside elaboration output.
 - [ ] Keep the structured query/compiler surface first-class across all entrypoints:
-  - `query_ir_v1` should be accepted by REPL/tooling/server APIs, not only by the LLM loop,
-  - elaboration/typecheck results should be available as API data, not only REPL text,
+  - `query_ir_v1` should be accepted uniformly by REPL, DB server, and tool-loop entrypoints,
+  - elaboration/typecheck results should include structured diagnostics and repair suggestions, not only text notes,
   - and prepared query handles should become the common execution currency across REPL/server/tooling.
 - [ ] Replace schema/type/relation string lookups in common typed workflows with stable refs derived from the compiled schema/category IR.
 - [ ] Make typed execution operate over a compiled schema/category IR instead of only stringly meta-plane indexes.
@@ -261,11 +332,49 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - label query forms and answers as `certifiable`, `execution-only`, or `mixed`,
   - expose certificate kind / anchor / soundness-only caveats in review and exploration surfaces,
   - and avoid implying completeness where only soundness is checked.
+- [x] Add a first runtime trust-contract slice on DB server query/certificate responses:
+  - `/query` now returns `trust = { trust_class, soundness, coverage, scope }`,
+  - `/cert/reachability` returns the same shape for certificate payloads,
+  - and mixed/certifiable/runtime-only query classes are surfaced as API data instead of only documentation.
+- [x] Add a first runtime trust-contract slice on proposal preview validation:
+  - `ProposalsValidationV1` now includes `trust = { trust_class, soundness, coverage, scope }`,
+  - CQ-gated preview validation reports before/after coverage and per-question trust metadata,
+  - and proposal authoring tools can request CQ gating directly.
+- [ ] Extend the trust contract beyond the current DB server slice:
+  - align REPL query output, LLM/tool-loop query output, migration preview, and proposal review responses on the same fields,
+  - attach anchor ids / certificate kinds where applicable,
+  - and keep “soundness/coverage/scope, not completeness/closure” explicit in all user-facing trust narratives.
+- [x] Add a first runtime semantic-summary slice for ontology/business-rule usefulness:
+  - proposal and promotion previews now attach a runtime semantic summary with explicit non-claims (`completeness_claim = not_claimed`, `ontology_closure_claim = not_claimed`),
+  - the summary inventories visible rule surfaces (structured constraints, rewrite rules, named blocks), typed coverage, CQ coverage, and current review/runtime gaps,
+  - and semantic commits / semantic refs persist a compact gate summary so promotion trust/coverage survives beyond preview JSON.
+- [ ] Upgrade query/proposal authoring diagnostics from strings/counts to typed repair objects:
+  - ambiguous schema/relation cases should surface candidate fixes,
+  - missing role/field/default-carrier issues should surface concrete next moves,
+  - and `query_ir_v1`, proposal authoring, and draft `.axi` review should share the same repair language family.
+- [x] Add the first meta-aware query trust slice across query/repl/LLM/server/CQ surfaces:
+  - query trust now carries `semantic_coverage`, `semantic_claims`, and explicit `gaps` when meta-plane data is available,
+  - `PreparedQueryV1` now carries its trust/semantic profile as typed runtime state rather than forcing downstream callers to recompute it from raw query text,
+  - and CQ evaluation / REPL / tool-loop / `/query` all surface the same “soundness/coverage/scope, not completeness/closure” framing.
+- [ ] Deepen meta-aware query trust from “in-scope ontology surface” to “actually used semantic surface”:
+  - distinguish runtime-used rules from merely in-scope declarations,
+  - persist that distinction in CQ/preview/review artifacts,
+  - and keep unsupported/review-only rule surfaces explicit.
+- [ ] Re-evaluate raw AxQL compatibility on server/tool boundaries under the greenfield policy:
+  - once `query_ir_v1` covers the required workflows, stop treating raw `axql` text as a first-class wire/tool contract and demote it to a REPL/debug surface or remove it.
 - [ ] Make type-driven ontology usefulness explicit in user tooling:
   - schema-first exploration,
   - olog-fragment synthesis,
   - candidate constraint / path-equation / rewrite-rule discovery,
   - and previewable `.axi` deltas before promotion.
+- [x] Add a first typed-authoring draft signal in the LLM/tool-loop draft path:
+  - `draft_axi_from_proposals` there can distinguish `draft_only` from `validated` drafts,
+  - carries a Rust-side `axi_well_typed_proof_v1` summary when the generated module passes the well-typed gate,
+  - and makes the review/promotion boundary explicit in the returned trust narrative.
+- [x] Bring the same typed-authoring response contract to `/discover/draft-axi`:
+  - the DB-server draft-authoring endpoint now returns the same lifecycle/trust summary as the LLM/tool-loop draft path,
+  - backed by a shared `typed_authoring` helper rather than duplicated ad hoc JSON logic.
+- [ ] Bring the same typed-authoring response contract to viz review flows and other non-LLM authoring entrypoints.
 - [ ] Treat competency-question gap discovery as a first-class compiler service:
   - identify unsupported or under-specified CQs,
   - preserve expected answer shapes as review assets,
@@ -288,6 +397,12 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - treat PathDB / RDF / property-graph backends as lowerings from that IR rather than as the ontology kernel.
 - [ ] Keep relation-as-object + projection arrows as the canonical internal model (olog-compatible), rather than privileging binary edges.
 - [ ] Add an explicit olog authoring surface that lowers into `.axi` / the schema/category IR.
+  - The useful target is a review bundle, not only an editor canvas:
+    - canonical delta,
+    - stable object/arrow ids,
+    - provenance/evidence links,
+    - CQ attachments,
+    - trust metadata.
 
 **Probabilistic / approximate semantics (extension layer; certifiable subsets later)**
 - [x] Add untrusted analysis tools to measure “semantic drift” between contexts/snapshots (KL/JS divergence over distributions of relations/types).
@@ -326,6 +441,8 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - `axiograph-llm-sync` path/reconciliation heuristics remain non-semantic tooling,
   - LLM and world-model outputs never write directly to canonical truth,
   - high-value answers/promotions must still pass typed validation + quality gates + certificates.
+- [ ] Add a rejection policy for AI/LLM proposal bundles that fail grounding:
+  - block direct review-tooling intake unless proposals include source links, context/snapshot anchors, and at least one typed acceptance path (`validated` draft or `.axi`-schema mapping).
 - [ ] Improve AI usefulness through typed grounding rather than looser generation:
   - every proposal should carry source/context/snapshot anchors plus grounded evidence links,
   - proposal clusters should synthesize candidate schema/theory/olog fragments,
@@ -340,6 +457,10 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - resulting promoted snapshot/tag (if any).
 - [x] Thread proposal-set digests into world-model lineage metadata and helpers so proposal streams have a stable typed identity in addition to run/snapshot anchors.
 - [x] Persist store-backed world-model run manifests under `sem/world_model_runs/<run_id>.json` for `/world_model/propose` and `wm propose --commit-dir` flows, including typed run/snapshot/proposal anchors and committed PathDB lineage when present.
+- [ ] Close the remaining world-model lifecycle gaps:
+  - REPL `wm propose/plan --commit-dir` should persist the same run-record object,
+  - `/llm/agent` auto-commit should attach lifecycle objects instead of writing only overlays,
+  - and committed runs should eventually link to semantic commit ids / refs once `sem/commits` is live.
 - [ ] Extend persisted world-model run manifests beyond the current phase-0 slice:
   - model/plugin/config digests,
   - evaluation refs / planner outcomes,
@@ -351,6 +472,11 @@ This file is a shared context note for humans/agents working in this repo. It ca
 **Semantic VCS / ontology lifecycle**
 - [ ] Evolve the accepted-plane snapshot store into a first-class semantic VCS, not just `HEAD` + logs.
 - [x] Create the initial `sem/` store layout in the accepted-plane directory, including `sem/world_model_runs/` for persisted run manifests.
+- Current state (implementation fact):
+  - `sem/commits`, `sem/refs`, `sem/validations`, and `sem/world_model_runs` exist in the accepted-plane layer,
+  - `refs/heads/main` and gate-summary persistence are real first slices,
+  - semantic commits are still evolving toward explicit state+delta objects with ancestry/policy metadata,
+  - and accepted-plane mutators do not yet use one universal semantic-commit / reconciliation flow.
 - [ ] Add refs beyond `HEAD`:
   - `refs/heads/main`,
   - `refs/heads/review/<name>`,
@@ -567,6 +693,10 @@ These items are “best practices” backed by the related work list in Appendix
   - CQ/query rewrites,
   - certificate availability,
   - and explicit review checkpoints before promotion.
+- [ ] Use accepted-plane promotion as the next concrete CQ-gated evolution seam:
+  - compare the current accepted snapshot with the would-be accepted snapshot,
+  - persist the resulting preview under `sem/validations/`,
+  - and fail closed on CQ regressions before promotion mutates accepted state.
 
 **Web/GitHub ingestion (tooling; evidence plane)**
 - [x] GitHub importer: `axiograph ingest github import` (repo index + optional proto ingest) emits merged `chunks.json` + `proposals.json`.

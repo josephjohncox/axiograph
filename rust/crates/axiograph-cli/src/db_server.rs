@@ -1532,6 +1532,7 @@ struct QueryResponseV1 {
     rows: Vec<BTreeMap<String, EntityViewV1>>,
     truncated: bool,
     elapsed_ms: u128,
+    trust: crate::trust_contract::TrustContractV1,
     #[serde(skip_serializing_if = "Option::is_none")]
     compiled_query_ir_v1: Option<crate::query_ir::QueryIrV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1709,6 +1710,7 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
         let elaborated_query = show_elaboration.then(|| prepared.elaborated_query_text());
         let elaboration = show_elaboration.then(|| prepared.elaboration_report().clone());
         let plan = show_elaboration.then(|| prepared.explain_plan_lines());
+        let certifiability = prepared.certifiability();
         let res = prepared.execute(&db, meta.as_ref())?;
         let elapsed_ms = start.elapsed().as_millis();
 
@@ -1753,6 +1755,13 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
             rows,
             truncated: res.truncated,
             elapsed_ms,
+            trust: crate::trust_contract::query_trust_contract_with_meta(
+                &parsed,
+                &certifiability,
+                certificate.is_some(),
+                certificate_verified,
+                meta.as_ref(),
+            ),
             compiled_query_ir_v1,
             elaborated_query,
             inferred_types: elaboration.as_ref().map(|e| e.inferred_types.clone()),
@@ -1825,6 +1834,7 @@ struct ReachabilityCertRequestV1 {
 #[derive(Debug, Clone, Serialize)]
 struct CertResponseV1 {
     anchor_digest: AxiDigest,
+    trust: crate::trust_contract::TrustContractV1,
     #[serde(skip_serializing_if = "Option::is_none")]
     anchor_axi: Option<String>,
     certificate: serde_json::Value,
@@ -1889,6 +1899,7 @@ async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Resu
 
         Ok::<_, anyhow::Error>(CertResponseV1 {
             anchor_digest: digest,
+            trust: crate::trust_contract::certificate_trust_contract(verified),
             anchor_axi: include_anchor.then_some(axi),
             certificate: cert_json,
             certificate_verified: verified,
@@ -3193,6 +3204,8 @@ async fn handle_discover_draft_axi(
 
     let axi_text = crate::schema_discovery::draft_axi_module_from_proposals(&req.proposals, &opts)?;
     let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
+    let typed_authoring =
+        crate::typed_authoring::draft_typed_authoring_summary_from_axi_text(&axi_text);
 
     Ok(serde_json::json!({
         "version": "axiograph_discover_draft_axi_v1",
@@ -3201,6 +3214,7 @@ async fn handle_discover_draft_axi(
         "schema_name": opts.schema_name,
         "instance_name": opts.instance_name,
         "axi_text": axi_text,
+        "typed_authoring": typed_authoring,
     }))
 }
 
@@ -3428,11 +3442,19 @@ struct PromoteRequestV1 {
     /// off|fast|strict
     #[serde(default)]
     quality: Option<String>,
+    #[serde(default)]
+    competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    #[serde(default)]
+    cq_fail_on_regression: bool,
+    #[serde(default)]
+    cq_fail_on_unsatisfied_after: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct PromoteResponseV1 {
     snapshot_id: AcceptedSnapshotId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation_report_path: Option<String>,
 }
 
 async fn handle_promote(state: &Arc<ServerState>, body: &[u8]) -> Result<PromoteResponseV1> {
@@ -3450,13 +3472,26 @@ async fn handle_promote(state: &Arc<ServerState>, body: &[u8]) -> Result<Promote
     let message = req.message.clone();
     let axi_text = req.axi_text.clone();
 
-    let snapshot_id = tokio::task::spawn_blocking(move || {
+    let competency_questions = req.competency_questions.clone();
+    let cq_fail_on_regression = req.cq_fail_on_regression;
+    let cq_fail_on_unsatisfied_after = req.cq_fail_on_unsatisfied_after;
+
+    let result = tokio::task::spawn_blocking(move || {
         let tmp = write_temp_file("axi", &axi_text)?;
-        let out = crate::accepted_plane::promote_reviewed_module(
+        let out = crate::accepted_plane::promote_reviewed_module_with_options(
             &tmp,
             &dir,
-            message.as_deref(),
-            &quality,
+            &crate::accepted_plane::PromoteReviewedModuleOptionsV1 {
+                message,
+                quality_profile: quality,
+                quality_plane: "both".to_string(),
+                competency_questions,
+                competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                    fail_on_regression: cq_fail_on_regression,
+                    fail_on_unsatisfied_after: cq_fail_on_unsatisfied_after,
+                },
+                persist_validation_report: true,
+            },
         )?;
         let _ = std::fs::remove_file(&tmp);
         Ok::<_, anyhow::Error>(out)
@@ -3478,7 +3513,10 @@ async fn handle_promote(state: &Arc<ServerState>, body: &[u8]) -> Result<Promote
         let _ = reload_now(state).await;
     }
 
-    Ok(PromoteResponseV1 { snapshot_id })
+    Ok(PromoteResponseV1 {
+        snapshot_id: result.snapshot_id,
+        validation_report_path: result.validation_report_path,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -4063,10 +4101,11 @@ mod tests {
     fn typed_server_snapshot_responses_serialize_as_string_ids() {
         let promote = PromoteResponseV1 {
             snapshot_id: AcceptedSnapshotId::new("accepted:42"),
+            validation_report_path: Some("sem/validations/demo.json".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&promote).expect("serialize promote response"),
-            json!({ "snapshot_id": "accepted:42" })
+            json!({ "snapshot_id": "accepted:42", "validation_report_path": "sem/validations/demo.json" })
         );
 
         let commit = PathdbCommitResponseV1 {
@@ -4091,6 +4130,21 @@ mod tests {
             rows: Vec::new(),
             truncated: false,
             elapsed_ms: 5,
+            trust: crate::trust_contract::TrustContractV1 {
+                trust_class: "certifiable".to_string(),
+                soundness: "certificate_available_but_not_emitted".to_string(),
+                coverage: "full_query".to_string(),
+                scope: crate::trust_contract::TrustScopeV1 {
+                    anchor: "snapshot_scoped".to_string(),
+                    context: "unscoped".to_string(),
+                },
+                reasons: Vec::new(),
+                certifiable_disjuncts: None,
+                execution_only_disjuncts: None,
+                semantic_coverage: None,
+                semantic_claims: Vec::new(),
+                gaps: Vec::new(),
+            },
             compiled_query_ir_v1: None,
             elaborated_query: None,
             inferred_types: None,
@@ -4109,6 +4163,21 @@ mod tests {
 
         let cert = CertResponseV1 {
             anchor_digest: AxiDigest::new("fnv1a64:def"),
+            trust: crate::trust_contract::TrustContractV1 {
+                trust_class: "certificate".to_string(),
+                soundness: "lean_verified_certificate".to_string(),
+                coverage: "certificate_payload".to_string(),
+                scope: crate::trust_contract::TrustScopeV1 {
+                    anchor: "snapshot_scoped".to_string(),
+                    context: "not_applicable".to_string(),
+                },
+                reasons: Vec::new(),
+                certifiable_disjuncts: None,
+                execution_only_disjuncts: None,
+                semantic_coverage: None,
+                semantic_claims: Vec::new(),
+                gaps: Vec::new(),
+            },
             anchor_axi: None,
             certificate: json!({"kind": "reachability"}),
             certificate_verified: Some(true),
@@ -4118,6 +4187,15 @@ mod tests {
             serde_json::to_value(&cert).expect("serialize cert response"),
             json!({
                 "anchor_digest": "fnv1a64:def",
+                "trust": {
+                    "trust_class": "certificate",
+                    "soundness": "lean_verified_certificate",
+                    "coverage": "certificate_payload",
+                    "scope": {
+                        "anchor": "snapshot_scoped",
+                        "context": "not_applicable"
+                    }
+                },
                 "certificate": {"kind": "reachability"},
                 "certificate_verified": true
             })
@@ -4270,5 +4348,90 @@ instance I of S:
         assert_eq!(resp.rows.len(), 2);
         assert!(resp.compiled_query_ir_v1.is_some());
         assert!(resp.elaborated_query.is_some());
+        assert_eq!(resp.trust.trust_class, "certifiable");
+        assert_eq!(
+            resp.trust.soundness,
+            "certificate_available_but_not_emitted"
+        );
+        assert_eq!(resp.trust.scope.anchor, "snapshot_scoped");
+        assert_eq!(resp.trust.scope.context, "unscoped");
+    }
+
+    #[tokio::test]
+    async fn handle_discover_draft_axi_returns_typed_authoring_summary() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))
+            .expect("load Family.axi");
+        let generated = crate::proposal_gen::propose_relation_proposals_v1(
+            &db,
+            &[],
+            crate::proposal_gen::ProposeRelationInputV1 {
+                rel_type: "child".to_string(),
+                source_name: "Jamison".to_string(),
+                target_name: "Bob".to_string(),
+                source_type: None,
+                target_type: None,
+                source_field: None,
+                target_field: None,
+                context: Some("FamilyTree".to_string()),
+                time: Some("T2025".to_string()),
+                confidence: Some(0.9),
+                schema_hint: Some("Fam".to_string()),
+                public_rationale: Some("Jamison is a child of Bob.".to_string()),
+                evidence_text: None,
+                evidence_locator: None,
+                extra_fields: std::collections::HashMap::new(),
+            },
+        )
+        .expect("generate proposals");
+
+        let body = serde_json::to_vec(&json!({
+            "proposals": generated.proposals,
+            "module_name": "DraftFamily",
+            "schema_name": "DraftFam",
+            "instance_name": "DraftFamilyInst",
+            "infer_constraints": true
+        }))
+        .expect("serialize draft-axi request");
+
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object A
+
+instance I of S:
+  A = {x}
+"#,
+        );
+
+        let resp = handle_discover_draft_axi(&state, &body)
+            .await
+            .expect("draft-axi endpoint should succeed");
+
+        assert_eq!(
+            resp["version"].as_str(),
+            Some("axiograph_discover_draft_axi_v1")
+        );
+        assert_eq!(
+            resp["typed_authoring"]["lifecycle_state"].as_str(),
+            Some("validated")
+        );
+        assert_eq!(
+            resp["typed_authoring"]["trust"]["trust_class"].as_str(),
+            Some("validated_draft")
+        );
+        assert_eq!(
+            resp["typed_authoring"]["trust"]["completeness_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(
+            resp["typed_authoring"]["axi_well_typed_proof_v1"]["module_name"].as_str(),
+            Some("DraftFamily")
+        );
     }
 }

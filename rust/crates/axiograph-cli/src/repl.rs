@@ -3,6 +3,7 @@
 //! By default we use `rustyline` for line editing and tab completion.
 //! A minimal stdin-based fallback exists behind `--no-default-features`.
 
+use crate::trust_contract::{query_user_visible_trust_contract_with_meta, QueryTrustContractV1};
 use anyhow::{anyhow, Result};
 use axiograph_pathdb::AcceptedSnapshotId;
 use colored::Colorize;
@@ -3480,6 +3481,16 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
                 println!("  {l}");
             }
         }
+        let trust = query_user_visible_trust_contract_with_meta(
+            &query,
+            &prepared.certifiability(),
+            false,
+            None,
+            meta,
+        );
+        for line in render_query_trust_contract_lines(&trust) {
+            println!("{line}");
+        }
         if typecheck_only {
             return Ok(());
         }
@@ -3814,6 +3825,79 @@ fn cmd_rules(state: &ReplState, args: &[String]) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn render_query_trust_contract_lines(trust: &QueryTrustContractV1) -> Vec<String> {
+    let mut lines = vec![
+        "trust:".to_string(),
+        format!("  class: {}", trust.trust_class),
+        format!("  soundness: {}", trust.soundness),
+        format!("  coverage: {}", trust.coverage),
+        format!("  claim_scope: {}", trust.claim_scope),
+        format!("  completeness_claim: {}", trust.completeness_claim),
+        format!("  ontology_closure_claim: {}", trust.ontology_closure_claim),
+        format!(
+            "  scope: anchor={}, context={}",
+            trust.scope.anchor, trust.scope.context
+        ),
+    ];
+
+    if !trust.notes.is_empty() {
+        lines.push("  notes:".to_string());
+        for note in &trust.notes {
+            lines.push(format!("  - {note}"));
+        }
+    }
+
+    if !trust.reasons.is_empty() {
+        lines.push("  reasons:".to_string());
+        for reason in &trust.reasons {
+            lines.push(format!("  - {reason}"));
+        }
+    }
+
+    if let Some(count) = trust.certifiable_disjuncts {
+        lines.push(format!("  certifiable_disjuncts: {count}"));
+    }
+    if let Some(count) = trust.execution_only_disjuncts {
+        lines.push(format!("  execution_only_disjuncts: {count}"));
+    }
+
+    if let Some(semantic) = trust.semantic_coverage.as_ref() {
+        lines.push("  semantic_coverage:".to_string());
+        lines.push(format!("    scope: {}", semantic.coverage_scope));
+        lines.push(format!("    in_scope_claims: {}", semantic.in_scope_claims));
+        lines.push(format!(
+            "    runtime_visible_claims: {}",
+            semantic.runtime_visible_claims
+        ));
+        lines.push(format!(
+            "    answer_relevant_claims: {}",
+            semantic.answer_relevant_claims
+        ));
+        lines.push(format!(
+            "    review_only_claims: {}",
+            semantic.review_only_claims
+        ));
+        lines.push(format!(
+            "    unsupported_claims: {}",
+            semantic.unsupported_claims
+        ));
+    }
+
+    if !trust.gaps.is_empty() {
+        lines.push("  gaps:".to_string());
+        for gap in &trust.gaps {
+            match gap.subject.as_deref() {
+                Some(subject) => {
+                    lines.push(format!("  - {} [{}]: {}", gap.code, subject, gap.detail))
+                }
+                None => lines.push(format!("  - {}: {}", gap.code, gap.detail)),
+            }
+        }
+    }
+
+    lines
 }
 
 fn cmd_sqlish(state: &mut ReplState, args: &[String]) -> Result<()> {
@@ -5131,6 +5215,30 @@ mod repl_tokenize_tests {
             tokens[2],
             r#"select ?x where name("Alice") -Parent-> ?x limit 3"#
         );
+    }
+
+    #[test]
+    fn render_query_trust_contract_lines_surfaces_non_claims() -> anyhow::Result<()> {
+        let query = crate::axql::parse_axql_query("select ?x where ?x : Node limit 3")?;
+        let trust = crate::trust_contract::query_user_visible_trust_contract(
+            &query,
+            &query.certifiability(),
+            false,
+            None,
+        );
+
+        let lines = render_query_trust_contract_lines(&trust);
+        assert!(lines
+            .iter()
+            .any(|line| line == "  completeness_claim: not_claimed"));
+        assert!(lines
+            .iter()
+            .any(|line| line == "  ontology_closure_claim: not_claimed"));
+        assert!(lines.iter().any(|line| line.contains("notes:")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("not a claim that all satisfying rows were returned")));
+        Ok(())
     }
 }
 

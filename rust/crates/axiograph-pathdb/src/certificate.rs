@@ -5,44 +5,16 @@
 
 use crate::migration::DeltaFMigrationProofV1;
 use crate::AxiDigest;
-use crate::ReachabilityProof;
 use axiograph_dsl::schema_v1::PathExprV3 as AxiPathExprV3;
 use serde::{Deserialize, Serialize};
 
-pub const CERTIFICATE_VERSION: u32 = 1;
 pub const CERTIFICATE_VERSION_V2: u32 = 2;
 
 /// Fixed-point denominator shared with the Lean checker (`Axiograph.Prob.Precision`).
 pub const FIXED_POINT_DENOMINATOR: u32 = 1_000_000;
 
-/// Backwards-compatible name for the fixed-point denominator.
-pub const FIXED_PROB_PRECISION: u32 = FIXED_POINT_DENOMINATOR;
-
-/// Top-level certificate wrapper (versioned and extensible).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Certificate {
-    pub version: u32,
-    #[serde(flatten)]
-    pub payload: CertificatePayload,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CertificatePayload {
-    Reachability { proof: ReachabilityProof },
-}
-
-impl Certificate {
-    pub fn reachability(proof: ReachabilityProof) -> Self {
-        Self {
-            version: CERTIFICATE_VERSION,
-            payload: CertificatePayload::Reachability { proof },
-        }
-    }
-}
-
 // ============================================================================
-// Certificate v2: fixed-point probabilities (no floats in the trusted checker)
+// Certificate v2+: fixed-point probabilities and anchored typed witnesses.
 // ============================================================================
 
 /// Fixed-point probability numerator in `[0, FIXED_POINT_DENOMINATOR]`.

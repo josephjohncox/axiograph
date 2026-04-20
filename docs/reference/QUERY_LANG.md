@@ -26,10 +26,33 @@ Operational note:
   - elaborated plan output (`explain_plan_lines`)
   - prepared-query introspection (`disjunct_count`, `selected_vars`, `limit`, `context_count`)
   - trust-class classification (`certifiable`, `execution-only`, or `mixed`)
+  - attached trust/semantic profile carried with the prepared handle itself
   - direct certificate request (`certify`) against the same prepared state
+- query-facing trust surfaces now make the boundary explicit:
+  - `QueryIrV1::trust_contract`
+  - `PreparedQueryV1::trust_contract`
+  - `PreparedQueryV1::semantic_coverage`
+  - `PreparedQueryV1::semantic_claims`
+  - `PreparedQueryV1::trust_gaps`
+  - LLM tools `axql_elaborate` / `axql_run`
+  - REPL `q --elaborate` / `q --typecheck`
+  return the core trust fields plus:
+  - `claim_scope = returned_rows_within_snapshot_and_context`
+  - `completeness_claim = not_claimed`
+  - `ontology_closure_claim = not_claimed`
+  - `notes` explaining that the contract is scoped returned-row soundness, not exhaustive answer completeness or full ontology closure
+- `axiograph db serve /query` now surfaces the same classification as a wire-level
+  `trust` contract:
+  - `trust_class`
+  - `soundness`
+  - `coverage`
+  - `scope`
+  so clients do not need to infer trust semantics from ad hoc booleans.
 
 `PreparedQueryV1` keeps the parsed AxQL body with the prepared low-level runtime handle
-so callers don’t have to re-parse or rely on raw strings for repeated execution.
+and the trust/semantic profile computed at preparation time, so callers don’t
+have to re-parse queries, re-run trust classification, or carry raw strings
+plus optional meta-plane state around for repeated execution.
 
 For hands-on demos (scenario generation + proof-relevant certificates), see
 `docs/tutorials/TYPE_THEORY_DEMOS.md`.
@@ -188,7 +211,14 @@ q --typecheck <AxQL query>
 ```
 
 This prints the elaborated query text (with implied type atoms inserted),
-inferred types per variable, and ambiguity notes. This is primarily a UX feature
+inferred types per variable, ambiguity notes, and a query trust block. The trust
+block is explicit about:
+
+- what the claim is scoped to (`claim_scope`)
+- the fact that completeness is **not** claimed
+- the fact that full ontology closure is **not** claimed
+
+This is primarily a UX feature
 to make schema-directed planning *visible* and to catch typos early (unknown
 types/relations, or `Flow(foo=...)` where `foo` is not a declared field).
 
@@ -268,6 +298,17 @@ The runtime currently marks `contains(...)`, `fts(...)`, and `fuzzy(...)` as
 execution-only even if other parts of the query are certifiable. `query_result_v2`
 certificates are therefore only emitted for fully certifiable fragments or for whole
 queries that avoid those operators and unsupported context shapes.
+
+The shared query-facing trust contract is intentionally stronger about what it
+does **not** say:
+
+- `soundness` is about returned rows within the current snapshot/context scope
+- `completeness_claim = not_claimed` means the runtime is not asserting that all
+  satisfying rows were found or returned
+- `ontology_closure_claim = not_claimed` means the runtime is not asserting full
+  closure under ontology rules, open-world completion, or exhaustive entailment
+- `notes` restate these non-claims in human-readable form so callers do not have
+  to infer them from enum values
 
 Important: approximate query atoms (`contains`, `fuzzy`, future similarity
 operators) are **not** part of the certified kernel. They are treated as

@@ -104,6 +104,25 @@ instance I of S:
 }
 
 #[test]
+fn typecheck_rejects_tuple_with_missing_declared_field() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(child=Alice)}
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    let err = validate_axi_v1_module(module).unwrap_err();
+    assert!(err.to_string().contains("missing field `parent`"));
+}
+
+#[test]
 fn review_transition_preserves_module_and_proof() {
     let axi = r#"
 module Demo

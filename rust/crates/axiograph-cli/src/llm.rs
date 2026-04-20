@@ -26,6 +26,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use roaring::RoaringBitmap;
 
 use crate::query_ir::QueryIrV1;
+use crate::trust_contract::query_user_visible_trust_contract_with_meta;
 use crate::world_model::{
     normalize_world_model_proposals_value, world_model_llm_prompt, WorldModelRequestV1,
     WorldModelResponseV1,
@@ -2900,6 +2901,9 @@ pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::{normalize_axql_candidate, parse_llm_json_object};
+    use anyhow::Result;
+    use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn normalizes_bare_atom_to_where_clause() {
@@ -3069,6 +3073,221 @@ mod tests {
         assert_eq!(out["span_id"].as_str(), Some("s0"));
         assert_eq!(out["text"].as_str().unwrap_or("").chars().count(), 33); // 32 + ellipsis
         assert_eq!(out["text_truncated"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn axql_elaborate_returns_trust_contract_payload() {
+        let db = axiograph_pathdb::PathDB::new();
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["x"],
+                "disjuncts": [
+                    [
+                        {"kind": "type", "term": "?x", "type": "Node"}
+                    ],
+                    [
+                        {"kind": "attr_contains", "term": "?x", "key": "name", "needle": "a"}
+                    ]
+                ],
+                "limit": 10
+            }
+        });
+
+        let out = super::tool_axql_elaborate(
+            &db,
+            None,
+            &[],
+            "trust-test-snapshot",
+            &mut query_cache,
+            &args,
+        )
+        .expect("axql_elaborate should succeed");
+
+        assert_eq!(out["trust"]["trust_class"].as_str(), Some("mixed"));
+        assert_eq!(
+            out["trust"]["coverage"].as_str(),
+            Some("mixed_union_of_branches")
+        );
+        assert_eq!(
+            out["trust"]["claim_scope"].as_str(),
+            Some("returned_rows_within_snapshot_and_context")
+        );
+        assert_eq!(
+            out["trust"]["completeness_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(
+            out["trust"]["ontology_closure_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(out["trust"]["scope"]["context"].as_str(), Some("unscoped"));
+        let notes = out["trust"]["notes"]
+            .as_array()
+            .expect("trust.notes should be an array");
+        assert!(notes.iter().any(|note| note
+            .as_str()
+            .unwrap_or("")
+            .contains("not a claim that all satisfying rows were returned")));
+    }
+
+    #[test]
+    fn axql_run_returns_trust_contract_payload() -> anyhow::Result<()> {
+        let db = axiograph_pathdb::PathDB::new();
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["x"],
+                "where": [
+                    {"kind": "attr_eq", "term": "?x", "key": "name", "value": "Alice"}
+                ],
+                "limit": 3
+            }
+        });
+
+        let out = super::tool_axql_run(
+            &db,
+            None,
+            &[],
+            "trust-test-snapshot",
+            &mut query_cache,
+            &args,
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(out["trust"]["trust_class"].as_str(), Some("certifiable"));
+        assert_eq!(out["trust"]["coverage"].as_str(), Some("full_query"));
+        assert_eq!(
+            out["trust"]["soundness"].as_str(),
+            Some("certificate_available_but_not_emitted")
+        );
+        assert_eq!(
+            out["trust"]["claim_scope"].as_str(),
+            Some("returned_rows_within_snapshot_and_context")
+        );
+        assert_eq!(
+            out["trust"]["completeness_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(
+            out["trust"]["ontology_closure_claim"].as_str(),
+            Some("not_claimed")
+        );
+        assert_eq!(out["trust"]["scope"]["context"].as_str(), Some("unscoped"));
+        let notes = out["trust"]["notes"]
+            .as_array()
+            .expect("trust.notes should be an array");
+        assert!(notes.iter().any(|note| note
+            .as_str()
+            .unwrap_or("")
+            .contains("does not claim full ontology closure")));
+        Ok(())
+    }
+
+    #[test]
+    fn draft_axi_from_proposals_returns_typed_authoring_summary() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+        let generated = crate::proposal_gen::propose_relation_proposals_v1(
+            &db,
+            &[],
+            crate::proposal_gen::ProposeRelationInputV1 {
+                rel_type: "child".to_string(),
+                source_name: "Jamison".to_string(),
+                target_name: "Bob".to_string(),
+                source_type: None,
+                target_type: None,
+                source_field: None,
+                target_field: None,
+                context: Some("FamilyTree".to_string()),
+                time: Some("T2025".to_string()),
+                confidence: Some(0.9),
+                schema_hint: Some("Fam".to_string()),
+                public_rationale: Some("Jamison is a child of Bob.".to_string()),
+                evidence_text: None,
+                evidence_locator: None,
+                extra_fields: std::collections::HashMap::new(),
+            },
+        )?;
+
+        let out = super::tool_draft_axi_from_proposals(&json!({
+            "proposals_json": generated.proposals,
+            "module_name": "DraftFamily",
+            "schema_name": "DraftFam",
+            "instance_name": "DraftFamilyInst",
+            "infer_constraints": true
+        }))?;
+
+        assert_eq!(
+            out["typed_authoring"]["lifecycle_state"].as_str(),
+            Some("validated")
+        );
+        assert_eq!(
+            out["typed_authoring"]["trust"]["trust_class"].as_str(),
+            Some("validated_draft")
+        );
+        assert_eq!(
+            out["typed_authoring"]["axi_well_typed_proof_v1"]["module_name"].as_str(),
+            Some("DraftFamily")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn propose_relation_tool_returns_competency_gate_validation() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let db = crate::load_pathdb_for_cli(&repo_root.join("examples/Family.axi"))?;
+
+        let out = super::tool_propose_relation_proposals(
+            &db,
+            &[],
+            &json!({
+                "rel_type": "child",
+                "source_name": "Jamison",
+                "target_name": "Bob",
+                "context": "FamilyTree",
+                "time": "T2025",
+                "schema_hint": "Fam",
+                "validate": true,
+                "competency_questions": [
+                    {
+                        "name": "jamison_parent",
+                        "query": "select ?f where ?f = Fam.Parent(child=Jamison, parent=Bob, ctx=FamilyTree, time=?t) limit 1",
+                        "min_rows": 1,
+                        "weight": 1.0
+                    },
+                    {
+                        "name": "jamison_spouse",
+                        "query": "select ?f where ?f = Fam.Spouse(a=Jamison, b=Bob, ctx=FamilyTree) limit 1",
+                        "min_rows": 1,
+                        "weight": 2.0
+                    }
+                ],
+                "cq_fail_on_unsatisfied_after": true
+            }),
+        )?;
+
+        assert_eq!(
+            out["validation"]["trust"]["trust_class"].as_str(),
+            Some("preview_validated")
+        );
+        assert_eq!(
+            out["validation"]["competency_gate"]["gate_passed"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            out["validation"]["competency_gate"]["questions"][0]["trust_class"].as_str(),
+            Some("certifiable")
+        );
+        Ok(())
     }
 }
 
@@ -4512,7 +4731,7 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "axql_elaborate".to_string(),
-            description: "Typecheck/elaborate an AxQL query using the meta-plane, returning the elaborated query + inferred types + plan.".to_string(),
+            description: "Typecheck/elaborate an AxQL query using the meta-plane, returning the elaborated query + inferred types + plan. The returned trust payload is explicit about soundness being scoped to returned rows only, not completeness or ontology closure.".to_string(),
             args_schema: {
                 let mut schema = serde_json::json!({
                     "type": "object",
@@ -4529,7 +4748,7 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "axql_run".to_string(),
-            description: "Run an AxQL query (or query_ir_v1) over the snapshot (uncertified, unless you later emit a certificate).".to_string(),
+            description: "Run an AxQL query (or query_ir_v1) over the snapshot (uncertified unless you later emit a certificate). The returned trust payload explicitly separates scoped returned-row soundness from non-claims about completeness or ontology closure.".to_string(),
             args_schema: {
                 let mut schema = serde_json::json!({
                     "type": "object",
@@ -4587,7 +4806,7 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "draft_axi_from_proposals".to_string(),
-            description: "Generate a draft canonical `.axi` module directly from an in-memory `proposals_json` object (deterministic, untrusted; for review).".to_string(),
+            description: "Generate a draft canonical `.axi` module directly from an in-memory `proposals_json` object (deterministic, untrusted; for review). The result now also includes a Rust-side well-typed module check summary when the draft parses as canonical `.axi`, so authoring flows can distinguish \"syntactically drafted\" from \"validated draft\".".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["proposals_json"],
@@ -4602,7 +4821,7 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "propose_relation_proposals".to_string(),
-            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding a relation assertion between two entities in the current snapshot. This does NOT mutate the DB; it produces a reviewable overlay artifact.\n\nImportant:\n- By default, `source_name` binds to the canonical relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` binds to the target-ish field (`to`/`target`/`parent`/`rhs`). If you need to disambiguate direction, set `source_field` and `target_field` explicitly (e.g. for Parent(child,parent): source_field=\"parent\" target_field=\"child\").\n- For n-ary relations, use `extra_fields` for required fields beyond endpoints (e.g. amount/currency/policy), or prefer `propose_fact_proposals` to specify all fields directly.".to_string(),
+            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding a relation assertion between two entities in the current snapshot. This does NOT mutate the DB; it produces a reviewable overlay artifact.\n\nImportant:\n- By default, `source_name` binds to the canonical relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` binds to the target-ish field (`to`/`target`/`parent`/`rhs`). If you need to disambiguate direction, set `source_field` and `target_field` explicitly (e.g. for Parent(child,parent): source_field=\"parent\" target_field=\"child\").\n- For n-ary relations, use `extra_fields` for required fields beyond endpoints (e.g. amount/currency/policy), or prefer `propose_fact_proposals` to specify all fields directly.\n- Optional `competency_questions` let you preview whether the proposal helps or regresses ontology intent before review/promotion.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["rel_type", "source_name", "target_name"],
@@ -4624,13 +4843,16 @@ fn tool_loop_tools_schema(
                     "extra_fields": { "type": "object", "additionalProperties": { "type": "string" } },
                     "validate": { "type": "boolean" },
                     "quality_profile": { "type": "string", "enum": ["fast", "strict"] },
-                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] }
+                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] },
+                    "competency_questions": { "type": "array", "items": { "type": "object" } },
+                    "cq_fail_on_regression": { "type": "boolean" },
+                    "cq_fail_on_unsatisfied_after": { "type": "boolean" }
                 }
             }),
         },
         ToolSpecV1 {
             name: "propose_fact_proposals".to_string(),
-            description: "Generate an untrusted `proposals.json` overlay for adding a *typed fact node* (n-ary relation) by specifying field values directly (recommended when direction is ambiguous or the relation has more than 2 fields).\n\nExample fields for Parent(child,parent,ctx,time): {\"child\":\"Jamison\",\"parent\":\"Bob\",\"ctx\":\"FamilyTree\",\"time\":\"T2025\"}.\n\nYou may pass `rel_type` as schema-qualified `Schema.Rel` when multiple schemas share the same relation name.".to_string(),
+            description: "Generate an untrusted `proposals.json` overlay for adding a *typed fact node* (n-ary relation) by specifying field values directly (recommended when direction is ambiguous or the relation has more than 2 fields).\n\nExample fields for Parent(child,parent,ctx,time): {\"child\":\"Jamison\",\"parent\":\"Bob\",\"ctx\":\"FamilyTree\",\"time\":\"T2025\"}.\n\nYou may pass `rel_type` as schema-qualified `Schema.Rel` when multiple schemas share the same relation name. Optional `competency_questions` let you attach CQ regression checks to the preview validation.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["rel_type", "fields"],
@@ -4644,13 +4866,16 @@ fn tool_loop_tools_schema(
                     "evidence_locator": { "type": "string" },
                     "validate": { "type": "boolean" },
                     "quality_profile": { "type": "string", "enum": ["fast", "strict"] },
-                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] }
+                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] },
+                    "competency_questions": { "type": "array", "items": { "type": "object" } },
+                    "cq_fail_on_regression": { "type": "boolean" },
+                    "cq_fail_on_unsatisfied_after": { "type": "boolean" }
                 }
             }),
         },
         ToolSpecV1 {
             name: "propose_relations_proposals".to_string(),
-            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding *multiple* relation assertions between lists of entities.\n\nThis is the batch form of `propose_relation_proposals`. Use it when the user asks for multiple pairs (e.g. \"Jamison is a child of Alice and Bob\").".to_string(),
+            description: "Generate an untrusted `proposals.json` (Evidence/Proposals schema) for adding *multiple* relation assertions between lists of entities.\n\nThis is the batch form of `propose_relation_proposals`. Use it when the user asks for multiple pairs (e.g. \"Jamison is a child of Alice and Bob\"). Optional `competency_questions` let you attach CQ regression checks to the preview validation.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["rel_type", "source_names", "target_names"],
@@ -4673,7 +4898,10 @@ fn tool_loop_tools_schema(
                     "extra_fields": { "type": "object", "additionalProperties": { "type": "string" } },
                     "validate": { "type": "boolean" },
                     "quality_profile": { "type": "string", "enum": ["fast", "strict"] },
-                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] }
+                    "quality_plane": { "type": "string", "enum": ["meta", "data", "both"] },
+                    "competency_questions": { "type": "array", "items": { "type": "object" } },
+                    "cq_fail_on_regression": { "type": "boolean" },
+                    "cq_fail_on_unsatisfied_after": { "type": "boolean" }
                 }
             }),
         },
@@ -7682,11 +7910,20 @@ fn tool_axql_elaborate(
     let report = prepared.elaboration_report();
     let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
     let plan = prepared.explain_plan_lines();
+    let trust = query_user_visible_trust_contract_with_meta(
+        &query,
+        &prepared.certifiability(),
+        false,
+        None,
+        meta,
+    );
+
     Ok(serde_json::json!({
         "elaborated": prepared.elaborated_query_text(),
         "inferred_types": inferred_types,
         "notes": report.notes.clone(),
-        "plan": plan
+        "plan": plan,
+        "trust": trust
     }))
 }
 
@@ -7723,6 +7960,13 @@ fn tool_axql_run(
     let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
     let notes = report.notes.clone();
     let plan = prepared.explain_plan_lines();
+    let trust = query_user_visible_trust_contract_with_meta(
+        &query,
+        &prepared.certifiability(),
+        false,
+        None,
+        meta,
+    );
 
     let result = prepared.execute(db, meta)?;
     let mut preview = PluginResultsV1::from_axql_result(db, &result);
@@ -7737,6 +7981,7 @@ fn tool_axql_run(
         "inferred_types": inferred_types,
         "notes": notes,
         "plan": plan,
+        "trust": trust,
         "results": preview
     }))
 }
@@ -7931,6 +8176,8 @@ fn tool_draft_axi_from_proposals(args: &serde_json::Value) -> Result<serde_json:
     };
     let axi_text = crate::schema_discovery::draft_axi_module_from_proposals(&proposals, &opts)?;
     let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
+    let typed_authoring =
+        crate::typed_authoring::draft_typed_authoring_summary_from_axi_text(&axi_text);
 
     Ok(serde_json::json!({
         "version": "axiograph_discover_draft_axi_v1",
@@ -7939,6 +8186,7 @@ fn tool_draft_axi_from_proposals(args: &serde_json::Value) -> Result<serde_json:
         "schema_name": opts.schema_name,
         "instance_name": opts.instance_name,
         "axi_text": axi_text,
+        "typed_authoring": typed_authoring,
     }))
 }
 
@@ -7989,6 +8237,12 @@ fn tool_propose_relation_proposals(
         quality_profile: Option<String>,
         #[serde(default)]
         quality_plane: Option<String>,
+        #[serde(default)]
+        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+        #[serde(default)]
+        cq_fail_on_regression: Option<bool>,
+        #[serde(default)]
+        cq_fail_on_unsatisfied_after: Option<bool>,
     }
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("propose_relation_proposals: invalid args: {e}"))?;
@@ -8019,12 +8273,21 @@ fn tool_propose_relation_proposals(
     let validation = if validate {
         let profile = a.quality_profile.unwrap_or_else(|| "fast".to_string());
         let plane = a.quality_plane.unwrap_or_else(|| "both".to_string());
-        Some(crate::proposals_validate::validate_proposals_v1(
-            db,
-            &out.proposals,
-            &profile,
-            &plane,
-        )?)
+        Some(
+            crate::proposals_validate::validate_proposals_with_options_v1(
+                db,
+                &out.proposals,
+                &crate::proposals_validate::ProposalsValidationOptionsV1 {
+                    quality_profile: profile,
+                    quality_plane: plane,
+                    competency_questions: a.competency_questions,
+                    competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                        fail_on_regression: a.cq_fail_on_regression.unwrap_or(false),
+                        fail_on_unsatisfied_after: a.cq_fail_on_unsatisfied_after.unwrap_or(false),
+                    },
+                },
+            )?,
+        )
     } else {
         None
     };
@@ -8062,6 +8325,12 @@ fn tool_propose_fact_proposals(
         quality_profile: Option<String>,
         #[serde(default)]
         quality_plane: Option<String>,
+        #[serde(default)]
+        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+        #[serde(default)]
+        cq_fail_on_regression: Option<bool>,
+        #[serde(default)]
+        cq_fail_on_unsatisfied_after: Option<bool>,
     }
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("propose_fact_proposals: invalid args: {e}"))?;
@@ -8084,12 +8353,21 @@ fn tool_propose_fact_proposals(
     let validation = if validate {
         let profile = a.quality_profile.unwrap_or_else(|| "fast".to_string());
         let plane = a.quality_plane.unwrap_or_else(|| "both".to_string());
-        Some(crate::proposals_validate::validate_proposals_v1(
-            db,
-            &out.proposals,
-            &profile,
-            &plane,
-        )?)
+        Some(
+            crate::proposals_validate::validate_proposals_with_options_v1(
+                db,
+                &out.proposals,
+                &crate::proposals_validate::ProposalsValidationOptionsV1 {
+                    quality_profile: profile,
+                    quality_plane: plane,
+                    competency_questions: a.competency_questions,
+                    competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                        fail_on_regression: a.cq_fail_on_regression.unwrap_or(false),
+                        fail_on_unsatisfied_after: a.cq_fail_on_unsatisfied_after.unwrap_or(false),
+                    },
+                },
+            )?,
+        )
     } else {
         None
     };
@@ -8144,6 +8422,12 @@ fn tool_propose_relations_proposals(
         quality_profile: Option<String>,
         #[serde(default)]
         quality_plane: Option<String>,
+        #[serde(default)]
+        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+        #[serde(default)]
+        cq_fail_on_regression: Option<bool>,
+        #[serde(default)]
+        cq_fail_on_unsatisfied_after: Option<bool>,
     }
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("propose_relations_proposals: invalid args: {e}"))?;
@@ -8175,12 +8459,21 @@ fn tool_propose_relations_proposals(
     let validation = if validate {
         let profile = a.quality_profile.unwrap_or_else(|| "fast".to_string());
         let plane = a.quality_plane.unwrap_or_else(|| "both".to_string());
-        Some(crate::proposals_validate::validate_proposals_v1(
-            db,
-            &out.proposals,
-            &profile,
-            &plane,
-        )?)
+        Some(
+            crate::proposals_validate::validate_proposals_with_options_v1(
+                db,
+                &out.proposals,
+                &crate::proposals_validate::ProposalsValidationOptionsV1 {
+                    quality_profile: profile,
+                    quality_plane: plane,
+                    competency_questions: a.competency_questions,
+                    competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
+                        fail_on_regression: a.cq_fail_on_regression.unwrap_or(false),
+                        fail_on_unsatisfied_after: a.cq_fail_on_unsatisfied_after.unwrap_or(false),
+                    },
+                },
+            )?,
+        )
     } else {
         None
     };
