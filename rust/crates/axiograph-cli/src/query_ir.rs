@@ -6,20 +6,21 @@
 //! - A typed JSON IR lets us validate and compile into the same AxQL core,
 //!   avoiding brittle parsing and enabling better error messages.
 //!
-//! Non-goals (v1):
-//! - This is not a stable public API yet; it is a pragmatic bridge for REPL/LLM
+//! Current scope:
+//! - `query_ir_v1` is the active machine-facing query surface for LLM/server
 //!   integration.
 //! - We keep the IR minimal and compile into the existing AxQL core.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::axql::PreparedQueryHandle;
 use crate::axql::{
-    parse_axql_path_expr, AxqlAtom, AxqlContextSpec, AxqlQuery, AxqlResult, AxqlTerm,
-    PreparedQueryIntrospection, QueryCertifiability,
+    parse_axql_path_expr, parse_axql_query, AxqlAtom, AxqlContextSpec, AxqlElaborationReport,
+    AxqlQuery, AxqlRefinementApplicationScopeV1, AxqlRefinementHandleV1, AxqlRefinementOpV1,
+    AxqlRefinementTermV1, AxqlResult, AxqlTerm, PreparedQueryIntrospection, QueryCertifiability,
 };
 use crate::trust_contract::{
     query_user_visible_trust_contract, query_user_visible_trust_contract_with_meta,
@@ -27,10 +28,48 @@ use crate::trust_contract::{
 };
 
 use axiograph_pathdb::certificate::CertificateV2;
+use axiograph_pathdb::kernel_ir::{CompiledSchemaIr, TheoryIr};
 
 pub const QUERY_IR_V1_VERSION: u32 = 1;
 
 pub type QueryTrustContract = QueryTrustContractV1;
+
+/// Focused exploration payload for editor/agent workflows.
+///
+/// This packages the runtime elaborator's "what can go here next?" view over a
+/// prepared query without implying execution completeness or ontology closure.
+///
+/// The key operational contract is that typed holes remain human-readable, while
+/// `exploration_suggestions[*].refinement_candidates[*].handle` is the
+/// machine-applicable refinement payload that editors/agents can feed back into
+/// the typed apply/refine helpers below.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreparedQueryExplorationV1 {
+    pub introspection: PreparedQueryIntrospection,
+    pub inferred_types: BTreeMap<String, Vec<String>>,
+    pub notes: Vec<String>,
+    pub typed_holes: Vec<crate::axql::AxqlTypedHoleV1>,
+    pub exploration_suggestions: Vec<crate::axql::AxqlExplorationSuggestionV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
+    pub semantic_claims: Vec<crate::trust_contract::SemanticClaimSummaryV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_coverage: Option<crate::trust_contract::SemanticCoverageSummaryV1>,
+    pub trust_gaps: Vec<crate::trust_contract::TrustGapV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryRefinementApplyResultV1 {
+    pub handle: AxqlRefinementHandleV1,
+    pub base_query_ir_v1: QueryIrV1,
+    pub refined_query_ir_v1: QueryIrV1,
+    pub refined_elaborated_query_ir_v1: QueryIrV1,
+    pub trust_before: QueryTrustContract,
+    pub trust_after: QueryTrustContract,
+    pub introspection_before: PreparedQueryIntrospection,
+    pub introspection_after: PreparedQueryIntrospection,
+    pub refined_exploration: PreparedQueryExplorationV1,
+}
 
 /// JSON schema for `QueryIrV1` (for tooling/LLMs).
 ///
@@ -38,7 +77,7 @@ pub type QueryTrustContract = QueryTrustContractV1;
 /// - it documents the IR shape in a machine-readable way,
 /// - it is used by the LLM tool-loop to strongly bias models toward producing
 ///   `query_ir_v1` rather than brittle AxQL text,
-/// - it is **not** a compatibility promise yet (v1 is an internal bridge).
+/// - and it reflects the current machine-facing query contract.
 pub fn query_ir_v1_json_schema() -> serde_json::Value {
     // Notes on schema design:
     //
@@ -328,6 +367,7 @@ impl QueryIrV1 {
             meta,
         );
         Ok(PreparedQueryV1 {
+            query_ir: QueryIrV1::from_axql_query(&query),
             query,
             handle,
             trust,
@@ -376,10 +416,10 @@ impl QueryIrV1 {
         ))
     }
 
-    /// Backwards-compatible lower-level access to the prepared query handle.
+    /// Lower-level access to the prepared query handle.
     ///
-    /// This keeps the existing execution surface available for internal callers
-    /// that do not need the typed wrapper.
+    /// Prefer the typed wrapper in new code; this exists for internal seams
+    /// that still need direct prepared-handle access.
     #[allow(dead_code)]
     pub fn prepare_handle_with_meta(
         &self,
@@ -394,6 +434,65 @@ impl QueryIrV1 {
         let q = self.to_axql_query()?;
         Ok(render_axql_query(&q))
     }
+
+    /// Apply a typed refinement handle to this IR and return the refined query.
+    ///
+    /// Current conservative scope: the refinement protocol only applies to a
+    /// single conjunctive query body. Disjunctive IR is left unchanged unless a
+    /// future protocol version carries explicit disjunct targeting.
+    pub fn apply_refinement_handle(&self, handle: &AxqlRefinementHandleV1) -> Result<QueryIrV1> {
+        handle.validate()?;
+        match handle.scope {
+            AxqlRefinementApplicationScopeV1::SingleConjunction => {}
+        }
+
+        let mut refined = self.clone();
+        let mut used_variables = refined.variable_names();
+        let where_atoms = refined.ensure_single_conjunctive_where_mut()?;
+        let atom = query_atom_from_refinement_handle(handle, &mut used_variables)?;
+        where_atoms.push(atom);
+        Ok(refined)
+    }
+
+    fn ensure_single_conjunctive_where_mut(&mut self) -> Result<&mut Vec<QueryAtomIrV1>> {
+        if let Some(disjuncts) = self.disjuncts.as_ref() {
+            if disjuncts.len() != 1 {
+                return Err(anyhow!(
+                    "typed refinement apply currently requires a single conjunctive query"
+                ));
+            }
+        }
+
+        if let Some(disjuncts) = self.disjuncts.take() {
+            let mut iter = disjuncts.into_iter();
+            let where_atoms = iter
+                .next()
+                .ok_or_else(|| anyhow!("typed refinement apply requires a non-empty query body"))?;
+            self.where_atoms = Some(where_atoms);
+        }
+
+        Ok(self.where_atoms.get_or_insert_with(Vec::new))
+    }
+
+    fn variable_names(&self) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        for var in &self.select_vars {
+            names.insert(normalize_var_name(var));
+        }
+        if let Some(where_atoms) = &self.where_atoms {
+            for atom in where_atoms {
+                collect_atom_variables(atom, &mut names);
+            }
+        }
+        if let Some(disjuncts) = &self.disjuncts {
+            for disjunct in disjuncts {
+                for atom in disjunct {
+                    collect_atom_variables(atom, &mut names);
+                }
+            }
+        }
+        names
+    }
 }
 
 /// A prepared query wrapper that keeps IR-level provenance with a concrete prepared plan.
@@ -403,6 +502,7 @@ impl QueryIrV1 {
 /// as an implementation detail.
 #[allow(dead_code)]
 pub struct PreparedQueryV1 {
+    query_ir: QueryIrV1,
     query: AxqlQuery,
     handle: PreparedQueryHandle,
     trust: QueryTrustContract,
@@ -410,6 +510,39 @@ pub struct PreparedQueryV1 {
 
 #[allow(dead_code)]
 impl PreparedQueryV1 {
+    fn apply_refinement_handle_internal(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle: &AxqlRefinementHandleV1,
+        theory_graph: Option<(&CompiledSchemaIr, &[TheoryIr])>,
+    ) -> Result<QueryRefinementApplyResultV1> {
+        let refined_query_ir_v1 = self.query_ir.apply_refinement_handle(handle)?;
+        let refined_prepared = refined_query_ir_v1.prepare_with_meta(db, meta)?;
+        let refined_exploration = match theory_graph {
+            Some((compiled_schema, theories)) => {
+                refined_prepared.exploration_view_with_theory_graph(None, compiled_schema, theories)
+            }
+            None => refined_prepared.exploration_view(None),
+        };
+        Ok(QueryRefinementApplyResultV1 {
+            handle: handle.clone(),
+            base_query_ir_v1: self.query_ir.clone(),
+            refined_query_ir_v1,
+            refined_elaborated_query_ir_v1: refined_prepared.elaborated_query_ir_v1()?,
+            trust_before: self.trust_contract_with_meta(meta),
+            trust_after: refined_prepared.trust_contract_with_meta(meta),
+            introspection_before: self.introspection(),
+            introspection_after: refined_prepared.introspection(),
+            refined_exploration,
+        })
+    }
+
+    /// Return the canonical typed IR for this prepared query.
+    pub fn query_ir_v1(&self) -> &QueryIrV1 {
+        &self.query_ir
+    }
+
     /// Return a borrowed AxQL view of the compiled query.
     pub fn as_query(&self) -> &AxqlQuery {
         &self.query
@@ -477,18 +610,296 @@ impl PreparedQueryV1 {
         self.handle.introspection()
     }
 
+    /// Return the structured elaboration payload for this prepared query.
+    pub fn elaboration_report(&self) -> &AxqlElaborationReport {
+        self.handle.elaboration_report()
+    }
+
+    /// Return a focused exploration view over the prepared query.
+    ///
+    /// This is the runtime/editor-facing typed-hole surface: it preserves
+    /// unresolved query structure as holes and returns admissible next moves
+    /// scoped to the compiled schema/category semantics already in play.
+    pub fn exploration_view(&self, focus_variable: Option<&str>) -> PreparedQueryExplorationV1 {
+        let report = self.elaboration_report();
+        let focus_variable = focus_variable.map(str::trim).filter(|v| !v.is_empty());
+
+        let typed_holes = report
+            .typed_holes
+            .iter()
+            .filter(|hole| match focus_variable {
+                Some(var) => hole.variable.as_deref() == Some(var) || hole.variable.is_none(),
+                None => true,
+            })
+            .cloned()
+            .collect();
+        let exploration_suggestions = report
+            .exploration_suggestions
+            .iter()
+            .filter(|suggestion| match focus_variable {
+                Some(var) => suggestion.variable == var,
+                None => true,
+            })
+            .cloned()
+            .collect();
+        let refinement_candidates = report
+            .exploration_suggestions
+            .iter()
+            .filter(|suggestion| match focus_variable {
+                Some(var) => suggestion.variable == var,
+                None => true,
+            })
+            .flat_map(|suggestion| suggestion.refinement_candidates.clone().into_iter())
+            .map(crate::typed_refinement::RuntimeRefinementCandidateV1::from_axql)
+            .collect();
+
+        PreparedQueryExplorationV1 {
+            introspection: self.introspection(),
+            inferred_types: report.inferred_types.clone(),
+            notes: report.notes.clone(),
+            typed_holes,
+            exploration_suggestions,
+            refinement_candidates,
+            semantic_claims: self.semantic_claims().to_vec(),
+            semantic_coverage: self.semantic_coverage().cloned(),
+            trust_gaps: self.trust_gaps().to_vec(),
+        }
+    }
+
+    /// Return a focused exploration view enriched with compiled-theory handles.
+    ///
+    /// This is the typed exploration surface for higher-order/dependent
+    /// ontology tooling: query holes still come from AxQL elaboration, but the
+    /// machine-usable refinement candidates are lifted onto the same
+    /// obligation/subject graph used by migration and reconciliation builders.
+    pub fn exploration_view_with_theory_graph(
+        &self,
+        focus_variable: Option<&str>,
+        compiled_schema: &CompiledSchemaIr,
+        theories: &[TheoryIr],
+    ) -> PreparedQueryExplorationV1 {
+        let report = self.elaboration_report();
+        let focus_variable = focus_variable.map(str::trim).filter(|v| !v.is_empty());
+
+        let typed_holes = report
+            .typed_holes
+            .iter()
+            .filter(|hole| match focus_variable {
+                Some(var) => hole.variable.as_deref() == Some(var) || hole.variable.is_none(),
+                None => true,
+            })
+            .cloned()
+            .collect();
+        let exploration_suggestions = report
+            .exploration_suggestions
+            .iter()
+            .filter(|suggestion| match focus_variable {
+                Some(var) => suggestion.variable == var,
+                None => true,
+            })
+            .cloned()
+            .collect();
+        let refinement_candidates = report
+            .exploration_suggestions
+            .iter()
+            .filter(|suggestion| match focus_variable {
+                Some(var) => suggestion.variable == var,
+                None => true,
+            })
+            .flat_map(|suggestion| suggestion.refinement_candidates.clone().into_iter())
+            .map(|candidate| {
+                crate::typed_refinement::RuntimeRefinementCandidateV1::from_axql_with_theory(
+                    candidate,
+                    compiled_schema,
+                    theories,
+                )
+            })
+            .collect();
+
+        PreparedQueryExplorationV1 {
+            introspection: self.introspection(),
+            inferred_types: report.inferred_types.clone(),
+            notes: report.notes.clone(),
+            typed_holes,
+            exploration_suggestions,
+            refinement_candidates,
+            semantic_claims: self.semantic_claims().to_vec(),
+            semantic_coverage: self.semantic_coverage().cloned(),
+            trust_gaps: self.trust_gaps().to_vec(),
+        }
+    }
+
+    /// Apply a typed refinement handle and return the refined query plus updated
+    /// trust/introspection/exploration metadata.
+    pub fn apply_refinement_handle(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle: &AxqlRefinementHandleV1,
+    ) -> Result<QueryRefinementApplyResultV1> {
+        self.apply_refinement_handle_internal(db, meta, handle, None)
+    }
+
+    /// Apply a typed refinement handle and keep the compiled theory graph on the
+    /// refined exploration payload.
+    pub fn apply_refinement_handle_with_theory_graph(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle: &AxqlRefinementHandleV1,
+        compiled_schema: &CompiledSchemaIr,
+        theories: &[TheoryIr],
+    ) -> Result<QueryRefinementApplyResultV1> {
+        self.apply_refinement_handle_internal(db, meta, handle, Some((compiled_schema, theories)))
+    }
+
+    /// Resolve a refinement handle by id from the current exploration payload
+    /// and apply it.
+    pub fn apply_refinement_by_id(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle_id: &str,
+    ) -> Result<QueryRefinementApplyResultV1> {
+        let handle = self
+            .exploration_view(None)
+            .exploration_suggestions
+            .into_iter()
+            .flat_map(|suggestion| suggestion.refinement_candidates.into_iter())
+            .find(|candidate| candidate.handle.id == handle_id)
+            .map(|candidate| candidate.handle)
+            .ok_or_else(|| anyhow!("unknown refinement handle `{handle_id}`"))?;
+        self.apply_refinement_handle(db, meta, &handle)
+    }
+
+    /// Resolve a refinement handle by id from the theory-enriched exploration
+    /// payload and apply it while keeping theory handles on the result.
+    pub fn apply_refinement_by_id_with_theory_graph(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle_id: &str,
+        compiled_schema: &CompiledSchemaIr,
+        theories: &[TheoryIr],
+    ) -> Result<QueryRefinementApplyResultV1> {
+        let handle = self
+            .exploration_view_with_theory_graph(None, compiled_schema, theories)
+            .refinement_candidates
+            .into_iter()
+            .find(|candidate| candidate.handle.id == handle_id)
+            .map(|candidate| match candidate.handle.payload {
+                crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } => handle,
+                _ => unreachable!("query exploration must only emit query-domain candidates"),
+            })
+            .ok_or_else(|| anyhow!("unknown refinement handle `{handle_id}`"))?;
+        self.apply_refinement_handle_with_theory_graph(db, meta, &handle, compiled_schema, theories)
+    }
+
+    /// Apply a shared runtime refinement handle. Query refinements and
+    /// authoring refinements can now travel through one machine-facing handle
+    /// protocol, even though this method only accepts the query domain.
+    pub fn apply_runtime_refinement_handle(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    ) -> Result<QueryRefinementApplyResultV1> {
+        handle.validate()?;
+        let crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } = &handle.payload
+        else {
+            return Err(anyhow!(
+                "runtime refinement handle `{}` is not a query refinement",
+                handle.id
+            ));
+        };
+        self.apply_refinement_handle(db, meta, handle)
+    }
+
+    /// Apply a shared runtime refinement handle while preserving compiled
+    /// theory handles on the refined exploration payload.
+    pub fn apply_runtime_refinement_handle_with_theory_graph(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+        compiled_schema: &CompiledSchemaIr,
+        theories: &[TheoryIr],
+    ) -> Result<QueryRefinementApplyResultV1> {
+        handle.validate()?;
+        let crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } = &handle.payload
+        else {
+            return Err(anyhow!(
+                "runtime refinement handle `{}` is not a query refinement",
+                handle.id
+            ));
+        };
+        self.apply_refinement_handle_with_theory_graph(db, meta, handle, compiled_schema, theories)
+    }
+
+    /// Resolve a shared runtime refinement handle by id from the current
+    /// exploration payload and apply it.
+    pub fn apply_runtime_refinement_by_id(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle_id: &str,
+    ) -> Result<QueryRefinementApplyResultV1> {
+        let handle = self
+            .exploration_view(None)
+            .refinement_candidates
+            .into_iter()
+            .find(|candidate| candidate.handle.id == handle_id)
+            .map(|candidate| candidate.handle)
+            .ok_or_else(|| anyhow!("unknown runtime refinement handle `{handle_id}`"))?;
+        self.apply_runtime_refinement_handle(db, meta, &handle)
+    }
+
+    /// Resolve a shared runtime refinement handle by id from the theory-enriched
+    /// exploration payload and apply it while preserving theory handles.
+    pub fn apply_runtime_refinement_by_id_with_theory_graph(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        handle_id: &str,
+        compiled_schema: &CompiledSchemaIr,
+        theories: &[TheoryIr],
+    ) -> Result<QueryRefinementApplyResultV1> {
+        let handle = self
+            .exploration_view_with_theory_graph(None, compiled_schema, theories)
+            .refinement_candidates
+            .into_iter()
+            .find(|candidate| candidate.handle.id == handle_id)
+            .map(|candidate| candidate.handle)
+            .ok_or_else(|| anyhow!("unknown runtime refinement handle `{handle_id}`"))?;
+        self.apply_runtime_refinement_handle_with_theory_graph(
+            db,
+            meta,
+            &handle,
+            compiled_schema,
+            theories,
+        )
+    }
+
+    /// Return the elaborated query IR that the runtime actually prepared.
+    pub fn elaborated_query_ir_v1(&self) -> Result<QueryIrV1> {
+        let elaborated = parse_axql_query(&self.handle.elaborated_query_text())?;
+        Ok(QueryIrV1::from_axql_query(&elaborated))
+    }
+
     /// Classification of what this prepared query can be certified under.
     pub fn certifiability(&self) -> QueryCertifiability {
         self.handle.certifiability()
     }
 
-    /// Emit a query-result certificate for this prepared query.
-    pub fn certify(
+    /// Emit the canonical `.axi`-anchored typed query witness for this prepared query.
+    pub fn certify_typed_with_anchor(
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        axi_digest_v1: &str,
     ) -> Result<CertificateV2> {
-        self.handle.certify(db, &self.query, meta)
+        self.handle
+            .certify_typed_with_anchor(db, &self.query, meta, axi_digest_v1)
     }
 
     /// Unwrap the low-level prepared execution handle for callers that need
@@ -1174,6 +1585,135 @@ impl QueryAtomIrV1 {
     }
 }
 
+fn collect_term_variables(term: &QueryTermIrV1, vars: &mut BTreeSet<String>) {
+    match term {
+        QueryTermIrV1::Simple(name) => {
+            if name.starts_with('?') {
+                vars.insert(normalize_var_name(name));
+            }
+        }
+        QueryTermIrV1::Id(_) => {}
+        QueryTermIrV1::Obj(obj) => {
+            if let QueryTermObjIrV1::Var { name } = obj {
+                vars.insert(normalize_var_name(name));
+            }
+        }
+    }
+}
+
+fn collect_atom_variables(atom: &QueryAtomIrV1, vars: &mut BTreeSet<String>) {
+    match atom {
+        QueryAtomIrV1::Type { term, .. }
+        | QueryAtomIrV1::AttrEq { term, .. }
+        | QueryAtomIrV1::AttrContains { term, .. }
+        | QueryAtomIrV1::AttrFts { term, .. }
+        | QueryAtomIrV1::AttrFuzzy { term, .. }
+        | QueryAtomIrV1::HasOut { term, .. }
+        | QueryAtomIrV1::Attrs { term, .. }
+        | QueryAtomIrV1::Shape { term, .. } => collect_term_variables(term, vars),
+        QueryAtomIrV1::Edge { left, right, .. } => {
+            collect_term_variables(left, vars);
+            collect_term_variables(right, vars);
+        }
+        QueryAtomIrV1::Fact { fact, fields, .. } => {
+            if let Some(fact) = fact {
+                collect_term_variables(fact, vars);
+            }
+            for term in fields.values() {
+                collect_term_variables(term, vars);
+            }
+        }
+    }
+}
+
+fn fresh_variable_name(base: &str, used: &mut BTreeSet<String>) -> String {
+    let normalized = normalize_var_name(base);
+    if used.insert(normalized.clone()) {
+        return normalized;
+    }
+
+    let stem = normalized.trim_start_matches('?');
+    let mut suffix = 2usize;
+    loop {
+        let candidate = format!("?{stem}_{suffix}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+fn query_term_from_refinement_term(
+    term: &AxqlRefinementTermV1,
+    used: &mut BTreeSet<String>,
+    suggested_names: &mut BTreeMap<String, String>,
+) -> Result<QueryTermIrV1> {
+    Ok(match term {
+        AxqlRefinementTermV1::ExistingVariable { name } => {
+            let normalized = normalize_var_name(name);
+            if !used.contains(&normalized) {
+                return Err(anyhow!(
+                    "refinement handle refers to unknown query variable `{normalized}`"
+                ));
+            }
+            QueryTermIrV1::Obj(QueryTermObjIrV1::Var { name: normalized })
+        }
+        AxqlRefinementTermV1::SuggestedVariable { name } => {
+            let actual = suggested_names
+                .entry(name.clone())
+                .or_insert_with(|| fresh_variable_name(name, used))
+                .clone();
+            QueryTermIrV1::Obj(QueryTermObjIrV1::Var { name: actual })
+        }
+        AxqlRefinementTermV1::NameLookup { value } => QueryTermIrV1::Obj(QueryTermObjIrV1::Name {
+            value: value.clone(),
+        }),
+        AxqlRefinementTermV1::Wildcard => QueryTermIrV1::Obj(QueryTermObjIrV1::Wildcard {}),
+    })
+}
+
+fn query_atom_from_refinement_handle(
+    handle: &AxqlRefinementHandleV1,
+    used: &mut BTreeSet<String>,
+) -> Result<QueryAtomIrV1> {
+    let mut suggested_names: BTreeMap<String, String> = BTreeMap::new();
+    Ok(match &handle.op {
+        AxqlRefinementOpV1::AddTypeGuard { term, type_name } => QueryAtomIrV1::Type {
+            term: query_term_from_refinement_term(term, used, &mut suggested_names)?,
+            type_name: type_name.clone(),
+        },
+        AxqlRefinementOpV1::AddEdgeAtom { left, path, right } => QueryAtomIrV1::Edge {
+            left: query_term_from_refinement_term(left, used, &mut suggested_names)?,
+            path: path.clone(),
+            right: query_term_from_refinement_term(right, used, &mut suggested_names)?,
+        },
+        AxqlRefinementOpV1::AddFactAtom {
+            fact,
+            relation,
+            fields,
+        } => {
+            let fact = fact
+                .as_ref()
+                .map(|term| query_term_from_refinement_term(term, used, &mut suggested_names))
+                .transpose()?;
+            let fields = fields
+                .iter()
+                .map(|(field, term)| {
+                    Ok((
+                        field.clone(),
+                        query_term_from_refinement_term(term, used, &mut suggested_names)?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?;
+            QueryAtomIrV1::Fact {
+                fact,
+                relation: relation.clone(),
+                fields,
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1230,6 +1770,26 @@ mod tests {
     }
 
     #[test]
+    fn query_ir_edge_simple_name_term_renders_as_name_lookup() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["p"],
+              "where": [
+                {"kind": "edge", "left": "Alice", "path": "Parent", "right": "?p"}
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        assert_eq!(
+            q.to_axql_text()?,
+            r#"select ?p where name("Alice") -Parent-> ?p limit 10"#
+        );
+        Ok(())
+    }
+
+    #[test]
     fn query_ir_v1_from_axql_roundtrips_basic() -> Result<()> {
         let axql = r#"select ?x where ?x : Node, attr(?x, "name", "a") limit 10"#;
         let parsed = crate::axql::parse_axql_query(axql)?;
@@ -1276,6 +1836,8 @@ instance I of S:
         assert_eq!(introspection.selected_vars, vec!["?x"]);
         assert_eq!(introspection.limit, 10);
         assert_eq!(introspection.context_count, 0);
+        assert_eq!(introspection.typed_hole_count, 0);
+        assert_eq!(introspection.exploration_target_count, 0);
         assert_eq!(prepared.trust_contract().trust_class, "certifiable");
         assert!(prepared.semantic_coverage().is_some());
         assert!(prepared
@@ -1287,6 +1849,575 @@ instance I of S:
             .explain_plan_lines()
             .iter()
             .any(|line| line.contains("join order")));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_prepared_handle_exposes_elaboration_payload() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["dst"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Flow",
+                  "fields": {
+                    "from": "a",
+                    "to": "?dst"
+                  }
+                }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let report = prepared.elaboration_report();
+        assert!(report
+            .inferred_types
+            .get("?dst")
+            .is_some_and(|tys| tys.iter().any(|ty| ty == "Supplier")));
+        assert!(report
+            .exploration_suggestions
+            .iter()
+            .any(|suggestion| suggestion.variable == "?dst"));
+
+        let elaborated_ir = prepared.elaborated_query_ir_v1()?;
+        assert_eq!(elaborated_ir.version, QUERY_IR_V1_VERSION);
+        assert!(
+            elaborated_ir
+                .where_atoms
+                .as_ref()
+                .is_some_and(|atoms| !atoms.is_empty())
+                || elaborated_ir
+                    .disjuncts
+                    .as_ref()
+                    .is_some_and(|disjuncts| !disjuncts.is_empty())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_prepared_handle_exposes_focused_exploration_view() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["src", "dst"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Flow",
+                  "fields": {
+                    "from": "?src",
+                    "to": "?dst"
+                  }
+                }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let full = prepared.exploration_view(None);
+        assert!(full
+            .exploration_suggestions
+            .iter()
+            .any(|suggestion| suggestion.variable == "?src"));
+        assert!(full
+            .exploration_suggestions
+            .iter()
+            .any(|suggestion| suggestion.variable == "?dst"));
+        assert!(full.exploration_suggestions.iter().any(|suggestion| {
+            suggestion.variable == "?dst" && !suggestion.refinement_candidates.is_empty()
+        }));
+        assert!(full.refinement_candidates.iter().any(|candidate| matches!(
+            candidate.handle.domain(),
+            crate::typed_refinement::RuntimeRefinementDomainV1::Query
+        )));
+        assert!(!full.semantic_claims.is_empty());
+        assert!(full.semantic_coverage.is_some());
+
+        let focused = prepared.exploration_view(Some("?dst"));
+        assert!(focused
+            .exploration_suggestions
+            .iter()
+            .all(|suggestion| suggestion.variable == "?dst"));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_exploration_view_can_attach_compiled_theory_handles() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+theory DemoRules on Demo:
+  constraint key Parent(parent, child)
+
+instance I of Demo:
+  Person = {Alice, Bob}
+  Parent = {(parent=Alice, child=Bob)}
+"#;
+        let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
+        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&parsed.schemas[0]);
+        let theories = parsed
+            .theories
+            .iter()
+            .map(|theory| axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(anyhow::Error::msg)?;
+
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["c"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Parent",
+                  "fields": {
+                    "parent": "Alice",
+                    "child": "?c"
+                  }
+                }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let exploration =
+            prepared.exploration_view_with_theory_graph(None, &compiled_schema, &theories);
+        assert!(exploration.refinement_candidates.iter().any(|candidate| {
+            matches!(
+                candidate.theory_obligation_ref.as_ref(),
+                Some(axiograph_pathdb::kernel_ir::TheoryObligationRefIr::Constraint {
+                    relation_name,
+                    ..
+                }) if relation_name.as_deref() == Some("Parent")
+            ) && candidate.theory_subject_refs.iter().any(|subject| {
+                matches!(
+                    subject,
+                    axiograph_pathdb::kernel_ir::TheorySubjectRefIr::Relation {
+                        relation_name,
+                        ..
+                    } if relation_name == "Parent"
+                )
+            })
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_query_runtime_refinement_with_theory_graph_preserves_typed_handles() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+theory DemoRules on Demo:
+  constraint key Flow(from, to)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
+        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&parsed.schemas[0]);
+        let theories = parsed
+            .theories
+            .iter()
+            .map(|theory| axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(anyhow::Error::msg)?;
+
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["dst"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Flow",
+                  "fields": {
+                    "from": "a",
+                    "to": "?dst"
+                  }
+                }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let handle_id = prepared
+            .exploration_view_with_theory_graph(Some("?dst"), &compiled_schema, &theories)
+            .refinement_candidates
+            .into_iter()
+            .find(|candidate| {
+                matches!(
+                    candidate.kind,
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::BindFactRelation
+                )
+            })
+            .map(|candidate| candidate.handle.id)
+            .expect("expected shared runtime refinement handle");
+
+        let applied = prepared.apply_runtime_refinement_by_id_with_theory_graph(
+            &db,
+            Some(&meta),
+            &handle_id,
+            &compiled_schema,
+            &theories,
+        )?;
+        assert_eq!(applied.handle.id, handle_id);
+        assert!(applied
+            .refined_exploration
+            .refinement_candidates
+            .iter()
+            .any(|candidate| matches!(
+                candidate.theory_obligation_ref.as_ref(),
+                Some(axiograph_pathdb::kernel_ir::TheoryObligationRefIr::Constraint {
+                    relation_name,
+                    ..
+                }) if relation_name.as_deref() == Some("Flow")
+            ) && candidate.theory_subject_refs.iter().any(|subject| {
+                matches!(
+                    subject,
+                    axiograph_pathdb::kernel_ir::TheorySubjectRefIr::Relation {
+                        relation_name,
+                        ..
+                    } if relation_name == "Flow"
+                )
+            })));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_apply_refinement_handle_appends_typed_atom() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["dst"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Flow",
+                  "fields": {
+                    "from": "a",
+                    "to": "?dst"
+                  }
+                }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let candidate = prepared
+            .exploration_view(Some("?dst"))
+            .exploration_suggestions
+            .into_iter()
+            .flat_map(|suggestion| suggestion.refinement_candidates.into_iter())
+            .find(|candidate| {
+                candidate.kind == crate::axql::AxqlRefinementCandidateKindV1::AddTypeGuard
+                    && candidate.target_type.as_deref() == Some("Demo.Supplier")
+            })
+            .expect("expected typed guard refinement for ?dst");
+
+        let refined = q.apply_refinement_handle(&candidate.handle)?;
+        let where_atoms = refined.where_atoms.expect("expected conjunctive body");
+        assert!(where_atoms.iter().any(|atom| matches!(
+            atom,
+            QueryAtomIrV1::Type {
+                term: QueryTermIrV1::Obj(QueryTermObjIrV1::Var { name }),
+                type_name
+            } if name == "?dst" && type_name == "Demo.Supplier"
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_apply_refinement_handle_freshens_suggested_variables() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["prev", "dst"],
+              "where": [
+                { "kind": "edge", "left": "?prev", "path": "Flow", "right": "?dst" }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let handle = AxqlRefinementHandleV1::new(
+            AxqlRefinementApplicationScopeV1::SingleConjunction,
+            AxqlRefinementOpV1::AddEdgeAtom {
+                left: AxqlRefinementTermV1::SuggestedVariable {
+                    name: "?prev".to_string(),
+                },
+                path: "Demo.Flow".to_string(),
+                right: AxqlRefinementTermV1::ExistingVariable {
+                    name: "?dst".to_string(),
+                },
+            },
+        );
+
+        let refined = q.apply_refinement_handle(&handle)?;
+        let where_atoms = refined.where_atoms.expect("expected conjunctive body");
+        let added_edge = where_atoms
+            .iter()
+            .find_map(|atom| match atom {
+                QueryAtomIrV1::Edge { left, path, right } if path == "Demo.Flow" => {
+                    Some((left, right))
+                }
+                _ => None,
+            })
+            .expect("expected added refinement edge");
+        match added_edge {
+            (
+                QueryTermIrV1::Obj(QueryTermObjIrV1::Var { name }),
+                QueryTermIrV1::Obj(QueryTermObjIrV1::Var { name: right_name }),
+            ) => {
+                assert_ne!(name, "?prev");
+                assert!(name.starts_with("?prev"));
+                assert_eq!(right_name, "?dst");
+            }
+            other => panic!("unexpected added edge terms: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_query_v1_apply_refinement_by_id_returns_refined_payload() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["dst"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Flow",
+                  "fields": {
+                    "from": "a",
+                    "to": "?dst"
+                  }
+                }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let handle_id = prepared
+            .exploration_view(Some("?dst"))
+            .exploration_suggestions
+            .into_iter()
+            .flat_map(|suggestion| suggestion.refinement_candidates.into_iter())
+            .find(|candidate| {
+                candidate.kind == crate::axql::AxqlRefinementCandidateKindV1::BindFactRelation
+            })
+            .map(|candidate| candidate.handle.id)
+            .expect("expected bind-fact refinement handle");
+
+        let applied = prepared.apply_refinement_by_id(&db, Some(&meta), &handle_id)?;
+        assert_eq!(applied.handle.id, handle_id);
+        assert!(applied.introspection_after.disjunct_count >= 1);
+        assert!(!applied
+            .refined_exploration
+            .exploration_suggestions
+            .is_empty());
+        assert!(applied
+            .refined_query_ir_v1
+            .where_atoms
+            .as_ref()
+            .is_some_and(
+                |atoms| atoms.len() > q.where_atoms.as_ref().map(|atoms| atoms.len()).unwrap_or(0)
+            ));
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_query_v1_apply_runtime_refinement_by_id_returns_refined_payload() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["dst"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Flow",
+                  "fields": {
+                    "from": "a",
+                    "to": "?dst"
+                  }
+                }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let handle_id = prepared
+            .exploration_view(Some("?dst"))
+            .refinement_candidates
+            .into_iter()
+            .find(|candidate| {
+                matches!(
+                    candidate.kind,
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::BindFactRelation
+                )
+            })
+            .map(|candidate| candidate.handle.id)
+            .expect("expected shared runtime refinement handle");
+
+        let applied = prepared.apply_runtime_refinement_by_id(&db, Some(&meta), &handle_id)?;
+        assert_eq!(applied.handle.id, handle_id);
+        assert!(!applied.refined_exploration.refinement_candidates.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn query_ir_v1_apply_refinement_rejects_disjunctions() -> Result<()> {
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "disjuncts": [
+                [{ "kind": "type", "term": "?x", "type": "Node" }],
+                [{ "kind": "type", "term": "?x", "type": "Supplier" }]
+              ],
+              "limit": 5
+            }"#,
+        )?;
+        let handle = AxqlRefinementHandleV1::new(
+            AxqlRefinementApplicationScopeV1::SingleConjunction,
+            AxqlRefinementOpV1::AddTypeGuard {
+                term: AxqlRefinementTermV1::ExistingVariable {
+                    name: "?x".to_string(),
+                },
+                type_name: "Demo.Node".to_string(),
+            },
+        );
+        let err = q
+            .apply_refinement_handle(&handle)
+            .expect_err("expected disjunctive refinement rejection");
+        assert!(err.to_string().contains("single conjunctive query"));
         Ok(())
     }
 
@@ -1328,7 +2459,10 @@ instance I of S:
         let trust = prepared.trust_contract();
         assert_eq!(trust.trust_class, "execution_only");
         assert!(trust.semantic_coverage.is_some());
-        assert!(!prepared.trust_gaps().is_empty());
+        assert!(prepared
+            .semantic_claims()
+            .iter()
+            .any(|claim| claim.kind == "declared_object_type"));
         Ok(())
     }
 
@@ -1514,6 +2648,52 @@ instance I of S:
             "disjunction with one certifiable and one execution-only branch should be mixed"
         );
         assert!(cert.reasons().iter().any(|r| r.contains("cannot certify")));
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_query_v1_certify_typed_with_anchor_emits_query_result_v3() -> Result<()> {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+            });
+        let axi_path = repo_root.join("examples/Family.axi");
+        let axi_text = std::fs::read_to_string(&axi_path)?;
+        let db = crate::load_pathdb_for_cli(&axi_path)?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["p"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Fam.Parent",
+                  "fields": {
+                    "child": "Carol",
+                    "parent": "?p",
+                    "ctx": "CensusData",
+                    "time": "T2020"
+                  }
+                }
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let cert = prepared.certify_typed_with_anchor(&db, Some(&meta), &digest)?;
+        match cert.payload {
+            axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } => {
+                assert!(!proof.rows.is_empty());
+            }
+            other => panic!("expected query_result_v3 typed witness, got {other:?}"),
+        }
         Ok(())
     }
 

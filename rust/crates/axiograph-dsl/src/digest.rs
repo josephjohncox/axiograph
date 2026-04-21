@@ -58,7 +58,7 @@ pub fn axi_digest_v1(text: &str) -> String {
     format!("{AXI_DIGEST_V1_PREFIX}{hash:016x}")
 }
 
-/// Compute a stable id for a single *fact/tuple* extracted from an `axi_schema_v1` instance.
+/// Compute a stable id for a single fact tuple extracted from canonical `axi_v1` instance data.
 ///
 /// This is intended for certificates and for stable export/import identifiers.
 ///

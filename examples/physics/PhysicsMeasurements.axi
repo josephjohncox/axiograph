@@ -63,11 +63,9 @@ schema PhysicsMeasurements:
   -- Observation facts (reified records)
   -- ==========================================================================
   -- The observation is a typed record:
-  --   MeasurementObs(run, quantity, unit, value_bin, ctx, time)
+--   MeasurementObs(run, quantity, unit, value_bin, ctx, time)
   --
-  -- Context and time are first-class scoping axes:
-  -- - `@context Context` adds a `ctx: Context` field
-  -- - `@temporal Time` adds a `time: Time` field
+  -- Context and time are first-class scoping axes encoded as explicit roles.
   --
   -- In PathDB, every imported observation becomes a fact-node with field edges,
   -- plus a derived traversal edge:
@@ -80,8 +78,10 @@ schema PhysicsMeasurements:
     run: Run,
     quantity: Quantity,
     unit: Unit,
-    value_bin: ScalarBin
-  ) @context Context @temporal Time
+    value_bin: ScalarBin,
+    ctx: Context,
+    time: Time
+  )
 
 theory PhysicsMeasurementsRules on PhysicsMeasurements:
   -- Metadata hygiene

@@ -1,7 +1,7 @@
 # Axiograph REPL script: modalities + dependent-type-like witnesses (supply chain)
 #
 # Demonstrates:
-# - Context/world scoping via `@context Context` (Plan vs Observed)
+# - Context/world scoping via explicit `ctx: Context` roles (Plan vs Observed)
 # - Higher structure: `RouteEquivalence` as a 2-cell with a proof object
 # - Proof terms: `JustificationPath` objects for obligations + equivalence between justifications
 # - Typed query elaboration (`q --elaborate`) + meta-plane-as-type-layer

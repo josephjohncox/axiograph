@@ -1,15 +1,15 @@
--- Supply Chain as Higher Category
+-- Supply chain ontology
 --
 -- Models manufacturing supply chains with HoTT structure:
 -- - Objects: Entities (suppliers, factories, warehouses, customers)
 -- - 1-morphisms: Material/info flows
 -- - 2-morphisms: Process equivalences (different routes, same outcome)
 --
--- HoTT enables:
--- - Path independence for logistics (multiple routes, same delivery)
--- - Supplier substitution via equivalence
--- - Bill of Materials as a functor
--- - Process verification as path equality
+-- The point of the example is readable typed supply-chain structure:
+-- - nodes and flows,
+-- - route equivalence,
+-- - supplier substitution,
+-- - and inventory/process relations.
 
 module SupplyChainHoTT
 

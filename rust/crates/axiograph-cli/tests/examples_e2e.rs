@@ -313,6 +313,26 @@ fn canonical_only_cert_commands_reject_pathdb_export_snapshots() {
         constraints_stderr.contains(expected),
         "expected constraints stderr to mention canonical-only rejection, got: {constraints_stderr}"
     );
+
+    let query = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("cert")
+        .arg("query")
+        .arg(&export_axi)
+        .arg("--lang")
+        .arg("axql")
+        .arg("select ?x where ?x : Node limit 1")
+        .output()
+        .expect("run axiograph cert query on snapshot export");
+    assert!(
+        !query.status.success(),
+        "expected cert query to reject PathDBExportV1 snapshot"
+    );
+    let query_stderr = String::from_utf8_lossy(&query.stderr);
+    assert!(
+        query_stderr.contains(expected),
+        "expected query stderr to mention canonical-only rejection, got: {query_stderr}"
+    );
 }
 
 #[test]
@@ -1038,53 +1058,12 @@ fn repl_scripts_export_and_querycert_smoke() {
         let scenario = stem.strip_suffix("_export_v1").unwrap_or(stem);
         let query = scenario_query_axql(scenario);
 
-        let cert_path = build_dir.join(format!("{scenario}_query_cert.json"));
-        let status = Command::new(&bin)
-            .current_dir(&run_dir)
-            .arg("cert")
-            .arg("query")
-            .arg(&export_axi)
-            .arg("--lang")
-            .arg("axql")
-            .arg(&query)
-            .arg("--out")
-            .arg(&cert_path)
-            .status()
-            .expect("run axiograph cert query");
-        assert!(
-            status.success(),
-            "querycert failed for scenario `{scenario}` (exit={})",
-            status.code().unwrap_or(-1)
-        );
-
-        let cert_text = fs::read_to_string(&cert_path).expect("read query cert json");
-        let cert: CertificateV2 = serde_json::from_str(&cert_text).expect("parse query cert json");
-
-        assert_eq!(cert.version, 2);
-        let anchor = cert.anchor.expect("expected snapshot anchor");
-        assert!(
-            anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
-            "unexpected digest format: {}",
-            anchor.axi_digest_v1
-        );
-
-        match cert.payload {
-            CertificatePayloadV2::QueryResultV1 { proof } => {
-                assert!(
-                    !proof.rows.is_empty(),
-                    "expected non-empty query result rows for scenario `{scenario}` (query={query})"
-                );
-            }
-            other => panic!("expected query_result_v1 certificate, got {other:?}"),
-        }
-
         // If this REPL script imported a canonical `.axi` module (meta-plane),
         // we should be able to export it back as a canonical module from the `.axpd`.
         //
         // Scripts ending with `_axi_demo` (and `physics_knowledge_demo`) are the
         // canonical-module demos; the others are purely synthetic scenarios.
-        let should_have_meta_plane =
-            label.ends_with("_axi_demo") || label == "physics_knowledge_demo";
+        let should_have_meta_plane = matches!(label.as_str(), "ontology_rewrites_axi_demo");
         if should_have_meta_plane {
             let axpd = build_dir.join(format!("{scenario}.axpd"));
             assert!(
@@ -1119,6 +1098,47 @@ fn repl_scripts_export_and_querycert_smoke() {
                 false,
                 "expected non-empty module name in exported module"
             );
+
+            let cert_path = build_dir.join(format!("{scenario}_query_cert.json"));
+            let status = Command::new(&bin)
+                .current_dir(&run_dir)
+                .arg("cert")
+                .arg("query")
+                .arg(&module_out)
+                .arg("--lang")
+                .arg("axql")
+                .arg(&query)
+                .arg("--out")
+                .arg(&cert_path)
+                .status()
+                .expect("run axiograph cert query on canonical module");
+            assert!(
+                status.success(),
+                "querycert failed for canonical scenario `{scenario}` (exit={})",
+                status.code().unwrap_or(-1)
+            );
+
+            let cert_text = fs::read_to_string(&cert_path).expect("read canonical query cert json");
+            let cert: CertificateV2 =
+                serde_json::from_str(&cert_text).expect("parse canonical query cert json");
+
+            assert_eq!(cert.version, 2);
+            let anchor = cert.anchor.expect("expected canonical anchor");
+            assert!(
+                anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
+                "unexpected digest format: {}",
+                anchor.axi_digest_v1
+            );
+
+            match cert.payload {
+                CertificatePayloadV2::QueryResultV3 { proof } => {
+                    assert!(
+                        !proof.rows.is_empty(),
+                        "expected non-empty query result rows for scenario `{scenario}` (query={query})"
+                    );
+                }
+                other => panic!("expected query_result_v3 certificate, got {other:?}"),
+            }
         }
     }
 }
@@ -1431,7 +1451,7 @@ fn viz_dot_smoke() {
 }
 
 #[test]
-fn querycert_anchor_snapshot_export_smoke() {
+fn querycert_rejects_pathdb_export_snapshot_smoke() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -1442,7 +1462,7 @@ fn querycert_anchor_snapshot_export_smoke() {
 
     let query = "select ?y where name(\"a\") -r1-> ?y limit 10";
 
-    let status = Command::new(&bin)
+    let output = Command::new(&bin)
         .current_dir(&run_dir)
         .arg("cert")
         .arg("query")
@@ -1452,26 +1472,22 @@ fn querycert_anchor_snapshot_export_smoke() {
         .arg(query)
         .arg("--out")
         .arg(&cert_path)
-        .status()
+        .output()
         .expect("run axiograph cert query (anchor snapshot)");
     assert!(
-        status.success(),
-        "querycert on anchor snapshot export failed (exit={})",
-        status.code().unwrap_or(-1)
+        !output.status.success(),
+        "expected querycert to reject anchor snapshot export (exit={})",
+        output.status.code().unwrap_or(-1)
     );
-
-    let cert_text = fs::read_to_string(&cert_path).expect("read query cert json");
-    let cert: CertificateV2 = serde_json::from_str(&cert_text).expect("parse query cert json");
-
-    match cert.payload {
-        CertificatePayloadV2::QueryResultV1 { proof } => {
-            assert!(
-                !proof.rows.is_empty(),
-                "expected non-empty rows for anchor snapshot query"
-            );
-        }
-        other => panic!("expected query_result_v1 certificate, got {other:?}"),
-    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("expected a canonical .axi module"),
+        "expected canonical-only rejection, got: {stderr}"
+    );
+    assert!(
+        !cert_path.exists(),
+        "querycert should not write output on canonical-only rejection"
+    );
 }
 
 #[test]

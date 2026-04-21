@@ -70,7 +70,10 @@ Today that means the code path centered on:
 - `lean/Axiograph/Axi/AxiV1.lean`
 - `lean/Axiograph/Axi/TypeCheck.lean`
 - `lean/Axiograph/Axi/ConstraintsCheck.lean`
-- `lean/Axiograph/Axi/PathDBExportV1.lean`
+
+`lean/Axiograph/Axi/PathDBExportV1.lean` remains useful for reversible snapshot
+roundtrip/parity work, but it is not in the current `VerifyMain` import
+closure and should not be described as part of the active verifier kernel.
 
 Adjacent theorem-bearing modules are important, but they are not automatically
 part of the shipped runtime kernel unless imported by the verifier target.
@@ -90,7 +93,16 @@ These modules participate directly in shipped certificate/module verification.
 | `Axiograph.Axi.AxiV1` | canonical `.axi` parser for trusted gates | runtime kernel |
 | `Axiograph.Axi.TypeCheck` | conservative `.axi` typechecking gate | runtime kernel |
 | `Axiograph.Axi.ConstraintsCheck` | conservative certifiable constraint gate | runtime kernel |
-| `Axiograph.Axi.PathDBExportV1` | transitional snapshot/export anchor parser | runtime kernel |
+
+### Transitional parity support
+
+These modules matter for snapshot roundtrip/parity workflows, but they are not
+currently imported by `VerifyMain` and therefore sit outside the shipped
+verifier kernel boundary.
+
+| Module | Role | Trust class |
+| --- | --- | --- |
+| `Axiograph.Axi.PathDBExportV1` | reversible PathDB snapshot/export parser for parity tooling | transitional parity support |
 
 ### Theorem support
 
@@ -154,6 +166,37 @@ Keep these outside:
 - explanation-level topos/sheaf/modal machinery
 - storage/index performance logic
 
+## Runtime Engineering Outputs Outside The Kernel
+
+The following outputs are important, but they belong to the runtime checker /
+report layer rather than to the trusted kernel unless they embed a checked
+certificate or gate result:
+
+- business-rule applicability reports
+- semantic coverage / drift reports
+- typed authoring and evolution-preview bundles
+- coding-agent semantic reports
+- SHACL/RDF/olog alignment reports
+- backend pushdown / projected read-surface contracts
+- authoring/query typed-hole and refinement-candidate reports
+
+These outputs may cite kernel-checked anchors, certificates, and IR ids. That
+does not make the whole report trusted. The correct product language is still
+`certified`, `mixed`, `execution-only`, or `evidence-grounded` according to the
+stated contract. Structured typed holes are especially important to classify
+correctly: they are runtime checker/exploration artifacts over compiled IR and
+anchors, not trusted semantic proofs. The same applies to the new shared
+query+authoring refinement protocol: it is one runtime repair/apply surface
+over compiled IR, not a new kernel claim.
+
+Projected backend read surfaces deserve the same conservatism as query
+certificates:
+
+- they may preserve useful lower-tier interfaces,
+- they may preserve typed transport structure faithfully,
+- but they still do **not** imply complete answers or ontology closure unless a
+  stronger claim is separately formalized.
+
 ## Certificate Status Model
 
 Each certificate kind should be classified using one of these statuses:
@@ -175,7 +218,8 @@ Current target classification:
 | Certificate kind | Status | Notes |
 | --- | --- | --- |
 | `reachability_v1` | replay-only | transitional float-based form |
-| `reachability_v2` | replay-only | fixed-point arithmetic is stronger; anchor story still transitional |
+| `reachability_v2` | replay-only | fixed-point arithmetic is stronger; historical `PathDBExportV1`-anchored form |
+| `reachability_v3` | replay-only | canonical `.axi`-anchored reachability with stable fact ids |
 | `axi_well_typed_v1` | decision-procedure | conservative `.axi` module gate |
 | `axi_constraints_ok_v1` | decision-procedure | conservative certifiable subset only |
 | `normalize_path_v2` | replay-only | valid narrow kernel slice |

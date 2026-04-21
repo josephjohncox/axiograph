@@ -261,10 +261,12 @@ fn resolve_verifier_bin(config: &ServerConfig) -> Option<PathBuf> {
     None
 }
 
-fn export_pathdb_anchor_axi(db: &PathDB) -> Result<(AxiDigest, String)> {
-    let axi = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(db)?;
-    let digest = AxiDigest::from_axi_text(&axi);
-    Ok((digest, axi))
+fn export_canonical_module_axi(db: &PathDB) -> Result<(AxiDigest, String)> {
+    let exported = crate::world_model_input::export_pathdb_world_model_axi(
+        db,
+        &crate::world_model_input::WorldModelAxiInputOptionsV1::default(),
+    )?;
+    Ok((exported.axi_digest_v1, exported.axi_text))
 }
 
 fn write_temp_file_unique(suffix: &str, contents: &str) -> Result<PathBuf> {
@@ -312,7 +314,7 @@ fn run_command_output_with_timeout(
 
 fn verify_certificate_with_lean(
     config: &ServerConfig,
-    anchor_axi: &str,
+    module_axi: &str,
     certificate_json: &str,
 ) -> Result<(bool, String)> {
     let Some(verifier) = resolve_verifier_bin(config) else {
@@ -321,15 +323,15 @@ fn verify_certificate_with_lean(
         ));
     };
 
-    let anchor_path = write_temp_file_unique("anchor.axi", anchor_axi)?;
+    let module_path = write_temp_file_unique("verify_module_input.axi", module_axi)?;
     let cert_path = write_temp_file_unique("cert.json", certificate_json)?;
 
     let timeout = config.cert_verify.timeout;
     let mut cmd = Command::new(&verifier);
-    cmd.arg(&anchor_path).arg(&cert_path);
+    cmd.arg(&module_path).arg(&cert_path);
     let output = run_command_output_with_timeout(cmd, timeout);
 
-    let _ = std::fs::remove_file(&anchor_path);
+    let _ = std::fs::remove_file(&module_path);
     let _ = std::fs::remove_file(&cert_path);
 
     let output = output?;
@@ -656,10 +658,6 @@ async fn handle_request(
             Ok(v) => json_response(StatusCode::OK, &v),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
         },
-        (Method::GET, "/anchor.axi") => match handle_anchor_get(&state, req.uri().query()).await {
-            Ok(r) => r,
-            Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
-        },
         (Method::GET, "/entity/describe") => {
             match handle_entity_describe_get(&state, req.uri().query()).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
@@ -810,6 +808,34 @@ async fn handle_request(
         (Method::POST, "/discover/draft-axi") => {
             let body = req.into_body().collect().await?.to_bytes().to_vec();
             match handle_discover_draft_axi(&state, &body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/discover/check-olog") => {
+            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            match handle_discover_check_olog(&body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/coverage") => {
+            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            match handle_semantic_coverage(&state, &body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/business-rule") => {
+            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            match handle_semantic_business_rule(&state, &body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/agent-report") => {
+            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            match handle_semantic_agent_report(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
@@ -1177,7 +1203,7 @@ fn snapshots_payload(state: &ServerState, query: Option<&str>) -> Result<serde_j
 struct QueryRequestV1 {
     #[serde(default)]
     query: Option<String>,
-    /// Structured typed query surface preferred for tooling/LLMs.
+    /// Structured typed query surface required for HTTP/tooling.
     #[serde(default)]
     query_ir_v1: Option<crate::query_ir::QueryIrV1>,
     #[serde(default)]
@@ -1202,11 +1228,6 @@ struct QueryRequestV1 {
     /// This implies `certify=true`.
     #[serde(default)]
     verify: bool,
-    /// Include the snapshot anchor `.axi` (PathDBExportV1) in the response.
-    ///
-    /// This can be large; default is false.
-    #[serde(default)]
-    include_anchor: bool,
     /// Optional snapshot id override when running in store-backed mode.
     ///
     /// If set, the server will load and query that snapshot for this request
@@ -1275,9 +1296,6 @@ struct LlmAgentRequestV1 {
     /// This implies `verify_queries=true` and `certify_queries=true`.
     #[serde(default)]
     require_verified_queries: bool,
-    /// Include the snapshot anchor `.axi` in the response (can be large).
-    #[serde(default)]
-    include_anchor: bool,
     /// Optional snapshot id override when running in store-backed mode.
     #[serde(default)]
     snapshot: Option<String>,
@@ -1291,9 +1309,6 @@ struct WorldModelProposeRequestV1 {
     /// Optional canonical `.axi` module name to export and feed into the world model.
     #[serde(default)]
     axi_module: Option<String>,
-    /// If true, refuse to run unless a canonical module export is available.
-    #[serde(default)]
-    require_canonical_axi: Option<bool>,
     /// Optional seed passed to the world model.
     #[serde(default)]
     seed: Option<u64>,
@@ -1348,9 +1363,6 @@ struct WorldModelPlanRequestV1 {
     /// Optional canonical `.axi` module name to export and feed into the world model.
     #[serde(default)]
     axi_module: Option<String>,
-    /// If true, refuse to run unless a canonical module export is available.
-    #[serde(default)]
-    require_canonical_axi: Option<bool>,
     /// Optional seed passed to the world model.
     #[serde(default)]
     seed: Option<u64>,
@@ -1536,17 +1548,21 @@ struct QueryResponseV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     compiled_query_ir_v1: Option<crate::query_ir::QueryIrV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    elaborated_query_ir_v1: Option<crate::query_ir::QueryIrV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     elaborated_query: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     inferred_types: Option<BTreeMap<String, Vec<String>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     notes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    typed_holes: Option<Vec<crate::axql::AxqlTypedHoleV1>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exploration_suggestions: Option<Vec<crate::axql::AxqlExplorationSuggestionV1>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     plan: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     anchor_digest: Option<AxiDigest>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    anchor_axi: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     certificate: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1599,46 +1615,28 @@ fn query_request_to_axql_query(req: &QueryRequestV1) -> Result<crate::axql::Axql
     let lang = req
         .lang
         .as_deref()
-        .unwrap_or_else(|| {
-            if req.query_ir_v1.is_some() {
-                "query_ir_v1"
-            } else {
-                "axql"
-            }
-        })
+        .unwrap_or("query_ir_v1")
         .trim()
         .to_ascii_lowercase();
 
-    let mut parsed = match (&req.query, &req.query_ir_v1) {
-        (Some(_), Some(_)) => {
-            return Err(anyhow!(
-                "query request must provide exactly one of `query` or `query_ir_v1`"
-            ))
-        }
-        (None, None) => {
-            return Err(anyhow!(
-                "query request requires one of `query` or `query_ir_v1`"
-            ))
-        }
-        (Some(query_text), None) => {
-            if lang != "axql" {
-                return Err(anyhow!(
-                    "unsupported lang `{}` for raw query text (expected `axql`)",
-                    lang
-                ));
-            }
-            crate::axql::parse_axql_query(query_text)?
-        }
-        (None, Some(ir)) => {
-            if lang != "query_ir_v1" && lang != "axql" {
-                return Err(anyhow!(
-                    "unsupported lang `{}` for structured query input (expected `query_ir_v1`)",
-                    lang
-                ));
-            }
-            ir.to_axql_query()?
-        }
+    if req.query.is_some() {
+        return Err(anyhow!(
+            "raw `query` text is no longer accepted at `/query`; send structured `query_ir_v1`"
+        ));
+    }
+
+    let Some(ir) = req.query_ir_v1.as_ref() else {
+        return Err(anyhow!("query request requires `query_ir_v1`"));
     };
+
+    if lang != "query_ir_v1" {
+        return Err(anyhow!(
+            "unsupported lang `{}` for `/query` (expected `query_ir_v1`)",
+            lang
+        ));
+    }
+
+    let mut parsed = ir.to_axql_query()?;
 
     if parsed.contexts.is_empty() && !req.contexts.is_empty() {
         parsed.contexts = parse_default_context_specs(&req.contexts);
@@ -1653,7 +1651,6 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
     let show_elaboration = req.show_elaboration;
     let want_cert = req.certify || req.verify;
     let want_verify = req.verify;
-    let include_anchor = req.include_anchor;
     let snapshot_override = req.snapshot.clone();
     let state = state.clone();
 
@@ -1708,6 +1705,14 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
         let compiled_query_ir_v1 =
             show_elaboration.then(|| crate::query_ir::QueryIrV1::from_axql_query(&parsed));
         let elaborated_query = show_elaboration.then(|| prepared.elaborated_query_text());
+        let elaborated_query_ir_v1 = if show_elaboration {
+            let elaborated_query = prepared.elaborated_query_text();
+            Some(crate::query_ir::QueryIrV1::from_axql_query(
+                &crate::axql::parse_axql_query(&elaborated_query)?,
+            ))
+        } else {
+            None
+        };
         let elaboration = show_elaboration.then(|| prepared.elaboration_report().clone());
         let plan = show_elaboration.then(|| prepared.explain_plan_lines());
         let certifiability = prepared.certifiability();
@@ -1725,20 +1730,20 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
         }
 
         let mut anchor_digest: Option<AxiDigest> = None;
-        let mut anchor_axi: Option<String> = None;
         let mut certificate: Option<serde_json::Value> = None;
         let mut certificate_verified: Option<bool> = None;
         let mut certificate_verify_output: Option<String> = None;
 
         if want_cert {
-            let (digest, axi) = export_pathdb_anchor_axi(&db)?;
+            let (digest, axi) = export_canonical_module_axi(&db)?;
             anchor_digest = Some(digest.clone());
-            if include_anchor {
-                anchor_axi = Some(axi.clone());
-            }
-
-            let cert = crate::axql::certify_axql_query_with_meta(&db, &parsed, meta.as_ref())?
-                .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
+            let cert = crate::axql::certify_axql_query_typed_with_meta(
+                &db,
+                &parsed,
+                meta.as_ref(),
+                digest.as_str(),
+            )?
+            .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
             let cert_json = serde_json::to_value(&cert)?;
             certificate = Some(cert_json);
 
@@ -1763,12 +1768,16 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
                 meta.as_ref(),
             ),
             compiled_query_ir_v1,
+            elaborated_query_ir_v1,
             elaborated_query,
             inferred_types: elaboration.as_ref().map(|e| e.inferred_types.clone()),
             notes: elaboration.as_ref().map(|e| e.notes.clone()),
+            typed_holes: elaboration.as_ref().map(|e| e.typed_holes.clone()),
+            exploration_suggestions: elaboration
+                .as_ref()
+                .map(|e| e.exploration_suggestions.clone()),
             plan,
             anchor_digest,
-            anchor_axi,
             certificate,
             certificate_verified,
             certificate_verify_output,
@@ -1778,54 +1787,12 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
     .map_err(|e| anyhow!("query task join failed: {e}"))?
 }
 
-async fn handle_anchor_get(
-    state: &Arc<ServerState>,
-    query: Option<&str>,
-) -> Result<Response<Full<Bytes>>> {
-    let p = parse_query_params(query);
-    let snapshot_override = p.get("snapshot").cloned();
-    let state = state.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let db = if let Some(snapshot) = snapshot_override.as_deref() {
-            let SnapshotSource::Store { dir, layer, .. } = &state.config.source else {
-                return Err(anyhow!(
-                    "anchor snapshot override requires a store-backed server (`--dir ...`)"
-                ));
-            };
-            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
-            loaded.db
-        } else {
-            let loaded = state
-                .loaded
-                .read()
-                .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
-            loaded.db.clone()
-        };
-
-        let (_digest, axi) = export_pathdb_anchor_axi(&db)?;
-        Ok::<_, anyhow::Error>(
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Full::new(Bytes::from(axi)))
-                .unwrap_or_else(|_| {
-                    Response::new(Full::new(Bytes::from_static(b"internal error")))
-                }),
-        )
-    })
-    .await
-    .map_err(|e| anyhow!("anchor task join failed: {e}"))?
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct ReachabilityCertRequestV1 {
     start: u32,
     relation_ids: Vec<u32>,
     #[serde(default)]
     verify: bool,
-    #[serde(default)]
-    include_anchor: bool,
     /// Optional snapshot id override when running in store-backed mode.
     #[serde(default)]
     snapshot: Option<String>,
@@ -1835,8 +1802,6 @@ struct ReachabilityCertRequestV1 {
 struct CertResponseV1 {
     anchor_digest: AxiDigest,
     trust: crate::trust_contract::TrustContractV1,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    anchor_axi: Option<String>,
     certificate: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     certificate_verified: Option<bool>,
@@ -1855,7 +1820,6 @@ async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Resu
 
     let snapshot_override = req.snapshot.clone();
     let verify = req.verify;
-    let include_anchor = req.include_anchor;
     let state = state.clone();
 
     tokio::task::spawn_blocking(move || {
@@ -1875,8 +1839,8 @@ async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Resu
             loaded.db.clone()
         };
 
-        let (digest, axi) = export_pathdb_anchor_axi(&db)?;
-        let proof = axiograph_pathdb::witness::reachability_proof_v2_from_relation_ids(
+        let (digest, axi) = export_canonical_module_axi(&db)?;
+        let proof = axiograph_pathdb::witness::reachability_proof_v3_from_relation_ids(
             &db,
             req.start,
             &req.relation_ids,
@@ -1884,9 +1848,10 @@ async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Resu
         .into_inner_in_db(&db)
         .map_err(|e| anyhow!(e))?;
 
-        let cert = axiograph_pathdb::certificate::CertificateV2::reachability(proof).with_anchor(
-            axiograph_pathdb::certificate::AxiAnchorV1::new(digest.clone()),
-        );
+        let cert = axiograph_pathdb::certificate::CertificateV2::reachability_v3(proof)
+            .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(
+                digest.clone(),
+            ));
 
         let cert_json = serde_json::to_value(&cert)?;
         let (verified, verify_out) = if verify {
@@ -1900,7 +1865,6 @@ async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Resu
         Ok::<_, anyhow::Error>(CertResponseV1 {
             anchor_digest: digest,
             trust: crate::trust_contract::certificate_trust_contract(verified),
-            anchor_axi: include_anchor.then_some(axi),
             certificate: cert_json,
             certificate_verified: verified,
             certificate_verify_output: verify_out,
@@ -1943,31 +1907,9 @@ async fn handle_llm_to_query(state: &Arc<ServerState>, body: &[u8]) -> Result<se
 
         let generated = state.config.llm.generate_query(&db, &question)?;
         Ok::<_, anyhow::Error>(match generated {
-            GeneratedQuery::Axql(axql) => {
-                // Prefer returning a typed IR even if the backend returned AxQL.
-                // This keeps downstream tooling/LLMs on the stable JSON form and
-                // avoids fragile parsing by clients.
-                match crate::axql::parse_axql_query(&axql) {
-                    Ok(parsed) => {
-                        let ir = crate::query_ir::QueryIrV1::from_axql_query(&parsed);
-                        let axql_text = ir.to_axql_text()?;
-                        serde_json::json!({
-                            "version": "axiograph_db_server_llm_to_query_v1",
-                            "query_ir_v1": ir,
-                            "axql": axql_text
-                        })
-                    }
-                    Err(_) => serde_json::json!({
-                        "version": "axiograph_db_server_llm_to_query_v1",
-                        "axql": axql,
-                        "notes": ["note: failed to parse AxQL into query_ir_v1; returning raw AxQL only"]
-                    }),
-                }
-            }
             GeneratedQuery::QueryIrV1(ir) => serde_json::json!({
                 "version": "axiograph_db_server_llm_to_query_v1",
-                "query_ir_v1": ir,
-                "axql": ir.to_axql_text()?
+                "query_ir_v1": ir
             }),
         })
     })
@@ -2015,233 +1957,211 @@ async fn handle_llm_agent(
     let require_query_certs = req.require_query_certs || req.require_verified_queries;
     let verify_queries = req.verify_queries || req.require_verified_queries;
     let certify_queries = req.certify_queries || verify_queries || require_query_certs;
-    let include_anchor = req.include_anchor;
     let max_steps_cap = crate::llm::llm_max_steps_cap()?;
 
     let state2 = state.clone();
-    let (mut outcome, accepted_snapshot_id, query_certs, anchor_axi) =
-        tokio::task::spawn_blocking(move || {
-            let (
-                db,
-                meta,
-                embeddings,
-                snapshot_key,
-                accepted_snapshot_id,
-                pathdb_snapshot_id,
-                snapshot_label,
-            ) = if let Some(snapshot) = snapshot_override.as_deref() {
-                let SnapshotSource::Store { dir, layer, .. } = &state2.config.source else {
-                    return Err(anyhow!(
-                        "llm snapshot override requires a store-backed server (`--dir ...`)"
-                    ));
-                };
-                let loaded = load_from_store(dir, layer, snapshot, &state2.config)?;
-                (
-                    loaded.db,
-                    loaded.meta,
-                    loaded.embeddings,
-                    loaded.snapshot_key,
-                    loaded.accepted_snapshot_id,
-                    loaded.pathdb_snapshot_id,
-                    loaded.snapshot_label,
-                )
-            } else {
-                let loaded = state2
-                    .loaded
-                    .read()
-                    .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
-                (
-                    loaded.db.clone(),
-                    loaded.meta.clone(),
-                    loaded.embeddings.clone(),
-                    loaded.snapshot_key.clone(),
-                    loaded.accepted_snapshot_id.clone(),
-                    loaded.pathdb_snapshot_id.clone(),
-                    loaded.snapshot_label.clone(),
-                )
+    let (mut outcome, accepted_snapshot_id, query_certs) = tokio::task::spawn_blocking(move || {
+        let (
+            db,
+            meta,
+            embeddings,
+            snapshot_key,
+            accepted_snapshot_id,
+            pathdb_snapshot_id,
+            snapshot_label,
+        ) = if let Some(snapshot) = snapshot_override.as_deref() {
+            let SnapshotSource::Store { dir, layer, .. } = &state2.config.source else {
+                return Err(anyhow!(
+                    "llm snapshot override requires a store-backed server (`--dir ...`)"
+                ));
             };
+            let loaded = load_from_store(dir, layer, snapshot, &state2.config)?;
+            (
+                loaded.db,
+                loaded.meta,
+                loaded.embeddings,
+                loaded.snapshot_key,
+                loaded.accepted_snapshot_id,
+                loaded.pathdb_snapshot_id,
+                loaded.snapshot_label,
+            )
+        } else {
+            let loaded = state2
+                .loaded
+                .read()
+                .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
+            (
+                loaded.db.clone(),
+                loaded.meta.clone(),
+                loaded.embeddings.clone(),
+                loaded.snapshot_key.clone(),
+                loaded.accepted_snapshot_id.clone(),
+                loaded.pathdb_snapshot_id.clone(),
+                loaded.snapshot_label.clone(),
+            )
+        };
 
-            let mut contexts: Vec<crate::axql::AxqlContextSpec> = Vec::new();
-            for c in contexts_raw {
-                let c = c.trim();
-                if c.is_empty() || c == "*" || c.eq_ignore_ascii_case("all") {
+        let mut contexts: Vec<crate::axql::AxqlContextSpec> = Vec::new();
+        for c in contexts_raw {
+            let c = c.trim();
+            if c.is_empty() || c == "*" || c.eq_ignore_ascii_case("all") {
+                continue;
+            }
+            if let Ok(id) = c.parse::<u32>() {
+                contexts.push(crate::axql::AxqlContextSpec::EntityId(id));
+            } else {
+                contexts.push(crate::axql::AxqlContextSpec::Name(c.to_string()));
+            }
+        }
+
+        // Thread conversation context into the question prompt.
+        //
+        // The assistant messages are untrusted convenience text: the tool loop
+        // is expected to validate and ground claims via tools (AxQL, describe_entity, etc).
+        let mut full_question = String::new();
+        if !history.is_empty() {
+            full_question.push_str("Conversation so far (untrusted; use tools to verify):\n");
+
+            // Keep prompts bounded (local models can be sensitive to long inputs).
+            let max_msgs = crate::llm::llm_chat_max_messages()?;
+            let start = history.len().saturating_sub(max_msgs.max(1));
+            for m in history.iter().skip(start) {
+                let role = m.role.trim();
+                let role = if role.is_empty() { "unknown" } else { role };
+                let mut content = m.content.trim().to_string();
+                if content.chars().count() > 800 {
+                    content = content.chars().take(800).collect::<String>() + "…";
+                }
+                full_question.push_str(&format!("[{role}] {content}\n"));
+            }
+            full_question.push('\n');
+            full_question.push_str("Current question:\n");
+            full_question.push_str(&question_for_prompt);
+        } else {
+            full_question = question_for_prompt.clone();
+        }
+
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let opts = ToolLoopOptions {
+            max_steps: max_steps.clamp(1, max_steps_cap),
+            max_rows: max_rows.clamp(1, 200),
+            ..Default::default()
+        };
+
+        let embed_host = match &state2.config.llm.backend {
+            #[cfg(feature = "llm-ollama")]
+            LlmBackend::Ollama { host } => Some(host.as_str()),
+            _ => None,
+        };
+
+        let store_ctx = match &state2.config.source {
+            SnapshotSource::Store { dir, layer, .. } => Some(crate::llm::ToolLoopStoreContext {
+                dir: dir.to_path_buf(),
+                default_layer: layer.to_string(),
+            }),
+            _ => None,
+        };
+
+        let world_model_ctx = if matches!(
+            state2.config.world_model.backend,
+            WorldModelBackend::Disabled
+        ) {
+            None
+        } else {
+            Some(crate::llm::ToolLoopWorldModelContext {
+                world_model: state2.config.world_model.clone(),
+                pathdb_snapshot_id: pathdb_snapshot_id.clone(),
+                accepted_snapshot_id: accepted_snapshot_id.clone(),
+                snapshot_label: snapshot_label.clone(),
+            })
+        };
+
+        let outcome = crate::llm::run_tool_loop_with_meta(
+            &state2.config.llm,
+            &db,
+            meta.as_ref(),
+            &contexts,
+            &snapshot_key,
+            store_ctx.as_ref(),
+            world_model_ctx.as_ref(),
+            embeddings.as_deref(),
+            embed_host,
+            &mut query_cache,
+            &full_question,
+            opts,
+        )?;
+
+        // Optional: certify (and optionally verify) queries executed by the tool loop.
+        let mut query_certs: Option<Vec<serde_json::Value>> = None;
+        if certify_queries {
+            let want_verify = verify_queries;
+            let (digest, axi) = export_canonical_module_axi(&db)?;
+
+            let mut out: Vec<serde_json::Value> = Vec::new();
+            for (i, step) in outcome.steps.iter().enumerate() {
+                if step.tool != "axql_run" {
                     continue;
                 }
-                if let Ok(id) = c.parse::<u32>() {
-                    contexts.push(crate::axql::AxqlContextSpec::EntityId(id));
-                } else {
-                    contexts.push(crate::axql::AxqlContextSpec::Name(c.to_string()));
+                let q = step
+                    .result
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if q.trim().is_empty() {
+                    continue;
+                }
+
+                match crate::axql::parse_axql_query(&q).and_then(|parsed| {
+                    crate::axql::certify_axql_query_typed_with_meta(
+                        &db,
+                        &parsed,
+                        meta.as_ref(),
+                        digest.as_str(),
+                    )
+                }) {
+                    Ok(cert) => {
+                        let cert = cert.with_anchor(
+                            axiograph_pathdb::certificate::AxiAnchorV1::new(digest.clone()),
+                        );
+                        let cert_json =
+                            serde_json::to_value(&cert).unwrap_or(serde_json::Value::Null);
+
+                        let (verified, verify_out, verify_err) = if want_verify {
+                            let cert_text = serde_json::to_string_pretty(&cert)?;
+                            match verify_certificate_with_lean(&state2.config, &axi, &cert_text) {
+                                Ok((ok, out_text)) => (Some(ok), Some(out_text), None),
+                                Err(e) => (Some(false), None, Some(e.to_string())),
+                            }
+                        } else {
+                            (None, None, None)
+                        };
+
+                        out.push(serde_json::json!({
+                            "step_index": i,
+                            "query": q,
+                            "certificate": cert_json,
+                            "certificate_verified": verified,
+                            "certificate_verify_output": verify_out,
+                            "certificate_verify_error": verify_err,
+                        }));
+                    }
+                    Err(e) => {
+                        out.push(serde_json::json!({
+                            "step_index": i,
+                            "query": q,
+                            "error": e.to_string(),
+                        }));
+                    }
                 }
             }
+            query_certs = Some(out);
+        }
 
-            // Thread conversation context into the question prompt.
-            //
-            // The assistant messages are untrusted convenience text: the tool loop
-            // is expected to validate and ground claims via tools (AxQL, describe_entity, etc).
-            let mut full_question = String::new();
-            if !history.is_empty() {
-                full_question.push_str("Conversation so far (untrusted; use tools to verify):\n");
-
-                // Keep prompts bounded (local models can be sensitive to long inputs).
-                let max_msgs = crate::llm::llm_chat_max_messages()?;
-                let start = history.len().saturating_sub(max_msgs.max(1));
-                for m in history.iter().skip(start) {
-                    let role = m.role.trim();
-                    let role = if role.is_empty() { "unknown" } else { role };
-                    let mut content = m.content.trim().to_string();
-                    if content.chars().count() > 800 {
-                        content = content.chars().take(800).collect::<String>() + "…";
-                    }
-                    full_question.push_str(&format!("[{role}] {content}\n"));
-                }
-                full_question.push('\n');
-                full_question.push_str("Current question:\n");
-                full_question.push_str(&question_for_prompt);
-            } else {
-                full_question = question_for_prompt.clone();
-            }
-
-            let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
-            let opts = ToolLoopOptions {
-                max_steps: max_steps.clamp(1, max_steps_cap),
-                max_rows: max_rows.clamp(1, 200),
-                ..Default::default()
-            };
-
-            let embed_host = match &state2.config.llm.backend {
-                #[cfg(feature = "llm-ollama")]
-                LlmBackend::Ollama { host } => Some(host.as_str()),
-                _ => None,
-            };
-
-            let store_ctx = match &state2.config.source {
-                SnapshotSource::Store { dir, layer, .. } => {
-                    Some(crate::llm::ToolLoopStoreContext {
-                        dir: dir.to_path_buf(),
-                        default_layer: layer.to_string(),
-                    })
-                }
-                _ => None,
-            };
-
-            let world_model_snapshot = match &state2.config.source {
-                SnapshotSource::Axpd(path) => Some(crate::world_model::WorldModelSnapshotRefV1 {
-                    kind: "axpd".to_string(),
-                    path: path.display().to_string(),
-                    snapshot_id: None,
-                    accepted_snapshot_id: None,
-                }),
-                SnapshotSource::Store { dir, .. } => {
-                    Some(crate::world_model::WorldModelSnapshotRefV1 {
-                        kind: "store".to_string(),
-                        path: dir.display().to_string(),
-                        snapshot_id: pathdb_snapshot_id.clone().map(Into::into),
-                        accepted_snapshot_id: accepted_snapshot_id.clone().map(Into::into),
-                    })
-                }
-            };
-            let world_model_ctx = if matches!(
-                state2.config.world_model.backend,
-                WorldModelBackend::Disabled
-            ) {
-                None
-            } else {
-                Some(crate::llm::ToolLoopWorldModelContext {
-                    world_model: state2.config.world_model.clone(),
-                    snapshot: world_model_snapshot,
-                    snapshot_label: snapshot_label.clone(),
-                })
-            };
-
-            let outcome = crate::llm::run_tool_loop_with_meta(
-                &state2.config.llm,
-                &db,
-                meta.as_ref(),
-                &contexts,
-                &snapshot_key,
-                store_ctx.as_ref(),
-                world_model_ctx.as_ref(),
-                embeddings.as_deref(),
-                embed_host,
-                &mut query_cache,
-                &full_question,
-                opts,
-            )?;
-
-            // Optional: certify (and optionally verify) queries executed by the tool loop.
-            let mut query_certs: Option<Vec<serde_json::Value>> = None;
-            let mut anchor_axi: Option<serde_json::Value> = None;
-            if certify_queries {
-                let want_verify = verify_queries;
-                let (digest, axi) = export_pathdb_anchor_axi(&db)?;
-                if include_anchor {
-                    anchor_axi = Some(serde_json::json!({
-                        "anchor_digest": digest.clone(),
-                        "anchor_axi": axi.clone(),
-                    }));
-                }
-
-                let mut out: Vec<serde_json::Value> = Vec::new();
-                for (i, step) in outcome.steps.iter().enumerate() {
-                    if step.tool != "axql_run" {
-                        continue;
-                    }
-                    let q = step
-                        .result
-                        .get("query")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if q.trim().is_empty() {
-                        continue;
-                    }
-
-                    match crate::axql::parse_axql_query(&q).and_then(|parsed| {
-                        crate::axql::certify_axql_query_with_meta(&db, &parsed, meta.as_ref())
-                    }) {
-                        Ok(cert) => {
-                            let cert = cert.with_anchor(
-                                axiograph_pathdb::certificate::AxiAnchorV1::new(digest.clone()),
-                            );
-                            let cert_json =
-                                serde_json::to_value(&cert).unwrap_or(serde_json::Value::Null);
-
-                            let (verified, verify_out, verify_err) = if want_verify {
-                                let cert_text = serde_json::to_string_pretty(&cert)?;
-                                match verify_certificate_with_lean(&state2.config, &axi, &cert_text)
-                                {
-                                    Ok((ok, out_text)) => (Some(ok), Some(out_text), None),
-                                    Err(e) => (Some(false), None, Some(e.to_string())),
-                                }
-                            } else {
-                                (None, None, None)
-                            };
-
-                            out.push(serde_json::json!({
-                                "step_index": i,
-                                "query": q,
-                                "certificate": cert_json,
-                                "certificate_verified": verified,
-                                "certificate_verify_output": verify_out,
-                                "certificate_verify_error": verify_err,
-                            }));
-                        }
-                        Err(e) => {
-                            out.push(serde_json::json!({
-                                "step_index": i,
-                                "query": q,
-                                "error": e.to_string(),
-                            }));
-                        }
-                    }
-                }
-                query_certs = Some(out);
-            }
-
-            Ok::<_, anyhow::Error>((outcome, accepted_snapshot_id, query_certs, anchor_axi))
-        })
-        .await
-        .map_err(|e| anyhow!("llm/agent task join failed: {e}"))??;
+        Ok::<_, anyhow::Error>((outcome, accepted_snapshot_id, query_certs))
+    })
+    .await
+    .map_err(|e| anyhow!("llm/agent task join failed: {e}"))??;
 
     let mut gate: Option<serde_json::Value> = None;
     if require_query_certs {
@@ -2456,9 +2376,6 @@ async fn handle_llm_agent(
     if let Some(certs) = query_certs {
         out["query_certificates"] = serde_json::to_value(certs).unwrap_or(serde_json::Value::Null);
     }
-    if let Some(anchor) = anchor_axi {
-        out["anchor"] = anchor;
-    }
     if auto_commit {
         out["commit"] = serde_json::to_value(commit).unwrap_or(serde_json::Value::Null);
     }
@@ -2497,158 +2414,120 @@ async fn handle_world_model_propose(
     let pathdb_snapshot_id_for_input = pathdb_snapshot_id.clone();
 
     let req2 = req.clone();
-    let (trace_id, proposals, provenance, guardrail, mut notes) =
-        state.world_model_executor.run(move || {
-        let guardrail_profile = req2
-            .guardrail_profile
-            .as_deref()
-            .unwrap_or("fast")
-            .trim()
-            .to_ascii_lowercase();
-        let guardrail_plane = req2
-            .guardrail_plane
-            .as_deref()
-            .unwrap_or("both")
-            .trim()
-            .to_ascii_lowercase();
-        let include_guardrail = req2.include_guardrail.unwrap_or(true);
+    let (trace_id, proposals, provenance, guardrail, mut notes) = state
+        .world_model_executor
+        .run(move || {
+            let guardrail_profile = req2
+                .guardrail_profile
+                .as_deref()
+                .unwrap_or("fast")
+                .trim()
+                .to_ascii_lowercase();
+            let guardrail_plane = req2
+                .guardrail_plane
+                .as_deref()
+                .unwrap_or("both")
+                .trim()
+                .to_ascii_lowercase();
+            let include_guardrail = req2.include_guardrail.unwrap_or(true);
 
-        let guardrail_weights = req2
-            .guardrail_weights
-            .clone()
-            .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
-        let guardrail = if include_guardrail && guardrail_profile != "off" {
-            Some(crate::world_model::compute_guardrail_costs(
-                db.as_ref(),
-                &format!("db_server:{snapshot_label}"),
-                &guardrail_profile,
-                &guardrail_plane,
-                &guardrail_weights,
-            )?)
-        } else {
-            None
-        };
-
-        let mut input = crate::world_model::WorldModelInputV1::default();
-        if guardrail.is_some() {
-            input.guardrail = guardrail.clone();
-        }
-        input.notes.push("source=db_server".to_string());
-        let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
-            module_name: req2.axi_module.clone(),
-            require_canonical: req2.require_canonical_axi.unwrap_or(false),
-        };
-        let exported = crate::world_model_input::export_pathdb_world_model_axi(db.as_ref(), &opts)?;
-        input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
-        input.axi_module_text = Some(exported.axi_text.clone());
-        input.axi_input_kind = Some(exported.kind.as_str().to_string());
-        input.axi_input_module = exported.selected_module_name.clone();
-        input.notes.push(format!("axi_input_kind={}", exported.kind.as_str()));
-        if let Some(m) = exported.selected_module_name.as_ref() {
-            input.notes.push(format!("axi_input_module={m}"));
-        }
-        if matches!(
-            exported.kind,
-            crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-        ) {
-            input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
-        }
-            let max_items = req2
-                .max_new_proposals
-                .unwrap_or(0)
-                .saturating_mul(20)
-                .min(2000)
-                .max(1000);
-            let exclude_relations = if matches!(
-                exported.kind,
-                crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-            ) {
-                vec!["interned_string".to_string()]
+            let guardrail_weights = req2
+                .guardrail_weights
+                .clone()
+                .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+            let guardrail = if include_guardrail && guardrail_profile != "off" {
+                Some(crate::world_model::compute_guardrail_costs(
+                    db.as_ref(),
+                    &format!("db_server:{snapshot_label}"),
+                    &guardrail_profile,
+                    &guardrail_plane,
+                    &guardrail_weights,
+                )?)
             } else {
-                Vec::new()
+                None
             };
-            let export_opts = crate::world_model::JepaExportOptions {
-                instance_filter: None,
-                max_items,
-                mask_fields: 1,
-                seed: 1,
-                exclude_relations,
+
+            let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+                module_name: req2.axi_module.clone(),
+                pathdb_snapshot_id: pathdb_snapshot_id_for_input.clone(),
+                accepted_snapshot_id: accepted_snapshot_id_for_input.clone(),
+                training_export: Some(crate::world_model::JepaExportOptions {
+                    instance_filter: None,
+                    max_items: req2
+                        .max_new_proposals
+                        .unwrap_or(0)
+                        .saturating_mul(20)
+                        .min(2000)
+                        .max(1000),
+                    mask_fields: 1,
+                    seed: 1,
+                    exclude_relations: Vec::new(),
+                }),
             };
-            if let Ok(export) =
-                crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
-            {
-                input.export = Some(export);
+            let mut input = crate::world_model_input::build_world_model_input_from_pathdb(
+                db.as_ref(),
+                &build_opts,
+            )?;
+            if let Some(guardrail) = guardrail.clone() {
+                input.set_guardrail_layer(guardrail);
+            }
+            input.notes.push("source=db_server".to_string());
+
+            let max_keep = req2.max_new_proposals.unwrap_or(0);
+            let mut options = crate::world_model::WorldModelOptionsV1::default();
+            options.max_new_proposals = max_keep;
+            options.seed = req2.seed;
+            options.goals = req2.goals.clone();
+            options.task_costs = req2.task_costs.clone();
+            options.horizon_steps = req2.horizon_steps;
+
+            let input_axi_digest = input.axi_digest_v1.clone();
+            let input_pathdb_snapshot_id = input.pathdb_snapshot_id();
+            let input_accepted_snapshot_id = input.accepted_snapshot_id();
+            let input_module_name = input.semantic_input.module_name.clone();
+            let request = crate::world_model::make_world_model_request(input, options);
+            let mut response = config.world_model.propose(&request)?;
+            if let Some(err) = response.error.take() {
+                return Err(anyhow!("world model error: {err}"));
             }
 
-        input.snapshot = Some(match &config.source {
-            SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
-                kind: "axpd".to_string(),
-                path: path.display().to_string(),
-                snapshot_id: None,
-                accepted_snapshot_id: None,
-            },
-            SnapshotSource::Store { dir, .. } => crate::world_model::WorldModelSnapshotRefV1 {
-                kind: "store".to_string(),
-                path: dir.display().to_string(),
-                snapshot_id: pathdb_snapshot_id_for_input.clone().map(Into::into),
-                accepted_snapshot_id: accepted_snapshot_id_for_input.clone().map(Into::into),
-            },
-        });
+            let guardrail_profile_label = if guardrail_profile == "off" {
+                None
+            } else {
+                Some(guardrail_profile.clone())
+            };
+            let guardrail_plane_label = if guardrail_profile == "off" {
+                None
+            } else {
+                Some(guardrail_plane.clone())
+            };
 
-        let max_keep = req2.max_new_proposals.unwrap_or(0);
-        let mut options = crate::world_model::WorldModelOptionsV1::default();
-        options.max_new_proposals = max_keep;
-        options.seed = req2.seed;
-        options.goals = req2.goals.clone();
-        options.task_costs = req2.task_costs.clone();
-        options.horizon_steps = req2.horizon_steps;
+            let provenance = crate::world_model::build_world_model_provenance(
+                &response,
+                config.world_model.backend_label(),
+                config.world_model.model.clone(),
+                input_axi_digest,
+                input_pathdb_snapshot_id,
+                input_accepted_snapshot_id,
+                guardrail.as_ref().map(|g| g.summary.total_cost),
+                guardrail_profile_label,
+                guardrail_plane_label,
+            )?;
 
-        let input_snapshot = input.snapshot.clone();
-        let input_axi_digest = input.axi_digest_v1.clone();
-        let request = crate::world_model::make_world_model_request(input, options);
-        let mut response = config.world_model.propose(&request)?;
-        if let Some(err) = response.error.take() {
-            return Err(anyhow!("world model error: {err}"));
-        }
+            let mut proposals =
+                crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+            if max_keep > 0 && proposals.proposals.len() > max_keep {
+                proposals.proposals.truncate(max_keep);
+            }
 
-        let guardrail_profile_label = if guardrail_profile == "off" {
-            None
-        } else {
-            Some(guardrail_profile.clone())
-        };
-        let guardrail_plane_label = if guardrail_profile == "off" {
-            None
-        } else {
-            Some(guardrail_plane.clone())
-        };
-
-        let provenance = crate::world_model::build_world_model_provenance(
-            &response,
-            config.world_model.backend_label(),
-            config.world_model.model.clone(),
-            input_axi_digest,
-            input_snapshot
-                .as_ref()
-                .and_then(|snap| snap.snapshot_id.clone()),
-            input_snapshot
-                .as_ref()
-                .and_then(|snap| snap.accepted_snapshot_id.clone()),
-            guardrail.as_ref().map(|g| g.summary.total_cost),
-            guardrail_profile_label,
-            guardrail_plane_label,
-        )?;
-
-        let mut proposals =
-            crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
-        if max_keep > 0 && proposals.proposals.len() > max_keep {
-            proposals.proposals.truncate(max_keep);
-        }
-
-        let mut notes = response.notes.clone();
-        notes.push(format!("axi_input_kind={}", exported.kind.as_str()));
-        if let Some(m) = exported.selected_module_name.as_ref() {
-            notes.push(format!("axi_input_module={m}"));
-        }
+            let mut notes = response.notes.clone();
+            notes.push(format!(
+                "semantic_input={}",
+                crate::world_model::WORLD_MODEL_SEMANTIC_INPUT_KIND_V1
+            ));
+            if let Some(m) = input_module_name.as_ref() {
+                notes.push(format!("semantic_module={m}"));
+            }
             Ok::<_, anyhow::Error>((response.trace_id, proposals, provenance, guardrail, notes))
         })
         .await?;
@@ -2764,93 +2643,55 @@ async fn handle_world_model_plan(
             let guardrail_weights = guardrail_weights.clone();
             let validation_profile = validation_profile.clone();
             let validation_plane = validation_plane.clone();
-            let report_step = state.world_model_executor.run(move || {
-                let mut base_input = crate::world_model::WorldModelInputV1::default();
-                base_input
-                    .notes
-                    .push(format!("source=db_server_plan step={step_idx}"));
-                let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
-                    module_name: req2.axi_module.clone(),
-                    require_canonical: req2.require_canonical_axi.unwrap_or(false),
-                };
-                let exported =
-                    crate::world_model_input::export_pathdb_world_model_axi(db.as_ref(), &opts)?;
-                base_input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
-                base_input.axi_module_text = Some(exported.axi_text.clone());
-                base_input.axi_input_kind = Some(exported.kind.as_str().to_string());
-                base_input.axi_input_module = exported.selected_module_name.clone();
-                base_input
-                    .notes
-                    .push(format!("axi_input_kind={}", exported.kind.as_str()));
-                if let Some(m) = exported.selected_module_name.as_ref() {
-                    base_input.notes.push(format!("axi_input_module={m}"));
-                }
-                if matches!(
-                    exported.kind,
-                    crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-                ) {
-                    base_input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
-                }
-                    let max_items = max_new.saturating_mul(20).min(2000).max(1000);
-                    let exclude_relations = if matches!(
-                        exported.kind,
-                        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-                    ) {
-                        vec!["interned_string".to_string()]
-                    } else {
-                        Vec::new()
+            let report_step = state
+                .world_model_executor
+                .run(move || {
+                    let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+                        module_name: req2.axi_module.clone(),
+                        pathdb_snapshot_id: pathdb_snapshot_id.clone(),
+                        accepted_snapshot_id: accepted_snapshot_id.clone(),
+                        training_export: Some(crate::world_model::JepaExportOptions {
+                            instance_filter: None,
+                            max_items: max_new.saturating_mul(20).min(2000).max(1000),
+                            mask_fields: 1,
+                            seed: 1,
+                            exclude_relations: Vec::new(),
+                        }),
                     };
-                    let export_opts = crate::world_model::JepaExportOptions {
-                        instance_filter: None,
-                        max_items,
-                        mask_fields: 1,
-                        seed: 1,
-                        exclude_relations,
+                    let mut base_input =
+                        crate::world_model_input::build_world_model_input_from_pathdb(
+                            db.as_ref(),
+                            &build_opts,
+                        )?;
+                    base_input
+                        .notes
+                        .push(format!("source=db_server_plan step={step_idx}"));
+
+                    let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+                        horizon_steps: 1,
+                        rollouts,
+                        max_new_proposals: max_new,
+                        seed: req2.seed,
+                        goals: req2.goals.clone(),
+                        task_costs: req2.task_costs.clone(),
+                        competency_questions: req2.competency_questions.clone(),
+                        guardrail_profile: guardrail_profile.clone(),
+                        guardrail_plane: guardrail_plane.clone(),
+                        guardrail_weights: guardrail_weights.clone(),
+                        include_guardrail,
+                        validation_profile: validation_profile.clone(),
+                        validation_plane: validation_plane.clone(),
                     };
-                    if let Ok(export) =
-                        crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
-                    {
-                        base_input.export = Some(export);
-                    }
-                base_input.snapshot = Some(match &config.source {
-                    SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
-                        kind: "axpd".to_string(),
-                        path: path.display().to_string(),
-                        snapshot_id: None,
-                        accepted_snapshot_id: None,
-                    },
-                    SnapshotSource::Store { dir, .. } => crate::world_model::WorldModelSnapshotRefV1 {
-                        kind: "store".to_string(),
-                        path: dir.display().to_string(),
-                        snapshot_id: pathdb_snapshot_id.clone().map(Into::into),
-                        accepted_snapshot_id: accepted_snapshot_id.clone().map(Into::into),
-                    },
-                });
 
-                let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
-                    horizon_steps: 1,
-                    rollouts,
-                    max_new_proposals: max_new,
-                    seed: req2.seed,
-                    goals: req2.goals.clone(),
-                    task_costs: req2.task_costs.clone(),
-                    competency_questions: req2.competency_questions.clone(),
-                    guardrail_profile: guardrail_profile.clone(),
-                    guardrail_plane: guardrail_plane.clone(),
-                    guardrail_weights: guardrail_weights.clone(),
-                    include_guardrail,
-                    validation_profile: validation_profile.clone(),
-                    validation_plane: validation_plane.clone(),
-                };
-
-                crate::world_model::run_world_model_plan(
-                    db.as_ref(),
-                    &config.world_model,
-                    &base_input,
-                    &plan_opts,
-                )
-                .map_err(|e| anyhow!("world_model/plan step failed: {e}"))
-            }).await?;
+                    crate::world_model::run_world_model_plan(
+                        db.as_ref(),
+                        &config.world_model,
+                        &base_input,
+                        &plan_opts,
+                    )
+                    .map_err(|e| anyhow!("world_model/plan step failed: {e}"))
+                })
+                .await?;
 
             let mut step_report = report_step
                 .steps
@@ -2918,90 +2759,52 @@ async fn handle_world_model_plan(
         let pathdb_snapshot_id_for_input = pathdb_snapshot_id.clone();
 
         let req2 = req.clone();
-        let report = state.world_model_executor.run(move || {
-            let mut base_input = crate::world_model::WorldModelInputV1::default();
-            base_input.notes.push("source=db_server_plan".to_string());
-            let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
-                module_name: req2.axi_module.clone(),
-                require_canonical: req2.require_canonical_axi.unwrap_or(false),
-            };
-            let exported = crate::world_model_input::export_pathdb_world_model_axi(db.as_ref(), &opts)?;
-            base_input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
-            base_input.axi_module_text = Some(exported.axi_text.clone());
-            base_input.axi_input_kind = Some(exported.kind.as_str().to_string());
-            base_input.axi_input_module = exported.selected_module_name.clone();
-            base_input
-                .notes
-                .push(format!("axi_input_kind={}", exported.kind.as_str()));
-            if let Some(m) = exported.selected_module_name.as_ref() {
-                base_input.notes.push(format!("axi_input_module={m}"));
-            }
-            if matches!(
-                exported.kind,
-                crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-            ) {
-                base_input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
-            }
-                let max_items = max_new.saturating_mul(20).min(2000).max(1000);
-                let exclude_relations = if matches!(
-                    exported.kind,
-                    crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-                ) {
-                    vec!["interned_string".to_string()]
-                } else {
-                    Vec::new()
+        let report = state
+            .world_model_executor
+            .run(move || {
+                let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+                    module_name: req2.axi_module.clone(),
+                    pathdb_snapshot_id: pathdb_snapshot_id_for_input.clone(),
+                    accepted_snapshot_id: accepted_snapshot_id.clone(),
+                    training_export: Some(crate::world_model::JepaExportOptions {
+                        instance_filter: None,
+                        max_items: max_new.saturating_mul(20).min(2000).max(1000),
+                        mask_fields: 1,
+                        seed: 1,
+                        exclude_relations: Vec::new(),
+                    }),
                 };
-                let export_opts = crate::world_model::JepaExportOptions {
-                    instance_filter: None,
-                    max_items,
-                    mask_fields: 1,
-                    seed: 1,
-                    exclude_relations,
+                let mut base_input = crate::world_model_input::build_world_model_input_from_pathdb(
+                    db.as_ref(),
+                    &build_opts,
+                )?;
+                base_input.notes.push("source=db_server_plan".to_string());
+
+                let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+                    horizon_steps,
+                    rollouts,
+                    max_new_proposals: max_new,
+                    seed: req2.seed,
+                    goals: req2.goals.clone(),
+                    task_costs: req2.task_costs.clone(),
+                    competency_questions: req2.competency_questions.clone(),
+                    guardrail_profile: guardrail_profile.clone(),
+                    guardrail_plane: guardrail_plane.clone(),
+                    guardrail_weights: guardrail_weights.clone(),
+                    include_guardrail,
+                    validation_profile: validation_profile.clone(),
+                    validation_plane: validation_plane.clone(),
                 };
-                if let Ok(export) =
-                    crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
-                {
-                    base_input.export = Some(export);
-                }
-            base_input.snapshot = Some(match &config.source {
-                SnapshotSource::Axpd(path) => crate::world_model::WorldModelSnapshotRefV1 {
-                    kind: "axpd".to_string(),
-                    path: path.display().to_string(),
-                    snapshot_id: None,
-                    accepted_snapshot_id: None,
-                },
-                SnapshotSource::Store { dir, .. } => crate::world_model::WorldModelSnapshotRefV1 {
-                    kind: "store".to_string(),
-                    path: dir.display().to_string(),
-                    snapshot_id: pathdb_snapshot_id_for_input.clone().map(Into::into),
-                    accepted_snapshot_id: accepted_snapshot_id.clone().map(Into::into),
-                },
-            });
 
-            let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
-                horizon_steps,
-                rollouts,
-                max_new_proposals: max_new,
-                seed: req2.seed,
-                goals: req2.goals.clone(),
-                task_costs: req2.task_costs.clone(),
-                competency_questions: req2.competency_questions.clone(),
-                guardrail_profile: guardrail_profile.clone(),
-                guardrail_plane: guardrail_plane.clone(),
-                guardrail_weights: guardrail_weights.clone(),
-                include_guardrail,
-                validation_profile: validation_profile.clone(),
-                validation_plane: validation_plane.clone(),
-            };
-
-            crate::world_model::run_world_model_plan(
-                db.as_ref(),
-                &config.world_model,
-                &base_input,
-                &plan_opts,
-            )
-            .map_err(|e| anyhow!("world_model/plan failed: {e}"))
-        }).await?;
+                crate::world_model::run_world_model_plan(
+                    db.as_ref(),
+                    &config.world_model,
+                    &base_input,
+                    &plan_opts,
+                )
+                .map_err(|e| anyhow!("world_model/plan failed: {e}"))
+            })
+            .await?;
 
         if req.auto_commit {
             let generated_at = std::time::SystemTime::now()
@@ -3206,6 +3009,11 @@ async fn handle_discover_draft_axi(
     let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
     let typed_authoring =
         crate::typed_authoring::draft_typed_authoring_summary_from_axi_text(&axi_text);
+    let exploration_preview =
+        crate::typed_authoring::build_compiled_ir_exploration_preview_against_axi_text(
+            &axi_text,
+            Some(&opts.schema_name),
+        );
 
     Ok(serde_json::json!({
         "version": "axiograph_discover_draft_axi_v1",
@@ -3215,6 +3023,205 @@ async fn handle_discover_draft_axi(
         "instance_name": opts.instance_name,
         "axi_text": axi_text,
         "typed_authoring": typed_authoring,
+        "exploration_preview": exploration_preview,
+    }))
+}
+
+async fn handle_discover_check_olog(body: &[u8]) -> Result<serde_json::Value> {
+    #[derive(Debug, Clone, Deserialize)]
+    struct Req {
+        axi_text: String,
+        #[serde(default)]
+        schema_name: Option<String>,
+        fragment: crate::typed_authoring::OlogFragmentV1,
+        #[serde(default)]
+        apply_refinement_handle_id: Option<String>,
+    }
+
+    let req: Req = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse discover/check-olog request JSON: {e}"))?;
+    let report = crate::typed_authoring::discover_check_olog_report_against_axi_text(
+        &req.axi_text,
+        req.schema_name.as_deref(),
+        req.fragment,
+        req.apply_refinement_handle_id.as_deref(),
+    )?;
+    Ok(serde_json::to_value(report)?)
+}
+
+async fn handle_semantic_coverage(
+    state: &Arc<ServerState>,
+    body: &[u8],
+) -> Result<serde_json::Value> {
+    #[derive(Debug, Clone, Deserialize)]
+    struct Req {
+        #[serde(default)]
+        lifecycle_state: Option<String>,
+        #[serde(default)]
+        surfaces: Vec<crate::semantic_claim::ImplementationSurfaceRefV1>,
+        #[serde(default)]
+        edges: Vec<crate::semantic_claim::CoverageEdgeV1>,
+    }
+
+    let req: Req = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/coverage request JSON: {e}"))?;
+
+    let (db, accepted_snapshot_id, meta_from_state) = {
+        let loaded = state.loaded.read().unwrap();
+        (
+            loaded.db.clone(),
+            loaded.accepted_snapshot_id.clone(),
+            loaded.meta.clone(),
+        )
+    };
+    let meta = match meta_from_state {
+        Some(meta) => meta,
+        None => MetaPlaneIndex::from_db(&db)?,
+    };
+    let lifecycle_state = req.lifecycle_state.unwrap_or_else(|| {
+        if accepted_snapshot_id.is_some() {
+            "accepted".to_string()
+        } else {
+            "runtime_checked".to_string()
+        }
+    });
+    let coverage = crate::semantic_claim::semantic_coverage_report(
+        &meta,
+        accepted_snapshot_id.clone(),
+        &lifecycle_state,
+        &req.surfaces,
+        &req.edges,
+    );
+
+    Ok(serde_json::json!({
+        "version": "axiograph_semantic_coverage_v1",
+        "accepted_snapshot_id": accepted_snapshot_id,
+        "coverage": coverage,
+    }))
+}
+
+async fn handle_semantic_business_rule(
+    state: &Arc<ServerState>,
+    body: &[u8],
+) -> Result<serde_json::Value> {
+    #[derive(Debug, Clone, Deserialize)]
+    struct Req {
+        scope: crate::semantic_claim::RuntimeRuleScopeV1,
+        #[serde(default)]
+        lifecycle_state: Option<String>,
+    }
+
+    let req: Req = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/business-rule request JSON: {e}"))?;
+
+    let (db, accepted_snapshot_id, meta_from_state) = {
+        let loaded = state.loaded.read().unwrap();
+        (
+            loaded.db.clone(),
+            loaded.accepted_snapshot_id.clone(),
+            loaded.meta.clone(),
+        )
+    };
+    let meta = match meta_from_state {
+        Some(meta) => meta,
+        None => MetaPlaneIndex::from_db(&db)?,
+    };
+    let lifecycle_state = req.lifecycle_state.unwrap_or_else(|| {
+        if accepted_snapshot_id.is_some() {
+            "accepted".to_string()
+        } else {
+            "runtime_checked".to_string()
+        }
+    });
+
+    let report = match req.scope.scope_class {
+        crate::semantic_claim::RuntimeRuleScopeClassV1::Relation => {
+            let relation = req
+                .scope
+                .relation
+                .as_deref()
+                .ok_or_else(|| anyhow!("relation scope requires `scope.relation`"))?;
+            crate::semantic_claim::business_rule_applicability_for_relation(
+                &meta,
+                accepted_snapshot_id.clone(),
+                &lifecycle_state,
+                &req.scope.schema,
+                relation,
+            )
+        }
+        crate::semantic_claim::RuntimeRuleScopeClassV1::Theory => {
+            let theory = req
+                .scope
+                .theory
+                .as_deref()
+                .ok_or_else(|| anyhow!("theory scope requires `scope.theory`"))?;
+            crate::semantic_claim::business_rule_applicability_for_theory(
+                &meta,
+                accepted_snapshot_id.clone(),
+                &lifecycle_state,
+                &req.scope.schema,
+                theory,
+            )
+        }
+    };
+
+    Ok(serde_json::json!({
+        "version": "axiograph_semantic_business_rule_v1",
+        "accepted_snapshot_id": accepted_snapshot_id,
+        "report": report,
+    }))
+}
+
+async fn handle_semantic_agent_report(
+    state: &Arc<ServerState>,
+    body: &[u8],
+) -> Result<serde_json::Value> {
+    #[derive(Debug, Clone, Deserialize)]
+    struct Req {
+        task: crate::semantic_claim::AgentTaskRefV1,
+        #[serde(default)]
+        lifecycle_state: Option<String>,
+        #[serde(default)]
+        surfaces: Vec<crate::semantic_claim::ImplementationSurfaceRefV1>,
+        #[serde(default)]
+        edges: Vec<crate::semantic_claim::CoverageEdgeV1>,
+    }
+
+    let req: Req = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/agent-report request JSON: {e}"))?;
+
+    let (db, accepted_snapshot_id, meta_from_state) = {
+        let loaded = state.loaded.read().unwrap();
+        (
+            loaded.db.clone(),
+            loaded.accepted_snapshot_id.clone(),
+            loaded.meta.clone(),
+        )
+    };
+    let meta = match meta_from_state {
+        Some(meta) => meta,
+        None => MetaPlaneIndex::from_db(&db)?,
+    };
+    let lifecycle_state = req.lifecycle_state.unwrap_or_else(|| {
+        if accepted_snapshot_id.is_some() {
+            "accepted".to_string()
+        } else {
+            "runtime_checked".to_string()
+        }
+    });
+    let report = crate::semantic_claim::agent_engineering_report(
+        &meta,
+        accepted_snapshot_id.clone(),
+        &lifecycle_state,
+        &req.task,
+        &req.surfaces,
+        &req.edges,
+    );
+
+    Ok(serde_json::json!({
+        "version": "axiograph_semantic_agent_report_v1",
+        "accepted_snapshot_id": accepted_snapshot_id,
+        "report": report,
     }))
 }
 
@@ -4146,12 +4153,14 @@ mod tests {
                 gaps: Vec::new(),
             },
             compiled_query_ir_v1: None,
+            elaborated_query_ir_v1: None,
             elaborated_query: None,
             inferred_types: None,
             notes: None,
+            typed_holes: None,
+            exploration_suggestions: None,
             plan: None,
             anchor_digest: Some(AxiDigest::new("fnv1a64:abc")),
-            anchor_axi: None,
             certificate: None,
             certificate_verified: None,
             certificate_verify_output: None,
@@ -4178,7 +4187,6 @@ mod tests {
                 semantic_claims: Vec::new(),
                 gaps: Vec::new(),
             },
-            anchor_axi: None,
             certificate: json!({"kind": "reachability"}),
             certificate_verified: Some(true),
             certificate_verify_output: None,
@@ -4264,6 +4272,20 @@ mod tests {
         assert_eq!(parsed.limit, 5);
     }
 
+    #[test]
+    fn query_request_rejects_raw_query_text_wire_shape() {
+        let req: QueryRequestV1 = serde_json::from_value(json!({
+            "query": "select ?x where ?x is A limit 5",
+            "lang": "axql"
+        }))
+        .expect("deserialize raw query request");
+
+        let err = query_request_to_axql_query(&req).expect_err("raw query text should be rejected");
+        assert!(err
+            .to_string()
+            .contains("raw `query` text is no longer accepted"));
+    }
+
     fn test_server_state_with_axi(axi_text: &str) -> Arc<ServerState> {
         let mut db = PathDB::new();
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi_text)
@@ -4347,7 +4369,10 @@ instance I of S:
         assert_eq!(resp.vars, vec!["?x".to_string()]);
         assert_eq!(resp.rows.len(), 2);
         assert!(resp.compiled_query_ir_v1.is_some());
+        assert!(resp.elaborated_query_ir_v1.is_some());
         assert!(resp.elaborated_query.is_some());
+        assert!(resp.typed_holes.is_some());
+        assert!(resp.exploration_suggestions.is_some());
         assert_eq!(resp.trust.trust_class, "certifiable");
         assert_eq!(
             resp.trust.soundness,
@@ -4355,6 +4380,64 @@ instance I of S:
         );
         assert_eq!(resp.trust.scope.anchor, "snapshot_scoped");
         assert_eq!(resp.trust.scope.context, "unscoped");
+    }
+
+    #[tokio::test]
+    async fn handle_query_surfaces_typed_holes_for_ambiguous_but_certifiable_query() {
+        let state = test_server_state_with_axi(
+            r#"
+module Universe
+
+schema Fam:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+schema Census:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance FamInst of Fam:
+  Person = {Alice, Bob, Carol}
+  Parent = {(child=Carol, parent=Alice), (child=Carol, parent=Bob)}
+
+instance CensusInst of Census:
+  Person = {Alice, Bob, Dan}
+  Parent = {(child=Dan, parent=Alice), (child=Dan, parent=Bob)}
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    { "kind": "edge", "left": "Carol", "path": "Parent", "right": "?p" }
+                ],
+                "limit": 10
+            },
+            "show_elaboration": true
+        }))
+        .expect("serialize ambiguous query request");
+
+        let resp = handle_query(&state, &body)
+            .await
+            .expect("ambiguous query request should execute");
+
+        assert_eq!(resp.trust.trust_class, "certifiable");
+        assert!(resp
+            .typed_holes
+            .as_ref()
+            .is_some_and(|holes| !holes.is_empty()));
+        assert!(resp
+            .typed_holes
+            .as_ref()
+            .is_some_and(|holes| holes.iter().any(|hole| {
+                hole.kind == crate::axql::AxqlTypedHoleKindV1::AmbiguousEdgeRelationSchema
+                    && hole.relation == "Parent"
+            })));
+        assert!(resp.elaborated_query_ir_v1.is_some());
+        assert!(resp.exploration_suggestions.is_some());
     }
 
     #[tokio::test]
@@ -4433,5 +4516,429 @@ instance I of S:
             resp["typed_authoring"]["axi_well_typed_proof_v1"]["module_name"].as_str(),
             Some("DraftFamily")
         );
+        assert_eq!(
+            resp["exploration_preview"]["kind"].as_str(),
+            Some("compiled_ir_directed_exploration")
+        );
+        assert_eq!(
+            resp["exploration_preview"]["typed_change"]["kind"].as_str(),
+            Some("compiled_ir_directed_exploration")
+        );
+        let draft_primitives = resp["exploration_preview"]["typed_change"]["primitives"]
+            .as_array()
+            .expect("draft exploration primitives should be an array");
+        assert!(
+            draft_primitives
+                .iter()
+                .any(|primitive| primitive["kind"].as_str() == Some("reify_relation_object")),
+            "draft exploration preview should surface relation-object semantics for some discovered relation"
+        );
+        assert!(
+            draft_primitives.iter().any(|primitive| {
+                primitive["kind"].as_str() == Some("introduce_dependent_relation_family")
+            }),
+            "draft exploration preview should surface dependent-family semantics for indexed discovered relations"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_discover_check_olog_returns_validated_fragment() {
+        let fragment = crate::typed_authoring::OlogFragmentV1 {
+            boxes: vec![
+                crate::typed_authoring::OlogBoxV1 {
+                    box_id: "employee".to_string(),
+                    object_type: "Person".to_string(),
+                    label: None,
+                },
+                crate::typed_authoring::OlogBoxV1 {
+                    box_id: "team".to_string(),
+                    object_type: "Team".to_string(),
+                    label: None,
+                },
+                crate::typed_authoring::OlogBoxV1 {
+                    box_id: "ctx".to_string(),
+                    object_type: "Context".to_string(),
+                    label: None,
+                },
+            ],
+            relation_boxes: vec![crate::typed_authoring::OlogRelationBoxV1 {
+                box_id: "works_for_fact".to_string(),
+                relation: "WorksFor".to_string(),
+                role_bindings: vec![
+                    crate::typed_authoring::OlogRoleBindingV1 {
+                        role: "employee".to_string(),
+                        target_box: "employee".to_string(),
+                    },
+                    crate::typed_authoring::OlogRoleBindingV1 {
+                        role: "employer".to_string(),
+                        target_box: "team".to_string(),
+                    },
+                    crate::typed_authoring::OlogRoleBindingV1 {
+                        role: "ctx".to_string(),
+                        target_box: "ctx".to_string(),
+                    },
+                ],
+            }],
+            aspects: vec![crate::typed_authoring::OlogAspectV1 {
+                aspect_id: "employee_role".to_string(),
+                from_box: "works_for_fact".to_string(),
+                to_box: "employee".to_string(),
+                kind: crate::typed_authoring::OlogAspectKindV1::RelationProjection {
+                    relation_box: "works_for_fact".to_string(),
+                    role: "employee".to_string(),
+                },
+            }],
+            path_equations: vec![crate::typed_authoring::OlogPathEquationV1 {
+                equation_id: "employee_identity".to_string(),
+                lhs: crate::typed_authoring::OlogPathV1 {
+                    steps: vec!["employee_role".to_string()],
+                },
+                rhs: crate::typed_authoring::OlogPathV1 {
+                    steps: vec!["employee_role".to_string()],
+                },
+            }],
+        };
+
+        let body = serde_json::to_vec(&json!({
+            "axi_text": r#"
+module Demo
+
+schema S:
+  object Person
+  object Team
+  object Context
+  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+
+instance I of S:
+  Person = {Alice}
+  Team = {Ops}
+  Context = {Prod}
+  WorksFor = {(employee=Alice, employer=Ops, ctx=Prod)}
+"#,
+            "schema_name": "S",
+            "fragment": fragment,
+        }))
+        .expect("serialize discover/check-olog request");
+
+        let resp = handle_discover_check_olog(&body)
+            .await
+            .expect("check-olog endpoint should succeed");
+        assert_eq!(
+            resp["version"].as_str(),
+            Some("axiograph_discover_check_olog_v1")
+        );
+        assert_eq!(resp["checked_olog"]["ok"].as_bool(), Some(true));
+        assert_eq!(
+            resp["checked_olog"]["trust"]["trust_class"].as_str(),
+            Some("validated_olog_fragment")
+        );
+        assert_eq!(
+            resp["checked_olog"]["typed_change"]["kind"].as_str(),
+            Some("olog_fragment_delta")
+        );
+        assert!(resp["checked_olog"]["refinement_candidates"].is_null());
+        let primitives = resp["checked_olog"]["typed_change"]["primitives"]
+            .as_array()
+            .expect("typed change primitives should be serialized");
+        assert!(primitives.iter().any(|primitive| {
+            primitive["kind"].as_str() == Some("reify_relation_object")
+                && primitive["relation"].as_str() == Some("WorksFor")
+        }));
+        assert!(primitives.iter().any(|primitive| {
+            primitive["kind"].as_str() == Some("introduce_dependent_relation_family")
+                && primitive["relation"].as_str() == Some("WorksFor")
+        }));
+        assert!(primitives.iter().any(|primitive| {
+            primitive["kind"].as_str() == Some("add_path_equation")
+                && primitive["equation_id"].as_str() == Some("employee_identity")
+        }));
+        assert_eq!(
+            resp["evolution_preview"]["kind"].as_str(),
+            Some("typed_olog_authoring")
+        );
+        assert_eq!(
+            resp["evolution_preview"]["typed_change"]["kind"].as_str(),
+            Some("olog_fragment_delta")
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_discover_check_olog_can_apply_refinement_handle() {
+        let axi_text = r#"
+module Demo
+
+schema S:
+  object Person
+  object Team
+  object Context
+  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+
+theory SRules on S:
+  constraint key WorksFor(employee, employer, ctx)
+
+instance I of S:
+  Person = {Alice}
+  Team = {Ops}
+  Context = {Prod}
+  WorksFor = {(employee=Alice, employer=Ops, ctx=Prod)}
+"#;
+        let fragment = crate::typed_authoring::OlogFragmentV1 {
+            boxes: vec![
+                crate::typed_authoring::OlogBoxV1 {
+                    box_id: "employee".to_string(),
+                    object_type: "Person".to_string(),
+                    label: None,
+                },
+                crate::typed_authoring::OlogBoxV1 {
+                    box_id: "team".to_string(),
+                    object_type: "Team".to_string(),
+                    label: None,
+                },
+                crate::typed_authoring::OlogBoxV1 {
+                    box_id: "ctx".to_string(),
+                    object_type: "Context".to_string(),
+                    label: None,
+                },
+            ],
+            relation_boxes: vec![crate::typed_authoring::OlogRelationBoxV1 {
+                box_id: "works_for_fact".to_string(),
+                relation: "WorksFor".to_string(),
+                role_bindings: vec![
+                    crate::typed_authoring::OlogRoleBindingV1 {
+                        role: "employee".to_string(),
+                        target_box: "employee".to_string(),
+                    },
+                    crate::typed_authoring::OlogRoleBindingV1 {
+                        role: "ctx".to_string(),
+                        target_box: "ctx".to_string(),
+                    },
+                ],
+            }],
+            aspects: Vec::new(),
+            path_equations: Vec::new(),
+        };
+        let checked = crate::typed_authoring::check_olog_fragment_against_axi_text(
+            axi_text,
+            Some("S"),
+            fragment.clone(),
+        );
+        let handle_id = checked
+            .refinement_candidates
+            .first()
+            .map(|candidate| candidate.handle.id.clone())
+            .expect("expected olog refinement handle");
+
+        let body = serde_json::to_vec(&json!({
+            "axi_text": axi_text,
+            "schema_name": "S",
+            "fragment": fragment,
+            "apply_refinement_handle_id": handle_id,
+        }))
+        .expect("serialize discover/check-olog apply request");
+
+        let resp = handle_discover_check_olog(&body)
+            .await
+            .expect("check-olog apply endpoint should succeed");
+        assert_eq!(resp["checked_olog"]["ok"].as_bool(), Some(true));
+        assert_eq!(
+            resp["checked_olog"]["lifecycle_state"].as_str(),
+            Some("runtime_checked_theory_enriched")
+        );
+        assert_eq!(
+            resp["applied_refinement"]["handle"]["id"].as_str(),
+            Some(handle_id.as_str())
+        );
+        let bindings = resp["applied_refinement"]["refined_fragment"]["relation_boxes"][0]
+            ["role_bindings"]
+            .as_array()
+            .expect("refined role bindings");
+        assert!(bindings.iter().any(|binding| {
+            binding["role"].as_str() == Some("employer")
+                && binding["target_box"].as_str() == Some("team")
+        }));
+        assert_eq!(resp["evolution_preview"]["ok"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn handle_semantic_coverage_returns_rule_coverage_report() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory TRules on S:
+  constraint functional Parent.child -> Parent.parent
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(child=Alice, parent=Bob)}
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "surfaces": [{
+                "surface_id": "endpoint:parent_lookup",
+                "kind": "endpoint",
+                "label": "GET /parent",
+                "scopes": [{
+                    "scope_id": "schema/s/relation/parent",
+                    "schema": "S",
+                    "scope_class": "relation",
+                    "relation": "Parent"
+                }],
+                "code_refs": ["src/parent.rs"]
+            }],
+            "edges": [{
+                "surface_id": "endpoint:parent_lookup",
+                "rule_id": "schema/s/relation/parent/rule/functional/0",
+                "status": "tested",
+                "notes": ["covered by endpoint integration test"]
+            }]
+        }))
+        .expect("serialize semantic coverage request");
+
+        let resp = handle_semantic_coverage(&state, &body)
+            .await
+            .expect("semantic coverage endpoint should succeed");
+        assert_eq!(
+            resp["version"].as_str(),
+            Some("axiograph_semantic_coverage_v1")
+        );
+        assert_eq!(
+            resp["coverage"]["version"].as_str(),
+            Some(crate::semantic_claim::SEMANTIC_COVERAGE_REPORT_VERSION_V1)
+        );
+        assert_eq!(resp["coverage"]["total_rules"].as_u64(), Some(1));
+        assert_eq!(resp["coverage"]["tested_rules"].as_u64(), Some(1));
+        assert_eq!(resp["coverage"]["covered_rules"].as_u64(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn handle_semantic_business_rule_returns_applicability_report() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory TRules on S:
+  constraint functional Parent.child -> Parent.parent
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(child=Alice, parent=Bob)}
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "scope": {
+                "scope_id": "schema/s/relation/parent",
+                "schema": "S",
+                "scope_class": "relation",
+                "relation": "Parent"
+            }
+        }))
+        .expect("serialize semantic business-rule request");
+
+        let resp = handle_semantic_business_rule(&state, &body)
+            .await
+            .expect("semantic/business-rule endpoint should succeed");
+        assert_eq!(
+            resp["version"].as_str(),
+            Some("axiograph_semantic_business_rule_v1")
+        );
+        assert_eq!(
+            resp["report"]["version"].as_str(),
+            Some(crate::semantic_claim::BUSINESS_RULE_APPLICABILITY_REPORT_VERSION_V1)
+        );
+        assert_eq!(
+            resp["report"]["scope"]["scope_id"].as_str(),
+            Some("schema/s/relation/parent")
+        );
+        assert_eq!(
+            resp["report"]["trust_class"].as_str(),
+            Some("runtime_enforced")
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_semantic_agent_report_returns_agent_facing_engineering_report() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory TRules on S:
+  constraint functional Parent.child -> Parent.parent
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(child=Alice, parent=Bob)}
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "task": {
+                "task_id": "task:family_endpoint_alignment",
+                "label": "Align family endpoint",
+                "objective": "check whether endpoint and docs match accepted ontology",
+                "languages": ["rust", "typescript"],
+                "artifact_refs": ["src/family.rs", "ui/family.tsx"]
+            },
+            "surfaces": [{
+                "surface_id": "endpoint:family_tree",
+                "kind": "endpoint",
+                "label": "GET /family/tree",
+                "scopes": [{
+                    "scope_id": "schema/s/relation/parent",
+                    "schema": "S",
+                    "scope_class": "relation",
+                    "relation": "Parent"
+                }],
+                "code_refs": ["src/family.rs"]
+            }],
+            "edges": [{
+                "surface_id": "endpoint:family_tree",
+                "rule_id": "schema/s/relation/parent/rule/functional/0",
+                "status": "implemented",
+                "notes": ["checked in endpoint handler"]
+            }]
+        }))
+        .expect("serialize semantic agent report request");
+
+        let resp = handle_semantic_agent_report(&state, &body)
+            .await
+            .expect("semantic/agent-report endpoint should succeed");
+        assert_eq!(
+            resp["version"].as_str(),
+            Some("axiograph_semantic_agent_report_v1")
+        );
+        assert_eq!(
+            resp["report"]["version"].as_str(),
+            Some(crate::semantic_claim::AGENT_ENGINEERING_REPORT_VERSION_V1)
+        );
+        assert_eq!(
+            resp["report"]["task"]["task_id"].as_str(),
+            Some("task:family_endpoint_alignment")
+        );
+        assert_eq!(
+            resp["report"]["trust_class"].as_str(),
+            Some("runtime_enforced")
+        );
+        assert_eq!(
+            resp["report"]["coverage"]["implemented_rules"].as_u64(),
+            Some(1)
+        );
+        assert!(resp["report"]["matched_rule_ids"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
     }
 }

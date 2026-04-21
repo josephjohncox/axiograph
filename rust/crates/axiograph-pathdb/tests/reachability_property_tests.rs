@@ -41,7 +41,6 @@ fn reachability_proof_v2_strategy(
                     rel_type,
                     to,
                     rel_confidence_fp,
-                    relation_id: None,
                     rest: Box::new(proof),
                 };
             }

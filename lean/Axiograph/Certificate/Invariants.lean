@@ -18,7 +18,7 @@ Scope (today)
 
 We focus on the core witness kinds that appear in end-to-end flows:
 
-* reachability witnesses (`reachability_v2`, optionally anchored to `PathDBExportV1`)
+* reachability witnesses (`reachability_v2`, unanchored internal structure)
 * normalization / rewrite witnesses (`normalize_path_v2`, `rewrite_derivation_v2`)
 * reconciliation decisions (`resolution_v2`)
 
@@ -65,7 +65,7 @@ theorem verifyReachabilityProofV2_ok_matches_computations
       cases h
       simp [ReachabilityProofV2.start, ReachabilityProofV2.end_, ReachabilityProofV2.pathLen,
         ReachabilityProofV2.confidence]
-  | step src relType dst relConfidence relationId? rest ih =>
+  | step src relType dst relConfidence rest ih =>
       intro h
       cases hRest : verifyReachabilityProofV2 rest with
       | error msg =>
@@ -83,184 +83,6 @@ theorem verifyReachabilityProofV2_ok_matches_computations
               · simpa [ReachabilityProofV2.end_] using hEnd
               · simpa [ReachabilityProofV2.pathLen] using hLen
               · simpa [ReachabilityProofV2.confidence] using congrArg (fun p => Prob.vMult relConfidence p) hConf
-
-/-!
-## Anchored structure invariants
-
-`verifyReachabilityProofV2Anchored` additionally requires each witness step to:
-
-* reference a real `relation_id` in a `PathDBExportV1` snapshot (via
-  `relation_info`), and
-* match the snapshot’s edge metadata (endpoints, rel-type, and confidence).
-
-We record this as an inductive predicate describing a “snapshot-anchored”
-reachability chain.
--/
-
-open Axiograph.Axi.PathDBExportV1
-
-inductive AnchoredReachabilityChain
-    (relationInfo : Std.HashMap Nat RelationInfoRow) :
-    ReachabilityProofV2 → Prop
-  | reflexive (entity : Nat) :
-      AnchoredReachabilityChain relationInfo (.reflexive entity)
-  | step
-      (src relType dst : Nat)
-      (relConfidence : Prob.VProb)
-      (relationId : Nat)
-      (row : RelationInfoRow)
-      (rest : ReachabilityProofV2)
-      (hGet : relationInfo.get? relationId = some row)
-      (hRelType : row.relTypeId = relType)
-      (hSource : row.source = src)
-      (hTarget : row.target = dst)
-      (hConfidence : Prob.toNat row.confidence = Prob.toNat relConfidence)
-      (hChain : rest.start = dst)
-      (hRest : AnchoredReachabilityChain relationInfo rest) :
-      AnchoredReachabilityChain relationInfo (.step src relType dst relConfidence (some relationId) rest)
-
-theorem verifyReachabilityProofV2Anchored_ok_matches_computations
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (proof : ReachabilityProofV2)
-    (result : ReachabilityResultV2) :
-    verifyReachabilityProofV2Anchored relationInfo proof = .ok result →
-      result.start = proof.start ∧
-      result.end_ = proof.end_ ∧
-      result.pathLen = proof.pathLen ∧
-      result.confidence = proof.confidence := by
-  induction proof generalizing result with
-  | reflexive entity =>
-      intro h
-      simp [verifyReachabilityProofV2Anchored] at h
-      cases h
-      simp [ReachabilityProofV2.start, ReachabilityProofV2.end_, ReachabilityProofV2.pathLen,
-        ReachabilityProofV2.confidence]
-  | step src relType dst relConfidence relationId? rest ih =>
-      intro h
-      cases relationId? with
-      | none =>
-          simp [verifyReachabilityProofV2Anchored] at h
-      | some relationId =>
-          cases hRow : relationInfo[relationId]? with
-          | none =>
-              simp [verifyReachabilityProofV2Anchored, hRow] at h
-          | some row =>
-              cases hEndpoints : (row.source != src || row.target != dst) with
-              | true =>
-                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints] at h
-              | false =>
-                  cases hRelType : (row.relTypeId != relType) with
-                  | true =>
-                      simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType] at h
-                  | false =>
-                      cases hConfidence : (Prob.toNat row.confidence != Prob.toNat relConfidence) with
-                      | true =>
-                          simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence] at h
-                      | false =>
-                          cases hRest : verifyReachabilityProofV2Anchored relationInfo rest with
-                          | error msg =>
-                              simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest] at h
-                          | ok restRes =>
-                              have hRestInv := ih restRes hRest
-                              cases hChain : (restRes.start != dst) with
-                              | true =>
-                                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest, hChain] at h
-                              | false =>
-                                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest,
-                                    hChain] at h
-                                  cases h
-                                  rcases hRestInv with ⟨_hStart, hEnd, hLen, hConf⟩
-                                  refine ⟨rfl, ?_, ?_, ?_⟩
-                                  · simpa [ReachabilityProofV2.end_] using hEnd
-                                  · simpa [ReachabilityProofV2.pathLen] using hLen
-                                  · simpa [ReachabilityProofV2.confidence] using congrArg (fun p => Prob.vMult relConfidence p) hConf
-
-theorem verifyReachabilityProofV2Anchored_ok_implies_anchored_chain
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (proof : ReachabilityProofV2)
-    (result : ReachabilityResultV2) :
-    verifyReachabilityProofV2Anchored relationInfo proof = .ok result →
-      AnchoredReachabilityChain relationInfo proof := by
-  induction proof generalizing result with
-  | reflexive entity =>
-      intro h
-      simp [verifyReachabilityProofV2Anchored] at h
-      exact AnchoredReachabilityChain.reflexive (relationInfo := relationInfo) entity
-  | step src relType dst relConfidence relationId? rest ih =>
-      intro h
-      cases relationId? with
-      | none =>
-          simp [verifyReachabilityProofV2Anchored] at h
-      | some relationId =>
-          cases hRow : relationInfo[relationId]? with
-          | none =>
-              simp [verifyReachabilityProofV2Anchored, hRow] at h
-          | some row =>
-              cases hEndpoints : (row.source != src || row.target != dst) with
-              | true =>
-                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints] at h
-              | false =>
-                  cases hRelType : (row.relTypeId != relType) with
-                  | true =>
-                      simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType] at h
-                  | false =>
-                      cases hConfidence : (Prob.toNat row.confidence != Prob.toNat relConfidence) with
-                      | true =>
-                          simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence] at h
-                      | false =>
-                          cases hRest : verifyReachabilityProofV2Anchored relationInfo rest with
-                          | error msg =>
-                              simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest] at h
-                          | ok restRes =>
-                              cases hChain : (restRes.start != dst) with
-                              | true =>
-                                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest,
-                                    hChain] at h
-                              | false =>
-                                  simp [verifyReachabilityProofV2Anchored, hRow, hEndpoints, hRelType, hConfidence, hRest,
-                                    hChain] at h
-                                  have hRestChain : AnchoredReachabilityChain relationInfo rest :=
-                                    ih restRes hRest
-
-                                  -- Convert the checker’s boolean guards into equalities.
-                                  have hEndpoints' :
-                                      (row.source != src) = false ∧ (row.target != dst) = false := by
-                                    exact (Bool.or_eq_false_iff).1 hEndpoints
-                                  have hSource : row.source = src :=
-                                    (bne_eq_false_iff_eq).1 hEndpoints'.left
-                                  have hTarget : row.target = dst :=
-                                    (bne_eq_false_iff_eq).1 hEndpoints'.right
-                                  have hRelTypeEq : row.relTypeId = relType :=
-                                    (bne_eq_false_iff_eq).1 hRelType
-                                  have hConfidenceEq : Prob.toNat row.confidence = Prob.toNat relConfidence :=
-                                    (bne_eq_false_iff_eq).1 hConfidence
-
-                                  -- Recover the witness-level chaining invariant `rest.start = dst`.
-                                  have hRestSummary :=
-                                    verifyReachabilityProofV2Anchored_ok_matches_computations
-                                      relationInfo rest restRes hRest
-                                  have hRestResStartEq : restRes.start = rest.start := hRestSummary.left
-                                  have hRestResStartDst : restRes.start = dst :=
-                                    (bne_eq_false_iff_eq).1 hChain
-                                  have hChainEq : rest.start = dst := by
-                                    exact hRestResStartEq.symm.trans hRestResStartDst
-
-                                  exact AnchoredReachabilityChain.step
-                                    (relationInfo := relationInfo)
-                                    (src := src)
-                                    (relType := relType)
-                                    (dst := dst)
-                                    (relConfidence := relConfidence)
-                                    (relationId := relationId)
-                                    (row := row)
-                                    (rest := rest)
-                                    (hGet := hRow)
-                                    (hRelType := hRelTypeEq)
-                                    (hSource := hSource)
-                                    (hTarget := hTarget)
-                                    (hConfidence := hConfidenceEq)
-                                    (hChain := hChainEq)
-                                    (hRest := hRestChain)
 
 end ReachabilityInvariants
 

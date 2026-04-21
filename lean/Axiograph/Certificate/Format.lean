@@ -76,12 +76,6 @@ partial def parseReachabilityProof (j : Json) : Except String ReachabilityProof 
 /-!
 `ReachabilityProofV2` is a versioned variant that replaces `Float` confidences
 with fixed-point verified probabilities (`Prob.VProb`).
-
-It additionally supports an optional `relationId?` field on each step so query
-certificates can be anchored to canonical `.axi` snapshots:
-
-* for `PathDBExportV1`, `relationId? = some n` refers to the snapshot fact
-  `Relation_<n>` in the `relation_info` table.
 -/
 inductive ReachabilityProofV2 where
   | reflexive (entity : Nat)
@@ -90,7 +84,6 @@ inductive ReachabilityProofV2 where
       (relType : Nat)
       (dst : Nat)
       (relConfidence : Prob.VProb)
-      (relationId? : Option Nat)
       (rest : ReachabilityProofV2)
   deriving Repr
 
@@ -100,15 +93,15 @@ def ReachabilityProofV2.start : ReachabilityProofV2 → Nat
 
 def ReachabilityProofV2.end_ : ReachabilityProofV2 → Nat
   | .reflexive entity => entity
-  | .step _ _ _ _ _ rest => rest.end_
+  | .step _ _ _ _ rest => rest.end_
 
 def ReachabilityProofV2.pathLen : ReachabilityProofV2 → Nat
   | .reflexive _ => 0
-  | .step _ _ _ _ _ rest => rest.pathLen + 1
+  | .step _ _ _ _ rest => rest.pathLen + 1
 
 def ReachabilityProofV2.confidence : ReachabilityProofV2 → Prob.VProb
   | .reflexive _ => Prob.vOne
-  | .step _ _ _ relConfidence _ rest => Prob.vMult relConfidence rest.confidence
+  | .step _ _ _ relConfidence rest => Prob.vMult relConfidence rest.confidence
 
 partial def parseReachabilityProofV2 (j : Json) : Except String ReachabilityProofV2 := do
   let ty ← (← j.getObjVal? "type").getStr?
@@ -121,12 +114,8 @@ partial def parseReachabilityProofV2 (j : Json) : Except String ReachabilityProo
       let relType ← (← j.getObjVal? "rel_type").getNat?
       let dst ← (← j.getObjVal? "to").getNat?
       let relConfidence ← FixedPointProbability.parseVProb (← j.getObjVal? "rel_confidence_fp")
-      let relationId? : Option Nat ←
-        match (j.getObjVal? "relation_id").toOption with
-        | none => pure none
-        | some ridJson => pure (some (← ridJson.getNat?))
       let rest ← parseReachabilityProofV2 (← j.getObjVal? "rest")
-      pure (.step src relType dst relConfidence relationId? rest)
+      pure (.step src relType dst relConfidence rest)
   | other =>
       throw s!"unknown reachability proof type: {other}"
 
@@ -655,290 +644,9 @@ def parseDeltaFMigrationProofV1 (j : Json) : Except String DeltaFMigrationProofV
 end Migration
 
 /-!
-## Query result certificates (conjunctive queries)
-
-To support “Rust computes, Lean verifies” for *queries* (AxQL / SQL-ish), we
-introduce a small **core query IR** intended for certificates.
-
-Key idea:
-
-* a query is a conjunction of atoms (type, attribute, and path constraints),
-* a certificate provides, for each returned row, witnesses that each atom holds,
-  anchored to a canonical `.axi` snapshot (via `relation_id` fact ids).
-
-This is the “datalog-ish / conjunctive query” kernel that other surfaces compile
-into.
--/
-
-inductive QueryTermV1 where
-  | var (name : String)
-  | const (entity : Nat)
-  deriving Repr
-
-inductive QueryRegexV1 where
-  | epsilon
-  | rel (relTypeId : Nat)
-  | seq (parts : Array QueryRegexV1)
-  | alt (parts : Array QueryRegexV1)
-  | star (inner : QueryRegexV1)
-  | plus (inner : QueryRegexV1)
-  | opt (inner : QueryRegexV1)
-  deriving Repr
-
-inductive QueryAtomV1 where
-  | type (term : QueryTermV1) (typeId : Nat)
-  | attrEq (term : QueryTermV1) (keyId : Nat) (valueId : Nat)
-  | path (left : QueryTermV1) (regex : QueryRegexV1) (right : QueryTermV1)
-  deriving Repr
-
-structure QueryV1 where
-  selectVars : Array String
-  atoms : Array QueryAtomV1
-  maxHops? : Option Nat
-  minConfidence? : Option Prob.VProb
-  deriving Repr
-
-structure QueryBindingV1 where
-  var : String
-  entity : Nat
-  deriving Repr
-
-inductive QueryAtomWitnessV1 where
-  | type (entity : Nat) (typeId : Nat)
-  | attrEq (entity : Nat) (keyId : Nat) (valueId : Nat)
-  | path (proof : ReachabilityProofV2)
-  deriving Repr
-
-structure QueryRowV1 where
-  bindings : Array QueryBindingV1
-  witnesses : Array QueryAtomWitnessV1
-  deriving Repr
-
-structure QueryResultProofV1 where
-  query : QueryV1
-  rows : Array QueryRowV1
-  truncated : Bool
-  deriving Repr
-
-partial def parseQueryTermV1 (j : Json) : Except String QueryTermV1 := do
-  let ty ← (← j.getObjVal? "type").getStr?
-  match ty with
-  | "var" =>
-      let name ← (← j.getObjVal? "name").getStr?
-      pure (.var name)
-  | "const" =>
-      let entity ← (← j.getObjVal? "entity").getNat?
-      pure (.const entity)
-  | other =>
-      throw s!"unknown query term type: {other}"
-
-partial def parseQueryRegexV1 (j : Json) : Except String QueryRegexV1 := do
-  let ty ← (← j.getObjVal? "type").getStr?
-  match ty with
-  | "epsilon" => pure .epsilon
-  | "rel" =>
-      let relTypeId ← (← j.getObjVal? "rel_type_id").getNat?
-      pure (.rel relTypeId)
-  | "seq" =>
-      let partsJson ← (← j.getObjVal? "parts").getArr?
-      let mut parts : Array QueryRegexV1 := #[]
-      for p in partsJson do
-        parts := parts.push (← parseQueryRegexV1 p)
-      pure (.seq parts)
-  | "alt" =>
-      let partsJson ← (← j.getObjVal? "parts").getArr?
-      let mut parts : Array QueryRegexV1 := #[]
-      for p in partsJson do
-        parts := parts.push (← parseQueryRegexV1 p)
-      pure (.alt parts)
-  | "star" =>
-      let inner ← parseQueryRegexV1 (← j.getObjVal? "inner")
-      pure (.star inner)
-  | "plus" =>
-      let inner ← parseQueryRegexV1 (← j.getObjVal? "inner")
-      pure (.plus inner)
-  | "opt" =>
-      let inner ← parseQueryRegexV1 (← j.getObjVal? "inner")
-      pure (.opt inner)
-  | other =>
-      throw s!"unknown query regex type: {other}"
-
-partial def parseQueryAtomV1 (j : Json) : Except String QueryAtomV1 := do
-  let ty ← (← j.getObjVal? "type").getStr?
-  match ty with
-  | "type" =>
-      let term ← parseQueryTermV1 (← j.getObjVal? "term")
-      let typeId ← (← j.getObjVal? "type_id").getNat?
-      pure (.type term typeId)
-  | "attr_eq" =>
-      let term ← parseQueryTermV1 (← j.getObjVal? "term")
-      let keyId ← (← j.getObjVal? "key_id").getNat?
-      let valueId ← (← j.getObjVal? "value_id").getNat?
-      pure (.attrEq term keyId valueId)
-  | "path" =>
-      let left ← parseQueryTermV1 (← j.getObjVal? "left")
-      let regex ← parseQueryRegexV1 (← j.getObjVal? "regex")
-      let right ← parseQueryTermV1 (← j.getObjVal? "right")
-      pure (.path left regex right)
-  | other =>
-      throw s!"unknown query atom type: {other}"
-
-partial def parseQueryV1 (j : Json) : Except String QueryV1 := do
-  let selectVarsJson ← (← j.getObjVal? "select_vars").getArr?
-  let mut selectVars : Array String := #[]
-  for v in selectVarsJson do
-    selectVars := selectVars.push (← v.getStr?)
-
-  let atomsJson ← (← j.getObjVal? "atoms").getArr?
-  let mut atoms : Array QueryAtomV1 := #[]
-  for a in atomsJson do
-    atoms := atoms.push (← parseQueryAtomV1 a)
-
-  let maxHops? : Option Nat ←
-    match (j.getObjVal? "max_hops").toOption with
-    | none => pure none
-    | some mh => pure (some (← mh.getNat?))
-
-  let minConfidence? : Option Prob.VProb ←
-    match (j.getObjVal? "min_confidence_fp").toOption with
-    | none => pure none
-    | some mc => pure (some (← FixedPointProbability.parseVProb mc))
-
-  pure { selectVars, atoms, maxHops?, minConfidence? }
-
-partial def parseQueryBindingV1 (j : Json) : Except String QueryBindingV1 := do
-  let var ← (← j.getObjVal? "var").getStr?
-  let entity ← (← j.getObjVal? "entity").getNat?
-  pure { var, entity }
-
-partial def parseQueryAtomWitnessV1 (j : Json) : Except String QueryAtomWitnessV1 := do
-  let ty ← (← j.getObjVal? "type").getStr?
-  match ty with
-  | "type" =>
-      let entity ← (← j.getObjVal? "entity").getNat?
-      let typeId ← (← j.getObjVal? "type_id").getNat?
-      pure (.type entity typeId)
-  | "attr_eq" =>
-      let entity ← (← j.getObjVal? "entity").getNat?
-      let keyId ← (← j.getObjVal? "key_id").getNat?
-      let valueId ← (← j.getObjVal? "value_id").getNat?
-      pure (.attrEq entity keyId valueId)
-  | "path" =>
-      let proof ← parseReachabilityProofV2 (← j.getObjVal? "proof")
-      pure (.path proof)
-  | other =>
-      throw s!"unknown query witness type: {other}"
-
-partial def parseQueryRowV1 (j : Json) : Except String QueryRowV1 := do
-  let bindingsJson ← (← j.getObjVal? "bindings").getArr?
-  let mut bindings : Array QueryBindingV1 := #[]
-  for b in bindingsJson do
-    bindings := bindings.push (← parseQueryBindingV1 b)
-
-  let witnessesJson ← (← j.getObjVal? "witnesses").getArr?
-  let mut witnesses : Array QueryAtomWitnessV1 := #[]
-  for w in witnessesJson do
-    witnesses := witnesses.push (← parseQueryAtomWitnessV1 w)
-
-  pure { bindings, witnesses }
-
-partial def parseQueryResultProofV1 (j : Json) : Except String QueryResultProofV1 := do
-  let query ← parseQueryV1 (← j.getObjVal? "query")
-
-  let rowsJson ← (← j.getObjVal? "rows").getArr?
-  let mut rows : Array QueryRowV1 := #[]
-  for r in rowsJson do
-    rows := rows.push (← parseQueryRowV1 r)
-
-  let truncated : Bool ← fromJson? (← j.getObjVal? "truncated")
-  pure { query, rows, truncated }
-
-/-!
-### Disjunction: unions of conjunctive queries (UCQs)
-
-The certified query kernel starts with conjunctive queries (CQs). The next
-expressive step is **top-level disjunction**: a query is an OR of conjunctive
-branches, and each returned row includes the chosen branch + witnesses.
--/
-
-structure QueryV2 where
-  selectVars : Array String
-  /-- Disjuncts (OR-branches), each a conjunction of atoms. -/
-  disjuncts : Array (Array QueryAtomV1)
-  maxHops? : Option Nat
-  minConfidence? : Option Prob.VProb
-  deriving Repr
-
-structure QueryRowV2 where
-  /-- Index into `query.disjuncts`. -/
-  disjunct : Nat
-  bindings : Array QueryBindingV1
-  witnesses : Array QueryAtomWitnessV1
-  deriving Repr
-
-structure QueryResultProofV2 where
-  query : QueryV2
-  rows : Array QueryRowV2
-  truncated : Bool
-  deriving Repr
-
-partial def parseQueryV2 (j : Json) : Except String QueryV2 := do
-  let selectVarsJson ← (← j.getObjVal? "select_vars").getArr?
-  let mut selectVars : Array String := #[]
-  for v in selectVarsJson do
-    selectVars := selectVars.push (← v.getStr?)
-
-  let disjunctsJson ← (← j.getObjVal? "disjuncts").getArr?
-  let mut disjuncts : Array (Array QueryAtomV1) := #[]
-  for d in disjunctsJson do
-    let atomsJson ← d.getArr?
-    let mut atoms : Array QueryAtomV1 := #[]
-    for a in atomsJson do
-      atoms := atoms.push (← parseQueryAtomV1 a)
-    disjuncts := disjuncts.push atoms
-
-  let maxHops? : Option Nat ←
-    match (j.getObjVal? "max_hops").toOption with
-    | none => pure none
-    | some mh => pure (some (← mh.getNat?))
-
-  let minConfidence? : Option Prob.VProb ←
-    match (j.getObjVal? "min_confidence_fp").toOption with
-    | none => pure none
-    | some mc => pure (some (← FixedPointProbability.parseVProb mc))
-
-  pure { selectVars, disjuncts, maxHops?, minConfidence? }
-
-partial def parseQueryRowV2 (j : Json) : Except String QueryRowV2 := do
-  let disjunct ← (← j.getObjVal? "disjunct").getNat?
-
-  let bindingsJson ← (← j.getObjVal? "bindings").getArr?
-  let mut bindings : Array QueryBindingV1 := #[]
-  for b in bindingsJson do
-    bindings := bindings.push (← parseQueryBindingV1 b)
-
-  let witnessesJson ← (← j.getObjVal? "witnesses").getArr?
-  let mut witnesses : Array QueryAtomWitnessV1 := #[]
-  for w in witnessesJson do
-    witnesses := witnesses.push (← parseQueryAtomWitnessV1 w)
-
-  pure { disjunct, bindings, witnesses }
-
-partial def parseQueryResultProofV2 (j : Json) : Except String QueryResultProofV2 := do
-  let query ← parseQueryV2 (← j.getObjVal? "query")
-
-  let rowsJson ← (← j.getObjVal? "rows").getArr?
-  let mut rows : Array QueryRowV2 := #[]
-  for r in rowsJson do
-    rows := rows.push (← parseQueryRowV2 r)
-
-  let truncated : Bool ← fromJson? (← j.getObjVal? "truncated")
-  pure { query, rows, truncated }
-
-/-!
 ### v3: name-based, `.axi`-anchored query certificates
 
-`query_result_v3` is the `.axi`-anchored successor to `query_result_v2`.
+`query_result_v3` is the supported query certificate family.
 
 Key differences:
 
@@ -1254,11 +962,10 @@ partial def parseAxiConstraintsOkProofV1 (j : Json) : Except String AxiConstrain
 inductive Certificate where
   | reachabilityV1 (proof : ReachabilityProof)
   | reachabilityV2 (proof : ReachabilityProofV2)
+  | reachabilityV3 (proof : ReachabilityProofV3)
   | resolutionV2 (proof : ResolutionProofV2)
   | axiWellTypedV1 (proof : AxiWellTypedProofV1)
   | axiConstraintsOkV1 (proof : AxiConstraintsOkProofV1)
-  | queryResultV1 (proof : QueryResultProofV1)
-  | queryResultV2 (proof : QueryResultProofV2)
   | queryResultV3 (proof : QueryResultProofV3)
   | normalizePathV2 (proof : NormalizePathProofV2)
   | rewriteDerivationV2 (proof : RewriteDerivationProofV2)
@@ -1310,6 +1017,11 @@ def parseCertificate (j : Json) : Except String Certificate := do
         throw s!"unsupported reachability_v2 certificate version: {version}"
       let proof ← parseReachabilityProofV2 (← j.getObjVal? "proof")
       pure (.reachabilityV2 proof)
+  | "reachability_v3" =>
+      if version != 2 then
+        throw s!"unsupported reachability_v3 certificate version: {version}"
+      let proof ← parseReachabilityProofV3 (← j.getObjVal? "proof")
+      pure (.reachabilityV3 proof)
   | "resolution_v2" =>
       if version != 2 then
         throw s!"unsupported resolution_v2 certificate version: {version}"
@@ -1325,16 +1037,6 @@ def parseCertificate (j : Json) : Except String Certificate := do
         throw s!"unsupported axi_constraints_ok_v1 certificate version: {version}"
       let proof ← parseAxiConstraintsOkProofV1 (← j.getObjVal? "proof")
       pure (.axiConstraintsOkV1 proof)
-  | "query_result_v1" =>
-      if version != 2 then
-        throw s!"unsupported query_result_v1 certificate version: {version}"
-      let proof ← parseQueryResultProofV1 (← j.getObjVal? "proof")
-      pure (.queryResultV1 proof)
-  | "query_result_v2" =>
-      if version != 2 then
-        throw s!"unsupported query_result_v2 certificate version: {version}"
-      let proof ← parseQueryResultProofV2 (← j.getObjVal? "proof")
-      pure (.queryResultV2 proof)
   | "query_result_v3" =>
       if version != 2 then
         throw s!"unsupported query_result_v3 certificate version: {version}"

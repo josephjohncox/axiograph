@@ -123,10 +123,10 @@ Detailed schema + running instructions live in:
 Today we support:
 - **v1 reachability**: float confidences (transition-only).
 - **v2 reachability**: fixed-point confidences (trusted representation).
-- **v2 reachability (anchored)**: optional `.axi` anchor + `relation_id` fact IDs checked against `PathDBExportV1` (endpoints, rel-type, confidence).
+- **v2 reachability_v3 (anchored)**: canonical `.axi`-anchored reachability with stable `axi_fact_id` references (preferred path).
 - **v2 axi_well_typed_v1 (anchored)**: canonical `.axi` module well-typedness gate (small decision procedure; Lean re-checks the parsed AST).
 - **v2 axi_constraints_ok_v1 (anchored)**: core theory-constraint gate (keys/functionals/at_most; Lean re-checks against the parsed AST).
-- **v2 query_result_v1 (anchored)**: conjunctive query results (AxQL / SQL-ish), with per-atom witnesses checked against `PathDBExportV1`.
+- **typed query witness / `query_result_v3` (anchored)**: canonical `.axi`-anchored query results (preferred path).
 - **v2 resolution**: fixed-point reconciliation decision (Lean recomputes `decideResolution`).
 - **v2 normalize_path**: free-groupoid path normalization (Lean recomputes normalization) and
   optional explicit rewrite derivations (Lean replays rule+position steps).
@@ -191,9 +191,7 @@ Rust → Lean end-to-end checks:
 - v2: `make verify-lean-e2e-v2`
 - axi well-typed gate: `make verify-lean-e2e-axi-well-typed-v1`
 - axi constraints gate: `make verify-lean-e2e-axi-constraints-ok-v1`
-- query results (anchored): `make verify-lean-e2e-query-result-v1`
-- query results (anchored, disjunction): `make verify-lean-e2e-query-result-v2`
-- query results (from canonical module): `make verify-lean-e2e-query-result-module-v3`
+- query results (canonical `.axi`-anchored typed witness): `make verify-lean-e2e-query-result-module-v3`
 - v2 resolution: `make verify-lean-e2e-resolution-v2`
 - v2 normalize_path: `make verify-lean-e2e-normalize-path-v2`
 - v3 rewrite_derivation (axi rules): `make verify-lean-e2e-rewrite-derivation-v3`

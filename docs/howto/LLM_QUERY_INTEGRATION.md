@@ -8,11 +8,22 @@ This document describes how LLMs can query Axiograph with rich semantic understa
 Note: This doc mixes **conceptual** representations with what the code actually
 parses today.
 
-**Today**, the REPL supports two structured LLM integration modes:
+**Today**, the REPL supports structured LLM/agent integration through typed
+plugin, API, and tool-loop surfaces. "LLM-assisted" here should be read as
+typed `query_ir_v1` generation, `axql_explore` / `axql_elaborate` / `axql_run`
+tool calls, and evidence-plane proposal workflows, not free-form semantic
+authority.
 
-- **Query mode**: the LLM proposes a structured query (`query_ir_v1` preferred; AxQL fallback).
+The REPL supports two structured integration modes:
+
+- **Query mode**: the LLM proposes a structured `query_ir_v1` query.
 - **Tool-loop mode** (`llm agent ...`, recommended): the LLM calls tools like `fts_chunks` and `axql_run`;
   Rust executes them against the snapshot; the LLM produces a grounded answer.
+- **Typed semantic service mode** (DB/API surfaces): agents call typed runtime
+  services such as query elaboration/exploration, typed olog checks, semantic
+  coverage, and agent-facing engineering reports. This is the intended path for
+  MCP/skill/API integrations where the model should consume typed semantic
+  objects rather than scrape prose.
 
 See:
 
@@ -372,7 +383,7 @@ The LLM never hallucinates structure—it can only query what exists in the type
 The `axiograph` REPL can run:
 
 - **Deterministic NL templates**: `ask …` → AxQL
-- **LLM-assisted single-shot query generation**: `llm query …` → `query_ir_v1` (preferred) or AxQL (fallback)
+- **LLM-assisted single-shot query generation**: `llm query …` → `query_ir_v1`
 - **LLM-assisted tool loop (RAG-like, multi-step)**: `llm ask …` / `llm answer …` (calls tools, elaborates/runs queries, proposes overlays)
 
 The LLM layer is intentionally “untrusted”: it produces candidate queries; the

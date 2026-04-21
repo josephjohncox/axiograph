@@ -22,15 +22,12 @@
 	verify-pathdb-export-axi-v1 \
 	verify-verus \
 	verify-lean-resolution-v2 verify-lean-normalize-path-v2 verify-lean-path-equiv-v2 verify-lean-delta-f-v1 \
-	verify-lean-e2e-v2-anchored \
 	verify-lean-e2e-axi-well-typed-v1 \
 	verify-lean-e2e-axi-constraints-ok-v1 \
-	verify-lean-e2e-query-result-v1 \
-	verify-lean-e2e-query-result-v2 \
 	verify-lean-e2e-query-result-module-v3 \
 	verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1 \
 	verify-lean-certificates verify-lean-e2e-suite \
-	rust-test-semantics verify-semantics test-semantics \
+	rust-test-semantics verify-semantics test-semantics test-backend-containers \
 	viz-install viz-build viz-dev \
 	demo test clean install help
 
@@ -178,7 +175,7 @@ verify-lean: lean
 verify-lean-cert: lean-exe
 	@echo "━━━ Running Lean checker executable (custom cert) ━━━"
 	@if [ -z "$(CERT)" ]; then \
-		echo "error: set CERT=/path/to/certificate.json (and optional AXI=/path/to/anchor.axi)"; \
+		echo "error: set CERT=/path/to/certificate.json (and optional AXI=/path/to/module.axi)"; \
 		exit 2; \
 	fi
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
@@ -309,48 +306,15 @@ verify-lean-e2e-v2: dirs
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
 
-verify-lean-e2e-v2-anchored: dirs
-	@echo "━━━ Rust → Lean certificate check (v2 anchored to .axi) ━━━"
-	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_reachability_cert_v2_anchored -- ../$(BUILD_DIR)/reachability_anchor_v1.axi > ../$(BUILD_DIR)/reachability_from_rust_v2_anchored.json ) && \
-			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_anchor_v1.axi ../$(BUILD_DIR)/reachability_from_rust_v2_anchored.json ) && \
-		echo "✓ Rust → Lean certificate verified (v2 anchored)"; \
-	else \
-		echo "⚠️  lake (Lean) not found - cannot run checker"; \
-	fi
-
-verify-lean-e2e-query-result-v1: dirs
-	@echo "━━━ Rust → Lean certificate check (query_result_v1 anchored) ━━━"
-	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/anchors/pathdb_export_anchor_v1.axi --lang axql 'select ?y where 0 -r1/r2-> ?y' > ../$(BUILD_DIR)/query_result_from_rust_v1.json ) && \
-			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/pathdb_export_anchor_v1.axi ../$(BUILD_DIR)/query_result_from_rust_v1.json ) && \
-		echo "✓ Rust → Lean certificate verified (query_result_v1)"; \
-	else \
-		echo "⚠️  lake (Lean) not found - cannot run checker"; \
-	fi
-
-verify-lean-e2e-query-result-v2: dirs
-	@echo "━━━ Rust → Lean certificate check (query_result_v2 / disjunction anchored) ━━━"
-	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/anchors/pathdb_export_anchor_v1.axi --lang axql 'select ?y where 0 -r1-> ?y or 0 -r1/r2-> ?y' > ../$(BUILD_DIR)/query_result_from_rust_v2.json ) && \
-			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/pathdb_export_anchor_v1.axi ../$(BUILD_DIR)/query_result_from_rust_v2.json ) && \
-		echo "✓ Rust → Lean certificate verified (query_result_v2)"; \
-	else \
-		echo "⚠️  lake (Lean) not found - cannot run checker"; \
-	fi
-
 verify-lean-e2e-query-result-module-v3: dirs
 	@echo "━━━ Rust → Lean certificate check (query_result_v3 anchored to canonical .axi) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/manufacturing/SupplyChainHoTT.axi --lang axql 'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' --anchor-out ../$(BUILD_DIR)/supply_chain_hott_anchor_export_v1.axi > ../$(BUILD_DIR)/query_result_from_module_v3.json ) && \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-cli -- cert query ../examples/manufacturing/SupplyChainHoTT.axi --lang axql 'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' > ../$(BUILD_DIR)/query_result_from_module_v3.json ) && \
 			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/manufacturing/SupplyChainHoTT.axi ../$(BUILD_DIR)/query_result_from_module_v3.json ) && \
 		echo "✓ Rust → Lean certificate verified (query_result_v3 from module)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
-
-# Back-compat alias (the cert is now `.axi`-anchored, so it's v3).
-verify-lean-e2e-query-result-module-v1: verify-lean-e2e-query-result-module-v3
 
 verify-lean-e2e-axi-well-typed-v1: dirs
 	@echo "━━━ Rust → Lean certificate check (axi_well_typed_v1) ━━━"
@@ -442,7 +406,7 @@ verify-lean-e2e-delta-f-v1: dirs
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
 
-verify-lean-e2e-suite: verify-lean-e2e verify-lean-e2e-v2 verify-lean-e2e-v2-anchored verify-lean-e2e-axi-well-typed-v1 verify-lean-e2e-axi-constraints-ok-v1 verify-lean-e2e-query-result-v1 verify-lean-e2e-query-result-v2 verify-lean-e2e-query-result-module-v3 verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-rewrite-derivation-v3 verify-lean-e2e-ontology-rewrites-v3 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1
+verify-lean-e2e-suite: verify-lean-e2e verify-lean-e2e-v2 verify-lean-e2e-axi-well-typed-v1 verify-lean-e2e-axi-constraints-ok-v1 verify-lean-e2e-query-result-module-v3 verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-rewrite-derivation-v3 verify-lean-e2e-ontology-rewrites-v3 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1
 
 # ============================================================================
 # Binaries
@@ -495,6 +459,10 @@ test-e2e: all
 test-property:
 	@echo "━━━ Running Property Tests ━━━"
 	cd $(RUST_DIR) && $(CARGO) test --release -p axiograph-llm-sync --test property_tests
+
+test-backend-containers:
+	@echo "━━━ Running backend container smoke tests (TypeDB + TerminusDB) ━━━"
+	cd $(RUST_DIR) && AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1 $(CARGO) test --test backend_container_tests -- --ignored --nocapture
 
 # ============================================================================
 # Formal Verification (Verus, optional)
@@ -569,6 +537,7 @@ help:
 	@echo "  demo-quick   Run Rust-only demo"
 	@echo "  test         Run all tests"
 	@echo "  test-e2e     Run end-to-end tests"
+	@echo "  test-backend-containers  Run Docker-backed TypeDB / TerminusDB smoke tests"
 	@echo "  docs         Build documentation"
 	@echo "  install      Install binaries to /usr/local/bin"
 	@echo "  clean        Remove build artifacts"

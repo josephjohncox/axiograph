@@ -71,8 +71,9 @@ use std::time::Duration;
 
 // Re-export key types
 pub use anchor::{
-    AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, ContextId, PathdbSnapshotId, ProposalDigest,
-    SchemaId, StableFactId, TheoryId, WorldModelRunId,
+    AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, ConstraintId, ContextId, EquationId,
+    ObjectTypeId, PathdbSnapshotId, ProposalDigest, RelationId, RewriteRuleId, RoleId, SchemaId,
+    StableFactId, TheoryId, WorldModelRunId,
 };
 pub use axi_module_typecheck::{
     review_axi_v1_module, validate_axi_v1_module, Module, ReviewStamp, WellTypedModuleState,
@@ -91,6 +92,9 @@ pub use guardrails::{GuardrailEngine, GuardrailRule, GuardrailViolation, Severit
 pub use index_sidecar::{
     read_sidecar_file, write_sidecar_file, IndexSidecarWriter, LruSnapshot, PathDbIndexSidecarV1,
     PATHDB_INDEX_SIDECAR_VERSION_V1,
+};
+pub use kernel_ir::{
+    TheoryObligationKindIr, TheoryObligationRefIr, TheorySubjectKindIr, TheorySubjectRefIr,
 };
 pub use lifecycle::{Accepted, Certified, LifecycleState, Parsed, Reviewed, Validated};
 pub use migration::{

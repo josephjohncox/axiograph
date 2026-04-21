@@ -23,6 +23,7 @@ mod analyze;
 mod axi_fmt;
 mod axi_input;
 mod axql;
+mod backend_pushdown;
 mod competency_questions;
 mod db_server;
 mod doc_chunks;
@@ -49,6 +50,7 @@ mod store_sync;
 mod synthetic_pathdb;
 mod trust_contract;
 mod typed_authoring;
+mod typed_refinement;
 mod viz;
 mod web;
 mod world_model;
@@ -315,25 +317,15 @@ enum Commands {
         quiet: bool,
     },
 
-    /// Run an AxQL/SQL-ish query over a `PathDBExportV1` `.axi` snapshot and emit a certificate.
+    /// Run an AxQL/SQL-ish query over a canonical `.axi` module and emit a typed query witness.
     ///
     /// This is a helper for “Rust computes, Lean verifies” end-to-end checks:
-    /// - the `.axi` snapshot is the canonical anchor (digest),
+    /// - the canonical `.axi` digest is the preferred anchor,
     /// - the query runs over the imported PathDB,
-    /// - and Rust emits a query-result certificate anchored to the snapshot digest:
-    ///   - `query_result_v1` for conjunctive queries
-    ///   - `query_result_v2` for disjunctions (`or`, i.e. UCQs)
+    /// - and Rust emits the canonical `.axi`-anchored typed query witness path.
     #[command(hide = true)]
     QueryCert {
-        /// Input `.axi` file.
-        ///
-        /// This may be either:
-        /// - a `PathDBExportV1` snapshot export (reversible `.axi` export), or
-        /// - a canonical `axi_v1` module (schema/theory/instance).
-        ///
-        /// If the input is a canonical module, you must pass `--anchor-out` so
-        /// this command can write a derived `PathDBExportV1` snapshot anchor for
-        /// `axiograph_verify`.
+        /// Input `.axi` file (canonical `axi_v1` module only).
         input: PathBuf,
 
         /// Query language: `axql` or `sql`.
@@ -346,13 +338,6 @@ enum Commands {
         /// Write certificate JSON to this path (defaults to stdout).
         #[arg(short, long)]
         out: Option<PathBuf>,
-
-        /// Write the derived `PathDBExportV1` anchor snapshot to this `.axi` path.
-        ///
-        /// Required when `input` is a canonical module (because the Lean verifier
-        /// currently anchors query-result certificates to snapshot exports).
-        #[arg(long)]
-        anchor_out: Option<PathBuf>,
     },
 
     /// Typecheck a canonical `.axi` module and emit an `axi_well_typed_v1` certificate.
@@ -690,17 +675,9 @@ struct DbServeArgs {
 
 #[derive(Subcommand)]
 enum CertCommands {
-    /// Run an AxQL/SQL-ish query over a `.axi` snapshot/module and emit a query-result certificate.
+    /// Run an AxQL/SQL-ish query over a canonical `.axi` module and emit a typed query witness.
     Query {
-        /// Input `.axi` file.
-        ///
-        /// This may be either:
-        /// - a `PathDBExportV1` snapshot export (reversible `.axi` export), or
-        /// - a canonical `axi_v1` module (schema/theory/instance).
-        ///
-        /// If the input is a canonical module, you must pass `--anchor-out` so
-        /// this command can write a derived `PathDBExportV1` snapshot anchor for
-        /// `axiograph_verify`.
+        /// Input `.axi` file (canonical `axi_v1` module only).
         input: PathBuf,
 
         /// Query language: `axql` or `sql`.
@@ -713,13 +690,6 @@ enum CertCommands {
         /// Write certificate JSON to this path (defaults to stdout).
         #[arg(short, long)]
         out: Option<PathBuf>,
-
-        /// Write the derived `PathDBExportV1` anchor snapshot to this `.axi` path.
-        ///
-        /// Required when `input` is a canonical module (because the Lean verifier
-        /// currently anchors query-result certificates to snapshot exports).
-        #[arg(long)]
-        anchor_out: Option<PathBuf>,
     },
 
     /// Typecheck a canonical `.axi` module and emit an `axi_well_typed_v1` certificate.
@@ -1303,8 +1273,34 @@ enum DiscoverCommands {
     /// Generate or translate competency questions (AxQL) for coverage checks.
     CompetencyQuestions(CompetencyQuestionsArgs),
 
+    /// Check a typed olog fragment against canonical `.axi` and optionally
+    /// apply one typed refinement handle before re-checking.
+    CheckOlog(DiscoverCheckOlogArgs),
+
     /// Run a world model plugin to propose new facts/relations (evidence plane).
     WorldModelPropose(WorldModelProposeArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverCheckOlogArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Input JSON file containing `OlogFragmentV1`.
+    #[arg(long)]
+    fragment: PathBuf,
+
+    /// Optional schema name if the module contains multiple schemas.
+    #[arg(long)]
+    schema: Option<String>,
+
+    /// Optional runtime refinement handle id to apply before returning the report.
+    #[arg(long)]
+    apply_refinement_handle_id: Option<String>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1622,6 +1618,41 @@ enum AcceptedCommands {
         /// Print full snapshot ids (default prints shortened ids).
         #[arg(long)]
         full: bool,
+    },
+
+    /// Show a persisted semantic reconciliation preview.
+    ///
+    /// This surfaces the typed conflict set, trust summary, and any compiled-IR
+    /// refinement handles available for review.
+    ReconciliationShow {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Reconciliation id.
+        #[arg(long)]
+        reconciliation: String,
+        /// Write the preview JSON to this path (defaults to stdout).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Apply a typed refinement handle to a persisted semantic reconciliation.
+    ///
+    /// This updates the stored reconciliation record and returns the typed
+    /// before/after apply result.
+    ReconciliationApply {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Reconciliation id.
+        #[arg(long)]
+        reconciliation: String,
+        /// Runtime refinement handle id from the reconciliation preview.
+        #[arg(long)]
+        handle_id: String,
+        /// Write the apply result JSON to this path (defaults to stdout).
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 
     /// Promote a reviewed canonical `.axi` module into the accepted plane.
@@ -1995,9 +2026,8 @@ fn main() -> Result<()> {
                     lang,
                     query,
                     out,
-                    anchor_out,
                 } => {
-                    cmd_query_cert(&input, &lang, &query, out.as_ref(), anchor_out.as_ref())?;
+                    cmd_query_cert(&input, &lang, &query, out.as_ref())?;
                 }
                 CertCommands::Typecheck { input, out } => {
                     cmd_typecheck_cert(&input, out.as_ref())?;
@@ -2351,6 +2381,9 @@ fn main() -> Result<()> {
                 DiscoverCommands::CompetencyQuestions(args) => {
                     cmd_discover_competency_questions(&args)?;
                 }
+                DiscoverCommands::CheckOlog(args) => {
+                    cmd_discover_check_olog(&args)?;
+                }
                 DiscoverCommands::WorldModelPropose(args) => {
                     cmd_world_model_propose(&args)?;
                 }
@@ -2424,9 +2457,8 @@ fn main() -> Result<()> {
                 lang,
                 query,
                 out,
-                anchor_out,
             } => {
-                cmd_query_cert(&input, &lang, &query, out.as_ref(), anchor_out.as_ref())?;
+                cmd_query_cert(&input, &lang, &query, out.as_ref())?;
             }
             Commands::TypecheckCert { input, out } => {
                 cmd_typecheck_cert(&input, out.as_ref())?;
@@ -2517,6 +2549,21 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             full,
         } => {
             cmd_accept_show(&dir, &layer, &snapshot, json, full)?;
+        }
+        AcceptedCommands::ReconciliationShow {
+            dir,
+            reconciliation,
+            out,
+        } => {
+            cmd_accept_reconciliation_show(&dir, &reconciliation, out.as_ref())?;
+        }
+        AcceptedCommands::ReconciliationApply {
+            dir,
+            reconciliation,
+            handle_id,
+            out,
+        } => {
+            cmd_accept_reconciliation_apply(&dir, &reconciliation, &handle_id, out.as_ref())?;
         }
         AcceptedCommands::Promote {
             input,
@@ -3714,35 +3761,13 @@ fn cmd_query_cert(
     lang: &str,
     query_text: &str,
     out: Option<&PathBuf>,
-    anchor_out: Option<&PathBuf>,
 ) -> Result<()> {
     let axi_text = fs::read_to_string(input)?;
-    let (db, anchor_digest, is_pathdb_export_anchor) =
-        match crate::axi_input::classify_axi_text(&axi_text)? {
-            crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => {
-                (module.import_pathdb()?, module.digest().clone(), true)
-            }
-            crate::axi_input::ClassifiedAxiModule::Canonical(module) => {
-                let mut db = axiograph_pathdb::PathDB::new();
-                let anchor_digest = module.digest().clone();
-                let _summary = module.import_into_pathdb(&mut db)?;
-                db.build_indexes();
-                if let Some(anchor_path) = anchor_out {
-                    // Optional convenience export for debugging / legacy workflows.
-                    // Certificates are still anchored to the canonical `.axi` digest.
-                    let anchor_text = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
-                    let anchor_digest = axiograph_dsl::digest::axi_digest_v1(&anchor_text);
-                    fs::write(anchor_path, anchor_text)?;
-                    eprintln!(
-                        "wrote derived PathDBExportV1 export {} (digest={})",
-                        anchor_path.display(),
-                        anchor_digest
-                    );
-                }
-
-                (db, anchor_digest, false)
-            }
-        };
+    let module = crate::axi_input::require_canonical_axi_text(&axi_text)?;
+    let mut db = axiograph_pathdb::PathDB::new();
+    let anchor_digest = module.digest().clone();
+    let _summary = module.import_into_pathdb(&mut db)?;
+    db.build_indexes();
     let query = match lang {
         "axql" => crate::axql::parse_axql_query(query_text)?,
         "sql" => crate::sqlish::parse_sqlish_query(query_text)?,
@@ -3753,17 +3778,13 @@ fn cmd_query_cert(
         }
     };
 
-    let cert = if is_pathdb_export_anchor {
-        crate::axql::certify_axql_query(&db, &query)?
-    } else {
-        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
-        crate::axql::certify_axql_query_v3_with_meta(
-            &db,
-            &query,
-            Some(&meta),
-            anchor_digest.as_str(),
-        )?
-    }
+    let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+    let cert = crate::axql::certify_axql_query_typed_with_meta(
+        &db,
+        &query,
+        Some(&meta),
+        anchor_digest.as_str(),
+    )?
     .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(
         anchor_digest,
     ));
@@ -3968,6 +3989,39 @@ fn cmd_viz(
         );
     }
     Ok(())
+}
+
+fn write_json_output<T: Serialize>(value: &T, out: Option<&PathBuf>) -> Result<()> {
+    let json = serde_json::to_string_pretty(value)?;
+    if let Some(path) = out {
+        fs::write(path, json)?;
+        println!("wrote {}", path.display());
+    } else {
+        println!("{json}");
+    }
+    Ok(())
+}
+
+fn cmd_accept_reconciliation_show(
+    dir: &PathBuf,
+    reconciliation: &str,
+    out: Option<&PathBuf>,
+) -> Result<()> {
+    let reconciliation_id = axiograph_pathdb::AxiDigest::new(reconciliation);
+    let report = accepted_plane::preview_reconciliation(dir, &reconciliation_id)?;
+    write_json_output(&report, out)
+}
+
+fn cmd_accept_reconciliation_apply(
+    dir: &PathBuf,
+    reconciliation: &str,
+    handle_id: &str,
+    out: Option<&PathBuf>,
+) -> Result<()> {
+    let reconciliation_id = axiograph_pathdb::AxiDigest::new(reconciliation);
+    let report =
+        accepted_plane::apply_reconciliation_refinement_by_id(dir, &reconciliation_id, handle_id)?;
+    write_json_output(&report, out)
 }
 
 fn sanitize_id_component(s: &str) -> String {
@@ -6681,6 +6735,41 @@ fn cmd_discover_jepa_export(
     Ok(())
 }
 
+fn discover_check_olog_report_from_inputs(
+    axi_text: &str,
+    schema_name: Option<&str>,
+    fragment_json: &str,
+    apply_refinement_handle_id: Option<&str>,
+) -> Result<crate::typed_authoring::DiscoverCheckOlogReportV1> {
+    let fragment: crate::typed_authoring::OlogFragmentV1 = serde_json::from_str(fragment_json)
+        .map_err(|e| anyhow!("failed to parse olog fragment JSON: {e}"))?;
+    crate::typed_authoring::discover_check_olog_report_against_axi_text(
+        axi_text,
+        schema_name,
+        fragment,
+        apply_refinement_handle_id,
+    )
+}
+
+fn cmd_discover_check_olog(args: &DiscoverCheckOlogArgs) -> Result<()> {
+    let axi_text = fs::read_to_string(&args.input)?;
+    let fragment_json = fs::read_to_string(&args.fragment)?;
+    let report = discover_check_olog_report_from_inputs(
+        &axi_text,
+        args.schema.as_deref(),
+        &fragment_json,
+        args.apply_refinement_handle_id.as_deref(),
+    )?;
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = args.out.as_ref() {
+        fs::write(path, json)?;
+        println!("wrote {}", path.display());
+    } else {
+        println!("{json}");
+    }
+    Ok(())
+}
+
 fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<()> {
     let db = load_pathdb_for_cli(&args.input)?;
 
@@ -7067,46 +7156,27 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
     }
     wm.model = args.world_model_model.clone();
 
+    if args.export.is_some() || args.export_out.is_some() {
+        return Err(anyhow!(
+            "world-model propose no longer accepts `--export`/`--export-out`; world-model input is canonical `.axi` semantics, and derived training exports belong in `axiograph discover jepa-export`"
+        ));
+    }
+
     let input_ext = args
         .input
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("");
 
-    let mut axi_text: Option<String> = None;
-    let mut axi_digest: Option<axiograph_pathdb::AxiDigest> = None;
-    if input_ext.eq_ignore_ascii_case("axi") {
-        let text = fs::read_to_string(&args.input)?;
-        axi_digest = Some(axiograph_pathdb::AxiDigest::from_axi_text(&text));
-        axi_text = Some(text);
-    }
-
-    let mut export_inline: Option<crate::world_model::JepaExportFileV1> = None;
-    let mut export_path: Option<String> = None;
-    if let Some(export) = args.export.as_ref() {
-        export_path = Some(export.display().to_string());
-    } else if let Some(text) = axi_text.as_ref() {
-        let opts = crate::world_model::JepaExportOptions {
-            instance_filter: args.export_instance.clone(),
-            max_items: args.export_max_items,
-            mask_fields: args.export_mask_fields,
-            seed: args.export_seed,
-            exclude_relations: Vec::new(),
-        };
-        let export = crate::world_model::build_jepa_export_from_axi_text(text, &opts)?;
-        if let Some(out_path) = args.export_out.as_ref() {
-            let json = serde_json::to_string_pretty(&export)?;
-            fs::write(out_path, json)?;
-            export_path = Some(out_path.display().to_string());
-            println!("wrote {}", out_path.display());
-        } else {
-            export_inline = Some(export);
-        }
-    } else if args.export_out.is_some() {
-        return Err(anyhow!("--export-out requires `.axi` input or --export"));
-    }
-
     let mut db: Option<axiograph_pathdb::PathDB> = None;
+    let training_export = Some(crate::world_model::JepaExportOptions {
+        instance_filter: args.export_instance.clone(),
+        max_items: args.export_max_items,
+        mask_fields: args.export_mask_fields,
+        seed: args.export_seed,
+        exclude_relations: Vec::new(),
+    });
+
     let guardrail_profile = args.guardrail_profile.trim().to_ascii_lowercase();
     let guardrail_plane = args.guardrail_plane.trim().to_ascii_lowercase();
     let guardrail_weights = if args.guardrail_weight.is_empty() {
@@ -7137,28 +7207,41 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         None
     };
 
-    let mut input = crate::world_model::WorldModelInputV1::default();
-    input.axi_digest_v1 = axi_digest.clone();
-    input.axi_module_text = axi_text.clone();
-    input.export = export_inline;
-    input.export_path = export_path;
-    if guardrail.is_some() {
-        input.guardrail = guardrail.clone();
-    }
-
-    if input_ext.eq_ignore_ascii_case("axpd") || input_ext.eq_ignore_ascii_case("axi") {
-        let kind = if input_ext.eq_ignore_ascii_case("axpd") {
-            "axpd"
+    let mut input = if input_ext.eq_ignore_ascii_case("axi") {
+        let text = fs::read_to_string(&args.input)?;
+        crate::world_model_input::build_world_model_input_from_axi_text(
+            &text,
+            None,
+            None,
+            None,
+            training_export,
+        )?
+    } else if input_ext.eq_ignore_ascii_case("axpd") {
+        let loaded = if let Some(db) = db.take() {
+            db
         } else {
-            "axi"
+            crate::load_pathdb_for_cli(&args.input)?
         };
-        input.snapshot = Some(crate::world_model::WorldModelSnapshotRefV1 {
-            kind: kind.to_string(),
-            path: args.input.display().to_string(),
-            snapshot_id: None,
-            accepted_snapshot_id: None,
-        });
+        let built = crate::world_model_input::build_world_model_input_from_pathdb(
+            &loaded,
+            &crate::world_model_input::WorldModelInputBuildOptionsV1 {
+                module_name: None,
+                pathdb_snapshot_id: None,
+                accepted_snapshot_id: None,
+                training_export,
+            },
+        )?;
+        db = Some(loaded);
+        built
+    } else {
+        return Err(anyhow!(
+            "world model input must be a canonical `.axi` module or an `.axpd` snapshot with an imported canonical module"
+        ));
+    };
+    if guardrail.is_some() {
+        input.set_guardrail_layer(guardrail.clone().expect("guardrail already checked"));
     }
+    input.notes.push("source=cli_world_model".to_string());
 
     let mut options = crate::world_model::WorldModelOptionsV1::default();
     options.max_new_proposals = args.max_new_proposals;
@@ -7167,7 +7250,8 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
     options.task_costs = task_costs.clone();
     options.horizon_steps = args.horizon_steps;
 
-    let input_snapshot = input.snapshot.clone();
+    let input_pathdb_snapshot_id = input.pathdb_snapshot_id();
+    let input_accepted_snapshot_id = input.accepted_snapshot_id();
     let req = crate::world_model::make_world_model_request(input, options);
     let mut response = wm.propose(&req)?;
     if let Some(err) = response.error.take() {
@@ -7178,13 +7262,9 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         &response,
         wm.backend_label(),
         wm.model.clone(),
-        axi_digest.clone(),
-        input_snapshot
-            .as_ref()
-            .and_then(|snap| snap.snapshot_id.clone()),
-        input_snapshot
-            .as_ref()
-            .and_then(|snap| snap.accepted_snapshot_id.clone()),
+        req.input.axi_digest_v1.clone(),
+        input_pathdb_snapshot_id,
+        input_accepted_snapshot_id,
         guardrail.as_ref().map(|g| g.summary.total_cost),
         if guardrail_profile == "off" {
             None
@@ -7699,3 +7779,88 @@ fn cmd_ingest_merge(
 
 // Legacy `.axi` emission has been removed. Ingestion produces `proposals.json`
 // first; promotion into canonical `.axi` is explicit and reviewable.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discover_check_olog_report_from_inputs_can_apply_handle() {
+        let axi_text = r#"
+module Demo
+
+schema S:
+  object Person
+  object Team
+  object Context
+  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+
+theory SRules on S:
+  constraint key WorksFor(employee, employer, ctx)
+
+instance I of S:
+  Person = {Alice}
+  Team = {Ops}
+  Context = {Prod}
+  WorksFor = {(employee=Alice, employer=Ops, ctx=Prod)}
+"#;
+        let fragment_json = serde_json::to_string(&serde_json::json!({
+            "boxes": [
+                {"box_id": "employee", "object_type": "Person"},
+                {"box_id": "team", "object_type": "Team"},
+                {"box_id": "ctx", "object_type": "Context"}
+            ],
+            "relation_boxes": [
+                {
+                    "box_id": "works_for_fact",
+                    "relation": "WorksFor",
+                    "role_bindings": [
+                        {"role": "employee", "target_box": "employee"},
+                        {"role": "ctx", "target_box": "ctx"}
+                    ]
+                }
+            ],
+            "aspects": [],
+            "path_equations": []
+        }))
+        .expect("serialize fragment json");
+
+        let first_report =
+            discover_check_olog_report_from_inputs(axi_text, Some("S"), &fragment_json, None)
+                .expect("initial check olog report");
+        let handle_id = first_report
+            .checked_olog
+            .refinement_candidates
+            .first()
+            .map(|candidate| candidate.handle.id.clone())
+            .expect("expected refinement handle");
+
+        let report = discover_check_olog_report_from_inputs(
+            axi_text,
+            Some("S"),
+            &fragment_json,
+            Some(handle_id.as_str()),
+        )
+        .expect("applied check olog report");
+
+        assert_eq!(report.version, "axiograph_discover_check_olog_v1");
+        assert!(report.checked_olog.ok);
+        assert!(report
+            .applied_refinement
+            .as_ref()
+            .is_some_and(|applied| applied.handle.id == handle_id));
+        let rel_box = report
+            .applied_refinement
+            .as_ref()
+            .expect("applied refinement")
+            .refined_fragment
+            .relation_boxes
+            .iter()
+            .find(|relation_box| relation_box.box_id == "works_for_fact")
+            .expect("refined relation box");
+        assert!(rel_box
+            .role_bindings
+            .iter()
+            .any(|binding| binding.role == "employer" && binding.target_box == "team"));
+    }
+}

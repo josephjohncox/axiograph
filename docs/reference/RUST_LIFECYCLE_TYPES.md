@@ -21,6 +21,24 @@ Current implemented slice (2026-04):
   `Module<Validated>` / `Module<Reviewed>` plus `ReviewStamp`, and
   `axiograph_pathdb::axi_module_import` accepts only `Module<S>` where
   `S: WellTypedModuleState`.
+- the validated-module boundary now includes a first real theory slice, not
+  only schema/instance checks:
+  - structured constraints are checked against declared relation/field/param
+    surfaces,
+  - rewrite rules are checked against compiled carrier semantics and endpoint
+    typing,
+  - parseable path equations are checked against the same runtime semantics,
+  - and opaque equations remain explicit rather than being silently treated as
+    part of the certifiable fragment.
+- `axiograph-cli::semantic_claim` now exposes first typed runtime report
+  families for engineering usefulness:
+  `BusinessRuleApplicabilityReportV1`, `ImplementationSurfaceRuleReportV1`,
+  `CoverageReportV1`, `AgentTaskRefV1`, and `AgentEngineeringReportV1`.
+- prepared query exploration now carries both human-readable typed holes and
+  machine-applicable refinement candidates:
+  `PreparedQueryExplorationV1`,
+  `AxqlTypedHoleV1`,
+  `AxqlRefinementCandidateV1`.
 - The broader `ProposalSet` / `Snapshot` / `WorldState` / `Query` / `Answer` /
   `FactId` / `TypedFact` surface remains target design.
 
@@ -188,6 +206,53 @@ pub struct TypedFact<S, R, A> {
 }
 ```
 
+### Runtime checker report types
+
+Typed runtime usefulness should extend to report objects, not only facts and
+queries.
+
+Target shapes:
+
+```rust
+pub struct RuleApplicabilityReport<A> {
+    pub anchor: A,
+    pub context: Option<ContextId>,
+    pub matched_rules: Vec<RuleMatch>,
+    pub trust: TrustContractV1,
+    pub residual_obligations: Vec<ResidualObligation>,
+}
+
+pub struct SemanticCoverageReport<A> {
+    pub anchor: A,
+    pub covered_objects: Vec<SemanticObjectRef>,
+    pub uncovered_objects: Vec<SemanticGap>,
+    pub drift_findings: Vec<SemanticDriftFinding>,
+    pub trust: TrustContractV1,
+}
+
+pub struct AgentSemanticReport<A> {
+    pub anchor: A,
+    pub task: AgentTaskRef,
+    pub propositions: Vec<ScopedClaim<A>>,
+    pub evidence_refs: Vec<EvidenceRef>,
+    pub next_actions: Vec<SuggestedAction>,
+}
+```
+
+These report families matter because ontology/business-rule/coding-agent
+usefulness is expressed through report objects as much as through typed domain
+objects. If the report layer falls back to ad hoc `serde_json::Value`, the
+semantic typing discipline will not survive to the user-facing workflows.
+
+The same rule now applies to exploration tooling. Typed holes are useful for
+humans, but agents/editors need machine-applicable next moves. So the runtime
+surface should preserve:
+
+- human-readable diagnostics,
+- typed holes that explain what is missing or ambiguous,
+- and explicit refinement candidates that can be applied as structured query or
+  authoring patches.
+
 ## Transition Discipline
 
 The target public transitions are:
@@ -214,6 +279,8 @@ Core crate APIs should prefer:
 - `FactId<A>` over raw `u32`
 - `Query<S, A>` over untyped query blobs
 - `CertifiedAnswer<A>` over “rows plus maybe some metadata”
+- typed report objects over one-off JSON/prose payloads for business-rule,
+  coverage, preview, and agent-facing semantics
 
 Legacy/raw APIs may remain temporarily, but they should move under:
 

@@ -1,4 +1,4 @@
--- Machining Demo (canonical `axi_schema_v1` syntax)
+-- Machining demo (canonical `axi_v1` syntax)
 --
 -- This example is intentionally small: it exists to exercise the basic
 -- schema/theory/instance surface without pulling in the larger machining
@@ -34,4 +34,3 @@ instance MachiningKG of MaterialSchema:
     (material=Steel, params=SteelParams),
     (material=Titanium, params=TitaniumParams)
   }
-

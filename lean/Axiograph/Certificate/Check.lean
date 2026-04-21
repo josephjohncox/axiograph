@@ -1,6 +1,5 @@
 import Std
 import Axiograph.Certificate.Format
-import Axiograph.Axi.PathDBExportV1
 import Axiograph.Axi.ConstraintsCheck
 import Axiograph.Axi.TypeCheck
 import Axiograph.Util.Fnv1a
@@ -47,7 +46,7 @@ structure ReachabilityResultV2 where
 def verifyReachabilityProofV2 : ReachabilityProofV2 → Except String ReachabilityResultV2
   | .reflexive entity =>
       pure { start := entity, end_ := entity, pathLen := 0, confidence := Prob.vOne }
-  | .step src _relType dst relConfidence _relationId? rest =>
+  | .step src _relType dst relConfidence rest =>
       match verifyReachabilityProofV2 rest with
       | .error msg => .error msg
       | .ok restRes =>
@@ -67,51 +66,11 @@ def verifyReachabilityProofV2 : ReachabilityProofV2 → Except String Reachabili
 `verifyReachabilityProofV2` checks the *internal* structure of a proof but is
 intentionally independent of any particular graph/snapshot.
 
-For end-to-end verification we also want the option to require that a reachability
-witness only uses edges that exist in a canonical `.axi` snapshot (e.g. a
-`PathDBExportV1` export).
-
-This is the first step toward “query certificates anchored to canonical inputs”:
-
-* certificates carry `relation_id` fact IDs,
-* the verifier loads the snapshot and extracts `relation_info`,
-* and we check every step references a real snapshot edge.
+For end-to-end verification we now keep `reachability_v2` purely as an
+unanchored internal-structure check. Canonical module anchoring lives on the
+newer certificate families (`reachability_v3`, `query_result_v3`,
+`rewrite_derivation_v3`, and typed module checks).
 -/
-
-open Axiograph.Axi.PathDBExportV1
-
-def verifyReachabilityProofV2Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow) :
-    ReachabilityProofV2 → Except String ReachabilityResultV2
-  | .reflexive entity =>
-      pure { start := entity, end_ := entity, pathLen := 0, confidence := Prob.vOne }
-  | .step src relType dst relConfidence relationId? rest =>
-      match relationId? with
-      | none => .error "anchored reachability step is missing `relation_id`"
-      | some rid =>
-          match relationInfo.get? rid with
-          | none =>
-              .error s!"unknown relation_id {rid} (missing from snapshot relation_info)"
-          | some row =>
-              if row.source != src || row.target != dst then
-                .error s!"relation_id {rid} endpoints mismatch: expected ({row.source},{row.target}), got ({src},{dst})"
-              else if row.relTypeId != relType then
-                .error s!"relation_id {rid} rel_type mismatch: expected {row.relTypeId}, got {relType}"
-              else if Prob.toNat row.confidence != Prob.toNat relConfidence then
-                .error s!"relation_id {rid} confidence mismatch: expected {Prob.toNat row.confidence}, got {Prob.toNat relConfidence}"
-              else
-                match verifyReachabilityProofV2Anchored relationInfo rest with
-                | .error msg => .error msg
-                | .ok restRes =>
-                    if restRes.start != dst then
-                      .error s!"invalid proof chain: expected rest.start = {dst}, got {restRes.start}"
-                    else
-                      .ok {
-                        start := src,
-                        end_ := restRes.end_,
-                        pathLen := restRes.pathLen + 1,
-                        confidence := Prob.vMult relConfidence restRes.confidence
-                      }
 
 end Reachability
 
@@ -437,7 +396,7 @@ partial def runDerivationV3Unanchored (input : PathExprV3) (steps : Array PathRe
     | .inl builtinRule =>
         current ← applyAtBuiltinV3 s.pos.toList builtinRule current
     | .inr _axiRef =>
-        throw "rewrite_derivation_v3: axi: rules require an `.axi` anchor context"
+        throw "rewrite_derivation_v3: axi: rules require a canonical `.axi` module context"
   pure current
 
 partial def runDerivationV3Anchored
@@ -487,312 +446,7 @@ end RewriteDerivation
 
 namespace Query
 
-/-!
-## Certified query checking (anchored)
-
-`query_result_v1` certificates are intended to support *conjunctive queries*
-(AxQL / SQL-ish) in a “Rust computes, Lean verifies” pipeline.
-
-Important: this verifier checks **soundness of the returned rows**, not completeness.
-It proves “these rows satisfy the query”, not “these are all the satisfying rows”.
-
-We also intentionally require a `PathDBExportV1` `.axi` anchor context:
-
-* type constraints are checked against `entity_type`,
-* attribute constraints are checked against `entity_attribute`,
-* path witnesses are checked against `relation_info` using `relation_id` fact ids.
--/
-
-open Axiograph.Axi.PathDBExportV1
 open RegularExpression
-
-structure QueryResultV1 where
-  rowCount : Nat
-  truncated : Bool
-  deriving Repr
-
-def resolveTerm (bindings : Std.HashMap String Nat) : QueryTermV1 → Except String Nat
-  | .const entity => pure entity
-  | .var name =>
-      match bindings.get? name with
-      | some entity => pure entity
-      | none => throw s!"missing binding for variable `{name}`"
-
-def toRegularExpression : QueryRegexV1 → RegularExpression Nat
-  | .epsilon => (1 : RegularExpression Nat)
-  | .rel relTypeId => RegularExpression.char relTypeId
-  | .seq parts =>
-      parts.foldl (fun acc p => acc * toRegularExpression p) (1 : RegularExpression Nat)
-  | .alt parts =>
-      parts.foldl (fun acc p => acc + toRegularExpression p) (0 : RegularExpression Nat)
-  | .star inner =>
-      RegularExpression.star (toRegularExpression inner)
-  | .plus inner =>
-      let re := toRegularExpression inner
-      re * RegularExpression.star re
-  | .opt inner =>
-      (1 : RegularExpression Nat) + toRegularExpression inner
-
-/-!
-### Subtyping in anchored snapshots
-
-When the anchor snapshot contains the meta-plane, Rust interprets type atoms as:
-
-`?x : T`  means  “x has type T **or any subtype of T**”.
-
-This matches typical query semantics (asking for `Agent` should include `Firm`,
-`Household`, …). For legacy snapshot-anchored certificates we recover the
-subtyping relation from meta-plane edges (`axi_subtype_of`) when present.
-
-If no meta-plane subtype edges exist in the snapshot, we fall back to **exact**
-type matching (subtype = supertype).
--/
-
-structure SubtypeIndexV1 where
-  /-- Subtyping adjacency (sub → immediate supertypes). -/
-  supertypesOf : Std.HashMap Nat (Array Nat) := {}
-  deriving Repr
-
-def findInternedId? (internedString : Std.HashMap Nat String) (needle : String) : Option Nat :=
-  Id.run do
-    for (k, v) in internedString.toList do
-      if v == needle then
-        return some k
-    return none
-
-def buildSubtypeIndexV1
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (internedString : Std.HashMap Nat String) : SubtypeIndexV1 :=
-  match findInternedId? internedString "axi_subtype_of",
-        findInternedId? internedString "name" with
-  | some subtypeRelTypeId, some nameKeyId =>
-      Id.run do
-        let mut out : Std.HashMap Nat (Array Nat) := {}
-        for (_, row) in relationInfo.toList do
-          if row.relTypeId == subtypeRelTypeId then
-            match entityAttribute.get? (row.source, nameKeyId),
-                  entityAttribute.get? (row.target, nameKeyId) with
-            | some subNameId, some supNameId =>
-                let current := out.getD subNameId #[]
-                out := out.insert subNameId (current.push supNameId)
-            | _, _ => pure ()
-        pure { supertypesOf := out }
-  | _, _ => {}
-
-def isSubtypeV1Fuel (idx : SubtypeIndexV1) (fuel : Nat) (subType superType : Nat) (seen : Std.HashSet Nat) : Bool :=
-  match fuel with
-  | 0 => false
-  | fuel + 1 =>
-      if subType == superType then
-        true
-      else if seen.contains subType then
-        false
-      else
-        let seen := seen.insert subType
-        match idx.supertypesOf.get? subType with
-        | none => false
-        | some sups =>
-            sups.any (fun next => isSubtypeV1Fuel idx fuel next superType seen)
-
-def isSubtypeV1 (idx : SubtypeIndexV1) (subType superType : Nat) : Bool :=
-  isSubtypeV1Fuel idx (idx.supertypesOf.size + 1) subType superType {}
-
-def reachabilityRelTypes : ReachabilityProofV2 → List Nat
-  | .reflexive _ => []
-  | .step _ relType _ _ _ rest => relType :: reachabilityRelTypes rest
-
-partial def ensureReachabilityMinConfidence
-    (proof : ReachabilityProofV2)
-    (minConfidence : Prob.VProb) : Except String Unit := do
-  match proof with
-  | .reflexive _ => pure ()
-  | .step _ _ _ relConfidence _ rest => do
-      if Prob.toNat relConfidence < Prob.toNat minConfidence then
-        throw s!"reachability step below min_confidence_fp: got {Prob.toNat relConfidence}, expected ≥ {Prob.toNat minConfidence}"
-      ensureReachabilityMinConfidence rest minConfidence
-
-def verifyQueryRowV1Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityType : Std.HashMap Nat Nat)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (subtypes : SubtypeIndexV1)
-    (query : QueryV1)
-    (row : QueryRowV1) : Except String Unit := do
-  -- Build a binding map and reject duplicates (fail-closed).
-  let mut bindings : Std.HashMap String Nat := {}
-  for b in row.bindings do
-    if bindings.contains b.var then
-      throw s!"duplicate binding for variable `{b.var}`"
-    bindings := bindings.insert b.var b.entity
-
-  if row.witnesses.size != query.atoms.size then
-    throw s!"witness count mismatch: expected {query.atoms.size}, got {row.witnesses.size}"
-
-  for (atom, witness) in query.atoms.zip row.witnesses do
-    match atom, witness with
-    | .type term typeId, .type entity typeId' => do
-        if typeId != typeId' then
-          throw s!"type witness mismatch: expected type_id={typeId}, got {typeId'}"
-        let entity' ← resolveTerm bindings term
-        if entity != entity' then
-          throw s!"type witness mismatch: expected entity={entity'}, got {entity}"
-        let some actual := entityType.get? entity
-          | throw s!"missing entity_type fact for entity {entity}"
-        if !isSubtypeV1 subtypes actual typeId then
-          throw s!"entity_type mismatch for entity {entity}: expected type_id={typeId} (allowing subtypes), got {actual}"
-
-    | .attrEq term keyId valueId, .attrEq entity keyId' valueId' => do
-        if keyId != keyId' || valueId != valueId' then
-          throw s!"attr witness mismatch: expected (key_id={keyId}, value_id={valueId}), got (key_id={keyId'}, value_id={valueId'})"
-        let entity' ← resolveTerm bindings term
-        if entity != entity' then
-          throw s!"attr witness mismatch: expected entity={entity'}, got {entity}"
-        let some actual := entityAttribute.get? (entity, keyId)
-          | throw s!"missing entity_attribute fact for entity {entity} and key_id {keyId}"
-        if actual != valueId then
-          throw s!"entity_attribute mismatch for entity {entity} and key_id {keyId}: expected value_id={valueId}, got {actual}"
-
-    | .path left regex right, .path proof => do
-        let src ← resolveTerm bindings left
-        let dst ← resolveTerm bindings right
-
-        let res ← Reachability.verifyReachabilityProofV2Anchored relationInfo proof
-        if res.start != src then
-          throw s!"path witness start mismatch: expected {src}, got {res.start}"
-        if res.end_ != dst then
-          throw s!"path witness end mismatch: expected {dst}, got {res.end_}"
-
-        match query.maxHops? with
-        | none => pure ()
-        | some maxHops =>
-            if res.pathLen > maxHops then
-              throw s!"path witness exceeds max_hops={maxHops} (got len={res.pathLen})"
-
-        match query.minConfidence? with
-        | none => pure ()
-        | some minConf => ensureReachabilityMinConfidence proof minConf
-
-        let labels := reachabilityRelTypes proof
-        if labels.length != res.pathLen then
-          throw s!"internal error: relTypes length {labels.length} != pathLen {res.pathLen}"
-
-        let re := toRegularExpression regex
-        if !(labels ∈ re.matches') then
-          throw s!"path witness labels do not match RPQ (labels={labels})"
-
-    | _, _ =>
-        throw "atom/witness kind mismatch"
-
-def verifyQueryResultProofV1Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityType : Std.HashMap Nat Nat)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (internedString : Std.HashMap Nat String)
-    (proof : QueryResultProofV1) : Except String QueryResultV1 := do
-  let subtypes := buildSubtypeIndexV1 relationInfo entityAttribute internedString
-  for row in proof.rows do
-    verifyQueryRowV1Anchored relationInfo entityType entityAttribute subtypes proof.query row
-  pure { rowCount := proof.rows.size, truncated := proof.truncated }
-
-structure QueryResultV2 where
-  rowCount : Nat
-  truncated : Bool
-  deriving Repr
-
-def verifyQueryRowV2Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityType : Std.HashMap Nat Nat)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (subtypes : SubtypeIndexV1)
-    (query : QueryV2)
-    (row : QueryRowV2) : Except String Unit := do
-  -- Build a binding map and reject duplicates (fail-closed).
-  let mut bindings : Std.HashMap String Nat := {}
-  for b in row.bindings do
-    if bindings.contains b.var then
-      throw s!"duplicate binding for variable `{b.var}`"
-    bindings := bindings.insert b.var b.entity
-
-  let mut chosen : Option (Array QueryAtomV1) := none
-  let mut idx : Nat := 0
-  for atoms in query.disjuncts do
-    if idx == row.disjunct then
-      chosen := some atoms
-    idx := idx + 1
-
-  let some atoms := chosen
-    | throw s!"disjunct out of bounds: {row.disjunct} (have {query.disjuncts.size})"
-
-  if row.witnesses.size != atoms.size then
-    throw s!"witness count mismatch: expected {atoms.size}, got {row.witnesses.size}"
-
-  for (atom, witness) in Array.zip atoms row.witnesses do
-    match atom, witness with
-    | .type term typeId, .type entity typeId' => do
-        if typeId != typeId' then
-          throw s!"type witness mismatch: expected type_id={typeId}, got {typeId'}"
-        let entity' ← resolveTerm bindings term
-        if entity != entity' then
-          throw s!"type witness mismatch: expected entity={entity'}, got {entity}"
-        let some actual := entityType.get? entity
-          | throw s!"missing entity_type fact for entity {entity}"
-        if !isSubtypeV1 subtypes actual typeId then
-          throw s!"entity_type mismatch for entity {entity}: expected type_id={typeId} (allowing subtypes), got {actual}"
-
-    | .attrEq term keyId valueId, .attrEq entity keyId' valueId' => do
-        if keyId != keyId' || valueId != valueId' then
-          throw s!"attr witness mismatch: expected (key_id={keyId}, value_id={valueId}), got (key_id={keyId'}, value_id={valueId'})"
-        let entity' ← resolveTerm bindings term
-        if entity != entity' then
-          throw s!"attr witness mismatch: expected entity={entity'}, got {entity}"
-        let some actual := entityAttribute.get? (entity, keyId)
-          | throw s!"missing entity_attribute fact for entity {entity} and key_id {keyId}"
-        if actual != valueId then
-          throw s!"entity_attribute mismatch for entity {entity} and key_id {keyId}: expected value_id={valueId}, got {actual}"
-
-    | .path left regex right, .path proof => do
-        let src ← resolveTerm bindings left
-        let dst ← resolveTerm bindings right
-
-        let res ← Reachability.verifyReachabilityProofV2Anchored relationInfo proof
-        if res.start != src then
-          throw s!"path witness start mismatch: expected {src}, got {res.start}"
-        if res.end_ != dst then
-          throw s!"path witness end mismatch: expected {dst}, got {res.end_}"
-
-        match query.maxHops? with
-        | none => pure ()
-        | some maxHops =>
-            if res.pathLen > maxHops then
-              throw s!"path witness exceeds max_hops={maxHops} (got len={res.pathLen})"
-
-        match query.minConfidence? with
-        | none => pure ()
-        | some minConf => ensureReachabilityMinConfidence proof minConf
-
-        let labels := reachabilityRelTypes proof
-        if labels.length != res.pathLen then
-          throw s!"internal error: relTypes length {labels.length} != pathLen {res.pathLen}"
-
-        let re := toRegularExpression regex
-        if !(labels ∈ re.matches') then
-          throw s!"path witness labels do not match RPQ (labels={labels})"
-
-    | _, _ =>
-        throw "atom/witness kind mismatch"
-
-def verifyQueryResultProofV2Anchored
-    (relationInfo : Std.HashMap Nat RelationInfoRow)
-    (entityType : Std.HashMap Nat Nat)
-    (entityAttribute : Std.HashMap (Nat × Nat) Nat)
-    (internedString : Std.HashMap Nat String)
-    (proof : QueryResultProofV2) : Except String QueryResultV2 := do
-  let subtypes := buildSubtypeIndexV1 relationInfo entityAttribute internedString
-  for row in proof.rows do
-    verifyQueryRowV2Anchored relationInfo entityType entityAttribute subtypes proof.query row
-  pure { rowCount := proof.rows.size, truncated := proof.truncated }
-
 /-!
 ## `.axi`-anchored query checking (v3, name-based)
 
@@ -1681,11 +1335,10 @@ end Migration
 inductive CertificateResult where
   | reachabilityV1 (res : Reachability.ReachabilityResult)
   | reachabilityV2 (res : Reachability.ReachabilityResultV2)
+  | reachabilityV3 (res : Query.ReachabilityResultV3)
   | resolutionV2 (res : Resolution.ResolutionResultV2)
   | axiWellTypedV1 (res : AxiWellTypedProofV1)
   | axiConstraintsOkV1 (res : AxiConstraintsOkProofV1)
-  | queryResultV1 (res : Query.QueryResultV1)
-  | queryResultV2 (res : Query.QueryResultV2)
   | queryResultV3 (res : Query.QueryResultV3)
   | normalizePathV2 (res : PathNormalization.NormalizePathResultV2)
   | rewriteDerivationV2 (res : RewriteDerivation.RewriteDerivationResultV2)
@@ -1701,19 +1354,17 @@ def verifyCertificate : Certificate → Except String CertificateResult
   | .reachabilityV2 proof => do
       let res ← Reachability.verifyReachabilityProofV2 proof
       pure (.reachabilityV2 res)
+  | .reachabilityV3 _ =>
+      throw "reachability_v3 requires a canonical `.axi` module context; run `axiograph_verify <module.axi> <certificate.json>`"
   | .resolutionV2 proof => do
       let res ← Resolution.verifyResolutionProofV2 proof
       pure (.resolutionV2 res)
   | .axiWellTypedV1 _ =>
-      throw "axi_well_typed_v1 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
+      throw "axi_well_typed_v1 requires a canonical `.axi` module context; run `axiograph_verify <module.axi> <certificate.json>`"
   | .axiConstraintsOkV1 _ =>
-      throw "axi_constraints_ok_v1 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
-  | .queryResultV1 _ =>
-      throw "query_result_v1 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
-  | .queryResultV2 _ =>
-      throw "query_result_v2 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
+      throw "axi_constraints_ok_v1 requires a canonical `.axi` module context; run `axiograph_verify <module.axi> <certificate.json>`"
   | .queryResultV3 _ =>
-      throw "query_result_v3 requires a `.axi` anchor context; run `axiograph_verify <anchor.axi> <certificate.json>`"
+      throw "query_result_v3 requires a canonical `.axi` module context; run `axiograph_verify <module.axi> <certificate.json>`"
   | .normalizePathV2 proof => do
       let res ← PathNormalization.verifyNormalizePathProofV2 proof
       pure (.normalizePathV2 res)

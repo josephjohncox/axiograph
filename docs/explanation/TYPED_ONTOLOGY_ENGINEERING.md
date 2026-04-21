@@ -20,6 +20,138 @@ The short answer is:
 - migration should be type-annotated and reviewable, because meaning changes are the
   highest-risk ontology events.
 
+That backend point should be read narrowly. "Stable across backends" does not
+mean every graph store is an equally good semantic home. It means advanced graph
+engines can host **typed projections** of accepted semantic state when they have
+enough structure, while semantic VCS, authoring, ologs, trust contracts, and
+CQ-gated lifecycle remain above them in Axiograph.
+
+At the moment that means:
+
+- `TypeDB` is the primary target when we want the backend itself to preserve
+  typed relation/role/n-ary structure well.
+- `TerminusDB` is the strongest RDF/VCS-shaped secondary target.
+- property-graph backends remain experimental rather than first-class support
+  targets. `Apache AGE` is the main one still worth evaluating, but it is not
+  yet on the same compatibility tier.
+
+That priority is not just a ranking; it is a pushdown split:
+
+- push the richest type/constraint/query-validation surface into `TypeDB`,
+- push branch/history/diff workspace mirroring into `TerminusDB`,
+- keep property-graph execution as a later optimization layer rather than an
+  active backend commitment,
+- and keep semantic authority in Axiograph above all of them.
+
+That does not mean projected backends should be opaque. They should still be
+usable through their own native query interfaces so outside tools and graph
+users can inspect a meaningful subset of the projected ontology. The contract
+should be:
+
+- native backend querying is allowed,
+- native backend querying exposes only a reduced projection of Axiograph
+  semantics,
+- and backend mutation is not authoritative: semantic mutation, review,
+  promotion, and lifecycle transitions still go through Axiograph.
+
+The current Rust implementation now reflects that split directly. The CLI layer
+contains a backend pushdown planner that consumes:
+
+- `CompiledSchemaIr`,
+- `BackendCapabilityProfileV1`,
+- `ProjectionCapabilityProfileV1`,
+
+and emits typed backend-specific plans for the first-class backends:
+
+- `TypeDbPushdownPlanV1`
+- `TerminusDbPushdownPlanV1`
+
+These plans make the degradation boundary explicit instead of burying it in
+adapter code. They say which tuple/role/context structure is preserved natively,
+which native read-only query surface is exposed, and which semantics still
+require Axiograph-side trust contracts and anchor checks.
+
+The important refinement is that projected backends should not be described as
+"mere exports". They should preserve readable lower-tier interfaces all the way
+through the projection:
+
+- native query interfaces remain usable as lower-tier read surfaces,
+- RDF-style datasets remain readable where the backend genuinely hosts them,
+- SHACL-style validation remains usable as a lower-tier closed-world interface
+  over the projected graph,
+- and Axiograph lifts those lower-tier surfaces back into higher typed semantic
+  objects, anchors, lifecycle state, CQ gates, and trust contracts.
+
+So the right model is:
+
+- **preserve lower-tier interfaces**,
+- **lift them into higher typed/meta semantics**,
+- and **never let the lower tier replace the semantic kernel**.
+
+In other words, we should not ask one backend to do all jobs equally well.
+`TypeDB` is the best host for typed runtime elaboration fragments.
+`TerminusDB` is the best host for native graph-history collaboration.
+Property-graph engines may still become useful execution targets later, but
+they are not part of the current first-class support contract.
+
+## TypeDB-inspired typing we should actually import
+
+TypeDB is useful to study because it gets several schema ideas right:
+
+- relation types are first-class, not hidden edge metadata,
+- roles are first-class typed interfaces,
+- subtypes inherit interface implementations,
+- and schema edits are treated as explicit operations rather than free-form
+  mutation.
+
+The official TypeDB docs are especially clear on:
+
+- entity/relation/attribute typing and interface polymorphism,
+- `owns` / `plays` / `relates` as interface declarations and implementations,
+- subtype inheritance of those interfaces,
+- cardinality / key constraints,
+- and `redefine` as an explicit schema-change operation.
+
+For Axiograph, the right import is semantic, not syntactic.
+
+We should keep:
+
+- first-class relation objects,
+- scoped role interfaces,
+- subtype-inherited admissible player sets,
+- explicit constrained schema evolution,
+- and typed constraint objects rather than prose-only rules.
+
+We should not copy directly:
+
+- backend-owned schema authority,
+- backend-native history as the ontology VCS,
+- or a backend surface becoming the canonical authoring language.
+
+So the Axiograph reading is:
+
+- a relation role defines a typed interface over the canonical IR,
+- subtype closure determines the admissible players of that interface,
+- CQ-gated evolution and semantic VCS own the mutation lifecycle,
+- and backend pushdown plans may preserve these interfaces natively without
+  becoming authoritative.
+
+This is where TypeDB-like discipline helps Axiograph most:
+
+- typed authoring can suggest valid role binders from admissible players,
+- query elaboration can surface why a subtype is accepted at a role boundary,
+- backend adapters can say exactly which role/player semantics survive pushdown,
+- and evolution previews can explain subtype generalization/specialization as
+  first-class semantic moves instead of opaque diffs.
+
+The important caveat is that backend-native history is still not the same thing
+as Axiograph semantic VCS. For example, TerminusDB's git-for-data layer is
+genuinely useful for projected collaboration branches, but its own docs say that
+branch pull/push operations transport instance information while schema
+operations "need to be manually maintained" or "manually applied". That is
+already enough to disqualify backend-native history from becoming the ontology
+kernel for reviewable schema/theory evolution.
+
 For ontology authors, typing is valuable only if it catches meaning errors early,
 keeps proposal deltas reviewable, and surfaces CQ breakage before they accept
 new commitments. For tool builders, typing is valuable when it gives deterministic,
@@ -67,6 +199,108 @@ current trust boundary and what each layer is or is not licensed to claim.
 - The goal is not "make Rust look like Idris".
 - The goal is to make ontology engineering safer, more legible, more auditable,
   and more useful by putting the right invariants in the right layers.
+
+### Runtime-typed usefulness bar
+
+Typing becomes operational only when it emits reviewable artifacts rather than
+only booleans, warnings, or prose.
+
+Near-term Axiograph should converge on a small runtime-typed artifact family:
+
+| Artifact family | Why it exists | Minimum typed content |
+| --- | --- | --- |
+| Evolution preview | review ontology change before mutation | typed `schema` / `theory` / `instance` / `context` deltas, CQ status, trust contract, residual obligations |
+| Business-rule applicability report | answer which obligations apply under explicit anchors | matched rule/theory/CQ ids, snapshot/world scope, trust strength, checked surfaces, next actions |
+| Semantic coverage / drift report | show what the ontology actually covers in implementation and interop | ontology-object/rule/CQ coverage, uncovered areas, drift reasons, anchors, caveats |
+| Agent-facing semantic report | let coding agents make disciplined engineering claims | proposition/task, matched ontology objects, trust, evidence/checks used, residual unknowns, suggested repairs |
+
+Lean will certify the strongest fragment of some of these artifacts, but the
+existence of the artifact family itself is a runtime design requirement rather
+than a theorem-proving requirement.
+
+### Runtime surfaces now worth building around
+
+The runtime checker becomes materially useful only when it exposes concrete
+typed services rather than keeping all of its semantics hidden inside import and
+query code paths.
+
+The immediate high-value services are:
+
+- typed olog fragment checking over the compiled schema/category IR,
+- business-rule applicability over explicit relation/theory scopes,
+- semantic coverage over implementation surfaces and rule ids,
+- and evolution previews that reuse the same typed deltas instead of inventing
+  workflow-specific JSON envelopes.
+
+The important operational detail is that these are not generic "analysis"
+reports. They are intended to become the everyday ontology-engineering currency
+ for:
+
+- authoring relation boxes and projections,
+- checking whether an endpoint/workflow/job is semantically governed,
+- showing which accepted rules are only weakly mapped into implementation,
+- and telling an agent what ontology/code/test work is still missing.
+
+That is the practical meaning of "runtime-usable dependent typing" in this
+project: a typed service layer over the canonical IR that is good enough to
+drive authoring, review, and engineering workflows before optional Lean
+certification.
+
+### Rich evolution primitives for directed exploration
+
+Directed exploration should not stop at "this preview added 2 schema objects"
+or "a subtype link appeared somewhere in the diff". If the ontology is going
+to be a serious authoring and discovery tool, the runtime checker needs a
+vocabulary of reviewable structural moves.
+
+The useful minimum is:
+
+- `reify_relation_object`
+- `introduce_dependent_relation_family`
+- `introduce_subtype`
+- `generalize_to_supertype`
+- `specialize_to_subtype`
+- `push_relation_role_to_subtype`
+- `pull_relation_role_to_supertype`
+- `factor_common_structure_to_supertype`
+- `split_type_into_subtypes`
+- `merge_types_under_supertype`
+- `lift_relation_to_carrier`
+- `add_path_equation`
+- `add_rewrite_rule`
+
+These are not UI sugar. They are the typed operational language for evolving
+ologs and ontologies as new structure is discovered.
+
+From an ontology-engineering perspective, they matter because:
+
+- relation-object reification and indexed/dependent-family primitives expose
+  when a domain relation is really a family over context, time, or other
+  parameters rather than a plain binary edge;
+- subtype/supertype moves change the lattice that query elaboration, rule
+  applicability, and code mapping depend on;
+- relation-role push/pull changes whether a role is valid at a general type or
+  only at a refined subtype;
+- path-equation and rewrite-rule primitives let theory evolution be reviewed as
+  first-class semantic law rather than being buried in prose;
+- factor/split/merge moves are often the real semantic change even when the
+  visible vocabulary barely changes;
+- lifting a relation into an explicit carrier object is how the model matures
+  from "binary edge sketch" to a relation-object that can carry time, context,
+  provenance, parameters, and business constraints.
+
+From a user perspective, this makes exploration materially more useful. The
+system should be able to say:
+
+- "introduce `Pump <: RotatingEquipment`"
+- "generalize this maintenance rule from `BoilerPump` to `Pump`"
+- "push the `requires_certification` role down from `Equipment` to
+  `PressureVessel`"
+- "lift `delivers_to` into `Delivery(material, plant, carrier, time)` because
+  time/provenance is now first-class"
+
+That kind of preview is what lets ontology authoring become a disciplined
+co-evolution workflow rather than a bag of schema notes.
 
 ## 0. What Would Make Axiograph A Dependently Typed Ontology Engine?
 
@@ -128,6 +362,55 @@ Memorable takeaway:
 
 > In Axiograph, “dependently typed ontology engine” should mean a small checked
 > semantic kernel plus one typed operational currency for ontology work.
+
+### 0.1 What sound type theory should mean here
+
+For Axiograph, a sound type theory is not "full-spectrum Martin-Lof type theory
+everywhere in the runtime". It is a disciplined split between:
+
+- a small checked fragment where the strongest semantic claims are reduced to
+  explicit judgments, and
+- a runtime elaborator/checker that preserves those same indices and refuses to
+  erase them into storage-local or stringly surfaces.
+
+The right internal judgment forms are practical rather than ornamental:
+
+- schema/category formation,
+- object and relation-role typing,
+- context/world-indexed truth,
+- endpoint-safe path typing,
+- rewrite admissibility,
+- transport along schema/theory maps,
+- and lifecycle legality across evidence/review/accepted/certified states.
+
+That is already enough to be recognizably dependent in the useful sense:
+
+- a fact depends on its schema, relation, anchor, and sometimes context;
+- a path depends on its endpoints and anchor;
+- a query depends on the schema/context/result-shape it elaborates against;
+- a migration witness depends on a transport basis and reindexing links;
+- and a certified answer depends on the accepted anchor under which it was
+  checked.
+
+What about higher-order structure?
+
+- In the trusted kernel, higher-order structure should be treated narrowly:
+  rules, path equations, CQ obligations, and transport/rewrite operators can be
+  first-class semantic objects that are checked and referenced.
+- In the runtime layer, higher-order usefulness means users and agents can ask
+  for structure over structure: "what rewrite laws apply here?", "what CQs are
+  induced by this authoring fragment?", "what transport obligations does this
+  schema map generate?", "what refinements preserve certifiability?"
+- It does **not** currently mean arbitrary higher-order dependent programming in
+  the theorem-prover sense, and the docs should stay honest about that.
+
+So the soundness bar is:
+
+- accepted meaning is formed over the canonical IR,
+- the strongest claims are checked against explicit anchors,
+- Rust preserves the semantic indices in its public/runtime tooling surface,
+- and no layer silently upgrades weak/exploratory/evidence-plane structure into
+  accepted truth.
 
 ## 1. Why Typing Matters For Ontology Engineering
 
@@ -449,6 +732,43 @@ Until this is complete for all transport forms, migration should be presented as
 typed operator with explicit soundness/coverage scope rather than as automatic
 truth preservation.
 
+#### 4.8a Reindexing and semantic comparability
+
+Transport is only half of useful evolution. The other half is explicit
+reindexing: which source semantic ids and target semantic ids remain comparable
+across anchors after a change.
+
+That is what lets the runtime say:
+
+- this source object is preserved as that target object,
+- this source arrow is now reviewed as a target path equation,
+- this subtype collapsed into its supertype image,
+- or this distinction was merged and now survives only as a residual
+  obligation.
+
+Without reindexing, migration reports degrade into counts and prose. With
+reindexing, previews, CQs, implementation mappings, and certificates can all
+point at the same semantic objects when they explain what changed.
+
+#### 4.8b Reconciliation as typed evolution over conflicts and decisions
+
+Reconciliation should be framed in the same typed language as authoring and
+migration, not as a separate file-merge story.
+
+Operationally, reconciliation is typed evolution over competing deltas rooted
+at a common anchor:
+
+- identify conflicts over schema/theory/instance/context artifacts,
+- record explicit decisions,
+- attach CQ/trust/coverage consequences,
+- and carry unresolved conflicts forward as residual obligations.
+
+The current runtime slice is deliberately conservative. It can summarize typed
+reconciliation previews from explicit conflict/decision records, but it does
+not yet claim merge optimality, merge completeness, or ontology closure. That
+is still the right operational move because it makes semantic merge reviewable
+through the same preview contract as every other mutation seam.
+
 ### 4.9 CQ-gated evolution
 
 Competency questions should not be treated as a nice-to-have reporting layer.
@@ -470,6 +790,20 @@ preview should therefore bundle:
 - the source accepted snapshot anchor,
 - the candidate target anchor or review delta,
 - the typed change summary (`schema` / `theory` / `instance` / `context`),
+- explicit structural primitives describing the intended ontology move:
+  - `reify_relation_object`
+  - `introduce_dependent_relation_family`
+  - `introduce_subtype`
+  - `generalize_to_supertype`
+  - `specialize_to_subtype`
+  - `push_relation_role_to_subtype`
+  - `pull_relation_role_to_supertype`
+  - `factor_common_structure_to_supertype`
+  - `split_type_into_subtypes`
+  - `merge_types_under_supertype`
+  - `lift_relation_to_carrier`
+  - `add_path_equation`
+  - `add_rewrite_rule`
 - per-CQ before/after status with expected answer-shape references,
 - trust-contract deltas,
 - and residual obligations or migration failures that still need author review.
@@ -479,6 +813,40 @@ safe?" into a reviewable statement about which domain questions still work and
 which commitments changed. For system builders, it gives a precise fail-closed
 interface for `fail_on_regression`, `fail_on_unsatisfied_after`, and later
 merge/promotion policies.
+
+Those structural primitives are not cosmetic labels. They are the bridge between
+typed ontology semantics and useful engineering review:
+
+- `reify_relation_object` and `introduce_dependent_relation_family` explain
+  when the authoring move is really about relation-objects, indexed families,
+  and dependent structure rather than new nouns alone;
+- `introduce_subtype` / `generalize_to_supertype` / `specialize_to_subtype`
+  explain how the subtype lattice is evolving and whether rules, constraints,
+  and implementation mappings should move up or down;
+- `push_relation_role_to_subtype` / `pull_relation_role_to_supertype` explain whether a role is being
+  re-homed between an object and a relation carrier, which is often the actual
+  semantic change hidden inside "field cleanup";
+- `factor_common_structure_to_supertype`, `split_type_into_subtypes`, and `merge_types_under_supertype` make
+  refactoring intent explicit enough for migration preview and CQ review to be
+  meaningful rather than textual;
+- `lift_relation_to_carrier` tells the system that an edge-like pattern now
+  requires first-class tuple identity, provenance, context axes, or additional
+  dependent parameters;
+- `add_path_equation` and `add_rewrite_rule` make theory evolution visible as a
+  typed change rather than mixing semantic laws into prose or opaque notes.
+  roles.
+
+These same primitives also improve directed exploration. A useful runtime
+checker should be able to suggest:
+
+- sibling subtypes or supertypes that now deserve review,
+- relations that become candidates for shared factoring,
+- roles likely to move with the current refactor,
+- CQs whose answer shape may widen or narrow,
+- and implementation/doc/test surfaces mapped to the affected semantic ids.
+
+That is the difference between a preview that merely reports "schema changed"
+and one that helps an ontology engineer steer the next edit safely.
 
 Current limitation: Axiograph has a first useful CQ-gated preview slice for
 proposal validation today, but migration preview, semantic merge, and accepted-
@@ -619,6 +987,22 @@ That is why Rust is the right place for the operational checker surface. It is
 where authoring, query, preview, and agent workflows become usable enough to
 drive everyday engineering.
 
+The practical implication is that Rust should expose typed operations over
+semantic structure, not only typed wrappers over stored values. A useful
+runtime surface needs first-class APIs for:
+
+- elaborating partial queries into typed result-shape judgments,
+- surfacing typed holes and machine-applicable refinements,
+- checking typed olog fragments against the compiled IR,
+- reporting business-rule applicability under explicit anchors and contexts,
+- previewing transport/reindexing/reconciliation obligations,
+- and returning agent-facing semantic reports that preserve trust class and
+  lifecycle scope.
+
+That is the runtime analogue of higher-order/dependent usefulness: the checker
+works over rules, holes, transport maps, CQ obligations, and previews as typed
+objects, not only over entity rows.
+
 ### 6.2 What the runtime checker may and may not claim
 
 The right trust split is:
@@ -715,6 +1099,11 @@ That gives Axiograph a powerful authoring story:
 
 Ologs are therefore not an ornament. They are the best human interface to the
 same typed semantic core.
+
+They are also not the only exploration surface. The same compiled IR should
+power query refinement, migration preview, reconciliation review, backend
+projection inspection, and implementation-surface mapping, all over the same
+stable semantic ids.
 
 ### 7.1 What typed olog authoring should emit
 
@@ -836,6 +1225,128 @@ These services answer "what did the system think I meant?".
 - explicit statement of whether a given query form is certifiable, execution-only,
   or mixed.
 
+### 9.3a Type inference and hole-driven exploration
+
+Type inference here should be read conservatively. The job is not to infer an
+ontology we failed to model. The job is to infer the strongest indices already
+licensed by the accepted/reviewed schema/category IR: variable types, relation
+roles, schema qualification, context/world carriers, result shape, and
+certifiability class. When multiple readings remain possible, the runtime
+should keep that ambiguity explicit and return repair choices rather than
+silently guessing.
+
+Typed holes are the dual surface of that same service. A hole is not just
+missing syntax; it is a request for admissible next moves under explicit
+anchors. In queries, holes can stand for unresolved relation objects, role
+fillers, projection targets, or context restrictions. In authoring, they can
+stand for missing roles, projection arrows, subtype witnesses, or CQ
+expectations. The useful response is a bounded set of schema-valid completions
+plus an explanation of how each completion changes trust and certifiability.
+
+The current runtime slice now does this in two places:
+
+- queries return structured typed holes plus refinement candidates over
+  prepared/query IR;
+- typed olog authoring returns structured holes for missing relation-role
+  bindings, role/type mismatches, projection gaps, and path endpoint failures.
+
+Those two surfaces now also share a first common runtime refinement protocol:
+
+- one handle/candidate envelope over compiled IR,
+- query-local refinement operations for query elaboration,
+- authoring-local refinement operations for typed olog repair where the edit is
+  deterministic,
+- and stable machine-applicable ids that let agents and editors move from
+  “what fills this hole?” to “apply this refinement and re-check”.
+
+That is already useful for type-directed exploration, but it is still a runtime
+checker service, not a theorem-backed completeness result and not yet a uniform
+machine-applicable repair protocol across every authoring surface.
+
+That is why query elaboration should be treated as an exploration service, not
+only as a compiler pass. A partial or ambiguous query should be able to return:
+
+- currently inferred variable and result types,
+- the candidate schemas/relations/contexts still in play,
+- the typed holes or unresolved obligations that remain,
+- the admissible next refinements,
+- and how each refinement changes the path from `execution-only` to `mixed` or
+  `certifiable`.
+
+This is a real dependent-type effect in the runtime layer: partial artifacts
+remain indexed by the schema/context/anchor relative to which they make sense,
+and users can ask "what can go here?" before committing to a full term. But it
+does not replace the semantic kernel. Inference, completion, and hole filling
+are operational services over the compiled IR; accepted `.axi` anchors and
+Lean-checked certificates remain the authority for the strongest semantic
+claims.
+
+A useful formal reading is:
+
+- `Sigma; Gamma; A |- q => (q', H, E, kappa)`
+
+where:
+
+- `Sigma` is the compiled schema/category IR,
+- `Gamma` is the current variable typing environment,
+- `A` is the accepted/review-state anchor plus world/context scope,
+- `q` is a partial query or authoring fragment,
+- `q'` is the best elaborated form currently justified,
+- `H` is the finite family of typed holes that remain,
+- `E` is the finite family of admissible next refinements,
+- and `kappa` is the current runtime trust/certifiability classification.
+
+Denotationally, a partial typed query is not yet a proposition with one fixed
+meaning. It denotes a bounded family of anchor-scoped completions licensed by
+the current IR:
+
+- `[[q]]_(Sigma,A) = { q_complete | q_complete is a schema-valid completion of q under A }`
+
+The elaborator is therefore a semantics-preserving restriction operator: it
+shrinks that completion family, records why, and keeps the remaining ambiguity
+explicit instead of silently guessing. That is the runtime analogue of
+Lean/Haskell-style hole-driven development. The next implementation step is to
+make those refinements machine-applicable over `query_ir_v1`, not merely
+diagnostic strings.
+
+### 9.3b Compiled-IR exploration beyond ologs
+
+Typed exploration should not stop at queries or hand-authored olog fragments.
+The same compiled IR should be able to surface:
+
+- relation-object reification opportunities,
+- indexed/dependent-family opportunities,
+- carrier/fiber lifting opportunities,
+- candidate path equations or rewrite rules suggested by witness view,
+- migration transport obligations,
+- and reconciliation follow-on work.
+
+Denotationally these are not separate products. They are restricted views of
+one anchor- and schema-scoped semantic program. A partial query, a partial
+olog, a migration preview, and a reconciliation preview should all be able to
+ask the same questions:
+
+- what is currently well-typed,
+- what semantic ids are in play,
+- what obligations remain,
+- and what admissible next refinements preserve the current trust boundary.
+
+What is still missing if we want this to feel materially closer to
+Lean/Haskell-style typed exploration rather than "better query errors":
+
+- typed holes should extend beyond the currently implemented query + typed-olog
+  slice into CQ authoring, migration authoring, reconciliation authoring, and
+  implementation-surface mapping;
+- refinement candidates should be machine-applicable objects, not only
+  explanation strings;
+- the checker should expose expected result shape and expected repair/proof
+  obligations as first-class IDE/API data;
+- agents and editors should be able to ask "what fills this hole while
+  preserving certifiability / accepted-world meaning / lifecycle legality?";
+- and the runtime should treat partially known authoring states as legitimate
+  typed states instead of forcing early collapse into either free text or hard
+  failure.
+
 ### 9.4 Review services
 
 These services answer "what semantic effect would this change have?".
@@ -859,6 +1370,11 @@ These services answer "what ontology might we want next?".
 
 In other words, the compiler/typechecker should become the main type-driven
 assistant for ontology exploration and creation.
+
+Throughout this document, "LLM-assisted" should be read narrowly: MCP/skill/API
+plugin surfaces, typed tool-loop integrations, and evidence-plane proposal
+generators that consume or emit structured IR and trust metadata, not
+free-form semantic authority or rewrite-only behavior.
 
 ### 9.6 Typed authoring services (olog + CQ + migration)
 
@@ -899,6 +1415,12 @@ rename this?", the response should include:
 - `schema` / `theory` / `instance` / `context` impact summary,
 - trust-contract fields and anchors,
 - and links to the supporting evidence that motivated the draft.
+
+The same principle should hold for exploration. Suggestions should not stop at
+prose like "you might add a type guard". The runtime should emit
+machine-applicable refinement candidates that an editor, agent, or MCP/skill
+surface can turn into concrete patches over query fragments, olog fragments,
+migration drafts, or reconciliation choices.
 
 That is concrete value for ontology authors because it makes changes reviewable
 before they mutate accepted meaning. It is concrete value for system builders
@@ -1552,6 +2074,114 @@ So the right present-tense claim is still conservative:
 > Axiograph already has the architectural pieces to become a strong semantic
 > engine for coding agents, but the fully integrated rule/correctness/coverage
 > workflow remains roadmap work.
+
+#### 13.4.10 Canonical co-evolution example: chemical plant + business system
+
+To see what is still missing, it helps to force a hard example rather than a
+toy ontology.
+
+Take a chemical plant that has to co-evolve all of the following:
+
+- physical process models:
+  equipment, streams, units, recipes, thermodynamics, control loops, alarms,
+  and simulation/digital-twin artifacts;
+- operational/business process:
+  material delivery, vendor certification, lot genealogy, maintenance windows,
+  shift operations, release approvals, regulatory reporting, and CAPA flows;
+- enterprise systems:
+  ERP/MRP, pricing, contracts, inventories, orders, delivery promises,
+  financial postings, and forecast models;
+- software and automation:
+  Go/Python/TypeScript/C/C++ services, PLC logic, optimizers, simulators,
+  containers, batch jobs, APIs, HMI/UX screens, and reporting pipelines;
+- documentary evidence:
+  wikis, SOPs, incident reports, P&IDs, instrument specs, QA certificates,
+  procurement records, and model cards.
+
+In that setting, ontology usefulness is not "can we label entities cleanly?" It
+is:
+
+- can the ontology tell us whether the simulator, ERP workflow, PLC logic, and
+  compliance reports still refer to the same business/physical commitments?
+- can we detect when a plant recipe or control invariant changed physically but
+  the pricing, certification, or delivery logic did not change with it?
+- can an agent tell which code/tests/docs/process assets are semantically
+  uncovered after a model change?
+- can we distinguish accepted plant semantics from review-state hypotheses and
+  evidence-plane suggestions discovered from documents or code?
+
+For that class of system, the right typed ontology architecture has to model at
+least these implementation surfaces:
+
+- APIs and jobs,
+- simulators and optimization models,
+- PLC routines and control modes,
+- HMI screens and operator workflows,
+- reports and regulatory extracts,
+- config/state machines,
+- and document sections or wiki procedures.
+
+And it has to model these ontology dimensions explicitly:
+
+- context/world:
+  regulatory region, plant, tenant, operating mode, what-if simulation world,
+  historical effective date;
+- temporal validity:
+  when an invariant or business rule was active;
+- provenance/evidence:
+  which source justified a modeled claim;
+- uncertainty:
+  what is accepted, what is runtime-checked, what is review-only, and what is
+  only evidence-backed.
+
+What is still missing for this to become truly useful in that setting:
+
+- typed implementation-surface modeling that reaches beyond endpoints/jobs into
+  simulators, PLC assets, HMI screens, reports, and planning models;
+- first-class units/dimensions and physically meaningful quantity typing in the
+  runtime checker and semantic IR;
+- typed temporal/state-machine constraints for operational modes, approvals,
+  process phases, and release gates;
+- stronger transport/evolution support so ontology changes can explain what
+  breaks in simulation, ERP, control logic, or reporting;
+- richer code/document/process ingest that can emit typed candidate mappings
+  from real artifacts into implementation surfaces and rule scopes;
+- and one agent-facing engineering report that unifies rule applicability,
+  semantic coverage, drift, and next actions over those surfaces.
+
+This is exactly why the project should be read as ontology-driven development
+and co-evolution, not as static ontology curation.
+
+#### 13.4.11 What "LLM-assisted" should mean here
+
+In this repo, "LLM-assisted" should not mean "the model rewrote some text that
+looked ontology-shaped".
+
+It should mean the model interacts with typed semantic services through
+explicit interfaces:
+
+- tool-loop endpoints,
+- stable APIs,
+- plugin or skill contracts,
+- future MCP-style adapters,
+- and typed request/response objects carrying anchors, lifecycle state, trust,
+  and residual unknowns.
+
+That matters because free-form assistant prose is not enough for disciplined
+ontology engineering. Agents need structured access to:
+
+- typed query elaboration and hole filling,
+- olog fragment checking,
+- rule applicability,
+- semantic coverage and drift,
+- CQ assets and preview gates,
+- and semantic VCS lineage.
+
+The product goal is therefore not "AI writes axioms". It is:
+
+> AI uses typed semantic services to discover, ground, propose, compare, and
+> repair ontology/code/business deltas under explicit anchors and trust
+> contracts.
 
 ## 14. A Practical Product Claim
 

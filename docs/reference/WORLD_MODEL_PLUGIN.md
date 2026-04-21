@@ -8,7 +8,10 @@ This protocol lets an **untrusted** world model propose evidence-plane facts
 
 The plugin reads a JSON request from stdin and writes a JSON response to stdout.
 You can implement this protocol in any language (or behind HTTP), and Axiograph
-also ships a built-in LLM-backed plugin to avoid Python in core flows.
+also ships a built-in LLM-backed plugin to avoid Python in core flows. This
+should be understood as one typed agent/model integration surface among
+several possible ones: plugin process, API-backed runner, tool-loop service, or
+future MCP/skill-style adapter.
 
 Note: the **LLM prompt** is only used by the built-in LLM plugin. Custom ONNX or
 hierarchical reasoning models receive the raw request and can interpret it
@@ -34,15 +37,22 @@ however they choose.
   "input": {
     "axi_digest_v1": "fnv1a64:...",
     "axi_module_text": "module ...",
-    "export": { "version": "axi_jepa_export_v1", "...": "..." },
-    "export_path": "/path/to/export.json",
-    "snapshot": {
-      "kind": "axpd|store",
-      "path": "/path/to/axpd_or_store",
-      "snapshot_id": "fnv1a64:...",
-      "accepted_snapshot_id": "fnv1a64:..."
+    "semantic_input": {
+      "kind": "canonical_axi_semantics_v1",
+      "module_name": "Family",
+      "pathdb_snapshot_id": "pathdb:...",
+      "accepted_snapshot_id": "accepted:...",
+      "layers": [
+        {
+          "kind": "training_export",
+          "export": { "version": "axi_jepa_export_v1", "...": "..." }
+        },
+        {
+          "kind": "guardrail",
+          "report": { "version": "guardrail_costs_v1", "...": "..." }
+        }
+      ]
     },
-    "guardrail": { "version": "guardrail_costs_v1", "...": "..." },
     "notes": ["source=db_server", "..."]
   },
   "options": {
@@ -58,11 +68,23 @@ however they choose.
 ```
 
 Notes:
-- `input.export` embeds a full JEPA training export (schema/theory/instance).
-- `input.export_path` is a file path when the export is large.
-- `input.guardrail` is **optional** and provides cost context.
+- `input.axi_module_text` is the primary semantic input. Plugins should be able to
+  reason from canonical `.axi` alone.
+- `input.axi_digest_v1` is the stable anchor for that canonical module and should
+  match the digest of `input.axi_module_text`.
+- `input.semantic_input` is typed derived metadata about that canonical input:
+  module selection, snapshot lineage ids, and optional semantic layers.
+- `semantic_input.layers[kind=training_export]` embeds a JEPA/training export when
+  the caller has one. It is optional derived metadata, not the primary contract.
+- If a training export layer is present, it should be derived from the same
+  canonical `.axi` bytes and therefore carry the same `axi_digest_v1` and
+  module name.
+- `semantic_input.layers[kind=guardrail]` is **optional** and provides cost context.
+- Snapshot/store paths and `export_path`-style file references are intentionally not
+  first-class request fields in this protocol.
 - `options.task_costs` and `options.horizon_steps` enable MPC/planning contexts.
-- `input.axi_module_text` should be a full `.axi` module (schema + theory + instance + contexts + rewrite rules), not just a PathDB export.
+- `input.axi_module_text` should be a full canonical `.axi` module (schema +
+  theory + instance + contexts + rewrite rules), not a PathDB export.
 
 ---
 
@@ -163,5 +185,11 @@ axiograph ingest world-model \
 - CLI: `--world-model-llm` and `--world-model-http` (server + propose)
 - REPL: `wm` subcommand (`wm use llm` / `wm use http <url>` / `wm use command ...`)
 - Server: `POST /world_model/propose`, `POST /world_model/plan`
+
+When these entrypoints start from a live PathDB snapshot, they first export the
+selected canonical module and attach typed lineage anchors
+(`axi_digest_v1`, `pathdb_snapshot_id`, `accepted_snapshot_id`) before invoking
+the world model. Reversible `PathDBExportV1` snapshots are not part of the
+world-model request contract.
 
 All outputs remain **evidence-plane** until validated and promoted.

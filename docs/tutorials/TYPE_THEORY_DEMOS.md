@@ -75,49 +75,44 @@ In this mode you get answers fast; you *don’t* get a machine-checkable witness
 
 The same query can be run in **certified mode**:
 
-1. Use a scenario script to generate a dataset and export a reversible snapshot:
-   - the scripts already do `export_axi build/<scenario>_export_v1.axi`.
-2. Emit a query certificate anchored to that snapshot:
+1. Start from a canonical `.axi` module:
+   - e.g. `examples/ontology/OntologyRewrites.axi`.
+2. Emit a typed query witness anchored to that module:
 3. Verify the certificate in Lean.
 
-### 2.1 Generate + export a snapshot (Rust)
+### 2.1 Choose a canonical `.axi` module
 
-```bash
-cd rust
-cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/proto_api_demo.repl
-```
+For this walkthrough we use:
 
-This writes a snapshot export like:
+- `examples/ontology/OntologyRewrites.axi`
 
-- `rust/build/proto_api_export_v1.axi`
-
-### 2.2 Emit a `query_result_v1` certificate (Rust)
+### 2.2 Emit a canonical `.axi`-anchored typed query witness (Rust)
 
 From `axiograph_v6/`:
 
 ```bash
 cd rust
-cargo run -p axiograph-cli -- cert query build/proto_api_export_v1.axi --lang axql \
-  'select ?rpc where name("doc_proto_api_0") -mentions_http_endpoint/proto_http_endpoint_of_rpc-> ?rpc max_hops 3 limit 10' \
-  > build/proto_api_query_cert.json
+cargo run -p axiograph-cli -- cert query ../examples/ontology/OntologyRewrites.axi --lang axql \
+  'select ?p where ?f = Parent(parent=?p, child=Bob) limit 10' \
+  > build/ontology_rewrites_query_cert.json
 ```
 
-This certificate is **proof-relevant**:
+This witness is **proof-relevant**:
 
 - every returned row includes **path witnesses**,
-- each witness is a chain of snapshot-scoped `relation_id` facts,
+- each witness is anchored to canonical `.axi` tuple facts / stable names,
 - confidences are fixed-point (`*_fp`) so Lean can check them without floats.
 
 ### 2.3 Verify in Lean (trusted checker)
 
 ```bash
-make verify-lean-cert AXI=rust/build/proto_api_export_v1.axi CERT=rust/build/proto_api_query_cert.json
+make verify-lean-cert AXI=examples/ontology/OntologyRewrites.axi CERT=rust/build/ontology_rewrites_query_cert.json
 ```
 
 Or run the repo’s anchored query e2e target:
 
 ```bash
-make verify-lean-e2e-query-result-v1
+make verify-lean-e2e-query-result-module-v3
 ```
 
 ## 3) Proof relevance vs proof irrelevance (practical take)
@@ -246,7 +241,7 @@ This demo is a more “operational” version of the above: a tiny supply-chain 
 with:
 
 - explicit **world/context indexing** (`Plan` vs `Observed` vs `Policy`),
-- **context-scoped tuples** via `@context Context` (so “missing” is *unknown*, not *false*),
+- **context-scoped tuples** via explicit `ctx : Context` roles (so “missing” is *unknown*, not *false*),
 - **2-cells** via `RouteEquivalence(..., proof=...)` (path between paths),
 - **proof terms** for obligations (`JustificationPath` objects),
 - and a small “knowledge generation” slice by adding `DocChunk(text=...)` nodes in the REPL and exploring them with `fts(...)`.
@@ -341,7 +336,7 @@ This includes an end-to-end suite that:
 
 - validates all `examples/**/*.axi`,
 - runs all `examples/repl_scripts/*.repl`,
-- emits a `query_result_v1` certificate for each script’s exported snapshot.
+- emits canonical `.axi`-anchored typed query witnesses for canonical-module demos.
 
 Lean-inclusive (trusted checker):
 

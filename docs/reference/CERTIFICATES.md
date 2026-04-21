@@ -65,7 +65,7 @@ Lean:
 - `lean/Axiograph/Prob/Verified.lean` (`VProb`, `vMult`)
 - `lean/Axiograph/Certificate/Check.lean` (`verifyReachabilityProofV2`)
 
-Shape:
+Historical v2 shape:
 
 ```json
 {
@@ -99,24 +99,37 @@ Any v2 certificate may additionally carry an optional anchor:
 }
 ```
 
-For **anchored reachability**, each step can also carry a `relation_id`:
+The historical `PathDBExportV1`-anchored `reachability_v2` lane has been
+removed. The active runtime/server path emits canonical `.axi`-anchored
+`reachability_v3` proofs with stable `axi_fact_id` references instead.
 
-- `relation_id = N` refers to `Relation_N` in a `PathDBExportV1` snapshot.
-- Lean checks that every referenced `relation_id` exists in the snapshot `relation_info`
-  table and matches `(from, rel_type, to, rel_confidence_fp)` (the snapshot stores float bits;
-  Lean deterministically converts them to the fixed-point numerator to avoid trusting floats).
+### v2: reachability_v3 (canonical `.axi`-anchored path witness)
 
-Note: this “anchored to `PathDBExportV1`” scheme is an end-to-end scaffold.
-The long-term goal is to anchor certificates to canonical `.axi` inputs via stable
-fact IDs (module digest + extracted fact ids), so verification does not require the
-engine interchange snapshot format.
+`reachability_v3` is the preferred top-level reachability certificate family.
 
-Samples:
-- Anchor snapshot: `examples/anchors/pathdb_export_anchor_v1.axi`
-- Anchored reachability cert: `examples/certificates/reachability_v2_anchored.json`
+- Each step refers to a canonical `.axi` tuple fact via `axi_fact_id`.
+- Lean checks the path against the anchored canonical module rather than
+  `PathDBExportV1` snapshot tables.
+- The DB server now emits `reachability_v3` from `POST /cert/reachability`.
 
-End-to-end:
-- `make verify-lean-e2e-v2-anchored`
+Shape:
+
+```json
+{
+  "version": 2,
+  "anchor": { "axi_digest_v1": "fnv1a64:..." },
+  "kind": "reachability_v3",
+  "proof": {
+    "type": "step",
+    "from": "alice",
+    "rel": "Parent",
+    "to": "bob",
+    "rel_confidence_fp": 1000000,
+    "axi_fact_id": "axi:fact:...",
+    "rest": { "type": "reflexive", "entity": "bob" }
+  }
+}
+```
 
 ### v2: axi_well_typed_v1 (canonical `.axi` module typecheck gate)
 
@@ -249,64 +262,30 @@ axiograph cert constraints examples/ontology/OntologyRewrites.axi --out build/ax
 make verify-lean-cert AXI=examples/ontology/OntologyRewrites.axi CERT=build/axi_constraints_ok.json
 ```
 
-### v2: query_result_v1 (certified conjunctive queries: AxQL / SQL-ish)
+### v2: typed query witness / `query_result_v3` (canonical `.axi`-anchored query results)
 
-This certificate kind supports “certified querying” for the *conjunctive query*
-kernel used by AxQL (REPL) and the SQL-ish surface.
+`query_result_v3` is the preferred query certificate family.
+At the Rust/runtime layer, this is the typed query-witness path.
 
-It proves **soundness of returned rows**:
-- each returned row satisfies the query under the anchored snapshot
+It proves **soundness of returned rows** under a canonical `.axi` anchor:
+
+- each returned row satisfies the query under the anchored canonical module
 - it does **not** claim completeness (“these are all rows”)
 
 Anchoring:
-- the certificate carries an `.axi` digest anchor (`axi_digest_v1`)
-- path witnesses use `relation_id` fact ids that refer to `Relation_<id>` in a
-  `PathDBExportV1` snapshot
 
-What Lean checks:
-- type constraints against `entity_type`
-- attribute constraints against `entity_attribute`
-- path witnesses via anchored `ReachabilityProofV2` (each step must reference a real snapshot edge)
-- RPQ semantics using mathlib `RegularExpression` (so path-meaning is not hand-rolled)
-- optional context/world scoping (when present in the query) as an ordinary `path`
-  atom over `axi_fact_in_context` (single-context scoping is certifiable today; multi-context unions are execution-only for now)
+- the certificate carries an `.axi` digest anchor (`axi_digest_v1`) of the
+  canonical module
+- witnesses reference edges by stable `axi_fact_id` values derived from the
+  canonical tuple facts, rather than `relation_id` values in a snapshot export
 
-Shape (sketch):
-
-```json
-{
-  "version": 2,
-  "anchor": { "axi_digest_v1": "fnv1a64:..." },
-  "kind": "query_result_v1",
-  "proof": {
-    "query": { "select_vars": ["?y"], "atoms": [ /* ... */ ], "max_hops": 5 },
-    "rows": [
-      { "bindings": [{ "var": "?y", "entity": 2 }], "witnesses": [ /* ... */ ] }
-    ],
-    "truncated": false
-  }
-}
-```
-
-End-to-end:
-- `make verify-lean-e2e-query-result-v1`
-
-### v2: query_result_v3 (axi-anchored query results)
-
-`query_result_v3` removes the dependency on `PathDBExportV1` snapshot tables by
-anchoring directly to a canonical `.axi` module:
-
-- the certificate anchor is `axi_digest_v1` of the canonical module
-- witnesses reference edges by their stable `axi_fact_id` (derived from the
-  canonical tuple fact), rather than `relation_id` in a snapshot export
-
-This keeps `.axi` as the canonical truth and avoids “DB export semantics drift”
-in the checker.
+This keeps accepted `.axi` meaning authoritative and avoids forcing query
+certification through `PathDBExportV1`.
 
 End-to-end:
 - `make verify-lean-e2e-query-result-module-v3`
 
-CLI usage (canonical module → certificate; optional `--anchor-out` only for debugging):
+CLI usage (canonical module → certificate):
 
 ```bash
 axiograph cert query examples/manufacturing/SupplyChainHoTT.axi \
@@ -317,30 +296,10 @@ axiograph cert query examples/manufacturing/SupplyChainHoTT.axi \
 make verify-lean-cert AXI=examples/manufacturing/SupplyChainHoTT.axi CERT=build/supply_chain_query_cert_v3.json
 ```
 
-### v2: query_result_v2 (certified disjunction / UCQs)
-
-This certificate kind extends `query_result_v1` with **top-level disjunction**
-(`or`): a query is a union of conjunctive branches (UCQ).
-
-It proves **soundness of returned rows**, but does not claim completeness.
-
-What changes compared to `query_result_v1`:
-- the query payload stores `disjuncts: [ [atoms...], [atoms...], ... ]`
-- each row carries `disjunct: <index>` to indicate which branch it satisfies
-- Lean checks each row against that branch using the same atom/witness rules
-
-End-to-end:
-- `make verify-lean-e2e-query-result-v2`
-
-CLI usage (disjunction over a snapshot anchor):
-
-```bash
-axiograph cert query examples/anchors/pathdb_export_anchor_v1.axi \
-  --lang axql \
-  'select ?y where 0 -r1-> ?y or 0 -r1/r2-> ?y' \
-  --out build/query_result_or_v2.json
-make verify-lean-cert AXI=examples/anchors/pathdb_export_anchor_v1.axi CERT=build/query_result_or_v2.json
-```
+`query_result_v1` and `query_result_v2` have been removed from the active
+Rust/Lean certificate stack. The supported query certificate family is
+`query_result_v3`, via the canonical `.axi`-anchored typed query-witness path
+above.
 
 ### v2: resolution (fixed-point)
 

@@ -68,9 +68,8 @@ pub struct JepaExportOptions {
     pub max_items: usize,
     pub mask_fields: usize,
     pub seed: u64,
-    /// Relation names to exclude from the export (useful to hide snapshot
-    /// implementation details such as `interned_string` when falling back to
-    /// `PathDBExportV1`).
+    /// Relation names to exclude from the derived training export when a caller
+    /// wants to suppress specific canonical relations.
     pub exclude_relations: Vec<String>,
 }
 
@@ -563,14 +562,48 @@ pub fn compute_guardrail_costs(
 // World model plugin protocol
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorldModelSnapshotRefV1 {
-    pub kind: String, // "axpd" | "store"
-    pub path: String,
+pub const WORLD_MODEL_SEMANTIC_INPUT_KIND_V1: &str = "canonical_axi_semantics_v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorldModelSemanticLayerV1 {
+    Guardrail { report: GuardrailCostReportV1 },
+    TrainingExport { export: JepaExportFileV1 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldModelSemanticInputV1 {
+    pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub snapshot_id: Option<PathdbSnapshotId>,
+    pub module_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accepted_snapshot_id: Option<AcceptedSnapshotId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<WorldModelSemanticLayerV1>,
+}
+
+impl Default for WorldModelSemanticInputV1 {
+    fn default() -> Self {
+        Self {
+            kind: WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string(),
+            module_name: None,
+            pathdb_snapshot_id: None,
+            accepted_snapshot_id: None,
+            layers: Vec::new(),
+        }
+    }
+}
+
+impl WorldModelSemanticInputV1 {
+    pub fn is_empty(&self) -> bool {
+        self.kind == WORLD_MODEL_SEMANTIC_INPUT_KIND_V1
+            && self.module_name.is_none()
+            && self.pathdb_snapshot_id.is_none()
+            && self.accepted_snapshot_id.is_none()
+            && self.layers.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -579,27 +612,149 @@ pub struct WorldModelInputV1 {
     pub axi_digest_v1: Option<AxiDigest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub axi_module_text: Option<String>,
-    /// Describes the provenance of `axi_module_text` when provided.
-    ///
-    /// Expected values:
-    /// - `canonical_module_export` (preferred)
-    /// - `pathdb_export_fallback` (debug-only; includes PathDBExportV1 internals)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub axi_input_kind: Option<String>,
-    /// If the snapshot contains multiple canonical modules, records which module
-    /// was selected (or requested) for export.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub axi_input_module: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub export: Option<JepaExportFileV1>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub export_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub snapshot: Option<WorldModelSnapshotRefV1>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub guardrail: Option<GuardrailCostReportV1>,
+    #[serde(default, skip_serializing_if = "WorldModelSemanticInputV1::is_empty")]
+    pub semantic_input: WorldModelSemanticInputV1,
     #[serde(default)]
     pub notes: Vec<String>,
+}
+
+impl WorldModelInputV1 {
+    pub fn set_canonical_axi_semantics(
+        &mut self,
+        module_name: Option<String>,
+        pathdb_snapshot_id: Option<PathdbSnapshotId>,
+        accepted_snapshot_id: Option<AcceptedSnapshotId>,
+    ) {
+        self.semantic_input.kind = WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string();
+        self.semantic_input.module_name = module_name;
+        self.semantic_input.pathdb_snapshot_id = pathdb_snapshot_id;
+        self.semantic_input.accepted_snapshot_id = accepted_snapshot_id;
+    }
+
+    fn replace_semantic_layer(&mut self, layer: WorldModelSemanticLayerV1) {
+        let same_kind = |candidate: &WorldModelSemanticLayerV1| {
+            matches!(
+                (&layer, candidate),
+                (
+                    WorldModelSemanticLayerV1::Guardrail { .. },
+                    WorldModelSemanticLayerV1::Guardrail { .. }
+                ) | (
+                    WorldModelSemanticLayerV1::TrainingExport { .. },
+                    WorldModelSemanticLayerV1::TrainingExport { .. }
+                )
+            )
+        };
+        self.semantic_input
+            .layers
+            .retain(|candidate| !same_kind(candidate));
+        self.semantic_input.layers.push(layer);
+    }
+
+    pub fn set_guardrail_layer(&mut self, report: GuardrailCostReportV1) {
+        self.replace_semantic_layer(WorldModelSemanticLayerV1::Guardrail { report });
+    }
+
+    pub fn set_training_export_layer(&mut self, export: JepaExportFileV1) {
+        self.replace_semantic_layer(WorldModelSemanticLayerV1::TrainingExport { export });
+    }
+
+    pub fn training_export(&self) -> Option<&JepaExportFileV1> {
+        self.semantic_input
+            .layers
+            .iter()
+            .find_map(|layer| match layer {
+                WorldModelSemanticLayerV1::TrainingExport { export } => Some(export),
+                WorldModelSemanticLayerV1::Guardrail { .. } => None,
+            })
+    }
+
+    pub fn pathdb_snapshot_id(&self) -> Option<PathdbSnapshotId> {
+        self.semantic_input.pathdb_snapshot_id.clone()
+    }
+
+    pub fn accepted_snapshot_id(&self) -> Option<AcceptedSnapshotId> {
+        self.semantic_input.accepted_snapshot_id.clone()
+    }
+
+    pub fn validate_canonical_axi_contract(&self) -> Result<()> {
+        let Some(axi_text) = self.axi_module_text.as_deref() else {
+            return Err(anyhow!(
+                "world model input requires `axi_module_text` with a canonical `.axi` module"
+            ));
+        };
+
+        let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
+        let canonical_digest = canonical.digest();
+        let canonical_module_name = canonical.module().module().module_name.as_str();
+
+        let Some(input_digest) = self.axi_digest_v1.as_ref() else {
+            return Err(anyhow!(
+                "world model input requires `axi_digest_v1` anchored to the canonical `.axi` input"
+            ));
+        };
+        if input_digest.as_str() != canonical_digest.as_str() {
+            return Err(anyhow!(
+                "world model input `axi_digest_v1` `{}` does not match canonical `.axi` digest `{}`",
+                input_digest.as_str(),
+                canonical_digest.as_str()
+            ));
+        }
+
+        if self.semantic_input.kind != WORLD_MODEL_SEMANTIC_INPUT_KIND_V1 {
+            return Err(anyhow!(
+                "world model input semantic kind `{}` is unsupported; expected `{}`",
+                self.semantic_input.kind,
+                WORLD_MODEL_SEMANTIC_INPUT_KIND_V1
+            ));
+        }
+
+        if let Some(module_name) = self.semantic_input.module_name.as_deref() {
+            if module_name != canonical_module_name {
+                return Err(anyhow!(
+                    "world model input semantic module `{module_name}` does not match canonical `.axi` module `{canonical_module_name}`"
+                ));
+            }
+        }
+
+        for layer in &self.semantic_input.layers {
+            if let WorldModelSemanticLayerV1::TrainingExport { export } = layer {
+                if export.axi_digest_v1.as_str() != canonical_digest.as_str() {
+                    return Err(anyhow!(
+                        "world model training export digest `{}` does not match canonical `.axi` digest `{}`",
+                        export.axi_digest_v1.as_str(),
+                        canonical_digest.as_str()
+                    ));
+                }
+                if export.module_name != canonical_module_name {
+                    return Err(anyhow!(
+                        "world model training export module `{}` does not match canonical `.axi` module `{}`",
+                        export.module_name,
+                        canonical_module_name
+                    ));
+                }
+                let export_canonical =
+                    crate::axi_input::require_canonical_axi_text(&export.module_text)?;
+                if export_canonical.digest().as_str() != canonical_digest.as_str() {
+                    return Err(anyhow!(
+                        "world model training export module text does not match the canonical `.axi` input digest `{}`",
+                        canonical_digest.as_str()
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+pub fn validate_world_model_request(req: &WorldModelRequestV1) -> Result<()> {
+    if req.protocol != WORLD_MODEL_PROTOCOL_V1 {
+        return Err(anyhow!(
+            "world model request protocol must be `{WORLD_MODEL_PROTOCOL_V1}`, got `{}`",
+            req.protocol
+        ));
+    }
+    req.input.validate_canonical_axi_contract()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -792,6 +947,7 @@ impl WorldModelState {
     }
 
     pub fn propose(&self, req: &WorldModelRequestV1) -> Result<WorldModelResponseV1> {
+        validate_world_model_request(req)?;
         match &self.backend {
             WorldModelBackend::Disabled => Err(anyhow!(
                 "world model backend is disabled (configure --world-model-plugin or use stub)"
@@ -1174,7 +1330,7 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
     let opts = &req.options;
     let input = &req.input;
 
-    let export_summary = input.export.as_ref().map(|export| {
+    let training_export_summary = input.training_export().map(|export| {
         let sample = export
             .items
             .iter()
@@ -1197,6 +1353,27 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
         })
     });
 
+    let semantic_layers_summary = input
+        .semantic_input
+        .layers
+        .iter()
+        .map(|layer| match layer {
+            WorldModelSemanticLayerV1::Guardrail { report } => json!({
+                "kind": "guardrail",
+                "profile": report.profile,
+                "plane": report.plane,
+                "total_cost": report.summary.total_cost,
+                "term_count": report.summary.term_count,
+            }),
+            WorldModelSemanticLayerV1::TrainingExport { export } => json!({
+                "kind": "training_export",
+                "module_name": export.module_name,
+                "axi_digest_v1": export.axi_digest_v1,
+                "items": export.items.len(),
+            }),
+        })
+        .collect::<Vec<_>>();
+
     let summary = json!({
         "trace_id": trace_id,
         "generated_at": req.generated_at_unix_secs,
@@ -1206,10 +1383,14 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
         "max_new_proposals": opts.max_new_proposals,
         "notes": opts.notes,
         "axi_digest_v1": input.axi_digest_v1,
-        "axi_input_kind": input.axi_input_kind,
-        "axi_input_module": input.axi_input_module,
-        "export_summary": export_summary,
-        "export_path": input.export_path,
+        "semantic_input": {
+            "kind": input.semantic_input.kind,
+            "module_name": input.semantic_input.module_name,
+            "pathdb_snapshot_id": input.semantic_input.pathdb_snapshot_id,
+            "accepted_snapshot_id": input.semantic_input.accepted_snapshot_id,
+            "layers": semantic_layers_summary,
+        },
+        "training_export_summary": training_export_summary,
     });
 
     let prompt = [
@@ -1232,9 +1413,10 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
         "- Propose at most max_new_proposals items.",
         "- Use stable ids (e.g. wm::<trace_id>::n).",
         "- Keep confidence between 0.55 and 0.9.",
-        "- Use only info grounded in export_summary + goals.",
-        "- Do NOT infer relationships from mere co-occurrence of string tokens/ids (especially intern tables or other low-level snapshot artifacts). If you cannot cite a specific typed item/field in export_summary that supports the proposal, do not propose it.",
-        "- If axi_input_kind is `pathdb_export_fallback`, treat the input as debug-only (it may contain implementation details). Prefer returning fewer proposals with stronger grounding.",
+        "- Treat `axi_module_text` + `semantic_input` as the semantic source of truth.",
+        "- `training_export_summary` is an optional derived view for pattern discovery, not the ontology kernel.",
+        "- Use only info grounded in `axi_module_text`, `semantic_input`, optional `training_export_summary`, and the stated goals.",
+        "- Do NOT infer relationships from mere co-occurrence of string tokens/ids or other low-level implementation artifacts. If you cannot cite a specific typed item/field in the semantic input or training-export summary that supports the proposal, do not propose it.",
     ]
     .join("\n");
 
@@ -1489,7 +1671,7 @@ pub fn run_world_model_plan(
         for rollout in 0..options.rollouts {
             let mut input = base_input.clone();
             if options.include_guardrail && options.guardrail_profile != "off" {
-                input.guardrail = Some(guardrail_before.clone());
+                input.set_guardrail_layer(guardrail_before.clone());
             }
             input.notes.push(format!(
                 "source=world_model_plan step={step} rollout={rollout}"
@@ -1526,14 +1708,8 @@ pub fn run_world_model_plan(
                 world_model.backend_label(),
                 world_model.model.clone(),
                 base_input.axi_digest_v1.clone(),
-                base_input
-                    .snapshot
-                    .as_ref()
-                    .and_then(|snap| snap.snapshot_id.clone()),
-                base_input
-                    .snapshot
-                    .as_ref()
-                    .and_then(|snap| snap.accepted_snapshot_id.clone()),
+                base_input.pathdb_snapshot_id(),
+                base_input.accepted_snapshot_id(),
                 Some(guardrail_before.summary.total_cost),
                 guardrail_profile_label,
                 guardrail_plane_label,
@@ -2110,17 +2286,13 @@ instance I of S:
             input: WorldModelInputV1 {
                 axi_digest_v1: Some(AxiDigest::new("fnv1a64:abc")),
                 axi_module_text: Some("module Demo\n".to_string()),
-                axi_input_kind: Some("canonical_module_export".to_string()),
-                axi_input_module: Some("Demo".to_string()),
-                export: None,
-                export_path: None,
-                snapshot: Some(WorldModelSnapshotRefV1 {
-                    kind: "store".to_string(),
-                    path: "/tmp/store".to_string(),
-                    snapshot_id: Some(PathdbSnapshotId::new("pathdb:42")),
+                semantic_input: WorldModelSemanticInputV1 {
+                    kind: WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string(),
+                    module_name: Some("Demo".to_string()),
+                    pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:42")),
                     accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:9")),
-                }),
-                guardrail: None,
+                    layers: Vec::new(),
+                },
                 notes: vec!["typed".to_string()],
             },
             options: WorldModelOptionsV1::default(),
@@ -2129,9 +2301,12 @@ instance I of S:
         let json = serde_json::to_value(&req).expect("serialize request");
         assert_eq!(json["trace_id"], "wm::123");
         assert_eq!(json["input"]["axi_digest_v1"], "fnv1a64:abc");
-        assert_eq!(json["input"]["snapshot"]["snapshot_id"], "pathdb:42");
         assert_eq!(
-            json["input"]["snapshot"]["accepted_snapshot_id"],
+            json["input"]["semantic_input"]["pathdb_snapshot_id"],
+            "pathdb:42"
+        );
+        assert_eq!(
+            json["input"]["semantic_input"]["accepted_snapshot_id"],
             "accepted:9"
         );
 
@@ -2146,18 +2321,95 @@ instance I of S:
                 .map(AxiDigest::as_str),
             Some("fnv1a64:abc")
         );
-        let snapshot = round_trip.input.snapshot.expect("snapshot");
         assert_eq!(
-            snapshot.snapshot_id.as_ref().map(PathdbSnapshotId::as_str),
+            round_trip
+                .input
+                .semantic_input
+                .pathdb_snapshot_id
+                .as_ref()
+                .map(PathdbSnapshotId::as_str),
             Some("pathdb:42")
         );
         assert_eq!(
-            snapshot
+            round_trip
+                .input
+                .semantic_input
                 .accepted_snapshot_id
                 .as_ref()
                 .map(AcceptedSnapshotId::as_str),
             Some("accepted:9")
         );
+    }
+
+    #[test]
+    fn world_model_request_validation_rejects_pathdb_export_snapshot_text() {
+        let canonical = r#"
+module Demo
+schema S:
+  object A
+  relation R(from: A, to: A)
+instance I of S:
+  A = {x, y}
+  R = {(from=x, to=y)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, canonical)
+            .expect("import canonical module");
+        db.build_indexes();
+        let snapshot_export = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)
+            .expect("export pathdb snapshot");
+
+        let req = WorldModelRequestV1 {
+            protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
+            trace_id: WorldModelRunId::new("wm::bad-snapshot"),
+            generated_at_unix_secs: 1,
+            input: WorldModelInputV1 {
+                axi_digest_v1: Some(AxiDigest::from_axi_text(&snapshot_export)),
+                axi_module_text: Some(snapshot_export),
+                semantic_input: WorldModelSemanticInputV1 {
+                    kind: WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string(),
+                    module_name: Some("Demo".to_string()),
+                    pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:1")),
+                    accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:1")),
+                    layers: Vec::new(),
+                },
+                notes: Vec::new(),
+            },
+            options: WorldModelOptionsV1::default(),
+        };
+
+        let err = validate_world_model_request(&req).expect_err("PathDB export must fail");
+        assert!(err
+            .to_string()
+            .contains("expected a canonical .axi module, but input is a PathDBExportV1 snapshot"));
+    }
+
+    #[test]
+    fn world_model_request_validation_rejects_missing_digest_anchor() {
+        let canonical = "module Demo\nschema S:\n  object A\n";
+        let req = WorldModelRequestV1 {
+            protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
+            trace_id: WorldModelRunId::new("wm::missing-digest"),
+            generated_at_unix_secs: 1,
+            input: WorldModelInputV1 {
+                axi_digest_v1: None,
+                axi_module_text: Some(canonical.to_string()),
+                semantic_input: WorldModelSemanticInputV1 {
+                    kind: WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string(),
+                    module_name: Some("Demo".to_string()),
+                    pathdb_snapshot_id: None,
+                    accepted_snapshot_id: None,
+                    layers: Vec::new(),
+                },
+                notes: Vec::new(),
+            },
+            options: WorldModelOptionsV1::default(),
+        };
+
+        let err = validate_world_model_request(&req).expect_err("missing digest anchor must fail");
+        assert!(err
+            .to_string()
+            .contains("requires `axi_digest_v1` anchored to the canonical `.axi` input"));
     }
 
     #[test]

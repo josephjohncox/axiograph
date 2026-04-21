@@ -1,7 +1,7 @@
 # Axiograph REPL script: context/world scoping + typed elaboration + typed viz overlay
 #
 # Demonstrates:
-# - canonical `.axi` contexts via `@context` / `ctx=...`
+# - canonical `.axi` contexts via explicit `ctx` roles
 # - PathDB-derived `axi_fact_in_context` edges on import
 # - AxQL scoping (`in <ctx>`) and REPL defaults (`ctx use ...`)
 # - schema-directed query elaboration (`q --elaborate`)
@@ -44,5 +44,5 @@ viz build/family_context_typed.html format html plane data focus_name Carol hops
 # E2E tests expect every script to support a default “Homotopy query” certificate.
 add_entity Homotopy demo_homotopy_0
 
-# Export a reversible snapshot `.axi` (used by CI smoke tests and for certificate anchoring).
+# Export a reversible snapshot `.axi` (used by CI smoke tests and snapshot-export compatibility coverage).
 export_axi build/context_scoping_family_export_v1.axi

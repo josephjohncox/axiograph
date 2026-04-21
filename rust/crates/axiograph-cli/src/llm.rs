@@ -471,7 +471,6 @@ pub struct LlmState {
 
 #[derive(Debug, Clone)]
 pub enum GeneratedQuery {
-    Axql(String),
     QueryIrV1(QueryIrV1),
 }
 
@@ -499,7 +498,7 @@ impl LlmState {
                 let tokens: Vec<String> =
                     question.split_whitespace().map(|s| s.to_string()).collect();
                 let q = crate::nlq::parse_ask_query(&tokens)?;
-                Ok(GeneratedQuery::Axql(crate::nlq::render_axql_query(&q)))
+                Ok(GeneratedQuery::QueryIrV1(QueryIrV1::from_axql_query(&q)))
             }
             #[cfg(feature = "llm-ollama")]
             LlmBackend::Ollama { host } => {
@@ -546,14 +545,11 @@ impl LlmState {
                 if let Some(ir) = response.query_ir_v1 {
                     return Ok(GeneratedQuery::QueryIrV1(ir));
                 }
-                if let Some(axql) = response.axql {
-                    return Ok(GeneratedQuery::Axql(axql));
-                }
-                Err(anyhow!("llm plugin returned no `query_ir_v1` or `axql`"))
+                Err(anyhow!("llm plugin returned no `query_ir_v1`"))
             }
         }?;
 
-        Ok(normalize_generated_query(out))
+        Ok(out)
     }
 
     pub fn summarize_answer(
@@ -570,10 +566,9 @@ impl LlmState {
                     model: self.model.clone(),
                     task: PluginTaskV1::Answer {
                         question: question.to_string(),
-                        query: QueryPayloadV1::Axql {
-                            axql: match query {
-                                GeneratedQuery::Axql(q) => q.clone(),
-                                GeneratedQuery::QueryIrV1(ir) => ir.to_axql_text()?,
+                        query: QueryPayloadV1::QueryIrV1 {
+                            query_ir_v1: match query {
+                                GeneratedQuery::QueryIrV1(ir) => ir.clone(),
                             },
                         },
                         results: result.to_plugin_results(db),
@@ -628,6 +623,7 @@ pub(crate) fn world_model_llm_plugin(
     llm: &LlmState,
     req: &WorldModelRequestV1,
 ) -> Result<WorldModelResponseV1> {
+    crate::world_model::validate_world_model_request(req)?;
     let _max_tokens_guard = maybe_bump_llm_max_output_tokens(req);
     let content = match &llm.backend {
         LlmBackend::Disabled => {
@@ -744,364 +740,6 @@ fn world_model_output_token_budget(req: &WorldModelRequestV1) -> u32 {
     estimate.clamp(DEFAULT_LLM_MAX_OUTPUT_TOKENS, 12000)
 }
 
-fn normalize_generated_query(q: GeneratedQuery) -> GeneratedQuery {
-    match q {
-        GeneratedQuery::Axql(text) => {
-            let normalized = normalize_axql_candidate(&text);
-            // Keep the LLM/tooling boundary typed when possible: if the AxQL
-            // parses, convert it into QueryIrV1 so downstream components can
-            // consume a stable JSON form.
-            if let Ok(parsed) = crate::axql::parse_axql_query(&normalized) {
-                GeneratedQuery::QueryIrV1(QueryIrV1::from_axql_query(&parsed))
-            } else {
-                GeneratedQuery::Axql(normalized)
-            }
-        }
-        GeneratedQuery::QueryIrV1(ir) => GeneratedQuery::QueryIrV1(ir),
-    }
-}
-
-fn normalize_axql_candidate(text: &str) -> String {
-    let mut s = text.trim().to_string();
-    if s.is_empty() {
-        return s;
-    }
-
-    // Trim common wrappers produced by models (even when we ask them not to).
-    if let Some(rest) = s.strip_prefix("axql:") {
-        s = rest.trim().to_string();
-    }
-    if let Some(rest) = s.strip_prefix("AxQL:") {
-        s = rest.trim().to_string();
-    }
-
-    // Strip a single surrounding markdown fence.
-    if s.starts_with("```") {
-        if let Some(end) = s.rfind("```") {
-            if end > 0 {
-                let inner = &s[3..end];
-                s = inner.trim().to_string();
-            }
-        }
-        if let Some(rest) = s.strip_prefix("text") {
-            // ```text
-            s = rest.trim().to_string();
-        }
-    }
-
-    // Many LLMs add a trailing ';' out of SQL habit.
-    while s.ends_with(';') {
-        s.pop();
-        s = s.trim_end().to_string();
-    }
-
-    // AxQL queries must start with either `where ...` (implicit select) or
-    // `select ... where ...`. If the model returns just an atom/conjunction,
-    // treat it as a `where` clause.
-    let lower = s.to_ascii_lowercase();
-    if !(lower.starts_with("where") || lower.starts_with("select")) {
-        s = format!("where {s}");
-    }
-
-    s = rewrite_common_llm_axql_mistakes(&s);
-    s
-}
-
-fn rewrite_common_llm_axql_mistakes(text: &str) -> String {
-    let mut s = text.to_string();
-    s = rewrite_bracketed_limit_syntax(&s);
-    s = rewrite_colon_attr_equality(&s);
-    s = rewrite_var_is_quoted_string_as_name_attr(&s);
-    s
-}
-
-fn rewrite_bracketed_limit_syntax(text: &str) -> String {
-    // Common LLM mistake: `[...]` around the query limit, like `[limit 10]`.
-    //
-    // Note: AxQL uses brackets for path expressions (RPQs), so we only rewrite
-    // bracket groups that *start* with `limit`.
-    let mut out = String::new();
-    let mut i = 0usize;
-    while let Some(open_rel) = text[i..].find('[') {
-        let open = i + open_rel;
-        out.push_str(&text[i..open]);
-
-        let Some(close_rel) = text[open + 1..].find(']') else {
-            // No closing bracket; emit the rest unchanged.
-            out.push_str(&text[open..]);
-            return out;
-        };
-        let close = open + 1 + close_rel;
-
-        let inner = text[open + 1..close].trim();
-        if let Some(limit) = parse_bracketed_limit(inner) {
-            if !out.is_empty() && !out.ends_with(char::is_whitespace) {
-                out.push(' ');
-            }
-            out.push_str(&limit);
-        } else {
-            // Keep untouched: this could be a bracketed RPQ like `-[a/b]->`.
-            out.push_str(&text[open..=close]);
-        }
-
-        i = close + 1;
-    }
-    out.push_str(&text[i..]);
-    out
-}
-
-fn parse_bracketed_limit(inner: &str) -> Option<String> {
-    // Supports:
-    // - limit 10
-    // - LIMIT 10
-    // - limit=10
-    // - limit: 10
-    let mut s = inner.trim().to_string();
-    if s.is_empty() {
-        return None;
-    }
-    let lower = s.to_ascii_lowercase();
-    if !lower.starts_with("limit") {
-        return None;
-    }
-
-    // Keep slicing by byte offset: ASCII only ("limit").
-    let rest = s[5..].trim_start();
-    let rest = rest
-        .strip_prefix('=')
-        .or_else(|| rest.strip_prefix(':'))
-        .unwrap_or(rest);
-    let rest = rest.trim_start();
-
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    Some(format!("limit {digits}"))
-}
-
-fn rewrite_var_is_quoted_string_as_name_attr(text: &str) -> String {
-    // Common LLM mistake: `?x is "SomeEntityName"` when it means attribute
-    // equality on `name`.
-    //
-    // We rewrite only when the RHS is a *quoted string* so we don't conflict
-    // with the valid type atom form: `?x is TypeName`.
-    let mut out = String::new();
-    let mut i = 0usize;
-
-    while let Some(q_rel) = text[i..].find('?') {
-        let q = i + q_rel;
-        out.push_str(&text[i..q]);
-
-        let Some((var_end, var_name)) = parse_var_token(text, q) else {
-            // Not a valid variable; emit '?' and continue.
-            out.push('?');
-            i = q + 1;
-            continue;
-        };
-
-        // Lookahead: `?var <ws> is <ws> "<string>"`
-        let mut j = var_end;
-        while let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                j += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if !starts_with_kw_case_insensitive(text, j, "is") {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        }
-        j += 2;
-        if let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                // ok
-            } else {
-                out.push_str(&text[q..var_end]);
-                i = var_end;
-                continue;
-            }
-        } else {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        }
-        while let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                j += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        let Some((lit_end, lit)) = parse_string_literal(text, j) else {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        };
-
-        // Rewrite: `?var is "X"` → `?var.name = "X"`
-        out.push_str(&var_name);
-        out.push_str(".name = ");
-        out.push_str(lit);
-
-        i = lit_end;
-    }
-
-    out.push_str(&text[i..]);
-    out
-}
-
-fn rewrite_colon_attr_equality(text: &str) -> String {
-    // Common LLM mistake: `?x :name = "Alice"` or `?x :full_name = "..."`.
-    //
-    // AxQL uses `:` for type constraints only; attribute equality is
-    // `?x.name = "Alice"` or `attr(?x, "name", "Alice")`.
-    //
-    // We rewrite only when the `:<ident>` is followed by `=`.
-    let mut out = String::new();
-    let mut i = 0usize;
-
-    while let Some(q_rel) = text[i..].find('?') {
-        let q = i + q_rel;
-        out.push_str(&text[i..q]);
-
-        let Some((var_end, var_name)) = parse_var_token(text, q) else {
-            out.push('?');
-            i = q + 1;
-            continue;
-        };
-
-        let mut j = var_end;
-        while let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                j += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if text.as_bytes().get(j) != Some(&b':') {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        }
-        j += 1;
-        while let Some(c) = text[j..].chars().next() {
-            if c.is_whitespace() {
-                j += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-
-        let Some((key_end, key)) = parse_ident_token(text, j) else {
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        };
-
-        let mut k = key_end;
-        while let Some(c) = text[k..].chars().next() {
-            if c.is_whitespace() {
-                k += c.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if text.as_bytes().get(k) != Some(&b'=') {
-            // This is probably a valid type atom: `?x : TypeName`.
-            out.push_str(&text[q..var_end]);
-            i = var_end;
-            continue;
-        }
-
-        // Rewrite `?x :key =` → `?x.key =`
-        out.push_str(&var_name);
-        out.push('.');
-        out.push_str(&key);
-        out.push_str(&text[key_end..=k]); // include any spaces before '=' plus '=' itself
-
-        i = k + 1;
-    }
-
-    out.push_str(&text[i..]);
-    out
-}
-
-fn parse_var_token(text: &str, start: usize) -> Option<(usize, String)> {
-    if !text.as_bytes().get(start).is_some_and(|b| *b == b'?') {
-        return None;
-    }
-    let mut i = start + 1;
-    let mut chars = text[i..].chars();
-    let first = chars.next()?;
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return None;
-    }
-    i += first.len_utf8();
-    while let Some(c) = text[i..].chars().next() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            i += c.len_utf8();
-        } else {
-            break;
-        }
-    }
-    Some((i, text[start..i].to_string()))
-}
-
-fn parse_ident_token(text: &str, start: usize) -> Option<(usize, String)> {
-    let mut i = start;
-    let first = text[i..].chars().next()?;
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return None;
-    }
-    i += first.len_utf8();
-    while let Some(c) = text[i..].chars().next() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            i += c.len_utf8();
-        } else {
-            break;
-        }
-    }
-    Some((i, text[start..i].to_string()))
-}
-
-fn starts_with_kw_case_insensitive(text: &str, start: usize, kw: &str) -> bool {
-    let Some(slice) = text.get(start..) else {
-        return false;
-    };
-    slice
-        .as_bytes()
-        .get(..kw.len())
-        .is_some_and(|b| b.eq_ignore_ascii_case(kw.as_bytes()))
-}
-
-fn parse_string_literal<'a>(text: &'a str, start: usize) -> Option<(usize, &'a str)> {
-    let quote = *text.as_bytes().get(start)?;
-    if quote != b'"' && quote != b'\'' {
-        return None;
-    }
-    let mut i = start + 1;
-    while i < text.len() {
-        let b = text.as_bytes()[i];
-        if b == b'\\' {
-            // Skip escaped char.
-            i += 1;
-            if i < text.len() {
-                i += 1;
-            }
-            continue;
-        }
-        if b == quote {
-            let end = i + 1;
-            return Some((end, &text[start..end]));
-        }
-        i += 1;
-    }
-    None
-}
-
 #[cfg(feature = "llm-ollama")]
 fn normalize_ollama_host(host: &str) -> String {
     let mut host = host.trim().to_string();
@@ -1177,7 +815,6 @@ fn ollama_generate_query(
 
 You MUST return a single JSON object with one of these shapes:
 - { "query_ir_v1": { ... } }
-- { "axql": "<AxQL query>" }   (fallback; only if you cannot produce query_ir_v1)
 - { "error": "<error message>" }
 
 Do not wrap in markdown or code fences."#;
@@ -1270,8 +907,6 @@ Terms:
 - variable:  "?x"
 - name ref:  "acme.svc0.v1.Service0"   (means name("acme.svc0.v1.Service0"))
 - wildcard:  "_"
-
-AxQL is accepted as a fallback (same semantics), but prefer `query_ir_v1`.
 
 Return ONLY the JSON object."#,
         schemas = schemas_text,
@@ -1296,11 +931,8 @@ Return ONLY the JSON object."#,
     if let Some(ir) = parsed.query_ir_v1 {
         return Ok(GeneratedQuery::QueryIrV1(ir));
     }
-    if let Some(axql) = parsed.axql {
-        return Ok(GeneratedQuery::Axql(axql));
-    }
 
-    Err(anyhow!("ollama returned no `query_ir_v1` or `axql`"))
+    Err(anyhow!("ollama returned no `query_ir_v1`"))
 }
 
 #[cfg(feature = "llm-openai")]
@@ -1321,7 +953,6 @@ fn openai_generate_query(
 
 You MUST return a single JSON object with one of these shapes:
 - { "query_ir_v1": { ... } }
-- { "axql": "<AxQL query>" }   (fallback; only if you cannot produce query_ir_v1)
 - { "error": "<error message>" }
 
 Do not wrap in markdown or code fences."#;
@@ -1415,8 +1046,6 @@ Terms:
 - name ref:  "acme.svc0.v1.Service0"   (means name("acme.svc0.v1.Service0"))
 - wildcard:  "_"
 
-AxQL is accepted as a fallback (same semantics), but prefer `query_ir_v1`.
-
 Return ONLY the JSON object."#,
         schemas = schemas_text,
         types = compact_join_list(&schema.types, 60, 1800),
@@ -1434,12 +1063,10 @@ Return ONLY the JSON object."#,
         "additionalProperties": false,
         "properties": {
             "query_ir_v1": query_ir_v1_schema,
-            "axql": { "type": "string" },
             "error": { "type": "string" }
         },
         "oneOf": [
             { "required": ["query_ir_v1"] },
-            { "required": ["axql"] },
             { "required": ["error"] }
         ]
     });
@@ -1466,11 +1093,8 @@ Return ONLY the JSON object."#,
     if let Some(ir) = parsed.query_ir_v1 {
         return Ok(GeneratedQuery::QueryIrV1(ir));
     }
-    if let Some(axql) = parsed.axql {
-        return Ok(GeneratedQuery::Axql(axql));
-    }
 
-    Err(anyhow!("openai returned no `query_ir_v1` or `axql`"))
+    Err(anyhow!("openai returned no `query_ir_v1`"))
 }
 
 #[cfg(feature = "llm-anthropic")]
@@ -1491,7 +1115,6 @@ fn anthropic_generate_query(
 
 You MUST return a single JSON object with one of these shapes:
 - { "query_ir_v1": { ... } }
-- { "axql": "<AxQL query>" }   (fallback; only if you cannot produce query_ir_v1)
 - { "error": "<error message>" }
 
 Do not wrap in markdown or code fences."#;
@@ -1585,8 +1208,6 @@ Terms:
 - name ref:  "acme.svc0.v1.Service0"   (means name("acme.svc0.v1.Service0"))
 - wildcard:  "_"
 
-AxQL is accepted as a fallback (same semantics), but prefer `query_ir_v1`.
-
 Return ONLY the JSON object."#,
         schemas = schemas_text,
         types = compact_join_list(&schema.types, 60, 1800),
@@ -1607,11 +1228,8 @@ Return ONLY the JSON object."#,
     if let Some(ir) = parsed.query_ir_v1 {
         return Ok(GeneratedQuery::QueryIrV1(ir));
     }
-    if let Some(axql) = parsed.axql {
-        return Ok(GeneratedQuery::Axql(axql));
-    }
 
-    Err(anyhow!("anthropic returned no `query_ir_v1` or `axql`"))
+    Err(anyhow!("anthropic returned no `query_ir_v1`"))
 }
 
 fn render_doc_grounding(
@@ -1979,7 +1597,6 @@ Return a single JSON object with an \"answer\" field.
 
 Write a concise answer grounded ONLY in the results. If the results are empty, say you don't know."#,
         query_json = match query {
-            GeneratedQuery::Axql(q) => format!("AxQL: {q}"),
             GeneratedQuery::QueryIrV1(ir) => format!(
                 "query_ir_v1 (compiled): {}",
                 ir.to_axql_text()
@@ -2039,7 +1656,6 @@ Return a single JSON object with an "answer" field.
 
 Write a concise answer grounded ONLY in the results. If the results are empty, say you don't know."#,
         query_json = match query {
-            GeneratedQuery::Axql(q) => format!("AxQL: {q}"),
             GeneratedQuery::QueryIrV1(ir) => format!(
                 "query_ir_v1 (compiled): {}",
                 ir.to_axql_text()
@@ -2119,7 +1735,6 @@ Return a single JSON object with an "answer" field.
 
 Write a concise answer grounded ONLY in the results. If the results are empty, say you don't know."#,
         query_json = match query {
-            GeneratedQuery::Axql(q) => format!("AxQL: {q}"),
             GeneratedQuery::QueryIrV1(ir) => format!(
                 "query_ir_v1 (compiled): {}",
                 ir.to_axql_text()
@@ -2900,53 +2515,10 @@ pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_axql_candidate, parse_llm_json_object};
+    use super::parse_llm_json_object;
     use anyhow::Result;
     use serde_json::json;
     use std::path::PathBuf;
-
-    #[test]
-    fn normalizes_bare_atom_to_where_clause() {
-        let s = normalize_axql_candidate("?x : Node");
-        assert_eq!(s, "where ?x : Node");
-        crate::axql::parse_axql_query(&s).expect("normalized query parses");
-    }
-
-    #[test]
-    fn strips_trailing_semicolons() {
-        let s = normalize_axql_candidate("where ?x : Node;");
-        assert_eq!(s, "where ?x : Node");
-        crate::axql::parse_axql_query(&s).expect("normalized query parses");
-    }
-
-    #[test]
-    fn strips_axql_prefix() {
-        let s = normalize_axql_candidate("axql: where ?x : Node limit 1");
-        assert_eq!(s, "where ?x : Node limit 1");
-        crate::axql::parse_axql_query(&s).expect("normalized query parses");
-    }
-
-    #[test]
-    fn rewrites_common_ollama_mistakes_to_parseable_axql() {
-        let cases = [
-            // `?x is "..."` (should become `?x.name = "..."`)
-            r#"select ?rpc where ?svc is "acme.svc0.v1.Service0", ?svc -proto_service_has_rpc-> ?rpc"#,
-            // `?x :name = ...` (should become `?x.name = ...`)
-            r#"select ?ep where ?rpc :ProtoRpc, ?rpc :name = "GetWidget", ?rpc :full_name = "acme.svc0.v1.Service0.GetWidget", ?rpc -proto_rpc_http_endpoint-> ?ep"#,
-            // `[limit 10]` (should become `limit 10`)
-            r#"select ?x where doc_proto_api_0 -mentions_http_endpoint|mentions_rpc-> ?x [limit 10]"#,
-            r#"select ?next where acme.svc0.v1.Service0.CreateWidget -observed_next-> ?next [LIMIT 10]"#,
-        ];
-
-        for raw in cases {
-            let normalized = normalize_axql_candidate(raw);
-            crate::axql::parse_axql_query(&normalized).unwrap_or_else(|e| {
-                panic!(
-                    "normalized query must parse\nraw: {raw}\nnormalized: {normalized}\nerr: {e}"
-                )
-            });
-        }
-    }
 
     #[test]
     fn parse_llm_json_object_repairs_truncated_world_model_output() {
@@ -3133,6 +2705,71 @@ mod tests {
     }
 
     #[test]
+    fn axql_explore_returns_focused_hole_driven_payload() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "variable": "?dst",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["src", "dst"],
+                "where": [
+                    {
+                        "kind": "fact",
+                        "fact": "?f",
+                        "relation": "Flow",
+                        "fields": {
+                            "from": "?src",
+                            "to": "?dst"
+                        }
+                    }
+                ],
+                "limit": 5
+            }
+        });
+
+        let out = super::tool_axql_explore(
+            &db,
+            Some(&meta),
+            &[],
+            "explore-test-snapshot",
+            &mut query_cache,
+            &args,
+        )?;
+
+        assert_eq!(out["focus_variable"].as_str(), Some("?dst"));
+        assert_eq!(out["trust"]["trust_class"].as_str(), Some("certifiable"));
+        assert!(out["elaborated_query_ir_v1"].is_object());
+        let suggestions = out["exploration"]["exploration_suggestions"]
+            .as_array()
+            .expect("exploration suggestions array");
+        assert!(!suggestions.is_empty());
+        assert!(suggestions
+            .iter()
+            .all(|suggestion| suggestion["variable"].as_str() == Some("?dst")));
+        assert!(out["exploration"]["semantic_claims"]
+            .as_array()
+            .is_some_and(|claims| !claims.is_empty()));
+        Ok(())
+    }
+
+    #[test]
     fn axql_run_returns_trust_contract_payload() -> anyhow::Result<()> {
         let db = axiograph_pathdb::PathDB::new();
         let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
@@ -3239,6 +2876,26 @@ mod tests {
     }
 
     #[test]
+    fn axql_tools_require_query_ir_v1_args() {
+        let db = axiograph_pathdb::PathDB::new();
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "axql": "select ?x where ?x is Node limit 1"
+        });
+
+        let err = super::tool_axql_elaborate(
+            &db,
+            None,
+            &[],
+            "typed-tool-boundary",
+            &mut query_cache,
+            &args,
+        )
+        .expect_err("raw axql tool args should be rejected");
+        assert!(err.to_string().contains("expected `query_ir_v1`"));
+    }
+
+    #[test]
     fn propose_relation_tool_returns_competency_gate_validation() -> Result<()> {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
@@ -3284,7 +2941,7 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            out["validation"]["competency_gate"]["questions"][0]["trust_class"].as_str(),
+            out["validation"]["competency_gate"]["questions"][0]["after_trust_class"].as_str(),
             Some("certifiable")
         );
         Ok(())
@@ -3309,10 +2966,6 @@ impl ExecutionResult {
 
 pub fn execute_generated_query(db: &PathDB, query: &GeneratedQuery) -> Result<ExecutionResult> {
     Ok(match query {
-        GeneratedQuery::Axql(text) => {
-            let q = crate::axql::parse_axql_query(text)?;
-            ExecutionResult::Axql(crate::axql::execute_axql_query(db, &q)?)
-        }
         GeneratedQuery::QueryIrV1(ir) => {
             let q = ir.to_axql_query()?;
             ExecutionResult::Axql(crate::axql::execute_axql_query(db, &q)?)
@@ -3326,10 +2979,6 @@ pub fn execute_generated_query_with_meta(
     meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
 ) -> Result<ExecutionResult> {
     Ok(match query {
-        GeneratedQuery::Axql(text) => {
-            let q = crate::axql::parse_axql_query(text)?;
-            ExecutionResult::Axql(crate::axql::execute_axql_query_with_meta(db, &q, meta)?)
-        }
         GeneratedQuery::QueryIrV1(ir) => {
             let q = ir.to_axql_query()?;
             ExecutionResult::Axql(crate::axql::execute_axql_query_with_meta(db, &q, meta)?)
@@ -3384,7 +3033,8 @@ pub(crate) struct ToolLoopStoreContext {
 #[derive(Debug, Clone)]
 pub(crate) struct ToolLoopWorldModelContext {
     pub world_model: crate::world_model::WorldModelState,
-    pub snapshot: Option<crate::world_model::WorldModelSnapshotRefV1>,
+    pub pathdb_snapshot_id: Option<axiograph_pathdb::PathdbSnapshotId>,
+    pub accepted_snapshot_id: Option<axiograph_pathdb::AcceptedSnapshotId>,
     pub snapshot_label: String,
 }
 
@@ -4731,37 +4381,39 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "axql_elaborate".to_string(),
-            description: "Typecheck/elaborate an AxQL query using the meta-plane, returning the elaborated query + inferred types + plan. The returned trust payload is explicit about soundness being scoped to returned rows only, not completeness or ontology closure.".to_string(),
-            args_schema: {
-                let mut schema = serde_json::json!({
-                    "type": "object",
-                    "required": ["query_ir_v1"],
-                    "properties": {
-                        "query_ir_v1": query_ir_v1_schema.clone(),
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                    }
-                });
-                // Backward-compatible escape hatch for older models; prefer query_ir_v1.
-                schema["properties"]["axql"] = serde_json::json!({ "type": "string" });
-                schema
-            },
+            description: "Typecheck/elaborate a structured `query_ir_v1` query using the meta-plane, returning the elaborated query, inferred types, typed holes, type-directed next moves, and plan. The returned trust payload is explicit about soundness being scoped to returned rows only, not completeness or ontology closure.".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query_ir_v1"],
+                "properties": {
+                    "query_ir_v1": query_ir_v1_schema.clone(),
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                }
+            }),
+        },
+        ToolSpecV1 {
+            name: "axql_explore".to_string(),
+            description: "Ask the typed elaborator what can go here next for a structured `query_ir_v1` query. This is the hole-driven exploration surface for editors/agents: it returns inferred types, typed holes, admissible next moves, semantic claims, and trust gaps, optionally focused on one variable, without claiming completeness or ontology closure.".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query_ir_v1"],
+                "properties": {
+                    "query_ir_v1": query_ir_v1_schema.clone(),
+                    "variable": { "type": "string" }
+                }
+            }),
         },
         ToolSpecV1 {
             name: "axql_run".to_string(),
-            description: "Run an AxQL query (or query_ir_v1) over the snapshot (uncertified unless you later emit a certificate). The returned trust payload explicitly separates scoped returned-row soundness from non-claims about completeness or ontology closure.".to_string(),
-            args_schema: {
-                let mut schema = serde_json::json!({
-                    "type": "object",
-                    "required": ["query_ir_v1"],
-                    "properties": {
-                        "query_ir_v1": query_ir_v1_schema.clone(),
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                    }
-                });
-                // Backward-compatible escape hatch for older models; prefer query_ir_v1.
-                schema["properties"]["axql"] = serde_json::json!({ "type": "string" });
-                schema
-            },
+            description: "Run a structured `query_ir_v1` query over the snapshot (uncertified unless you later emit a certificate). The returned trust payload explicitly separates scoped returned-row soundness from non-claims about completeness or ontology closure.".to_string(),
+            args_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query_ir_v1"],
+                "properties": {
+                    "query_ir_v1": query_ir_v1_schema.clone(),
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                }
+            }),
         },
         ToolSpecV1 {
             name: "viz_render".to_string(),
@@ -4955,14 +4607,13 @@ fn tool_loop_tools_schema(
             name: "world_model_propose".to_string(),
             description: "Run the configured world model to propose new evidence-plane facts/relations (untrusted).".to_string(),
             args_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "goals": { "type": "array", "items": { "type": "string" } },
-                    "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
-                    "require_canonical_axi": { "type": "boolean", "description": "If true, refuse to run unless a canonical module export is available." },
-                    "seed": { "type": "integer", "minimum": 0 },
-                    "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
-                    "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
+                    "type": "object",
+                    "properties": {
+                        "goals": { "type": "array", "items": { "type": "string" } },
+                        "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
+                        "seed": { "type": "integer", "minimum": 0 },
+                        "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
+                        "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
                     "guardrail_plane": { "type": "string", "enum": ["meta", "data", "both"] },
                     "guardrail_weights": { "type": "object" },
                     "task_costs": { "type": "array", "items": { "type": "object" } },
@@ -4975,14 +4626,13 @@ fn tool_loop_tools_schema(
             name: "world_model_plan".to_string(),
             description: "Run an MPC-style world model plan (multi-step proposals + guardrail costs).".to_string(),
             args_schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "goals": { "type": "array", "items": { "type": "string" } },
-                    "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
-                    "require_canonical_axi": { "type": "boolean", "description": "If true, refuse to run unless a canonical module export is available." },
-                    "seed": { "type": "integer", "minimum": 0 },
-                    "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
-                    "horizon_steps": { "type": "integer", "minimum": 1, "maximum": 20 },
+                    "type": "object",
+                    "properties": {
+                        "goals": { "type": "array", "items": { "type": "string" } },
+                        "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
+                        "seed": { "type": "integer", "minimum": 0 },
+                        "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
+                        "horizon_steps": { "type": "integer", "minimum": 1, "maximum": 20 },
                     "rollouts": { "type": "integer", "minimum": 1, "maximum": 10 },
                     "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
                     "guardrail_plane": { "type": "string", "enum": ["meta", "data", "both"] },
@@ -5036,6 +4686,14 @@ fn execute_tool_call(
             query_cache,
             &call.args,
         ),
+        "axql_explore" => tool_axql_explore(
+            db,
+            meta,
+            default_contexts,
+            snapshot_key,
+            query_cache,
+            &call.args,
+        ),
         "axql_run" => tool_axql_run(
             db,
             meta,
@@ -5082,9 +4740,6 @@ fn tool_world_model_propose(
         /// Optional canonical `.axi` module name to export and feed into the world model.
         #[serde(default)]
         axi_module: Option<String>,
-        /// If true, refuse to run unless a canonical module export is available.
-        #[serde(default)]
-        require_canonical_axi: Option<bool>,
         #[serde(default)]
         seed: Option<u64>,
         #[serde(default)]
@@ -5132,59 +4787,28 @@ fn tool_world_model_propose(
         None
     };
 
-    let mut input = crate::world_model::WorldModelInputV1::default();
-    if guardrail.is_some() {
-        input.guardrail = guardrail.clone();
+    let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+        module_name: a.axi_module.clone(),
+        pathdb_snapshot_id: ctx.pathdb_snapshot_id.clone(),
+        accepted_snapshot_id: ctx.accepted_snapshot_id.clone(),
+        training_export: Some(crate::world_model::JepaExportOptions {
+            instance_filter: None,
+            max_items: a
+                .max_new_proposals
+                .unwrap_or(0)
+                .saturating_mul(20)
+                .min(2000)
+                .max(1000),
+            mask_fields: 1,
+            seed: 1,
+            exclude_relations: Vec::new(),
+        }),
+    };
+    let mut input = crate::world_model_input::build_world_model_input_from_pathdb(db, &build_opts)?;
+    if let Some(guardrail) = guardrail.clone() {
+        input.set_guardrail_layer(guardrail);
     }
     input.notes.push("source=llm_tool_loop".to_string());
-    let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
-        module_name: a.axi_module.clone(),
-        require_canonical: a.require_canonical_axi.unwrap_or(false),
-    };
-    let exported = crate::world_model_input::export_pathdb_world_model_axi(db, &opts)?;
-    input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
-    input.axi_module_text = Some(exported.axi_text.clone());
-    input.axi_input_kind = Some(exported.kind.as_str().to_string());
-    input.axi_input_module = exported.selected_module_name.clone();
-    input
-        .notes
-        .push(format!("axi_input_kind={}", exported.kind.as_str()));
-    if let Some(m) = exported.selected_module_name.as_ref() {
-        input.notes.push(format!("axi_input_module={m}"));
-    }
-    if matches!(
-        exported.kind,
-        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-    ) {
-        input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
-    }
-    let max_items = a
-        .max_new_proposals
-        .unwrap_or(0)
-        .saturating_mul(20)
-        .min(2000)
-        .max(1000);
-    let exclude_relations = if matches!(
-        exported.kind,
-        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-    ) {
-        vec!["interned_string".to_string()]
-    } else {
-        Vec::new()
-    };
-    let export_opts = crate::world_model::JepaExportOptions {
-        instance_filter: None,
-        max_items,
-        mask_fields: 1,
-        seed: 1,
-        exclude_relations,
-    };
-    if let Ok(export) =
-        crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
-    {
-        input.export = Some(export);
-    }
-    input.snapshot = ctx.snapshot.clone();
 
     let max_keep = a.max_new_proposals.unwrap_or(0);
     let mut options = crate::world_model::WorldModelOptionsV1::default();
@@ -5216,14 +4840,8 @@ fn tool_world_model_propose(
         ctx.world_model.backend_label(),
         ctx.world_model.model.clone(),
         input.axi_digest_v1.clone(),
-        input
-            .snapshot
-            .as_ref()
-            .and_then(|snap| snap.snapshot_id.clone()),
-        input
-            .snapshot
-            .as_ref()
-            .and_then(|snap| snap.accepted_snapshot_id.clone()),
+        input.pathdb_snapshot_id(),
+        input.accepted_snapshot_id(),
         guardrail.as_ref().map(|g| g.summary.total_cost),
         guardrail_profile_label,
         guardrail_plane_label,
@@ -5262,9 +4880,6 @@ fn tool_world_model_plan(
         /// Optional canonical `.axi` module name to export and feed into the world model.
         #[serde(default)]
         axi_module: Option<String>,
-        /// If true, refuse to run unless a canonical module export is available.
-        #[serde(default)]
-        require_canonical_axi: Option<bool>,
         #[serde(default)]
         seed: Option<u64>,
         #[serde(default)]
@@ -5308,51 +4923,21 @@ fn tool_world_model_plan(
     let rollouts = a.rollouts.unwrap_or(2).max(1);
     let max_new_proposals = a.max_new_proposals.unwrap_or(0);
 
-    let mut base_input = crate::world_model::WorldModelInputV1::default();
-    base_input.notes.push("source=llm_tool_loop".to_string());
-    let opts = crate::world_model_input::WorldModelAxiInputOptionsV1 {
+    let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
         module_name: a.axi_module.clone(),
-        require_canonical: a.require_canonical_axi.unwrap_or(false),
+        pathdb_snapshot_id: ctx.pathdb_snapshot_id.clone(),
+        accepted_snapshot_id: ctx.accepted_snapshot_id.clone(),
+        training_export: Some(crate::world_model::JepaExportOptions {
+            instance_filter: None,
+            max_items: max_new_proposals.saturating_mul(20).min(2000).max(1000),
+            mask_fields: 1,
+            seed: 1,
+            exclude_relations: Vec::new(),
+        }),
     };
-    let exported = crate::world_model_input::export_pathdb_world_model_axi(db, &opts)?;
-    base_input.axi_digest_v1 = Some(exported.axi_digest_v1.clone());
-    base_input.axi_module_text = Some(exported.axi_text.clone());
-    base_input.axi_input_kind = Some(exported.kind.as_str().to_string());
-    base_input.axi_input_module = exported.selected_module_name.clone();
-    base_input
-        .notes
-        .push(format!("axi_input_kind={}", exported.kind.as_str()));
-    if let Some(m) = exported.selected_module_name.as_ref() {
-        base_input.notes.push(format!("axi_input_module={m}"));
-    }
-    if matches!(
-        exported.kind,
-        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-    ) {
-        base_input.notes.push("warning: axi_input_kind=pathdb_export_fallback includes PathDBExportV1 internals (debug-only)".to_string());
-    }
-    let max_items = max_new_proposals.saturating_mul(20).min(2000).max(1000);
-    let exclude_relations = if matches!(
-        exported.kind,
-        crate::world_model_input::WorldModelAxiInputKindV1::PathdbExportFallback
-    ) {
-        vec!["interned_string".to_string()]
-    } else {
-        Vec::new()
-    };
-    let export_opts = crate::world_model::JepaExportOptions {
-        instance_filter: None,
-        max_items,
-        mask_fields: 1,
-        seed: 1,
-        exclude_relations,
-    };
-    if let Ok(export) =
-        crate::world_model::build_jepa_export_from_axi_text(&exported.axi_text, &export_opts)
-    {
-        base_input.export = Some(export);
-    }
-    base_input.snapshot = ctx.snapshot.clone();
+    let mut base_input =
+        crate::world_model_input::build_world_model_input_from_pathdb(db, &build_opts)?;
+    base_input.notes.push("source=llm_tool_loop".to_string());
 
     let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
         horizon_steps,
@@ -7922,7 +7507,102 @@ fn tool_axql_elaborate(
         "elaborated": prepared.elaborated_query_text(),
         "inferred_types": inferred_types,
         "notes": report.notes.clone(),
+        "typed_holes": report.typed_holes.clone(),
+        "exploration_suggestions": report.exploration_suggestions.clone(),
         "plan": plan,
+        "trust": trust
+    }))
+}
+
+fn tool_axql_explore(
+    db: &PathDB,
+    meta: Option<&MetaPlaneIndex>,
+    default_contexts: &[crate::axql::AxqlContextSpec],
+    snapshot_key: &str,
+    query_cache: &mut crate::axql::AxqlPreparedQueryCache,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    #[derive(Debug, Deserialize)]
+    struct ExploreArgs {
+        #[serde(default)]
+        variable: Option<String>,
+    }
+
+    let mut query = parse_query_from_tool_args(args, "axql_explore")?;
+    if query.contexts.is_empty() && !default_contexts.is_empty() {
+        query.contexts = default_contexts.to_vec();
+    }
+
+    let focus = serde_json::from_value::<ExploreArgs>(args.clone())
+        .ok()
+        .and_then(|parsed| parsed.variable)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+        db,
+        &query,
+        meta,
+        snapshot_key,
+        query_cache,
+    )?;
+    let elaborated = prepared.elaborated_query_text();
+    let elaborated_query_ir_v1 =
+        crate::query_ir::QueryIrV1::from_axql_query(&crate::axql::parse_axql_query(&elaborated)?);
+    let report = prepared.elaboration_report().clone();
+    let focus_ref = focus.as_deref();
+    let typed_holes = report
+        .typed_holes
+        .iter()
+        .filter(|hole| match focus_ref {
+            Some(var) => hole.variable.as_deref() == Some(var) || hole.variable.is_none(),
+            None => true,
+        })
+        .cloned()
+        .collect();
+    let exploration_suggestions = report
+        .exploration_suggestions
+        .iter()
+        .filter(|suggestion| match focus_ref {
+            Some(var) => suggestion.variable == var,
+            None => true,
+        })
+        .cloned()
+        .collect();
+    let refinement_candidates = report
+        .exploration_suggestions
+        .iter()
+        .filter(|suggestion| match focus_ref {
+            Some(var) => suggestion.variable == var,
+            None => true,
+        })
+        .flat_map(|suggestion| suggestion.refinement_candidates.clone().into_iter())
+        .map(crate::typed_refinement::RuntimeRefinementCandidateV1::from_axql)
+        .collect();
+    let trust = query_user_visible_trust_contract_with_meta(
+        &query,
+        &prepared.certifiability(),
+        false,
+        None,
+        meta,
+    );
+    let exploration = crate::query_ir::PreparedQueryExplorationV1 {
+        introspection: prepared.introspection(),
+        inferred_types: report.inferred_types,
+        notes: report.notes,
+        typed_holes,
+        exploration_suggestions,
+        refinement_candidates,
+        semantic_claims: trust.semantic_claims.clone(),
+        semantic_coverage: trust.semantic_coverage.clone(),
+        trust_gaps: trust.gaps.clone(),
+    };
+
+    Ok(serde_json::json!({
+        "elaborated": elaborated,
+        "elaborated_query_ir_v1": elaborated_query_ir_v1,
+        "focus_variable": focus,
+        "exploration": exploration,
         "trust": trust
     }))
 }
@@ -7959,6 +7639,8 @@ fn tool_axql_run(
     let report = prepared.elaboration_report().clone();
     let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
     let notes = report.notes.clone();
+    let typed_holes = report.typed_holes.clone();
+    let exploration_suggestions = report.exploration_suggestions.clone();
     let plan = prepared.explain_plan_lines();
     let trust = query_user_visible_trust_contract_with_meta(
         &query,
@@ -7980,6 +7662,8 @@ fn tool_axql_run(
         "elaborated": elaborated,
         "inferred_types": inferred_types,
         "notes": notes,
+        "typed_holes": typed_holes,
+        "exploration_suggestions": exploration_suggestions,
         "plan": plan,
         "trust": trust,
         "results": preview
@@ -8493,8 +8177,6 @@ fn parse_query_from_tool_args(
     #[derive(Deserialize)]
     struct Args {
         #[serde(default)]
-        axql: Option<String>,
-        #[serde(default)]
         query_ir_v1: Option<QueryIrV1>,
         #[serde(default)]
         limit: Option<usize>,
@@ -8504,11 +8186,8 @@ fn parse_query_from_tool_args(
 
     let mut q = if let Some(ir) = a.query_ir_v1 {
         ir.to_axql_query()?
-    } else if let Some(axql) = a.axql {
-        let normalized = normalize_axql_candidate(&axql);
-        crate::axql::parse_axql_query(&normalized)?
     } else {
-        return Err(anyhow!("{tool}: expected `query_ir_v1` or `axql`"));
+        return Err(anyhow!("{tool}: expected `query_ir_v1`"));
     };
 
     if let Some(limit) = a.limit {
@@ -9052,8 +8731,9 @@ Rules:
   Use these when the user asks about equivalence, commuting diagrams, “why”, or alternative derivations.
 - For schema mappings / migrations, look for `Morphism` nodes (usually `from`/`to`) and related homotopies (commuting diagrams).
 - For AxQL execution, prefer the typed JSON IR:
-  - When calling `axql_elaborate` or `axql_run`, pass `query_ir_v1` (NOT raw `axql` text).
-  - If you generated a query, call `axql_elaborate` first to validate it and to see inferred types, then call `axql_run`.
+  - When calling `axql_elaborate`, `axql_explore`, or `axql_run`, pass `query_ir_v1` (NOT raw `axql` text).
+  - If the query is partial, ambiguous, or you need to ask “what can go here next?”, call `axql_explore`.
+  - If you generated a query and want validation plus inferred types, call `axql_elaborate` first; then call `axql_run` only when execution is actually needed.
 - For requests that would *change* the graph (add/update facts/relationships), do NOT claim the DB changed. Instead, generate a reviewable `proposals.json` overlay:
   - Prefer `propose_fact_proposals` when the relation is n-ary (more than 2 fields) or when direction is ambiguous.
   - Use `propose_relation_proposals` for simple two-endpoint assertions when you are confident about direction.
@@ -9521,7 +9201,7 @@ fn parse_tool_loop_response_json(
     // - { "error": "..." }
     // - { "tool": "...", "args": {...} }          (common variant)
     // - { "name": "...", "args": {...} }          (common variant)
-    // - { "axql": "..." } / { "query_ir_v1": {...} }  (treated as `axql_run`)
+    // - { "query_ir_v1": {...} }  (treated as `axql_run`)
     // - { "answer": "..." } (treated as final answer)
     let v: serde_json::Value = parse_llm_json_object(content)?;
 
@@ -9571,42 +9251,12 @@ fn parse_tool_loop_response_json(
         }
     }
 
-    fn maybe_convert_axql_args_to_query_ir(args: &mut serde_json::Value) {
-        let Some(obj) = args.as_object_mut() else {
-            return;
-        };
-        if obj.contains_key("query_ir_v1") {
-            // Canonicalize: if the model provided both, prefer the typed form.
-            obj.remove("axql");
-            return;
-        }
-        let Some(axql) = obj.get("axql").and_then(|v| v.as_str()) else {
-            return;
-        };
-        let normalized = normalize_axql_candidate(axql);
-        if let Ok(parsed) = crate::axql::parse_axql_query(&normalized) {
-            let ir = QueryIrV1::from_axql_query(&parsed);
-            if let Ok(ir_json) = serde_json::to_value(&ir) {
-                obj.insert("query_ir_v1".to_string(), ir_json);
-                // Keep the tool-loop canonically typed: once we have `query_ir_v1`,
-                // drop raw AxQL to avoid “two sources of truth” in transcripts.
-                obj.remove("axql");
-            }
-        } else {
-            // Still normalize in-place to apply our "common mistakes" rewrites.
-            obj.insert("axql".to_string(), serde_json::Value::String(normalized));
-        }
-    }
-
     fn parse_one_tool_call(
         call_v: &serde_json::Value,
         options: ToolLoopOptions,
     ) -> Result<Option<ToolCallV1>> {
         // Primary form: { "name": "...", "args": {...} }
-        if let Ok(mut call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
-            if call.name == "axql_run" || call.name == "axql_elaborate" {
-                maybe_convert_axql_args_to_query_ir(&mut call.args);
-            }
+        if let Ok(call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
             return Ok(Some(call));
         }
 
@@ -9622,9 +9272,6 @@ fn parse_tool_loop_response_json(
             .get("args")
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
-        if name == "axql_run" || name == "axql_elaborate" {
-            maybe_convert_axql_args_to_query_ir(&mut args);
-        }
         if name == "axql_run" {
             // Ensure we always apply the tool-loop row limit safety valve.
             if let Some(obj) = args.as_object_mut() {
@@ -9659,10 +9306,6 @@ fn parse_tool_loop_response_json(
     // Primary wrapper shape.
     if let Some(call_v) = v.get("tool_call") {
         if let Ok(call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
-            let mut call = call;
-            if call.name == "axql_run" || call.name == "axql_elaborate" {
-                maybe_convert_axql_args_to_query_ir(&mut call.args);
-            }
             return Ok(ToolLoopModelResponseV1 {
                 tool_call: Some(call),
                 tool_calls: None,
@@ -9680,9 +9323,6 @@ fn parse_tool_loop_response_json(
                 .get("args")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            if name == "axql_run" || name == "axql_elaborate" {
-                maybe_convert_axql_args_to_query_ir(&mut args);
-            }
             return Ok(ToolLoopModelResponseV1 {
                 tool_call: Some(ToolCallV1 {
                     name: name.to_string(),
@@ -9705,9 +9345,6 @@ fn parse_tool_loop_response_json(
             .get("args")
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
-        if name == "axql_run" || name == "axql_elaborate" {
-            maybe_convert_axql_args_to_query_ir(&mut args);
-        }
         return Ok(ToolLoopModelResponseV1 {
             tool_call: Some(ToolCallV1 {
                 name: name.to_string(),
@@ -9719,20 +9356,13 @@ fn parse_tool_loop_response_json(
         });
     }
 
-    // Fallback: treat an `axql`/`query_ir_v1` payload as an `axql_run` tool call.
-    if v.get("axql").is_some() || v.get("query_ir_v1").is_some() {
+    // Fallback: treat a top-level `query_ir_v1` payload as an `axql_run` tool call.
+    if v.get("query_ir_v1").is_some() {
         let mut args = serde_json::Map::new();
-        if let Some(axql) = v.get("axql").and_then(|x| x.as_str()) {
-            args.insert(
-                "axql".to_string(),
-                serde_json::Value::String(axql.to_string()),
-            );
-        }
         if let Some(ir) = v.get("query_ir_v1").cloned() {
             args.insert("query_ir_v1".to_string(), ir);
         }
         let mut args_v = serde_json::Value::Object(args);
-        maybe_convert_axql_args_to_query_ir(&mut args_v);
         if let Some(obj) = args_v.as_object_mut() {
             obj.insert(
                 "limit".to_string(),
@@ -9805,7 +9435,7 @@ enum PluginTaskV2 {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum QueryPayloadV1 {
-    Axql { axql: String },
+    QueryIrV1 { query_ir_v1: QueryIrV1 },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -10144,8 +9774,6 @@ impl EntityViewV1 {
 
 #[derive(Debug, Clone, Deserialize)]
 struct PluginResponseV1 {
-    #[serde(default)]
-    axql: Option<String>,
     #[serde(default)]
     query_ir_v1: Option<QueryIrV1>,
     #[serde(default)]

@@ -2,6 +2,77 @@
 
 This file is a shared context note for humans/agents working in this repo. It captures the current technical reality and the direction we’ve committed to.
 
+### Harness engineering guidance (adapted for this repo)
+
+- Treat `AGENTS.md` as a map, not an encyclopedia.
+  - The durable system of record should live in versioned docs, specs, roadmaps,
+    references, examples, schemas, and executable plans under `docs/`,
+    `examples/`, and the typed runtime/Lean surfaces.
+  - When adding new durable policy or theory, prefer adding or updating the
+    canonical doc and then linking it from here instead of growing this file
+    indefinitely.
+  - We should progressively slim this file over time by moving detailed,
+    domain-specific truth into better-indexed docs rather than preserving a
+    monolithic agent manual.
+- Repository-local knowledge is the system of record.
+  - If an important design constraint, business rule, ontology assumption,
+    migration caveat, world-model lesson, or backend limitation only exists in
+    chat, memory, or a human’s head, it effectively does not exist for agents.
+  - Encode important operational knowledge into the repo in typed/runtime-usable
+    form where possible:
+    docs, `.axi`, compiled IR, CQ fixtures, semantic coverage reports, trust
+    contracts, backend capability profiles, tests, or generated references.
+- When agents fail, fix the harness, not just the prompt.
+  - Prefer adding missing capability over retrying vague instructions:
+    better typed diagnostics, richer query elaboration, hole-driven repair,
+    better docs, stronger examples, CQ fixtures, backend smoke tests, business
+    rule surfaces, semantic coverage, typed migration/reconciliation builders,
+    and clearer trust reports.
+  - In this repo, harness engineering means making the ontology/type/query/CQ
+    stack operationally legible to agents, not only mathematically elegant.
+- Optimize for agent legibility.
+  - Favor repo structure, APIs, docs, examples, and abstractions that are easy
+    for an agent to navigate and reason over locally.
+  - Prefer boring, explicit, inspectable mechanisms over opaque magic when the
+    latter hurts typed reasoning or semantic traceability.
+  - Stable ids, typed anchors, explicit lifecycle states, deterministic IR
+    lowering, and reviewable preview objects are all part of the harness.
+- Plans are first-class artifacts.
+  - Complex work should leave behind an execution plan or roadmap entry with
+    progress and decisions captured in-repo.
+  - Typed ontology evolution work should not rely on ephemeral conversational
+    context alone.
+- Mechanical enforcement beats aspirational prose.
+  - Prefer CI/tests/lints/checkers/generators that enforce:
+    doc freshness,
+    example validity,
+    CQ behavior,
+    trust-contract shape,
+    typed anchor propagation,
+    backend capability/profile invariants,
+    and runtime/Lean alignment.
+  - If a rule matters, try to make it machine-checkable.
+- Agent-facing feedback loops should be rich.
+  - The harness should expose not just code but also typed evidence about
+    behavior: query elaboration, typed holes, refinement handles, semantic
+    coverage, CQ status, migration previews, reconciliation previews, logs,
+    metrics, traces, and backend pushdown plans.
+  - “Useful to agents” in Axiograph means the agent can discover what is
+    missing, what is weak vs strong, what changed, and what code/ontology/test
+    action should come next.
+- Throughput changes merge/review philosophy.
+  - Prefer small, typed, reviewable deltas and explicit semantic previews over
+    large opaque patches.
+  - Reconciliation, migration, promotion, and ontology discovery should all
+    converge on shared typed preview/apply surfaces.
+- Entropy must be removed aggressively.
+  - Greenfield rule: do not preserve old compatibility harnesses unless they are
+    clearly worth the cost right now.
+  - Remove stale docs, obsolete protocol versions, dead fallback paths, and
+    historical interchange surfaces when they no longer serve the current
+    semantic/kernel direction.
+  - Backward compatibility is not a default goal in this repo.
+
 ### Current state (as-is in `axiograph_v6/`)
 
 - **Build system**: `axiograph_v6/Makefile` builds **Rust + Lean** (Idris/FFI compatibility removed for the initial Rust+Lean release).
@@ -49,6 +120,48 @@ This file is a shared context note for humans/agents working in this repo. It ca
 - PathDB is a strong engine, but it is not yet the ontology kernel.
   - The intended kernel is accepted `.axi` plus compiled schema/category IR.
   - Keep relation-as-object + projection arrows canonical internally; treat RDF / LPG / quad stores as lowerings.
+  - Backend compatibility should target only advanced graph engines with enough
+    structure to preserve typed projections:
+    RDF/quad stores with named graphs, or property-graph systems with
+    constraints/transactions/stable query surfaces.
+  - Current backend priority:
+    - `TypeDB` is the primary high-fidelity typed backend target,
+    - `TerminusDB` is the preferred RDF/VCS-shaped secondary target,
+    - and property-graph backends remain experimental rather than first-class support targets.
+  - Pushdown guidance:
+    - push the richest runtime typing, n-ary relation/role structure, and
+      typed-query validation into `TypeDB`,
+    - import the useful TypeDB ideas semantically, not syntactically:
+      first-class role interfaces, subtype-inherited admissible players,
+      explicit constrained schema evolution, and typed constraints,
+    - push native history/branch/diff workspace mirroring into `TerminusDB`
+      only as a projected collaborator view, never as semantic authority,
+    - make projected backends usable through their own native read/query
+      surfaces so outside tools can understand a reduced view of the ontology,
+      but treat those surfaces as read-only projected lenses rather than the
+      full Axiograph semantic/query contract,
+    - and keep semantic VCS, olog authoring, CQ gates, trust contracts,
+      lifecycle state, and denotational meaning in Axiograph above all
+      backends.
+  - Semantic VCS, authoring, CQ gates, trust contracts, and lifecycle state
+    remain Axiograph-native even when data is materialized into external graph
+    databases.
+  - Mutation authority for projected graph backends remains Axiograph-only:
+    external graph engines may be queried directly for partial understanding,
+    but semantic mutation, promotion, review, and lifecycle transitions must
+    still flow through Axiograph.
+  - Keep Docker-backed smoke coverage for the currently prioritized external
+    backends:
+    `TypeDB` and `TerminusDB` should have runnable container
+    checks in-repo so projection compatibility does not remain doc-only.
+  - Runtime adapter work should consume capability profiles directly rather than
+    re-encoding backend assumptions:
+    generate typed pushdown plans from `CompiledSchemaIr` plus
+    `BackendCapabilityProfileV1` / `ProjectionCapabilityProfileV1`, keep those
+    plans explicit about preserved tuple/role/context semantics, native
+    read-only query dialect, preserved lower-tier interfaces
+    (native query / RDF / SHACL where real), lifting contracts back into the
+    higher typed/meta layer, and trust caveats.
 - Semantic VCS is still a first slice, not the universal lifecycle backbone.
   - `sem/commits`, `sem/refs`, `sem/validations`, and `sem/world_model_runs` exist in the accepted-plane layer.
   - accepted-plane promotion and evidence-plane overlay commits still do not flow through one universal ancestry-driven semantic-commit path.
@@ -95,20 +208,58 @@ This file is a shared context note for humans/agents working in this repo. It ca
     - canonical `.axi` deltas over stable ids,
     - provenance/evidence/context anchors,
     - CQ attachments and trust metadata,
+    - explicit structural evolution primitives (`reify_relation_object`, `introduce_dependent_relation_family`, `transport_along_schema_morphism`, `introduce_subtype`, `generalize_to_supertype`, `specialize_to_subtype`, `push_relation_role_to_subtype`, `pull_relation_role_to_supertype`, `factor_common_structure_to_supertype`, `split_type_into_subtypes`, `merge_types_under_supertype`, `lift_relation_to_carrier`, `add_path_equation`, `add_rewrite_rule`, `resolve_conflict_by_decision`),
+    - directed exploration next-actions keyed to those primitives,
     - and fix-oriented repair suggestions instead of ad hoc notes or raw strings.
   - [ ] keep typed query and certification first-class across REPL, server, and tooling:
     - `query_ir_v1` / prepared query handles as the common execution currency,
     - structured elaboration diagnostics and repair data,
     - anchor-aware answers and uniform trust contracts,
     - and certification language scoped to row soundness under explicit anchors.
+  - [ ] treat migration as typed transport plus explicit reindexing over stable semantic ids:
+    - previews should name the transport basis,
+    - preserved/reindexed/split/merged/dropped ids,
+    - and residual comparability obligations across anchors.
+  - [ ] treat reconciliation as typed evolution over conflict sets and decisions:
+    - merge is not file concatenation,
+    - conflict sets, operator/policy decisions, CQ/trust consequences, and unresolved obligations should all remain first-class preview/history objects.
+  - [~] make type inference / hole-driven exploration a first-class shared service over the compiled IR:
+    - current implemented slice:
+      inferred types, structured typed holes, variable-centric exploration suggestions, elaborated IR, and focused exploration payloads are available over prepared queries / REPL / server / tool-loop surfaces,
+      typed olog authoring now also returns structured runtime holes for missing relation-role bindings, role/type mismatches, projection holes, and path endpoint mismatches,
+      query exploration and typed olog authoring now share a first common runtime refinement-handle/candidate protocol, while keeping query ops and authoring ops surface-specific,
+    - keep inferring schema/type/context/result-shape indices conservatively from accepted/review-state semantics rather than guessing ontology meaning,
+    - next implementation step:
+      extend the same shared refinement protocol into migration authoring, reconciliation review, CQ repair, and implementation-surface mapping,
+    - extend that same typed-hole/refinement model beyond the current query + typed-olog slice into CQ authoring, migration authoring, and implementation-surface mapping,
+    - continue replacing hard failures for recoverable unknowns with typed repair sites where semantically defensible,
+    - and keep docs/UX explicit that this is runtime dependent-type usefulness, not a replacement for the Lean-checked semantic kernel.
   - [ ] make CQ-gated evolution a shared primitive rather than a proposal-preview-only slice:
     - one preview object for proposal review, accepted-plane promotion, migration preview, and semantic merge,
     - schema/theory/instance/context deltas plus before/after CQ status and expected answer-shape refs,
+    - rich structural primitives so review can distinguish subtype/generalization/role-movement/factor/split/merge/lift moves from generic add/remove churn,
     - and fail-closed policy hooks before accepted-plane mutation.
+  - [x] first slice: treat migration as typed transport plus reindexing over stable semantic ids:
+    - migration preview builders now emit transport-along-morphism, transported path-equation, subtype-collapse, and merge-image primitives,
+    - previews should keep citing the transport basis and preserve semantic comparability explicitly,
+    - and the next step is to route real migration-authoring/preview entrypoints through these builders rather than leaving them helper-level.
+  - [x] first slice: treat reconciliation as typed evolution over conflict sets and decisions:
+    - conflict/decision records now lower into the same preview language as authoring and migration,
+    - persisted reconciliation can now emit a stored preview report plus a `SemCommitKindV1::Merge` commit carrying typed delta/trust/rule/coverage summaries,
+    - unresolved conflicts remain explicit residual obligations,
+    - and the next step is to route CLI/server merge flows through this path rather than treating reconciliation as a raw side file.
+  - [x] first slice: treat compiled-IR exploration as a general service beyond olog authoring:
+    - compiled IR now emits typed exploration candidates for relation-object reification, dependent families, carrier lifts, rewrite candidates, and subtype factoring,
+    - `/discover/draft-axi` now returns this exploration preview,
+    - and the next step is to drive query refinement, migration authoring, reconciliation review, backend projection review, and implementation-surface mapping through the same refinement/typed-hole protocol.
   - [ ] make semantic VCS the reviewable unit of ontology change without overstating what exists today:
     - semantic commits / refs / validations should carry typed deltas and anchors,
     - review/evidence/world-model branches should be explicit,
     - and ancestry/reconciliation should become the default path for high-value changes.
+  - [ ] make the typed lifecycle useful for co-evolving real engineering systems, not only ontology artifacts:
+    - implementation surfaces must grow beyond endpoints/jobs into simulators, optimizers, PLC logic, HMI views, reports, and document/SOP sections,
+    - agent-facing reports should answer "what applies here, what is weak, what drifted, and what code/test/CQ/ontology action comes next?",
+    - and the canonical stress case should remain a hard industrial system where physics, process, ERP/MRP, certification, pricing, delivery, and code all evolve together.
   - [ ] require AI/world-model outputs to remain evidence-plane but richly typed:
     - typed run/proposal/snapshot anchors,
     - proposal-set digests and grounded evidence links,
@@ -127,6 +278,12 @@ This file is a shared context note for humans/agents working in this repo. It ca
   - proposal digests,
   - grounded source/context links,
   - explicit preview failure modes rather than silent coercion.
+  - Treat “LLM-assisted” as concrete typed integration surfaces:
+    plugin protocols, API-backed runners, tool-loop services, and future
+    MCP/skill-style adapters, not as free-form rewrite-only behavior.
+  - Prefer agent-facing typed reports and APIs over prose-only assistance:
+    rule applicability, semantic coverage, drift, typed hole exploration, and
+    engineering next-actions should be available as structured services.
 - Raise semantic-VCS/world-model lifecycle coupling to high priority:
   - persist proposal/review bundles under `sem/validations/` with stable proposal-set and run anchors,
   - require CQ-gated merge/review transitions from review branches before accepted-plane promotion,
@@ -142,6 +299,19 @@ High-level service direction (not exhaustive):
 - schema-aware completion should drive authoring and proposal drafting before execution.
 - the same compiled schema/category IR should be shared by authoring, query, migration, certification, and semantic diff rather than duplicated across tools.
 
+### Runtime usefulness bar
+
+- Treat the Rust runtime checker as the default useful surface for ordinary ontology work outside the Lean-certified slice.
+- Near-term surfaces should converge on a small artifact family instead of inventing bespoke review JSON:
+  - one evolution-preview report for proposal / promotion / migration / merge with typed `schema` / `theory` / `instance` / `context` deltas, rich structural primitives, CQ status, trust contract, residual obligations, and directed exploration next-actions;
+  - one business-rule applicability report naming matched theory/rule/CQ objects, accepted/review anchors, world/context scope, trust strength, and suggested next actions;
+  - one semantic-coverage / drift report showing which ontology objects, rules, and CQs are mapped into code/tests/docs/interop artifacts and where gaps remain;
+  - one agent-facing semantic report family that can compose ontology-backed results, CQ assets, and retrieved evidence without collapsing strong and weak claims.
+- Prefer extending shared preview / trust / report families over creating new one-off payloads per CLI, server, viz, or agent surface.
+- Keep business-rule usefulness concrete:
+  - the question is not only “can Lean certify this?”;
+  - it is also “what can the runtime checker say now, under explicit anchors, about applicability, scope, residual gaps, and required next actions?”
+
 ### Change policy (greenfield default)
 
 - Backward compatibility is **not** a default goal in this repo.
@@ -154,6 +324,15 @@ High-level service direction (not exhaustive):
 - Examples, demos, and tests should be updated intentionally to match the current design.
   - They are not required to remain unchanged.
   - What matters is that the repo keeps a coherent, truthful set of examples and verification checks for the surfaces we currently claim.
+- When a stronger typed/runtime surface exists, remove the old compatibility harness in the same slice instead of dual-running both.
+  - Do not keep legacy request/response shapes, parser branches, or plugin payload variants around “just in case”.
+- Current high-priority compatibility cuts after the raw-AxQL removal:
+  - collapse `query_ir_v1` execution so it stops routing through AxQL as the effective runtime currency,
+  - keep `query_result_v3` as the only supported query certificate family; do not reintroduce `query_result_v1` / `query_result_v2`,
+  - then remove the remaining `/anchor.axi`-style surfaces and any residual `PathDBExportV1` certification paths rather than treating those exports as primary anchors,
+  - and collapse workflow-specific wrappers so `EvolutionPreviewV1` becomes the single mutation-review currency.
+  - when strengthening ontology evolution, prefer exact semantic primitives over compatibility summaries.
+    - subtype/supertype moves, role push/pull, split/merge, and carrier lifting should be explicit preview/history fields rather than inferred from old bucket-only reports.
 
 ### Docs (canonical references)
 
@@ -217,8 +396,8 @@ High-level service direction (not exhaustive):
 - [ ] Extend cert v2 rewrite derivations beyond normalization (reconciliation proofs, domain rewrites).
 - [ ] Anchor certificates to canonical `.axi` inputs (stable module hash + extracted facts).
 - [ ] Continue removing legacy certificate surfaces unless they are still needed for trusted-checker continuity or explicit fixture coverage.
-  - Current state: Rust-side standalone v1 reachability emission has been removed; verifier-side historical support remains explicit in `docs/reference/CERTIFICATES.md`.
-  - Highest-value next removal: collapse `query_result_v1` / `query_result_v2` toward `query_result_v3` as the only active query-certificate family once remaining fixtures/tooling are migrated.
+  - Current state: Rust-side standalone v1 reachability emission is gone, the DB server now emits canonical `.axi`-anchored `reachability_v3`, and Rust-side query certificate emission routes only through the `.axi`-anchored `query_result_v3` / typed-query-witness path; verifier-side historical support remains explicit in `docs/reference/CERTIFICATES.md`.
+  - Highest-value next removal: cut any remaining `/anchor.axi`-style compatibility surfaces and retire residual `PathDBExportV1`-anchored verifier-only fixtures when the canonical anchored replacements cover them.
 - [ ] Keep certificate scope explicit and conservative:
   - certify soundness of returned rows / derivations / migrations,
   - do not imply completeness of query results or full ontology-theoretic closure unless explicitly proved.
@@ -230,12 +409,11 @@ High-level service direction (not exhaustive):
 - [x] Rust e2e: emit normalize_path cert v2 (`make verify-lean-e2e-normalize-path-v2`).
 - [x] Rust proof-mode scaffolding: `ProofMode` generic + proof-producing optimizer (normalize/resolution/Δ_F).
 - [x] PathDB snapshot export/import: `.axpd` ↔ `.axi` (`PathDBExportV1`) + CLI (`axiograph db pathdb export-axi|import-axi`).
-- [x] DB server wrapper: `axiograph db serve` (read-only replica + optional write master) serving `/query` (AxQL) + `/status` + admin endpoints.
+- [x] DB server wrapper: `axiograph db serve` (read-only replica + optional write master) serving `/query` (`query_ir_v1`) + `/status` + admin endpoints.
 - [x] DB server viz endpoints: `GET /viz` (HTML), `GET /viz.json` (graph JSON), `GET /viz.dot` + `refresh_secs=N` for live-ish auto-refresh.
 - [x] DB server certificate endpoints:
-  - `GET /anchor.axi` (export PathDBExportV1 anchor),
-  - `POST /cert/reachability` (reachability cert from relation-id chains),
-  - `/query` supports `certify/verify/include_anchor` and optional default `contexts`.
+  - `POST /cert/reachability` (canonical `.axi`-anchored `reachability_v3` cert from relation-id chains),
+  - `/query` supports `certify/verify` over canonical anchor digests and optional default `contexts`.
 - [x] DB server can optionally verify certificates server-side:
   - verifier discovery: `--verify-bin`, `AXIOGRAPH_VERIFY_BIN`, `bin/axiograph_verify`, repo dev fallback,
   - exposed in `/status.certificates.*`.
@@ -243,7 +421,7 @@ High-level service direction (not exhaustive):
   - `/llm/agent` supports `require_query_certs` / `require_verified_queries`,
   - `/viz` LLM tab exposes “require verified query certificates (fail closed)”.
 - [x] DB server demos (scripts): `scripts/db_server_api_demo.sh`, `scripts/db_server_distributed_demo.sh`, `scripts/db_server_live_viz_demo.sh`.
-- [x] Rust query certification emits v2 reachability/confidence certificates for the current certifiable query subset (`/query certify`, AxQL query-result certificates, anchored reachability witnesses).
+- [x] Rust query certification emits fixed-point and canonical-module-anchored certificates for the current certifiable query subset (`/query certify`, AxQL query-result certificates, `reachability_v3` witnesses).
 - [ ] Wire runtime normalization / path-equivalence / reconciliation certificate emitters into user-facing CLI/server workflows rather than keeping them mostly as optimizer/runtime helpers.
 - [x] Canonical `.axi` parser in Rust: unified `axi_v1` entrypoint (`rust/crates/axiograph-dsl/src/axi_v1.rs`).
 - [x] Unified `.axi` entrypoint in Rust: `axi_v1` dialect detection (`rust/crates/axiograph-dsl/src/axi_v1.rs`).
@@ -312,7 +490,7 @@ High-level service direction (not exhaustive):
 - [ ] Expose a first-class prepared/typechecked query handle:
   - e.g. `PreparedQuery<S, A>` / `TypecheckedLoweredQuery`,
   - so REPL / server / LLM tooling stop executing from raw query strings and raw ASTs.
-- [x] `db serve /query` now accepts structured `query_ir_v1` in addition to raw AxQL, and can echo canonical compiled query IR alongside elaboration output.
+- [x] `db serve /query` now accepts structured `query_ir_v1` as the machine-facing query contract, and can echo canonical compiled query IR alongside elaboration output.
 - [ ] Keep the structured query/compiler surface first-class across all entrypoints:
   - `query_ir_v1` should be accepted uniformly by REPL, DB server, and tool-loop entrypoints,
   - elaboration/typecheck results should include structured diagnostics and repair suggestions, not only text notes,
@@ -348,10 +526,35 @@ High-level service direction (not exhaustive):
   - proposal and promotion previews now attach a runtime semantic summary with explicit non-claims (`completeness_claim = not_claimed`, `ontology_closure_claim = not_claimed`),
   - the summary inventories visible rule surfaces (structured constraints, rewrite rules, named blocks), typed coverage, CQ coverage, and current review/runtime gaps,
   - and semantic commits / semantic refs persist a compact gate summary so promotion trust/coverage survives beyond preview JSON.
+- [x] Add first typed runtime business-rule report objects:
+  - `RuntimeRuleCatalogV1`, `RuntimeRuleReportV1`, and `BusinessRuleApplicabilityReportV1` now give the runtime checker stable rule ids/scope ids, rule classes, runtime/advisory/review-only trust classes, and agent-facing applicability/next-action summaries,
+  - relation/theory scoped reports are deterministic over the current meta-plane,
+  - and they make “what applies here, how strong is it, and what is still missing?” a typed runtime question rather than ad hoc UI logic.
 - [ ] Upgrade query/proposal authoring diagnostics from strings/counts to typed repair objects:
   - ambiguous schema/relation cases should surface candidate fixes,
   - missing role/field/default-carrier issues should surface concrete next moves,
   - and `query_ir_v1`, proposal authoring, and draft `.axi` review should share the same repair language family.
+- [x] Replace string-only query refinements with typed apply/refine handles:
+  - query exploration now emits `AxqlRefinementHandleV1` / `AxqlRefinementOpV1` rather than only string patches,
+  - `QueryIrV1` / `PreparedQueryV1` can apply those handles directly and return a refined typed query plus updated trust/introspection payloads,
+  - and refinement ids are stable over the handle payload rather than ad hoc UI strings.
+- [x] Add the first shared refinement-protocol slice across query + typed olog authoring:
+  - `typed_refinement.rs` now carries one runtime handle/candidate envelope over query and olog-authoring domains,
+  - query exploration now exports shared runtime refinement candidates in addition to query-local candidates,
+  - typed olog holes now carry machine-applicable role-binding/refinement handles where the repair is deterministic,
+  - and typed olog checking can apply shared refinement handles by id and re-run the compiled-IR checker on the refined fragment.
+- [x] Extend the shared refinement protocol into migration preview, reconciliation review, and CQ repair:
+  - `EvolutionPreviewV1` now carries shared `refinement_candidates` rather than only prose next-actions/residual obligations,
+  - migration previews emit typed transport-obligation refinement handles,
+  - reconciliation previews emit typed conflict-resolution handles and reconciliation refinement can now upsert explicit decision records,
+  - CQ evaluation emits shared runtime repair handles over the prepared typed query surface,
+  - and CQ repair now intentionally filters out elaboration-internal lookup-variable moves so the surfaced candidates remain machine-usable for agents.
+- [x] Make the first runtime theory-obligation seam addressable in the compiled IR:
+  - `TheoryIr` now exports `TheoryObligationRefIr` / `TheoryObligationKindIr` plus `TheorySubjectRefIr` / `TheorySubjectKindIr`,
+  - the compiled IR now exposes `obligation_refs()`, `subject_refs()`, `subject_refs_for_obligation(...)`, and `obligation_refs_for_subject(...)`,
+  - constraints now retain compiled relation ids plus field/param role ids, and parseable path equations / rewrite rules retain compiled relation ids,
+  - previews/repairs can now cite typed theory obligations and semantic subjects rather than bottoming out only in strings,
+  - and this is the next stepping stone toward fuller runtime-addressable higher-order/dependent theory obligations.
 - [x] Add the first meta-aware query trust slice across query/repl/LLM/server/CQ surfaces:
   - query trust now carries `semantic_coverage`, `semantic_claims`, and explicit `gaps` when meta-plane data is available,
   - `PreparedQueryV1` now carries its trust/semantic profile as typed runtime state rather than forcing downstream callers to recompute it from raw query text,
@@ -360,13 +563,19 @@ High-level service direction (not exhaustive):
   - distinguish runtime-used rules from merely in-scope declarations,
   - persist that distinction in CQ/preview/review artifacts,
   - and keep unsupported/review-only rule surfaces explicit.
-- [ ] Re-evaluate raw AxQL compatibility on server/tool boundaries under the greenfield policy:
-  - once `query_ir_v1` covers the required workflows, stop treating raw `axql` text as a first-class wire/tool contract and demote it to a REPL/debug surface or remove it.
+- [x] Cut the old raw-AxQL compatibility harnesses from the active LLM/server machine boundaries:
+  - `/query`, `/llm/to_query`, command-plugin query generation, and the LLM tool-call surfaces now require structured `query_ir_v1`,
+  - raw `axql` remains a human/debug representation only, not a wire/plugin contract,
+  - and old fallback request/response shapes should be removed rather than preserved unless they are explicitly needed for trusted migration.
 - [ ] Make type-driven ontology usefulness explicit in user tooling:
   - schema-first exploration,
   - olog-fragment synthesis,
   - candidate constraint / path-equation / rewrite-rule discovery,
   - and previewable `.axi` deltas before promotion.
+- [x] Deepen the runtime module checker beyond schema/instance-only validation:
+  - `validate_axi_v1_module` now checks structured theory constraints against declared relation/field/param surfaces,
+  - runtime-checked rewrite rules and parseable path equations now typecheck against compiled carrier semantics,
+  - and `kernel_ir::compile_theory_ir(...)` assigns deterministic ids to constraints/equations/rewrite rules instead of leaving theory objects as stringly metadata.
 - [x] Add a first typed-authoring draft signal in the LLM/tool-loop draft path:
   - `draft_axi_from_proposals` there can distinguish `draft_only` from `validated` drafts,
   - carries a Rust-side `axi_well_typed_proof_v1` summary when the generated module passes the well-typed gate,
@@ -457,6 +666,11 @@ High-level service direction (not exhaustive):
   - resulting promoted snapshot/tag (if any).
 - [x] Thread proposal-set digests into world-model lineage metadata and helpers so proposal streams have a stable typed identity in addition to run/snapshot anchors.
 - [x] Persist store-backed world-model run manifests under `sem/world_model_runs/<run_id>.json` for `/world_model/propose` and `wm propose --commit-dir` flows, including typed run/snapshot/proposal anchors and committed PathDB lineage when present.
+- [x] Collapse world-model semantic input onto canonical `.axi` plus typed semantic layers:
+  - `axi_module_text` is the primary meaning input,
+  - snapshot ids are lineage metadata inside `semantic_input`,
+  - JEPA/training export and guardrails are optional semantic layers,
+  - and old `snapshot` / `export_path`-style first-class plugin fields are removed from the active request contract.
 - [ ] Close the remaining world-model lifecycle gaps:
   - REPL `wm propose/plan --commit-dir` should persist the same run-record object,
   - `/llm/agent` auto-commit should attach lifecycle objects instead of writing only overlays,
@@ -475,7 +689,8 @@ High-level service direction (not exhaustive):
 - Current state (implementation fact):
   - `sem/commits`, `sem/refs`, `sem/validations`, and `sem/world_model_runs` exist in the accepted-plane layer,
   - `refs/heads/main` and gate-summary persistence are real first slices,
-  - semantic commits are still evolving toward explicit state+delta objects with ancestry/policy metadata,
+  - semantic commits now persist compact `semantic_delta` / `trust_summary` / `rule_summary` / `coverage_summary` sidecars copied from `EvolutionPreviewV1`,
+  - semantic commits are still evolving toward fuller explicit state+delta objects with ancestry/policy metadata,
   - and accepted-plane mutators do not yet use one universal semantic-commit / reconciliation flow.
 - [ ] Add refs beyond `HEAD`:
   - `refs/heads/main`,
@@ -528,6 +743,21 @@ High-level service direction (not exhaustive):
   - attach semantic diffs and CQ regressions to each evolution step,
   - preview migration and reconciliation impact before merge/promotion,
   - preserve lineage from evidence -> review -> accepted -> superseded/retracted artifacts.
+- [ ] Make structural ontology evolution primitives first-class in semantic history and review:
+  - `reify_relation_object`,
+  - `introduce_dependent_relation_family`,
+  - `introduce_subtype`,
+  - `generalize_to_supertype`,
+  - `specialize_to_subtype`,
+  - `push_relation_role_to_subtype`,
+  - `pull_relation_role_to_supertype`,
+  - `factor_common_structure_to_supertype`,
+  - `split_type_into_subtypes`,
+  - `merge_types_under_supertype`,
+  - `lift_relation_to_carrier`,
+  - `add_path_equation`,
+  - `add_rewrite_rule`.
+  - These should drive directed exploration, typed olog authoring, migration preview, semantic merge/reconciliation, and theory/dependent-family evolution rather than living only in notes or inferred diffs.
 
 ### Literature-driven roadmap deltas (Appendix C of `docs/explanation/BOOK.md`)
 
@@ -627,13 +857,13 @@ These items are “best practices” backed by the related work list in Appendix
   - `diff ctx ...` (context/world diffs),
   - `neigh ...` (REPL-driven viz export).
 - [x] Add `q --explain` plan output (join order + candidate domains + FactIndex hints).
-- [x] Add a typed JSON query IR for tooling/LLMs (`query_ir_v1`) that compiles into the same AxQL core (REPL `llm query` prints this; the LLM tool-loop emits it; raw AxQL is fallback only).
+- [x] Add a typed JSON query IR for tooling/LLMs (`query_ir_v1`) that compiles into the same AxQL core (REPL `llm query` prints this; the LLM tool-loop, DB server, and LLM/plugin query-generation surfaces use it as the machine-facing contract; raw AxQL is now a human/debug surface only).
 - [x] Add schema-qualified AxQL for multi-schema “one universe” snapshots:
   - `?x is Fam.Person` / `?x -Fam.Parent-> ?y` / `?f = Fam.Parent(child=..., parent=...)`,
   - ambiguous unqualified edge labels elaborate to either a chosen schema (when inferred) or a union alternation.
 - [x] Add first-class disjunction (`or`) in AxQL with a certifiable subset:
   - execution: UCQ semantics (union of conjunctive branches),
-  - certificates: `query_result_v2` (Lean checks each row against the chosen branch).
+  - certificates: `query_result_v3` (Lean checks each row against the chosen branch under the canonical `.axi` anchor).
 - [x] Add an LLM “tool loop” (lookup + elaborate + run + propose) so `llm ask`/`llm answer` are multi-step and models don’t emit raw AxQL by default.
 - [ ] Make REPL and AxQL completion position-aware and schema-aware:
   - complete valid schema-qualified symbols, tuple roles, contexts, and rewrite-rule names from the compiled IR.

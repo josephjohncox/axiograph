@@ -4,26 +4,37 @@
 **Audience:** contributors
 
 The Axiograph REPL (and some CLI discovery workflows) support an optional
-**LLM-assisted** layer.
+agent/model integration layer. In practice this should be read as:
+
+- typed plugin protocols,
+- API-backed model runners,
+- tool-loop agent interfaces,
+- and, in broader deployments, MCP/skill-style adapter surfaces,
+
+not merely "free-form LLM rewriting".
 
 There are two related protocols:
 
-- `axiograph_llm_plugin_v2`: translate questions → structured query (`query_ir_v1` preferred; AxQL fallback) and (optionally) summarize results.
+- `axiograph_llm_plugin_v2`: translate questions → structured `query_ir_v1` and (optionally) summarize results.
   - Used by REPL `llm query ...` and some CLI workflows (e.g. discovery augmentation).
+  - Query-authoring loops should prefer `axql_explore` for partial/ambiguous
+    queries, `axql_elaborate` for validation/inference, and `axql_run` only
+    once execution is actually needed.
 - `axiograph_llm_plugin_v3`: a **tool-loop step** protocol for agentic workflows (LLM calls tools; Rust executes; LLM answers).
   - Used by REPL `llm ask ...` / `llm answer ...` (and `llm agent ...` for verbose debugging).
 
-1. an LLM proposes a **structured** query (AxQL)
+1. an LLM proposes a **structured** query (`query_ir_v1`)
 2. Rust executes the proposed query against the loaded snapshot
 3. (optional) the LLM summarizes results into a natural-language answer
 
-This document specifies the **plugin protocol** used by the REPL so we can use:
+This document specifies the **typed plugin protocol** used by the REPL so we can use:
 
 - a local lightweight model runner (Ollama, llama.cpp, llamafile, …), or
 - a remote LLM API (later), without changing the REPL itself.
 
-The LLM is **untrusted**: it produces *candidate queries*. Axiograph is the
-source of truth for execution (and later: certificate production for Lean).
+The model/agent layer is **untrusted**: it produces *candidate queries*, tool
+calls, or summaries. Axiograph is the source of truth for execution, typing,
+trust surfacing, and later certificate production for Lean.
 
 The same plugin protocol is also used by evidence-plane discovery augmentation:
 
@@ -96,8 +107,7 @@ Top-level:
 
 The plugin should translate a user question into a **structured query**.
 
-Preferred output: `query_ir_v1` (typed JSON that compiles into AxQL).
-Fallback output: `axql` (string).
+Required output: `query_ir_v1` (typed JSON that compiles into AxQL).
 
 ```json
 {
@@ -131,14 +141,6 @@ Preferred response (typed IR):
 }
 ```
 
-Fallback response (AxQL text):
-
-```json
-{
-  "axql": "select ?x where ?x is Node, ?x.name = \"b\" limit 20"
-}
-```
-
 ### Task: `answer`
 
 The plugin should produce a natural-language answer grounded in results.
@@ -147,7 +149,15 @@ The plugin should produce a natural-language answer grounded in results.
 {
   "kind": "answer",
   "question": "how do I reach c from a?",
-  "query": { "kind": "axql", "axql": "select ?y where ..." },
+  "query": {
+    "kind": "query_ir_v1",
+    "query_ir_v1": {
+      "version": 1,
+      "select": ["?y"],
+      "where": [ ... ],
+      "limit": 20
+    }
+  },
   "results": {
     "vars": ["?x", "?y"],
     "rows": [
@@ -192,7 +202,6 @@ Top-level (fields are optional; shape depends on the task):
 ```json
 {
   "query_ir_v1": { "version": 1, "select": ["?x"], "where": [ ... ], "limit": 20 },
-  "axql": "select ?x where ...",
   "answer": "…",
   "added_proposals": [ ... ],
   "schema_hint_updates": [ { "proposal_id": "...", "schema_hint": "machinist_learning" } ],

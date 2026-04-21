@@ -1,0 +1,19 @@
+services:
+  typedb:
+    image: typedb/typedb:latest
+    ports:
+      - "127.0.0.1::8000"
+    volumes:
+      - typedb-data:/var/lib/typedb/data
+
+  terminusdb:
+    image: terminusdb/terminusdb-server:v12
+    environment:
+      TERMINUSDB_ADMIN_PASS: root
+      TERMINUSDB_SERVER_PORT: 6363
+    volumes:
+      - terminusdb-data:/app/terminusdb/storage
+
+volumes:
+  typedb-data:
+  terminusdb-data:

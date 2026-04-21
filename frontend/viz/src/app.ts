@@ -611,7 +611,6 @@ async function certifySelectedPath(verify) {
       start: ui.pathStart,
       relation_ids: relationIds,
       verify: !!verify,
-      include_anchor: false,
     };
     if (snapshot) body.snapshot = snapshot;
     const resp = await fetch("/cert/reachability", {

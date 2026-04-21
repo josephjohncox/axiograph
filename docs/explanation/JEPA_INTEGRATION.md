@@ -50,9 +50,9 @@ JEPA needs stable, structured context/target pairs. Axiograph provides:
 - **Provable checks**: Lean certificates for constraints, rewrite rules, and
   canonical semantics.
 
-This enables a loop where JEPA learns from grounded snapshots and emits
-predictions back into the evidence plane, while promotion into the accepted
-plane remains certificate-checked.
+This enables a loop where JEPA learns from canonical grounded `.axi` modules and
+emits predictions back into the evidence plane, while promotion into the
+accepted plane remains certificate-checked.
 
 ## Mapping JEPA concepts onto Axiograph
 
@@ -109,6 +109,14 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 - **REPL:** `wm` subcommand (configure backend, emit proposals, optional WAL commit).
 - **DB server:** `POST /world_model/propose` (evidence plane; optional WAL commit).
 
+The plugin/request seam should be read this way:
+- `input.axi_module_text` + `axi_digest_v1` are the primary semantic contract.
+- `semantic_input` carries typed lineage and optional semantic layers.
+- JEPA/training export is an optional `semantic_input` layer, not a replacement
+  for canonical `.axi`.
+- Snapshot/export file paths are implementation details and should not be treated
+  as first-class semantic request fields.
+
 ## Integration with knowledge discovery + tooling
 
 - **Knowledge discovery loop:** JEPA outputs are just another evidence stream
@@ -134,7 +142,7 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 
 ## Self-supervised loop (iterative)
 
-1) Export grounded training pairs from snapshot anchors.
+1) Export grounded training pairs from canonical `.axi` anchors.
 2) Train JEPA to predict masked targets from context.
 3) Emit top-k predictions into the evidence plane (proposals).
 4) Reconcile/promote with constraints + certificates.
@@ -147,6 +155,9 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
   + instance) plus context/world metadata, not just a PathDB export.
 - Use accepted-plane anchors (snapshot ids) for reproducibility; PathDB exports
   are derived and optional convenience views.
+- Keep the world-model plugin request centered on canonical `.axi`; training
+  exports are derived metadata, and snapshot/store paths should stay out of the
+  primary request contract.
 - Include negative samples (distractors) to reduce trivial shortcuts.
 
 **2) Model layer**

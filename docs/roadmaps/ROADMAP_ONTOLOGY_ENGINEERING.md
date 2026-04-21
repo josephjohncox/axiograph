@@ -58,6 +58,24 @@ The operative target is not “a perfect ontology”. It is:
 - reproducible promotion,
 - and explainable regression handling.
 
+### 0.1 Runtime usefulness bar
+
+This roadmap is not only about better ontology curation. It is about shipping a
+runtime-usable ontology checker whose outputs are concrete enough to drive
+business-rule review, coding-agent workflows, and ontology-driven development.
+
+Near-term ontology-engineering surfaces should converge on a small report family:
+
+| Report family | Normal producers | Must answer | Minimum contract |
+| --- | --- | --- | --- |
+| `EvolutionPreviewV1`-style review object | proposal preview, promotion preview, migration preview, merge/reconciliation preview | what changed semantically before mutation? | typed `schema` / `theory` / `instance` / `context` deltas, CQ before/after, trust, residual obligations |
+| Business-rule applicability report | runtime checker, authoring review, implementation review, merge/promotion review | which accepted/review-state rules apply here? | matched rule/CQ ids, anchors, world/context scope, trust class, checked surfaces, next actions |
+| Semantic coverage / drift report | runtime checker, implementation review, interop review | what is mapped, what is weak, and what is missing? | covered ontology objects/rules/CQs, uncovered areas, drift/gap reasons, anchors, trust/caveats |
+| Agent-facing semantic report | REPL, server, tool-loop, review surfaces | what can an agent defensibly claim now? | proposition/task, matched ontology objects, anchors, trust contract, evidence/checks used, residual unknowns, next actions |
+
+If a new ontology-engineering surface cannot say which report family it emits,
+it is not yet aligned with this roadmap.
+
 ---
 
 ## 1. Non-Negotiables
@@ -103,6 +121,13 @@ The roadmap should build on the slices that already exist today.
 | Accepted plane + PathDB WAL split | accepted snapshots plus PathDB WAL/checkpoints are live, with explicit promotion and `pathdb-commit` flows | This is the core evidence-plane to accepted-plane operating model |
 
 The roadmap below should close the gaps between these slices rather than invent a parallel workflow vocabulary.
+
+The practical instruction for implementation is:
+
+- reuse the existing trust / preview / semantic-summary seams as the starting point;
+- widen them to business-rule and coverage usefulness;
+- and resist introducing new one-off payload vocabularies unless they are clearly
+  temporary migration adapters.
 
 ---
 
@@ -158,6 +183,7 @@ Minimum fields:
 | `candidate_kind` | `proposal_overlay`, `canonical_axi_module`, `olog_fragment`, `migration`, `semantic_merge` |
 | `candidate_ref` | digest/path/id of the reviewed candidate |
 | `delta.schema` | added/removed/changed schema objects, arrows, relation-objects, context axes |
+| `delta.primitives[]` | explicit structural moves such as `reify_relation_object`, `introduce_dependent_relation_family`, `transport_along_schema_morphism`, `introduce_subtype`, `generalize_to_supertype`, `specialize_to_subtype`, `push_relation_role_to_subtype`, `pull_relation_role_to_supertype`, `factor_common_structure_to_supertype`, `split_type_into_subtypes`, `merge_types_under_supertype`, `lift_relation_to_carrier`, `add_path_equation`, `add_rewrite_rule`, `resolve_conflict_by_decision` |
 | `delta.theory` | changed constraints, path equations, rewrite rules, opaque equations |
 | `delta.instance` | facts/entities added, removed, or retyped |
 | `delta.context` | world/context scoping additions, removals, or reinterpretations |
@@ -165,10 +191,70 @@ Minimum fields:
 | `cq.questions[]` | per-question before/after rows, satisfaction status, trust class, and reasons |
 | `trust` | soundness/coverage/scope/reasons for the preview itself |
 | `migration_obligations[]` | preserved/generated/dropped/unsupported transport obligations |
+| `transport_basis` | named schema/theory map or other typed transport basis used by the preview |
+| `reindexing_links[]` | source/target semantic ids that remain comparable across the evolution |
+| `reconciliation_decisions[]` | typed conflict-set and decision inventory when the candidate is a semantic merge |
+| `exploration_next_actions[]` | directed follow-on work suggested by the structural change: CQs to rerun, sibling relations to inspect, candidate shared supertypes, roles to re-home, code/docs/tests likely affected |
 | `stored_report_path` | semantic-history location of the persisted report |
 
 The important change is not merely storing more data. It is making the same
 review object appear at every ontology mutation seam.
+
+### 3.3 Structural evolution primitives
+
+Ontology review gets materially better when the preview can say what kind of
+structural move is being attempted, not only what strings changed.
+
+The minimum structural primitive set should be:
+
+- `reify_relation_object`
+- `introduce_dependent_relation_family`
+- `transport_along_schema_morphism`
+- `introduce_subtype`
+- `generalize_to_supertype`
+- `specialize_to_subtype`
+- `push_relation_role_to_subtype`
+- `pull_relation_role_to_supertype`
+- `factor_common_structure_to_supertype`
+- `split_type_into_subtypes`
+- `merge_types_under_supertype`
+- `lift_relation_to_carrier`
+- `add_path_equation`
+- `add_rewrite_rule`
+- `resolve_conflict_by_decision`
+
+Why these specifically:
+
+- relation-object reification and dependent/indexed-family primitives keep the
+  categorical and dependent-type story operational rather than leaving it in
+  docs only;
+- subtype/generalize/specialize make the subtype lattice reviewable as a typed
+  design object rather than a byproduct of renaming;
+- push/pull relation role and lift relation to carrier preserve the repo's
+  relation-as-object semantics and make role movement explicit before it causes
+  query or migration drift;
+- path-equation and rewrite-rule primitives make theory evolution explicit
+  rather than mixing semantic laws into free-form notes;
+- factor/split/merge cover the most common ontology refactorings that change CQ
+  behavior and implementation mapping even when the vocabulary looks familiar.
+
+Each primitive should carry:
+
+- stable refs for the affected objects, relation-objects, and roles,
+- a short rationale,
+- migration obligations produced by the move,
+- and directed exploration hints so the reviewer knows what to inspect next.
+
+Directed exploration is part of the usefulness bar, not extra UI polish. If the
+preview says "generalize `BoilerPump` and `CoolingPump` into `Pump`", the
+runtime checker should also be able to suggest:
+
+- sibling relations whose source/target types should be reconsidered,
+- CQs likely to gain or lose answers,
+- code/test/docs surfaces mapped to the changed semantic ids,
+- and candidate follow-on edits such as "push maintenance interval onto the new
+  supertype" or "lift `delivers_to` into `Delivery(...)` because time/carrier
+  provenance is now in scope".
 
 ---
 
@@ -195,6 +281,7 @@ Implemented today:
   - accepted-plane promotion preview,
   - migration preview,
   - semantic merge/reconciliation preview.
+- [ ] Make subtype/supertype evolution reviewable through explicit primitives instead of relying on before/after diff inference.
 - [ ] Treat CQ suites as named review assets, not ad hoc JSON passed only at runtime.
 - [ ] Preserve expected answer-shape references with the CQ asset:
   - exact set,
@@ -211,9 +298,11 @@ Implemented today:
 ### Operational deliverables
 
 - [ ] Define a first-class `EvolutionPreviewV1` or equivalent report shape that subsumes current proposal and promotion preview reports.
+- [ ] Make `EvolutionPreviewV1` carry rich structural primitives rather than only bucketed add/remove/change counts.
 - [ ] Add one stable storage convention for CQ-bearing preview reports under `sem/validations/`.
 - [ ] Add a CQ suite manifest location in the repo for reusable acceptance suites.
 - [ ] Make every ontology-changing CLI/server surface accept the same CQ policy and emit the same per-question result structure.
+- [ ] Emit `exploration_next_actions[]` from preview generation so authoring/review tooling can drive directed follow-up inspection instead of only printing deltas.
 
 ### Exit criteria
 
@@ -237,6 +326,25 @@ Implemented today:
 - evidence-plane proposals can be drafted into canonical `.axi`,
 - `draft_axi_from_proposals` can distinguish plain rendered drafts from validated drafts,
 - authoring responses can already include a Rust-side well-typedness summary.
+- checked olog fragments now emit a compiled-IR-derived typed change summary and
+  evolution preview with:
+  - relation-object reification primitives,
+  - indexed/dependent-family primitives over context/temporal/fiber roles,
+  - path-equation primitives,
+  - subtype-specialization primitives induced by actual box bindings,
+  - and directed exploration next actions.
+- migration preview builders now emit transport-along-morphism, transported
+  path-equation, subtype-collapse, and merge-image primitives from real
+  `SchemaMorphismV1` inputs plus residual transport obligations.
+- reconciliation preview builders now emit typed conflict/decision previews from
+  persisted reconciliation records without overstating merge completeness.
+- accepted-plane reconciliation can now persist a stored reconciliation preview
+  report under `sem/validations/` and emit a `SemCommitKindV1::Merge` semantic
+  commit carrying typed delta/trust/rule/coverage summaries plus the cited
+  preview path.
+- compiled-IR directed exploration now emits relation-object, indexed-family,
+  carrier-lift, rewrite-candidate, and subtype-factor opportunities beyond
+  hand-authored olog fragments.
 
 ### Target behavior
 
@@ -353,7 +461,53 @@ That means the authoring bundle should be able to produce:
   - business-rule checklists,
   - CQ deltas,
   - migration obligations,
+  - backend projection obligations for advanced graph stores,
   - and code/test generation hints anchored to semantic ids.
+- [ ] Keep advanced graph database compatibility above the storage layer:
+  - authoring, ologs, CQ gates, semantic VCS refs/commits, and trust contracts
+    stay in Axiograph,
+  - graph databases receive anchored projections/materializations from accepted
+    semantic state,
+  - and backend-local schema or branch concepts do not replace semantic
+    lifecycle state.
+- [ ] Add one typed backend-projection plan per target materialization:
+  - selected semantic ref / accepted snapshot anchor,
+  - compiled IR digest,
+  - target capability profile,
+  - relation-object vs edge projection decisions,
+  - context/world mapping,
+  - and drift/round-trip caveats.
+- [ ] Restrict “generic graph database support” to advanced engines that can
+  actually preserve typed ontology structure or at least host disciplined
+  projections:
+  - `TypeDB` first for typed relation/role/n-ary semantics,
+  - `TerminusDB` next for RDF/VCS-shaped graph projection,
+  - and only then other advanced RDF/quad or constrained property-graph
+    systems when their capability profiles justify it.
+- [ ] Use backend-native strengths deliberately instead of flattening them into
+  one compatibility story:
+  - push rich type/constraint/query-validation fragments into `TypeDB`,
+  - import TypeDB-style interface typing into the canonical IR:
+    scoped role interfaces, subtype-inherited admissible players, and explicit
+    single-change schema evolution/redefinition discipline,
+  - push mirrored branch/history/diff collaboration views into `TerminusDB`,
+  - treat property-graph execution/indexing as experimental until a backend
+    clears the same long-term compatibility bar,
+  - and keep semantic meaning, olog authoring, CQ gates, trust contracts, and
+    lifecycle state in Axiograph above every backend.
+- [ ] Treat backend-native VCS/history as advisory projection infrastructure,
+  not ontology authority:
+  - use it where it helps review and collaboration,
+  - keep native backend query/read surfaces available for external tools as
+    read-only projected views,
+  - but keep Axiograph semantic refs/commits as the source of truth,
+  - especially when a backend's native sync/history model does not transport
+    schema evolution with the same guarantees as instance data.
+- [ ] Make implementation review aware of backend projections:
+  - semantic coverage should say which accepted rules/CQs are satisfied in the
+    canonical semantic layer only,
+  - which are also materialized in a target graph backend,
+  - and where backend capabilities forced a weaker projection.
 - [ ] Keep authoring trust contracts explicit about scope:
   - draft-only typing,
   - runtime-checked preview,
@@ -533,6 +687,9 @@ A migration preview must make these questions answerable before promotion:
   - `dropped`
   - `unsupported`
   - `requires_review`
+- [ ] Make migration preview name both:
+  - the transport basis (`SchemaMorphismV1` or later richer schema/theory map),
+  - and the reindexing links that preserve semantic comparability across anchors.
 - [ ] Attach CQ before/after reporting and trust deltas to migration preview.
 - [ ] Route migration preview through the same stored validation path as proposal and promotion preview.
 - [ ] Fail closed on unresolved required obligations before accepted-plane mutation.
@@ -595,7 +752,8 @@ Required persisted objects remain:
 - [ ] Emit semantic commit objects for accepted-plane promotions as the normal history unit.
 - [ ] Persist validation report refs in semantic commits and use them as review evidence.
 - [ ] Add ancestry-aware semantic history for review branches and merges.
-- [ ] Make reconciliation objects carry conflict sets, decisions, and attached certificates.
+- [ ] Make reconciliation objects carry conflict sets, decisions, attached certificates, and typed layer classification usable directly by preview/report tooling.
+- [ ] Treat merge as typed reconciliation over semantic deltas rather than as commit ancestry plus free-form notes.
 - [ ] Link world-model runs, proposal digests, validations, and resulting promotions through semantic history rather than loose filenames.
 - [ ] Stop treating `sem/` as scaffolding only; make it the review audit trail for ontology change.
 
@@ -1103,6 +1261,11 @@ Minimum fields:
   - LLM tool-loop,
   - DB server,
   - and review/promotion previews.
+- [x] First runtime/API slice:
+  - `POST /semantic/agent-report` now returns a typed engineering report over a
+    task, mapped implementation surfaces, matched rule ids/scope ids, semantic
+    coverage, residual unknowns, and suggested next actions under the current
+    accepted snapshot.
 - [ ] Make agent reports preserve the distinction between:
   - accepted semantic fact,
   - review-preview result,
@@ -1111,6 +1274,22 @@ Minimum fields:
   - and speculative repair suggestion.
 
 ### 12.4 Core work items
+
+Canonical hard example for this workstream:
+
+- a chemical plant where physics, optimization, ERP/MRP, vendor certification,
+  pricing, delivery, reporting, PLC/HMI behavior, and operational procedures
+  all co-evolve.
+
+That example forces the ontology-engineering surface to become useful across:
+
+- simulators and digital-twin models,
+- PLC/control logic and HMI/operator workflows,
+- APIs, jobs, reports, and pricing/ERP integrations,
+- and wiki/SOP/certificate/document evidence.
+
+If a proposed feature cannot explain how it helps that class of system co-evolve
+under typed semantic control, it is probably still too abstract.
 
 - [ ] Add a coding-agent query profile that can ask for:
   - applicable business rules,
@@ -1135,6 +1314,14 @@ Minimum fields:
   - what code obligations are now missing or inconsistent,
   - which changes weaken a previously stronger claim,
   - and which changes are only weak/evidence-plane suggestions.
+- [ ] Extend implementation surfaces beyond the current minimal set when
+  modeling industrial/business systems:
+  - simulation models,
+  - optimizer artifacts,
+  - PLC routines and mode/state machines,
+  - HMI views,
+  - regulatory/reporting outputs,
+  - and document/SOP sections as typed surfaces rather than only generic notes.
 - [ ] Make ontology-backed retrieval first-class for LLM/tool loops:
   - accepted facts/rules/contexts/provenance,
   - trust contracts and anchors,
@@ -1146,6 +1333,11 @@ Minimum fields:
   - review checklists,
   - migration previews,
   - and code-generation hints for business systems.
+- [ ] Add hole-driven IDE/API behavior for engineering, not only query repair:
+  - typed holes in olog authoring,
+  - typed holes in CQ authoring,
+  - typed holes in migration/evolution authoring,
+  - and machine-applicable refinement actions rather than only diagnostic prose.
 - [ ] Make typed authoring/querying first-class for engineers as well as
   ontology authors:
   - authoring surfaces return stable object/arrow/role ids plus repair
@@ -1159,6 +1351,12 @@ Minimum fields:
   - ologs remain the human authoring surface,
   - but all three must lower into the same canonical delta/query/coverage
     vocabulary.
+- [ ] Treat "LLM-assisted" as explicit typed integration surfaces:
+  - tool-loop endpoints,
+  - stable APIs,
+  - plugin/skill contracts,
+  - and future MCP-style adapters,
+  - rather than free-form rewrite-only behavior.
 
 ### 12.5 Strong and weak claims across versioned worlds
 

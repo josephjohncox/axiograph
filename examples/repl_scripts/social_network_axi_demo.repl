@@ -1,7 +1,7 @@
 # Axiograph REPL script: import canonical `.axi` schema module (SocialNetwork)
 #
 # Demonstrates:
-# - importing a canonical `axi_schema_v1` module (schema/theory/instance)
+# - importing a canonical `axi_v1` module (schema/theory/instance)
 # - inspecting meta-plane schema + constraints
 # - schema-directed validation of imported fact nodes (reified tuples)
 # - visualization "layering": schema/meta-plane + instance data + fact nodes

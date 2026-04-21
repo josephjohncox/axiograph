@@ -153,36 +153,6 @@ fn http_get_json(addr: &str, path_and_query: &str) -> (u16, serde_json::Value) {
     (status, json)
 }
 
-fn http_get_text(addr: &str, path_and_query: &str) -> (u16, String) {
-    let mut stream = TcpStream::connect(addr).expect("connect");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-
-    let request =
-        format!("GET {path_and_query} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-    stream.write_all(request.as_bytes()).expect("write request");
-    stream.flush().ok();
-
-    let mut response_bytes = Vec::new();
-    stream
-        .read_to_end(&mut response_bytes)
-        .expect("read response");
-    let response = String::from_utf8_lossy(&response_bytes);
-
-    let mut lines = response.lines();
-    let status_line = lines.next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-
-    let (_, body_text) = response
-        .split_once("\r\n\r\n")
-        .unwrap_or(("", response.as_ref()));
-    (status, body_text.to_string())
-}
-
 fn wait_for_ready_addr(ready_file: &Path) -> String {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !ready_file.exists() && std::time::Instant::now() < deadline {
@@ -633,8 +603,15 @@ fn db_serve_query_smoke() {
     let addr = ready_json["addr"].as_str().expect("ready.addr is string");
 
     let query = serde_json::json!({
-        "query": "select ?gc where name(\"Alice\") -Grandparent-> ?gc limit 10",
-        "lang": "axql",
+        "lang": "query_ir_v1",
+        "query_ir_v1": {
+            "version": 1,
+            "select": ["?gc"],
+            "where": [
+                {"kind": "edge", "left": "Alice", "path": "Grandparent", "right": "?gc"}
+            ],
+            "limit": 10
+        },
         "show_elaboration": true,
     });
 
@@ -663,11 +640,17 @@ fn db_serve_query_smoke() {
     );
 
     let query_cert = serde_json::json!({
-        "query": "select ?gc where name(\"Alice\") -Grandparent-> ?gc limit 10",
-        "lang": "axql",
+        "lang": "query_ir_v1",
+        "query_ir_v1": {
+            "version": 1,
+            "select": ["?gc"],
+            "where": [
+                {"kind": "edge", "left": "Alice", "path": "Grandparent", "right": "?gc"}
+            ],
+            "limit": 10
+        },
         "certify": true,
-        "verify": false,
-        "include_anchor": true,
+        "verify": false
     });
     let (cert_status, cert_resp) = http_post_json(addr, "/query", &query_cert);
     assert_eq!(
@@ -682,30 +665,10 @@ fn db_serve_query_smoke() {
         cert_resp.get("anchor_digest").is_some(),
         "expected anchor_digest in /query response when certify=true: {cert_resp}"
     );
-    let anchor_axi_from_query = cert_resp["anchor_axi"].as_str().unwrap_or("");
-    assert!(
-        !anchor_axi_from_query.is_empty(),
-        "expected anchor_axi in /query response when include_anchor=true: {cert_resp}"
-    );
     let anchor_digest_from_query = cert_resp["anchor_digest"].as_str().unwrap_or("");
-    assert_eq!(
-        anchor_digest_from_query,
-        axiograph_dsl::digest::axi_digest_v1(anchor_axi_from_query),
-        "expected /query anchor_digest to match the returned anchor_axi bytes"
-    );
-
-    let (anchor_status, anchor_text) = http_get_text(addr, "/anchor.axi");
-    assert_eq!(
-        anchor_status, 200,
-        "expected 200 for /anchor.axi, got {anchor_status}: {anchor_text}"
-    );
     assert!(
-        anchor_text.contains("module"),
-        "expected /anchor.axi to look like an axi module"
-    );
-    assert_eq!(
-        anchor_axi_from_query, anchor_text,
-        "expected /query include_anchor output to match /anchor.axi"
+        !anchor_digest_from_query.is_empty(),
+        "expected non-empty canonical anchor digest in /query response: {cert_resp}"
     );
 
     let (viz_status, viz_json) = http_get_json(
@@ -783,7 +746,6 @@ fn db_serve_query_smoke() {
         &serde_json::json!({
             "start": alice_id,
             "relation_ids": [alice_parent_rel],
-            "include_anchor": true,
             "verify": false
         }),
     );
@@ -795,20 +757,20 @@ fn db_serve_query_smoke() {
         reach_json.get("certificate").is_some(),
         "expected certificate in /cert/reachability response: {reach_json}"
     );
-    let reach_anchor_axi = reach_json["anchor_axi"].as_str().unwrap_or("");
     let reach_anchor_digest = reach_json["anchor_digest"].as_str().unwrap_or("");
     assert!(
-        !reach_anchor_axi.is_empty(),
-        "expected anchor_axi in /cert/reachability response: {reach_json}"
+        !reach_anchor_digest.is_empty(),
+        "expected anchor_digest in /cert/reachability response: {reach_json}"
     );
     assert_eq!(
-        reach_anchor_digest,
-        axiograph_dsl::digest::axi_digest_v1(reach_anchor_axi),
-        "expected /cert/reachability anchor_digest to match returned anchor_axi"
+        reach_json["certificate"]["kind"].as_str(),
+        Some("reachability_v3"),
+        "expected canonical reachability_v3 certificate payload: {reach_json}"
     );
     assert_eq!(
-        reach_anchor_axi, anchor_text,
-        "expected /cert/reachability anchor to match /anchor.axi"
+        reach_json["certificate"]["proof"]["type"].as_str(),
+        Some("step"),
+        "expected non-trivial reachability_v3 proof chain: {reach_json}"
     );
 
     let (prop_status, prop_json) = http_post_json(
@@ -984,8 +946,15 @@ fn db_serve_llm_agent_smoke() {
         "expected 200, got {to_query_status}: {to_query_json}"
     );
     assert!(
-        to_query_json.get("axql").and_then(|v| v.as_str()).is_some(),
-        "expected llm/to_query to return axql: {to_query_json}"
+        to_query_json
+            .get("query_ir_v1")
+            .and_then(|v| v.as_object())
+            .is_some(),
+        "expected llm/to_query to return query_ir_v1: {to_query_json}"
+    );
+    assert!(
+        to_query_json.get("axql").is_none(),
+        "llm/to_query should no longer return raw axql fallback: {to_query_json}"
     );
 
     let (agent_status, agent_json) = http_post_json(
@@ -1172,8 +1141,15 @@ fn db_serve_llm_agent_auto_commit_smoke() {
         addr,
         "/query",
         &serde_json::json!({
-            "query": "select ?p where name(\"Jamison\") -Parent-> ?p limit 10",
-            "lang": "axql"
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    {"kind": "edge", "left": "Jamison", "path": "Parent", "right": "?p"}
+                ],
+                "limit": 10
+            }
         }),
     );
     assert_eq!(q_status, 200, "expected 200, got {q_status}: {q_json}");
@@ -1234,8 +1210,7 @@ fn db_serve_llm_agent_require_verified_queries_refuses_without_verifier() {
             "question": "find Person named Alice",
             "max_steps": 3,
             "max_rows": 5,
-            "require_verified_queries": true,
-            "include_anchor": true
+            "require_verified_queries": true
         }),
     );
     assert_eq!(
@@ -1360,10 +1335,16 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
         &addr,
         "/query",
         &serde_json::json!({
-            "query": "select ?p where ?p is Person limit 20",
-            "lang": "axql",
-            "certify": true,
-            "include_anchor": true
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    { "kind": "type", "term": "?p", "type": "Person" }
+                ],
+                "limit": 20
+            },
+            "certify": true
         }),
     );
     assert_eq!(
@@ -1387,26 +1368,26 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
         }),
         "expected Jamison to appear in current head snapshot: {current_q_json}"
     );
-    let current_anchor_axi = current_q_json["anchor_axi"].as_str().unwrap_or("");
     let current_anchor_digest = current_q_json["anchor_digest"].as_str().unwrap_or("");
     assert!(
-        !current_anchor_axi.is_empty(),
-        "expected anchor_axi for current snapshot query: {current_q_json}"
-    );
-    assert_eq!(
-        current_anchor_digest,
-        axiograph_dsl::digest::axi_digest_v1(current_anchor_axi),
-        "expected current anchor digest parity"
+        !current_anchor_digest.is_empty(),
+        "expected anchor_digest for current snapshot query: {current_q_json}"
     );
 
     let (old_q_status, old_q_json) = http_post_json(
         &addr,
         "/query",
         &serde_json::json!({
-            "query": "select ?p where ?p is Person limit 20",
-            "lang": "axql",
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    { "kind": "type", "term": "?p", "type": "Person" }
+                ],
+                "limit": 20
+            },
             "certify": true,
-            "include_anchor": true,
             "snapshot": old_snapshot_id
         }),
     );
@@ -1428,31 +1409,14 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
         }),
         "expected Jamison to be absent from the overridden older snapshot: {old_q_json}"
     );
-    let old_anchor_axi = old_q_json["anchor_axi"].as_str().unwrap_or("");
     let old_anchor_digest = old_q_json["anchor_digest"].as_str().unwrap_or("");
     assert!(
-        !old_anchor_axi.is_empty(),
-        "expected anchor_axi for snapshot override query: {old_q_json}"
+        !old_anchor_digest.is_empty(),
+        "expected anchor_digest for snapshot override query: {old_q_json}"
     );
     assert_eq!(
-        old_anchor_digest,
-        axiograph_dsl::digest::axi_digest_v1(old_anchor_axi),
-        "expected overridden snapshot anchor digest parity"
-    );
-    assert_ne!(
         current_anchor_digest, old_anchor_digest,
-        "expected current and overridden snapshot anchors to differ"
-    );
-
-    let (old_anchor_status, old_anchor_text) =
-        http_get_text(&addr, &format!("/anchor.axi?snapshot={old_snapshot_id}"));
-    assert_eq!(
-        old_anchor_status, 200,
-        "expected 200 for overridden /anchor.axi, got {old_anchor_status}: {old_anchor_text}"
-    );
-    assert_eq!(
-        old_anchor_text, old_anchor_axi,
-        "expected snapshot override /query anchor to match /anchor.axi?snapshot=..."
+        "expected canonical anchor digest to stay stable across derived PathDB snapshot overrides"
     );
 }
 

@@ -1,9 +1,9 @@
--- Schema Evolution via Univalence
+-- Schema evolution ontology
 --
--- Uses HoTT's univalence principle for ontology migration:
--- - Equivalent schemas are "the same" (can substitute)
--- - Schema changes that preserve structure are equivalences
--- - Data migration is transport along paths
+-- This example models schema/version/migration structure explicitly:
+-- - schemas and versions,
+-- - migrations and equivalences,
+-- - and transport of instances across reviewed migration paths.
 --
 -- This is the category-theoretic approach to schema evolution:
 -- schemas are objects, migrations are morphisms,
@@ -46,6 +46,7 @@ schema OntologyMeta:
   )
 
   object EquivProof  -- Evidence of equivalence
+  object SchemaEquivalence
 
   -- If schemas are equivalent, we can substitute one for the other
   -- This is the univalence axiom for ontologies!
@@ -79,7 +80,7 @@ schema OntologyMeta:
   -- Inverse of equivalence is an equivalence
   -- These are the groupoid laws!
 
-  relation EquivCompose(e1: SchemaEquiv, e2: SchemaEquiv, result: SchemaEquiv)
+  relation EquivCompose(e1: SchemaEquivalence, e2: SchemaEquivalence, result: SchemaEquivalence)
 
   -- Support types
   object Text
@@ -143,6 +144,7 @@ instance ProductCatalog of OntologyMeta:
     MergeCategories,    -- V2 -> V1 (inverse of AddCategories)
     JoinSKU,            -- V3 -> V2 (inverse of NormalizeSKU)
     IdentityMigration,  -- No-op
+    DirectV1toV3,
     V3toV3alt,          -- V3 -> V3_alt (equivalence!)
     V3altToV3           -- V3_alt -> V3
   }
@@ -252,4 +254,3 @@ instance ProductCatalog of OntologyMeta:
   }
 
   Text = {Proof_V3_equiv_V3alt}
-

@@ -1,11 +1,11 @@
-//! Axiograph `.axi` DSL (canonical dialects)
+//! Axiograph `.axi` DSL
 //!
-//! This crate defines the canonical, versioned `.axi` surface syntaxes used by
-//! Axiograph and provides parsers + typed ASTs for each dialect.
+//! This crate defines the canonical, versioned `.axi` surface used by
+//! Axiograph and provides the parser + typed AST behind `axi_v1`.
 //!
-//! We intentionally keep dialects explicit (and machine-checkable in Lean)
-//! during migration, while providing a single Rust entrypoint (`axi_v1`) that
-//! auto-detects the dialect for the canonical corpus.
+//! Internal module names remain versioned so Rust and Lean can stay in
+//! lockstep, but contributors should treat `axi_v1` as the single canonical
+//! authoring surface.
 
 pub mod axi_v1;
 pub mod digest;

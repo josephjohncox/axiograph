@@ -38,6 +38,7 @@ use nom::number::complete::recognize_float;
 use nom::sequence::{delimited, preceded, tuple};
 use nom::IResult;
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axiograph_dsl::schema_v1::{parse_path_expr_v3, PathExprV3};
@@ -48,11 +49,9 @@ use axiograph_pathdb::axi_meta::{
 };
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::certificate::{
-    CertificatePayloadV2, CertificateV2, FixedPointProbability, PathRewriteStepV3, QueryAtomV1,
-    QueryAtomV3, QueryAtomWitnessV1, QueryAtomWitnessV3, QueryBindingV1, QueryBindingV3,
-    QueryRegexV1, QueryRegexV3, QueryResultProofV1, QueryResultProofV2, QueryResultProofV3,
-    QueryRowV1, QueryRowV2, QueryRowV3, QueryTermV1, QueryTermV3, QueryV1, QueryV2, QueryV3,
-    ReachabilityProofV2, RewriteDerivationProofV3,
+    CertificatePayloadV2, CertificateV2, FixedPointProbability, PathRewriteStepV3, QueryAtomV3,
+    QueryAtomWitnessV3, QueryBindingV3, QueryRegexV3, QueryResultProofV3, QueryRowV3, QueryTermV3,
+    QueryV3, RewriteDerivationProofV3,
 };
 use axiograph_pathdb::witness;
 use axiograph_pathdb::{DbToken, DbTokenMismatch};
@@ -281,7 +280,7 @@ pub struct AxqlResult {
 
 /// Whether a query can be fully handled by certificate-generating execution,
 /// or if it is execution-only.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QueryCertifiability {
     /// The query body is compatible with current certificate generation.
     Certifiable,
@@ -348,13 +347,225 @@ impl QueryCertifiability {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedQueryIntrospection {
     pub disjunct_count: usize,
     pub selected_vars: Vec<String>,
     pub limit: usize,
     pub context_count: usize,
     pub certifiability: QueryCertifiability,
+    pub typed_hole_count: usize,
+    pub exploration_target_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AxqlRepairSuggestionKindV1 {
+    AddSchemaConstraint,
+    QualifyRelationLabel,
+    AddTypeGuard,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AxqlRepairSuggestionV1 {
+    pub kind: AxqlRepairSuggestionKindV1,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AxqlTypedHoleKindV1 {
+    AmbiguousFactRelationSchema,
+    AmbiguousEdgeRelationSchema,
+    EndpointTypingDeferred,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AxqlTypedHoleV1 {
+    pub kind: AxqlTypedHoleKindV1,
+    pub relation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variable: Option<String>,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_schemas: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<AxqlRepairSuggestionV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AxqlExplorationSuggestionV1 {
+    pub variable: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inferred_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_type_guards: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outgoing_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incoming_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fact_bindings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refinement_candidates: Vec<AxqlRefinementCandidateV1>,
+}
+
+pub const AXQL_REFINEMENT_HANDLE_V1_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AxqlRefinementCandidateKindV1 {
+    AddTypeGuard,
+    ExtendOutgoingPath,
+    ExtendIncomingPath,
+    BindFactRelation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AxqlRefinementApplicationScopeV1 {
+    SingleConjunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AxqlRefinementTermV1 {
+    ExistingVariable { name: String },
+    SuggestedVariable { name: String },
+    NameLookup { value: String },
+    Wildcard,
+}
+
+impl AxqlRefinementTermV1 {
+    fn preview(&self) -> String {
+        match self {
+            Self::ExistingVariable { name } | Self::SuggestedVariable { name } => name.clone(),
+            Self::NameLookup { value } => value.clone(),
+            Self::Wildcard => "_".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AxqlRefinementOpV1 {
+    AddTypeGuard {
+        term: AxqlRefinementTermV1,
+        type_name: String,
+    },
+    AddEdgeAtom {
+        left: AxqlRefinementTermV1,
+        path: String,
+        right: AxqlRefinementTermV1,
+    },
+    AddFactAtom {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fact: Option<AxqlRefinementTermV1>,
+        relation: String,
+        fields: BTreeMap<String, AxqlRefinementTermV1>,
+    },
+}
+
+impl AxqlRefinementOpV1 {
+    fn preview_fragment(&self) -> String {
+        match self {
+            Self::AddTypeGuard { term, type_name } => {
+                format!("{} is {type_name}", term.preview())
+            }
+            Self::AddEdgeAtom { left, path, right } => {
+                format!("{} -{path}-> {}", left.preview(), right.preview())
+            }
+            Self::AddFactAtom {
+                fact,
+                relation,
+                fields,
+            } => {
+                let mut rendered_fields = fields
+                    .iter()
+                    .map(|(field, term)| format!("{field}={}", term.preview()))
+                    .collect::<Vec<_>>();
+                rendered_fields.sort();
+                let inner = format!("{relation}({})", rendered_fields.join(", "));
+                match fact {
+                    Some(fact) => format!("{} = {inner}", fact.preview()),
+                    None => inner,
+                }
+            }
+        }
+    }
+
+    fn stable_digest_input(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| self.preview_fragment())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AxqlRefinementHandleV1 {
+    pub version: u32,
+    pub id: String,
+    pub scope: AxqlRefinementApplicationScopeV1,
+    pub op: AxqlRefinementOpV1,
+}
+
+impl AxqlRefinementHandleV1 {
+    pub fn new(scope: AxqlRefinementApplicationScopeV1, op: AxqlRefinementOpV1) -> Self {
+        let id = format!(
+            "axql_refine_v1:{}",
+            axiograph_dsl::digest::axi_digest_v1(&format!(
+                "{scope:?}:{}",
+                op.stable_digest_input()
+            ))
+        );
+        Self {
+            version: AXQL_REFINEMENT_HANDLE_V1_VERSION,
+            id,
+            scope,
+            op,
+        }
+    }
+
+    pub fn preview_fragment(&self) -> String {
+        self.op.preview_fragment()
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != AXQL_REFINEMENT_HANDLE_V1_VERSION {
+            return Err(anyhow!(
+                "unsupported AxQL refinement handle version {}; expected {}",
+                self.version,
+                AXQL_REFINEMENT_HANDLE_V1_VERSION
+            ));
+        }
+        let expected = Self::new(self.scope.clone(), self.op.clone());
+        if self.id != expected.id {
+            return Err(anyhow!(
+                "invalid AxQL refinement handle id {}; expected {} for this payload",
+                self.id,
+                expected.id
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AxqlRefinementCandidateV1 {
+    pub kind: AxqlRefinementCandidateKindV1,
+    pub summary: String,
+    pub handle: AxqlRefinementHandleV1,
+    pub preview_fragment: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<String>,
 }
 
 impl AxqlQuery {
@@ -476,14 +687,6 @@ pub fn execute_axql_query(db: &axiograph_pathdb::PathDB, query: &AxqlQuery) -> R
     execute_axql_query_with_meta(db, query, Some(&meta))
 }
 
-pub fn certify_axql_query(
-    db: &axiograph_pathdb::PathDB,
-    query: &AxqlQuery,
-) -> Result<CertificateV2> {
-    let meta = MetaPlaneIndex::from_db(db)?;
-    certify_axql_query_with_meta(db, query, Some(&meta))
-}
-
 /// Compute a stable digest for an AxQL query IR.
 ///
 /// This is used as a key for the REPL's compiled-query cache, together with a
@@ -589,22 +792,53 @@ pub(crate) fn execute_axql_query_cached(
     get_or_prepare_axql_query_handle_mut(db, query, meta, snapshot_key, cache)?.execute(db, meta)
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct AxqlElaborationReport {
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AxqlElaborationReport {
     /// Map `?var -> inferred types` (including supertypes closure).
     pub inferred_types: BTreeMap<String, Vec<String>>,
     /// Additional notes (e.g., ambiguity) that are helpful to show in a REPL.
     pub notes: Vec<String>,
     /// Optional elaboration rewrite witnesses (e.g. `.axi` path canonicalization).
     pub elaboration_rewrites: Vec<AxqlElaborationRewriteStepV1>,
+    /// Structured “typed hole” diagnostics for ambiguity or missing typing
+    /// information that blocks precise elaboration.
+    pub typed_holes: Vec<AxqlTypedHoleV1>,
+    /// Type-directed next-step suggestions for query exploration.
+    pub exploration_suggestions: Vec<AxqlExplorationSuggestionV1>,
+}
+
+fn push_unique_string(target: &mut Vec<String>, value: String) {
+    if !target.iter().any(|existing| existing == &value) {
+        target.push(value);
+    }
+}
+
+fn push_unique_refinement_candidate(
+    target: &mut Vec<AxqlRefinementCandidateV1>,
+    candidate: AxqlRefinementCandidateV1,
+) {
+    if !target.iter().any(|existing| existing == &candidate) {
+        target.push(candidate);
+    }
+}
+
+fn sort_and_dedup_strings(values: &mut Vec<String>) {
+    values.sort();
+    values.dedup();
+}
+
+fn limit_vec<T>(values: &mut Vec<T>, max_len: usize) {
+    if values.len() > max_len {
+        values.truncate(max_len);
+    }
 }
 
 /// One recorded rewrite application during AxQL elaboration.
 ///
 /// This is intended to justify “rewrite-normalized” query atoms in a way that
 /// Lean can independently check against the anchored `.axi` rewrite rule.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AxqlElaborationRewriteStepV1 {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxqlElaborationRewriteStepV1 {
     pub theory_name: String,
     pub rule_name: String,
     pub input: PathExprV3,
@@ -726,14 +960,6 @@ impl TypecheckedLoweredQuery {
         })
     }
 
-    fn certify(
-        self,
-        db: &axiograph_pathdb::PathDB,
-        meta: Option<&MetaPlaneIndex>,
-    ) -> Result<CertificateV2> {
-        self.lowered.certify(db, meta)
-    }
-
     fn certify_v3(
         self,
         db: &axiograph_pathdb::PathDB,
@@ -809,6 +1035,12 @@ impl TypecheckedAxqlQueryExpr {
                     merged
                         .elaboration_rewrites
                         .extend(p.elaboration.elaboration_rewrites.iter().cloned());
+                    merged
+                        .typed_holes
+                        .extend(p.elaboration.typed_holes.iter().cloned());
+                    merged
+                        .exploration_suggestions
+                        .extend(p.elaboration.exploration_suggestions.iter().cloned());
                     prepared.push(p);
                 }
 
@@ -846,6 +1078,18 @@ impl TypecheckedAxqlQueryExpr {
                 }
                 merged.notes.sort();
                 merged.notes.dedup();
+                merged.typed_holes.sort_by(|a, b| {
+                    (&a.relation, &a.variable, &a.summary).cmp(&(
+                        &b.relation,
+                        &b.variable,
+                        &b.summary,
+                    ))
+                });
+                merged.typed_holes.dedup();
+                merged
+                    .exploration_suggestions
+                    .sort_by(|a, b| a.variable.cmp(&b.variable));
+                merged.exploration_suggestions.dedup();
 
                 Ok(PreparedAxqlQueryExpr {
                     inner: PreparedAxqlQueryExprInner::Disjunction(PreparedAxqlDisjunction {
@@ -855,20 +1099,6 @@ impl TypecheckedAxqlQueryExpr {
                         limit,
                     }),
                 })
-            }
-        }
-    }
-
-    fn certify(
-        self,
-        db: &axiograph_pathdb::PathDB,
-        meta: Option<&MetaPlaneIndex>,
-        limit: usize,
-    ) -> Result<CertificateV2> {
-        match self {
-            TypecheckedAxqlQueryExpr::Conjunction(q) => q.certify(db, meta),
-            TypecheckedAxqlQueryExpr::Disjunction(disjuncts) => {
-                certify_disjunctive_query(db, disjuncts, meta, limit)
             }
         }
     }
@@ -1157,6 +1387,8 @@ impl PreparedQueryHandle {
                 limit: q.lowered.limit,
                 context_count: self.context_count,
                 certifiability: self.certifiability.clone(),
+                typed_hole_count: q.elaboration.typed_holes.len(),
+                exploration_target_count: q.elaboration.exploration_suggestions.len(),
             },
             PreparedAxqlQueryExprInner::Disjunction(q) => PreparedQueryIntrospection {
                 disjunct_count: q.disjuncts.len(),
@@ -1164,6 +1396,8 @@ impl PreparedQueryHandle {
                 limit: q.limit,
                 context_count: self.context_count,
                 certifiability: self.certifiability.clone(),
+                typed_hole_count: q.elaboration.typed_holes.len(),
+                exploration_target_count: q.elaboration.exploration_suggestions.len(),
             },
         };
 
@@ -1172,18 +1406,19 @@ impl PreparedQueryHandle {
         out
     }
 
-    pub(crate) fn certify(
+    pub(crate) fn certify_typed_with_anchor(
         &self,
         db: &axiograph_pathdb::PathDB,
         query: &AxqlQuery,
         meta: Option<&MetaPlaneIndex>,
+        axi_digest_v1: &str,
     ) -> Result<CertificateV2> {
         if query.contexts.len() > 1 {
             return Err(anyhow!(
                 "cannot certify multi-context scoping yet; use a single `in <context>`"
             ));
         }
-        TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?.certify(db, meta, query.limit)
+        certify_axql_query_typed_with_meta(db, query, meta, axi_digest_v1)
     }
 }
 
@@ -1293,22 +1528,13 @@ pub fn execute_axql_query_with_meta(
     prepared.execute(db, meta)
 }
 
-/// Emit a `query_result_v1` certificate with an optional precomputed meta-plane index.
-pub fn certify_axql_query_with_meta(
-    db: &axiograph_pathdb::PathDB,
-    query: &AxqlQuery,
-    meta: Option<&MetaPlaneIndex>,
-) -> Result<CertificateV2> {
-    prepare_axql_query_with_meta(db, query, meta)?.certify(db, query, meta)
-}
-
-/// Emit a `query_result_v3` certificate (name-based, `.axi`-anchored) with an
-/// optional precomputed meta-plane index.
+/// Emit the canonical `.axi`-anchored typed query witness path with an optional
+/// precomputed meta-plane index.
 ///
 /// This format is intended to make certificates verifiable against canonical
 /// `.axi` inputs without requiring a `PathDBExportV1` snapshot export as an
 /// anchor.
-pub fn certify_axql_query_v3_with_meta(
+pub fn certify_axql_query_typed_with_meta(
     db: &axiograph_pathdb::PathDB,
     query: &AxqlQuery,
     meta: Option<&MetaPlaneIndex>,
@@ -1327,106 +1553,6 @@ pub fn certify_axql_query_v3_with_meta(
             certify_disjunctive_query_v3(db, disjuncts, meta, query.limit, axi_digest_v1)
         }
     }
-}
-
-fn certify_disjunctive_query(
-    db: &axiograph_pathdb::PathDB,
-    disjuncts: Vec<TypecheckedLoweredQuery>,
-    meta: Option<&MetaPlaneIndex>,
-    limit: usize,
-) -> Result<CertificateV2> {
-    if disjuncts.is_empty() {
-        return Err(anyhow!("AxQL query must have at least one disjunct"));
-    }
-
-    // For a UCQ (union of conjunctive queries), the natural “implicit select”
-    // semantics is: return only variables common to all branches. When the
-    // user explicitly selects vars, the per-branch lowerings will already have
-    // enforced that the vars exist in every disjunct.
-    let mut select_vars = disjuncts
-        .first()
-        .map(|d| d.lowered.select_vars.clone())
-        .unwrap_or_default();
-    for d in &disjuncts[1..] {
-        let set: HashSet<&str> = d.lowered.select_vars.iter().map(|s| s.as_str()).collect();
-        select_vars.retain(|v| set.contains(v.as_str()));
-    }
-
-    // Query IR: we record all disjuncts’ atoms, even if we truncate before
-    // producing rows from later branches.
-    let mut query_disjuncts: Vec<Vec<QueryAtomV1>> = Vec::with_capacity(disjuncts.len());
-    let mut max_hops: Option<u32> = None;
-    let mut min_confidence_fp: Option<FixedPointProbability> = None;
-    for (i, d) in disjuncts.iter().enumerate() {
-        let q1 = d.lowered.to_query_ir(db)?;
-        if i == 0 {
-            max_hops = q1.max_hops;
-            min_confidence_fp = q1.min_confidence_fp;
-        } else {
-            if q1.max_hops != max_hops {
-                return Err(anyhow!(
-                    "internal error: disjunct max_hops mismatch (expected {max_hops:?}, got {:?})",
-                    q1.max_hops
-                ));
-            }
-            if q1.min_confidence_fp != min_confidence_fp {
-                return Err(anyhow!(
-                    "internal error: disjunct min_confidence mismatch (expected {min_confidence_fp:?}, got {:?})",
-                    q1.min_confidence_fp
-                ));
-            }
-        }
-        query_disjuncts.push(q1.atoms);
-    }
-
-    let query = QueryV2 {
-        select_vars,
-        disjuncts: query_disjuncts,
-        max_hops,
-        min_confidence_fp,
-    };
-
-    // Rows: prove each returned row satisfies *some* branch. We do not claim
-    // completeness; the only global control is the output limit.
-    let mut rows: Vec<QueryRowV2> = Vec::new();
-    let mut truncated = rows.len() >= limit;
-
-    for (i, mut d) in disjuncts.into_iter().enumerate() {
-        if rows.len() >= limit {
-            truncated = true;
-            break;
-        }
-        let remaining = limit - rows.len();
-        d.lowered.limit = remaining;
-
-        let cert = d.lowered.certify(db, meta)?;
-        let proof = match cert.payload {
-            CertificatePayloadV2::QueryResultV1 { proof } => proof,
-            other => {
-                return Err(anyhow!(
-                    "internal error: expected query_result_v1 from conjunctive certifier, got {other:?}"
-                ))
-            }
-        };
-
-        for row in proof.rows {
-            if rows.len() >= limit {
-                truncated = true;
-                break;
-            }
-            rows.push(QueryRowV2 {
-                disjunct: u32::try_from(i).unwrap_or(u32::MAX),
-                bindings: row.bindings,
-                witnesses: row.witnesses,
-            });
-        }
-    }
-
-    Ok(CertificateV2::query_result_v2(QueryResultProofV2 {
-        query,
-        rows,
-        truncated,
-    }))
 }
 
 fn certify_disjunctive_query_v3(
@@ -1503,7 +1629,7 @@ fn certify_disjunctive_query_v3(
             CertificatePayloadV2::QueryResultV3 { proof } => proof,
             other => {
                 return Err(anyhow!(
-                    "internal error: expected query_result_v3 from conjunctive certifier, got {other:?}"
+                    "internal error: expected typed query witness from conjunctive certifier, got {other:?}"
                 ))
             }
         };
@@ -3763,6 +3889,31 @@ impl LoweredQuery {
                     "relation `{relation_name}` is ambiguous across schemas: {} (add `attr({fact_name}, \"{ATTR_AXI_SCHEMA}\", \"<Schema>\")` to disambiguate)",
                     candidate_schemas.join(", ")
                 ));
+                report.typed_holes.push(AxqlTypedHoleV1 {
+                    kind: AxqlTypedHoleKindV1::AmbiguousFactRelationSchema,
+                    relation: relation_name.clone(),
+                    variable: Some(fact_name.clone()),
+                    summary: format!(
+                        "fact relation `{relation_name}` is ambiguous for {fact_name}; add an explicit schema constraint before elaboration can treat it as a single relation-object"
+                    ),
+                    candidate_schemas: candidate_schemas
+                        .iter()
+                        .map(|schema| schema.to_string())
+                        .collect(),
+                    expected_types: Vec::new(),
+                    suggestions: candidate_schemas
+                        .iter()
+                        .map(|schema| AxqlRepairSuggestionV1 {
+                            kind: AxqlRepairSuggestionKindV1::AddSchemaConstraint,
+                            summary: format!(
+                                "constrain {fact_name} to schema `{schema}` before elaborating `{relation_name}`"
+                            ),
+                            replacement: Some(format!(
+                                "attr({fact_name}, \"{ATTR_AXI_SCHEMA}\", \"{schema}\")"
+                            )),
+                        })
+                        .collect(),
+                });
                 None
             };
 
@@ -4087,6 +4238,29 @@ impl LoweredQuery {
                             "note: relation `{rel}` is ambiguous across schemas: {} (treated as union; qualify with `Schema.{rel}` to force one)",
                             candidates.join(", ")
                         ));
+                        report.typed_holes.push(AxqlTypedHoleV1 {
+                            kind: AxqlTypedHoleKindV1::AmbiguousEdgeRelationSchema,
+                            relation: rel.clone(),
+                            variable: None,
+                            summary: format!(
+                                "edge relation `{rel}` is ambiguous across schemas; elaboration preserved a union instead of selecting one carrier morphism"
+                            ),
+                            candidate_schemas: candidates
+                                .iter()
+                                .map(|schema| schema.to_string())
+                                .collect(),
+                            expected_types: Vec::new(),
+                            suggestions: candidates
+                                .iter()
+                                .map(|schema| AxqlRepairSuggestionV1 {
+                                    kind: AxqlRepairSuggestionKindV1::QualifyRelationLabel,
+                                    summary: format!(
+                                        "qualify `{rel}` with schema `{schema}` to keep exploration type-directed"
+                                    ),
+                                    replacement: Some(format!("{schema}.{rel}")),
+                                })
+                                .collect(),
+                        });
                     }
                 }
             }
@@ -4099,6 +4273,11 @@ impl LoweredQuery {
             types.sort();
             types.dedup();
         }
+        report.typed_holes.sort_by(|a, b| {
+            (&a.relation, &a.variable, &a.summary).cmp(&(&b.relation, &b.variable, &b.summary))
+        });
+        report.typed_holes.dedup();
+        populate_type_directed_exploration(meta, &mut report);
         Ok(report)
     }
 
@@ -4502,6 +4681,35 @@ impl LoweredQuery {
             if !report.notes.iter().any(|n| n == &note) {
                 report.notes.push(note);
             }
+            for rel in rels {
+                let candidate_schemas = schemas_by_relation
+                    .get(rel.as_str())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|schema| schema.to_string())
+                    .collect::<Vec<_>>();
+                report.typed_holes.push(AxqlTypedHoleV1 {
+                    kind: AxqlTypedHoleKindV1::EndpointTypingDeferred,
+                    relation: rel.clone(),
+                    variable: None,
+                    summary: format!(
+                        "endpoint typing for `{rel}` was deferred because the relation is ambiguous across schemas"
+                    ),
+                    candidate_schemas: candidate_schemas.clone(),
+                    expected_types: Vec::new(),
+                    suggestions: candidate_schemas
+                        .iter()
+                        .map(|schema| AxqlRepairSuggestionV1 {
+                            kind: AxqlRepairSuggestionKindV1::QualifyRelationLabel,
+                            summary: format!(
+                                "pick `{schema}.{rel}` if you want path endpoint inference and stricter type-directed exploration"
+                            ),
+                            replacement: Some(format!("{schema}.{rel}")),
+                        })
+                        .collect(),
+                });
+            }
         }
 
         self.atoms.extend(extra_atoms);
@@ -4687,61 +4895,6 @@ impl LoweredQuery {
         Ok(rewrites)
     }
 
-    fn certify(
-        &self,
-        db: &axiograph_pathdb::PathDB,
-        meta: Option<&MetaPlaneIndex>,
-    ) -> Result<CertificateV2> {
-        let mut rpq = RpqContext::new(db, &self.rpqs, self.max_hops, self.min_confidence)?;
-
-        let query = self.to_query_ir(db)?;
-        let mut rows: Vec<QueryRowV1> = Vec::new();
-
-        let truncated = if self.vars.is_empty() {
-            // Boolean query: either 0 or 1 row, with no bindings.
-            if let Some(witnesses) = self.witnesses_for_assignment(db, &[], &mut rpq, meta)? {
-                rows.push(QueryRowV1 {
-                    bindings: Vec::new(),
-                    witnesses,
-                });
-            }
-            false
-        } else {
-            let (assignments, truncated) = self.execute_assignments(db, &mut rpq, meta)?;
-            for assignment in assignments {
-                let bindings = self
-                    .vars
-                    .iter()
-                    .zip(assignment.iter().copied())
-                    .map(|(var, entity)| QueryBindingV1 {
-                        var: var.clone(),
-                        entity,
-                    })
-                    .collect::<Vec<_>>();
-
-                let Some(witnesses) =
-                    self.witnesses_for_assignment(db, &assignment, &mut rpq, meta)?
-                else {
-                    return Err(anyhow!(
-                        "internal error: assignment from search does not satisfy constraints"
-                    ));
-                };
-                rows.push(QueryRowV1 {
-                    bindings,
-                    witnesses,
-                });
-            }
-            truncated
-        };
-
-        let proof = QueryResultProofV1 {
-            query,
-            rows,
-            truncated,
-        };
-        Ok(CertificateV2::query_result_v1(proof))
-    }
-
     fn certify_v3(
         &self,
         db: &axiograph_pathdb::PathDB,
@@ -4823,99 +4976,6 @@ impl LoweredQuery {
                 .collect(),
         };
         Ok(CertificateV2::query_result_v3(proof))
-    }
-
-    fn to_query_ir(&self, db: &axiograph_pathdb::PathDB) -> Result<QueryV1> {
-        let atoms = self
-            .atoms
-            .iter()
-            .map(|a| self.atom_to_query_ir(db, a))
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(QueryV1 {
-            select_vars: self.select_vars.clone(),
-            atoms,
-            max_hops: self.max_hops,
-            min_confidence_fp: self.min_confidence.map(fixed_prob_from_confidence),
-        })
-    }
-
-    fn atom_to_query_ir(
-        &self,
-        db: &axiograph_pathdb::PathDB,
-        atom: &LoweredAtom,
-    ) -> Result<QueryAtomV1> {
-        match atom {
-            LoweredAtom::Type { term, type_name } => {
-                let type_id = db
-                    .interner
-                    .id_of(type_name)
-                    .ok_or_else(|| anyhow!("unknown type `{type_name}` (missing from interner)"))?;
-                Ok(QueryAtomV1::Type {
-                    term: self.term_to_query_ir(term),
-                    type_id: type_id.raw(),
-                })
-            }
-            LoweredAtom::AttrEq { term, key, value } => {
-                let key_id = db.interner.id_of(key).ok_or_else(|| {
-                    anyhow!("unknown attribute key `{key}` (missing from interner)")
-                })?;
-                let value_id = db.interner.id_of(value).ok_or_else(|| {
-                    anyhow!("unknown attribute value `{value}` (missing from interner)")
-                })?;
-                Ok(QueryAtomV1::AttrEq {
-                    term: self.term_to_query_ir(term),
-                    key_id: key_id.raw(),
-                    value_id: value_id.raw(),
-                })
-            }
-            LoweredAtom::AttrContains { .. } => Err(anyhow!(
-                "cannot certify `contains(...)` atoms (approximate querying is not in the certified core)"
-            )),
-            LoweredAtom::AttrFts { .. } => Err(anyhow!(
-                "cannot certify `fts(...)` atoms (approximate querying is not in the certified core)"
-            )),
-            LoweredAtom::AttrFuzzy { .. } => Err(anyhow!(
-                "cannot certify `fuzzy(...)` atoms (approximate querying is not in the certified core)"
-            )),
-            LoweredAtom::Edge { left, rel, right } => {
-                let rel_type_id = db
-                    .interner
-                    .id_of(rel)
-                    .ok_or_else(|| anyhow!("unknown relation `{rel}` (missing from interner)"))?;
-                Ok(QueryAtomV1::Path {
-                    left: self.term_to_query_ir(left),
-                    regex: QueryRegexV1::Rel {
-                        rel_type_id: rel_type_id.raw(),
-                    },
-                    right: self.term_to_query_ir(right),
-                })
-            }
-            LoweredAtom::Rpq {
-                left,
-                rpq_id,
-                right,
-            } => {
-                let regex = self
-                    .rpqs
-                    .get(*rpq_id)
-                    .ok_or_else(|| anyhow!("invalid rpq_id {rpq_id}"))?;
-                Ok(QueryAtomV1::Path {
-                    left: self.term_to_query_ir(left),
-                    regex: axql_regex_to_query_regex(db, regex)?,
-                    right: self.term_to_query_ir(right),
-                })
-            }
-        }
-    }
-
-    fn term_to_query_ir(&self, term: &LoweredTerm) -> QueryTermV1 {
-        match term {
-            LoweredTerm::Var(v) => QueryTermV1::Var {
-                name: self.vars[*v].clone(),
-            },
-            LoweredTerm::Const(entity) => QueryTermV1::Const { entity: *entity },
-        }
     }
 
     fn to_query_ir_v3_disjunct(&self, db: &axiograph_pathdb::PathDB) -> Result<Vec<QueryAtomV3>> {
@@ -5002,7 +5062,7 @@ impl LoweredQuery {
                 })
             }
             other => Err(anyhow!(
-                "cannot certify atom {other:?} in query_result_v3 (not in certified core)"
+                "cannot certify atom {other:?} in the typed query-witness core"
             )),
         }
     }
@@ -5278,117 +5338,6 @@ impl LoweredQuery {
         }
 
         Ok(())
-    }
-
-    fn witnesses_for_assignment(
-        &self,
-        db: &axiograph_pathdb::PathDB,
-        assignment: &[u32],
-        rpq: &mut RpqContext,
-        meta: Option<&MetaPlaneIndex>,
-    ) -> Result<Option<Vec<QueryAtomWitnessV1>>> {
-        let mut witnesses: Vec<QueryAtomWitnessV1> = Vec::with_capacity(self.atoms.len());
-
-        for atom in &self.atoms {
-            let wit = match atom {
-                LoweredAtom::Type { term, type_name } => {
-                    let entity = resolve_term_assigned(term, assignment);
-                    let expected = db.interner.id_of(type_name).ok_or_else(|| {
-                        anyhow!("unknown type `{type_name}` (missing from interner)")
-                    })?;
-                    let bitmap = type_bitmap_including_subtypes(db, type_name, meta);
-                    if !bitmap.contains(entity) {
-                        return Ok(None);
-                    }
-                    QueryAtomWitnessV1::Type {
-                        entity,
-                        type_id: expected.raw(),
-                    }
-                }
-                LoweredAtom::AttrEq { term, key, value } => {
-                    let entity = resolve_term_assigned(term, assignment);
-                    let key_id = db.interner.id_of(key).ok_or_else(|| {
-                        anyhow!("unknown attribute key `{key}` (missing from interner)")
-                    })?;
-                    let value_id = db.interner.id_of(value).ok_or_else(|| {
-                        anyhow!("unknown attribute value `{value}` (missing from interner)")
-                    })?;
-                    if db.entities.get_attr(entity, key_id) != Some(value_id) {
-                        return Ok(None);
-                    }
-                    QueryAtomWitnessV1::AttrEq {
-                        entity,
-                        key_id: key_id.raw(),
-                        value_id: value_id.raw(),
-                    }
-                }
-                LoweredAtom::AttrContains { .. } => {
-                    return Err(anyhow!(
-                        "cannot certify `contains(...)` atoms (approximate querying is not in the certified core)"
-                    ))
-                }
-                LoweredAtom::AttrFts { .. } => {
-                    return Err(anyhow!(
-                        "cannot certify `fts(...)` atoms (approximate querying is not in the certified core)"
-                    ))
-                }
-                LoweredAtom::AttrFuzzy { .. } => {
-                    return Err(anyhow!(
-                        "cannot certify `fuzzy(...)` atoms (approximate querying is not in the certified core)"
-                    ))
-                }
-                LoweredAtom::Edge { left, rel, right } => {
-                    let src = resolve_term_assigned(left, assignment);
-                    let dst = resolve_term_assigned(right, assignment);
-                    let rel_type_id = db.interner.id_of(rel).ok_or_else(|| {
-                        anyhow!("unknown relation `{rel}` (missing from interner)")
-                    })?;
-                    let relation_id = match self.min_confidence {
-                        None => db.relations.edge_relation_id(src, rel_type_id, dst),
-                        Some(min) => db
-                            .relations
-                            .edge_relation_id_with_min_confidence(src, rel_type_id, dst, min),
-                    };
-                    let Some(relation_id) = relation_id else {
-                        return Ok(None);
-                    };
-                    let rel = db.relations.get_relation(relation_id).ok_or_else(|| {
-                        anyhow!("internal error: missing relation {relation_id} in RelationStore")
-                    })?;
-                    let rel_confidence_fp = fixed_prob_from_confidence(rel.confidence);
-                    let proof = ReachabilityProofV2::Step {
-                        from: rel.source,
-                        rel_type: rel.rel_type.raw(),
-                        to: rel.target,
-                        rel_confidence_fp,
-                        relation_id: Some(relation_id),
-                        rest: Box::new(ReachabilityProofV2::Reflexive { entity: rel.target }),
-                    };
-                    QueryAtomWitnessV1::Path { proof }
-                }
-                LoweredAtom::Rpq {
-                    left,
-                    rpq_id,
-                    right,
-                } => {
-                    let src = resolve_term_assigned(left, assignment);
-                    let dst = resolve_term_assigned(right, assignment);
-                    let Some(rel_ids) = rpq.witness_relation_ids(db, *rpq_id, src, dst)? else {
-                        return Ok(None);
-                    };
-                    let proof = axiograph_pathdb::witness::reachability_proof_v2_from_relation_ids(
-                        db, src, &rel_ids,
-                    )?
-                    .into_inner_in_db(db)
-                    .map_err(|e| anyhow!(e))?;
-                    QueryAtomWitnessV1::Path { proof }
-                }
-            };
-
-            witnesses.push(wit);
-        }
-
-        Ok(Some(witnesses))
     }
 
     fn witnesses_for_assignment_v3(
@@ -6668,6 +6617,265 @@ fn canonical_entity_type_for_axi_type(
     None
 }
 
+fn format_schema_qualified_type_guard(
+    meta: &MetaPlaneIndex,
+    variable: &str,
+    type_name: &str,
+) -> Vec<String> {
+    let mut guards = Vec::new();
+    for (schema_name, schema) in &meta.schemas {
+        if schema.object_types.contains(type_name) || schema.relation_decls.contains_key(type_name)
+        {
+            guards.push(format!("{variable} is {schema_name}.{type_name}"));
+        } else {
+            let tuple_match = schema
+                .relation_decls
+                .keys()
+                .any(|rel| tuple_entity_type_name(schema, rel) == type_name);
+            if tuple_match {
+                guards.push(format!("{variable} is {schema_name}.{type_name}"));
+            }
+        }
+    }
+    if guards.is_empty() {
+        guards.push(format!("{variable} is {type_name}"));
+    }
+    sort_and_dedup_strings(&mut guards);
+    guards
+}
+
+fn populate_type_directed_exploration(meta: &MetaPlaneIndex, report: &mut AxqlElaborationReport) {
+    const MAX_SUGGESTIONS_PER_BUCKET: usize = 8;
+
+    for (variable, inferred_types) in &report.inferred_types {
+        if inferred_types.is_empty() {
+            continue;
+        }
+
+        let mut suggestion = AxqlExplorationSuggestionV1 {
+            variable: variable.clone(),
+            inferred_types: inferred_types.clone(),
+            suggested_type_guards: Vec::new(),
+            outgoing_paths: Vec::new(),
+            incoming_paths: Vec::new(),
+            fact_bindings: Vec::new(),
+            refinement_candidates: Vec::new(),
+        };
+
+        for inferred_type in inferred_types {
+            for guard in format_schema_qualified_type_guard(meta, variable, inferred_type) {
+                push_unique_string(&mut suggestion.suggested_type_guards, guard.clone());
+                let guard_type = guard
+                    .split_once(" is ")
+                    .map(|(_, ty)| ty.to_string())
+                    .unwrap_or_else(|| inferred_type.clone());
+                let handle = AxqlRefinementHandleV1::new(
+                    AxqlRefinementApplicationScopeV1::SingleConjunction,
+                    AxqlRefinementOpV1::AddTypeGuard {
+                        term: AxqlRefinementTermV1::ExistingVariable {
+                            name: variable.clone(),
+                        },
+                        type_name: guard_type.clone(),
+                    },
+                );
+                push_unique_refinement_candidate(
+                    &mut suggestion.refinement_candidates,
+                    AxqlRefinementCandidateV1 {
+                        kind: AxqlRefinementCandidateKindV1::AddTypeGuard,
+                        summary: format!("constrain {variable} to {guard_type}"),
+                        preview_fragment: handle.preview_fragment(),
+                        handle,
+                        relation: None,
+                        schema: guard_type
+                            .split_once('.')
+                            .map(|(schema_name, _)| schema_name.to_string()),
+                        role: None,
+                        target_type: Some(guard_type),
+                    },
+                );
+            }
+        }
+
+        for (schema_name, schema) in &meta.schemas {
+            for relation_name in schema.relation_decls.keys() {
+                let Some(rel_ir) = schema.compiled_relation_semantics(relation_name) else {
+                    continue;
+                };
+
+                if let Some((src_role, dst_role)) = rel_ir.carrier_roles() {
+                    let source_match = inferred_types
+                        .iter()
+                        .any(|ty| schema.is_subtype(ty, src_role.target_type.as_str()));
+                    let target_match = inferred_types
+                        .iter()
+                        .any(|ty| schema.is_subtype(ty, dst_role.target_type.as_str()));
+                    if source_match {
+                        let handle = AxqlRefinementHandleV1::new(
+                            AxqlRefinementApplicationScopeV1::SingleConjunction,
+                            AxqlRefinementOpV1::AddEdgeAtom {
+                                left: AxqlRefinementTermV1::ExistingVariable {
+                                    name: variable.clone(),
+                                },
+                                path: format!("{schema_name}.{relation_name}"),
+                                right: AxqlRefinementTermV1::SuggestedVariable {
+                                    name: "?next".to_string(),
+                                },
+                            },
+                        );
+                        let preview_fragment = handle.preview_fragment();
+                        push_unique_string(
+                            &mut suggestion.outgoing_paths,
+                            preview_fragment.clone(),
+                        );
+                        push_unique_refinement_candidate(
+                            &mut suggestion.refinement_candidates,
+                            AxqlRefinementCandidateV1 {
+                                kind: AxqlRefinementCandidateKindV1::ExtendOutgoingPath,
+                                summary: format!(
+                                    "extend {variable} with outgoing path {schema_name}.{relation_name}"
+                                ),
+                                preview_fragment,
+                                handle,
+                                relation: Some(relation_name.clone()),
+                                schema: Some(schema_name.clone()),
+                                role: None,
+                                target_type: Some(dst_role.target_type.clone()),
+                            },
+                        );
+                    }
+                    if target_match {
+                        let handle = AxqlRefinementHandleV1::new(
+                            AxqlRefinementApplicationScopeV1::SingleConjunction,
+                            AxqlRefinementOpV1::AddEdgeAtom {
+                                left: AxqlRefinementTermV1::SuggestedVariable {
+                                    name: "?prev".to_string(),
+                                },
+                                path: format!("{schema_name}.{relation_name}"),
+                                right: AxqlRefinementTermV1::ExistingVariable {
+                                    name: variable.clone(),
+                                },
+                            },
+                        );
+                        let preview_fragment = handle.preview_fragment();
+                        push_unique_string(
+                            &mut suggestion.incoming_paths,
+                            preview_fragment.clone(),
+                        );
+                        push_unique_refinement_candidate(
+                            &mut suggestion.refinement_candidates,
+                            AxqlRefinementCandidateV1 {
+                                kind: AxqlRefinementCandidateKindV1::ExtendIncomingPath,
+                                summary: format!(
+                                    "extend {variable} with incoming path {schema_name}.{relation_name}"
+                                ),
+                                preview_fragment,
+                                handle,
+                                relation: Some(relation_name.clone()),
+                                schema: Some(schema_name.clone()),
+                                role: None,
+                                target_type: Some(src_role.target_type.clone()),
+                            },
+                        );
+                    }
+                }
+
+                for role in &rel_ir.roles {
+                    let role_match = inferred_types
+                        .iter()
+                        .any(|ty| schema.is_subtype(ty, role.target_type.as_str()));
+                    if !role_match {
+                        continue;
+                    }
+
+                    let fields = rel_ir
+                        .roles
+                        .iter()
+                        .map(|candidate_role| {
+                            let term = if candidate_role.name == role.name {
+                                AxqlRefinementTermV1::ExistingVariable {
+                                    name: variable.clone(),
+                                }
+                            } else {
+                                AxqlRefinementTermV1::SuggestedVariable {
+                                    name: format!("?{}", candidate_role.name),
+                                }
+                            };
+                            (candidate_role.name.clone(), term)
+                        })
+                        .collect::<BTreeMap<_, _>>();
+                    let handle = AxqlRefinementHandleV1::new(
+                        AxqlRefinementApplicationScopeV1::SingleConjunction,
+                        AxqlRefinementOpV1::AddFactAtom {
+                            fact: Some(AxqlRefinementTermV1::SuggestedVariable {
+                                name: "?fact".to_string(),
+                            }),
+                            relation: format!("{schema_name}.{relation_name}"),
+                            fields,
+                        },
+                    );
+                    let preview_fragment = handle.preview_fragment();
+                    push_unique_string(&mut suggestion.fact_bindings, preview_fragment.clone());
+                    push_unique_refinement_candidate(
+                        &mut suggestion.refinement_candidates,
+                        AxqlRefinementCandidateV1 {
+                            kind: AxqlRefinementCandidateKindV1::BindFactRelation,
+                            summary: format!(
+                                "bind {variable} through {schema_name}.{relation_name}.{role_name}",
+                                role_name = role.name
+                            ),
+                            preview_fragment,
+                            handle,
+                            relation: Some(relation_name.clone()),
+                            schema: Some(schema_name.clone()),
+                            role: Some(role.name.clone()),
+                            target_type: Some(role.target_type.clone()),
+                        },
+                    );
+                }
+            }
+        }
+
+        sort_and_dedup_strings(&mut suggestion.suggested_type_guards);
+        sort_and_dedup_strings(&mut suggestion.outgoing_paths);
+        sort_and_dedup_strings(&mut suggestion.incoming_paths);
+        sort_and_dedup_strings(&mut suggestion.fact_bindings);
+        limit_vec(
+            &mut suggestion.suggested_type_guards,
+            MAX_SUGGESTIONS_PER_BUCKET,
+        );
+        limit_vec(&mut suggestion.outgoing_paths, MAX_SUGGESTIONS_PER_BUCKET);
+        limit_vec(&mut suggestion.incoming_paths, MAX_SUGGESTIONS_PER_BUCKET);
+        limit_vec(&mut suggestion.fact_bindings, MAX_SUGGESTIONS_PER_BUCKET);
+        suggestion
+            .refinement_candidates
+            .sort_by(|a, b| match a.kind.cmp(&b.kind) {
+                std::cmp::Ordering::Equal => a.preview_fragment.cmp(&b.preview_fragment),
+                other => other,
+            });
+        suggestion.refinement_candidates.dedup();
+        limit_vec(
+            &mut suggestion.refinement_candidates,
+            MAX_SUGGESTIONS_PER_BUCKET * 2,
+        );
+
+        if suggestion.suggested_type_guards.is_empty()
+            && suggestion.outgoing_paths.is_empty()
+            && suggestion.incoming_paths.is_empty()
+            && suggestion.fact_bindings.is_empty()
+            && suggestion.refinement_candidates.is_empty()
+        {
+            continue;
+        }
+
+        report.exploration_suggestions.push(suggestion);
+    }
+
+    report
+        .exploration_suggestions
+        .sort_by(|a, b| a.variable.cmp(&b.variable));
+    report.exploration_suggestions.dedup();
+}
+
 fn term_var(t: &LoweredTerm) -> Option<usize> {
     match t {
         LoweredTerm::Var(v) => Some(*v),
@@ -6932,45 +7140,6 @@ fn edge_exists(
         Some(min) => db
             .relations
             .has_edge_with_min_confidence(source, rel_id, target, min),
-    })
-}
-
-fn axql_regex_to_query_regex(
-    db: &axiograph_pathdb::PathDB,
-    regex: &AxqlRegex,
-) -> Result<QueryRegexV1> {
-    Ok(match regex {
-        AxqlRegex::Epsilon => QueryRegexV1::Epsilon,
-        AxqlRegex::Rel(name) => {
-            let rel_type_id = db
-                .interner
-                .id_of(name)
-                .ok_or_else(|| anyhow!("unknown relation `{name}` (missing from interner)"))?;
-            QueryRegexV1::Rel {
-                rel_type_id: rel_type_id.raw(),
-            }
-        }
-        AxqlRegex::Seq(parts) => QueryRegexV1::Seq {
-            parts: parts
-                .iter()
-                .map(|p| axql_regex_to_query_regex(db, p))
-                .collect::<Result<Vec<_>>>()?,
-        },
-        AxqlRegex::Alt(parts) => QueryRegexV1::Alt {
-            parts: parts
-                .iter()
-                .map(|p| axql_regex_to_query_regex(db, p))
-                .collect::<Result<Vec<_>>>()?,
-        },
-        AxqlRegex::Star(inner) => QueryRegexV1::Star {
-            inner: Box::new(axql_regex_to_query_regex(db, inner)?),
-        },
-        AxqlRegex::Plus(inner) => QueryRegexV1::Plus {
-            inner: Box::new(axql_regex_to_query_regex(db, inner)?),
-        },
-        AxqlRegex::Opt(inner) => QueryRegexV1::Opt {
-            inner: Box::new(axql_regex_to_query_regex(db, inner)?),
-        },
     })
 }
 
@@ -7717,6 +7886,27 @@ instance CensusInst of Census:
         db
     }
 
+    fn tiny_axi_witness_db() -> axiograph_pathdb::PathDB {
+        let mut db = axiograph_pathdb::PathDB::new();
+        let axi = r#"
+module TinyWitness
+
+schema Demo:
+  object Node
+  relation rel_0(from: Node, to: Node)
+  relation rel_1(from: Node, to: Node)
+
+instance DemoInst of Demo:
+  Node = {a, b, c}
+  rel_0 = {(from=a, to=b)}
+  rel_1 = {(from=b, to=c)}
+"#;
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import tiny witness axi module");
+        db.build_indexes();
+        db
+    }
+
     #[test]
     fn axql_elaboration_infers_field_types_and_supertypes() -> Result<()> {
         let db = db_with_axi_meta_plane();
@@ -7768,6 +7958,11 @@ instance CensusInst of Census:
         let mut prepared = prepare_axql_query_with_meta(&db, &q, Some(&meta))?;
         let report = prepared.elaboration_report();
         assert!(report.notes.iter().any(|n| n.contains("treated as union")));
+        assert!(report.typed_holes.iter().any(|hole| {
+            hole.kind == AxqlTypedHoleKindV1::AmbiguousEdgeRelationSchema
+                && hole.relation == "Parent"
+        }));
+        assert!(prepared.introspection().typed_hole_count > 0);
 
         let res = prepared.execute(&db, Some(&meta))?;
         assert_eq!(res.rows.len(), 2);
@@ -7782,6 +7977,32 @@ instance CensusInst of Census:
         )?;
         let res = execute_axql_query(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn axql_ambiguous_fact_relation_becomes_typed_hole() -> Result<()> {
+        let db = db_with_multi_schema_parent_collision();
+        let meta = MetaPlaneIndex::from_db(&db)?;
+        let q =
+            parse_axql_query(r#"select ?f where ?f = Parent(child=Carol, parent=Alice) limit 10"#)?;
+        let prepared = prepare_axql_query_with_meta(&db, &q, Some(&meta))?;
+        let report = prepared.elaboration_report();
+        let hole = report
+            .typed_holes
+            .iter()
+            .find(|hole| {
+                hole.kind == AxqlTypedHoleKindV1::AmbiguousFactRelationSchema
+                    && hole.relation == "Parent"
+            })
+            .expect("expected ambiguous fact relation hole");
+        assert_eq!(hole.variable.as_deref(), Some("?f"));
+        assert!(hole.candidate_schemas.iter().any(|schema| schema == "Fam"));
+        assert!(hole
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion.replacement.as_deref()
+                == Some("attr(?f, \"axi_schema\", \"Fam\")")));
         Ok(())
     }
 
@@ -7887,6 +8108,53 @@ instance I2 of S2:
             .map(|s| s.rule_name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(rule_names, vec!["z_to_y", "y_to_x"]);
+        Ok(())
+    }
+
+    #[test]
+    fn axql_elaboration_adds_type_directed_exploration_suggestions() -> Result<()> {
+        let db = db_with_axi_meta_plane();
+        let meta = MetaPlaneIndex::from_db(&db)?;
+
+        let q = parse_axql_query(r#"select ?dst where ?f = Flow(from=a, to=?dst) limit 5"#)?;
+        let prepared = prepare_axql_query_with_meta(&db, &q, Some(&meta))?;
+        let report = prepared.elaboration_report();
+
+        let suggestion = report
+            .exploration_suggestions
+            .iter()
+            .find(|suggestion| suggestion.variable == "?dst")
+            .expect("expected exploration suggestion for ?dst");
+
+        assert!(suggestion.inferred_types.iter().any(|ty| ty == "Supplier"));
+        assert!(suggestion
+            .suggested_type_guards
+            .iter()
+            .any(|guard| guard.contains("?dst is Demo.Supplier")));
+        assert!(suggestion
+            .incoming_paths
+            .iter()
+            .any(|path| path.contains("-Demo.Flow-> ?dst")));
+        assert!(suggestion
+            .fact_bindings
+            .iter()
+            .any(|binding| binding.contains("Demo.Flow(") && binding.contains("to=?dst")));
+        assert!(suggestion.refinement_candidates.iter().any(|candidate| {
+            candidate.kind == AxqlRefinementCandidateKindV1::AddTypeGuard
+                && candidate.preview_fragment.contains("?dst is Demo.Supplier")
+                && candidate.handle.validate().is_ok()
+        }));
+        assert!(suggestion.refinement_candidates.iter().any(|candidate| {
+            candidate.kind == AxqlRefinementCandidateKindV1::ExtendIncomingPath
+                && candidate.preview_fragment.contains("-Demo.Flow-> ?dst")
+                && candidate.handle.validate().is_ok()
+        }));
+        assert!(suggestion.refinement_candidates.iter().any(|candidate| {
+            candidate.kind == AxqlRefinementCandidateKindV1::BindFactRelation
+                && candidate.preview_fragment.contains("Demo.Flow(")
+                && candidate.role.as_deref() == Some("to")
+                && candidate.handle.validate().is_ok()
+        }));
         Ok(())
     }
 
@@ -8009,17 +8277,27 @@ instance I2 of S2:
     }
 
     #[test]
-    fn certify_or_emits_query_result_v2() -> Result<()> {
-        let db = tiny_db();
-        let q = parse_axql_query(r#"select ?y where 0 -rel_0-> ?y or 1 -rel_1-> ?y limit 10"#)?;
-        let cert = certify_axql_query(&db, &q)?;
+    fn certify_typed_query_witness_supports_disjunction() -> Result<()> {
+        let db = tiny_axi_witness_db();
+        let q = parse_axql_query(r#"select ?y where a -rel_0-> ?y or b -rel_1-> ?y limit 10"#)?;
+        let cert = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")?;
         let proof = match cert.payload {
-            CertificatePayloadV2::QueryResultV2 { proof } => proof,
-            other => return Err(anyhow!("expected query_result_v2, got {other:?}")),
+            CertificatePayloadV2::QueryResultV3 { proof } => proof,
+            other => return Err(anyhow!("expected query_result_v3, got {other:?}")),
         };
         assert_eq!(proof.rows.len(), 2);
         assert!(proof.rows.iter().any(|r| r.disjunct == 0));
         assert!(proof.rows.iter().any(|r| r.disjunct == 1));
+        assert!(proof.rows.iter().any(|row| {
+            row.bindings
+                .iter()
+                .any(|binding| binding.var == "?y" && binding.entity == "b")
+        }));
+        assert!(proof.rows.iter().any(|row| {
+            row.bindings
+                .iter()
+                .any(|binding| binding.var == "?y" && binding.entity == "c")
+        }));
         Ok(())
     }
 
@@ -8294,100 +8572,100 @@ instance I2 of S2:
     fn certify_rejects_approximate_atoms() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x : Node, contains(?x, "name", "a")"#)?;
-        let err = certify_axql_query(&db, &q).expect_err("expected certification to fail");
+        let err = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")
+            .expect_err("expected certification to fail");
         assert!(err.to_string().contains("cannot certify"));
         Ok(())
     }
 
     #[test]
-    fn certify_emits_relation_id_for_edge_atoms() -> Result<()> {
-        let mut db = axiograph_pathdb::PathDB::new();
-        let a = db.add_entity("Node", vec![("name", "a")]);
-        let b = db.add_entity("Node", vec![("name", "b")]);
-        let rel_id = db.add_relation("rel_0", a, b, 0.9, Vec::new());
-        db.build_indexes();
+    fn certify_typed_query_witness_emits_axi_fact_id_for_edge_atoms() -> Result<()> {
+        let db = tiny_axi_witness_db();
+        let q = parse_axql_query(r#"select ?y where a -rel_0-> ?y"#)?;
+        let cert = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")?;
 
-        let q = parse_axql_query(r#"select ?y where 0 -rel_0-> ?y"#)?;
-        let cert = certify_axql_query(&db, &q)?;
-
-        let axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV1 { proof } =
+        let axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } =
             cert.payload
         else {
-            return Err(anyhow!("expected query_result_v1 certificate"));
+            return Err(anyhow!("expected query_result_v3 certificate"));
         };
 
         assert_eq!(proof.rows.len(), 1);
         let row = &proof.rows[0];
 
-        assert!(row.bindings.iter().any(|b| b.var == "?y" && b.entity == 1));
-        assert_eq!(row.witnesses.len(), 1);
+        assert!(row
+            .bindings
+            .iter()
+            .any(|b| b.var == "?y" && b.entity == "b"));
+        let path_witness = row
+            .witnesses
+            .iter()
+            .find_map(|witness| match witness {
+                QueryAtomWitnessV3::Path { proof } => Some(proof),
+                _ => None,
+            })
+            .ok_or_else(|| anyhow!("expected at least one path witness"))?;
 
-        match &row.witnesses[0] {
-            QueryAtomWitnessV1::Path {
-                proof:
-                    ReachabilityProofV2::Step {
-                        relation_id: Some(rid),
-                        ..
-                    },
-            } => assert_eq!(*rid, rel_id),
-            other => return Err(anyhow!("unexpected witness shape: {other:?}")),
+        match path_witness {
+            axiograph_pathdb::certificate::ReachabilityProofV3::Step { axi_fact_id, .. } => {
+                assert!(axi_fact_id.starts_with("factfnv1a64:"));
+            }
+            other => return Err(anyhow!("unexpected path witness shape: {other:?}")),
         }
 
         Ok(())
     }
 
     #[test]
-    fn certify_emits_relation_ids_for_path_seq_rpq() -> Result<()> {
-        let mut db = axiograph_pathdb::PathDB::new();
-        let a = db.add_entity("Node", vec![("name", "a")]);
-        let b = db.add_entity("Node", vec![("name", "b")]);
-        let c = db.add_entity("Node", vec![("name", "c")]);
-        let rel_0_id = db.add_relation("rel_0", a, b, 0.9, Vec::new());
-        let rel_1_id = db.add_relation("rel_1", b, c, 0.9, Vec::new());
-        db.build_indexes();
+    fn certify_typed_query_witness_emits_axi_fact_ids_for_path_seq_rpq() -> Result<()> {
+        let db = tiny_axi_witness_db();
+        let q = parse_axql_query(r#"select ?y where a -rel_0/rel_1-> ?y"#)?;
+        let cert = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")?;
 
-        let q = parse_axql_query(r#"select ?y where 0 -rel_0/rel_1-> ?y"#)?;
-        let cert = certify_axql_query(&db, &q)?;
-
-        let axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV1 { proof } =
+        let axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } =
             cert.payload
         else {
-            return Err(anyhow!("expected query_result_v1 certificate"));
+            return Err(anyhow!("expected query_result_v3 certificate"));
         };
 
         assert_eq!(proof.rows.len(), 1);
         let row = &proof.rows[0];
 
-        assert!(row.bindings.iter().any(|b| b.var == "?y" && b.entity == 2));
-
-        assert_eq!(row.witnesses.len(), 1);
-
-        let rid_chain = match &row.witnesses[0] {
-            QueryAtomWitnessV1::Path { proof } => {
-                let mut ids: Vec<u32> = Vec::new();
+        assert!(row
+            .bindings
+            .iter()
+            .any(|b| b.var == "?y" && b.entity == "c"));
+        let fact_chain = match row.witnesses.iter().find_map(|witness| match witness {
+            QueryAtomWitnessV3::Path { proof } => Some(proof),
+            _ => None,
+        }) {
+            Some(proof) => {
+                let mut ids: Vec<String> = Vec::new();
                 let mut cur = proof;
                 loop {
                     match cur {
-                        ReachabilityProofV2::Reflexive { .. } => break,
-                        ReachabilityProofV2::Step {
-                            relation_id: Some(rid),
+                        axiograph_pathdb::certificate::ReachabilityProofV3::Reflexive {
+                            ..
+                        } => {
+                            break;
+                        }
+                        axiograph_pathdb::certificate::ReachabilityProofV3::Step {
+                            axi_fact_id,
                             rest,
                             ..
                         } => {
-                            ids.push(*rid);
+                            ids.push(axi_fact_id.clone());
                             cur = rest;
                         }
-                        ReachabilityProofV2::Step {
-                            relation_id: None, ..
-                        } => return Err(anyhow!("expected relation_id in reachability proof")),
                     }
                 }
                 ids
             }
-            other => return Err(anyhow!("unexpected witness[0] shape: {other:?}")),
+            None => return Err(anyhow!("expected at least one path witness")),
         };
 
-        assert_eq!(rid_chain, vec![rel_0_id, rel_1_id]);
+        assert_eq!(fact_chain.len(), 2);
+        assert!(fact_chain.iter().all(|id| id.starts_with("factfnv1a64:")));
         Ok(())
     }
 
@@ -8405,13 +8683,13 @@ instance I2 of S2:
         let res = execute_axql_query(&db, &q)?;
         assert_eq!(res.rows.len(), 0);
 
-        let cert = certify_axql_query(&db, &q)?;
+        let cert = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")?;
         match cert.payload {
-            CertificatePayloadV2::QueryResultV1 { proof } => {
+            CertificatePayloadV2::QueryResultV3 { proof } => {
                 assert!(proof.query.min_confidence_fp.is_some());
                 assert_eq!(proof.rows.len(), 0);
             }
-            other => panic!("expected query_result_v1 certificate, got {other:?}"),
+            other => panic!("expected query_result_v3 certificate, got {other:?}"),
         }
 
         Ok(())

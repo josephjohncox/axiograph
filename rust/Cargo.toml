@@ -110,6 +110,10 @@ hnsw_rs = "0.3"
 name = "integration_tests"
 path = "tests/integration_tests.rs"
 
+[[test]]
+name = "backend_container_tests"
+path = "tests/backend_container_tests.rs"
+
 [dev-dependencies]
 libc = "0.2"
 tempfile = "3"
@@ -120,6 +124,7 @@ axiograph-pathdb = { path = "crates/axiograph-pathdb" }
 axiograph-llm-sync = { path = "crates/axiograph-llm-sync" }
 tokio.workspace = true
 chrono.workspace = true
+reqwest.workspace = true
 
 [profile.release]
 opt-level = 3

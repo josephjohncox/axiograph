@@ -3,13 +3,14 @@
 Baseline world model plugin (axiograph_world_model_v1).
 
 This is a deterministic, dependency-free example that:
-- reads a JEPA export,
-- emits relation proposals for each tuple,
+- reads canonical `.axi` semantics plus optional derived training export layers,
+- emits relation proposals for each tuple-like training/example item,
 - ignores learning (acts as a placeholder for MLP-style baselines).
 """
 
 import argparse
 import json
+import re
 import sys
 import time
 from typing import Dict, List, Tuple
@@ -29,15 +30,105 @@ def infer_endpoints(field_names: List[str]) -> Tuple[str, str]:
     return ("", "")
 
 
-def load_export(req: Dict) -> Dict:
-    export = req.get("input", {}).get("export")
-    if export:
-        return export
-    export_path = req.get("input", {}).get("export_path")
-    if export_path:
-        with open(export_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+INSTANCE_RE = re.compile(r"^\s*instance\s+(\S+)\s+of\s+(\S+)\s*:\s*$")
+ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{(.*)$")
+
+
+def strip_axi_comment(line: str) -> str:
+    return line.split("--", 1)[0].rstrip()
+
+
+def semantic_input(req: Dict) -> Dict:
+    return req.get("input", {}).get("semantic_input") or {}
+
+
+def semantic_layers(req: Dict) -> List[Dict]:
+    layers = semantic_input(req).get("layers")
+    if isinstance(layers, list):
+        return layers
+    return []
+
+
+def load_training_export(req: Dict) -> Dict:
+    for layer in semantic_layers(req):
+        if layer.get("kind") == "training_export" and isinstance(layer.get("export"), dict):
+            return layer["export"]
     return {}
+
+
+def parse_tuple_fields(body: str) -> List[Tuple[str, str]]:
+    fields: List[Tuple[str, str]] = []
+    for raw_part in body.split(","):
+        part = raw_part.strip()
+        if not part or "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            fields.append((key, value))
+    return fields
+
+
+def extract_items_from_axi(axi_text: str) -> List[Dict]:
+    items: List[Dict] = []
+    current_instance = None
+    current_schema = None
+    assignment_name = None
+    assignment_lines: List[str] = []
+    brace_depth = 0
+
+    def flush_assignment() -> None:
+        nonlocal assignment_name, assignment_lines, brace_depth
+        if not assignment_name:
+            return
+        block = "\n".join(assignment_lines)
+        tuples = re.findall(r"\(([^()]*)\)", block)
+        for tuple_body in tuples:
+            fields = parse_tuple_fields(tuple_body)
+            if not fields:
+                continue
+            items.append(
+                {
+                    "schema": current_schema,
+                    "instance": current_instance,
+                    "relation": assignment_name,
+                    "fields": fields,
+                    "mask_fields": [],
+                }
+            )
+        assignment_name = None
+        assignment_lines = []
+        brace_depth = 0
+
+    for raw_line in axi_text.splitlines():
+        line = strip_axi_comment(raw_line)
+        if not line.strip():
+            continue
+
+        if assignment_name is None:
+            instance_match = INSTANCE_RE.match(line)
+            if instance_match:
+                current_instance, current_schema = instance_match.groups()
+                continue
+
+            assign_match = ASSIGN_RE.match(line)
+            if current_instance and assign_match:
+                assignment_name = assign_match.group(1)
+                remainder = assign_match.group(2)
+                assignment_lines = [remainder]
+                brace_depth = 1 + remainder.count("{") - remainder.count("}")
+                if brace_depth <= 0:
+                    flush_assignment()
+                continue
+        else:
+            assignment_lines.append(line)
+            brace_depth += line.count("{") - line.count("}")
+            if brace_depth <= 0:
+                flush_assignment()
+
+    flush_assignment()
+    return items
 
 
 def main() -> int:
@@ -52,8 +143,13 @@ def main() -> int:
     if req.get("protocol") != "axiograph_world_model_v1":
         raise SystemExit("unsupported protocol")
 
-    export = load_export(req)
+    export = load_training_export(req)
     items = export.get("items", [])
+    mode = "training_export"
+    if not items:
+        axi_text = req.get("input", {}).get("axi_module_text") or ""
+        items = extract_items_from_axi(axi_text)
+        mode = "canonical_axi"
 
     proposals = []
     for idx, item in enumerate(items):
@@ -98,7 +194,7 @@ def main() -> int:
             "schema_hint": None,
             "proposals": proposals,
         },
-        "notes": [f"baseline strategy={args.strategy} proposals={len(proposals)}"],
+        "notes": [f"baseline strategy={args.strategy} mode={mode} proposals={len(proposals)}"],
         "error": None,
     }
 

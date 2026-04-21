@@ -1,4 +1,4 @@
--- MachinistLearning.axi (axi_schema_v1)
+-- MachinistLearning.axi (`axi_v1`)
 --
 -- This module is the canonical “learning + guardrails” example, expressed in
 -- the same schema/theory/instance surface syntax as the rest of the corpus.

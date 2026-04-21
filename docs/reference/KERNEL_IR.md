@@ -15,14 +15,92 @@ compiled semantic form that:
 
 Current implemented slice (2026-04):
 
-- `axiograph_pathdb::kernel_ir` currently provides `CompiledSchemaIr`,
-  `RelationSemanticsIr`, `RoleIr`, `RoleKind::{Data, Context, Temporal}`,
-  `CarrierSpecIr`, and `WitnessViewIr`.
+- `axiograph_pathdb::kernel_ir` currently provides:
+  - `CompiledSchemaIr`
+  - `RelationSemanticsIr`
+  - `RoleIr`
+  - deterministic semantic ids for compiled schema objects
+    (`ObjectTypeId`, `RelationId`, `RoleId`)
+  - `RoleKind::{Data, Context, Temporal}`
+  - `CarrierSpecIr`
+  - `WitnessViewIr`
+- the first runtime `TheoryIr` slice now exists in the compiled IR:
+  - `ConstraintIr`
+  - `PathEquationIr`
+  - `OpaqueEquationIr`
+  - `RewriteRuleIr`
+  - `TheoryObligationRefIr`
+  - `TheoryObligationKindIr`
+  - `TheorySubjectRefIr`
+  - `TheorySubjectKindIr`
+  - deterministic theory-object ids
+    (`TheoryId`, `ConstraintId`, `EquationId`, `RewriteRuleId`)
+  - deterministic runtime-addressable obligation refs via
+    `TheoryIr::obligation_refs()`
+  - explicit obligation→subject and subject→obligation cross-links via
+    `TheoryIr::subject_refs_for_obligation(...)` and
+    `TheoryIr::obligation_refs_for_subject(...)`
+- `compile_theory_ir(...)` is now a checked projector rather than a blind
+  format step:
+  - structured constraints validate relation/field/param references,
+  - constraints now retain compiled relation ids and compiled role ids for
+    referenced fields/params,
+  - parseable path equations validate against compiled carrier semantics,
+  - parseable path equations now retain compiled relation ids,
+  - rewrite rules validate declared vars, referenced relations, and endpoint
+    typing against the same compiled schema slice.
 - `.axi` import and meta-plane schema semantics now consult this compiled slice
   for carrier inference and witness-view selection instead of repeating
   endpoint heuristics locally.
-- The full `KernelModuleIr` / `SchemaCoreIr` / `TheoryIr` / `InstanceIr` /
-  deterministic per-object ids remain future work.
+- `axiograph_cli::semantic_claim` now projects the indexed schema/theory surface
+  into a first runtime business-rule catalog:
+  `RuntimeRuleCatalogV1 -> RuntimeRuleV1 { rule_id, scope, class, runtime_support, trust_class }`.
+  This is a deterministic runtime report layer for agents/review/query tooling,
+  not yet the full canonical `TheoryIr`.
+- `axiograph_cli::backend_pushdown` now consumes `CompiledSchemaIr` plus
+  backend/projection capability profiles and emits typed pushdown plans for the
+  current first-class backends:
+  - `TypeDbPushdownPlanV1`
+  - `TerminusDbPushdownPlanV1`
+  These plans are explicit about preserved tuple/role/context structure, native
+  read-only query dialect, preserved lower-tier interfaces
+  (native query / RDF dataset / SHACL validation where applicable), lifting
+  contracts back into the higher typed/meta layer, carrier-edge convenience
+  projections, and the trust caveats where backend-native querying becomes a
+  reduced lens over Axiograph semantics.
+- `BackendPushdownPlanV1::operational_surface()` now exposes the bounded
+  agent-facing operational contract over those plans:
+  - relation transport summary,
+  - context transport strategy and preserved axis bindings,
+  - residual obligations that still require Axiograph-side anchor/context
+    rechecks or reindexing,
+  - and the explicit reconciliation boundary where semantic refs, CQ gates, and
+    persisted reconciliation previews remain authoritative.
+- `axiograph_cli::query_ir::PreparedQueryExplorationV1` is the current typed
+  compiled-query exploration surface for editors/agents:
+  - inferred types,
+  - typed holes,
+  - refinement candidates,
+  - semantic claims/coverage,
+  - and trust gaps.
+- `axiograph_cli::typed_refinement` is the current shared apply/refine envelope
+  over those compiled-IR-facing surfaces:
+  - one runtime handle/candidate currency,
+  - query-local, typed-olog, migration-preview, reconciliation-review, and
+    CQ-repair domains inside that envelope,
+  - machine-applicable refinement ids,
+  - and explicit separation between runtime repair transport and trusted kernel
+    proof objects.
+- `axiograph_cli::evolution_preview` already exposes the matching compiled-IR
+  and reconciliation preview objects for review workflows:
+  - `build_compiled_ir_exploration_evolution_preview_v1(...)`
+  - `build_migration_evolution_preview_v1(...)`
+  - `build_reconciliation_evolution_preview_v1(...)`
+- CQ evaluation now surfaces shared runtime refinement candidates per
+  competency question, rather than only trust/coverage strings.
+- The full `KernelModuleIr` / shared `InstanceIr` / richer canonical
+  `ConstraintIr` enum / broader equation language / certifiable theory proof
+  export remain future work.
 
 ## Design Rules
 
@@ -36,6 +114,8 @@ Current implemented slice (2026-04):
    - RDF/OWL/SHACL adapters,
    - property-graph projection,
    - and `Δ/Σ/Π` migration machinery.
+6. Engineering-facing reports must cite IR-level semantic ids rather than only
+   prose labels or storage-local names.
 
 ## Why This IR Is The Hinge
 
@@ -57,6 +137,53 @@ In this repo, the IR is the hinge only if all of the following become true:
 
 That is the operational point of the IR: one semantic spine for authoring,
 query, migration, certification, and review.
+
+### Engineering-facing consequences
+
+If the IR is genuinely the semantic spine, then these runtime outputs must cite
+the same ids too:
+
+- business-rule applicability reports should name theory/rule/object/role ids;
+- semantic coverage reports should map code/tests/docs/interop artifacts onto
+  those ids or report them as unmapped;
+- SHACL/RDF/olog flows should resolve to the same ids when alignment is known;
+- and coding-agent reports should point at the same objects when they explain
+  why a claim is strong, weak, missing, or drifted.
+
+## Current Operational Surfaces
+
+The repo is no longer at the stage where compiled IR is only a design note. The
+current operational seam already has three concrete surfaces:
+
+- typed exploration:
+  `PreparedQueryExplorationV1` and
+  `build_compiled_ir_exploration_evolution_preview_v1(...)`
+- typed transport / projection review:
+  `BackendPushdownPlanV1` plus `BackendPushdownOperationalSurfaceV1`
+- typed reconciliation review:
+  `ReconciliationPreviewReportV1` plus
+  `build_reconciliation_evolution_preview_v1(...)`
+
+Those surfaces are still first slices, not the finished kernel. But they are
+already the correct default direction for agents and tooling:
+
+- explore the ontology through compiled/query IR rather than raw token
+  heuristics,
+- inspect backend pushdown as typed transport plus residual obligations rather
+  than as opaque adapter behavior,
+- and inspect merge/reconciliation through persisted preview objects rather than
+  implicit backend history.
+
+The shared refinement protocol is the operational bridge between those slices.
+It is deliberately not a theorem-prover kernel object. It is a compiled-IR
+runtime service that preserves:
+
+- stable handle ids,
+- typed holes and admissible next moves,
+- surface-local repair operations for queries, typed olog authoring,
+  migration/reconciliation review, and CQ repair,
+- and trust/coverage deltas that can be carried forward into review, migration,
+  and reconciliation workflows.
 
 ## Top-Level Shape
 
@@ -202,6 +329,10 @@ If a relation has no `CarrierSpec`, it has no direct binary traversal meaning.
 
 Theories must stop being a bag of partially structured text.
 
+They are also where business-rule usefulness becomes concrete: constraints,
+path equations, and rewrite rules are the stable theory objects that runtime
+checker, coverage, and agent-facing reports should cite.
+
 ```rust
 pub struct TheoryIr {
     pub theory_id: TheoryId,
@@ -252,6 +383,55 @@ pub enum RewriteRuleSource {
     AcceptedAxi,
 }
 ```
+
+### Runtime rule projection (implemented now)
+
+Before the repo has a fully shared `TheoryIr`, the CLI/runtime already needs a
+typed rule surface that coding agents and business-rule review flows can use
+without parsing prose.
+
+Today that slice is derived from `MetaPlaneIndex`, not from a completed kernel
+module IR:
+
+```rust
+pub struct RuntimeRuleCatalogV1 {
+    pub version: String,
+    pub rules: Vec<RuntimeRuleV1>,
+    pub notes: Vec<String>,
+}
+
+pub struct RuntimeRuleV1 {
+    pub rule_id: String,
+    pub class: RuntimeRuleClassV1,
+    pub scope: RuntimeRuleScopeV1,
+    pub runtime_support: RuntimeRuleSupportV1,
+    pub trust_class: RuntimeRuleTrustClassV1,
+    pub certification: RuntimeRuleCertificationV1,
+    pub summary: String,
+}
+```
+
+Operational intent:
+
+- `rule_id` is deterministic for the current indexed schema/theory surface, so
+  agent-facing reports can point at a stable runtime rule object rather than a
+  raw prose string.
+- `scope.scope_id` is deterministic at relation or theory scope today:
+  `schema/<schema>/relation/<relation>` or `schema/<schema>/theory/<theory>`.
+- `class` distinguishes concrete rule families already present in the
+  meta-plane index: `functional`, `key`, `at_most`, `typing`,
+  `rewrite_rule`, `named_block_constraint`, and the current review-only
+  residual cases.
+- `runtime_support` and `trust_class` separate rules that are actually used by
+  the runtime today (`quality_gate`, `query_planning`, `rewrite_helper`) from
+  rules that are only advisory metadata or review-only declarations.
+
+This layer is deliberately modest:
+
+- it is a runtime projection over the live indexed ontology surface;
+- it is useful for agent tooling, semantic summaries, and business-rule review;
+- but it is not yet the canonical `TheoryIr`, and it does not by itself expand
+  the trusted Lean-checked kernel.
 
 ## InstanceIR
 
@@ -312,6 +492,30 @@ should use instead of re-deriving endpoints heuristically from field names.
 
 - `object T` lowers to `ObjectTypeDef`.
 - `T <: U` lowers to `SubtypeInclusionDef`.
+- the compiled IR should retain both supertypes and admissible subtypes so
+  typed tooling can answer:
+  - which refinements inhabit a given supertype,
+  - which player types are valid at a role interface,
+  - and which subtype-sensitive repairs or exploration moves are legal.
+
+### Role interfaces
+
+TypeDB is a useful reference point here, but Axiograph should import the idea
+rather than the surface syntax:
+
+- every role projection is a first-class typed interface,
+- the role's declared target type is its interface supertype,
+- admissible players are that type plus all compiled subtypes,
+- and query/authoring/pushdown surfaces should expose the scoped role name
+  explicitly, e.g. `Approval:approver`.
+
+That means the compiled IR should make role interfaces directly available for:
+
+- typed olog binding suggestions,
+- subtype-aware query elaboration,
+- backend pushdown plans,
+- and semantic evolution previews that explain when a role is being pushed down
+  to or pulled up from a subtype.
 
 ### Relations
 
@@ -345,7 +549,11 @@ Required ids include:
 - `RelationId`
 - `RoleId`
 - `ArrowId`
+- `ContextAxisId`
 - `TheoryId`
+- `ConstraintId`
+- `EquationId`
+- `RewriteRuleId`
 - `StableFactId`
 
 These ids are the semantic handles that Rust typed APIs, certificates, and VCS
@@ -385,6 +593,61 @@ Property graph export is also a projection:
 `Δ/Σ/Π` should operate over `SchemaCoreIr`, not over PathDB's derived binary-edge
 view.
 
+### Migration As Transport And Reindexing
+
+Migration is not merely “copy data through an adapter”. In the semantic kernel
+story it is:
+
+- typed transport along a named schema/theory map, and
+- explicit reindexing of semantic ids so source and target artifacts remain
+  comparable across anchors.
+
+Transport answers which object/arrow/relation/path structure is preserved,
+reinterpreted, or made residual. Reindexing answers which source ids and target
+ids are "the same enough" for CQ diff, semantic coverage, migration preview,
+and later certification to speak precisely.
+
+That is why migration preview should cite:
+
+- the schema morphism or transport basis,
+- the reindexing links or preserved ids,
+- transported path equations / rewrite obligations,
+- and residual obligations for anything not yet carried soundly.
+
+### Reconciliation As Typed Evolution
+
+Reconciliation is not file merge. It is typed evolution over competing semantic
+deltas rooted at a common anchor:
+
+- enumerate conflicts over schema/theory/instance/context artifacts,
+- record explicit operator or policy decisions,
+- attach CQ/trust/coverage consequences,
+- and keep unresolved obligations first-class.
+
+The runtime slice does not yet claim a full categorical merge calculus. The
+current requirement is narrower and still useful: reconciliation objects and
+previews must carry stable artifact ids, conflict sets, decisions, and
+residuals in the same semantic language used by authoring, migration, and
+querying.
+
+## Exploration Surfaces
+
+Ologs are the most legible human-facing frontend, but they are not the only
+exploration mode.
+
+The same compiled IR should also drive:
+
+- query refinement and typed-hole filling,
+- migration authoring and transport preview,
+- reconciliation review,
+- rule/CQ browsing,
+- backend projection review,
+- and implementation-surface mapping.
+
+The operative principle is one semantic spine: every exploration surface should
+talk about the same object ids, relation-object ids, role ids, rule ids, and
+anchors.
+
 ## Olog Surface
 
 Ologs are a frontend to the same IR, not a separate semantic subsystem.
@@ -411,3 +674,5 @@ The first implementation cut for this spec should:
    than raw surface names alone.
 7. Make certificate payloads and semantic diffs name the same stable IR objects
    used by authoring and query tooling.
+8. Make business-rule applicability, semantic-coverage, and agent-facing
+   reports cite the same stable IR ids rather than ad hoc labels.

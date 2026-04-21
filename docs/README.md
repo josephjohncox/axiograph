@@ -7,6 +7,13 @@ This repository has a lot of documentation because Axiograph spans:
 - a **trusted semantics/checker** (Lean + mathlib),
 - and **tooling** (REPL, discovery loops, ingestion adapters, visualization).
 
+Repo-wide terminology note:
+
+- "LLM-assisted" means typed plugin/API/tool-loop/MCP-skill-style integration
+  surfaces that emit `query_ir_v1`, typed exploration payloads, or
+  evidence-plane proposal artifacts. It does not mean free-form semantic
+  authority over accepted ontology state.
+
 To keep this navigable, we organize docs using the **Diataxis** framework:
 **Tutorials** (learn), **How-to** (do), **Reference** (look up), **Explanation** (understand).
 
@@ -54,6 +61,7 @@ If you only read one thing, read the “book”:
 - `docs/reference/CERTIFICATES.md` — certificate schema, versions, and how the Lean checker validates them
 - `docs/reference/TRUSTED_KERNEL.md` — exact boundary of the Lean trusted kernel and certificate trust classes
 - `docs/reference/KERNEL_IR.md` — canonical schema/category IR target spec
+- `docs/reference/AXI_STYLE.md` — canonical `.axi` authoring/style guide for examples and reviews
 - `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle state + anchor-aware artifact model
 - `docs/reference/QUERY_LANG.md` — AxQL + SQL-ish dialect reference (and “certified querying” roadmap)
 - `docs/reference/SEMANTIC_VCS.md` — semantic refs/commits/reconciliation/world-model lineage spec

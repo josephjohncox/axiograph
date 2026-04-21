@@ -16,7 +16,7 @@
 //! - content-derived snapshot ids (stable)
 //! - and a reproducible “rebuild PathDB from snapshots” command.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -55,16 +55,22 @@ const ACCEPTED_PLANE_SEM_HEADS_WM_DIR: &str = "sem/refs/heads/wm";
 const ACCEPTED_PLANE_SEM_TAGS_DIR: &str = "sem/refs/tags";
 const ACCEPTED_PLANE_SEM_VALIDATIONS_DIR: &str = "sem/validations";
 const ACCEPTED_PLANE_SEM_WORLD_MODEL_RUNS_DIR: &str = "sem/world_model_runs";
+const ACCEPTED_PLANE_SEM_PROJECTIONS_DIR: &str = "sem/projections";
 
 const ACCEPTED_PLANE_SNAPSHOT_VERSION_V1: &str = "accepted_plane_snapshot_v1";
 const ACCEPTED_PLANE_EVENT_VERSION_V1: &str = "accepted_plane_event_v1";
 const ACCEPTED_PLANE_PROMOTION_PREVIEW_VERSION_V1: &str = "accepted_plane_promotion_preview_v1";
+#[cfg_attr(not(test), allow(dead_code))]
+const ACCEPTED_PLANE_RECONCILIATION_PREVIEW_VERSION_V1: &str =
+    "accepted_plane_reconciliation_preview_v1";
 const ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1: &str = "accepted_plane_semantic_commit_v1";
 const ACCEPTED_PLANE_SEM_REF_POINTER_VERSION_V1: &str = "accepted_plane_sem_ref_pointer_v1";
 #[allow(dead_code)]
 const ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1: &str = "accepted_plane_sem_reconciliation_v1";
 #[cfg_attr(not(test), allow(dead_code))]
 const WORLD_MODEL_RUN_RECORD_VERSION_V1: &str = "world_model_run_record_v1";
+#[cfg_attr(not(test), allow(dead_code))]
+const BACKEND_PROJECTION_MANIFEST_VERSION_V1: &str = "backend_projection_manifest_v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptedPlaneSnapshotV1 {
@@ -166,6 +172,36 @@ pub struct PromotionPreviewReportV1 {
     pub stored_report_path: Option<String>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationPreviewReportV1 {
+    pub version: String,
+    pub reconciliation_id: AxiDigest,
+    pub base_commit_id: AxiDigest,
+    pub left_commit_id: AxiDigest,
+    pub right_commit_id: AxiDigest,
+    pub policy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_ref_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref_name: Option<String>,
+    pub evolution_preview: crate::evolution_preview::EvolutionPreviewV1,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_report_path: Option<String>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconciliationReviewApplyResultV1 {
+    pub handle: crate::typed_refinement::RuntimeRefinementHandleV1,
+    pub base_reconciliation: SemReconciliationV1,
+    pub updated_reconciliation: SemReconciliationV1,
+    pub evolution_preview: crate::evolution_preview::EvolutionPreviewV1,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PromotionImportSummaryV1 {
     pub meta_entities_added: usize,
@@ -233,7 +269,44 @@ pub struct PromoteReviewedModuleResultV1 {
     pub validation_report_path: Option<String>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReconciliationSemanticCommitOptionsV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default = "default_semantic_commit_author")]
+    pub author: String,
+    #[serde(default = "default_persist_validation_report")]
+    pub persist_validation_report: bool,
+    #[serde(default = "default_update_resolved_ref")]
+    pub update_resolved_ref: bool,
+    #[serde(default = "default_update_semantic_head")]
+    pub update_semantic_head: bool,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn default_update_resolved_ref() -> bool {
+    true
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn default_update_semantic_head() -> bool {
+    true
+}
+
+impl Default for ReconciliationSemanticCommitOptionsV1 {
+    fn default() -> Self {
+        Self {
+            message: None,
+            author: default_semantic_commit_author(),
+            persist_validation_report: true,
+            update_resolved_ref: true,
+            update_semantic_head: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SemCommitV1 {
     pub version: String,
     pub commit_id: AxiDigest,
@@ -284,6 +357,7 @@ pub enum SemCommitKindV1 {
     #[default]
     Promote,
     EvidenceCommit,
+    ProjectionMaterialization,
     Merge,
     Validation,
     WorldModelRun,
@@ -319,12 +393,20 @@ pub struct SemStateRefV1 {
     pub evidence_digests: Vec<ProposalDigest>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SemDeltaV1 {
     #[serde(default)]
     pub module_digests_added: Vec<AxiDigest>,
     #[serde(default)]
     pub module_digests_removed: Vec<AxiDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_delta: Option<crate::evolution_preview::EvolutionSemanticDeltaV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_summary: Option<crate::evolution_preview::SemTrustSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_summary: Option<crate::evolution_preview::SemRuleSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage_summary: Option<crate::evolution_preview::EvolutionCoverageSummaryV1>,
     #[serde(default)]
     pub evidence_blobs_added: Vec<ProposalDigest>,
     #[serde(default)]
@@ -333,6 +415,8 @@ pub struct SemDeltaV1 {
     pub quality_report_refs_added: Vec<String>,
     #[serde(default)]
     pub validation_report_refs_added: Vec<String>,
+    #[serde(default)]
+    pub projection_manifest_refs_added: Vec<AxiDigest>,
     #[serde(default)]
     pub lifecycle_events: Vec<SemLifecycleEventV1>,
     #[serde(default)]
@@ -353,6 +437,10 @@ pub struct SemLifecycleEventV1 {
 pub struct ArtifactRefV1 {
     pub artifact_kind: String,
     pub artifact_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theory_obligation_ref: Option<axiograph_pathdb::kernel_ir::TheoryObligationRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub theory_subject_refs: Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -535,6 +623,345 @@ pub struct WorldModelRunRecordV1 {
     pub guardrail_plane: Option<String>,
     #[serde(default)]
     pub notes: Vec<String>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionBackendKindV1 {
+    RdfQuadStore,
+    PropertyGraph,
+    ManagedSchemaGraph,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionBackendEngineV1 {
+    TypeDb,
+    TerminusDb,
+    ApacheAge,
+    Neo4j,
+    Neptune,
+    JanusGraph,
+    Memgraph,
+    Other,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionSupportTierV1 {
+    Primary,
+    Supported,
+    Experimental,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackendCapabilityProfileV1 {
+    pub backend_engine: ProjectionBackendEngineV1,
+    pub support_tier: ProjectionSupportTierV1,
+    pub backend_kind: ProjectionBackendKindV1,
+    pub backend_label: String,
+    #[serde(default)]
+    pub named_graphs: bool,
+    #[serde(default)]
+    pub transactions: bool,
+    #[serde(default)]
+    pub constraints: bool,
+    #[serde(default)]
+    pub schema_management: bool,
+    #[serde(default)]
+    pub native_type_system: bool,
+    #[serde(default)]
+    pub native_nary_relations: bool,
+    #[serde(default)]
+    pub typed_query_validation: bool,
+    #[serde(default)]
+    pub logic_programming_or_functions: bool,
+    #[serde(default)]
+    pub cypher_like_queries: bool,
+    #[serde(default)]
+    pub gremlin_like_traversals: bool,
+    #[serde(default)]
+    pub sparql_dataset_queries: bool,
+    #[serde(default)]
+    pub relationship_entities: bool,
+    #[serde(default)]
+    pub procedures_or_triggers: bool,
+    #[serde(default)]
+    pub multi_database_or_namespace_support: bool,
+    #[serde(default)]
+    pub immutable_history: bool,
+    #[serde(default)]
+    pub branching_and_merge: bool,
+    #[serde(default)]
+    pub diff_and_patch: bool,
+    #[serde(default)]
+    pub schema_instance_separation: bool,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl BackendCapabilityProfileV1 {
+    pub fn typedb_primary() -> Self {
+        Self {
+            backend_engine: ProjectionBackendEngineV1::TypeDb,
+            support_tier: ProjectionSupportTierV1::Primary,
+            backend_kind: ProjectionBackendKindV1::ManagedSchemaGraph,
+            backend_label: "TypeDB".to_string(),
+            named_graphs: false,
+            transactions: true,
+            constraints: true,
+            schema_management: true,
+            native_type_system: true,
+            native_nary_relations: true,
+            typed_query_validation: true,
+            logic_programming_or_functions: true,
+            cypher_like_queries: false,
+            gremlin_like_traversals: false,
+            sparql_dataset_queries: false,
+            relationship_entities: true,
+            procedures_or_triggers: false,
+            multi_database_or_namespace_support: true,
+            immutable_history: false,
+            branching_and_merge: false,
+            diff_and_patch: false,
+            schema_instance_separation: false,
+        }
+    }
+
+    pub fn terminusdb_supported() -> Self {
+        Self {
+            backend_engine: ProjectionBackendEngineV1::TerminusDb,
+            support_tier: ProjectionSupportTierV1::Supported,
+            backend_kind: ProjectionBackendKindV1::RdfQuadStore,
+            backend_label: "TerminusDB".to_string(),
+            named_graphs: true,
+            transactions: true,
+            constraints: true,
+            schema_management: true,
+            native_type_system: true,
+            native_nary_relations: false,
+            typed_query_validation: false,
+            logic_programming_or_functions: true,
+            cypher_like_queries: false,
+            gremlin_like_traversals: false,
+            sparql_dataset_queries: false,
+            relationship_entities: true,
+            procedures_or_triggers: false,
+            multi_database_or_namespace_support: true,
+            immutable_history: true,
+            branching_and_merge: true,
+            diff_and_patch: true,
+            schema_instance_separation: true,
+        }
+    }
+
+    pub fn apache_age_experimental() -> Self {
+        Self {
+            backend_engine: ProjectionBackendEngineV1::ApacheAge,
+            support_tier: ProjectionSupportTierV1::Experimental,
+            backend_kind: ProjectionBackendKindV1::PropertyGraph,
+            backend_label: "Apache AGE".to_string(),
+            named_graphs: false,
+            transactions: true,
+            constraints: false,
+            schema_management: false,
+            native_type_system: false,
+            native_nary_relations: false,
+            typed_query_validation: false,
+            logic_programming_or_functions: false,
+            cypher_like_queries: true,
+            gremlin_like_traversals: false,
+            sparql_dataset_queries: false,
+            relationship_entities: false,
+            procedures_or_triggers: false,
+            multi_database_or_namespace_support: false,
+            immutable_history: false,
+            branching_and_merge: false,
+            diff_and_patch: false,
+            schema_instance_separation: false,
+        }
+    }
+
+    pub fn can_mirror_semantic_vcs_workspace(&self) -> bool {
+        self.immutable_history && self.branching_and_merge && self.diff_and_patch
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionNativeQueryAccessV1 {
+    #[default]
+    None,
+    ReadOnlyPartial,
+    ReadOnlyAnchorScoped,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionMutationAuthorityV1 {
+    #[default]
+    AxiographOnly,
+    BackendWritableMirror,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ProjectionCapabilityProfileV1 {
+    #[serde(default)]
+    pub preserves_relation_objects: bool,
+    #[serde(default)]
+    pub binary_carrier_edges_only_when_lossless: bool,
+    #[serde(default)]
+    pub preserves_nary_relation_objects: bool,
+    #[serde(default)]
+    pub preserves_context_world_axes: bool,
+    #[serde(default)]
+    pub preserves_evidence_objects: bool,
+    #[serde(default)]
+    pub preserves_provenance_links: bool,
+    #[serde(default)]
+    pub supports_anchor_scoped_query_pushdown: bool,
+    #[serde(default)]
+    pub supports_context_scoped_query_pushdown: bool,
+    #[serde(default)]
+    pub native_query_access: ProjectionNativeQueryAccessV1,
+    #[serde(default)]
+    pub mutation_authority: ProjectionMutationAuthorityV1,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl ProjectionCapabilityProfileV1 {
+    pub fn allows_native_read_queries(&self) -> bool {
+        !matches!(
+            self.native_query_access,
+            ProjectionNativeQueryAccessV1::None
+        )
+    }
+
+    pub fn requires_axiograph_mutation_authority(&self) -> bool {
+        matches!(
+            self.mutation_authority,
+            ProjectionMutationAuthorityV1::AxiographOnly
+        )
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionObjectMappingV1 {
+    pub object_name: String,
+    pub backend_label: String,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionRoleMappingV1 {
+    pub role_name: String,
+    pub backend_slot: String,
+    #[serde(default)]
+    pub preserved_explicitly: bool,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionCarrierEdgeMappingV1 {
+    pub edge_label: String,
+    pub source_role: String,
+    pub target_role: String,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionRelationTupleEncodingV1 {
+    RelationNode,
+    ReifiedFact,
+    RelationshipEntity,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionRelationMappingV1 {
+    pub relation_name: String,
+    pub tuple_encoding: ProjectionRelationTupleEncodingV1,
+    pub tuple_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carrier_edge: Option<ProjectionCarrierEdgeMappingV1>,
+    #[serde(default)]
+    pub role_mappings: Vec<ProjectionRoleMappingV1>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionContextMappingStrategyV1 {
+    NamedGraphs,
+    SeparateNamespaces,
+    SeparateDatabases,
+    TupleProperties,
+    SidecarIndex,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionContextAxisBindingV1 {
+    pub axis_name: String,
+    pub backend_slot: String,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionContextMappingV1 {
+    pub strategy: ProjectionContextMappingStrategyV1,
+    #[serde(default)]
+    pub axis_bindings: Vec<ProjectionContextAxisBindingV1>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectionManifestV1 {
+    pub version: String,
+    pub projection_id: AxiDigest,
+    pub created_at_unix_secs: u64,
+    pub accepted_snapshot_id: AcceptedSnapshotId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sem_ref_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sem_commit_id: Option<AxiDigest>,
+    pub compiled_ir_digest: AxiDigest,
+    pub materialization_ref: String,
+    pub backend: BackendCapabilityProfileV1,
+    pub projection: ProjectionCapabilityProfileV1,
+    #[serde(default)]
+    pub object_mappings: Vec<ProjectionObjectMappingV1>,
+    #[serde(default)]
+    pub relation_mappings: Vec<ProjectionRelationMappingV1>,
+    pub context_mapping: ProjectionContextMappingV1,
+    #[serde(default)]
+    pub trust_caveats: Vec<String>,
+    #[serde(default)]
+    pub round_trip_limitations: Vec<String>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProjectionSemanticCommitOptionsV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default = "default_projection_semantic_commit_policy")]
+    pub policy: String,
+    #[serde(default = "default_semantic_commit_author")]
+    pub author: String,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn default_projection_semantic_commit_policy() -> String {
+    "projection_materialization".to_string()
 }
 
 /// Initialize the accepted-plane directory layout.
@@ -1161,6 +1588,37 @@ fn persist_promotion_preview_report(
     Ok(rel_path)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+fn reconciliation_preview_report_path(
+    accepted_dir: &Path,
+    reconciliation_id: &AxiDigest,
+) -> PathBuf {
+    let file = format!(
+        "reconciliation__{}.json",
+        digest_to_filename(reconciliation_id.as_str())
+    );
+    accepted_dir
+        .join(ACCEPTED_PLANE_SEM_VALIDATIONS_DIR)
+        .join(file)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn persist_reconciliation_preview_report(
+    accepted_dir: &Path,
+    report: &ReconciliationPreviewReportV1,
+) -> Result<String> {
+    let abs_path = reconciliation_preview_report_path(accepted_dir, &report.reconciliation_id);
+    let rel_path = abs_path
+        .strip_prefix(accepted_dir)
+        .unwrap_or(&abs_path)
+        .to_string_lossy()
+        .to_string();
+    let mut stored = report.clone();
+    stored.stored_report_path = Some(rel_path.clone());
+    fs::write(&abs_path, serde_json::to_string_pretty(&stored)?)?;
+    Ok(rel_path)
+}
+
 pub fn persist_world_model_run_record(
     accepted_dir: &Path,
     record: &WorldModelRunRecordV1,
@@ -1229,6 +1687,73 @@ pub fn read_world_model_run_record(
     Ok(record)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn persist_projection_manifest(
+    accepted_dir: &Path,
+    manifest: &ProjectionManifestV1,
+) -> Result<PathBuf> {
+    ensure_layout(accepted_dir)?;
+    read_snapshot(accepted_dir, &manifest.accepted_snapshot_id)?;
+
+    let manifest = normalize_projection_manifest(manifest.clone())?;
+    let path = projection_manifest_path(accepted_dir, &manifest.projection_id);
+    if path.exists() {
+        let existing = read_projection_manifest(accepted_dir, &manifest.projection_id)?;
+        if existing != manifest {
+            return Err(anyhow!(
+                "backend projection id collision `{}`: existing manifest differs",
+                manifest.projection_id
+            ));
+        }
+        return Ok(path);
+    }
+
+    let json = serde_json::to_string_pretty(&manifest)?;
+    fs::write(&path, json)?;
+    Ok(path)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn read_projection_manifest(
+    accepted_dir: &Path,
+    projection_id: &AxiDigest,
+) -> Result<ProjectionManifestV1> {
+    let path = projection_manifest_path(accepted_dir, projection_id);
+    let text = fs::read_to_string(&path).map_err(|e| {
+        anyhow!(
+            "failed to read projection manifest `{}`: {e}",
+            path.display()
+        )
+    })?;
+    let manifest = normalize_projection_manifest(serde_json::from_str(&text)?)?;
+    if manifest.projection_id != *projection_id {
+        return Err(anyhow!(
+            "projection manifest `{}` has mismatched id: expected={} got={}",
+            path.display(),
+            projection_id,
+            manifest.projection_id
+        ));
+    }
+    Ok(manifest)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn persist_projection_semantic_commit(
+    accepted_dir: &Path,
+    manifest: &ProjectionManifestV1,
+    options: &ProjectionSemanticCommitOptionsV1,
+) -> Result<SemCommitV1> {
+    ensure_layout(accepted_dir)?;
+    let manifest = normalize_projection_manifest(manifest.clone())?;
+    persist_projection_manifest(accepted_dir, &manifest)?;
+
+    let parent_commit_id = read_sem_head_commit_id(accepted_dir)?;
+    let commit = semantic_commit_from_projection_manifest(&manifest, parent_commit_id, options);
+    write_semantic_commit(accepted_dir, &commit)?;
+    write_sem_head_commit_id(accepted_dir, &commit.commit_id)?;
+    Ok(commit)
+}
+
 fn ensure_layout(accepted_dir: &Path) -> Result<()> {
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_MODULES_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SNAPSHOTS_DIR))?;
@@ -1245,6 +1770,7 @@ fn ensure_layout(accepted_dir: &Path) -> Result<()> {
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_TAGS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_VALIDATIONS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_WORLD_MODEL_RUNS_DIR))?;
+    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_PROJECTIONS_DIR))?;
     // Log is append-only; create it if it doesn't exist.
     let log_path = accepted_dir.join(ACCEPTED_PLANE_LOG_V1);
     if !log_path.exists() {
@@ -1447,6 +1973,14 @@ fn world_model_run_record_path(accepted_dir: &Path, run_id: &WorldModelRunId) ->
         .join(file)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+fn projection_manifest_path(accepted_dir: &Path, projection_id: &AxiDigest) -> PathBuf {
+    let file = format!("{}.json", digest_to_filename(projection_id.as_str()));
+    accepted_dir
+        .join(ACCEPTED_PLANE_SEM_PROJECTIONS_DIR)
+        .join(file)
+}
+
 fn read_snapshot(
     accepted_dir: &Path,
     snapshot_id: &AcceptedSnapshotId,
@@ -1538,6 +2072,347 @@ fn sem_commit_id_v1(
     AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+fn sem_merge_commit_id_v1(
+    parent_commit_id: Option<&AxiDigest>,
+    reconciliation: &SemReconciliationV1,
+    validation_report_path: Option<&str>,
+) -> AxiDigest {
+    use std::fmt::Write as _;
+
+    let mut material = String::new();
+    let _ = write!(
+        &mut material,
+        "{};kind=merge;parent={};reconciliation={};base={};left={};right={};policy={};validation={};",
+        ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1,
+        parent_commit_id.map(|id| id.as_str()).unwrap_or("(none)"),
+        reconciliation.reconciliation_id,
+        reconciliation.base_commit_id,
+        reconciliation.left_commit_id,
+        reconciliation.right_commit_id,
+        reconciliation.policy,
+        validation_report_path.unwrap_or("(none)")
+    );
+    AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn semantic_commit_snapshot_for_reconciliation(
+    accepted_dir: &Path,
+    commit_id: &AxiDigest,
+) -> Result<(AcceptedSnapshotId, Option<PathdbSnapshotId>)> {
+    let commit = read_semantic_commit(accepted_dir, commit_id)?;
+    Ok((commit.accepted_snapshot_id, commit.pathdb_snapshot_id))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn reconciliation_parent_commit_id(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+) -> Option<AxiDigest> {
+    let _ = accepted_dir;
+    Some(reconciliation.right_commit_id.clone())
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn verify_reconciliation_target_head(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+) -> Result<()> {
+    if let Some(ref_name) = reconciliation.target_ref_name.as_ref() {
+        let pointer = read_sem_ref_pointer(accepted_dir, ref_name)?;
+        if pointer.commit_id != reconciliation.right_commit_id {
+            return Err(anyhow!(
+                "semantic reconciliation target ref `{}` moved after reconciliation was recorded: expected right_commit_id={} got={}",
+                ref_name,
+                reconciliation.right_commit_id,
+                pointer.commit_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn reconciliation_with_outcome_commit(
+    reconciliation: &SemReconciliationV1,
+    commit_id: &AxiDigest,
+) -> SemReconciliationV1 {
+    let mut updated = reconciliation.clone();
+    updated.outcome_commit_id = Some(commit_id.clone());
+    updated
+}
+
+fn reconciliation_runtime_refinement_handle_by_id(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+    handle_id: &str,
+) -> Result<crate::typed_refinement::RuntimeRefinementHandleV1> {
+    reconciliation_preview_report(accepted_dir, reconciliation)
+        .evolution_preview
+        .refinement_candidates
+        .into_iter()
+        .find(|candidate| candidate.handle.id == handle_id)
+        .map(|candidate| candidate.handle)
+        .ok_or_else(|| anyhow!("unknown reconciliation runtime refinement handle `{handle_id}`"))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn apply_runtime_refinement_by_id_to_reconciliation(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+    handle_id: &str,
+) -> Result<SemReconciliationV1> {
+    Ok(
+        apply_runtime_refinement_by_id_to_reconciliation_with_available_compiled_theory(
+            accepted_dir,
+            reconciliation,
+            handle_id,
+        )?
+        .updated_reconciliation,
+    )
+}
+
+#[allow(dead_code)]
+pub fn apply_runtime_refinement_handle_to_reconciliation_with_available_compiled_theory(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+) -> Result<ReconciliationReviewApplyResultV1> {
+    let updated_reconciliation =
+        apply_runtime_refinement_handle_to_reconciliation(reconciliation, handle)?;
+    let base_snapshot_id =
+        semantic_commit_snapshot_for_reconciliation(accepted_dir, &reconciliation.base_commit_id)
+            .ok()
+            .map(|(snapshot_id, _)| snapshot_id);
+    let evolution_preview =
+        build_reconciliation_evolution_preview_from_available_compiled_theory_v1(
+            accepted_dir,
+            base_snapshot_id,
+            &updated_reconciliation,
+        );
+    Ok(ReconciliationReviewApplyResultV1 {
+        handle: handle.clone(),
+        base_reconciliation: reconciliation.clone(),
+        updated_reconciliation,
+        evolution_preview,
+    })
+}
+
+#[allow(dead_code)]
+pub fn apply_runtime_refinement_by_id_to_reconciliation_with_available_compiled_theory(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+    handle_id: &str,
+) -> Result<ReconciliationReviewApplyResultV1> {
+    let handle =
+        reconciliation_runtime_refinement_handle_by_id(accepted_dir, reconciliation, handle_id)?;
+    apply_runtime_refinement_handle_to_reconciliation_with_available_compiled_theory(
+        accepted_dir,
+        reconciliation,
+        &handle,
+    )
+}
+
+#[allow(dead_code)]
+pub fn apply_runtime_refinement_handle_to_reconciliation(
+    reconciliation: &SemReconciliationV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+) -> Result<SemReconciliationV1> {
+    handle.validate()?;
+    let crate::typed_refinement::RuntimeRefinementPayloadV1::ReconciliationReview { op } =
+        &handle.payload
+    else {
+        return Err(anyhow!(
+            "runtime refinement handle `{}` is not a reconciliation refinement",
+            handle.id
+        ));
+    };
+    let crate::typed_refinement::ReconciliationRefinementOpV1::ResolveConflictByDecision {
+        reconciliation_id,
+        artifact_kind,
+        artifact_id,
+        resolution,
+        theory_obligation_ref,
+        theory_subject_refs,
+    } = op;
+    if reconciliation.reconciliation_id.to_string() != *reconciliation_id {
+        return Err(anyhow!(
+            "reconciliation refinement handle `{}` targets reconciliation `{}` but current reconciliation is `{}`",
+            handle.id,
+            reconciliation_id,
+            reconciliation.reconciliation_id
+        ));
+    }
+
+    let mut updated = reconciliation.clone();
+    let artifact = ArtifactRefV1 {
+        artifact_kind: artifact_kind.clone(),
+        artifact_id: artifact_id.clone(),
+        theory_obligation_ref: theory_obligation_ref.clone(),
+        theory_subject_refs: theory_subject_refs.clone(),
+    };
+    if let Some(existing) = updated.decisions.iter_mut().find(|decision| {
+        decision.artifact.artifact_kind == artifact.artifact_kind
+            && decision.artifact.artifact_id == artifact.artifact_id
+    }) {
+        existing.resolution = resolution.clone();
+        if artifact.theory_obligation_ref.is_some() || !artifact.theory_subject_refs.is_empty() {
+            existing.artifact.theory_obligation_ref = artifact.theory_obligation_ref.clone();
+            existing.artifact.theory_subject_refs = artifact.theory_subject_refs.clone();
+        }
+    } else {
+        updated.decisions.push(SemDecisionRecordV1 {
+            artifact,
+            resolution: resolution.clone(),
+        });
+    }
+    Ok(updated)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn reconciliation_preview_report(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+) -> ReconciliationPreviewReportV1 {
+    let base_snapshot_id =
+        semantic_commit_snapshot_for_reconciliation(accepted_dir, &reconciliation.base_commit_id)
+            .ok()
+            .map(|(snapshot_id, _)| snapshot_id);
+    let evolution_preview =
+        build_reconciliation_evolution_preview_from_available_compiled_theory_v1(
+            accepted_dir,
+            base_snapshot_id.clone(),
+            reconciliation,
+        );
+    ReconciliationPreviewReportV1 {
+        version: ACCEPTED_PLANE_RECONCILIATION_PREVIEW_VERSION_V1.to_string(),
+        reconciliation_id: reconciliation.reconciliation_id.clone(),
+        base_commit_id: reconciliation.base_commit_id.clone(),
+        left_commit_id: reconciliation.left_commit_id.clone(),
+        right_commit_id: reconciliation.right_commit_id.clone(),
+        policy: reconciliation.policy.clone(),
+        source_ref_name: reconciliation.source_ref_name.clone(),
+        target_ref_name: reconciliation.target_ref_name.clone(),
+        resolved_ref_name: reconciliation.resolved_ref_name.clone(),
+        ok: evolution_preview.ok,
+        evolution_preview,
+        stored_report_path: None,
+    }
+}
+
+fn artifact_has_missing_theory_handles(artifact: &ArtifactRefV1) -> bool {
+    artifact.theory_obligation_ref.is_none() && artifact.theory_subject_refs.is_empty()
+}
+
+fn reconciliation_has_missing_theory_handles(reconciliation: &SemReconciliationV1) -> bool {
+    reconciliation
+        .conflicts
+        .iter()
+        .any(|conflict| artifact_has_missing_theory_handles(&conflict.artifact))
+        || reconciliation
+            .decisions
+            .iter()
+            .any(|decision| artifact_has_missing_theory_handles(&decision.artifact))
+}
+
+fn reconciliation_snapshot_ids(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+) -> Vec<AcceptedSnapshotId> {
+    let mut snapshot_ids = Vec::new();
+    let mut seen = BTreeSet::new();
+    for commit_id in [
+        &reconciliation.base_commit_id,
+        &reconciliation.left_commit_id,
+        &reconciliation.right_commit_id,
+    ] {
+        let Ok((snapshot_id, _)) =
+            semantic_commit_snapshot_for_reconciliation(accepted_dir, commit_id)
+        else {
+            continue;
+        };
+        if seen.insert(snapshot_id.to_string()) {
+            snapshot_ids.push(snapshot_id);
+        }
+    }
+    snapshot_ids
+}
+
+fn reconciliation_compiled_theory_contexts(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+) -> Vec<(
+    axiograph_pathdb::kernel_ir::CompiledSchemaIr,
+    Vec<axiograph_pathdb::kernel_ir::TheoryIr>,
+)> {
+    let mut contexts = Vec::new();
+    for snapshot_id in reconciliation_snapshot_ids(accepted_dir, reconciliation) {
+        let Ok(snapshot) = read_snapshot(accepted_dir, &snapshot_id) else {
+            continue;
+        };
+        for module_ref in snapshot.modules.values() {
+            let path = accepted_dir.join(&module_ref.stored_path);
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if AxiDigest::from_axi_text(&text) != module_ref.module_digest {
+                continue;
+            }
+            let Ok(validated) =
+                require_canonical_axi_text(&text).map(|canonical| canonical.into_parts().1)
+            else {
+                continue;
+            };
+            for schema in &validated.module().schemas {
+                let Ok(Some(compiled_schema)) = validated.compiled_schema_ir(&schema.name) else {
+                    continue;
+                };
+                let Ok(theories) = validated.compiled_theories_for_schema(&schema.name) else {
+                    continue;
+                };
+                contexts.push((compiled_schema, theories));
+            }
+        }
+    }
+    contexts
+}
+
+fn build_reconciliation_evolution_preview_from_available_compiled_theory_v1(
+    accepted_dir: &Path,
+    base_snapshot_id: Option<AcceptedSnapshotId>,
+    reconciliation: &SemReconciliationV1,
+) -> crate::evolution_preview::EvolutionPreviewV1 {
+    if !reconciliation_has_missing_theory_handles(reconciliation) {
+        return crate::evolution_preview::build_reconciliation_evolution_preview_v1(
+            base_snapshot_id,
+            reconciliation,
+        );
+    }
+
+    let mut contexts = reconciliation_compiled_theory_contexts(accepted_dir, reconciliation);
+    let Some((compiled_schema, theories)) = contexts.pop() else {
+        return crate::evolution_preview::build_reconciliation_evolution_preview_v1(
+            base_snapshot_id,
+            reconciliation,
+        );
+    };
+
+    let enriched = contexts
+        .into_iter()
+        .fold(reconciliation.clone(), |current, context| {
+            crate::evolution_preview::enrich_reconciliation_with_compiled_theory_v1(
+                &context.0, &context.1, &current,
+            )
+        });
+    crate::evolution_preview::build_reconciliation_evolution_preview_from_compiled_theory_v1(
+        base_snapshot_id,
+        &compiled_schema,
+        &theories,
+        &enriched,
+    )
+}
+
 fn promotion_gate_summary(
     event: &AcceptedPlaneEventV1,
     preview: Option<&crate::evolution_preview::EvolutionPreviewV1>,
@@ -1547,6 +2422,7 @@ fn promotion_gate_summary(
         constraint_count: event.constraints_constraint_count.unwrap_or(0),
         instance_count: event.constraints_instance_count.unwrap_or(0),
         check_count: event.constraints_check_count.unwrap_or(0),
+        ..Default::default()
     };
     Some(summary.with_rule_summary(rule))
 }
@@ -1584,6 +2460,10 @@ fn semantic_commit_from_promotion(
         delta: SemDeltaV1 {
             module_digests_added: vec![event.module_digest.clone()],
             module_digests_removed: Vec::new(),
+            semantic_delta: preview.map(|value| value.semantic_delta.clone()),
+            trust_summary: preview.map(|value| value.trust_summary.clone()),
+            rule_summary: preview.map(|value| value.rule_summary.clone()),
+            coverage_summary: preview.map(|value| value.coverage_summary.clone()),
             evidence_blobs_added: Vec::new(),
             certificate_refs_added: event.constraints_cert_path.clone().into_iter().collect(),
             quality_report_refs_added: event.quality_report_path.clone().into_iter().collect(),
@@ -1592,10 +2472,13 @@ fn semantic_commit_from_promotion(
                 .clone()
                 .into_iter()
                 .collect(),
+            projection_manifest_refs_added: Vec::new(),
             lifecycle_events: vec![SemLifecycleEventV1 {
                 artifact: ArtifactRefV1 {
                     artifact_kind: "module".to_string(),
                     artifact_id: event.module_digest.to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
                 },
                 from: Some(LifecycleStageV1::Reviewed),
                 to: LifecycleStageV1::Accepted,
@@ -1616,6 +2499,88 @@ fn semantic_commit_from_promotion(
         constraints_cert_path: event.constraints_cert_path.clone(),
         validation_report_path: event.validation_report_path.clone(),
         validation_ok: event.validation_ok,
+        world_model_run_id: None,
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn semantic_commit_from_reconciliation(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+    parent_commit_id: Option<AxiDigest>,
+    preview: &crate::evolution_preview::EvolutionPreviewV1,
+    validation_report_path: Option<String>,
+    options: &ReconciliationSemanticCommitOptionsV1,
+) -> Result<SemCommitV1> {
+    let (before_snapshot_id, before_pathdb_snapshot_id) =
+        semantic_commit_snapshot_for_reconciliation(accepted_dir, &reconciliation.right_commit_id)?;
+    let after_snapshot_id = before_snapshot_id.clone();
+    let after_pathdb_snapshot_id = before_pathdb_snapshot_id.clone();
+    let commit_id = sem_merge_commit_id_v1(
+        parent_commit_id.as_ref(),
+        reconciliation,
+        validation_report_path.as_deref(),
+    );
+    let message = options.message.clone().or_else(|| {
+        Some(format!(
+            "reconcile {} conflict(s) under `{}`",
+            reconciliation.conflicts.len(),
+            reconciliation.policy
+        ))
+    });
+    Ok(SemCommitV1 {
+        version: ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1.to_string(),
+        commit_id,
+        parent_commit_id,
+        kind: SemCommitKindV1::Merge,
+        created_at_unix_secs: now_unix_secs(),
+        author: options.author.clone(),
+        message: message.clone(),
+        action: "semantic_reconciliation".to_string(),
+        provenance: SemCommitProvenanceV1 {
+            source: "semantic_vcs".to_string(),
+            command: Some("axiograph sem merge".to_string()),
+            source_commit: Some(reconciliation.left_commit_id.clone()),
+            world_model_run_id: None,
+        },
+        state: SemStateRefV1 {
+            accepted_snapshot_id_before: Some(before_snapshot_id.clone()),
+            accepted_snapshot_id_after: Some(after_snapshot_id.clone()),
+            pathdb_snapshot_id_before: before_pathdb_snapshot_id.clone(),
+            pathdb_snapshot_id_after: after_pathdb_snapshot_id.clone(),
+            accepted_tree_digest: None,
+            evidence_digests: Vec::new(),
+        },
+        delta: SemDeltaV1 {
+            module_digests_added: Vec::new(),
+            module_digests_removed: Vec::new(),
+            semantic_delta: Some(preview.semantic_delta.clone()),
+            trust_summary: Some(preview.trust_summary.clone()),
+            rule_summary: Some(preview.rule_summary.clone()),
+            coverage_summary: Some(preview.coverage_summary.clone()),
+            evidence_blobs_added: Vec::new(),
+            certificate_refs_added: reconciliation.certificate_refs.clone(),
+            quality_report_refs_added: Vec::new(),
+            validation_report_refs_added: validation_report_path.clone().into_iter().collect(),
+            projection_manifest_refs_added: Vec::new(),
+            lifecycle_events: Vec::new(),
+            world_model_run_refs: Vec::new(),
+        },
+        gate_summary: Some(
+            crate::evolution_preview::sem_gate_summary_from_evolution_preview(preview),
+        ),
+        reconciliation_id: Some(reconciliation.reconciliation_id.clone()),
+        accepted_snapshot_id: after_snapshot_id.clone(),
+        accepted_parent_snapshot_id: Some(before_snapshot_id),
+        pathdb_snapshot_id: after_pathdb_snapshot_id,
+        proposal_digests: Vec::new(),
+        policy: reconciliation.policy.clone(),
+        module_name: "(semantic_reconciliation)".to_string(),
+        module_digest: reconciliation.reconciliation_id.clone(),
+        quality_report_path: None,
+        constraints_cert_path: None,
+        validation_report_path,
+        validation_ok: Some(preview.ok),
         world_model_run_id: None,
     })
 }
@@ -1674,6 +2639,152 @@ fn sem_commit_id_for_pathdb_overlay_v1(
     AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+fn projection_manifest_id_v1(manifest: &ProjectionManifestV1) -> Result<AxiDigest> {
+    #[derive(Serialize)]
+    struct ProjectionManifestIdentityMaterial<'a> {
+        accepted_snapshot_id: &'a AcceptedSnapshotId,
+        source_sem_ref_name: &'a Option<String>,
+        source_sem_commit_id: &'a Option<AxiDigest>,
+        compiled_ir_digest: &'a AxiDigest,
+        materialization_ref: &'a String,
+        backend: &'a BackendCapabilityProfileV1,
+        projection: &'a ProjectionCapabilityProfileV1,
+        object_mappings: &'a [ProjectionObjectMappingV1],
+        relation_mappings: &'a [ProjectionRelationMappingV1],
+        context_mapping: &'a ProjectionContextMappingV1,
+        trust_caveats: &'a [String],
+        round_trip_limitations: &'a [String],
+    }
+
+    let material = ProjectionManifestIdentityMaterial {
+        accepted_snapshot_id: &manifest.accepted_snapshot_id,
+        source_sem_ref_name: &manifest.source_sem_ref_name,
+        source_sem_commit_id: &manifest.source_sem_commit_id,
+        compiled_ir_digest: &manifest.compiled_ir_digest,
+        materialization_ref: &manifest.materialization_ref,
+        backend: &manifest.backend,
+        projection: &manifest.projection,
+        object_mappings: &manifest.object_mappings,
+        relation_mappings: &manifest.relation_mappings,
+        context_mapping: &manifest.context_mapping,
+        trust_caveats: &manifest.trust_caveats,
+        round_trip_limitations: &manifest.round_trip_limitations,
+    };
+    let json = serde_json::to_string(&material)?;
+    Ok(AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(
+        &format!("{BACKEND_PROJECTION_MANIFEST_VERSION_V1};{json}"),
+    )))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn normalize_projection_manifest(
+    mut manifest: ProjectionManifestV1,
+) -> Result<ProjectionManifestV1> {
+    if manifest.materialization_ref.trim().is_empty() {
+        return Err(anyhow!(
+            "backend projection materialization_ref must not be empty"
+        ));
+    }
+    if let Some(ref_name) = manifest.source_sem_ref_name.as_deref() {
+        let _ = SemRefNameV1::parse(ref_name)?;
+    }
+    manifest.version = BACKEND_PROJECTION_MANIFEST_VERSION_V1.to_string();
+    if manifest.created_at_unix_secs == 0 {
+        manifest.created_at_unix_secs = now_unix_secs();
+    }
+    manifest.projection_id = projection_manifest_id_v1(&manifest)?;
+    Ok(manifest)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn sem_commit_id_for_projection_manifest_v1(
+    parent_commit_id: Option<&AxiDigest>,
+    manifest: &ProjectionManifestV1,
+) -> AxiDigest {
+    use std::fmt::Write as _;
+
+    let mut material = String::new();
+    let _ = write!(
+        &mut material,
+        "{};action=backend_projection;accepted={};projection={};parent={};",
+        ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1,
+        manifest.accepted_snapshot_id,
+        manifest.projection_id,
+        parent_commit_id.map(|id| id.as_str()).unwrap_or("(none)")
+    );
+    let _ = write!(
+        &mut material,
+        "engine={:?};support_tier={:?};materialization={};",
+        manifest.backend.backend_engine,
+        manifest.backend.support_tier,
+        manifest.materialization_ref
+    );
+    AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn semantic_commit_from_projection_manifest(
+    manifest: &ProjectionManifestV1,
+    parent_commit_id: Option<AxiDigest>,
+    options: &ProjectionSemanticCommitOptionsV1,
+) -> SemCommitV1 {
+    let commit_id = sem_commit_id_for_projection_manifest_v1(parent_commit_id.as_ref(), manifest);
+    SemCommitV1 {
+        version: ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1.to_string(),
+        commit_id,
+        parent_commit_id,
+        kind: SemCommitKindV1::ProjectionMaterialization,
+        created_at_unix_secs: now_unix_secs(),
+        author: options.author.clone(),
+        message: options.message.clone(),
+        action: "backend_projection".to_string(),
+        provenance: SemCommitProvenanceV1 {
+            source: "backend_projection".to_string(),
+            command: Some("axiograph sem project-backend".to_string()),
+            source_commit: manifest.source_sem_commit_id.clone(),
+            world_model_run_id: None,
+        },
+        state: SemStateRefV1 {
+            accepted_snapshot_id_before: Some(manifest.accepted_snapshot_id.clone()),
+            accepted_snapshot_id_after: Some(manifest.accepted_snapshot_id.clone()),
+            pathdb_snapshot_id_before: None,
+            pathdb_snapshot_id_after: None,
+            accepted_tree_digest: Some(manifest.compiled_ir_digest.clone()),
+            evidence_digests: Vec::new(),
+        },
+        delta: SemDeltaV1 {
+            module_digests_added: Vec::new(),
+            module_digests_removed: Vec::new(),
+            semantic_delta: None,
+            trust_summary: None,
+            rule_summary: None,
+            coverage_summary: None,
+            evidence_blobs_added: Vec::new(),
+            certificate_refs_added: Vec::new(),
+            quality_report_refs_added: Vec::new(),
+            validation_report_refs_added: Vec::new(),
+            projection_manifest_refs_added: vec![manifest.projection_id.clone()],
+            lifecycle_events: Vec::new(),
+            world_model_run_refs: Vec::new(),
+        },
+        gate_summary: None,
+        reconciliation_id: None,
+        accepted_snapshot_id: manifest.accepted_snapshot_id.clone(),
+        accepted_parent_snapshot_id: None,
+        pathdb_snapshot_id: None,
+        proposal_digests: Vec::new(),
+        policy: options.policy.clone(),
+        module_name: "(backend_projection)".to_string(),
+        module_digest: manifest.projection_id.clone(),
+        quality_report_path: None,
+        constraints_cert_path: None,
+        validation_report_path: None,
+        validation_ok: None,
+        world_model_run_id: None,
+    }
+}
+
 fn semantic_commit_from_pathdb_overlay(
     accepted_snapshot: &AcceptedPlaneSnapshotV1,
     pathdb_snapshot_id: &PathdbSnapshotId,
@@ -1721,10 +2832,15 @@ fn semantic_commit_from_pathdb_overlay(
         delta: SemDeltaV1 {
             module_digests_added: Vec::new(),
             module_digests_removed: Vec::new(),
+            semantic_delta: None,
+            trust_summary: None,
+            rule_summary: None,
+            coverage_summary: None,
             evidence_blobs_added: options.proposal_digests.clone(),
             certificate_refs_added: Vec::new(),
             quality_report_refs_added: Vec::new(),
             validation_report_refs_added: Vec::new(),
+            projection_manifest_refs_added: Vec::new(),
             lifecycle_events: options
                 .proposal_digests
                 .iter()
@@ -1732,6 +2848,8 @@ fn semantic_commit_from_pathdb_overlay(
                     artifact: ArtifactRefV1 {
                         artifact_kind: "proposal_set".to_string(),
                         artifact_id: digest.to_string(),
+                        theory_obligation_ref: None,
+                        theory_subject_refs: Vec::new(),
                     },
                     from: Some(LifecycleStageV1::Proposed),
                     to: LifecycleStageV1::Validated,
@@ -1900,10 +3018,15 @@ fn read_sem_ref_pointer_main(accepted_dir: &Path) -> Result<Option<SemRefPointer
 fn sem_delta_is_empty(delta: &SemDeltaV1) -> bool {
     delta.module_digests_added.is_empty()
         && delta.module_digests_removed.is_empty()
+        && delta.semantic_delta.is_none()
+        && delta.trust_summary.is_none()
+        && delta.rule_summary.is_none()
+        && delta.coverage_summary.is_none()
         && delta.evidence_blobs_added.is_empty()
         && delta.certificate_refs_added.is_empty()
         && delta.quality_report_refs_added.is_empty()
         && delta.validation_report_refs_added.is_empty()
+        && delta.projection_manifest_refs_added.is_empty()
         && delta.lifecycle_events.is_empty()
         && delta.world_model_run_refs.is_empty()
 }
@@ -1915,6 +3038,8 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
         } else {
             SemCommitKindV1::EvidenceCommit
         };
+    } else if commit.action == "backend_projection" {
+        commit.kind = SemCommitKindV1::ProjectionMaterialization;
     }
 
     if commit.provenance.source.is_empty() {
@@ -1925,11 +3050,15 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                 } else {
                     "pathdb_wal".to_string()
                 }
+            } else if commit.action == "backend_projection" {
+                "backend_projection".to_string()
             } else {
                 "accepted_plane".to_string()
             },
             command: if commit.action == "pathdb_commit" {
                 Some("axiograph db accept pathdb-commit".to_string())
+            } else if commit.action == "backend_projection" {
+                Some("axiograph sem project-backend".to_string())
             } else {
                 Some("axiograph db accept promote".to_string())
             },
@@ -1956,10 +3085,15 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
             SemDeltaV1 {
                 module_digests_added: Vec::new(),
                 module_digests_removed: Vec::new(),
+                semantic_delta: None,
+                trust_summary: None,
+                rule_summary: None,
+                coverage_summary: None,
                 evidence_blobs_added: commit.proposal_digests.clone(),
                 certificate_refs_added: Vec::new(),
                 quality_report_refs_added: Vec::new(),
                 validation_report_refs_added: Vec::new(),
+                projection_manifest_refs_added: Vec::new(),
                 lifecycle_events: commit
                     .proposal_digests
                     .iter()
@@ -1967,6 +3101,8 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                         artifact: ArtifactRefV1 {
                             artifact_kind: "proposal_set".to_string(),
                             artifact_id: digest.to_string(),
+                            theory_obligation_ref: None,
+                            theory_subject_refs: Vec::new(),
                         },
                         from: Some(LifecycleStageV1::Proposed),
                         to: LifecycleStageV1::Validated,
@@ -1975,10 +3111,30 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                     .collect(),
                 world_model_run_refs: commit.world_model_run_id.clone().into_iter().collect(),
             }
+        } else if commit.action == "backend_projection" {
+            SemDeltaV1 {
+                module_digests_added: Vec::new(),
+                module_digests_removed: Vec::new(),
+                semantic_delta: None,
+                trust_summary: None,
+                rule_summary: None,
+                coverage_summary: None,
+                evidence_blobs_added: Vec::new(),
+                certificate_refs_added: Vec::new(),
+                quality_report_refs_added: Vec::new(),
+                validation_report_refs_added: Vec::new(),
+                projection_manifest_refs_added: vec![commit.module_digest.clone()],
+                lifecycle_events: Vec::new(),
+                world_model_run_refs: Vec::new(),
+            }
         } else {
             SemDeltaV1 {
                 module_digests_added: vec![commit.module_digest.clone()],
                 module_digests_removed: Vec::new(),
+                semantic_delta: None,
+                trust_summary: None,
+                rule_summary: None,
+                coverage_summary: None,
                 evidence_blobs_added: Vec::new(),
                 certificate_refs_added: commit.constraints_cert_path.clone().into_iter().collect(),
                 quality_report_refs_added: commit.quality_report_path.clone().into_iter().collect(),
@@ -1987,10 +3143,13 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                     .clone()
                     .into_iter()
                     .collect(),
+                projection_manifest_refs_added: Vec::new(),
                 lifecycle_events: vec![SemLifecycleEventV1 {
                     artifact: ArtifactRefV1 {
                         artifact_kind: "module".to_string(),
                         artifact_id: commit.module_digest.to_string(),
+                        theory_obligation_ref: None,
+                        theory_subject_refs: Vec::new(),
                     },
                     from: Some(LifecycleStageV1::Reviewed),
                     to: LifecycleStageV1::Accepted,
@@ -2044,20 +3203,87 @@ pub fn persist_reconciliation(
     accepted_dir: &Path,
     reconciliation: &SemReconciliationV1,
 ) -> Result<PathBuf> {
+    write_reconciliation_record(accepted_dir, reconciliation, false)
+}
+
+fn write_reconciliation_record(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+    allow_update: bool,
+) -> Result<PathBuf> {
     ensure_layout(accepted_dir)?;
     let path = sem_reconciliation_path(accepted_dir, &reconciliation.reconciliation_id);
     if path.exists() {
         let existing = read_reconciliation(accepted_dir, &reconciliation.reconciliation_id)?;
-        if existing != *reconciliation {
+        if existing != *reconciliation && !allow_update {
             return Err(anyhow!(
                 "semantic reconciliation id collision `{}`: existing reconciliation differs",
                 reconciliation.reconciliation_id
             ));
         }
-        return Ok(path);
+        if existing == *reconciliation {
+            return Ok(path);
+        }
     }
     fs::write(&path, serde_json::to_string_pretty(reconciliation)?)?;
     Ok(path)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn persist_reconciliation_semantic_commit(
+    accepted_dir: &Path,
+    reconciliation: &SemReconciliationV1,
+    options: &ReconciliationSemanticCommitOptionsV1,
+) -> Result<SemCommitV1> {
+    ensure_layout(accepted_dir)?;
+    verify_reconciliation_target_head(accepted_dir, reconciliation)?;
+    persist_reconciliation(accepted_dir, reconciliation)?;
+
+    let preview_report = reconciliation_preview_report(accepted_dir, reconciliation);
+    let validation_report_path = if options.persist_validation_report {
+        Some(persist_reconciliation_preview_report(
+            accepted_dir,
+            &preview_report,
+        )?)
+    } else {
+        None
+    };
+    if !preview_report.ok {
+        return Err(anyhow!(
+            "semantic reconciliation `{}` still has unresolved obligations; inspect `{}` before materializing a merge commit",
+            reconciliation.reconciliation_id,
+            validation_report_path
+                .as_deref()
+                .unwrap_or("the in-memory reconciliation preview")
+        ));
+    }
+
+    let parent_commit_id = reconciliation_parent_commit_id(accepted_dir, reconciliation);
+    let commit = semantic_commit_from_reconciliation(
+        accepted_dir,
+        reconciliation,
+        parent_commit_id,
+        &preview_report.evolution_preview,
+        validation_report_path,
+        options,
+    )?;
+    write_semantic_commit(accepted_dir, &commit)?;
+    write_reconciliation_record(
+        accepted_dir,
+        &reconciliation_with_outcome_commit(reconciliation, &commit.commit_id),
+        true,
+    )?;
+
+    if options.update_resolved_ref {
+        if let Some(ref_name) = reconciliation.resolved_ref_name.as_ref() {
+            persist_semantic_ref(accepted_dir, ref_name, &commit.commit_id)?;
+        }
+    }
+    if options.update_semantic_head {
+        write_sem_head_commit_id(accepted_dir, &commit.commit_id)?;
+    }
+
+    Ok(commit)
 }
 
 #[allow(dead_code)]
@@ -2083,6 +3309,31 @@ pub fn read_reconciliation(
         ));
     }
     Ok(reconciliation)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn preview_reconciliation(
+    accepted_dir: &Path,
+    reconciliation_id: &AxiDigest,
+) -> Result<ReconciliationPreviewReportV1> {
+    let reconciliation = read_reconciliation(accepted_dir, reconciliation_id)?;
+    Ok(reconciliation_preview_report(accepted_dir, &reconciliation))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn apply_reconciliation_refinement_by_id(
+    accepted_dir: &Path,
+    reconciliation_id: &AxiDigest,
+    handle_id: &str,
+) -> Result<ReconciliationReviewApplyResultV1> {
+    let reconciliation = read_reconciliation(accepted_dir, reconciliation_id)?;
+    let applied = apply_runtime_refinement_by_id_to_reconciliation_with_available_compiled_theory(
+        accepted_dir,
+        &reconciliation,
+        handle_id,
+    )?;
+    write_reconciliation_record(accepted_dir, &applied.updated_reconciliation, true)?;
+    Ok(applied)
 }
 
 fn store_module_if_needed(
@@ -2205,14 +3456,14 @@ mod tests {
     }
 
     fn sample_evolution_preview() -> crate::evolution_preview::EvolutionPreviewV1 {
-        crate::evolution_preview::EvolutionPreviewV1 {
-            version: crate::evolution_preview::EVOLUTION_PREVIEW_VERSION_V1.to_string(),
-            kind: "accepted_promotion_preview".to_string(),
-            base_snapshot_id: Some(AcceptedSnapshotId::new("fnv1a64:promotion-parent")),
-            candidate_label: "PromotionDemo".to_string(),
-            typed_change: crate::evolution_preview::TypedChangeSummaryV1 {
+        crate::evolution_preview::build_evolution_preview_v1(
+            "accepted_promotion_preview",
+            Some(AcceptedSnapshotId::new("fnv1a64:promotion-parent")),
+            "PromotionDemo".to_string(),
+            crate::evolution_preview::TypedChangeSummaryV1 {
                 kind: "accepted_module_delta".to_string(),
                 subjects: vec!["PromotionDemo".to_string()],
+                primitives: Vec::new(),
                 counts: BTreeMap::from([("relations_added".to_string(), 1usize)]),
                 notes: Vec::new(),
                 schema: crate::evolution_preview::TypedChangeBucketV1 {
@@ -2226,7 +3477,7 @@ mod tests {
                 },
                 context: crate::evolution_preview::TypedChangeBucketV1::default(),
             },
-            quality_delta: crate::quality::QualityReportV1 {
+            &crate::quality::QualityReportV1 {
                 version: "quality_report_v1".to_string(),
                 generated_at_unix_secs: 1,
                 input: "PromotionDemo".to_string(),
@@ -2239,7 +3490,7 @@ mod tests {
                 },
                 findings: Vec::new(),
             },
-            competency_gate: Some(crate::proposals_validate::CompetencyGateReportV1 {
+            Some(&crate::proposals_validate::CompetencyGateReportV1 {
                 total: 2,
                 satisfied_before: 1,
                 satisfied_after: 2,
@@ -2256,7 +3507,7 @@ mod tests {
                 },
                 questions: Vec::new(),
             }),
-            trust: crate::proposals_validate::ProposalValidationTrustContractV1 {
+            &crate::proposals_validate::ProposalValidationTrustContractV1 {
                 trust_class: "accepted_promotion_preview".to_string(),
                 soundness: "candidate_module_typechecked_constraints_checked_and_previewed"
                     .to_string(),
@@ -2264,23 +3515,222 @@ mod tests {
                 scope: "accepted_snapshot_scoped_preview".to_string(),
                 reasons: vec!["preview is scoped to the accepted snapshot delta".to_string()],
             },
-            runtime_semantics: Some(sample_runtime_semantics()),
-            trust_delta: crate::evolution_preview::TrustDeltaV1 {
-                preview_trust_class: "accepted_promotion_preview".to_string(),
-                preview_soundness: "candidate_module_typechecked_constraints_checked_and_previewed"
-                    .to_string(),
-                preview_coverage: "accepted_snapshot_delta_plus_competency_questions".to_string(),
-                preview_scope: "accepted_snapshot_scoped_preview".to_string(),
-                competency_coverage_before: Some(0.5),
-                competency_coverage_after: Some(1.0),
-                regressions: 0,
-                improvements: 1,
-                changed_questions: 0,
-                questions: Vec::new(),
-                notes: Vec::new(),
+            Some(sample_runtime_semantics()),
+            std::iter::empty::<String>(),
+            true,
+        )
+    }
+
+    fn seed_semantic_commit(
+        accepted_dir: &Path,
+        snapshot_id: &str,
+        previous_snapshot_id: Option<&str>,
+        module_name: &str,
+        module_digest: &str,
+        message: &str,
+    ) -> SemCommitV1 {
+        let event = AcceptedPlaneEventV1 {
+            version: ACCEPTED_PLANE_EVENT_VERSION_V1.to_string(),
+            created_at_unix_secs: 11,
+            action: "promote".to_string(),
+            snapshot_id: AcceptedSnapshotId::new(snapshot_id),
+            previous_snapshot_id: previous_snapshot_id.map(AcceptedSnapshotId::new),
+            module_name: module_name.to_string(),
+            module_digest: AxiDigest::new(module_digest),
+            stored_module_path: format!(
+                "modules/{module_name}/{}.axi",
+                module_digest.replace(':', "_")
+            ),
+            message: Some(message.to_string()),
+            quality_profile: None,
+            quality_report_path: None,
+            quality_error_count: None,
+            quality_warning_count: None,
+            quality_info_count: None,
+            constraints_cert_path: None,
+            constraints_constraint_count: None,
+            constraints_instance_count: None,
+            constraints_check_count: None,
+            validation_report_path: None,
+            validation_ok: Some(true),
+        };
+        let snapshot = AcceptedPlaneSnapshotV1 {
+            version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
+            snapshot_id: event.snapshot_id.clone(),
+            previous_snapshot_id: event.previous_snapshot_id.clone(),
+            created_at_unix_secs: 12,
+            modules: BTreeMap::new(),
+        };
+        let parent_commit_id = event
+            .previous_snapshot_id
+            .as_ref()
+            .map(|_| read_sem_head_commit_id(accepted_dir).expect("read head"))
+            .flatten();
+        let commit = semantic_commit_from_promotion(&event, parent_commit_id, &snapshot, None)
+            .expect("seed promotion commit");
+        write_semantic_commit(accepted_dir, &commit).expect("write seed commit");
+        write_sem_head_commit_id(accepted_dir, &commit.commit_id).expect("write seed head");
+        commit
+    }
+
+    fn seed_semantic_commit_with_module_text(
+        accepted_dir: &Path,
+        snapshot_id: &str,
+        previous_snapshot_id: Option<&str>,
+        module_name: &str,
+        module_text: &str,
+        message: &str,
+    ) -> SemCommitV1 {
+        let module_digest = AxiDigest::from_axi_text(module_text);
+        let candidate_path = accepted_dir.join(format!(
+            "{}-{}.axi",
+            sanitize_path_component(module_name),
+            digest_to_filename(module_digest.as_str())
+        ));
+        fs::write(&candidate_path, module_text).expect("write seed module");
+        let stored_module_path = store_module_if_needed(
+            accepted_dir,
+            module_name,
+            &module_digest,
+            &candidate_path,
+            module_text,
+        )
+        .expect("store seed module");
+
+        let previous_snapshot_id = previous_snapshot_id.map(AcceptedSnapshotId::new);
+        let mut modules = previous_snapshot_id
+            .as_ref()
+            .map(|snapshot_id| {
+                read_snapshot(accepted_dir, snapshot_id)
+                    .expect("read previous seed snapshot")
+                    .modules
+            })
+            .unwrap_or_default();
+        modules.insert(
+            module_name.to_string(),
+            AcceptedModuleRefV1 {
+                module_digest: module_digest.clone(),
+                stored_path: stored_module_path.clone(),
             },
-            residual_obligations: Vec::new(),
-            ok: true,
+        );
+
+        let snapshot = AcceptedPlaneSnapshotV1 {
+            version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
+            snapshot_id: AcceptedSnapshotId::new(snapshot_id),
+            previous_snapshot_id: previous_snapshot_id.clone(),
+            created_at_unix_secs: 12,
+            modules,
+        };
+        write_snapshot(accepted_dir, &snapshot).expect("write seed snapshot");
+        write_head(accepted_dir, &snapshot.snapshot_id).expect("write accepted head");
+
+        let event = AcceptedPlaneEventV1 {
+            version: ACCEPTED_PLANE_EVENT_VERSION_V1.to_string(),
+            created_at_unix_secs: 11,
+            action: "promote".to_string(),
+            snapshot_id: snapshot.snapshot_id.clone(),
+            previous_snapshot_id,
+            module_name: module_name.to_string(),
+            module_digest,
+            stored_module_path,
+            message: Some(message.to_string()),
+            quality_profile: None,
+            quality_report_path: None,
+            quality_error_count: None,
+            quality_warning_count: None,
+            quality_info_count: None,
+            constraints_cert_path: None,
+            constraints_constraint_count: None,
+            constraints_instance_count: None,
+            constraints_check_count: None,
+            validation_report_path: None,
+            validation_ok: Some(true),
+        };
+        let parent_commit_id = event
+            .previous_snapshot_id
+            .as_ref()
+            .map(|_| read_sem_head_commit_id(accepted_dir).expect("read head"))
+            .flatten();
+        let commit = semantic_commit_from_promotion(&event, parent_commit_id, &snapshot, None)
+            .expect("seed promotion commit");
+        write_semantic_commit(accepted_dir, &commit).expect("write seed commit");
+        write_sem_head_commit_id(accepted_dir, &commit.commit_id).expect("write seed head");
+        commit
+    }
+
+    fn sample_projection_manifest(
+        accepted_snapshot_id: AcceptedSnapshotId,
+        source_sem_commit_id: Option<AxiDigest>,
+    ) -> ProjectionManifestV1 {
+        ProjectionManifestV1 {
+            version: String::new(),
+            projection_id: AxiDigest::new("fnv1a64:placeholder"),
+            created_at_unix_secs: 0,
+            accepted_snapshot_id,
+            source_sem_ref_name: Some("heads/review/backend-projection".to_string()),
+            source_sem_commit_id,
+            compiled_ir_digest: AxiDigest::new("fnv1a64:compiled-ir"),
+            materialization_ref: "typedb://axiograph/ontology_main".to_string(),
+            backend: BackendCapabilityProfileV1::typedb_primary(),
+            projection: ProjectionCapabilityProfileV1 {
+                preserves_relation_objects: true,
+                binary_carrier_edges_only_when_lossless: true,
+                preserves_nary_relation_objects: true,
+                preserves_context_world_axes: true,
+                preserves_evidence_objects: true,
+                preserves_provenance_links: true,
+                supports_anchor_scoped_query_pushdown: true,
+                supports_context_scoped_query_pushdown: true,
+                native_query_access: ProjectionNativeQueryAccessV1::ReadOnlyAnchorScoped,
+                mutation_authority: ProjectionMutationAuthorityV1::AxiographOnly,
+            },
+            object_mappings: vec![
+                ProjectionObjectMappingV1 {
+                    object_name: "Node".to_string(),
+                    backend_label: "node".to_string(),
+                },
+                ProjectionObjectMappingV1 {
+                    object_name: "EdgeFact".to_string(),
+                    backend_label: "edge_fact".to_string(),
+                },
+            ],
+            relation_mappings: vec![ProjectionRelationMappingV1 {
+                relation_name: "Edge".to_string(),
+                tuple_encoding: ProjectionRelationTupleEncodingV1::RelationNode,
+                tuple_label: "edge_fact".to_string(),
+                carrier_edge: Some(ProjectionCarrierEdgeMappingV1 {
+                    edge_label: "edge_carrier".to_string(),
+                    source_role: "from".to_string(),
+                    target_role: "to".to_string(),
+                }),
+                role_mappings: vec![
+                    ProjectionRoleMappingV1 {
+                        role_name: "from".to_string(),
+                        backend_slot: "role:from".to_string(),
+                        preserved_explicitly: true,
+                    },
+                    ProjectionRoleMappingV1 {
+                        role_name: "to".to_string(),
+                        backend_slot: "role:to".to_string(),
+                        preserved_explicitly: true,
+                    },
+                ],
+            }],
+            context_mapping: ProjectionContextMappingV1 {
+                strategy: ProjectionContextMappingStrategyV1::TupleProperties,
+                axis_bindings: vec![ProjectionContextAxisBindingV1 {
+                    axis_name: "world".to_string(),
+                    backend_slot: "property:world".to_string(),
+                }],
+            },
+            trust_caveats: vec![
+                "query pushdown remains soundness-scoped and does not imply completeness"
+                    .to_string(),
+            ],
+            round_trip_limitations: vec![
+                "backend labels are adapter-level choices and do not define ontology identity"
+                    .to_string(),
+            ],
         }
     }
 
@@ -3001,6 +4451,8 @@ instance I of Fam:
                 artifact: ArtifactRefV1 {
                     artifact_kind: "module".to_string(),
                     artifact_id: "fnv1a64:module".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
                 },
                 detail: "parent relation changed incompatibly".to_string(),
             }],
@@ -3008,6 +4460,8 @@ instance I of Fam:
                 artifact: ArtifactRefV1 {
                     artifact_kind: "module".to_string(),
                     artifact_id: "fnv1a64:module".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
                 },
                 resolution: "prefer_left".to_string(),
             }],
@@ -3019,6 +4473,284 @@ instance I of Fam:
         let round_trip =
             read_reconciliation(&accepted_dir, &reconciliation.reconciliation_id).expect("read");
         assert_eq!(round_trip, reconciliation);
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn reconciliation_runtime_refinement_handle_upserts_decision() {
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconciliation"),
+            created_at_unix_secs: 42,
+            base_commit_id: AxiDigest::new("fnv1a64:base"),
+            left_commit_id: AxiDigest::new("fnv1a64:left"),
+            right_commit_id: AxiDigest::new("fnv1a64:right"),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/fam-parent".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: None,
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "rewrite_rule".to_string(),
+                    artifact_id: "normalize_parent".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                detail: "parent relation changed incompatibly".to_string(),
+            }],
+            decisions: Vec::new(),
+            certificate_refs: Vec::new(),
+        };
+
+        let handle = crate::typed_refinement::RuntimeRefinementHandleV1::new_reconciliation(
+            crate::typed_refinement::ReconciliationRefinementOpV1::ResolveConflictByDecision {
+                reconciliation_id: reconciliation.reconciliation_id.to_string(),
+                artifact_kind: "rewrite_rule".to_string(),
+                artifact_id: "normalize_parent".to_string(),
+                resolution: "prefer_right".to_string(),
+                theory_obligation_ref: None,
+                theory_subject_refs: Vec::new(),
+            },
+        );
+        let updated = apply_runtime_refinement_handle_to_reconciliation(&reconciliation, &handle)
+            .expect("apply reconciliation refinement handle");
+        assert_eq!(updated.decisions.len(), 1);
+        assert_eq!(updated.decisions[0].artifact.artifact_kind, "rewrite_rule");
+        assert_eq!(
+            updated.decisions[0].artifact.artifact_id,
+            "normalize_parent"
+        );
+        assert_eq!(updated.decisions[0].resolution, "prefer_right");
+    }
+
+    #[test]
+    fn reconciliation_runtime_refinement_by_id_uses_enriched_preview_candidates() {
+        let accepted_dir = temp_test_dir("sem-reconciliation-apply-by-id-theory");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let module_text = r#"
+module RefundPolicy
+
+schema Refund:
+  object RefundRequest
+  object Approver
+  relation RefundApproval(request: RefundRequest, approver: Approver)
+
+theory RefundRules on Refund:
+  constraint key RefundApproval(request, approver)
+"#;
+
+        let base_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-base-apply-by-id",
+            None,
+            "RefundPolicy",
+            module_text,
+            "base",
+        );
+        let left_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-left-apply-by-id",
+            Some("fnv1a64:snap-base-apply-by-id"),
+            "RefundPolicy",
+            module_text,
+            "left",
+        );
+        let right_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-right-apply-by-id",
+            Some("fnv1a64:snap-left-apply-by-id"),
+            "RefundPolicy",
+            module_text,
+            "right",
+        );
+
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-apply-by-id"),
+            created_at_unix_secs: 1_700_000_444,
+            base_commit_id: base_commit.commit_id.clone(),
+            left_commit_id: left_commit.commit_id.clone(),
+            right_commit_id: right_commit.commit_id.clone(),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/refund-policy".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: None,
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "schema_relation".to_string(),
+                    artifact_id: "RefundApproval".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                detail: "left and right both change approval routing".to_string(),
+            }],
+            decisions: Vec::new(),
+            certificate_refs: Vec::new(),
+        };
+
+        let handle_id = reconciliation_preview_report(&accepted_dir, &reconciliation)
+            .evolution_preview
+            .refinement_candidates
+            .into_iter()
+            .find(|candidate| {
+                candidate.artifact_id.as_deref() == Some("RefundApproval")
+                    && candidate.resolution.as_deref() == Some("prefer_right")
+            })
+            .map(|candidate| candidate.handle.id)
+            .expect("expected prefer_right reconciliation refinement candidate");
+
+        let updated = apply_runtime_refinement_by_id_to_reconciliation(
+            &accepted_dir,
+            &reconciliation,
+            &handle_id,
+        )
+        .expect("apply reconciliation refinement by id");
+
+        assert_eq!(updated.decisions.len(), 1);
+        assert_eq!(updated.decisions[0].resolution, "prefer_right");
+        assert!(matches!(
+            updated.decisions[0].artifact.theory_obligation_ref.as_ref(),
+            Some(
+                axiograph_pathdb::kernel_ir::TheoryObligationRefIr::Constraint {
+                    relation_name,
+                    ..
+                }
+            ) if relation_name.as_deref() == Some("RefundApproval")
+        ));
+        assert!(updated.decisions[0]
+            .artifact
+            .theory_subject_refs
+            .iter()
+            .any(|subject| matches!(
+                subject,
+                axiograph_pathdb::kernel_ir::TheorySubjectRefIr::Relation {
+                    relation_name,
+                    ..
+                } if relation_name == "RefundApproval"
+            )));
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn reconciliation_runtime_refinement_handle_refreshes_existing_decision_theory_refs() {
+        let accepted_dir = temp_test_dir("sem-reconciliation-refresh-theory");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let module_text = r#"
+module RefundPolicy
+
+schema Refund:
+  object RefundRequest
+  object Approver
+  relation RefundApproval(request: RefundRequest, approver: Approver)
+
+theory RefundRules on Refund:
+  constraint key RefundApproval(request, approver)
+"#;
+
+        let base_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-base-refresh-theory",
+            None,
+            "RefundPolicy",
+            module_text,
+            "base",
+        );
+        let left_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-left-refresh-theory",
+            Some("fnv1a64:snap-base-refresh-theory"),
+            "RefundPolicy",
+            module_text,
+            "left",
+        );
+        let right_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-right-refresh-theory",
+            Some("fnv1a64:snap-left-refresh-theory"),
+            "RefundPolicy",
+            module_text,
+            "right",
+        );
+
+        let unresolved = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-refresh-theory"),
+            created_at_unix_secs: 1_700_000_445,
+            base_commit_id: base_commit.commit_id.clone(),
+            left_commit_id: left_commit.commit_id.clone(),
+            right_commit_id: right_commit.commit_id.clone(),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/refund-policy".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: None,
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "schema_relation".to_string(),
+                    artifact_id: "RefundApproval".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                detail: "left and right both change approval routing".to_string(),
+            }],
+            decisions: Vec::new(),
+            certificate_refs: Vec::new(),
+        };
+
+        let handle = reconciliation_preview_report(&accepted_dir, &unresolved)
+            .evolution_preview
+            .refinement_candidates
+            .into_iter()
+            .find(|candidate| {
+                candidate.artifact_id.as_deref() == Some("RefundApproval")
+                    && candidate.resolution.as_deref() == Some("prefer_right")
+            })
+            .map(|candidate| candidate.handle)
+            .expect("expected prefer_right reconciliation refinement candidate");
+
+        let mut with_existing_decision = unresolved.clone();
+        with_existing_decision.decisions.push(SemDecisionRecordV1 {
+            artifact: ArtifactRefV1 {
+                artifact_kind: "schema_relation".to_string(),
+                artifact_id: "RefundApproval".to_string(),
+                theory_obligation_ref: None,
+                theory_subject_refs: Vec::new(),
+            },
+            resolution: "manual_review".to_string(),
+        });
+
+        let updated =
+            apply_runtime_refinement_handle_to_reconciliation(&with_existing_decision, &handle)
+                .expect("apply reconciliation refinement handle");
+
+        assert_eq!(updated.decisions.len(), 1);
+        assert_eq!(updated.decisions[0].resolution, "prefer_right");
+        assert!(matches!(
+            updated.decisions[0].artifact.theory_obligation_ref.as_ref(),
+            Some(
+                axiograph_pathdb::kernel_ir::TheoryObligationRefIr::Constraint {
+                    relation_name,
+                    ..
+                }
+            ) if relation_name.as_deref() == Some("RefundApproval")
+        ));
+        assert!(updated.decisions[0]
+            .artifact
+            .theory_subject_refs
+            .iter()
+            .any(|subject| matches!(
+                subject,
+                axiograph_pathdb::kernel_ir::TheorySubjectRefIr::Relation {
+                    relation_name,
+                    ..
+                } if relation_name == "RefundApproval"
+            )));
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }
@@ -3095,6 +4827,8 @@ instance I of Fam:
                 artifact: ArtifactRefV1 {
                     artifact_kind: "module".to_string(),
                     artifact_id: "fnv1a64:module-a".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
                 },
                 detail: "schema conflict".to_string(),
             }],
@@ -3102,6 +4836,8 @@ instance I of Fam:
                 artifact: ArtifactRefV1 {
                     artifact_kind: "module".to_string(),
                     artifact_id: "fnv1a64:module-a".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
                 },
                 resolution: "take review branch".to_string(),
             }],
@@ -3119,6 +4855,554 @@ instance I of Fam:
         let round_trip = read_reconciliation(&accepted_dir, &reconciliation.reconciliation_id)
             .expect("read reconciliation");
         assert_eq!(round_trip, reconciliation);
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn reconciliation_semantic_commit_persists_preview_and_updates_ref() {
+        let accepted_dir = temp_test_dir("sem-reconciliation-commit");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let base_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-base",
+            None,
+            "BaseModule",
+            "fnv1a64:module-base",
+            "base",
+        );
+        let left_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-left",
+            Some("fnv1a64:snap-base"),
+            "LeftModule",
+            "fnv1a64:module-left",
+            "left",
+        );
+        let right_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-right",
+            Some("fnv1a64:snap-left"),
+            "RightModule",
+            "fnv1a64:module-right",
+            "right",
+        );
+        persist_semantic_ref(&accepted_dir, "heads/main", &right_commit.commit_id)
+            .expect("seed main ref");
+
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-commit"),
+            created_at_unix_secs: 1_700_000_777,
+            base_commit_id: base_commit.commit_id.clone(),
+            left_commit_id: left_commit.commit_id.clone(),
+            right_commit_id: right_commit.commit_id.clone(),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/refund-policy".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: Some("heads/review/refund-policy-merged".to_string()),
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "schema_relation".to_string(),
+                    artifact_id: "RefundApproval".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                detail: "left introduces a stricter approval path than right".to_string(),
+            }],
+            decisions: vec![SemDecisionRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "schema_relation".to_string(),
+                    artifact_id: "RefundApproval".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                resolution: "prefer_review_branch".to_string(),
+            }],
+            certificate_refs: vec!["certs/reconcile-commit.json".to_string()],
+        };
+
+        let commit = persist_reconciliation_semantic_commit(
+            &accepted_dir,
+            &reconciliation,
+            &ReconciliationSemanticCommitOptionsV1::default(),
+        )
+        .expect("persist reconciliation commit");
+
+        assert_eq!(commit.kind, SemCommitKindV1::Merge);
+        assert_eq!(
+            commit.reconciliation_id,
+            Some(AxiDigest::new("fnv1a64:reconcile-commit"))
+        );
+        assert_eq!(
+            commit.parent_commit_id,
+            Some(right_commit.commit_id.clone()),
+            "target branch commit should be used as the linearized parent"
+        );
+        assert_eq!(
+            commit
+                .delta
+                .semantic_delta
+                .as_ref()
+                .expect("semantic delta")
+                .changed_layers,
+            vec!["schema".to_string()]
+        );
+        assert_eq!(
+            commit
+                .delta
+                .trust_summary
+                .as_ref()
+                .expect("trust summary")
+                .trust_class,
+            "runtime_checked_reconciliation_preview"
+        );
+        assert_eq!(
+            commit.delta.certificate_refs_added,
+            vec!["certs/reconcile-commit.json".to_string()]
+        );
+        assert_eq!(
+            commit
+                .validation_report_path
+                .as_deref()
+                .expect("validation report path"),
+            "sem/validations/reconciliation__fnv1a64_reconcile-commit.json"
+        );
+        assert_eq!(
+            commit.delta.validation_report_refs_added,
+            vec!["sem/validations/reconciliation__fnv1a64_reconcile-commit.json".to_string()]
+        );
+
+        let report_text = fs::read_to_string(
+            accepted_dir.join(
+                commit
+                    .validation_report_path
+                    .as_ref()
+                    .expect("validation report path"),
+            ),
+        )
+        .expect("read validation report");
+        let report: ReconciliationPreviewReportV1 =
+            serde_json::from_str(&report_text).expect("parse reconciliation preview report");
+        assert_eq!(
+            report.evolution_preview.kind,
+            "semantic_reconciliation_preview"
+        );
+        assert_eq!(
+            report
+                .stored_report_path
+                .as_deref()
+                .expect("stored report path"),
+            "sem/validations/reconciliation__fnv1a64_reconcile-commit.json"
+        );
+
+        let ref_pointer = read_sem_ref_pointer(&accepted_dir, "heads/review/refund-policy-merged")
+            .expect("read merged review ref");
+        assert_eq!(ref_pointer.commit_id, commit.commit_id);
+        assert_eq!(
+            read_sem_head_commit_id(&accepted_dir).expect("read sem head"),
+            Some(commit.commit_id.clone())
+        );
+
+        let round_trip =
+            read_semantic_commit(&accepted_dir, &commit.commit_id).expect("read merge commit");
+        assert_eq!(round_trip.kind, SemCommitKindV1::Merge);
+        assert_eq!(
+            round_trip
+                .gate_summary
+                .as_ref()
+                .expect("gate summary")
+                .trust
+                .trust_class,
+            "runtime_checked_reconciliation_preview"
+        );
+        let updated_reconciliation =
+            read_reconciliation(&accepted_dir, &reconciliation.reconciliation_id)
+                .expect("read updated reconciliation");
+        assert_eq!(
+            updated_reconciliation.outcome_commit_id,
+            Some(commit.commit_id.clone())
+        );
+        assert_eq!(
+            round_trip.provenance.source_commit,
+            Some(left_commit.commit_id.clone())
+        );
+        assert_eq!(
+            round_trip.state.accepted_snapshot_id_before,
+            round_trip.state.accepted_snapshot_id_after,
+            "first merge slice should keep accepted-plane state stable until promotion"
+        );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn reconciliation_preview_report_enriches_theory_refs_from_snapshot_modules() {
+        let accepted_dir = temp_test_dir("sem-reconciliation-preview-theory");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let module_text = r#"
+module RefundPolicy
+
+schema Refund:
+  object RefundRequest
+  object Approver
+  relation RefundApproval(request: RefundRequest, approver: Approver)
+
+theory RefundRules on Refund:
+  constraint key RefundApproval(request, approver)
+"#;
+
+        let base_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-base-theory",
+            None,
+            "RefundPolicy",
+            module_text,
+            "base",
+        );
+        let left_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-left-theory",
+            Some("fnv1a64:snap-base-theory"),
+            "RefundPolicy",
+            module_text,
+            "left",
+        );
+        let right_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-right-theory",
+            Some("fnv1a64:snap-left-theory"),
+            "RefundPolicy",
+            module_text,
+            "right",
+        );
+
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-preview-theory"),
+            created_at_unix_secs: 1_700_000_999,
+            base_commit_id: base_commit.commit_id.clone(),
+            left_commit_id: left_commit.commit_id.clone(),
+            right_commit_id: right_commit.commit_id.clone(),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/refund-policy".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: None,
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "schema_relation".to_string(),
+                    artifact_id: "RefundApproval".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                detail: "left and right both change approval routing".to_string(),
+            }],
+            decisions: Vec::new(),
+            certificate_refs: Vec::new(),
+        };
+
+        let report = reconciliation_preview_report(&accepted_dir, &reconciliation);
+        assert_eq!(
+            report.evolution_preview.kind,
+            "semantic_reconciliation_preview"
+        );
+        assert_eq!(report.evolution_preview.refinement_candidates.len(), 3);
+        for candidate in &report.evolution_preview.refinement_candidates {
+            assert!(
+                matches!(
+                    candidate.theory_obligation_ref.as_ref(),
+                    Some(
+                        axiograph_pathdb::kernel_ir::TheoryObligationRefIr::Constraint {
+                            relation_name: Some(relation_name),
+                            ..
+                        }
+                    ) if relation_name == "RefundApproval"
+                ),
+                "expected a compiled-theory obligation for RefundApproval, got {:?}",
+                candidate.theory_obligation_ref
+            );
+            assert!(
+                candidate.theory_subject_refs.iter().any(|subject| matches!(
+                    subject,
+                    axiograph_pathdb::kernel_ir::TheorySubjectRefIr::Relation {
+                        relation_name,
+                        ..
+                    } if relation_name == "RefundApproval"
+                )),
+                "expected compiled-theory relation subject refs for RefundApproval, got {:?}",
+                candidate.theory_subject_refs
+            );
+        }
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn preview_reconciliation_reads_persisted_record() {
+        let accepted_dir = temp_test_dir("sem-reconciliation-preview-public");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let module_text = r#"
+module RefundPolicy
+
+schema Refund:
+  object RefundRequest
+  object Approver
+  relation RefundApproval(request: RefundRequest, approver: Approver)
+
+theory RefundRules on Refund:
+  constraint key RefundApproval(request, approver)
+"#;
+
+        let base_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-base-preview-public",
+            None,
+            "RefundPolicy",
+            module_text,
+            "base",
+        );
+        let left_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-left-preview-public",
+            Some("fnv1a64:snap-base-preview-public"),
+            "RefundPolicy",
+            module_text,
+            "left",
+        );
+        let right_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-right-preview-public",
+            Some("fnv1a64:snap-left-preview-public"),
+            "RefundPolicy",
+            module_text,
+            "right",
+        );
+
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-preview-public"),
+            created_at_unix_secs: 1_700_001_111,
+            base_commit_id: base_commit.commit_id.clone(),
+            left_commit_id: left_commit.commit_id.clone(),
+            right_commit_id: right_commit.commit_id.clone(),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/refund-policy".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: None,
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "schema_relation".to_string(),
+                    artifact_id: "RefundApproval".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                detail: "left and right both change approval routing".to_string(),
+            }],
+            decisions: Vec::new(),
+            certificate_refs: Vec::new(),
+        };
+        persist_reconciliation(&accepted_dir, &reconciliation).expect("persist reconciliation");
+
+        let report = preview_reconciliation(&accepted_dir, &reconciliation.reconciliation_id)
+            .expect("preview persisted reconciliation");
+        assert_eq!(report.reconciliation_id, reconciliation.reconciliation_id);
+        assert_eq!(
+            report.evolution_preview.kind,
+            "semantic_reconciliation_preview"
+        );
+        assert!(!report.evolution_preview.refinement_candidates.is_empty());
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn apply_reconciliation_refinement_by_id_persists_updated_record() {
+        let accepted_dir = temp_test_dir("sem-reconciliation-apply-public");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let module_text = r#"
+module RefundPolicy
+
+schema Refund:
+  object RefundRequest
+  object Approver
+  relation RefundApproval(request: RefundRequest, approver: Approver)
+
+theory RefundRules on Refund:
+  constraint key RefundApproval(request, approver)
+"#;
+
+        let base_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-base-apply-public",
+            None,
+            "RefundPolicy",
+            module_text,
+            "base",
+        );
+        let left_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-left-apply-public",
+            Some("fnv1a64:snap-base-apply-public"),
+            "RefundPolicy",
+            module_text,
+            "left",
+        );
+        let right_commit = seed_semantic_commit_with_module_text(
+            &accepted_dir,
+            "fnv1a64:snap-right-apply-public",
+            Some("fnv1a64:snap-left-apply-public"),
+            "RefundPolicy",
+            module_text,
+            "right",
+        );
+
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-apply-public"),
+            created_at_unix_secs: 1_700_001_222,
+            base_commit_id: base_commit.commit_id.clone(),
+            left_commit_id: left_commit.commit_id.clone(),
+            right_commit_id: right_commit.commit_id.clone(),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/refund-policy".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: None,
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "schema_relation".to_string(),
+                    artifact_id: "RefundApproval".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                detail: "left and right both change approval routing".to_string(),
+            }],
+            decisions: Vec::new(),
+            certificate_refs: Vec::new(),
+        };
+        persist_reconciliation(&accepted_dir, &reconciliation).expect("persist reconciliation");
+
+        let handle_id = preview_reconciliation(&accepted_dir, &reconciliation.reconciliation_id)
+            .expect("preview persisted reconciliation")
+            .evolution_preview
+            .refinement_candidates
+            .into_iter()
+            .find(|candidate| {
+                candidate.artifact_id.as_deref() == Some("RefundApproval")
+                    && candidate.resolution.as_deref() == Some("prefer_right")
+            })
+            .map(|candidate| candidate.handle.id)
+            .expect("expected prefer_right refinement candidate");
+
+        let applied = apply_reconciliation_refinement_by_id(
+            &accepted_dir,
+            &reconciliation.reconciliation_id,
+            &handle_id,
+        )
+        .expect("apply persisted reconciliation refinement");
+        assert_eq!(applied.updated_reconciliation.decisions.len(), 1);
+        assert_eq!(
+            applied.updated_reconciliation.decisions[0].resolution,
+            "prefer_right"
+        );
+
+        let stored = read_reconciliation(&accepted_dir, &reconciliation.reconciliation_id)
+            .expect("read updated reconciliation");
+        assert_eq!(stored.decisions.len(), 1);
+        assert_eq!(stored.decisions[0].resolution, "prefer_right");
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn reconciliation_semantic_commit_fails_closed_on_unresolved_conflicts() {
+        let accepted_dir = temp_test_dir("sem-reconciliation-unresolved");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let base_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-base",
+            None,
+            "BaseModule",
+            "fnv1a64:module-base",
+            "base",
+        );
+        let left_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-left",
+            Some("fnv1a64:snap-base"),
+            "LeftModule",
+            "fnv1a64:module-left",
+            "left",
+        );
+        let right_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-right",
+            Some("fnv1a64:snap-left"),
+            "RightModule",
+            "fnv1a64:module-right",
+            "right",
+        );
+        persist_semantic_ref(&accepted_dir, "heads/main", &right_commit.commit_id)
+            .expect("seed main ref");
+
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-unresolved"),
+            created_at_unix_secs: 1_700_000_888,
+            base_commit_id: base_commit.commit_id.clone(),
+            left_commit_id: left_commit.commit_id.clone(),
+            right_commit_id: right_commit.commit_id.clone(),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/refund-policy".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: Some("heads/review/refund-policy-merged".to_string()),
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: ArtifactRefV1 {
+                    artifact_kind: "schema_relation".to_string(),
+                    artifact_id: "RefundApproval".to_string(),
+                    theory_obligation_ref: None,
+                    theory_subject_refs: Vec::new(),
+                },
+                detail: "conflict remains unresolved".to_string(),
+            }],
+            decisions: Vec::new(),
+            certificate_refs: Vec::new(),
+        };
+
+        let err = persist_reconciliation_semantic_commit(
+            &accepted_dir,
+            &reconciliation,
+            &ReconciliationSemanticCommitOptionsV1::default(),
+        )
+        .expect_err("unresolved reconciliation should not materialize merge commit");
+        assert!(
+            err.to_string().contains("still has unresolved obligations"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            accepted_dir
+                .join("sem/validations/reconciliation__fnv1a64_reconcile-unresolved.json")
+                .exists(),
+            "preview report should still be persisted for review"
+        );
+        assert!(
+            read_sem_ref_pointer(&accepted_dir, "heads/review/refund-policy-merged").is_err(),
+            "resolved ref should not move on a failed preview"
+        );
+        assert_eq!(
+            read_sem_head_commit_id(&accepted_dir).expect("read sem head"),
+            Some(right_commit.commit_id.clone()),
+            "semantic head should remain unchanged when merge materialization fails"
+        );
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }
@@ -3176,6 +5460,42 @@ instance I of Fam:
         assert_eq!(
             commit.delta.certificate_refs_added,
             vec!["certs/promotion.json".to_string()]
+        );
+        assert_eq!(
+            commit
+                .delta
+                .semantic_delta
+                .as_ref()
+                .expect("semantic delta")
+                .changed_layers,
+            vec!["schema".to_string(), "instance".to_string()]
+        );
+        assert_eq!(
+            commit
+                .delta
+                .trust_summary
+                .as_ref()
+                .expect("trust summary")
+                .trust_class,
+            "accepted_promotion_preview"
+        );
+        assert_eq!(
+            commit
+                .delta
+                .rule_summary
+                .as_ref()
+                .expect("rule summary")
+                .total_rules,
+            4
+        );
+        assert_eq!(
+            commit
+                .delta
+                .coverage_summary
+                .as_ref()
+                .expect("coverage summary")
+                .competency_questions_total,
+            2
         );
         assert_eq!(
             commit.delta.quality_report_refs_added,
@@ -3271,6 +5591,10 @@ instance I of Fam:
             commit.delta.world_model_run_refs,
             vec![WorldModelRunId::new("wm::run-a")]
         );
+        assert!(commit.delta.semantic_delta.is_none());
+        assert!(commit.delta.trust_summary.is_none());
+        assert!(commit.delta.rule_summary.is_none());
+        assert!(commit.delta.coverage_summary.is_none());
         assert_eq!(commit.delta.lifecycle_events.len(), 1);
         assert_eq!(
             commit.delta.lifecycle_events[0].artifact.artifact_kind,
@@ -3439,6 +5763,218 @@ instance I of Demo:
             main_pointer_after.gate_summary, main_pointer_before.gate_summary,
             "evidence-plane commits must not rewrite main's promotion gate summary"
         );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn projection_manifest_round_trips_with_typed_backend_profile() {
+        let accepted_dir = temp_test_dir("sem-projection-manifest");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let base_axi = accepted_dir.join("ProjectionDemo.axi");
+        fs::write(
+            &base_axi,
+            r#"module ProjectionDemo
+
+schema Demo:
+  object Node
+  relation Edge(from: Node, to: Node)
+
+instance I of Demo:
+  Node = {a, b}
+  Edge = {(from=a, to=b)}
+"#,
+        )
+        .expect("write projection module");
+
+        let accepted_snapshot_id =
+            promote_reviewed_module(&base_axi, &accepted_dir, Some("projection-base"), "off")
+                .expect("promote baseline");
+        let manifest = sample_projection_manifest(accepted_snapshot_id.clone(), None);
+        let path = persist_projection_manifest(&accepted_dir, &manifest).expect("persist manifest");
+
+        assert!(
+            path.starts_with(accepted_dir.join("sem/projections")),
+            "projection manifests must live under sem/projections"
+        );
+
+        let stored = read_projection_manifest(
+            &accepted_dir,
+            &normalize_projection_manifest(manifest)
+                .expect("normalize")
+                .projection_id,
+        )
+        .expect("read manifest");
+        assert_eq!(stored.version, BACKEND_PROJECTION_MANIFEST_VERSION_V1);
+        assert_eq!(stored.accepted_snapshot_id, accepted_snapshot_id);
+        assert_eq!(
+            stored.backend.backend_engine,
+            ProjectionBackendEngineV1::TypeDb
+        );
+        assert_eq!(
+            stored.backend.support_tier,
+            ProjectionSupportTierV1::Primary
+        );
+        assert!(stored.backend.constraints);
+        assert!(stored.projection.preserves_relation_objects);
+        assert_eq!(stored.relation_mappings.len(), 1);
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn backend_capability_presets_encode_supported_backend_priority() {
+        let typedb = BackendCapabilityProfileV1::typedb_primary();
+        let terminus = BackendCapabilityProfileV1::terminusdb_supported();
+        let age = BackendCapabilityProfileV1::apache_age_experimental();
+
+        assert_eq!(typedb.backend_engine, ProjectionBackendEngineV1::TypeDb);
+        assert_eq!(typedb.support_tier, ProjectionSupportTierV1::Primary);
+        assert!(typedb.constraints);
+        assert!(typedb.native_type_system);
+        assert!(typedb.native_nary_relations);
+        assert!(typedb.typed_query_validation);
+        assert!(typedb.relationship_entities);
+        assert!(
+            !typedb.can_mirror_semantic_vcs_workspace(),
+            "TypeDB should be treated as the primary typed execution target, not as the semantic VCS authority"
+        );
+
+        assert_eq!(
+            terminus.backend_engine,
+            ProjectionBackendEngineV1::TerminusDb
+        );
+        assert_eq!(terminus.support_tier, ProjectionSupportTierV1::Supported);
+        assert!(terminus.named_graphs);
+        assert!(terminus.native_type_system);
+        assert!(terminus.immutable_history);
+        assert!(terminus.branching_and_merge);
+        assert!(terminus.diff_and_patch);
+        assert!(terminus.schema_instance_separation);
+        assert!(terminus.can_mirror_semantic_vcs_workspace());
+
+        assert_eq!(age.backend_engine, ProjectionBackendEngineV1::ApacheAge);
+        assert_eq!(age.support_tier, ProjectionSupportTierV1::Experimental);
+        assert!(
+            !age.constraints,
+            "Apache AGE should not be elevated to supported until the schema/constraint story is stronger"
+        );
+    }
+
+    #[test]
+    fn projection_capability_profile_can_expose_read_only_native_queries_without_granting_mutation()
+    {
+        let typed_projection = ProjectionCapabilityProfileV1 {
+            preserves_relation_objects: true,
+            binary_carrier_edges_only_when_lossless: true,
+            preserves_nary_relation_objects: true,
+            preserves_context_world_axes: true,
+            preserves_evidence_objects: true,
+            preserves_provenance_links: true,
+            supports_anchor_scoped_query_pushdown: true,
+            supports_context_scoped_query_pushdown: true,
+            native_query_access: ProjectionNativeQueryAccessV1::ReadOnlyAnchorScoped,
+            mutation_authority: ProjectionMutationAuthorityV1::AxiographOnly,
+        };
+        assert!(typed_projection.allows_native_read_queries());
+        assert!(typed_projection.requires_axiograph_mutation_authority());
+
+        let passive_projection = ProjectionCapabilityProfileV1::default();
+        assert!(!passive_projection.allows_native_read_queries());
+        assert!(passive_projection.requires_axiograph_mutation_authority());
+    }
+
+    #[test]
+    fn projection_semantic_commit_advances_sem_head_without_moving_main() {
+        let accepted_dir = temp_test_dir("sem-projection-commit");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let base_axi = accepted_dir.join("ProjectionCommit.axi");
+        fs::write(
+            &base_axi,
+            r#"module ProjectionCommit
+
+schema Demo:
+  object Node
+  relation Edge(from: Node, to: Node)
+
+instance I of Demo:
+  Node = {a, b}
+  Edge = {(from=a, to=b)}
+"#,
+        )
+        .expect("write projection module");
+
+        let accepted_snapshot_id =
+            promote_reviewed_module(&base_axi, &accepted_dir, Some("projection-base"), "off")
+                .expect("promote baseline");
+        let promote_head = read_sem_head_commit_id(&accepted_dir)
+            .expect("read sem head")
+            .expect("promotion should seed sem head");
+        let main_pointer_before = read_sem_ref_pointer_main(&accepted_dir)
+            .expect("read main pointer")
+            .expect("main pointer exists");
+
+        let manifest =
+            sample_projection_manifest(accepted_snapshot_id.clone(), Some(promote_head.clone()));
+        let normalized_manifest =
+            normalize_projection_manifest(manifest.clone()).expect("normalize manifest");
+        let commit = persist_projection_semantic_commit(
+            &accepted_dir,
+            &manifest,
+            &ProjectionSemanticCommitOptionsV1 {
+                message: Some("project typed backend".to_string()),
+                ..ProjectionSemanticCommitOptionsV1::default()
+            },
+        )
+        .expect("persist projection commit");
+
+        assert_eq!(commit.kind, SemCommitKindV1::ProjectionMaterialization);
+        assert_eq!(commit.action, "backend_projection");
+        assert_eq!(
+            commit.state.accepted_snapshot_id_after,
+            Some(accepted_snapshot_id.clone())
+        );
+        assert_eq!(
+            commit.state.accepted_tree_digest,
+            Some(AxiDigest::new("fnv1a64:compiled-ir"))
+        );
+        assert_eq!(
+            commit.delta.projection_manifest_refs_added,
+            vec![normalized_manifest.projection_id.clone()]
+        );
+        assert_eq!(commit.parent_commit_id, Some(promote_head.clone()));
+
+        let sem_head_after = read_sem_head_commit_id(&accepted_dir)
+            .expect("read sem head after projection")
+            .expect("projection commit should advance sem head");
+        assert_eq!(sem_head_after, commit.commit_id);
+
+        let main_pointer_after = read_sem_ref_pointer_main(&accepted_dir)
+            .expect("read main pointer after projection")
+            .expect("main pointer exists");
+        assert_eq!(
+            main_pointer_after.commit_id, main_pointer_before.commit_id,
+            "projection materialization must not advance refs/heads/main"
+        );
+
+        let stored_manifest =
+            read_projection_manifest(&accepted_dir, &normalized_manifest.projection_id)
+                .expect("read stored projection manifest");
+        assert_eq!(
+            stored_manifest.projection_id,
+            normalized_manifest.projection_id
+        );
+        assert_eq!(
+            stored_manifest.source_sem_commit_id,
+            Some(promote_head),
+            "projection manifest should preserve semantic source lineage"
+        );
+        assert!(stored_manifest.projection.allows_native_read_queries());
+        assert!(stored_manifest
+            .projection
+            .requires_axiograph_mutation_authority());
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }

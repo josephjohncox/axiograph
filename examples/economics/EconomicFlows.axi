@@ -1,15 +1,16 @@
--- Economic Flows as Higher Category
+-- Economic flows ontology
 --
 -- Models economic transactions using categorical structure:
 -- - Objects: Economic agents (firms, households, government)
 -- - 1-morphisms: Transactions (money, goods, services)
 -- - 2-morphisms: Transaction equivalences (different paths, same result)
 --
--- HoTT enables:
--- - Path independence of value flows (conservation laws)
--- - Reversibility analysis (which transactions can be undone?)
--- - Composition of complex financial instruments
--- - Equivalence of economic strategies
+-- The point of the example is readable typed economic structure:
+-- - agents,
+-- - flows,
+-- - stock-flow consistency,
+-- - reversible instruments,
+-- - and equivalence of transaction paths.
 
 module EconomicFlows
 
@@ -157,7 +158,12 @@ instance SimpleEconomy of Economy:
     Taxes,          -- Agent -> Government
     Transfers,      -- Government -> Household
     GovSpending,    -- Government -> Firm
-    
+    Employment,     -- Labor ; Wages
+    CreditPurchase, -- Loans ; Consumption
+    Accumulation,   -- Wages ; Savings
+    Redistribution, -- Taxes ; Transfers
+    Withdrawal,     -- inverse of Savings
+
     -- Identity (doing nothing)
     Identity
   }
@@ -212,7 +218,7 @@ instance SimpleEconomy of Economy:
     SaveInvestEarn
   }
 
-  Text = {SameNetWorth, FiscalBalance, CircularFlow}
+  Text = {SameNetWorth, FiscalBalance, CircularFlow, SameCashFlows}
 
   PathEquivalence = {
     -- Both paths end with same net worth change (path independence!)
@@ -224,7 +230,9 @@ instance SimpleEconomy of Economy:
     Bond,           -- Promise to pay future amounts
     Stock,          -- Ownership share
     Derivative,     -- Value derived from other instruments
-    Mortgage        -- Loan secured by real estate
+    Mortgage,       -- Loan secured by real estate
+    CallableBond,
+    BondPlusPut
   }
 
   ContractTerms = {
@@ -239,4 +247,3 @@ instance SimpleEconomy of Economy:
     -- A callable bond ≡ bond + put option (in terms of cash flows)
     (i1=CallableBond, i2=BondPlusPut, proof=SameCashFlows)
   }
-

@@ -2,16 +2,14 @@
 //!
 //! `axi_v1` is the **single canonical** `.axi` surface language entrypoint.
 //!
-//! For the initial Rust+Lean-only release we intentionally keep exactly one
-//! concrete surface syntax:
-//! - `axi_schema_v1` → `schema_v1::SchemaV1Module`
+//! The concrete schema/theory/instance parser currently lives in
+//! `schema_v1::SchemaV1Module`, but that is an internal module name rather than
+//! a second end-user dialect.
 //!
-//! Historical note: the repo previously carried a separate `axi_learning_v1`
-//! dialect. We removed that split in favor of a single schema/theory/instance
-//! syntax so:
+//! We intentionally keep one canonical authoring surface so:
 //! - PathDB import/export has one canonical `.axi` plane
 //! - certificates can be anchored to a single parser/AST
-//! - Rust and Lean stay in lockstep without dialect detection
+//! - Rust and Lean stay in lockstep without end-user dialect drift
 
 pub use crate::schema_v1::{SchemaV1Module as AxiV1Module, SchemaV1ParseError as AxiV1ParseError};
 

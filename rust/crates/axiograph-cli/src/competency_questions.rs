@@ -7,6 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
+use axiograph_pathdb::kernel_ir::{CompiledSchemaIr, TheoryIr};
 use axiograph_pathdb::PathDB;
 
 use crate::llm::{GeneratedQuery, LlmState};
@@ -212,7 +213,6 @@ pub fn prompts_to_competency_questions(
         })?;
         let generated = llm.generate_query(db, &question)?;
         let query = match generated {
-            GeneratedQuery::Axql(q) => q,
             GeneratedQuery::QueryIrV1(ir) => ir.to_axql_text()?,
         };
         out.push(CompetencyQuestionV1 {
@@ -252,6 +252,8 @@ pub struct CompetencyQuestionEvaluationV1 {
     pub weight: f64,
     pub cost: f64,
     pub trust: CompetencyQuestionTrustV1,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -262,6 +264,107 @@ pub struct CompetencyCoverageWithTrustV1 {
     pub cost: f64,
     #[serde(default)]
     pub questions: Vec<CompetencyQuestionEvaluationV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompetencyQuestionRefinementApplyResultV1 {
+    pub question_name: String,
+    pub base_question: CompetencyQuestionV1,
+    pub refined_question: CompetencyQuestionV1,
+    pub query_apply: crate::query_ir::QueryRefinementApplyResultV1,
+}
+
+fn query_refinement_handle_for_competency_question<'a>(
+    question: &CompetencyQuestionV1,
+    handle: &'a crate::typed_refinement::RuntimeRefinementHandleV1,
+) -> Result<&'a crate::axql::AxqlRefinementHandleV1> {
+    handle.validate()?;
+    match &handle.payload {
+        crate::typed_refinement::RuntimeRefinementPayloadV1::CompetencyQuestionRepair {
+            question_name,
+            handle,
+        } => {
+            if question_name != &question.name {
+                return Err(anyhow!(
+                    "competency-question refinement handle `{}` targets `{}` but question is `{}`",
+                    handle.id,
+                    question_name,
+                    question.name
+                ));
+            }
+            Ok(handle)
+        }
+        crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } => Ok(handle),
+        _ => Err(anyhow!(
+            "runtime refinement handle `{}` is not a competency-question/query refinement",
+            handle.id
+        )),
+    }
+}
+
+#[allow(dead_code)]
+pub fn apply_runtime_refinement_handle_to_competency_question_result(
+    db: &PathDB,
+    meta: Option<&MetaPlaneIndex>,
+    question: &CompetencyQuestionV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+) -> Result<CompetencyQuestionRefinementApplyResultV1> {
+    let query_handle = query_refinement_handle_for_competency_question(question, handle)?;
+    let axql = crate::axql::parse_axql_query(&question.query)?;
+    let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&axql);
+    let prepared = query_ir.prepare_with_meta(db, meta)?;
+    let query_apply = prepared.apply_refinement_handle(db, meta, query_handle)?;
+    let mut refined_question = question.clone();
+    refined_question.query = query_apply.refined_query_ir_v1.to_axql_text()?;
+    Ok(CompetencyQuestionRefinementApplyResultV1 {
+        question_name: question.name.clone(),
+        base_question: question.clone(),
+        refined_question,
+        query_apply,
+    })
+}
+
+#[allow(dead_code)]
+pub fn apply_runtime_refinement_handle_to_competency_question_result_with_theory_graph(
+    db: &PathDB,
+    meta: Option<&MetaPlaneIndex>,
+    question: &CompetencyQuestionV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    compiled_schema: &CompiledSchemaIr,
+    theories: &[TheoryIr],
+) -> Result<CompetencyQuestionRefinementApplyResultV1> {
+    let query_handle = query_refinement_handle_for_competency_question(question, handle)?;
+    let axql = crate::axql::parse_axql_query(&question.query)?;
+    let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&axql);
+    let prepared = query_ir.prepare_with_meta(db, meta)?;
+    let query_apply = prepared.apply_refinement_handle_with_theory_graph(
+        db,
+        meta,
+        query_handle,
+        compiled_schema,
+        theories,
+    )?;
+    let mut refined_question = question.clone();
+    refined_question.query = query_apply.refined_query_ir_v1.to_axql_text()?;
+    Ok(CompetencyQuestionRefinementApplyResultV1 {
+        question_name: question.name.clone(),
+        base_question: question.clone(),
+        refined_question,
+        query_apply,
+    })
+}
+
+#[allow(dead_code)]
+pub fn apply_runtime_refinement_handle_to_competency_question(
+    db: &PathDB,
+    meta: Option<&MetaPlaneIndex>,
+    question: &CompetencyQuestionV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+) -> Result<CompetencyQuestionV1> {
+    Ok(
+        apply_runtime_refinement_handle_to_competency_question_result(db, meta, question, handle)?
+            .refined_question,
+    )
 }
 
 fn normalized_competency_query(
@@ -328,7 +431,21 @@ pub fn evaluate_competency_questions_with_trust(
 
     for q in questions {
         let (query, min_rows, weight) = normalized_competency_query(q)?;
-        let mut prepared = crate::axql::prepare_axql_query_with_meta(db, &query, meta.as_ref())?;
+        let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&query);
+        let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
+        let refinement_candidates = prepared
+            .exploration_view(None)
+            .exploration_suggestions
+            .into_iter()
+            .flat_map(|suggestion| suggestion.refinement_candidates.into_iter())
+            .filter(|candidate| !candidate.handle.preview_fragment().contains("?_lookup"))
+            .map(|candidate| {
+                crate::typed_refinement::RuntimeRefinementCandidateV1::wrap_axql_for_competency_question(
+                    q.name.clone(),
+                    candidate,
+                )
+            })
+            .collect::<Vec<_>>();
         let trust = crate::trust_contract::query_user_visible_trust_contract_with_meta(
             &query,
             &prepared.certifiability(),
@@ -360,6 +477,93 @@ pub fn evaluate_competency_questions_with_trust(
                 semantic_coverage: trust.semantic_coverage,
                 gaps: trust.gaps,
             },
+            refinement_candidates,
+        });
+    }
+
+    let total = questions.len();
+    let coverage = if total == 0 {
+        0.0
+    } else {
+        satisfied as f64 / total as f64
+    };
+
+    Ok(CompetencyCoverageWithTrustV1 {
+        total,
+        satisfied,
+        coverage,
+        cost: total_cost,
+        questions: results,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_competency_questions_with_trust_and_theory_graph(
+    db: &PathDB,
+    questions: &[CompetencyQuestionV1],
+    compiled_schema: &CompiledSchemaIr,
+    theories: &[TheoryIr],
+) -> Result<CompetencyCoverageWithTrustV1> {
+    if questions.is_empty() {
+        return Ok(CompetencyCoverageWithTrustV1::default());
+    }
+
+    let meta = MetaPlaneIndex::from_db(db).ok();
+    let mut results: Vec<CompetencyQuestionEvaluationV1> = Vec::new();
+    let mut satisfied = 0usize;
+    let mut total_cost = 0.0;
+
+    for q in questions {
+        let (query, min_rows, weight) = normalized_competency_query(q)?;
+        let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&query);
+        let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
+        let refinement_candidates = prepared
+            .exploration_view_with_theory_graph(None, compiled_schema, theories)
+            .exploration_suggestions
+            .into_iter()
+            .flat_map(|suggestion| suggestion.refinement_candidates.into_iter())
+            .filter(|candidate| !candidate.handle.preview_fragment().contains("?_lookup"))
+            .map(|candidate| {
+                crate::typed_refinement::RuntimeRefinementCandidateV1::wrap_axql_for_competency_question_with_theory(
+                    q.name.clone(),
+                    candidate,
+                    compiled_schema,
+                    theories,
+                )
+            })
+            .collect::<Vec<_>>();
+        let trust = crate::trust_contract::query_user_visible_trust_contract_with_meta(
+            &query,
+            &prepared.certifiability(),
+            false,
+            None,
+            meta.as_ref(),
+        );
+        let res = prepared.execute(db, meta.as_ref())?;
+        let rows = res.rows.len();
+        let ok = rows >= min_rows;
+        if ok {
+            satisfied += 1;
+        }
+        let cost = if ok { 0.0 } else { weight };
+        total_cost += cost;
+
+        results.push(CompetencyQuestionEvaluationV1 {
+            name: q.name.clone(),
+            rows,
+            min_rows,
+            satisfied: ok,
+            weight,
+            cost,
+            trust: CompetencyQuestionTrustV1 {
+                trust_class: trust.trust_class,
+                coverage: Some(trust.coverage),
+                reasons: trust.reasons,
+                notes: trust.notes,
+                semantic_coverage: trust.semantic_coverage,
+                gaps: trust.gaps,
+            },
+            refinement_candidates,
         });
     }
 
@@ -506,6 +710,220 @@ mod tests {
             .notes
             .iter()
             .any(|note| note.contains("full ontology closure")));
+        assert!(eval.questions[0]
+            .refinement_candidates
+            .iter()
+            .all(|candidate| matches!(
+                candidate.handle.domain(),
+                crate::typed_refinement::RuntimeRefinementDomainV1::CompetencyQuestionRepair
+            )));
+        Ok(())
+    }
+
+    #[test]
+    fn competency_questions_surface_runtime_query_repair_handles() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+
+        let question = CompetencyQuestionV1 {
+            name: "flow_dst".to_string(),
+            question: Some("Find a downstream supplier".to_string()),
+            query: r#"select ?dst where ?f = Demo.Flow(from=a, to=?dst) limit 1"#.to_string(),
+            min_rows: 1,
+            weight: 1.0,
+            contexts: Vec::new(),
+        };
+
+        let eval = evaluate_competency_questions_with_trust(&db, std::slice::from_ref(&question))?;
+        let candidate = eval.questions[0]
+            .refinement_candidates
+            .iter()
+            .find(|candidate| {
+                matches!(
+                    candidate.handle.domain(),
+                    crate::typed_refinement::RuntimeRefinementDomainV1::CompetencyQuestionRepair
+                ) && matches!(
+                    candidate.kind,
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::AddTypeGuard
+                ) && candidate.target_type.as_deref() == Some("Demo.Supplier")
+            })
+            .expect("expected CQ repair candidate");
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let refined = apply_runtime_refinement_handle_to_competency_question(
+            &db,
+            Some(&meta),
+            &question,
+            &candidate.handle,
+        )?;
+        assert_ne!(refined.query, question.query);
+        assert!(refined.query.contains("Demo.Supplier"));
+        Ok(())
+    }
+
+    #[test]
+    fn competency_questions_can_attach_compiled_theory_handles_to_repairs() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+theory DemoRules on Demo:
+  constraint key Parent(parent, child)
+
+instance I of Demo:
+  Person = {Alice, Bob}
+  Parent = {(parent=Alice, child=Bob)}
+"#;
+        let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
+        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&parsed.schemas[0]);
+        let theories = parsed
+            .theories
+            .iter()
+            .map(|theory| axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(anyhow::Error::msg)?;
+
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+
+        let question = CompetencyQuestionV1 {
+            name: "parent_child".to_string(),
+            question: Some("Find Alice's child".to_string()),
+            query: r#"select ?c where ?f = Demo.Parent(parent=Alice, child=?c) limit 1"#
+                .to_string(),
+            min_rows: 1,
+            weight: 1.0,
+            contexts: Vec::new(),
+        };
+
+        let eval = evaluate_competency_questions_with_trust_and_theory_graph(
+            &db,
+            std::slice::from_ref(&question),
+            &compiled_schema,
+            &theories,
+        )?;
+        assert!(eval.questions[0]
+            .refinement_candidates
+            .iter()
+            .any(|candidate| {
+                matches!(
+                    candidate.theory_obligation_ref.as_ref(),
+                    Some(axiograph_pathdb::kernel_ir::TheoryObligationRefIr::Constraint {
+                        relation_name,
+                        ..
+                    }) if relation_name.as_deref() == Some("Parent")
+                ) && candidate.theory_subject_refs.iter().any(|subject| {
+                    matches!(
+                        subject,
+                        axiograph_pathdb::kernel_ir::TheorySubjectRefIr::Relation {
+                            relation_name,
+                            ..
+                        } if relation_name == "Parent"
+                    )
+                })
+            }));
+        Ok(())
+    }
+
+    #[test]
+    fn competency_question_refinement_apply_result_preserves_theory_graph() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+theory DemoRules on Demo:
+  constraint key Flow(from, to)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
+        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&parsed.schemas[0]);
+        let theories = parsed
+            .theories
+            .iter()
+            .map(|theory| axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(anyhow::Error::msg)?;
+
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let question = CompetencyQuestionV1 {
+            name: "flow_dst".to_string(),
+            question: Some("Find a downstream supplier".to_string()),
+            query: r#"select ?dst where ?f = Demo.Flow(from=a, to=?dst) limit 1"#.to_string(),
+            min_rows: 1,
+            weight: 1.0,
+            contexts: Vec::new(),
+        };
+
+        let eval = evaluate_competency_questions_with_trust_and_theory_graph(
+            &db,
+            std::slice::from_ref(&question),
+            &compiled_schema,
+            &theories,
+        )?;
+        let candidate = eval.questions[0]
+            .refinement_candidates
+            .iter()
+            .find(|candidate| {
+                matches!(
+                    candidate.kind,
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::BindFactRelation
+                )
+            })
+            .expect("expected CQ repair candidate");
+
+        let applied =
+            apply_runtime_refinement_handle_to_competency_question_result_with_theory_graph(
+                &db,
+                Some(&meta),
+                &question,
+                &candidate.handle,
+                &compiled_schema,
+                &theories,
+            )?;
+        assert_ne!(applied.refined_question.query, question.query);
+        assert!(applied
+            .query_apply
+            .refined_exploration
+            .refinement_candidates
+            .iter()
+            .any(|candidate| {
+                matches!(
+                    candidate.theory_obligation_ref.as_ref(),
+                    Some(axiograph_pathdb::kernel_ir::TheoryObligationRefIr::Constraint {
+                        relation_name,
+                        ..
+                    }) if relation_name.as_deref() == Some("Flow")
+                )
+            }));
         Ok(())
     }
 }

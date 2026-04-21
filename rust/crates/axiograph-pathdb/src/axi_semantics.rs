@@ -45,8 +45,7 @@ use crate::axi_meta::*;
 use crate::kernel_ir::{
     classify_role, compile_relation_semantics, CompiledSchemaIr, RelationSemanticsIr, RoleIr,
 };
-use crate::PathDB;
-use crate::SchemaId;
+use crate::{ObjectTypeId, PathDB, RoleId, SchemaId};
 
 #[derive(Debug, Clone, Default)]
 pub struct MetaPlaneIndex {
@@ -56,6 +55,7 @@ pub struct MetaPlaneIndex {
 
 #[derive(Debug, Clone)]
 pub struct SchemaIndex {
+    pub schema_name: String,
     pub schema_entity: u32,
     pub module_name: Option<String>,
     pub object_types: HashSet<String>,
@@ -206,6 +206,10 @@ impl SchemaIndex {
             .fields
             .iter()
             .map(|field| RoleIr {
+                role_id: RoleId::new(format!(
+                    "role:{}:{}:{}",
+                    self.schema_name, relation_name, field.field_name
+                )),
                 name: field.field_name.clone(),
                 target_type: field.field_type.clone(),
                 order: field.field_index as u16,
@@ -218,6 +222,7 @@ impl SchemaIndex {
             })
             .collect::<Vec<_>>();
         Some(compile_relation_semantics(
+            &self.schema_name,
             relation_name,
             self.tuple_entity_type_name(relation_name),
             roles,
@@ -225,6 +230,16 @@ impl SchemaIndex {
     }
 
     pub fn compiled_schema_ir(&self, schema_name: &str) -> CompiledSchemaIr {
+        let object_type_ids = self
+            .object_types
+            .iter()
+            .map(|object_type| {
+                (
+                    object_type.clone(),
+                    ObjectTypeId::new(format!("object:{}:{}", schema_name, object_type)),
+                )
+            })
+            .collect();
         let relations = self
             .relation_decls
             .keys()
@@ -233,10 +248,55 @@ impl SchemaIndex {
                     .map(|rel| (name.clone(), rel))
             })
             .collect();
-        CompiledSchemaIr {
+        let subtypes_of = self
+            .object_types
+            .iter()
+            .map(|expected| {
+                let subtypes = self
+                    .object_types
+                    .iter()
+                    .filter(|candidate| {
+                        self.supertypes_of
+                            .get(*candidate)
+                            .is_some_and(|supers| supers.contains(expected))
+                    })
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                (expected.clone(), subtypes)
+            })
+            .collect::<HashMap<_, _>>();
+        let mut compiled = CompiledSchemaIr {
             schema_id: SchemaId::new(schema_name.to_string()),
+            object_types: self.object_types.clone(),
+            object_type_ids,
+            supertypes_of: self.supertypes_of.clone(),
+            subtypes_of,
             relations,
-        }
+            role_interfaces: HashMap::new(),
+        };
+        compiled.role_interfaces = compiled
+            .relations
+            .values()
+            .flat_map(|relation| {
+                relation.roles.iter().map(|role| {
+                    let scoped_role_name = format!("{}:{}", relation.name, role.name);
+                    (
+                        scoped_role_name.clone(),
+                        crate::kernel_ir::RoleInterfaceIr {
+                            role_id: role.role_id.clone(),
+                            scoped_role_name,
+                            relation_name: relation.name.clone(),
+                            role_name: role.name.clone(),
+                            declared_target_type: role.target_type.clone(),
+                            role_kind: role.kind,
+                            admissible_player_types: compiled
+                                .admissible_player_types(&role.target_type),
+                        },
+                    )
+                })
+            })
+            .collect();
+        compiled
     }
 }
 
@@ -604,6 +664,7 @@ impl MetaPlaneIndex {
 
             let supertypes_of = compute_supertypes_closure(&object_types, &subtype_decls);
             let schema_index = SchemaIndex {
+                schema_name: schema_name.clone(),
                 schema_entity,
                 module_name,
                 object_types,

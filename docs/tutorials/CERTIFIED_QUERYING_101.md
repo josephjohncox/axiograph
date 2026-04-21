@@ -48,24 +48,22 @@ select ?p where ?f = Parent(parent=?p, child=Bob) limit 10
 
 ---
 
-## 2) Emit a query certificate (Rust)
+## 2) Emit a typed query witness (Rust)
 
-Because the input is a canonical `.axi` module, `axiograph cert query` also writes
-a derived `PathDBExportV1` snapshot anchor (used by Lean verification).
+For canonical `.axi` input, `axiograph cert query` now emits the canonical
+`.axi`-anchored typed query-witness path directly.
 
 ```bash
 bin/axiograph cert query \
-  --input examples/ontology/OntologyRewrites.axi \
   --lang axql \
-  --query 'select ?p where ?f = Parent(parent=?p, child=Bob) limit 10' \
-  --out build/bob_parent.query_cert.json \
-  --anchor-out build/OntologyRewrites.anchor.axi
+  examples/ontology/OntologyRewrites.axi \
+  'select ?p where ?f = Parent(parent=?p, child=Bob) limit 10' \
+  --out build/bob_parent.query_cert.json
 ```
 
 You now have:
 
 - `build/bob_parent.query_cert.json` (certificate)
-- `build/OntologyRewrites.anchor.axi` (snapshot anchor for the checker)
 
 ---
 
@@ -74,7 +72,7 @@ You now have:
 ```bash
 make verify-lean-cert \
   CERT=build/bob_parent.query_cert.json \
-  AXI=build/OntologyRewrites.anchor.axi
+  AXI=examples/ontology/OntologyRewrites.axi
 ```
 
 If the checker succeeds, it prints a success line and exits with code 0.
@@ -85,11 +83,10 @@ If the checker succeeds, it prints a success line and exits with code 0.
 
 You proved:
 
-- the returned binding(s) are **derivable from the anchored snapshot input** under the AxQL semantics.
+- the returned binding(s) are **derivable from the anchored canonical `.axi` input** under the AxQL semantics.
 
 You did **not** prove:
 
 - the input facts are “true in the real world”.
 
 This separation is intentional: certificates prove **derivability from accepted inputs**, not correctness of the inputs.
-

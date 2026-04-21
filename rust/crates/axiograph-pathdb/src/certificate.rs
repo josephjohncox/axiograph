@@ -155,12 +155,6 @@ pub enum ReachabilityProofV2 {
         to: u32,
         /// Relation confidence as a fixed-point numerator (Lean checks this).
         rel_confidence_fp: FixedPointProbability,
-        /// Optional fact id for this edge (for `.axi`-anchored query certificates).
-        ///
-        /// For PathDB export snapshots (`PathDBExportV1`), this corresponds to
-        /// the `Relation_<id>` identifier in the snapshot instance.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        relation_id: Option<u32>,
         rest: Box<ReachabilityProofV2>,
     },
 }
@@ -292,6 +286,10 @@ pub enum CertificatePayloadV2 {
     ReachabilityV2 {
         proof: ReachabilityProofV2,
     },
+    #[serde(rename = "reachability_v3")]
+    ReachabilityV3 {
+        proof: ReachabilityProofV3,
+    },
     ResolutionV2 {
         proof: ResolutionProofV2,
     },
@@ -306,14 +304,6 @@ pub enum CertificatePayloadV2 {
     },
     PathEquivV2 {
         proof: PathEquivProofV2,
-    },
-    #[serde(rename = "query_result_v1")]
-    QueryResultV1 {
-        proof: QueryResultProofV1,
-    },
-    #[serde(rename = "query_result_v2")]
-    QueryResultV2 {
-        proof: QueryResultProofV2,
     },
     #[serde(rename = "query_result_v3")]
     QueryResultV3 {
@@ -342,11 +332,19 @@ impl CertificateV2 {
         }
     }
 
-    pub fn reachability(proof: ReachabilityProofV2) -> Self {
+    pub fn reachability_v2(proof: ReachabilityProofV2) -> Self {
         Self {
             version: CERTIFICATE_VERSION_V2,
             anchor: None,
             payload: CertificatePayloadV2::ReachabilityV2 { proof },
+        }
+    }
+
+    pub fn reachability_v3(proof: ReachabilityProofV3) -> Self {
+        Self {
+            version: CERTIFICATE_VERSION_V2,
+            anchor: None,
+            payload: CertificatePayloadV2::ReachabilityV3 { proof },
         }
     }
 
@@ -387,22 +385,6 @@ impl CertificateV2 {
             version: CERTIFICATE_VERSION_V2,
             anchor: None,
             payload: CertificatePayloadV2::PathEquivV2 { proof },
-        }
-    }
-
-    pub fn query_result_v1(proof: QueryResultProofV1) -> Self {
-        Self {
-            version: CERTIFICATE_VERSION_V2,
-            anchor: None,
-            payload: CertificatePayloadV2::QueryResultV1 { proof },
-        }
-    }
-
-    pub fn query_result_v2(proof: QueryResultProofV2) -> Self {
-        Self {
-            version: CERTIFICATE_VERSION_V2,
-            anchor: None,
-            payload: CertificatePayloadV2::QueryResultV2 { proof },
         }
     }
 
@@ -993,153 +975,10 @@ pub struct PathEquivProofV2 {
 }
 
 // =============================================================================
-// Query result certificates (conjunctive queries; AxQL / SQL-ish)
+// Typed query witnesses (v3): `.axi`-anchored, name-based
 // =============================================================================
 
-/// Certified query term (v1).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum QueryTermV1 {
-    Var { name: String },
-    Const { entity: u32 },
-}
-
-/// Regular-path query (RPQ) expression over relation-type IDs (interned string ids).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum QueryRegexV1 {
-    Epsilon,
-    Rel { rel_type_id: u32 },
-    Seq { parts: Vec<QueryRegexV1> },
-    Alt { parts: Vec<QueryRegexV1> },
-    Star { inner: Box<QueryRegexV1> },
-    Plus { inner: Box<QueryRegexV1> },
-    Opt { inner: Box<QueryRegexV1> },
-}
-
-/// Query atom in the certified core query IR (v1).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum QueryAtomV1 {
-    Type {
-        term: QueryTermV1,
-        type_id: u32,
-    },
-    AttrEq {
-        term: QueryTermV1,
-        key_id: u32,
-        value_id: u32,
-    },
-    Path {
-        left: QueryTermV1,
-        regex: QueryRegexV1,
-        right: QueryTermV1,
-    },
-}
-
-/// Certified conjunctive query (v1).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryV1 {
-    pub select_vars: Vec<String>,
-    pub atoms: Vec<QueryAtomV1>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_hops: Option<u32>,
-    /// Optional minimum per-edge confidence threshold for path witnesses.
-    ///
-    /// Semantics: for every `ReachabilityProofV2::Step` used to witness a `path`
-    /// atom, the step's `rel_confidence_fp` must be ≥ this value.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_confidence_fp: Option<FixedPointProbability>,
-}
-
-/// A single variable binding in a query result row.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryBindingV1 {
-    pub var: String,
-    pub entity: u32,
-}
-
-/// Witness for a single query atom under a given binding.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum QueryAtomWitnessV1 {
-    Type {
-        entity: u32,
-        type_id: u32,
-    },
-    AttrEq {
-        entity: u32,
-        key_id: u32,
-        value_id: u32,
-    },
-    /// A path witness (as a reachability proof).
-    ///
-    /// In anchored mode, every step must include a `relation_id` fact id that
-    /// the checker can validate against a `PathDBExportV1` snapshot.
-    Path {
-        proof: ReachabilityProofV2,
-    },
-}
-
-/// One certified query result row: bindings + witnesses for each atom.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryRowV1 {
-    pub bindings: Vec<QueryBindingV1>,
-    pub witnesses: Vec<QueryAtomWitnessV1>,
-}
-
-/// Certified query result set (v1).
-///
-/// This does **not** claim completeness: it proves that each returned row
-/// satisfies the query, but not that all satisfying rows were returned.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryResultProofV1 {
-    pub query: QueryV1,
-    pub rows: Vec<QueryRowV1>,
-    pub truncated: bool,
-}
-
-/// Certified disjunctive query: a disjunction (OR) of conjunctive queries (v2).
-///
-/// This is the natural next step beyond conjunctive queries (CQs): **unions of
-/// conjunctive queries** (UCQs). It keeps certification simple:
-///
-/// - a row is valid if it satisfies *one* disjunct,
-/// - the certificate records which disjunct was used and provides witnesses for
-///   that disjunct's atoms.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryV2 {
-    pub select_vars: Vec<String>,
-    /// Disjuncts (OR-branches), each a conjunction of atoms.
-    pub disjuncts: Vec<Vec<QueryAtomV1>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_hops: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_confidence_fp: Option<FixedPointProbability>,
-}
-
-/// One certified query result row for a disjunctive query (v2).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryRowV2 {
-    /// Which disjunct in `QueryV2.disjuncts` this row satisfies.
-    pub disjunct: u32,
-    pub bindings: Vec<QueryBindingV1>,
-    pub witnesses: Vec<QueryAtomWitnessV1>,
-}
-
-/// Certified query result set for `QueryV2` (v2).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryResultProofV2 {
-    pub query: QueryV2,
-    pub rows: Vec<QueryRowV2>,
-    pub truncated: bool,
-}
-
-// =============================================================================
-// Query result certificates (v3): `.axi`-anchored, name-based
-// =============================================================================
-
-/// Certified query term (v3): name-based (canonical `.axi` anchoring).
+/// Typed query term (v3): name-based (canonical `.axi` anchoring).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueryTermV3 {
@@ -1169,7 +1008,7 @@ pub enum QueryRegexV3 {
     Opt { inner: Box<QueryRegexV3> },
 }
 
-/// Query atom in the certified core query IR (v3).
+/// Query atom in the typed certified query IR (v3).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueryAtomV3 {
@@ -1189,7 +1028,7 @@ pub enum QueryAtomV3 {
     },
 }
 
-/// Certified query IR (v3): union-of-conjunctive queries (UCQ).
+/// Typed certified query IR (v3): union-of-conjunctive queries (UCQ).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueryV3 {
     pub select_vars: Vec<String>,
@@ -1200,7 +1039,7 @@ pub struct QueryV3 {
     pub min_confidence_fp: Option<FixedPointProbability>,
 }
 
-/// A single variable binding in a query result row (v3).
+/// A single variable binding in a typed query-witness row (v3).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueryBindingV3 {
     pub var: String,
@@ -1227,7 +1066,7 @@ pub enum ReachabilityProofV3 {
     },
 }
 
-/// Witness for a single query atom under a given binding (v3).
+/// Witness for a single typed query atom under a given binding (v3).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QueryAtomWitnessV3 {
@@ -1245,7 +1084,7 @@ pub enum QueryAtomWitnessV3 {
     },
 }
 
-/// One certified query result row for a disjunctive query (v3).
+/// One typed query-witness row for a disjunctive query (v3).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueryRowV3 {
     pub disjunct: u32,
@@ -1253,7 +1092,7 @@ pub struct QueryRowV3 {
     pub witnesses: Vec<QueryAtomWitnessV3>,
 }
 
-/// Certified query result set (v3).
+/// Typed query witness set (v3).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QueryResultProofV3 {
     pub query: QueryV3,
@@ -1267,6 +1106,7 @@ pub struct QueryResultProofV3 {
     pub elaboration_rewrites: Vec<RewriteDerivationProofV3>,
 }
 
+/// Runtime-facing alias for the canonical `.axi`-anchored query witness path.
 #[cfg(test)]
 mod normalize_path_v2_tests {
     use super::*;
@@ -1291,7 +1131,7 @@ mod normalize_path_v2_tests {
 
     #[test]
     fn certificate_v2_round_trips_typed_anchor() {
-        let cert = CertificateV2::reachability(ReachabilityProofV2::Reflexive { entity: 7 })
+        let cert = CertificateV2::reachability_v2(ReachabilityProofV2::Reflexive { entity: 7 })
             .with_anchor(AxiAnchorV1::new("fnv1a64:feedfacecafebeef"));
 
         let json = serde_json::to_string(&cert).expect("certificate should serialize");
@@ -1305,6 +1145,28 @@ mod normalize_path_v2_tests {
                 .axi_digest_v1,
             AxiDigest::new("fnv1a64:feedfacecafebeef")
         );
+    }
+
+    #[test]
+    fn certificate_v2_round_trips_reachability_v3_payload() {
+        let cert = CertificateV2::reachability_v3(ReachabilityProofV3::Reflexive {
+            entity: "axi:id:Node:alice".to_string(),
+        });
+
+        let json = serde_json::to_value(&cert).expect("certificate should serialize");
+        assert_eq!(json["kind"], "reachability_v3");
+
+        let round_trip: CertificateV2 =
+            serde_json::from_value(json).expect("certificate should deserialize");
+
+        match round_trip.payload {
+            CertificatePayloadV2::ReachabilityV3 {
+                proof: ReachabilityProofV3::Reflexive { entity },
+            } => {
+                assert_eq!(entity, "axi:id:Node:alice");
+            }
+            other => panic!("expected reachability_v3 payload, got {other:?}"),
+        }
     }
 
     #[test]

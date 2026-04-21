@@ -1,4 +1,4 @@
--- Social Network as Higher Groupoid
+-- Social network ontology
 --
 -- Models social relationships using 2-categorical structure:
 -- - 0-cells: People
@@ -9,10 +9,11 @@
 -- has structure. "We were friends, then colleagues, now friends again"
 -- forms a PATH in the space of relationships.
 --
--- HoTT enables:
--- - Tracking relationship evolution
--- - Proving relationship equivalences
--- - Reasoning about social dynamics
+-- The point of the example is readable typed social structure:
+-- - current relationships,
+-- - relationship evolution,
+-- - trust paths,
+-- - and equivalence of social histories.
 
 module SocialNetwork
 
@@ -151,7 +152,12 @@ instance SocialExample of SocialGraph:
     Deformalize,   -- Colleague -> Friend
     DeepTrust,     -- Friend -> CloseFriend
     MeetIntro,     -- Stranger -> Acquaintance
-    Drift          -- Any -> Stranger (relationship decay)
+    Drift,         -- Any -> Stranger (relationship decay)
+    BecameFriends,
+    BecameClose,
+    BecameColleagues,
+    WorkThenFriend,
+    FriendThenWork
   }
 
   Time = {T0, T1, T2, T3}

@@ -1,7 +1,7 @@
 # Axiograph REPL script: import canonical `.axi` schema module (SchemaEvolution)
 #
 # Demonstrates:
-# - importing a canonical `axi_schema_v1` module (schema/theory/instance)
+# - importing a canonical `axi_v1` module (schema/theory/instance)
 # - morphisms as first-class *witness nodes* (reified tuples tagged `Morphism`)
 # - homotopies as first-class *witness nodes* (reified tuples tagged `Homotopy`)
 # - visualization of a schema-evolution neighborhood (migrations + equivalences)

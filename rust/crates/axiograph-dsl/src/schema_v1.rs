@@ -1,12 +1,13 @@
-//! `.axi` dialect: `axi_schema_v1`
+//! Canonical `.axi` schema/theory/instance surface backing `axi_v1`
 //!
-//! This dialect is the *canonical schema-oriented* surface syntax used by the
-//! example corpus (e.g. `examples/economics/EconomicFlows.axi`).
+//! This module defines the single canonical `.axi` authoring surface used by
+//! the live example corpus and the Rust-side import/checking path.
 //!
-//! Notes:
-//! - This is **not** Axiograph's removed legacy `.axi` syntax (pre-`axi_v1`).
-//! - The goal is to parse the canonical corpus in a stable, readable way first,
-//!   then converge dialects once the migration is complete.
+//! Internal note:
+//! - the module name stays `schema_v1` because it is the schema/theory/instance
+//!   AST behind `axi_v1`;
+//! - contributors should think in terms of one canonical `.axi` surface, not
+//!   multiple end-user dialects.
 
 use nom::{
     branch::alt,
@@ -46,7 +47,11 @@ pub struct SchemaV1Schema {
 pub struct SubtypeDeclV1 {
     pub sub: Name,
     pub sup: Name,
-    /// Optional explicit inclusion morphism name (legacy dialect uses this).
+    /// Optional explicit inclusion morphism name.
+    ///
+    /// This is preserved for now because it still appears in some internal
+    /// lowering paths, but it is not part of the preferred canonical authoring
+    /// style.
     pub inclusion: Option<Name>,
 }
 
@@ -719,7 +724,7 @@ fn parse_subtype_decl(rest: &str) -> Result<SubtypeDeclV1, String> {
     all_consuming(parser)(rest.trim())
         .map(|(_, v)| v)
         .map_err(|_| {
-            "subtype expects: `subtype <Sub> < <Sup>` (or `<:` and optional `as Incl`)".to_string()
+            "subtype expects canonical `subtype <Sub> < <Sup>` (optionally `as Incl`)".to_string()
         })
 }
 
@@ -803,13 +808,16 @@ fn parse_relation_decl(line: &str) -> Result<RelationDeclV1, String> {
         let (input, annotations) = nom::multi::many0(annotation)(input)?;
         let (input, _) = multispace0(input)?;
 
-        // Expand a small set of legacy-ish annotations into explicit fields.
+        // Accept a small set of relation-role shorthands and immediately
+        // normalize them to explicit roles.
         //
-        // This keeps the canonical parser compatible with examples like:
+        // Canonical authoring style is:
+        //   relation Parent(child: Person, parent: Person, ctx: Context, time: Time)
+        //
+        // Accepted shorthand:
         //   relation Parent(child: Person, parent: Person) @context Context @temporal Time
         //
-        // (The longer-term intent is to give these annotations first-class semantics
-        // in the Lean spec + certificate layer. For now we just parse them.)
+        // The semantic distinction is recovered later in the compiled IR.
         let mut expanded_fields = fields;
         for (ann, ty) in annotations {
             match ann {
@@ -844,7 +852,7 @@ fn parse_relation_decl(line: &str) -> Result<RelationDeclV1, String> {
     all_consuming(parser)(line.trim())
         .map(|(_, v)| v)
         .map_err(|_| {
-            "relation expects: `relation Name(field: Ty, ...)` (optionally followed by `@context Ty` / `@temporal Ty`)".to_string()
+            "relation expects canonical `relation Name(role: Ty, ...)` (accepted shorthand: `@context Ty` / `@temporal Ty`)".to_string()
         })
 }
 
@@ -1146,7 +1154,7 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
     })
 }
 
-/// Parse a `constraint ...` line *body* in `axi_schema_v1`.
+/// Parse a `constraint ...` line body in canonical `axi_v1` surface syntax.
 ///
 /// This takes the text after the `constraint ` keyword.
 ///
@@ -1157,7 +1165,7 @@ pub fn parse_constraint_v1(rest: &str) -> Result<ConstraintV1, String> {
     parse_constraint(rest)
 }
 
-/// Format a `ConstraintV1` back into canonical `axi_schema_v1` surface syntax.
+/// Format a `ConstraintV1` back into canonical `axi_v1` surface syntax.
 ///
 /// This returns a single-line `constraint ...` string. Named-block constraints
 /// (`ConstraintV1::NamedBlock`) require multi-line rendering and are **not**
@@ -1249,6 +1257,39 @@ pub fn format_constraint_v1(constraint: &ConstraintV1) -> Result<String, String>
                 .to_string(),
         ),
     }
+}
+
+/// Parse a canonical `subtype ...` declaration body.
+pub fn parse_subtype_decl_v1(rest: &str) -> Result<SubtypeDeclV1, String> {
+    parse_subtype_decl(rest)
+}
+
+/// Format a subtype declaration back into canonical `axi_v1` surface syntax.
+pub fn format_subtype_decl_v1(decl: &SubtypeDeclV1) -> String {
+    match decl.inclusion.as_ref() {
+        Some(inclusion) => format!("subtype {} < {} as {}", decl.sub, decl.sup, inclusion),
+        None => format!("subtype {} < {}", decl.sub, decl.sup),
+    }
+}
+
+/// Parse a canonical `relation ...` declaration.
+pub fn parse_relation_decl_v1(line: &str) -> Result<RelationDeclV1, String> {
+    parse_relation_decl(line)
+}
+
+/// Format a relation declaration back into canonical `axi_v1` surface syntax.
+///
+/// Canonical formatting always renders explicit roles. Accepted shorthands such
+/// as `@context` / `@temporal` are lowered to explicit `ctx` / `time` roles by
+/// the parser before formatting.
+pub fn format_relation_decl_v1(relation: &RelationDeclV1) -> String {
+    let fields = relation
+        .fields
+        .iter()
+        .map(|field| format!("{}: {}", field.field, field.ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("relation {}({fields})", relation.name)
 }
 
 fn split_rel_field(s: &str) -> Result<(Name, Name), String> {
@@ -1781,5 +1822,23 @@ mod tests {
         assert_eq!(module.module_name, "SchemaEvolution");
         assert!(module.schemas.iter().any(|s| s.name == "OntologyMeta"));
         assert!(module.instances.iter().any(|i| i.name == "ProductCatalog"));
+    }
+
+    #[test]
+    fn relation_shorthand_formats_back_to_explicit_roles() {
+        let relation = parse_relation_decl_v1(
+            "relation Parent(child: Person, parent: Person) @context Context @temporal Time",
+        )
+        .expect("parse relation declaration");
+        assert_eq!(
+            format_relation_decl_v1(&relation),
+            "relation Parent(child: Person, parent: Person, ctx: Context, time: Time)"
+        );
+    }
+
+    #[test]
+    fn subtype_alias_formats_back_to_canonical_surface() {
+        let subtype = parse_subtype_decl_v1("Child <: Parent").expect("parse subtype declaration");
+        assert_eq!(format_subtype_decl_v1(&subtype), "subtype Child < Parent");
     }
 }

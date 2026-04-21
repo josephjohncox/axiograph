@@ -171,6 +171,45 @@ cargo test -p axiograph-pathdb --test pathdb_tests
 cargo test -p axiograph-llm-sync --test pathdb_snapshot_export_tests
 ```
 
+### Advanced Graph Backend Containers
+
+These smoke tests bring up the currently prioritized external graph backends with Docker Compose and
+exercise a minimal typed operation against each one:
+
+- `TypeDB` as the primary high-fidelity typed backend target
+- `TerminusDB` as the RDF/VCS-shaped secondary target
+
+The compose file lives at [rust/tests/docker/graph_backends.compose.yml](/Users/joseph/dev/Axiograph/axiograph_v6/rust/tests/docker/graph_backends.compose.yml).
+The test target is intentionally `ignored` by default because it requires Docker,
+image pulls, and a slower startup path than the normal crate tests.
+
+Run from repo root:
+
+```bash
+make test-backend-containers
+```
+
+Run from `rust/` directly:
+
+```bash
+AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1 cargo test --test backend_container_tests -- --ignored --nocapture
+```
+
+Useful environment flags:
+
+- `AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1` enables the ignored backend test.
+- `AXIOGRAPH_KEEP_BACKEND_TEST_CONTAINERS=1` leaves the compose project running
+  after the test for manual inspection.
+
+The current smoke checks are deliberately narrow:
+
+- `TypeDB`: create a database, define a minimal schema, insert data, query it back
+- `TerminusDB`: boot the server, create a database, verify it appears in the CLI listing
+
+These tests validate backend bootability and basic compatibility. They do not
+elevate any backend into the semantic kernel; Axiograph still treats these
+systems as typed projection/execution targets rather than the source of truth.
+
 ### With Output
 ```bash
 cargo test -- --nocapture

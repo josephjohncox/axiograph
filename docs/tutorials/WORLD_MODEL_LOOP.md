@@ -1,11 +1,11 @@
-# World Model Loop (JEPA + Guardrails + Promotion)
+# World Model Loop (Canonical `.axi` + Optional JEPA + Guardrails + Promotion)
 
 **Diataxis:** Tutorial  
 **Audience:** users and contributors
 
 This tutorial shows how to:
-1) export JEPA training pairs from a full `.axi` module,  
-2) run a world model (real model preferred),  
+1) run a world model directly from a canonical `.axi` module,
+2) optionally attach JEPA/training export metadata,
 3) emit proposals with guardrails, and  
 4) validate/commit/promote.
 
@@ -21,7 +21,36 @@ make binaries
 
 ---
 
-## 1) Export JEPA training pairs (generic masked-tuple)
+## 1) Run directly from canonical `.axi`
+
+The world-model request contract is grounded in the canonical `.axi` module.
+If you point `axiograph ingest world-model` at a canonical module, Axiograph
+passes that text and digest as the primary semantic input and can derive a
+JEPA/training export sidecar automatically when the backend benefits from it.
+When the flow starts from a live snapshot instead of a file, Axiograph first
+exports the selected canonical module and carries typed lineage anchors
+(`axi_digest_v1`, `pathdb_snapshot_id`, `accepted_snapshot_id`) alongside that
+same module text.
+
+```bash
+# OpenAI (default)
+export WORLD_MODEL_BACKEND=openai
+export OPENAI_API_KEY=...
+export WORLD_MODEL_MODEL=gpt-4o-mini
+
+bin/axiograph ingest world-model \
+  --input examples/Family.axi \
+  --out build/family_proposals.json \
+  --world-model-llm \
+  --world-model-model "$WORLD_MODEL_MODEL"
+```
+
+The output is **evidence-plane** `proposals.json`, with provenance metadata
+describing the world model and guardrail costs.
+
+---
+
+## 2) Optional JEPA training export (generic masked-tuple)
 
 Generic mask strategy: choose a fixed number of fields per tuple.
 
@@ -37,10 +66,12 @@ targets. It is anchored to `axi_digest_v1`.
 Grounding note:
 - Use full `.axi` modules as training input (schema + theory + instance + contexts + rewrite rules).
 - PathDB `.axpd` exports are derived for query performance, not canonical training truth.
+- This JEPA export is optional derived metadata. It should help a model, not
+  replace the canonical `.axi` request input.
 
 ---
 
-## 2) Explicit relation masks (endpoint-focused)
+## 3) Explicit relation masks (endpoint-focused)
 
 Sometimes you want to always mask a specific field (e.g., `parent`).
 You can post-process the export (or implement this directly in your plugin).
@@ -62,7 +93,7 @@ This is the **explicit mask** strategy; the generic approach is just
 
 ---
 
-## 3) Run a real world model (LLM-backed; no Python)
+## 4) Run a real world model with an explicit training sidecar (optional)
 
 By default, the demos use the **built-in** world model plugin
 (`axiograph ingest world-model-plugin-llm`). It supports:
@@ -71,7 +102,10 @@ By default, the demos use the **built-in** world model plugin
 - **Anthropic**, or
 - **Ollama** (local).
 
-Select the backend with environment variables before running the demo.
+Select the backend with environment variables before running the demo. Axiograph
+derives any optional JEPA/training sidecar inline from the canonical `.axi`
+input; `axiograph discover jepa-export` remains available when you want to
+inspect or persist that derived metadata separately.
 
 ```bash
 # OpenAI (default)
@@ -81,18 +115,14 @@ export WORLD_MODEL_MODEL=gpt-4o-mini
 
 bin/axiograph ingest world-model \
   --input examples/Family.axi \
-  --export build/family_jepa.json \
   --out build/family_proposals.json \
   --world-model-llm \
   --world-model-model "$WORLD_MODEL_MODEL"
 ```
 
-The output is **evidence-plane** `proposals.json`, with provenance metadata
-describing the world model and guardrail costs.
-
 ---
 
-## 4) Run a deterministic ONNX world model (offline)
+## 5) Run a deterministic ONNX world model (offline)
 
 Use this for offline, deterministic runs (no network, no LLM calls).
 
@@ -105,7 +135,6 @@ source .venv-onnx/bin/activate
 
 bin/axiograph ingest world-model \
   --input examples/Family.axi \
-  --export build/family_jepa.json \
   --out build/family_proposals_onnx.json \
   --world-model-plugin scripts/axiograph_world_model_plugin_onnx.py \
   --world-model-model onnx_v1
@@ -113,7 +142,7 @@ bin/axiograph ingest world-model \
 
 ---
 
-## 5) Run a transformer-style world model (stub)
+## 6) Run a transformer-style world model (stub)
 
 The transformer stub is a skeleton that shows how to wire a PyTorch model.
 Swap in your own checkpoint or training loop.
@@ -121,7 +150,6 @@ Swap in your own checkpoint or training loop.
 ```bash
 bin/axiograph ingest world-model \
   --input examples/Family.axi \
-  --export build/family_jepa.json \
   --out build/family_proposals_transformer.json \
   --world-model-plugin scripts/axiograph_world_model_plugin_transformer_stub.py \
   --world-model-model transformer_v1
@@ -129,7 +157,7 @@ bin/axiograph ingest world-model \
 
 ---
 
-## 6) Python plugin (optional; legacy)
+## 7) Python plugin (optional; legacy)
 
 If you still want a Python-backed LLM proposer, use:
 `scripts/axiograph_world_model_plugin_real.py`. The built-in plugin is now the
@@ -137,7 +165,7 @@ default for demos.
 
 ---
 
-## 7) Validate proposals (guardrails + constraints)
+## 8) Validate proposals (guardrails + constraints)
 
 ```bash
 bin/axiograph check quality examples/Family.axi --profile fast --plane both
@@ -155,7 +183,7 @@ bin/axiograph db accept pathdb-commit \
 
 ---
 
-## 8) Use the REPL / server loop
+## 9) Use the REPL / server loop
 
 REPL:
 
@@ -184,7 +212,7 @@ curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
 
 ---
 
-## 9) MPC plan -> draft .axi -> promote
+## 10) MPC plan -> draft .axi -> promote
 
 Use the MPC plan endpoint to generate multi-step proposals, then draft and
 promote a canonical module.
@@ -228,14 +256,14 @@ bin/axiograph discover draft-module \
   --infer-constraints
 ```
 
-## 10) Promotion (accepted plane)
+## 11) Promotion (accepted plane)
 
 Once proposals pass guardrails and review, promote into the accepted plane.
 See `docs/howto/ACCEPTED_PLANE.md` for the full workflow.
 
 ---
 
-## 11) Physics-scale demo (larger corpus)
+## 12) Physics-scale demo (larger corpus)
 
 The physics examples include differential geometry, mechanics, QFT, and algebra.
 This flow uses:
@@ -315,7 +343,6 @@ bin/axiograph discover competency-questions \
 ```bash
 bin/axiograph ingest world-model \
   --input examples/Family.axi \
-  --export build/family_jepa.json \
   --out build/family_proposals.json \
   --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py \
   --guardrail-weight quality_error=20 \

@@ -17,9 +17,10 @@ All of these should share the same *meaning* and be able to run in:
 
 Operational note:
 
-- `axiograph db serve` now accepts either raw AxQL or structured `query_ir_v1`
-  at `POST /query`, and can echo the canonical compiled `query_ir_v1` alongside
-  elaboration output.
+- `axiograph db serve` now accepts structured `query_ir_v1` at `POST /query`,
+  and can echo the canonical compiled `query_ir_v1` alongside elaboration output.
+- raw AxQL remains a human-facing REPL/debug surface, not the machine-facing
+  HTTP/tool boundary.
 - `query_ir_v1` is now the preferred execution seam for tooling: `QueryIrV1::prepare_with_meta`
   returns a typed prepared query handle (`PreparedQueryV1`) that exposes:
   - execution via prepared statement
@@ -34,7 +35,7 @@ Operational note:
   - `PreparedQueryV1::semantic_coverage`
   - `PreparedQueryV1::semantic_claims`
   - `PreparedQueryV1::trust_gaps`
-  - LLM tools `axql_elaborate` / `axql_run`
+  - LLM tools `axql_elaborate` / `axql_run` (typed `query_ir_v1` only)
   - REPL `q --elaborate` / `q --typecheck`
   return the core trust fields plus:
   - `claim_scope = returned_rows_within_snapshot_and_context`
@@ -67,8 +68,10 @@ Key idea: a query is a **conjunction of atoms** (a basic graph pattern),
 evaluated as a **graph homomorphism** (pattern match) over PathDB.
 
 AxQL also supports top-level **disjunction** (`or`): a query can be a union of
-conjunctive branches (UCQ). This is certificate-checkable via `query_result_v2`
-(each returned row is proved to satisfy *some* branch).
+conjunctive branches (UCQ). The preferred certificate path is the canonical
+`.axi`-anchored typed query-witness family (wire kind `query_result_v3`).
+Older snapshot-export query certificate families are historical verification
+seams for migrated fixtures only.
 
 Supported atoms:
 
@@ -198,7 +201,7 @@ ingestion artifacts:
 
 This is an optimization that also makes certified queries more explicit: the
 extra type atoms become part of the core query IR and are checked by Lean for
-`query_result_v1` certificates.
+canonical typed query-witness certificates (wire kind `query_result_v3`).
 
 User-facing type elaboration (REPL)
 
@@ -225,6 +228,48 @@ types/relations, or `Flow(foo=...)` where `foo` is not a declared field).
 With `--explain`, the REPL also prints a small **execution plan** summary
 (join order, candidate domain sizes, and FactIndex hints). This is untrusted
 debug output, but it helps explain performance and schema-directed inference.
+
+#### Type inference and hole-driven exploration
+
+Current implemented slice:
+
+- `q --elaborate`, `q --typecheck`, and prepared queries already expose inferred
+  variable types, ambiguity notes, schema-qualification choices, typed holes,
+  variable-centric exploration suggestions, and trust classification before
+  execution.
+- The same structured payload is also available to tool-loop/agent surfaces,
+  including `axql_elaborate` and the focused exploration tool `axql_explore`.
+- exploration suggestions now carry typed refinement handles rather than only
+  pasteable query fragments:
+  - `exploration_suggestions[*].refinement_candidates[*].handle`
+  - each handle has a stable id plus a typed operation (`add_type_guard`,
+    `add_edge_atom`, `add_fact_atom`) over machine-usable terms;
+- `PreparedQueryV1::apply_refinement_handle` /
+  `PreparedQueryV1::apply_refinement_by_id` apply one of those handles and
+  return:
+  - refined `query_ir_v1`,
+  - refined elaborated IR,
+  - trust/introspection before+after,
+  - and refreshed exploration suggestions for the new prepared query.
+- This makes elaboration usable as a real exploration loop instead of only as a
+  hidden planner step.
+
+Remaining gaps:
+
+- partial queries should preserve even more unresolved relation names, role
+  fillers, projection targets, or context restrictions as typed repair sites
+  rather than collapsing immediately into opaque errors;
+- the current typed apply protocol is conservative:
+  it applies only to a single conjunctive query body and does not yet target
+  individual disjuncts or higher-order theory objects;
+- and tooling should show how each repair changes result shape and
+  certifiability (`execution-only`, `mixed`, `certifiable`).
+
+This is runtime dependent-type usefulness rather than a replacement for the
+semantic kernel: the elaborator keeps schema/context indices and repair
+obligations explicit so humans and agents can explore the ontology safely,
+while accepted `.axi` anchors and Lean-checked certificates remain the
+authority for strong semantic claims.
 
 #### Context/world scoping (`in ...`)
 
@@ -274,9 +319,9 @@ This is intended for familiarity and tooling integration, not “full SQL”.
 
 AxQL/SQL-ish queries can be run in a **proof-producing mode**:
 
-- Rust emits a `query_result_v1` certificate (versioned JSON)
-- certificates are anchored to canonical `.axi` snapshots (`PathDBExportV1`) via module digest
-- Lean verifies that each returned row satisfies the query under that snapshot
+- Rust emits canonical `.axi`-anchored typed query witnesses (wire kind `query_result_v3`)
+- Lean verifies that each returned row satisfies the query under that anchor
+- older snapshot-export query certificate families are historical compatibility seams, not the preferred runtime contract
 
 This certificate is intentionally **soundness-only** (no completeness claim): it
 proves “these rows satisfy the query”, not “these are all the satisfying rows”.
@@ -295,9 +340,9 @@ and per-branch classification counts so callers can choose whether to:
 - execute whole query in untrusted mode and report trust caveats explicitly.
 
 The runtime currently marks `contains(...)`, `fts(...)`, and `fuzzy(...)` as
-execution-only even if other parts of the query are certifiable. `query_result_v2`
-certificates are therefore only emitted for fully certifiable fragments or for whole
-queries that avoid those operators and unsupported context shapes.
+execution-only even if other parts of the query are certifiable. Certified
+querying therefore still applies only to the supported fragment and does not
+upgrade approximate search into kernel semantics.
 
 The shared query-facing trust contract is intentionally stronger about what it
 does **not** say:
@@ -316,9 +361,8 @@ evidence-plane tooling for discovery and should not be conflated with
 certificate-checked derivability.
 
 E2E:
-- Emit cert from Rust (snapshot export): `axiograph cert query <snapshot_export.axi> --lang axql '<query>'`
-- Emit cert from Rust (canonical module): `axiograph cert query <module.axi> --anchor-out <derived_snapshot_export.axi> --lang axql '<query>'`
-- Verify in Lean: `make verify-lean-e2e-query-result-v1`
+- Emit cert from Rust (canonical module): `axiograph cert query <module.axi> --lang axql '<query>'`
+- Verify in Lean: `make verify-lean-e2e-query-result-module-v3`
 
 ## Roadmap (next iterations)
 

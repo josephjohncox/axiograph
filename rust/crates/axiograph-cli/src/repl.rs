@@ -703,13 +703,13 @@ fn print_help() {
   load <file.axpd>               Load a PathDB snapshot
   save <file.axpd>               Save the current PathDB snapshot
 
-  import_axi <file.axi>          Import either a `PathDBExportV1` snapshot or a canonical `axi_schema_v1` module
+  import_axi <file.axi>          Import either a `PathDBExportV1` snapshot or a canonical `axi_v1` module
   import_proto <descriptor.json> [schema_hint]
                                  Import a Buf descriptor set JSON into the current DB
                                  (adds Proto* entities + relations; use `match_proto_enterprise` to link to `enterprise*` scenarios)
   export_axi <file.axi>          Export current PathDB as `PathDBExportV1` `.axi`
   export_axi_module <file.axi> [module_name]
-                                 Export a canonical `axi_schema_v1` module from the meta-plane (if imported)
+                                 Export a canonical `axi_v1` module from the meta-plane (if imported)
   ctx [show|list|use|add|clear]   Manage optional context/world scoping for queries
   schema [name]                  Inspect imported `.axi` schema/theory metadata (meta-plane)
   constraints <schema> [relation]
@@ -754,6 +754,8 @@ fn print_help() {
                                  Prints cache hit/miss + elapsed time
   q --elaborate <AxQL query>     Typecheck + show elaborated query (inferred types)
   q --typecheck <AxQL query>     Typecheck only (no execution)
+  q --apply-refinement <handle> <AxQL query>
+                                 Apply a typed refinement handle before typecheck/execute
   sql <SQL query>                SQL-ish dialect compiled into the same query core
   ask <query>                    Natural-language-ish templates compiled into AxQL
   llm <subcommand>               LLM-assisted query translation / answering
@@ -1005,7 +1007,7 @@ fn cmd_import_axi(state: &mut ReplState, path: &PathBuf) -> Result<()> {
             set_snapshot_key(state, next_key);
             refresh_meta_plane_index(state)?;
             println!(
-                "imported axi_schema_v1 module {} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
+                "imported axi_v1 module {} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
                 path.display(),
                 summary.meta_entities_added,
                 summary.meta_relations_added,
@@ -3408,10 +3410,13 @@ fn cmd_gen(state: &mut ReplState, args: &[String]) -> Result<()> {
 
 fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
     if args.is_empty() {
-        return Err(anyhow!("usage: q [--elaborate|--typecheck] <AxQL query>"));
+        return Err(anyhow!(
+            "usage: q [--elaborate|--typecheck] [--apply-refinement <handle>] <AxQL query>"
+        ));
     }
     let mut show_elaboration = false;
     let mut typecheck_only = false;
+    let mut apply_refinement: Option<String> = None;
 
     let mut idx = 0usize;
     while idx < args.len() {
@@ -3425,12 +3430,22 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
                 typecheck_only = true;
                 idx += 1;
             }
+            "--apply-refinement" | "--apply" => {
+                idx += 1;
+                let Some(handle) = args.get(idx) else {
+                    return Err(anyhow!("--apply-refinement requires a handle id"));
+                };
+                apply_refinement = Some(handle.clone());
+                idx += 1;
+            }
             _ => break,
         }
     }
 
     if idx >= args.len() {
-        return Err(anyhow!("usage: q [--elaborate|--typecheck] <AxQL query>"));
+        return Err(anyhow!(
+            "usage: q [--elaborate|--typecheck] [--apply-refinement <handle>] <AxQL query>"
+        ));
     }
 
     let query_text = args[idx..].join(" ");
@@ -3443,6 +3458,14 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
     let mut query = crate::axql::parse_axql_query(&query_text)?;
     if query.contexts.is_empty() && !state.contexts.is_empty() {
         query.contexts = state.contexts.clone();
+    }
+    let mut applied_refinement: Option<crate::query_ir::QueryRefinementApplyResultV1> = None;
+    if let Some(handle_id) = apply_refinement.as_deref() {
+        let prepared_for_apply =
+            crate::query_ir::QueryIrV1::from_axql_query(&query).prepare_with_meta(db, meta)?;
+        let applied = prepared_for_apply.apply_refinement_by_id(db, meta, handle_id)?;
+        query = applied.refined_query_ir_v1.to_axql_query()?;
+        applied_refinement = Some(applied);
     }
     let start = Instant::now();
     let cache_hit = state
@@ -3460,6 +3483,17 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
         &mut state.query_cache,
     )?;
     if show_elaboration {
+        if let Some(applied) = &applied_refinement {
+            println!("applied refinement: {}", applied.handle.id);
+            println!(
+                "refined query: {}",
+                applied.refined_query_ir_v1.to_axql_text()?
+            );
+            println!(
+                "trust delta: {} -> {}",
+                applied.trust_before.trust_class, applied.trust_after.trust_class
+            );
+        }
         let report = prepared.elaboration_report();
         println!("elaborated: {}", prepared.elaborated_query_text());
         if !report.inferred_types.is_empty() {
@@ -3472,6 +3506,56 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
             println!("notes:");
             for note in &report.notes {
                 println!("  - {note}");
+            }
+        }
+        if !report.typed_holes.is_empty() {
+            println!("typed holes:");
+            for hole in &report.typed_holes {
+                println!("  - {}", hole.summary);
+                if !hole.suggestions.is_empty() {
+                    for suggestion in &hole.suggestions {
+                        match suggestion.replacement.as_deref() {
+                            Some(replacement) => {
+                                println!("      repair: {} => {}", suggestion.summary, replacement)
+                            }
+                            None => println!("      repair: {}", suggestion.summary),
+                        }
+                    }
+                }
+            }
+        }
+        if !report.exploration_suggestions.is_empty() {
+            println!("type-directed next moves:");
+            for suggestion in &report.exploration_suggestions {
+                println!("  {}:", suggestion.variable);
+                if !suggestion.suggested_type_guards.is_empty() {
+                    println!(
+                        "    type guards: {}",
+                        suggestion.suggested_type_guards.join(" | ")
+                    );
+                }
+                if !suggestion.outgoing_paths.is_empty() {
+                    println!("    outgoing: {}", suggestion.outgoing_paths.join(" | "));
+                }
+                if !suggestion.incoming_paths.is_empty() {
+                    println!("    incoming: {}", suggestion.incoming_paths.join(" | "));
+                }
+                if !suggestion.fact_bindings.is_empty() {
+                    println!(
+                        "    fact bindings: {}",
+                        suggestion.fact_bindings.join(" | ")
+                    );
+                }
+                if !suggestion.refinement_candidates.is_empty() {
+                    println!("    typed refinement handles:");
+                    for candidate in &suggestion.refinement_candidates {
+                        println!(
+                            "      - {} [{:?}] {}",
+                            candidate.handle.id, candidate.kind, candidate.summary
+                        );
+                        println!("        preview: {}", candidate.preview_fragment);
+                    }
+                }
             }
         }
         let plan_lines = prepared.explain_plan_lines();
@@ -3494,6 +3578,9 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
         if typecheck_only {
             return Ok(());
         }
+    }
+    if let Some(applied) = &applied_refinement {
+        println!("applied refinement {}", applied.handle.id);
     }
     let result = prepared.execute(db, meta)?;
     let dt = start.elapsed();
@@ -4133,7 +4220,6 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
 
             let generated = state.llm.generate_query(db, &question)?;
             match &generated {
-                crate::llm::GeneratedQuery::Axql(q) => println!("axql: {q}"),
                 crate::llm::GeneratedQuery::QueryIrV1(ir) => {
                     println!(
                         "query_ir_v1:\n{}",
@@ -4414,9 +4500,9 @@ fn tokenize_repl_line(line: &str) -> Vec<String> {
     // quotes changes the meaning (and can make URLs/IRIs unparsable).
     //
     // So we parse:
-    //   q [--elaborate|--typecheck] <raw query...>
+    //   q [--elaborate|--typecheck] [--apply-refinement <handle>] <raw query...>
     // as:
-    //   ["q", "--elaborate", "<raw query...>"]
+    //   ["q", "--elaborate", "--apply-refinement", "<handle>", "<raw query...>"]
     //
     // preserving the query text verbatim after the option prefix.
     {
@@ -4443,21 +4529,26 @@ fn tokenize_repl_line(line: &str) -> Vec<String> {
             // themselves are not quote-sensitive), but slice the raw query from
             // the original text.
             let rest_tokens = split_command_line(rest);
-            let mut opt_count = 0usize;
-            for t in &rest_tokens {
-                if t.starts_with('-') {
-                    opt_count += 1;
-                } else {
+            let mut prefix_token_count = 0usize;
+            while prefix_token_count < rest_tokens.len() {
+                let token = &rest_tokens[prefix_token_count];
+                if !token.starts_with('-') {
                     break;
                 }
+                prefix_token_count += 1;
+                if matches!(token.as_str(), "--apply-refinement" | "--apply")
+                    && prefix_token_count < rest_tokens.len()
+                {
+                    prefix_token_count += 1;
+                }
             }
-            out.extend(rest_tokens.iter().take(opt_count).cloned());
+            out.extend(rest_tokens.iter().take(prefix_token_count).cloned());
 
-            // Skip `opt_count` leading tokens in the raw `rest` string.
+            // Skip the option-prefix tokens in the raw `rest` string.
             let mut i = 0usize;
             let bytes = rest.as_bytes();
             let mut skipped = 0usize;
-            while skipped < opt_count {
+            while skipped < prefix_token_count {
                 while i < bytes.len() && bytes[i].is_ascii_whitespace() {
                     i += 1;
                 }
@@ -4575,7 +4666,7 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     };
     if args.is_empty() {
         return Err(anyhow!(
-            "usage: wm propose <out.json> [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--export <file>] [--axi <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
+            "usage: wm propose <out.json> [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--axi <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
         ));
     }
 
@@ -4584,7 +4675,6 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     let mut max_new: usize = 0;
     let mut guardrail_profile = "fast".to_string();
     let mut guardrail_plane = "both".to_string();
-    let mut export_path: Option<PathBuf> = None;
     let mut axi_path: Option<PathBuf> = None;
     let mut commit_dir: Option<PathBuf> = None;
     let mut accepted_snapshot: Option<AcceptedSnapshotId> = None;
@@ -4628,13 +4718,6 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
                     return Err(anyhow!("--plane requires a value"));
                 };
                 guardrail_plane = v.to_string();
-            }
-            "--export" => {
-                i += 1;
-                let Some(v) = args.get(i) else {
-                    return Err(anyhow!("--export requires a path"));
-                };
-                export_path = Some(PathBuf::from(v));
             }
             "--axi" => {
                 i += 1;
@@ -4740,31 +4823,43 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
         None
     };
 
-    let mut export_inline: Option<crate::world_model::JepaExportFileV1> = None;
-    let mut export_path_str: Option<String> = None;
-    if let Some(path) = export_path.as_ref() {
-        export_path_str = Some(path.display().to_string());
-    } else if let Some(axi) = axi_path.as_ref() {
+    let mut input = if let Some(axi) = axi_path.as_ref() {
         let axi = resolve_path_with_repo_fallback(axi)?;
         let text = fs::read_to_string(axi)?;
-        let opts = crate::world_model::JepaExportOptions {
-            instance_filter: None,
-            max_items: 0,
-            mask_fields: 1,
-            seed: 1,
-            exclude_relations: Vec::new(),
-        };
-        export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(
-            &text, &opts,
-        )?);
-    }
-
-    let mut input = crate::world_model::WorldModelInputV1::default();
-    input.export = export_inline;
-    input.export_path = export_path_str;
+        crate::world_model_input::build_world_model_input_from_axi_text(
+            &text,
+            None,
+            None,
+            None,
+            Some(crate::world_model::JepaExportOptions {
+                instance_filter: None,
+                max_items: 0,
+                mask_fields: 1,
+                seed: 1,
+                exclude_relations: Vec::new(),
+            }),
+        )?
+    } else {
+        crate::world_model_input::build_world_model_input_from_pathdb(
+            db,
+            &crate::world_model_input::WorldModelInputBuildOptionsV1 {
+                module_name: None,
+                pathdb_snapshot_id: None,
+                accepted_snapshot_id: None,
+                training_export: Some(crate::world_model::JepaExportOptions {
+                    instance_filter: None,
+                    max_items: 0,
+                    mask_fields: 1,
+                    seed: 1,
+                    exclude_relations: Vec::new(),
+                }),
+            },
+        )?
+    };
     if guardrail.is_some() {
-        input.guardrail = guardrail.clone();
+        input.set_guardrail_layer(guardrail.clone().expect("guardrail already checked"));
     }
+    input.notes.push("source=repl_world_model".to_string());
 
     let mut options = crate::world_model::WorldModelOptionsV1::default();
     options.max_new_proposals = max_new;
@@ -4773,6 +4868,9 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     options.task_costs = task_costs.clone();
     options.horizon_steps = horizon_steps;
 
+    let input_axi_digest = input.axi_digest_v1.clone();
+    let input_pathdb_snapshot_id = input.pathdb_snapshot_id();
+    let input_accepted_snapshot_id = input.accepted_snapshot_id();
     let req = crate::world_model::make_world_model_request(input, options);
     let mut response = state.world_model.propose(&req)?;
     if let Some(err) = response.error.take() {
@@ -4794,9 +4892,9 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
         &response,
         state.world_model.backend_label(),
         state.world_model.model.clone(),
-        None,
-        None,
-        None,
+        input_axi_digest,
+        input_pathdb_snapshot_id,
+        input_accepted_snapshot_id,
         guardrail.as_ref().map(|g| g.summary.total_cost),
         guardrail_profile_label,
         guardrail_plane_label,
@@ -4868,7 +4966,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
     };
     if args.is_empty() {
         return Err(anyhow!(
-            "usage: wm plan <out.json> [--steps N] [--rollouts N] [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--export <file>] [--axi <file>] [--cq <name=query>] [--cq-file <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
+            "usage: wm plan <out.json> [--steps N] [--rollouts N] [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--axi <file>] [--cq <name=query>] [--cq-file <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
         ));
     }
 
@@ -4877,7 +4975,6 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
     let mut max_new: usize = 0;
     let mut guardrail_profile = "fast".to_string();
     let mut guardrail_plane = "both".to_string();
-    let mut export_path: Option<PathBuf> = None;
     let mut axi_path: Option<PathBuf> = None;
     let mut commit_dir: Option<PathBuf> = None;
     let mut accepted_snapshot: Option<AcceptedSnapshotId> = None;
@@ -4926,13 +5023,6 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
                     return Err(anyhow!("--plane requires a value"));
                 };
                 guardrail_plane = v.to_string();
-            }
-            "--export" => {
-                i += 1;
-                let Some(v) = args.get(i) else {
-                    return Err(anyhow!("--export requires a path"));
-                };
-                export_path = Some(PathBuf::from(v));
             }
             "--axi" => {
                 i += 1;
@@ -5068,28 +5158,42 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
         competency_questions.append(&mut loaded);
     }
 
-    let mut export_inline: Option<crate::world_model::JepaExportFileV1> = None;
-    let mut export_path_str: Option<String> = None;
-    if let Some(path) = export_path.as_ref() {
-        export_path_str = Some(path.display().to_string());
-    } else if let Some(axi) = axi_path.as_ref() {
+    let mut base_input = if let Some(axi) = axi_path.as_ref() {
         let axi = resolve_path_with_repo_fallback(axi)?;
         let text = fs::read_to_string(axi)?;
-        let opts = crate::world_model::JepaExportOptions {
-            instance_filter: None,
-            max_items: 0,
-            mask_fields: 1,
-            seed: 1,
-            exclude_relations: Vec::new(),
-        };
-        export_inline = Some(crate::world_model::build_jepa_export_from_axi_text(
-            &text, &opts,
-        )?);
-    }
-
-    let mut base_input = crate::world_model::WorldModelInputV1::default();
-    base_input.export = export_inline;
-    base_input.export_path = export_path_str;
+        crate::world_model_input::build_world_model_input_from_axi_text(
+            &text,
+            None,
+            None,
+            None,
+            Some(crate::world_model::JepaExportOptions {
+                instance_filter: None,
+                max_items: 0,
+                mask_fields: 1,
+                seed: 1,
+                exclude_relations: Vec::new(),
+            }),
+        )?
+    } else {
+        crate::world_model_input::build_world_model_input_from_pathdb(
+            db,
+            &crate::world_model_input::WorldModelInputBuildOptionsV1 {
+                module_name: None,
+                pathdb_snapshot_id: None,
+                accepted_snapshot_id: None,
+                training_export: Some(crate::world_model::JepaExportOptions {
+                    instance_filter: None,
+                    max_items: 0,
+                    mask_fields: 1,
+                    seed: 1,
+                    exclude_relations: Vec::new(),
+                }),
+            },
+        )?
+    };
+    base_input
+        .notes
+        .push("source=repl_world_model_plan".to_string());
 
     let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
         horizon_steps: steps,
@@ -5213,6 +5317,22 @@ mod repl_tokenize_tests {
         assert_eq!(tokens[1], "--elaborate");
         assert_eq!(
             tokens[2],
+            r#"select ?x where name("Alice") -Parent-> ?x limit 3"#
+        );
+    }
+
+    #[test]
+    fn tokenize_repl_line_preserves_axql_with_refinement_handle_option() {
+        let tokens = tokenize_repl_line(
+            r#"q --typecheck --apply-refinement axql_refine_v1:fnv1a64:abc123 select ?x where name("Alice") -Parent-> ?x limit 3"#,
+        );
+        assert_eq!(tokens.len(), 5);
+        assert_eq!(tokens[0], "q");
+        assert_eq!(tokens[1], "--typecheck");
+        assert_eq!(tokens[2], "--apply-refinement");
+        assert_eq!(tokens[3], "axql_refine_v1:fnv1a64:abc123");
+        assert_eq!(
+            tokens[4],
             r#"select ?x where name("Alice") -Parent-> ?x limit 3"#
         );
     }

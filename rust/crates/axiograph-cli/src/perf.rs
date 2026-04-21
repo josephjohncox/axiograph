@@ -953,8 +953,10 @@ fn cmd_perf_world_model(
             let mut input = crate::world_model::WorldModelInputV1::default();
             input.axi_digest_v1 = axi_digest.clone();
             input.axi_module_text = axi_text.clone();
-            input.export = jepa_export.clone();
-            input.guardrail = Some(guardrail_before.clone());
+            if let Some(export) = jepa_export.clone() {
+                input.set_training_export_layer(export);
+            }
+            input.set_guardrail_layer(guardrail_before.clone());
             input.notes.push(format!(
                 "source=perf_world_model step={step} rollout={rollout}"
             ));

@@ -4,8 +4,8 @@
 --
 -- - **Modalities (world/context indexing)**:
 --     - We model multiple *contexts/worlds* (`Plan`, `Observed`, `Policy`).
---     - Key relations are annotated with `@context Context`, so each tuple is
---       explicitly scoped to a context (no silent closed-world assumptions).
+--     - Key relations carry explicit `ctx: Context` roles, so each tuple is
+--       scoped to a context with no silent closed-world assumptions.
 --     - In PathDB, this becomes `fact -axi_fact_in_context-> ctx`, enabling
 --       scoped AxQL queries via `ctx use ...` / `in { ... }`.
 --
@@ -61,7 +61,7 @@ schema SupplyChainModal:
   object LeadTime
 
   -- A flow is a directed transfer, scoped to a Context.
-  relation Flow(from: Node, to: Node, material: Material, qty: Quantity, time: LeadTime) @context Context
+  relation Flow(from: Node, to: Node, material: Material, qty: Quantity, time: LeadTime, ctx: Context)
 
   -- ==========================================================================
   -- 2-cells: equivalences between routes (homotopies / “paths between paths”)
@@ -76,8 +76,9 @@ schema SupplyChainModal:
     to: Node,
     route1: Route,
     route2: Route,
-    proof: RouteProof
-  ) @context Context
+    proof: RouteProof,
+    ctx: Context
+  )
 
   -- ==========================================================================
   -- Modal knowledge: propositions, evidence, and obligations
@@ -95,7 +96,7 @@ schema SupplyChainModal:
   relation Holds(world: Context, prop: Proposition)
 
   -- Evidence supports propositions, and is itself context-scoped.
-  relation EvidenceSupports(ev: Evidence, prop: Proposition) @context Context
+  relation EvidenceSupports(ev: Evidence, prop: Proposition, ctx: Context)
 
   -- Evidence may have supporting doc chunks (tooling / discovery convenience).
   relation EvidenceChunk(ev: Evidence, chunk: DocChunk)
@@ -232,4 +233,3 @@ instance SupplyChainModalDemo of SupplyChainModal:
   JustificationEquiv = {
     (path1=Justification_Policy, path2=Justification_ObservedDelay)
   }
-

@@ -19,6 +19,8 @@ this doc defines how they must be persisted as semantic VCS objects.
 4. Artifact lifecycle changes are preserved as history, never hidden mutation.
 5. World-model runs must be persisted with explicit lineage and status.
 6. Anchor references are the source of truth for history, not inferred UI state.
+7. Review-critical runtime reports should be stored as machine-readable objects
+   and referenced from history, not left as transient console prose.
 
 ## Relationship To Existing Stores
 
@@ -32,6 +34,22 @@ Current stores remain useful:
 The semantic VCS sits above them and points at them.
 
 It should not duplicate large artifacts; it should reference them.
+
+## Review Artifacts
+
+`sem/validations/` should persist the review objects that actually explain
+semantic change.
+
+That includes, as the implementation matures:
+
+- evolution previews
+- CQ gate reports
+- business-rule applicability reports used in review
+- semantic coverage / drift reports
+- agent-facing semantic reports when they justify a merge or promotion decision
+
+Commits, reconciliations, and refs should point at these persisted artifacts
+rather than copying their full payloads inline.
 
 ## Store Layout
 
@@ -49,11 +67,12 @@ sem/
     tags/
   commits/
   reconciliations/
+  projections/
   world_model_runs/
   validations/
 ```
 
-`commits/`, `reconciliations/`, and `world_model_runs/` are canonical persistence
+`commits/`, `reconciliations/`, `projections/`, and `world_model_runs/` are canonical persistence
 locations for phase-1 objects.
 
 ## Refs
@@ -77,17 +96,25 @@ observed through these branches must have a persisted `WorldModelRun` object.
 
 ```rust
 pub struct SemCommitV1 {
+    pub version: String,
     pub commit_id: SemCommitId,
-    pub parent_ids: Vec<SemCommitId>,
+    pub parent_commit_id: Option<SemCommitId>,
     pub author: String,
-    pub timestamp_utc: String,
-    pub message: String,
+    pub created_at_unix_secs: u64,
+    pub message: Option<String>,
     pub kind: SemCommitKind,
-    pub policy: Option<String>,
+    pub action: String,
+    pub gate_summary: Option<SemGateSummaryV1>,
+    pub policy: String,
     pub provenance: SemCommitProvenanceV1,
     pub state: SemStateRefV1,
     pub delta: SemDeltaV1,
     pub reconciliation_id: Option<ReconciliationId>,
+    pub accepted_snapshot_id: AcceptedSnapshotId,
+    pub accepted_parent_snapshot_id: Option<AcceptedSnapshotId>,
+    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    pub validation_report_path: Option<String>,
+    pub validation_ok: Option<bool>,
 }
 
 pub struct SemCommitProvenanceV1 {
@@ -98,12 +125,18 @@ pub struct SemCommitProvenanceV1 {
 }
 ```
 
+The current runtime stores a single `parent_commit_id` on `SemCommitV1`. Merge
+ancestry is still preserved, but it lives in the paired reconciliation object
+(`base_commit_id`, `left_commit_id`, `right_commit_id`) rather than in a
+materialized multi-parent commit DAG node.
+
 ### Commit kinds
 
 ```rust
 pub enum SemCommitKind {
     Promote,
     EvidenceCommit,
+    ProjectionMaterialization,
     Merge,
     Validation,
     WorldModelRun,
@@ -120,10 +153,10 @@ The commit points at existing materialized stores.
 pub struct SemStateRefV1 {
     pub accepted_snapshot_id_before: Option<AcceptedSnapshotId>,
     pub accepted_snapshot_id_after: Option<AcceptedSnapshotId>,
-    pub accepted_tree_digest: Option<String>,
+    pub accepted_tree_digest: Option<AxiDigest>,
     pub pathdb_snapshot_id_before: Option<PathdbSnapshotId>,
     pub pathdb_snapshot_id_after: Option<PathdbSnapshotId>,
-    pub evidence_digest: Option<String>,
+    pub evidence_digests: Vec<ProposalDigest>,
 }
 ```
 
@@ -136,13 +169,198 @@ must provide before/after accepted anchors when changed state is expected.
 pub struct SemDeltaV1 {
     pub module_digests_added: Vec<AxiDigest>,
     pub module_digests_removed: Vec<AxiDigest>,
-    pub evidence_blobs_added: Vec<String>,
+    pub semantic_delta: Option<EvolutionSemanticDeltaV1>,
+    pub trust_summary: Option<SemTrustSummaryV1>,
+    pub rule_summary: Option<SemRuleSummaryV1>,
+    pub coverage_summary: Option<EvolutionCoverageSummaryV1>,
+    pub evidence_blobs_added: Vec<ProposalDigest>,
     pub certificate_refs_added: Vec<String>,
     pub quality_report_refs_added: Vec<String>,
+    pub validation_report_refs_added: Vec<String>,
+    pub projection_manifest_refs_added: Vec<AxiDigest>,
     pub lifecycle_events: Vec<SemLifecycleEventV1>,
     pub world_model_run_refs: Vec<WorldModelRunId>,
 }
 ```
+
+`semantic_delta`, `trust_summary`, `rule_summary`, and `coverage_summary` are the
+compact typed sidecars copied from a stored `EvolutionPreviewV1` when a commit
+is derived from a proposal or promotion preview. They are intentionally small:
+enough for semantic history and diffing, not a duplicate of the full preview
+report.
+
+```rust
+pub struct EvolutionSemanticDeltaV1 {
+    pub delta_kind: String,
+    pub subject_refs: Vec<String>,
+    pub primitives: Vec<EvolutionPrimitiveV1>,
+    pub changed_layers: Vec<String>,
+    pub schema: TypedChangeBucketV1,
+    pub theory: TypedChangeBucketV1,
+    pub instance: TypedChangeBucketV1,
+    pub context: TypedChangeBucketV1,
+    pub total_added: usize,
+    pub total_reused: usize,
+    pub total_removed: usize,
+    pub notes: Vec<String>,
+}
+```
+
+`primitives` is where semantic history stops pretending that ontology
+evolution is only bucket arithmetic. It carries explicit reviewable structural
+moves such as:
+
+- `reify_relation_object`
+- `introduce_dependent_relation_family`
+- `introduce_subtype`
+- `generalize_to_supertype`
+- `specialize_to_subtype`
+- `push_relation_role_to_subtype`
+- `pull_relation_role_to_supertype`
+- `factor_common_structure_to_supertype`
+- `split_type_into_subtypes`
+- `merge_types_under_supertype`
+- `lift_relation_to_carrier`
+- `add_path_equation`
+- `add_rewrite_rule`
+
+These are intended to be the machine-readable currency for typed directed
+exploration, olog refinement, migration review, and semantic merge. The coarse
+`schema` / `theory` / `instance` / `context` buckets stay useful for compact
+history summaries, but they are no longer sufficient on their own to explain
+what kind of ontology move actually happened.
+
+The intended rule is:
+
+- keep full previews in `sem/validations/`
+- keep compact gate/delta/trust/rule/coverage summaries in commits, refs, and reconciliations
+- do not copy full quality/CQ/runtime-semantic payloads into commit history
+
+`primitives` is the compact semantic summary that matters most for ontology
+review. Generic add/remove counts are not enough to explain whether a
+change:
+
+- introduced a new subtype rather than an unrelated object,
+- generalized two local concepts into a reusable supertype,
+- specialized a previously overloaded type,
+- pushed or pulled a role across a relation-object boundary,
+- factored common structure out of sibling relations,
+- split or merged concepts,
+- or lifted a binary edge into a first-class relation carrier.
+
+Those distinctions are what reviewers, migration tooling, and exploration
+surfaces need to preserve across preview, commit history, merge, and promotion.
+
+### Backend projection manifests
+
+Backend materialization is tracked explicitly rather than being inferred from a
+backend-local schema or dataset.
+
+```rust
+pub struct ProjectionManifestV1 {
+    pub projection_id: AxiDigest,
+    pub accepted_snapshot_id: AcceptedSnapshotId,
+    pub source_sem_ref_name: Option<String>,
+    pub source_sem_commit_id: Option<SemCommitId>,
+    pub compiled_ir_digest: AxiDigest,
+    pub materialization_ref: String,
+    pub backend: BackendCapabilityProfileV1,
+    pub projection: ProjectionCapabilityProfileV1,
+    pub object_mappings: Vec<ProjectionObjectMappingV1>,
+    pub relation_mappings: Vec<ProjectionRelationMappingV1>,
+    pub context_mapping: ProjectionContextMappingV1,
+    pub trust_caveats: Vec<String>,
+    pub round_trip_limitations: Vec<String>,
+}
+
+pub struct ProjectionCapabilityProfileV1 {
+    pub preserves_relation_objects: bool,
+    pub preserves_context_world_axes: bool,
+    pub supports_anchor_scoped_query_pushdown: bool,
+    pub supports_context_scoped_query_pushdown: bool,
+    pub native_query_access: ProjectionNativeQueryAccessV1,
+    pub mutation_authority: ProjectionMutationAuthorityV1,
+}
+
+pub enum ProjectionNativeQueryAccessV1 {
+    None,
+    ReadOnlyPartial,
+    ReadOnlyAnchorScoped,
+}
+
+pub enum ProjectionMutationAuthorityV1 {
+    AxiographOnly,
+    BackendWritableMirror,
+}
+```
+
+The current implementation now has a planner layer above this manifest model:
+
+- `axiograph_cli::backend_pushdown::build_backend_pushdown_plan(...)`
+- `TypeDbPushdownPlanV1`
+- `TerminusDbPushdownPlanV1`
+- `BackendPushdownOperationalSurfaceV1`
+
+Those pushdown plans are generated directly from `CompiledSchemaIr` plus the
+backend/projection capability profiles. They are intentionally explicit about:
+
+- tuple encoding (`relationship_entity` for `TypeDB`, `reified_fact` for
+  `TerminusDB`),
+- role preservation and context-axis handling,
+- whether carrier edges are materialized only as lossless convenience views,
+- the native read-only query dialect,
+- preserved lower-tier interfaces such as native query, RDF dataset, and SHACL
+  validation surfaces where the backend actually supports them,
+- the lifting contracts that carry those lower-tier surfaces back into
+  anchor-scoped Axiograph semantics,
+- and which semantics remain Axiograph-only even when backend-native querying is
+  allowed.
+
+`BackendPushdownOperationalSurfaceV1` is the compact operational summary over
+those plans. It is the current agent-facing transport/reindexing seam: the place
+where tooling can inspect relation transport, context-axis handling, residual
+obligations, and the explicit reconciliation boundary without parsing the full
+backend plan or confusing backend-native history with semantic merge state.
+
+The current implementation direction is:
+
+- `TypeDB` as the primary high-fidelity typed backend target,
+- `TerminusDB` as the strongest RDF/VCS-shaped secondary target,
+- and property-graph engines such as `Apache AGE`, `Neo4j`, and related
+  backends as experimental projection targets rather than first-class support.
+
+The capability profile is expected to distinguish at least:
+
+- typed-schema / relation-role / n-ary support,
+- typed query validation and logic/function pushdown,
+- immutable history / branch / merge / diff support,
+- and schema-vs-instance separation.
+
+That split matters because the recommended pushdown is intentionally asymmetric:
+
+- `TypeDB` is where we should push the richest runtime type/constraint/query
+  surface.
+- `TerminusDB` is where we should exploit backend-native history/branch/diff
+  features for projected collaboration views.
+- property-graph engines are where we may eventually push execution/indexing
+  and hybrid SQL/openCypher workloads, but only after they clear the same
+  typed projection bar.
+
+Projected backend usability still matters. The intended contract is:
+
+- native backend interfaces should remain queryable so outside tools can read a
+  reduced, backend-shaped view of accepted semantic state,
+- those native interfaces are read-only projected lenses rather than the full
+  Axiograph query/type/certificate surface,
+- and mutation authority stays in Axiograph unless a future manifest
+  deliberately opts into some weaker mirror mode.
+
+Even where a backend has native VCS-like features, semantic authority stays in
+Axiograph. TerminusDB is the clearest example: its git-for-data branch model is
+useful, but its own transport docs say schema operations are not pushed/pulled
+with ordinary branch synchronization. That means backend-native history can
+mirror semantic workspaces, but it cannot replace Axiograph's schema/theory
+review history.
 
 ## Lifecycle Events
 
@@ -176,10 +394,14 @@ reconciliation object.
 ```rust
 pub struct SemReconciliationV1 {
     pub reconciliation_id: ReconciliationId,
-    pub base: SemCommitId,
-    pub left: SemCommitId,
-    pub right: SemCommitId,
+    pub base_commit_id: SemCommitId,
+    pub left_commit_id: SemCommitId,
+    pub right_commit_id: SemCommitId,
     pub policy: String,
+    pub source_ref_name: Option<String>,
+    pub target_ref_name: Option<String>,
+    pub resolved_ref_name: Option<String>,
+    pub outcome_commit_id: Option<SemCommitId>,
     pub conflicts: Vec<ConflictRecordV1>,
     pub decisions: Vec<DecisionRecordV1>,
     pub certificate_refs: Vec<String>,
@@ -188,6 +410,28 @@ pub struct SemReconciliationV1 {
 
 The reconciliation object is where “merge” becomes ontology review rather than
 filesystem merge.
+
+The current runtime also persists a paired `ReconciliationPreviewReportV1`
+under `sem/validations/`. That report stores the `EvolutionPreviewV1` used to
+fail closed on unresolved conflicts before a `SemCommitKindV1::Merge` commit is
+materialized.
+
+Current operator surface:
+
+```bash
+axiograph db accept reconciliation-show \
+  --dir build/accepted_plane \
+  --reconciliation fnv1a64:...
+
+axiograph db accept reconciliation-apply \
+  --dir build/accepted_plane \
+  --reconciliation fnv1a64:... \
+  --handle-id typed_refine_v1:...
+```
+
+`reconciliation-show` returns the stored typed preview, including any compiled-IR
+refinement handles. `reconciliation-apply` persists the selected decision back
+into the reconciliation object and returns the typed before/after apply result.
 
 ## World-Model Run Objects
 
@@ -338,6 +582,29 @@ Instead:
   stays auditable and machine-parseable.
 - `SemCommitV1` should include stable accepted/pathdb anchor pairs before/after whenever it changes state.
 - Reconciliations must be explicit `SemReconciliationV1` objects.
+
+## Evolution Preview Sidecars
+
+`EvolutionPreviewV1` is the canonical review artifact currently shared by
+proposal validation and accepted-plane promotion. In addition to the full
+quality/CQ/runtime-semantic payloads, the object now carries compact sidecars
+meant for semantic-history use:
+
+- `semantic_delta`: compact schema/theory/instance/context change summary
+- `trust_summary`: compact trust/non-claim summary
+- `rule_summary`: compact runtime-visible/review-only rule inventory
+- `coverage_summary`: compact CQ/semantic-coverage surface summary
+- `exploration_next_actions`: directed follow-on review suggestions derived from structural evolution primitives
+
+The rule for semantic history is:
+
+- persist the full `EvolutionPreviewV1` under `sem/validations/`
+- copy the compact `semantic_delta` / `trust_summary` / `rule_summary` /
+  `coverage_summary` sidecars into `SemDeltaV1`
+- copy only the compact gate summary into commits/refs
+- Review-critical reports should be stored under `sem/validations/` and cited by
+  path/ref from semantic commits or reconciliations rather than reconstructed
+  from logs.
 
 ## First Implementation Slice
 

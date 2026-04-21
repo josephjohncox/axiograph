@@ -253,7 +253,7 @@ cargo run -p axiograph-cli -- db accept pathdb-build \
   --snapshot latest \
   --out ../build/Discovered.accepted_with_chunks.axpd
 
-# Export a reversible snapshot `.axi` (PathDBExportV1) for certificate anchoring.
+# Export a reversible snapshot `.axi` (PathDBExportV1) for debug/interchange or parser-parity workflows.
 cargo run -p axiograph-cli -- db pathdb export-axi ../build/Discovered.accepted.axpd \
   --out ../build/Discovered.snapshot_export_v1.axi
 

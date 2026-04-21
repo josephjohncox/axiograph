@@ -1,5 +1,5 @@
--- Machining Knowledge Ontology
--- Conceptual domain model for manufacturing knowledge capture
+-- Machining knowledge ontology
+-- Canonical typed ontology example for manufacturing domain knowledge.
 --
 -- This schema captures tacit machining knowledge including:
 -- - Materials science (workpiece properties, hardness, machinability)
@@ -52,9 +52,9 @@ schema Machining:
   object ShearZone
   object BuiltUpEdge
 
-  relation CuttingProducesChip(mat: Material, tool: Tool, chipType: ChipType) @context Context
-  relation ChipFormationShearAngle(mat: Material, tool: Tool, angle: Scalar) @context Context
-  relation BUEConditions(mat: Material, tool: Tool, speed: Scalar) @context Context
+  relation CuttingProducesChip(mat: Material, tool: Tool, chipType: ChipType, ctx: Context)
+  relation ChipFormationShearAngle(mat: Material, tool: Tool, angle: Scalar, ctx: Context)
+  relation BUEConditions(mat: Material, tool: Tool, speed: Scalar, ctx: Context)
 
   -- ==========================================================================
   -- Tool Wear
@@ -62,8 +62,8 @@ schema Machining:
   object WearType           -- flank, crater, notch, thermal cracking
   object WearMechanism      -- abrasion, adhesion, diffusion, oxidation
 
-  relation ObservedWear(tool: Tool, wearType: WearType, amount: Scalar) @temporal Time @context Context
-  relation WearMechanismActive(mat: Material, tool: Tool, mechanism: WearMechanism) @context Context
+  relation ObservedWear(tool: Tool, wearType: WearType, amount: Scalar, time: Time, ctx: Context)
+  relation WearMechanismActive(mat: Material, tool: Tool, mechanism: WearMechanism, ctx: Context)
   relation TaylorToolLife(mat: Material, tool: Tool, C: Scalar, n: Scalar)  -- V*T^n = C
 
   -- ==========================================================================
@@ -77,7 +77,7 @@ schema Machining:
   relation RecommendedSpeed(mat: Material, tool: Tool, regime: CuttingRegime, sfm: Scalar)
   relation RecommendedFeed(mat: Material, tool: Tool, regime: CuttingRegime, ipt: Scalar)
   relation RecommendedDOC(mat: Material, tool: Tool, regime: CuttingRegime, doc: Scalar)
-  relation ActualParameters(op: Operation, speed: Scalar, feed: Scalar, doc: Scalar) @temporal Time
+  relation ActualParameters(op: Operation, speed: Scalar, feed: Scalar, doc: Scalar, time: Time)
 
   -- ==========================================================================
   -- Chatter and Vibration
@@ -87,7 +87,7 @@ schema Machining:
   object FrequencyMode
 
   relation StabilityBoundary(tool: Tool, setup: Setup, rpm: Scalar, docLimit: Scalar)
-  relation ObservedChatter(op: Operation, freq: Scalar, amplitude: Scalar) @temporal Time @context Context
+  relation ObservedChatter(op: Operation, freq: Scalar, amplitude: Scalar, time: Time, ctx: Context)
   relation ChatterModeShape(chatter: ChatterEvent, mode: FrequencyMode)
   relation RegenerativeChatter(tool: Tool, workpiece: Workpiece, dominantFreq: Scalar)
 
@@ -109,12 +109,12 @@ schema Machining:
   -- ==========================================================================
   object Inspection
   object CMMMeasurement
-  object InspectionMethod   -- CMM, optical, surface profilometry, etc.
+  object InspectionMethodKind   -- CMM, optical, surface profilometry, etc.
 
-  relation InspectionResult(insp: Inspection, feat: Feature, measured: Scalar, nominal: Scalar) @temporal Time
-  relation InspectionMethod(insp: Inspection, method: InspectionMethod)
+  relation InspectionResult(insp: Inspection, feat: Feature, measured: Scalar, nominal: Scalar, time: Time)
+  relation InspectionUsesMethod(insp: Inspection, method: InspectionMethodKind)
   relation PassFail(insp: Inspection, pass: Bool)
-  relation SurfaceFinishMeasurement(insp: Inspection, feat: Feature, Ra: Scalar) @temporal Time
+  relation SurfaceFinishMeasurement(insp: Inspection, feat: Feature, Ra: Scalar, time: Time)
 
   -- ==========================================================================
   -- Process Planning
@@ -139,9 +139,9 @@ schema Machining:
   object TimeSlot
 
   relation MachineCapability(machine: Machine, op: Operation)
-  relation OperationCycleTime(op: Operation, estimated: Scalar, actual: Scalar) @context Context
+  relation OperationCycleTime(op: Operation, estimated: Scalar, actual: Scalar, ctx: Context)
   relation MachineAvailability(machine: Machine, slot: TimeSlot, available: Bool)
-  relation QueueLength(machine: Machine, jobs: Scalar) @temporal Time
+  relation QueueLength(machine: Machine, jobs: Scalar, time: Time)
 
   -- ==========================================================================
   -- Auxiliary concepts
@@ -232,4 +232,3 @@ instance MachinistKnowledge of Machining:
   ToleranceType = {Position, Flatness, Perpendicularity, Cylindricity, Concentricity}
   Datum = {A, B, C}
   Bool = {True, False}
-

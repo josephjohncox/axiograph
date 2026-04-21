@@ -2,7 +2,7 @@
 #
 # Demonstrates that `import_axi` accepts:
 # - PathDB snapshot exports (`PathDBExportV1`)
-# - Canonical `axi_schema_v1` modules (schema/theory/instance)
+# - Canonical `axi_v1` modules (schema/theory/instance)
 #
 # Run (from repo root):
 #   make binaries

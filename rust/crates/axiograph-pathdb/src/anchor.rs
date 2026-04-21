@@ -78,6 +78,12 @@ semantic_id_type!(ProposalDigest);
 semantic_id_type!(WorldModelRunId);
 semantic_id_type!(SchemaId);
 semantic_id_type!(TheoryId);
+semantic_id_type!(ObjectTypeId);
+semantic_id_type!(RelationId);
+semantic_id_type!(RoleId);
+semantic_id_type!(ConstraintId);
+semantic_id_type!(EquationId);
+semantic_id_type!(RewriteRuleId);
 semantic_id_type!(ContextId);
 semantic_id_type!(StableFactId);
 
@@ -125,6 +131,12 @@ mod tests {
     struct SemanticIdFixture {
         schema_id: SchemaId,
         theory_id: TheoryId,
+        object_type_id: ObjectTypeId,
+        relation_id: RelationId,
+        role_id: RoleId,
+        constraint_id: ConstraintId,
+        equation_id: EquationId,
+        rewrite_rule_id: RewriteRuleId,
         context_id: ContextId,
         proposal_digest: ProposalDigest,
     }
@@ -157,6 +169,12 @@ mod tests {
         let fixture = SemanticIdFixture {
             schema_id: SchemaId::new("schema:demo"),
             theory_id: TheoryId::new("theory:demo"),
+            object_type_id: ObjectTypeId::new("object:demo:Thing"),
+            relation_id: RelationId::new("relation:demo:Rel"),
+            role_id: RoleId::new("role:demo:Rel:from"),
+            constraint_id: ConstraintId::new("constraint:demo:T:0"),
+            equation_id: EquationId::new("equation:demo:T:eq"),
+            rewrite_rule_id: RewriteRuleId::new("rewrite:demo:T:r"),
             context_id: ContextId::new("context:demo"),
             proposal_digest: ProposalDigest::new("proposal:deadbeef"),
         };
@@ -167,6 +185,12 @@ mod tests {
             json!({
                 "schema_id": "schema:demo",
                 "theory_id": "theory:demo",
+                "object_type_id": "object:demo:Thing",
+                "relation_id": "relation:demo:Rel",
+                "role_id": "role:demo:Rel:from",
+                "constraint_id": "constraint:demo:T:0",
+                "equation_id": "equation:demo:T:eq",
+                "rewrite_rule_id": "rewrite:demo:T:r",
                 "context_id": "context:demo",
                 "proposal_digest": "proposal:deadbeef"
             })

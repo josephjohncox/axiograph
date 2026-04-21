@@ -55,20 +55,20 @@ echo "-- REPL demo: schema discovery module import (extensional constraints)"
 "$AXIOGRAPH" repl --script "$PROJECT_ROOT/examples/repl_scripts/sql_schema_discovery_axi_demo.repl" --quiet
 
 echo ""
-echo "-- emit a query certificate from the snapshot export"
-"$AXIOGRAPH" query-cert "$RUN_DIR/build/supply_chain_hott_export_v1.axi" \
+echo "-- emit a canonical .axi-anchored typed query witness"
+"$AXIOGRAPH" cert query "$PROJECT_ROOT/examples/manufacturing/SupplyChainHoTT.axi" \
   --lang axql \
   'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' \
-  --out "$RUN_DIR/build/supply_chain_hott_query_cert_v1.json" >/dev/null
-echo "wrote: build/supply_chain_hott_query_cert_v1.json"
+  --out "$RUN_DIR/build/supply_chain_hott_query_cert_v3.json" >/dev/null
+echo "wrote: build/supply_chain_hott_query_cert_v3.json"
 
 echo ""
 echo "-- verify in Lean (if lake is installed)"
 if command -v lake >/dev/null 2>&1; then
   cd "$PROJECT_ROOT/lean"
   lake env lean --run Axiograph/VerifyMain.lean \
-    "$RUN_DIR/build/supply_chain_hott_export_v1.axi" \
-    "$RUN_DIR/build/supply_chain_hott_query_cert_v1.json" >/dev/null
+    "$PROJECT_ROOT/examples/manufacturing/SupplyChainHoTT.axi" \
+    "$RUN_DIR/build/supply_chain_hott_query_cert_v3.json" >/dev/null
   echo "ok: Lean verified query certificate"
 else
   echo "skip: lake not found (install via elan)"

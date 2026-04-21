@@ -208,7 +208,7 @@ The `q` command prints cache hit/miss + elapsed time.
 - n-ary relation (fact) atoms (canonical `.axi` import shape):
   - `Flow(from=a, to=b)`
   - `?f = Flow(from=a, to=b)`
-- optional context/world scoping (recommended for `.axi` modules using `@context` / `ctx=...`):
+- optional context/world scoping (recommended for `.axi` modules using explicit `ctx=...` / `time=...` tuple fields):
   - `... in CensusData` (single context; certifiable)
   - `... in {CensusData, FamilyTree}` (multi-context union; not certifiable yet)
 - approximate attribute queries (REPL/discovery only; **not certifiable**):
@@ -263,7 +263,8 @@ axiograph> q --elaborate select ?dst where ?f = Flow(from=a, to=?dst)
 This prints:
 - the elaborated AxQL query text (with implied `?x : Type` atoms inserted),
 - inferred types per variable (including supertypes),
-- and ambiguity notes when a relation name exists in multiple schemas.
+- ambiguity notes when a relation name exists in multiple schemas,
+- and typed refinement handles for admissible next moves.
 
 To stop after checking/elaboration (no execution), use:
 
@@ -273,6 +274,39 @@ axiograph> q --typecheck select ?dst where ?f = Flow(from=a, to=?dst)
 
 This mode is intentionally user-facing: it catches common typos early (unknown
 types/relations, or `Flow(foo=...)` where `foo` is not a declared field).
+
+If the elaboration output shows a typed refinement handle, you can apply it
+directly:
+
+```text
+axiograph> q --apply-refinement axql_refine_v1:fnv1a64:... --typecheck select ?dst where ?f = Flow(from=a, to=?dst)
+```
+
+The REPL re-prepares the refined query, prints the refined AxQL text, and then
+continues with typecheck or execution as requested.
+
+Typed authoring now has a matching non-server operator path through the CLI:
+
+```text
+axiograph discover check-olog examples/ontology/OntologyRewrites.axi \
+  --schema S \
+  --fragment build/olog_fragment.json
+```
+
+If the initial report returns `checked_olog.refinement_candidates[*].handle.id`,
+you can immediately apply one of those handles and re-check the refined
+fragment:
+
+```text
+axiograph discover check-olog examples/ontology/OntologyRewrites.axi \
+  --schema S \
+  --fragment build/olog_fragment.json \
+  --apply-refinement-handle-id olog_refine_v1:fnv1a64:...
+```
+
+This uses the same compiled-schema/compiled-theory runtime checker as the HTTP
+`/discover/check-olog` surface and returns the refined fragment plus its updated
+typed report.
 
 #### Context scoping (worlds)
 
@@ -347,7 +381,7 @@ cd rust
 cargo run -p axiograph-cli -- tools viz path/to/snapshot.axpd --out build/graph.dot --focus-name Alice_0 --hops 2
 ```
 
-## Importing canonical `axi_schema_v1` modules
+## Importing canonical `axi_v1` modules
 
 `import_axi` accepts both `PathDBExportV1` snapshot exports and canonical schema
 modules (like `examples/machining/PhysicsKnowledge.axi` or

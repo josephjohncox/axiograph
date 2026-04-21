@@ -2,16 +2,17 @@ import Std
 import Std.Internal.Parsec
 
 /-!
-# `.axi` dialect: `axi_schema_v1`
+# Canonical `.axi` schema/theory/instance surface backing `axi_v1`
 
-This module defines the **schema-oriented** `.axi` surface syntax used by the
-canonical corpus:
+This module defines the canonical `.axi` schema/theory/instance surface used by
+the corpus and the Lean-side checker:
 
 - `examples/economics/EconomicFlows.axi`
 - `examples/ontology/SchemaEvolution.axi`
 
-During the migration we keep dialects explicit and versioned so we can support
-multiple syntaxes without a flag day.
+The module name stays `SchemaV1` because it is the concrete AST behind
+`axi_v1`, but contributors should think in terms of one canonical `.axi`
+surface rather than multiple end-user dialects.
 
 ## Design goals
 
@@ -47,7 +48,10 @@ deriving Repr, DecidableEq
 structure SubtypeDeclV1 where
   sub : Name
   sup : Name
-  /-- Optional explicit inclusion morphism name (legacy syntax). -/
+  /-- Optional explicit inclusion morphism name.
+
+  Preserved for now because some lowering paths still carry it, but it is not
+  part of the preferred canonical authoring style. -/
   inclusion : Option Name
 deriving Repr, DecidableEq
 
@@ -404,22 +408,27 @@ def parseRelationDecl (line : String) : Except String RelationDeclV1 := do
     pure { field, ty }
 
   /-
-  Optional relation annotations.
+  Optional relation-role shorthands.
 
-  The canonical Rust parser supports legacy-ish surface forms like:
+  Canonical authoring style is explicit-role:
+
+  ```
+  relation Parent(child: Person, parent: Person, ctx: Context, time: Time)
+  ```
+
+  The parser also accepts shorthand forms like:
 
   ```
   relation Parent(child: Person, parent: Person) @context Context @temporal Time
   ```
 
-  For now, we preserve this behavior by **expanding** a small set of
-  annotations into explicit fields:
+  and immediately expands them into explicit roles:
 
   - `@context Context` ⇒ adds a `ctx : Context` field (unless already present)
   - `@temporal Time`   ⇒ adds a `time : Time` field (unless already present)
 
-  This keeps Rust/Lean parsing in lockstep while we continue to evolve the
-  formal semantics (Lean) for contexts/worlds and time.
+  This keeps Rust/Lean parsing in lockstep while the compiled IR recovers the
+  stronger role-kind distinction for context/world and time axes.
   -/
   let annotation : LineParser (Name × Name) := do
     ws1

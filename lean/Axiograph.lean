@@ -3,7 +3,6 @@ import Axiograph.AST
 import Axiograph.Axi.AxiV1
 import Axiograph.Axi.SchemaV1
 import Axiograph.Util.Fnv1a
-import Axiograph.Axi.PathDBExportV1
 import Axiograph.Prob.Verified
 import Axiograph.Prob.KL
 import Axiograph.HoTT.Core

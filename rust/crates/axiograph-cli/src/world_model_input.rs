@@ -1,4 +1,4 @@
-//! World-model input helpers (canonical `.axi` export + fallback behavior).
+//! World-model input helpers for canonical `.axi` meaning-plane export.
 //!
 //! The world model should reason over the canonical `.axi` meaning-plane (schema/theory/instance),
 //! not over reversible `PathDBExportV1` snapshots (which contain interned string tables and other
@@ -11,26 +11,10 @@
 //! so the behavior cannot drift.
 
 use anyhow::{anyhow, Result};
-use axiograph_pathdb::{AxiDigest, PathDB};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorldModelAxiInputKindV1 {
-    CanonicalModuleExport,
-    PathdbExportFallback,
-}
-
-impl WorldModelAxiInputKindV1 {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            WorldModelAxiInputKindV1::CanonicalModuleExport => "canonical_module_export",
-            WorldModelAxiInputKindV1::PathdbExportFallback => "pathdb_export_fallback",
-        }
-    }
-}
+use axiograph_pathdb::{AcceptedSnapshotId, AxiDigest, PathDB, PathdbSnapshotId};
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorldModelAxiInputV1 {
-    pub(crate) kind: WorldModelAxiInputKindV1,
     pub(crate) axi_digest_v1: AxiDigest,
     pub(crate) axi_text: String,
     pub(crate) selected_module_name: Option<String>,
@@ -39,7 +23,14 @@ pub(crate) struct WorldModelAxiInputV1 {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WorldModelAxiInputOptionsV1 {
     pub(crate) module_name: Option<String>,
-    pub(crate) require_canonical: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WorldModelInputBuildOptionsV1 {
+    pub(crate) module_name: Option<String>,
+    pub(crate) pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    pub(crate) accepted_snapshot_id: Option<AcceptedSnapshotId>,
+    pub(crate) training_export: Option<crate::world_model::JepaExportOptions>,
 }
 
 fn entity_attr_string(db: &PathDB, entity_id: u32, key: &str) -> Option<String> {
@@ -133,41 +124,76 @@ pub(crate) fn export_pathdb_world_model_axi(
             Ok(axi_text) => {
                 let digest = AxiDigest::from_axi_text(&axi_text);
                 return Ok(WorldModelAxiInputV1 {
-                    kind: WorldModelAxiInputKindV1::CanonicalModuleExport,
                     axi_digest_v1: digest,
                     axi_text,
                     selected_module_name: selected,
                 });
             }
             Err(e) => {
-                if opts.require_canonical {
-                    return Err(anyhow!(
-                        "failed to export canonical module `{module_name}`: {e}"
-                    ));
-                }
+                return Err(anyhow!(
+                    "failed to export canonical module `{module_name}`: {e}"
+                ));
             }
         }
-    } else if opts.require_canonical {
-        return Err(anyhow!(
-            "no canonical `.axi` module is available in this snapshot (import a `.axi` module first, or disable require_canonical)"
-        ));
     }
+    Err(anyhow!(
+        "no canonical `.axi` module is available in this snapshot (import a canonical module before running world-model or agent proposal flows)"
+    ))
+}
 
-    // Fallback: reversible snapshot export (`PathDBExportV1`). This is not ideal as an
-    // LLM/world-model input, but can be useful for debugging.
-    let axi_text = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(db)?;
-    let digest = AxiDigest::from_axi_text(&axi_text);
-    Ok(WorldModelAxiInputV1 {
-        kind: WorldModelAxiInputKindV1::PathdbExportFallback,
-        axi_digest_v1: digest,
-        axi_text,
-        selected_module_name: selected,
-    })
+pub(crate) fn build_world_model_input_from_pathdb(
+    db: &PathDB,
+    opts: &WorldModelInputBuildOptionsV1,
+) -> Result<crate::world_model::WorldModelInputV1> {
+    let exported = export_pathdb_world_model_axi(
+        db,
+        &WorldModelAxiInputOptionsV1 {
+            module_name: opts.module_name.clone(),
+        },
+    )?;
+    build_world_model_input_from_axi_text(
+        &exported.axi_text,
+        exported.selected_module_name,
+        opts.pathdb_snapshot_id.clone(),
+        opts.accepted_snapshot_id.clone(),
+        opts.training_export.clone(),
+    )
+}
+
+pub(crate) fn build_world_model_input_from_axi_text(
+    axi_text: &str,
+    module_name: Option<String>,
+    pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    accepted_snapshot_id: Option<AcceptedSnapshotId>,
+    training_export: Option<crate::world_model::JepaExportOptions>,
+) -> Result<crate::world_model::WorldModelInputV1> {
+    let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
+    let mut input = crate::world_model::WorldModelInputV1::default();
+    input.axi_digest_v1 = Some(canonical.digest().clone());
+    input.axi_module_text = Some(axi_text.to_string());
+    input.set_canonical_axi_semantics(
+        module_name.or_else(|| Some(canonical.module().module().module_name.clone())),
+        pathdb_snapshot_id,
+        accepted_snapshot_id,
+    );
+    input.notes.push(format!(
+        "semantic_input={}",
+        crate::world_model::WORLD_MODEL_SEMANTIC_INPUT_KIND_V1
+    ));
+    if let Some(module_name) = input.semantic_input.module_name.as_ref() {
+        input.notes.push(format!("semantic_module={module_name}"));
+    }
+    if let Some(export_opts) = training_export.as_ref() {
+        let export = crate::world_model::build_jepa_export_from_axi_text(axi_text, export_opts)?;
+        input.set_training_export_layer(export);
+    }
+    Ok(input)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axiograph_pathdb::{AcceptedSnapshotId, PathdbSnapshotId};
 
     #[test]
     fn canonical_world_model_export_avoids_pathdb_internals() {
@@ -186,13 +212,9 @@ instance DemoInst of Demo:
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
             .expect("import demo module");
 
-        let opts = WorldModelAxiInputOptionsV1 {
-            module_name: None,
-            require_canonical: true,
-        };
+        let opts = WorldModelAxiInputOptionsV1 { module_name: None };
         let out =
             export_pathdb_world_model_axi(&db, &opts).expect("export canonical world-model axi");
-        assert_eq!(out.kind, WorldModelAxiInputKindV1::CanonicalModuleExport);
         assert!(out.axi_digest_v1.has_v1_prefix());
         assert!(
             !out.axi_text.contains("InternedString"),
@@ -217,20 +239,87 @@ instance DemoInst of Demo:
 
         let opts = WorldModelAxiInputOptionsV1 {
             module_name: Some("NoSuchModule".to_string()),
-            require_canonical: true,
         };
         let err = export_pathdb_world_model_axi(&db, &opts).unwrap_err();
         assert!(err.to_string().contains("unknown module"));
     }
 
     #[test]
-    fn require_canonical_fails_without_meta_plane_module() {
+    fn canonical_export_fails_without_meta_plane_module() {
         let db = axiograph_pathdb::PathDB::new();
-        let opts = WorldModelAxiInputOptionsV1 {
-            module_name: None,
-            require_canonical: true,
-        };
+        let opts = WorldModelAxiInputOptionsV1 { module_name: None };
         let err = export_pathdb_world_model_axi(&db, &opts).unwrap_err();
         assert!(err.to_string().contains("no canonical"));
+    }
+
+    #[test]
+    fn built_world_model_input_uses_canonical_semantic_envelope() {
+        let mut db = axiograph_pathdb::PathDB::new();
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance DemoInst of Demo:
+  Person = {Alice, Bob}
+  Parent = {(child=Alice, parent=Bob)}
+"#;
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import demo module");
+
+        let input = build_world_model_input_from_pathdb(
+            &db,
+            &WorldModelInputBuildOptionsV1 {
+                module_name: None,
+                pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:test")),
+                accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:test")),
+                training_export: Some(crate::world_model::JepaExportOptions {
+                    instance_filter: None,
+                    max_items: 8,
+                    mask_fields: 1,
+                    seed: 1,
+                    exclude_relations: Vec::new(),
+                }),
+            },
+        )
+        .expect("build world-model input");
+
+        assert_eq!(input.semantic_input.kind, "canonical_axi_semantics_v1");
+        assert_eq!(input.semantic_input.module_name.as_deref(), Some("Demo"));
+        assert_eq!(
+            input
+                .semantic_input
+                .pathdb_snapshot_id
+                .as_ref()
+                .map(PathdbSnapshotId::as_str),
+            Some("pathdb:test")
+        );
+        assert_eq!(
+            input
+                .semantic_input
+                .accepted_snapshot_id
+                .as_ref()
+                .map(AcceptedSnapshotId::as_str),
+            Some("accepted:test")
+        );
+        assert!(
+            input.training_export().is_some(),
+            "expected training export to be carried as a semantic layer"
+        );
+
+        let json = serde_json::to_value(&input).expect("serialize world-model input");
+        assert_eq!(json["semantic_input"]["kind"], "canonical_axi_semantics_v1");
+        assert_eq!(json["semantic_input"]["module_name"], "Demo");
+        assert_eq!(json["semantic_input"]["pathdb_snapshot_id"], "pathdb:test");
+        assert_eq!(
+            json["semantic_input"]["accepted_snapshot_id"],
+            "accepted:test"
+        );
+        assert_eq!(
+            json["semantic_input"]["layers"][0]["kind"],
+            "training_export"
+        );
     }
 }

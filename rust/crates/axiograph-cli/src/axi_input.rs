@@ -40,17 +40,12 @@ impl CanonicalAxiModule {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PathdbExportAxiModule {
-    digest: AxiDigest,
     module: SchemaV1Module,
 }
 
 impl PathdbExportAxiModule {
-    pub(crate) fn new(digest: AxiDigest, module: SchemaV1Module) -> Self {
-        Self { digest, module }
-    }
-
-    pub(crate) fn digest(&self) -> &AxiDigest {
-        &self.digest
+    pub(crate) fn new(module: SchemaV1Module) -> Self {
+        Self { module }
     }
 
     pub(crate) fn module_name(&self) -> &str {
@@ -83,7 +78,7 @@ pub(crate) fn classify_axi_text(text: &str) -> Result<ClassifiedAxiModule> {
     let module = axiograph_dsl::axi_v1::parse_axi_v1(text)?;
     if is_pathdb_export_v1_module(&module) {
         Ok(ClassifiedAxiModule::PathdbExport(
-            PathdbExportAxiModule::new(digest, module),
+            PathdbExportAxiModule::new(module),
         ))
     } else {
         let module = axiograph_pathdb::validate_axi_v1_module(module)?;
@@ -166,7 +161,7 @@ instance I of S:
 
         match classify_axi_text(&export).expect("classify snapshot export") {
             ClassifiedAxiModule::PathdbExport(module) => {
-                assert!(module.digest().has_v1_prefix());
+                assert_eq!(module.module_name(), "PathDBExport");
                 assert!(module.import_pathdb().is_ok());
             }
             ClassifiedAxiModule::Canonical(_) => {

@@ -497,7 +497,13 @@ Required delta payload:
 - lifecycle events
 - world-model run refs
 
-- [ ] Expand `SemDeltaV1` to carry typed layer summaries instead of only flat ref vectors.
+- [x] Land a first compact typed-layer sidecar on `SemDeltaV1`:
+  - semantic commits can now carry `semantic_delta` copied from `EvolutionPreviewV1`
+    without inlining the full preview report.
+- [ ] Continue expanding `SemDeltaV1` beyond the first sidecar:
+  - keep layer summaries compact,
+  - preserve refs for quality/validation/certs/world-model lineage,
+  - and avoid copying full preview internals into commit history.
 - [ ] Keep `SemStateRefV1` pointer-only; it should not inline preview payloads or copy large reports.
 - [ ] Make semantic commits cite materialized state and persisted review artifacts, not duplicate them.
 - [ ] Add one compact semantic gate summary to commits and refs:
@@ -577,10 +583,14 @@ The implementation is already ahead of the roadmap text:
 - `accepted_plane.rs` produces `PromotionPreviewReportV1`
 - `evolution_preview.rs` already defines `EvolutionPreviewV1` with:
   - `typed_change`
+  - `semantic_delta`
   - `quality_delta`
   - `competency_gate`
   - `trust`
+  - `trust_summary`
   - `runtime_semantics`
+  - `rule_summary`
+  - `coverage_summary`
   - `trust_delta`
   - `residual_obligations`
   - `ok`
@@ -645,6 +655,8 @@ Required policy fields:
 
 - [ ] Make `sem merge --dry-run` emit `EvolutionPreviewV1` plus a candidate reconciliation object.
 - [ ] Make accepted-plane promotion persist the `EvolutionPreviewV1` path and cite it from the emitted semantic commit.
+- [x] Make persisted reconciliations capable of emitting a stored `EvolutionPreviewV1`-backed
+  review report and a `SemCommitKindV1::Merge` commit with compact semantic/trust/rule/coverage summaries.
 - [ ] Make future migration preview emit the same object shape and store it in the same location.
 - [ ] Add one preview-read surface in CLI/server tooling so reviewers can inspect stored preview objects without scraping logs.
 
@@ -781,6 +793,99 @@ Make RDF/OWL/SHACL/property-graph interoperability strong without making any of 
   - binary relations may project to edges,
   - n-ary relations project to fact nodes / relationship entities,
   - canonical internal form remains olog/relation-object based.
+- [ ] Add an explicit **advanced graph backend compatibility profile** instead of
+  a vague "generic graph DB" promise.
+  - Tier-1 targets should be only graph engines that expose enough structure to
+    preserve typed projections and scoped execution, for example:
+    - RDF/quad systems with named graphs and SPARQL dataset semantics,
+    - property-graph systems with constraints, transactions, and stable query
+      surfaces (`Cypher`/`openCypher`/`Gremlin`),
+    - and graph engines with explicit schema/index management rather than
+      purely ad hoc edge stores.
+  - Initial reference backends to design against:
+    - `TypeDB` as the primary high-fidelity typed backend target because it is
+      schema-first, strongly typed, relation/role-native, and n-ary by design,
+    - `TerminusDB` as the preferred RDF/VCS-shaped secondary target because it
+      exposes schema/instance graph separation plus commit/branch graphs,
+    - `Neo4j`, `Neptune`, `JanusGraph`, and `Memgraph` as lower-level
+      projection/execution targets,
+    - and `Apache AGE` as an experimental property-graph option rather than a
+      first-class compatibility target.
+- [ ] Define a `BackendCapabilityProfile` / `ProjectionCapabilityProfile`
+  contract in Rust for backend adapters:
+  - backend engine / support tier
+  - `named_graphs`
+  - `transactions`
+  - `constraints`
+  - `schema_management`
+  - `native_type_system`
+  - `native_nary_relations`
+  - `typed_query_validation`
+  - `logic_programming_or_functions`
+  - `cypher_like_queries`
+  - `gremlin_like_traversals`
+  - `sparql_dataset_queries`
+  - `relationship_entities`
+  - `procedures_or_triggers`
+  - `multi_database_or_namespace_support`
+  - `immutable_history`
+  - `branching_and_merge`
+  - `diff_and_patch`
+  - `schema_instance_separation`
+- [ ] Encode backend pushdown asymmetrically instead of pretending every engine
+  should host every semantic layer:
+  - `TypeDB` should be the primary pushdown target for schema typing, relation
+    roles, n-ary structure, typed query validation, and safe runtime rule/query
+    fragments.
+  - `TerminusDB` should be the primary pushdown target for projected branch /
+    history / diff workspaces and context-aware RDF/document collaboration.
+  - property-graph execution should remain experimental until a backend clears
+    the same long-term support and typed-projection bar.
+  - No backend becomes the ontology kernel just because it can host one of
+    these layers well.
+- [ ] Keep semantic authority above the backend:
+  - authoring, ologs, semantic VCS refs/commits, CQ gates, trust contracts,
+    and lifecycle states remain Axiograph-native artifacts,
+  - backends store **materialized projections** anchored to accepted snapshot /
+    semantic commit ids,
+  - native backend query interfaces stay usable as read-only projection lenses
+    for outside tools and graph users,
+  - backend mutation remains non-authoritative and must flow through
+    Axiograph review/promotion paths,
+  - and no backend-local schema or branch model becomes the ontology kernel.
+- [ ] Be explicit about backend-native VCS limits:
+  - exploit native commit/branch/diff features when a backend has them,
+  - but keep schema/theory review and promotion in Axiograph,
+  - especially where backend-native branch synchronization does not transport
+    schema evolution together with instance data.
+- [ ] Add a typed projection manifest for every backend materialization:
+  - source `AcceptedSnapshotId` / semantic ref,
+  - compiled IR digest,
+  - backend capability profile,
+  - backend engine / support tier,
+  - projected object/relation/role mappings,
+  - context/world mapping strategy,
+  - trust caveats about what was preserved vs flattened.
+- [ ] Support backend-specific lowering without semantic surrender:
+  - RDF backends preserve relation-objects and context/world structure through
+    named graphs / reified fact objects where needed,
+  - property-graph backends project binary carrier relations to edges only when
+    semantics are not lost,
+  - n-ary relations, evidence objects, and provenance remain explicit nodes /
+    relationship entities,
+  - and query pushdown is limited to fragments whose semantics are understood by
+    the adapter profile.
+- [ ] Make backend round-tripping explicit rather than implicit:
+  - imports from external graph engines lower through the canonical IR,
+  - exports/projected views are versioned and anchor-aware,
+  - and drift between a backend projection and the accepted semantic state is
+    reported as a typed coverage/drift artifact rather than silently repaired.
+- [ ] Treat backend query pushdown as an optimization layer, not a second
+  semantic core:
+  - typed query elaboration still happens against the canonical IR,
+  - pushdown plans must record which predicates/paths were executed remotely,
+  - and trust contracts must distinguish `accepted_semantic_result_with_backend_pushdown`
+    from plain backend retrieval.
 - [ ] Rework RDF ingest to lower through IR rather than directly into `ProposalV1::Entity` / binary `ProposalV1::Relation`.
 - [ ] Rework RDF export/query support to preserve anchor-aware trust reporting:
   - accepted ontology-backed answers stay distinct from retrieval-only graph

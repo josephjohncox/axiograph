@@ -28,7 +28,7 @@ stats
 # Follow the supply chain graph via derived endpoint edges on the n-ary Flow relation.
 q select ?to where name("RawMetal_A") -Flow-> ?to limit 10
 
-# Subtyping should work for type constraints: Supplier/Factory/Warehouse/Customer <: Node.
+# Subtyping should work for type constraints: Supplier/Factory/Warehouse/Customer < Node.
 q select ?n where ?n : Node limit 10
 
 # Many relation tuples are also indexed as generic morphisms (1-cells).
@@ -40,7 +40,7 @@ q select ?h where ?h : Homotopy limit 10
 # Typecheck + show elaborated query (meta-plane-driven).
 #
 # This inserts implied `?x : Type` atoms for tuple nodes + field values and shows inferred types
-# (including subtyping closure, e.g. `Supplier <: Node`).
+# (including subtyping closure, e.g. `Supplier < Node`).
 q --elaborate select ?s ?cap where SupplierProvides(supplier=?s, cap=?cap) limit 5
 
 # Traverse route equivalence directly (derived edge uses `route1/route2`).
