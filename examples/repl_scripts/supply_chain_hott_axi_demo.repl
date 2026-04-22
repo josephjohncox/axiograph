@@ -34,8 +34,8 @@ q select ?n where ?n : Node limit 10
 # Many relation tuples are also indexed as generic morphisms (1-cells).
 q select ?m where ?m : Morphism, ?m -from-> name("RawMetal_A") limit 10
 
-# Route equivalences are treated as generic homotopies (2-cells).
-q select ?h where ?h : Homotopy limit 10
+# Route equivalences are exposed directly as witness-bearing relation tuples.
+q select ?eq where ?eq : RouteEquivalence limit 10
 
 # Typecheck + show elaborated query (meta-plane-driven).
 #

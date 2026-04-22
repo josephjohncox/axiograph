@@ -23,9 +23,6 @@ instance DemoInst of Demo:
   Person = {P0, P1, P2, P3, P4, P5}
   Context = {C0, C1}
   Time = {T0, T1}
-
-  Parent = {}
-  Spouse = {}
 "#;
 
 fn demo_db() -> PathDB {

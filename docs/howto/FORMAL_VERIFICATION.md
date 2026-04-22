@@ -180,6 +180,9 @@ Lean `.axi` parsing (schema dialect):
 Lean `.axi` parsing (canonical corpus via unified `axi_v1`):
 - `make verify-lean-axi-v1`
 
+Rust↔Lean digest parity for canonical `.axi` anchors:
+- `make verify-axi-digest-e2e`
+
 Lean certificate checks:
 - v1 sample: `make verify-lean`
 - v2 sample: `make verify-lean-v2`

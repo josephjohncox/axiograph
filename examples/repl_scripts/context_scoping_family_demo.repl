@@ -41,8 +41,5 @@ q --elaborate select ?f where ?f = Parent(child=Eve) limit 10
 # Visualize a neighborhood with typed overlay enabled (shows supertypes + relation signatures + constraints).
 viz build/family_context_typed.html format html plane data focus_name Carol hops 2 max_nodes 220 typed_overlay
 
-# E2E tests expect every script to support a default “Homotopy query” certificate.
-add_entity Homotopy demo_homotopy_0
-
 # Export a reversible snapshot `.axi` (used by CI smoke tests and snapshot-export compatibility coverage).
 export_axi build/context_scoping_family_export_v1.axi

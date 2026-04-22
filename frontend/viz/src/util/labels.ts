@@ -1,5 +1,19 @@
 // @ts-nocheck
 
+export function entityTypeDisplayLabel(entityType) {
+  const raw = String(entityType || "").trim();
+  if (!raw) return "(unknown)";
+  if (raw === "Homotopy") return "Path equivalence";
+  return raw;
+}
+
+export function kindDisplayLabel(kind) {
+  const raw = String(kind || "").trim();
+  if (!raw || raw === "entity") return "entity";
+  if (raw === "homotopy") return "path equivalence";
+  return raw;
+}
+
 export function nodeDisplayName(n) {
   if (!n) return "";
   if (n.display_name) return String(n.display_name);
@@ -9,20 +23,22 @@ export function nodeDisplayName(n) {
 }
 
 export function nodeTitle(n) {
+  const typeLabel = entityTypeDisplayLabel(n && n.entity_type);
+  const base = `${typeLabel}#${n.id}`;
   const display = nodeDisplayName(n);
-  if (display && display !== `${n.entity_type}#${n.id}`) {
-    return `${n.entity_type}#${n.id} — ${display}`;
+  if (display && display !== base) {
+    return `${base} — ${display}`;
   }
-  return `${n.entity_type}#${n.id}`;
+  return base;
 }
 
 export function effectiveTypeLabel(n) {
   if (!n) return "(unknown)";
-  if (n.type_label) return String(n.type_label);
+  if (n.type_label) return entityTypeDisplayLabel(n.type_label);
   if ((n.kind === "fact" || n.kind === "morphism" || n.kind === "homotopy") && n.attrs && n.attrs.axi_relation) {
     return String(n.attrs.axi_relation);
   }
-  return n.entity_type || "(unknown)";
+  return entityTypeDisplayLabel(n.entity_type);
 }
 
 export function nodeColor(n) {
@@ -73,7 +89,7 @@ export function parseRelationSignature(sig) {
 export function nodeShortLabel(n) {
   if (!n) return "(unknown)";
   if (n.name) return String(n.name);
-  return `${n.entity_type}#${n.id}`;
+  return `${entityTypeDisplayLabel(n.entity_type)}#${n.id}`;
 }
 
 export function isTupleLike(n) {

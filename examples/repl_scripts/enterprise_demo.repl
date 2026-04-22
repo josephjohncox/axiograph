@@ -10,7 +10,7 @@
 # Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/enterprise_demo.repl
 
-# Generate a realistic scenario graph (shapes + equivalences + homotopies).
+# Generate a realistic scenario graph (shapes + equivalences + path witnesses).
 gen enterprise 5 3 1
 
 stats
@@ -26,11 +26,10 @@ q select ?svc where name("team_0") -owns-> ?svc limit 10
 q select ?svc where name("person_0_0") -memberOf/owns-> ?svc limit 10
 q select ?ep where name("svc_0") -exposes-> ?ep limit 10
 
-# Proof-relevant structures (paths between paths):
-# `doc_0_0` reaches `svc_0` in at least two ways; we record a Homotopy explicitly.
+# Proof-relevant structures (alternative derivations over the same endpoints):
+# `doc_0_0` reaches `svc_0` in at least two ways; inspect the path witnesses directly.
 q select ?svc where name("doc_0_0") -mentionsService-> ?svc limit 10
 q select ?svc where name("doc_0_0") -mentionsEndpoint/belongsTo-> ?svc max_hops 4 limit 10
-q select ?h ?lhs ?rhs where ?h is Homotopy, ?h -from-> name("doc_0_0"), ?h -lhs-> ?lhs, ?h -rhs-> ?rhs limit 10
 q select ?p where ?p is PathWitness, ?p -from-> name("doc_0_0") limit 10
 
 # Ask templates (deterministic, no LLM).

@@ -1295,19 +1295,11 @@ theory T on S:
 instance I of S:
   Person = {Alice}
 "#;
-        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
-        db.build_indexes();
-
-        let report = CheckedDb::check(&db)?;
-        assert!(!report.ok, "expected checked_db to report errors");
+        let err = crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect_err("ill-typed rewrite rule should be rejected during import validation");
         assert!(
-            report
-                .rewrite_rule_typecheck
-                .errors
-                .iter()
-                .any(|e| e.contains("unknown endpoint `y`")),
-            "expected unknown endpoint error, got: {:?}",
-            report.rewrite_rule_typecheck.errors
+            err.to_string().contains("unknown endpoint `y`"),
+            "expected unknown endpoint error, got: {err:#}"
         );
         Ok(())
     }

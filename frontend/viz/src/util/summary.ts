@@ -1,5 +1,7 @@
 // @ts-nocheck
 
+import { entityTypeDisplayLabel } from "./labels";
+
 export function makeSummaries(ctx) {
   const {
     nodeById,
@@ -22,7 +24,9 @@ export function makeSummaries(ctx) {
   function tupleFallbackSummary(n) {
     if (!n || !isTupleLike(n)) return null;
 
-    const rel = (n.attrs && n.attrs.axi_relation) ? String(n.attrs.axi_relation) : String(n.entity_type || "Tuple");
+    const rel = (n.attrs && n.attrs.axi_relation)
+      ? String(n.attrs.axi_relation)
+      : entityTypeDisplayLabel(n.entity_type || "Tuple");
     const order = parseRelationSignatureFieldOrder(n.attrs && n.attrs.axi_overlay_relation_signature);
     const rank = new Map();
     if (order) {
@@ -108,7 +112,9 @@ export function makeSummaries(ctx) {
 
   function homotopySummary(n) {
     if (!n || n.kind !== "homotopy") return null;
-    const rel = (n.attrs && n.attrs.axi_relation) ? String(n.attrs.axi_relation) : String(n.entity_type || "Homotopy");
+    const rel = (n.attrs && n.attrs.axi_relation)
+      ? String(n.attrs.axi_relation)
+      : entityTypeDisplayLabel(n.entity_type || "Homotopy");
     const lhsId = firstOutTargetId(n.id, "lhs");
     const rhsId = firstOutTargetId(n.id, "rhs");
     const lhs = lhsId != null ? nodeShortLabel(nodeById.get(lhsId)) : "";

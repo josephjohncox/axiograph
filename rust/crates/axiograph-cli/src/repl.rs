@@ -3,7 +3,7 @@
 //! By default we use `rustyline` for line editing and tab completion.
 //! A minimal stdin-based fallback exists behind `--no-default-features`.
 
-use crate::trust_contract::{query_user_visible_trust_contract_with_meta, QueryTrustContractV1};
+use crate::trust_contract::QueryTrustContractV1;
 use anyhow::{anyhow, Result};
 use axiograph_pathdb::AcceptedSnapshotId;
 use colored::Colorize;
@@ -372,6 +372,74 @@ struct ReplState {
     snapshot_key: String,
     contexts: Vec<crate::axql::AxqlContextSpec>,
     query_cache: crate::axql::AxqlPreparedQueryCache,
+    prepared_query_cache: ReplPreparedQueryCache,
+}
+
+struct ReplPreparedQueryCache {
+    entries:
+        std::collections::HashMap<crate::axql::AxqlQueryCacheKey, crate::query_ir::PreparedQueryV1>,
+    lru: std::collections::VecDeque<crate::axql::AxqlQueryCacheKey>,
+    max_entries: usize,
+}
+
+impl ReplPreparedQueryCache {
+    const DEFAULT_MAX_ENTRIES: usize = 32;
+
+    fn new(max_entries: usize) -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            lru: std::collections::VecDeque::new(),
+            max_entries: max_entries.max(1),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.lru.clear();
+    }
+
+    fn contains_key(&self, key: &crate::axql::AxqlQueryCacheKey) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    fn touch(&mut self, key: &crate::axql::AxqlQueryCacheKey) {
+        if let Some(pos) = self.lru.iter().position(|existing| existing == key) {
+            self.lru.remove(pos);
+        }
+        self.lru.push_back(key.clone());
+    }
+
+    fn get_mut(
+        &mut self,
+        key: &crate::axql::AxqlQueryCacheKey,
+    ) -> Option<&mut crate::query_ir::PreparedQueryV1> {
+        if self.entries.contains_key(key) {
+            self.touch(key);
+            return self.entries.get_mut(key);
+        }
+        None
+    }
+
+    fn insert(
+        &mut self,
+        key: crate::axql::AxqlQueryCacheKey,
+        value: crate::query_ir::PreparedQueryV1,
+    ) {
+        self.entries.insert(key.clone(), value);
+        self.touch(&key);
+
+        while self.lru.len() > self.max_entries {
+            if let Some(oldest) = self.lru.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+}
+
+impl Default for ReplPreparedQueryCache {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_MAX_ENTRIES)
+    }
 }
 
 fn refresh_meta_plane_index(state: &mut ReplState) -> Result<()> {
@@ -829,6 +897,27 @@ fn require_db_mut(state: &mut ReplState) -> Result<&mut axiograph_pathdb::PathDB
 fn set_snapshot_key(state: &mut ReplState, key: String) {
     state.snapshot_key = key;
     state.query_cache.clear();
+    state.prepared_query_cache.clear();
+}
+
+fn get_or_prepare_repl_prepared_query_mut<'a>(
+    db: &axiograph_pathdb::PathDB,
+    query_ir_v1: &crate::query_ir::QueryIrV1,
+    meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    snapshot_key: &str,
+    cache: &'a mut ReplPreparedQueryCache,
+) -> Result<(bool, &'a mut crate::query_ir::PreparedQueryV1)> {
+    let query = query_ir_v1.to_axql_query()?;
+    let key = crate::axql::axql_query_cache_key(snapshot_key, &query);
+    let cache_hit = cache.contains_key(&key);
+    if !cache_hit {
+        let prepared = query_ir_v1.prepare_with_meta(db, meta)?;
+        cache.insert(key.clone(), prepared);
+    }
+    let prepared = cache
+        .get_mut(&key)
+        .ok_or_else(|| anyhow!("query cache insert failed"))?;
+    Ok((cache_hit, prepared))
 }
 
 fn chain_snapshot_key(prev: &str, op: &str, extra: &str) -> String {
@@ -3459,28 +3548,21 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
     if query.contexts.is_empty() && !state.contexts.is_empty() {
         query.contexts = state.contexts.clone();
     }
+    let mut query_ir_v1 = crate::query_ir::QueryIrV1::from_axql_query(&query);
     let mut applied_refinement: Option<crate::query_ir::QueryRefinementApplyResultV1> = None;
     if let Some(handle_id) = apply_refinement.as_deref() {
-        let prepared_for_apply =
-            crate::query_ir::QueryIrV1::from_axql_query(&query).prepare_with_meta(db, meta)?;
+        let prepared_for_apply = query_ir_v1.prepare_with_meta(db, meta)?;
         let applied = prepared_for_apply.apply_refinement_by_id(db, meta, handle_id)?;
-        query = applied.refined_query_ir_v1.to_axql_query()?;
+        query_ir_v1 = applied.refined_query_ir_v1.clone();
         applied_refinement = Some(applied);
     }
     let start = Instant::now();
-    let cache_hit = state
-        .query_cache
-        .get_mut(&crate::axql::axql_query_cache_key(
-            &state.snapshot_key,
-            &query,
-        ))
-        .is_some();
-    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+    let (cache_hit, prepared) = get_or_prepare_repl_prepared_query_mut(
         db,
-        &query,
+        &query_ir_v1,
         meta,
         &state.snapshot_key,
-        &mut state.query_cache,
+        &mut state.prepared_query_cache,
     )?;
     if show_elaboration {
         if let Some(applied) = &applied_refinement {
@@ -3565,13 +3647,7 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
                 println!("  {l}");
             }
         }
-        let trust = query_user_visible_trust_contract_with_meta(
-            &query,
-            &prepared.certifiability(),
-            false,
-            None,
-            meta,
-        );
+        let trust = prepared.trust_contract_with_meta(meta);
         for line in render_query_trust_contract_lines(&trust) {
             println!("{line}");
         }
@@ -4002,12 +4078,13 @@ fn cmd_sqlish(state: &mut ReplState, args: &[String]) -> Result<()> {
     if query.contexts.is_empty() && !state.contexts.is_empty() {
         query.contexts = state.contexts.clone();
     }
-    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+    let query_ir_v1 = crate::query_ir::QueryIrV1::from_axql_query(&query);
+    let (_, prepared) = get_or_prepare_repl_prepared_query_mut(
         db,
-        &query,
+        &query_ir_v1,
         meta,
         &state.snapshot_key,
-        &mut state.query_cache,
+        &mut state.prepared_query_cache,
     )?;
     let result = prepared.execute(db, meta)?;
 
@@ -4057,12 +4134,13 @@ fn cmd_ask(state: &mut ReplState, args: &[String]) -> Result<()> {
     }
     println!("axql: {}", crate::nlq::render_axql_query(&query));
 
-    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+    let query_ir_v1 = crate::query_ir::QueryIrV1::from_axql_query(&query);
+    let (_, prepared) = get_or_prepare_repl_prepared_query_mut(
         db,
-        &query,
+        &query_ir_v1,
         meta,
         &state.snapshot_key,
-        &mut state.query_cache,
+        &mut state.prepared_query_cache,
     )?;
     let result = prepared.execute(db, meta)?;
 
@@ -4292,6 +4370,8 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                 None,
                 None,
                 None,
+                None,
+                None,
                 &mut state.query_cache,
                 &question,
                 opts,
@@ -4382,6 +4462,8 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                 state.meta.as_ref(),
                 &contexts,
                 &snapshot_key,
+                None,
+                None,
                 None,
                 None,
                 None,

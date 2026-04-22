@@ -134,7 +134,7 @@ axiograph> gen enterprise 5 3 1
 The `enterprise` scenario generates:
 - `Person`, `Team`, `Service`, `Endpoint`, `Table`, `Column`, `Doc`
 - equivalence classes (e.g. `SameService`, `SameApiSurface`)
-- explicit `Homotopy` / commuting-diagram artifacts via `PathWitness` nodes
+- explicit path-witness / equivalence artifacts for alternative derivations
 
 It also prints a short list of suggested queries to try.
 
@@ -354,7 +354,6 @@ axiograph> viz build/schema.html format html plane meta focus_name SupplyChainHo
 ```
 
 Tip: if multiple entities share a `name`, add `focus_type <TypeName>` to disambiguate.
-This also works for “virtual types” like `Morphism` and `Homotopy`.
 
 With `typed_overlay`, the visualization annotates data-plane nodes using the
 `.axi` meta-plane as a type layer (supertypes, relation signatures, and theory
@@ -395,11 +394,10 @@ When importing a canonical schema module, the REPL maps instance data into PathD
 - when a relation has clear endpoints (binary, or `from/to`, etc), the importer
   also adds a derived edge `source -RelationName-> target` for direct traversal
 
-For HoTT-style examples, the importer also adds lightweight “higher structure”
+For path/rewrite-style examples, the importer also adds lightweight witness
 hooks:
 
-- relations named `*Equiv*` / `*Equivalence*` are indexed as `Homotopy` and get
-  alias edges `lhs` / `rhs` (so you can query them generically)
+- equivalence-bearing relation tuples get alias edges `lhs` / `rhs` for generic inspection
 - many endpoint-bearing relation tuples are indexed as `Morphism` and get alias
   edges `from` / `to`
 

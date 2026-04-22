@@ -1373,6 +1373,11 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
         !current_anchor_digest.is_empty(),
         "expected anchor_digest for current snapshot query: {current_q_json}"
     );
+    assert_eq!(
+        current_q_json["accepted_axi_anchor"]["axi_digest"].as_str(),
+        Some(current_anchor_digest),
+        "expected accepted_axi_anchor digest for current snapshot query: {current_q_json}"
+    );
 
     let (old_q_status, old_q_json) = http_post_json(
         &addr,
@@ -1413,6 +1418,11 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
     assert!(
         !old_anchor_digest.is_empty(),
         "expected anchor_digest for snapshot override query: {old_q_json}"
+    );
+    assert_eq!(
+        old_q_json["accepted_axi_anchor"]["axi_digest"].as_str(),
+        Some(old_anchor_digest),
+        "expected accepted_axi_anchor digest for snapshot override query: {old_q_json}"
     );
     assert_eq!(
         current_anchor_digest, old_anchor_digest,

@@ -22,8 +22,8 @@ use crate::certificate::{
     ResolutionDecisionV2, ResolutionProofV2,
 };
 use crate::migration::{
-    ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1, ObjectElementsV1,
-    ObjectMappingV1, SchemaMorphismV1, SchemaV1, SigmaFMigrationProofV1,
+    ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1, MigrationFunctorKindV1,
+    ObjectElementsV1, ObjectMappingV1, SchemaMorphismV1, SchemaV1, SigmaFMigrationProofV1,
 };
 use crate::proof_mode::{ProofMode, Proved};
 use crate::typestate::{NormalizedPathExprV2, UnnormalizedPathExprV2};
@@ -541,6 +541,7 @@ impl ProofProducingOptimizer {
         let pulled_back = delta_f_compute(&morphism, &source_schema, &target_instance)?;
 
         let proof = M::capture(|| DeltaFMigrationProofV1 {
+            operator: MigrationFunctorKindV1::DeltaF,
             morphism,
             source_schema,
             target_instance,
@@ -564,6 +565,7 @@ impl ProofProducingOptimizer {
 
         let proof = M::capture(|| {
             CertificateV2::delta_f_v1(DeltaFMigrationProofV1 {
+                operator: MigrationFunctorKindV1::DeltaF,
                 morphism,
                 source_schema,
                 target_instance,

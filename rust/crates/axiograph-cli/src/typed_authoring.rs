@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use axiograph_dsl::schema_v1::{SchemaV1Module, SchemaV1Schema};
 use axiograph_pathdb::certificate::AxiWellTypedProofV1;
-use axiograph_pathdb::kernel_ir::{CompiledSchemaIr, RelationSemanticsIr, RoleKind, TheoryIr};
+use axiograph_pathdb::kernel_ir::{
+    CompiledSchemaIr, KernelModuleIr, RelationSemanticsIr, RoleKind, TheoryIr,
+};
 use axiograph_pathdb::SchemaId;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +29,8 @@ pub struct TypedAuthoringSummaryV1 {
     pub trust: TypedAuthoringTrustV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub axi_well_typed_proof_v1: Option<AxiWellTypedProofV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_module_ir: Option<KernelModuleIr>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -216,40 +220,56 @@ fn trust(
 
 pub fn draft_typed_authoring_summary_from_axi_text(axi_text: &str) -> TypedAuthoringSummaryV1 {
     match axiograph_dsl::schema_v1::parse_schema_v1(axi_text) {
-        Ok(module) => match axiograph_pathdb::validate_axi_v1_module(module) {
-            Ok(validated) => {
-                let proof = validated.proof().clone();
-                TypedAuthoringSummaryV1 {
-                    lifecycle_state: "validated".to_string(),
+        Ok(module) => {
+            let compiled_kernel_module_ir =
+                axiograph_pathdb::compile_kernel_module_ir(&module, axi_text);
+            match axiograph_pathdb::validate_axi_v1_module(module) {
+                Ok(validated) => {
+                    let proof = validated.proof().clone();
+                    let mut reasons = vec![
+                    "draft parses as canonical .axi".to_string(),
+                    "module passed the Rust-side well-typed module gate".to_string(),
+                    "review/promotion and Lean-side certificate checking are still separate steps"
+                        .to_string(),
+                ];
+                    let kernel_module_ir = match compiled_kernel_module_ir {
+                        Ok(kernel_module_ir) => Some(kernel_module_ir),
+                        Err(err) => {
+                            reasons.push(format!(
+                            "compiled kernel module IR could not be produced for this validated draft: {err}"
+                        ));
+                            None
+                        }
+                    };
+                    TypedAuthoringSummaryV1 {
+                        lifecycle_state: "validated".to_string(),
+                        trust: trust(
+                            "validated_draft",
+                            "rust_side_well_typed_module_check",
+                            "draft_module_only",
+                            "canonical_axi_draft",
+                            reasons,
+                        ),
+                        axi_well_typed_proof_v1: Some(proof),
+                        kernel_module_ir,
+                    }
+                }
+                Err(err) => TypedAuthoringSummaryV1 {
+                    lifecycle_state: "draft_only".to_string(),
                     trust: trust(
-                        "validated_draft",
-                        "rust_side_well_typed_module_check",
+                        "draft_only",
+                        "not_yet_well_typed",
                         "draft_module_only",
                         "canonical_axi_draft",
-                        vec![
-                            "draft parses as canonical .axi".to_string(),
-                            "module passed the Rust-side well-typed module gate".to_string(),
-                            "review/promotion and Lean-side certificate checking are still separate steps"
-                                .to_string(),
-                        ],
+                        vec![format!(
+                            "draft did not pass the Rust-side well-typed module gate: {err}"
+                        )],
                     ),
-                    axi_well_typed_proof_v1: Some(proof),
-                }
+                    axi_well_typed_proof_v1: None,
+                    kernel_module_ir: None,
+                },
             }
-            Err(err) => TypedAuthoringSummaryV1 {
-                lifecycle_state: "draft_only".to_string(),
-                trust: trust(
-                    "draft_only",
-                    "not_yet_well_typed",
-                    "draft_module_only",
-                    "canonical_axi_draft",
-                    vec![format!(
-                        "draft did not pass the Rust-side well-typed module gate: {err}"
-                    )],
-                ),
-                axi_well_typed_proof_v1: None,
-            },
-        },
+        }
         Err(err) => TypedAuthoringSummaryV1 {
             lifecycle_state: "draft_only".to_string(),
             trust: trust(
@@ -260,6 +280,7 @@ pub fn draft_typed_authoring_summary_from_axi_text(axi_text: &str) -> TypedAutho
                 vec![format!("draft did not parse as canonical .axi: {err}")],
             ),
             axi_well_typed_proof_v1: None,
+            kernel_module_ir: None,
         },
     }
 }
@@ -464,6 +485,21 @@ fn theory_handles_for_relation_role(
     (obligation, subjects)
 }
 
+fn primary_theory_subject_ref(
+    theory_subject_refs: &[axiograph_pathdb::kernel_ir::TheorySubjectRefIr],
+) -> Option<axiograph_pathdb::kernel_ir::TheorySubjectRefIr> {
+    theory_subject_refs
+        .iter()
+        .find(|subject| {
+            !matches!(
+                subject,
+                axiograph_pathdb::kernel_ir::TheorySubjectRefIr::Theory { .. }
+            )
+        })
+        .or_else(|| theory_subject_refs.first())
+        .cloned()
+}
+
 fn enrich_olog_refinement_candidate_with_compiled_theory(
     candidate: &mut crate::typed_refinement::RuntimeRefinementCandidateV1,
     compiled_ir: &CompiledSchemaIr,
@@ -479,7 +515,7 @@ fn enrich_olog_refinement_candidate_with_compiled_theory(
         candidate.relation.as_deref(),
         candidate.role.as_deref(),
     );
-    candidate.theory_subject_ref = theory_subject_refs.first().cloned();
+    candidate.theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
     candidate.theory_subject_refs = theory_subject_refs;
     candidate.theory_obligation_ref = theory_obligation_ref;
 }
@@ -499,7 +535,7 @@ fn enrich_olog_hole_with_compiled_theory(
         hole.relation.as_deref(),
         hole.role.as_deref(),
     );
-    hole.theory_subject_ref = theory_subject_refs.first().cloned();
+    hole.theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
     hole.theory_subject_refs = theory_subject_refs;
     hole.theory_obligation_ref = theory_obligation_ref;
 }
@@ -1297,6 +1333,47 @@ fn path_endpoints(
     Some((start, current_end))
 }
 
+fn role_target_refinement_primitives(
+    compiled_ir: &CompiledSchemaIr,
+    relation_name: &str,
+    role_name: &str,
+    expected_type: &str,
+    actual_type: &str,
+    affected_subject_refs: Vec<String>,
+    specialize_rationale: String,
+    push_rationale: String,
+) -> Vec<crate::evolution_preview::EvolutionPrimitiveV1> {
+    if actual_type == expected_type
+        || !compiled_ir.type_matches_or_subtypes(actual_type, expected_type)
+    {
+        return Vec::new();
+    }
+
+    let mut primitives = vec![
+        crate::evolution_preview::EvolutionPrimitiveV1::SpecializeToSubtype {
+            from: expected_type.to_string(),
+            to: actual_type.to_string(),
+            affected_subject_refs: affected_subject_refs.clone(),
+            rationale: Some(specialize_rationale),
+        },
+    ];
+
+    if compiled_ir.is_direct_subtype(actual_type, expected_type) {
+        primitives.push(
+            crate::evolution_preview::EvolutionPrimitiveV1::PushRelationRoleToSubtype {
+                relation: relation_name.to_string(),
+                role: role_name.to_string(),
+                from_supertype: expected_type.to_string(),
+                to_subtype: actual_type.to_string(),
+                affected_subject_refs,
+                rationale: Some(push_rationale),
+            },
+        );
+    }
+
+    primitives
+}
+
 fn relation_binding_specialization_primitives(
     compiled_ir: &CompiledSchemaIr,
     relation_box_id: &str,
@@ -1312,21 +1389,77 @@ fn relation_binding_specialization_primitives(
         let Some(actual_type) = object_boxes.get(&binding.target_box) else {
             continue;
         };
-        if actual_type != &role.target_type
-            && compiled_ir.type_matches_or_subtypes(actual_type, &role.target_type)
-        {
-            primitives.push(
-                crate::evolution_preview::EvolutionPrimitiveV1::SpecializeToSubtype {
-                    from: role.target_type.clone(),
-                    to: actual_type.clone(),
-                    affected_subject_refs: vec![binding.target_box.clone()],
-                    rationale: Some(format!(
-                        "olog relation box `{relation_box_id}` binds role `{}` with narrower box type `{}`",
-                        binding.role, actual_type
-                    )),
-                },
-            );
+        primitives.extend(role_target_refinement_primitives(
+            compiled_ir,
+            &relation.name,
+            &role.name,
+            &role.target_type,
+            actual_type,
+            vec![binding.target_box.clone()],
+            format!(
+                "olog relation box `{relation_box_id}` binds role `{}` with narrower box type `{}`",
+                binding.role, actual_type
+            ),
+            format!(
+                "typed olog authoring used direct subtype `{}` for `{}` on relation box `{relation_box_id}`; review whether `{}` should be pushed down from `{}`",
+                actual_type, binding.role, binding.role, role.target_type
+            ),
+        ));
+    }
+    primitives
+}
+
+fn fragment_relation_split_primitives(
+    compiled_ir: &CompiledSchemaIr,
+    fragment: &OlogFragmentV1,
+    object_boxes: &HashMap<String, String>,
+) -> Vec<crate::evolution_preview::EvolutionPrimitiveV1> {
+    let mut subtypes_by_relation_role: BTreeMap<(String, String, String), BTreeSet<String>> =
+        BTreeMap::new();
+
+    for relation_box in &fragment.relation_boxes {
+        let Some(relation) = compiled_ir.relation(&relation_box.relation) else {
+            continue;
+        };
+        for binding in &relation_box.role_bindings {
+            let Some(role) = relation.roles.iter().find(|role| role.name == binding.role) else {
+                continue;
+            };
+            let Some(actual_type) = object_boxes.get(&binding.target_box) else {
+                continue;
+            };
+            if actual_type != &role.target_type
+                && compiled_ir.is_direct_subtype(actual_type, &role.target_type)
+            {
+                subtypes_by_relation_role
+                    .entry((
+                        relation.name.clone(),
+                        role.name.clone(),
+                        role.target_type.clone(),
+                    ))
+                    .or_default()
+                    .insert(actual_type.clone());
+            }
         }
+    }
+
+    let mut primitives = Vec::new();
+    for ((relation_name, role_name, source_type), subtypes) in subtypes_by_relation_role {
+        if subtypes.len() <= 1 {
+            continue;
+        }
+        primitives.push(
+            crate::evolution_preview::EvolutionPrimitiveV1::SplitTypeIntoSubtypes {
+                source: source_type.clone(),
+                subtypes: subtypes.into_iter().collect(),
+                discriminator: Some(format!("{}.{}", relation_name, role_name)),
+                affected_subject_refs: Vec::new(),
+                rationale: Some(format!(
+                    "typed olog authoring bound `{}` across multiple direct subtypes for `{}`; review whether `{}` should split explicitly along this role",
+                    role_name, relation_name, source_type
+                )),
+            },
+        );
     }
     primitives
 }
@@ -1506,6 +1639,12 @@ pub fn olog_fragment_typed_change_summary(
             &object_boxes,
         ));
     }
+
+    primitives.extend(fragment_relation_split_primitives(
+        compiled_ir,
+        fragment,
+        &object_boxes,
+    ));
 
     primitives.extend(aspect_specialization_primitives(compiled_ir, fragment));
 
@@ -2115,6 +2254,31 @@ instance I of S:
 "#
     }
 
+    fn sample_axi_with_role_split() -> &'static str {
+        r#"
+module Demo
+
+schema S:
+  object Person
+  object Employee
+  object Contractor
+  object Task
+  subtype Employee <: Person
+  subtype Contractor <: Person
+  relation Assigned(worker: Person, task: Task)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Employee = {Alice}
+  Contractor = {Bob}
+  Task = {TicketA, TicketB}
+  Assigned = {
+    (worker=Alice, task=TicketA),
+    (worker=Bob, task=TicketB)
+  }
+"#
+    }
+
     #[test]
     fn draft_typed_authoring_summary_reports_validated_module() {
         let axi = r#"
@@ -2141,6 +2305,20 @@ instance I of S:
                 .map(|proof| proof.module_name.as_str()),
             Some("Demo")
         );
+        let kernel_module_ir = summary
+            .kernel_module_ir
+            .as_ref()
+            .expect("validated draft should expose kernel module ir");
+        assert_eq!(kernel_module_ir.instances.len(), 1);
+        assert_eq!(
+            kernel_module_ir.instances[0].instance_id.as_str(),
+            "instance:S:I"
+        );
+        assert_eq!(kernel_module_ir.instances[0].relation_facts.len(), 1);
+        assert_eq!(
+            kernel_module_ir.instances[0].relation_facts[0].relation_name,
+            "Parent"
+        );
     }
 
     #[test]
@@ -2150,6 +2328,7 @@ instance I of S:
         assert_eq!(summary.lifecycle_state, "draft_only");
         assert_eq!(summary.trust.trust_class, "draft_only");
         assert!(summary.axi_well_typed_proof_v1.is_none());
+        assert!(summary.kernel_module_ir.is_none());
         assert!(summary
             .trust
             .reasons
@@ -3568,6 +3747,111 @@ schema S:
             } if equation_id == "employee_path"
                 && start_box.as_deref() == Some("works_for_fact")
                 && end_box.as_deref() == Some("employee")
+        )));
+    }
+
+    #[test]
+    fn olog_fragment_typed_change_summary_emits_role_pushdown_and_split_primitives() {
+        let module =
+            axiograph_dsl::schema_v1::parse_schema_v1(sample_axi_with_role_split()).expect("parse");
+        let schema = select_schema(&module, Some("S")).expect("schema");
+        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let fragment = OlogFragmentV1 {
+            boxes: vec![
+                OlogBoxV1 {
+                    box_id: "employee".to_string(),
+                    object_type: "Employee".to_string(),
+                    label: None,
+                },
+                OlogBoxV1 {
+                    box_id: "contractor".to_string(),
+                    object_type: "Contractor".to_string(),
+                    label: None,
+                },
+                OlogBoxV1 {
+                    box_id: "task_a".to_string(),
+                    object_type: "Task".to_string(),
+                    label: None,
+                },
+                OlogBoxV1 {
+                    box_id: "task_b".to_string(),
+                    object_type: "Task".to_string(),
+                    label: None,
+                },
+            ],
+            relation_boxes: vec![
+                OlogRelationBoxV1 {
+                    box_id: "assigned_employee".to_string(),
+                    relation: "Assigned".to_string(),
+                    role_bindings: vec![
+                        OlogRoleBindingV1 {
+                            role: "worker".to_string(),
+                            target_box: "employee".to_string(),
+                        },
+                        OlogRoleBindingV1 {
+                            role: "task".to_string(),
+                            target_box: "task_a".to_string(),
+                        },
+                    ],
+                },
+                OlogRelationBoxV1 {
+                    box_id: "assigned_contractor".to_string(),
+                    relation: "Assigned".to_string(),
+                    role_bindings: vec![
+                        OlogRoleBindingV1 {
+                            role: "worker".to_string(),
+                            target_box: "contractor".to_string(),
+                        },
+                        OlogRoleBindingV1 {
+                            role: "task".to_string(),
+                            target_box: "task_b".to_string(),
+                        },
+                    ],
+                },
+            ],
+            aspects: Vec::new(),
+            path_equations: Vec::new(),
+        };
+
+        let summary = olog_fragment_typed_change_summary(&compiled_ir, &fragment);
+
+        assert!(summary.primitives.iter().any(|primitive| matches!(
+            primitive,
+            crate::evolution_preview::EvolutionPrimitiveV1::PushRelationRoleToSubtype {
+                relation,
+                role,
+                from_supertype,
+                to_subtype,
+                ..
+            } if relation == "Assigned"
+                && role == "worker"
+                && from_supertype == "Person"
+                && to_subtype == "Employee"
+        )));
+        assert!(summary.primitives.iter().any(|primitive| matches!(
+            primitive,
+            crate::evolution_preview::EvolutionPrimitiveV1::PushRelationRoleToSubtype {
+                relation,
+                role,
+                from_supertype,
+                to_subtype,
+                ..
+            } if relation == "Assigned"
+                && role == "worker"
+                && from_supertype == "Person"
+                && to_subtype == "Contractor"
+        )));
+        assert!(summary.primitives.iter().any(|primitive| matches!(
+            primitive,
+            crate::evolution_preview::EvolutionPrimitiveV1::SplitTypeIntoSubtypes {
+                source,
+                subtypes,
+                discriminator,
+                ..
+            } if source == "Person"
+                && discriminator.as_deref() == Some("Assigned.worker")
+                && subtypes.iter().any(|ty| ty == "Employee")
+                && subtypes.iter().any(|ty| ty == "Contractor")
         )));
     }
 

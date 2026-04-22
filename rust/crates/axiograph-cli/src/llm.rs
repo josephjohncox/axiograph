@@ -26,7 +26,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use roaring::RoaringBitmap;
 
 use crate::query_ir::QueryIrV1;
-use crate::trust_contract::query_user_visible_trust_contract_with_meta;
 use crate::world_model::{
     normalize_world_model_proposals_value, world_model_llm_prompt, WorldModelRequestV1,
     WorldModelResponseV1,
@@ -34,6 +33,7 @@ use crate::world_model::{
 use axiograph_ingest_docs::{Chunk, ProposalSourceV1, ProposalV1, ProposalsFileV1};
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::PathDB;
+use axiograph_pathdb::{AcceptedAxiAnchor, AcceptedSnapshotId};
 
 // Common attribute keys (shared with viz overlays).
 const ATTR_AXI_RELATION: &str = "axi_relation";
@@ -2520,6 +2520,69 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
 
+    fn semantic_tool_db_and_meta() -> Result<(
+        axiograph_pathdb::PathDB,
+        axiograph_pathdb::axi_semantics::MetaPlaneIndex,
+    )> {
+        let axi = r#"
+module Family
+
+schema Family:
+  object Person
+  relation parent(child: Person, parent: Person)
+
+theory FamilyTheory on Family:
+  constraint functional parent on child
+
+instance FamilyInst of Family:
+  Person = {alice, bob}
+  parent = {(child=bob, parent=alice)}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        Ok((db, meta))
+    }
+
+    fn sample_accepted_axi_anchor() -> axiograph_pathdb::AcceptedAxiAnchor {
+        axiograph_pathdb::AcceptedAxiAnchor::new(
+            axiograph_pathdb::AcceptedSnapshotId::new("accepted:regulated-line"),
+            axiograph_pathdb::AxiDigest::new("fnv1a64:regulated-line"),
+        )
+    }
+
+    fn sample_harness_trust() -> crate::trust_contract::TrustContractV1 {
+        crate::trust_contract::TrustContractV1 {
+            trust_class: "runtime_guarded".to_string(),
+            soundness: "seed_cache_artifacts_are_anchor_scoped".to_string(),
+            coverage: "regulated_line_seed_shadow_harness".to_string(),
+            scope: crate::trust_contract::TrustScopeV1 {
+                anchor: "accepted:regulated-line@fnv1a64:regulated-line".to_string(),
+                context: "regulated_production_line_seed".to_string(),
+            },
+            reasons: Vec::new(),
+            certifiable_disjuncts: None,
+            execution_only_disjuncts: None,
+            semantic_coverage: None,
+            semantic_claims: Vec::new(),
+            gaps: Vec::new(),
+        }
+    }
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "axiograph-llm-industrial-harness-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("temp test dir");
+        path
+    }
+
     #[test]
     fn parse_llm_json_object_repairs_truncated_world_model_output() {
         // Realistic failure mode: the model produces a correct prefix but the
@@ -2789,6 +2852,7 @@ instance I of Demo:
             None,
             &[],
             "trust-test-snapshot",
+            None,
             &mut query_cache,
             &args,
             super::ToolLoopOptions::default(),
@@ -2820,6 +2884,418 @@ instance I of Demo:
             .as_str()
             .unwrap_or("")
             .contains("does not claim full ontology closure")));
+        Ok(())
+    }
+
+    #[test]
+    fn axql_run_returns_support_summary_for_anchored_certifiable_queries() -> anyhow::Result<()> {
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person) @context Context
+
+instance I of S:
+  Person = {Alice, Bob}
+  Context = {CensusData}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=CensusData)
+  }
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let anchor = axiograph_pathdb::AcceptedAxiAnchor::new(
+            axiograph_pathdb::AcceptedSnapshotId::new("accepted:test"),
+            axiograph_pathdb::AxiDigest::from_axi_text(axi),
+        );
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let args = serde_json::json!({
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    {
+                        "kind": "fact",
+                        "fact": "?f",
+                        "relation": "S.Parent",
+                        "fields": {
+                            "child": "Alice",
+                            "parent": "?p",
+                            "ctx": "CensusData"
+                        }
+                    }
+                ],
+                "limit": 10
+            }
+        });
+
+        let out = super::tool_axql_run(
+            &db,
+            Some(&meta),
+            &[],
+            "support-summary-test-snapshot",
+            Some(&anchor),
+            &mut query_cache,
+            &args,
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["trust"]["soundness"].as_str(),
+            Some("certificate_available_but_not_emitted")
+        );
+        assert_eq!(
+            out["support_summary"]["accepted_axi_anchor"]["accepted_snapshot_id"].as_str(),
+            Some("accepted:test")
+        );
+        assert_eq!(
+            out["support_summary"]["trust"]["soundness"].as_str(),
+            Some("certificate_emitted_row_soundness_unverified")
+        );
+        assert!(out["support_summary"]["supported_facts"]
+            .as_array()
+            .is_some_and(|facts| !facts.is_empty()));
+        assert!(out["support_summary"]["supported_facts"]
+            .as_array()
+            .is_some_and(|facts| facts.iter().any(|fact| fact["contexts"]
+                .as_array()
+                .is_some_and(|contexts| contexts
+                    .iter()
+                    .any(|ctx| ctx["name"].as_str() == Some("CensusData"))))));
+        Ok(())
+    }
+
+    #[test]
+    fn tool_loop_tools_schema_includes_semantic_report_tools() {
+        let names = super::tool_loop_tools_schema(None, false)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| name == "semantic_business_rule"));
+        assert!(names.iter().any(|name| name == "semantic_coverage"));
+        assert!(names.iter().any(|name| name == "semantic_agent_report"));
+        assert!(names
+            .iter()
+            .any(|name| name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME));
+        assert!(names
+            .iter()
+            .any(|name| name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME));
+        assert!(names
+            .iter()
+            .any(|name| name == "industrial_harness_run_regulated_seed"));
+    }
+
+    #[test]
+    fn tool_loop_tools_schema_advertises_route_preview_schema() {
+        let tools = super::tool_loop_tools_schema(None, false);
+        let route_preview = tools
+            .iter()
+            .find(|tool| tool.name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME)
+            .expect("route_preview should be advertised");
+
+        assert_eq!(
+            route_preview.args_schema,
+            crate::route_preview_tools::route_preview_tool_specs()
+                .into_iter()
+                .find(|tool| tool.name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME)
+                .expect("route preview spec")
+                .input_schema
+        );
+    }
+
+    #[test]
+    fn tool_loop_tools_schema_advertises_transport_preview_schema() {
+        let tools = super::tool_loop_tools_schema(None, false);
+        let transport_preview = tools
+            .iter()
+            .find(|tool| tool.name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME)
+            .expect("transport_preview should be advertised");
+
+        assert_eq!(
+            transport_preview.args_schema,
+            crate::transport_preview_tools::transport_preview_tool_specs()
+                .into_iter()
+                .find(
+                    |tool| tool.name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME
+                )
+                .expect("transport preview spec")
+                .input_schema
+        );
+    }
+
+    #[test]
+    fn tool_loop_tools_schema_includes_industrial_harness_inspect() {
+        let tools = super::tool_loop_tools_schema(None, false);
+        let inspect = tools
+            .iter()
+            .find(|tool| {
+                tool.name == crate::industrial_harness_tools::INDUSTRIAL_HARNESS_INSPECT_TOOL_NAME
+            })
+            .expect("industrial_harness_inspect should be advertised");
+
+        assert_eq!(
+            inspect.args_schema,
+            crate::industrial_harness_tools::industrial_harness_tool_specs()
+                .into_iter()
+                .find(|tool| {
+                    tool.name
+                        == crate::industrial_harness_tools::INDUSTRIAL_HARNESS_INSPECT_TOOL_NAME
+                })
+                .expect("industrial harness spec")
+                .input_schema
+        );
+    }
+
+    #[test]
+    fn execute_tool_call_supports_semantic_business_rule() -> Result<()> {
+        let (db, meta) = semantic_tool_db_and_meta()?;
+        let accepted_snapshot_id = axiograph_pathdb::AcceptedSnapshotId::new("accepted:family");
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &db,
+            Some(&meta),
+            &[],
+            "semantic-tool-snapshot",
+            Some(&accepted_snapshot_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name: "semantic_business_rule".to_string(),
+                args: json!({
+                    "scope": {
+                        "schema": "Family",
+                        "scope_class": "relation",
+                        "relation": "parent"
+                    }
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["version"].as_str(),
+            Some("axiograph_semantic_business_rule_v1")
+        );
+        assert_eq!(
+            out["accepted_snapshot_id"].as_str(),
+            Some("accepted:family")
+        );
+        assert_eq!(
+            out["report"]["scope"]["scope_id"].as_str(),
+            Some("schema/family/relation/parent")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn execute_tool_call_supports_industrial_harness_inspect() -> Result<()> {
+        let cache_root = temp_test_dir("inspect-tool");
+        let accepted_axi_anchor = sample_accepted_axi_anchor();
+        crate::industrial_harness::materialize_regulated_production_line_seed_harness(
+            &cache_root,
+            "inspect-tool-run",
+            4242,
+            accepted_axi_anchor.clone(),
+            sample_harness_trust(),
+        )?;
+
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &axiograph_pathdb::PathDB::new(),
+            None,
+            &[],
+            "industrial-harness-tool-snapshot",
+            None,
+            Some(&accepted_axi_anchor),
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name: crate::industrial_harness_tools::INDUSTRIAL_HARNESS_INSPECT_TOOL_NAME
+                    .to_string(),
+                args: json!({
+                    "cache_root": cache_root.to_string_lossy().to_string(),
+                    "campaign_id": crate::industrial_harness::REGULATED_PRODUCTION_LINE_CAMPAIGN_ID,
+                    "run_id": "inspect-tool-run"
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["bundle"]["run"]["run_id"].as_str(),
+            Some("inspect-tool-run")
+        );
+        assert_eq!(out["verification"]["failed"].as_u64(), Some(0));
+
+        std::fs::remove_dir_all(&cache_root).expect("cleanup temp dir");
+        Ok(())
+    }
+
+    #[test]
+    fn execute_tool_call_supports_industrial_harness_run_regulated_seed() -> Result<()> {
+        let cache_root = temp_test_dir("run-tool");
+        let accepted_axi_anchor = sample_accepted_axi_anchor();
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let db = crate::load_pathdb_for_cli(
+            &repo_root.join("examples/industrial/RegulatedProductionLine.axi"),
+        )?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &db,
+            Some(&meta),
+            &[],
+            "industrial-harness-run-snapshot",
+            None,
+            Some(&accepted_axi_anchor),
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name:
+                    crate::industrial_harness_tools::INDUSTRIAL_HARNESS_RUN_REGULATED_SEED_TOOL_NAME
+                        .to_string(),
+                args: json!({
+                    "cache_root": cache_root.to_string_lossy().to_string(),
+                    "run_id": "run-tool-seed",
+                    "created_at_unix_secs": 4242
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(out["run_id"].as_str(), Some("run-tool-seed"));
+        assert_eq!(
+            out["trust"]["trust_class"].as_str(),
+            Some("runtime_guarded")
+        );
+        std::fs::remove_dir_all(&cache_root).expect("cleanup temp dir");
+        Ok(())
+    }
+
+    #[test]
+    fn execute_tool_call_supports_route_preview() -> Result<()> {
+        let mut db = axiograph_pathdb::PathDB::new();
+        let a = db.add_entity("Node", vec![("name", "A")]);
+        let b = db.add_entity("Node", vec![("name", "B")]);
+        let ab = db.add_relation("road", a, b, 0.9, Vec::new());
+        db.build_indexes();
+
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &db,
+            None,
+            &[],
+            "route-preview-tool-snapshot",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name: crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME.to_string(),
+                args: json!({
+                    "route": {
+                        "start_entity": a,
+                        "segments": [
+                            {
+                                "relation_id": ab,
+                                "direction": "forward"
+                            }
+                        ]
+                    }
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["version"].as_str(),
+            Some("axiograph_discover_route_preview_v1")
+        );
+        assert_eq!(out["route"]["end_entity"].as_u64(), Some(b as u64));
+        assert_eq!(
+            out["route"]["normalized"]["hops"][0]["relation"].as_str(),
+            Some("road")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn execute_tool_call_supports_transport_preview() -> Result<()> {
+        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
+        let out = super::execute_tool_call(
+            &axiograph_pathdb::PathDB::new(),
+            None,
+            &[],
+            "transport-preview-tool-snapshot",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &mut query_cache,
+            &super::ToolCallV1 {
+                name: crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME.to_string(),
+                args: json!({
+                    "axi_text": r#"
+module Plant
+
+schema Plant:
+  object PlantAsset
+  object Pump
+  object Compressor
+  object Context
+  relation installed_at(asset: PlantAsset, site: PlantAsset, ctx: Context)
+  subtype Pump < PlantAsset
+  subtype Compressor < PlantAsset
+
+theory PlantTransport on Plant:
+  constraint key installed_at(asset, site, ctx)
+"#,
+                    "schema": "Plant",
+                    "morphism": {
+                        "source_schema": "Plant",
+                        "target_schema": "Ops",
+                        "objects": [
+                            {"source_object": "PlantAsset", "target_object": "Equipment"},
+                            {"source_object": "Pump", "target_object": "Equipment"},
+                            {"source_object": "Compressor", "target_object": "Equipment"}
+                        ],
+                        "arrows": [
+                            {"source_arrow": "installed_at", "target_path": ["owned_by", "located_at"]}
+                        ]
+                    }
+                }),
+            },
+            super::ToolLoopOptions::default(),
+        )?;
+
+        assert_eq!(
+            out["version"].as_str(),
+            Some(crate::evolution_preview::EVOLUTION_PREVIEW_VERSION_V1)
+        );
+        assert_eq!(out["kind"].as_str(), Some("migration_preview"));
+        assert_eq!(out["candidate_label"].as_str(), Some("Plant->Ops"));
         Ok(())
     }
 
@@ -3494,6 +3970,8 @@ pub(crate) fn run_tool_loop_with_meta(
     meta: Option<&MetaPlaneIndex>,
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
+    accepted_snapshot_id: Option<&AcceptedSnapshotId>,
+    accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
     store: Option<&ToolLoopStoreContext>,
     world_model: Option<&ToolLoopWorldModelContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
@@ -3793,6 +4271,8 @@ pub(crate) fn run_tool_loop_with_meta(
                 meta,
                 default_contexts,
                 snapshot_key,
+                accepted_snapshot_id,
+                accepted_axi_anchor,
                 store,
                 world_model,
                 embeddings,
@@ -4256,7 +4736,7 @@ fn is_trivial_model_answer(answer: &str) -> bool {
     }
 }
 
-fn tool_loop_tools_schema(
+pub(crate) fn tool_loop_tools_schema(
     store: Option<&ToolLoopStoreContext>,
     world_model_enabled: bool,
 ) -> Vec<ToolSpecV1> {
@@ -4405,7 +4885,7 @@ fn tool_loop_tools_schema(
         },
         ToolSpecV1 {
             name: "axql_run".to_string(),
-            description: "Run a structured `query_ir_v1` query over the snapshot (uncertified unless you later emit a certificate). The returned trust payload explicitly separates scoped returned-row soundness from non-claims about completeness or ontology closure.".to_string(),
+            description: "Run a structured `query_ir_v1` query over the snapshot (uncertified unless you later emit a certificate). The returned trust payload explicitly separates scoped returned-row soundness from non-claims about completeness or ontology closure, and accepted-anchor runtimes also return an evidence support summary when the query stays inside the current certifiable subset.".to_string(),
             args_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query_ir_v1"],
@@ -4415,6 +4895,49 @@ fn tool_loop_tools_schema(
                 }
             }),
         },
+    ];
+
+    out.extend(
+        crate::semantic_tools::semantic_tool_specs()
+            .into_iter()
+            .map(|tool| ToolSpecV1 {
+                name: tool.name.to_string(),
+                description: tool.description.to_string(),
+                args_schema: tool.input_schema,
+            }),
+    );
+
+    out.extend(
+        crate::route_preview_tools::route_preview_tool_specs()
+            .into_iter()
+            .map(|tool| ToolSpecV1 {
+                name: tool.name.to_string(),
+                description: tool.description.to_string(),
+                args_schema: tool.input_schema,
+            }),
+    );
+
+    out.extend(
+        crate::transport_preview_tools::transport_preview_tool_specs()
+            .into_iter()
+            .map(|tool| ToolSpecV1 {
+                name: tool.name.to_string(),
+                description: tool.description.to_string(),
+                args_schema: tool.input_schema,
+            }),
+    );
+
+    out.extend(
+        crate::industrial_harness_tools::industrial_harness_tool_specs()
+            .into_iter()
+            .map(|tool| ToolSpecV1 {
+                name: tool.name.to_string(),
+                description: tool.description.to_string(),
+                args_schema: tool.input_schema,
+            }),
+    );
+
+    out.extend([
         ToolSpecV1 {
             name: "viz_render".to_string(),
             description: "Render an HTML neighborhood visualization (restricted to build/llm_agent).".to_string(),
@@ -4557,7 +5080,7 @@ fn tool_loop_tools_schema(
                 }
             }),
         },
-    ];
+    ]);
 
     if let Some(store) = store {
         let default_layer = store.default_layer.trim().to_ascii_lowercase();
@@ -4653,6 +5176,8 @@ fn execute_tool_call(
     meta: Option<&MetaPlaneIndex>,
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
+    accepted_snapshot_id: Option<&AcceptedSnapshotId>,
+    accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
     store: Option<&ToolLoopStoreContext>,
     world_model: Option<&ToolLoopWorldModelContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
@@ -4699,10 +5224,47 @@ fn execute_tool_call(
             meta,
             default_contexts,
             snapshot_key,
+            accepted_axi_anchor,
             query_cache,
             &call.args,
             options,
         ),
+        name if crate::semantic_tools::is_semantic_tool(name) => {
+            crate::semantic_tools::invoke_semantic_tool(
+                name,
+                crate::semantic_tools::SemanticToolContext {
+                    db,
+                    meta,
+                    accepted_snapshot_id,
+                },
+                call.args.clone(),
+            )
+        }
+        name if crate::route_preview_tools::is_route_preview_tool(name) => {
+            crate::route_preview_tools::invoke_route_preview_tool(
+                name,
+                crate::route_preview_tools::RoutePreviewToolContext { db },
+                call.args.clone(),
+            )
+        }
+        name if crate::transport_preview_tools::is_transport_preview_tool(name) => {
+            crate::transport_preview_tools::invoke_transport_preview_tool(
+                name,
+                crate::transport_preview_tools::TransportPreviewToolContext,
+                call.args.clone(),
+            )
+        }
+        name if crate::industrial_harness_tools::is_industrial_harness_tool(name) => {
+            crate::industrial_harness_tools::invoke_industrial_harness_tool(
+                name,
+                crate::industrial_harness_tools::IndustrialHarnessToolContext {
+                    db: Some(db),
+                    meta,
+                    accepted_axi_anchor,
+                },
+                call.args.clone(),
+            )
+        }
         "viz_render" => tool_viz_render(db, meta, &call.args),
         "quality_report" => tool_quality_report(db, &call.args),
         "propose_axi_patch" => tool_propose_axi_patch(&call.args),
@@ -7477,31 +8039,23 @@ fn tool_axql_elaborate(
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let mut query = parse_query_from_tool_args(args, "axql_elaborate")?;
-    if query.contexts.is_empty() && !default_contexts.is_empty() {
-        query.contexts = default_contexts.to_vec();
-    }
-
     // We run the full prepare pipeline so we can return a plan (join order,
     // index hints, etc). This is untrusted tooling output, not a certificate.
-    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+    let prepared = prepare_tool_loop_query_ir(
         db,
-        &query,
         meta,
+        default_contexts,
         snapshot_key,
         query_cache,
+        args,
+        "axql_elaborate",
+        None,
     )?;
 
     let report = prepared.elaboration_report();
     let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
     let plan = prepared.explain_plan_lines();
-    let trust = query_user_visible_trust_contract_with_meta(
-        &query,
-        &prepared.certifiability(),
-        false,
-        None,
-        meta,
-    );
+    let trust = prepared.trust_contract_with_meta(meta);
 
     Ok(serde_json::json!({
         "elaborated": prepared.elaborated_query_text(),
@@ -7528,75 +8082,26 @@ fn tool_axql_explore(
         variable: Option<String>,
     }
 
-    let mut query = parse_query_from_tool_args(args, "axql_explore")?;
-    if query.contexts.is_empty() && !default_contexts.is_empty() {
-        query.contexts = default_contexts.to_vec();
-    }
-
     let focus = serde_json::from_value::<ExploreArgs>(args.clone())
         .ok()
         .and_then(|parsed| parsed.variable)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
 
-    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+    let prepared = prepare_tool_loop_query_ir(
         db,
-        &query,
         meta,
+        default_contexts,
         snapshot_key,
         query_cache,
+        args,
+        "axql_explore",
+        None,
     )?;
     let elaborated = prepared.elaborated_query_text();
-    let elaborated_query_ir_v1 =
-        crate::query_ir::QueryIrV1::from_axql_query(&crate::axql::parse_axql_query(&elaborated)?);
-    let report = prepared.elaboration_report().clone();
-    let focus_ref = focus.as_deref();
-    let typed_holes = report
-        .typed_holes
-        .iter()
-        .filter(|hole| match focus_ref {
-            Some(var) => hole.variable.as_deref() == Some(var) || hole.variable.is_none(),
-            None => true,
-        })
-        .cloned()
-        .collect();
-    let exploration_suggestions = report
-        .exploration_suggestions
-        .iter()
-        .filter(|suggestion| match focus_ref {
-            Some(var) => suggestion.variable == var,
-            None => true,
-        })
-        .cloned()
-        .collect();
-    let refinement_candidates = report
-        .exploration_suggestions
-        .iter()
-        .filter(|suggestion| match focus_ref {
-            Some(var) => suggestion.variable == var,
-            None => true,
-        })
-        .flat_map(|suggestion| suggestion.refinement_candidates.clone().into_iter())
-        .map(crate::typed_refinement::RuntimeRefinementCandidateV1::from_axql)
-        .collect();
-    let trust = query_user_visible_trust_contract_with_meta(
-        &query,
-        &prepared.certifiability(),
-        false,
-        None,
-        meta,
-    );
-    let exploration = crate::query_ir::PreparedQueryExplorationV1 {
-        introspection: prepared.introspection(),
-        inferred_types: report.inferred_types,
-        notes: report.notes,
-        typed_holes,
-        exploration_suggestions,
-        refinement_candidates,
-        semantic_claims: trust.semantic_claims.clone(),
-        semantic_coverage: trust.semantic_coverage.clone(),
-        trust_gaps: trust.gaps.clone(),
-    };
+    let elaborated_query_ir_v1 = prepared.elaborated_query_ir_v1()?;
+    let trust = prepared.trust_contract_with_meta(meta);
+    let exploration = prepared.exploration_view(focus.as_deref());
 
     Ok(serde_json::json!({
         "elaborated": elaborated,
@@ -7612,29 +8117,28 @@ fn tool_axql_run(
     meta: Option<&MetaPlaneIndex>,
     default_contexts: &[crate::axql::AxqlContextSpec],
     snapshot_key: &str,
+    accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
     args: &serde_json::Value,
     options: ToolLoopOptions,
 ) -> Result<serde_json::Value> {
-    let mut query = parse_query_from_tool_args(args, "axql_run")?;
-    if query.contexts.is_empty() && !default_contexts.is_empty() {
-        query.contexts = default_contexts.to_vec();
-    }
-
     // Safety: cap row count.
     let cap = options.max_rows.clamp(1, 200);
-    query.limit = query.limit.min(cap).max(1);
 
     // Always run the full prepare pipeline (meta-plane typecheck/elaboration +
     // plan) so the REPL/UI can show what was inferred and how the engine ran.
-    let prepared = crate::axql::get_or_prepare_axql_query_handle_mut(
+    let mut prepared = prepare_tool_loop_query_ir(
         db,
-        &query,
         meta,
+        default_contexts,
         snapshot_key,
         query_cache,
+        args,
+        "axql_run",
+        Some(cap),
     )?;
 
+    let query = prepared.query_ir_v1().to_axql_text()?;
     let elaborated = prepared.elaborated_query_text();
     let report = prepared.elaboration_report().clone();
     let inferred_types: BTreeMap<String, Vec<String>> = report.inferred_types.clone();
@@ -7642,23 +8146,29 @@ fn tool_axql_run(
     let typed_holes = report.typed_holes.clone();
     let exploration_suggestions = report.exploration_suggestions.clone();
     let plan = prepared.explain_plan_lines();
-    let trust = query_user_visible_trust_contract_with_meta(
-        &query,
-        &prepared.certifiability(),
-        false,
-        None,
-        meta,
-    );
+    let trust = prepared.trust_contract_with_meta(meta);
+    let mut support_summary = None;
 
-    let result = prepared.execute(db, meta)?;
+    let result = if let Some(accepted_axi_anchor) = accepted_axi_anchor.cloned() {
+        let (result, summary) = crate::evidence_support::execute_anchored_query_with_support_summary(
+            &mut prepared,
+            db,
+            meta,
+            accepted_axi_anchor,
+        )?;
+        support_summary = summary;
+        result
+    } else {
+        prepared.execute(db, meta)?
+    };
     let mut preview = PluginResultsV1::from_axql_result(db, &result);
     if preview.rows.len() > cap {
         preview.rows.truncate(cap);
         preview.truncated = true;
     }
 
-    Ok(serde_json::json!({
-        "query": crate::nlq::render_axql_query(&query),
+    let mut out = serde_json::json!({
+        "query": query,
         "elaborated": elaborated,
         "inferred_types": inferred_types,
         "notes": notes,
@@ -7667,7 +8177,14 @@ fn tool_axql_run(
         "plan": plan,
         "trust": trust,
         "results": preview
-    }))
+    });
+    if let Some(summary) = support_summary {
+        out.as_object_mut()
+            .expect("tool output should be a JSON object")
+            .insert("support_summary".to_string(), serde_json::to_value(summary)?);
+    }
+
+    Ok(out)
 }
 
 fn tool_viz_render(
@@ -8170,10 +8687,7 @@ fn tool_propose_relations_proposals(
     }))
 }
 
-fn parse_query_from_tool_args(
-    args: &serde_json::Value,
-    tool: &str,
-) -> Result<crate::axql::AxqlQuery> {
+fn parse_query_from_tool_args(args: &serde_json::Value, tool: &str) -> Result<QueryIrV1> {
     #[derive(Deserialize)]
     struct Args {
         #[serde(default)]
@@ -8184,16 +8698,53 @@ fn parse_query_from_tool_args(
     let a: Args =
         serde_json::from_value(args.clone()).map_err(|e| anyhow!("{tool}: invalid args: {e}"))?;
 
-    let mut q = if let Some(ir) = a.query_ir_v1 {
-        ir.to_axql_query()?
+    let mut query_ir = if let Some(ir) = a.query_ir_v1 {
+        ir
     } else {
         return Err(anyhow!("{tool}: expected `query_ir_v1`"));
     };
 
     if let Some(limit) = a.limit {
-        q.limit = limit;
+        query_ir.limit = Some(limit);
     }
-    Ok(q)
+    Ok(query_ir)
+}
+
+fn prepare_tool_loop_query_ir(
+    db: &PathDB,
+    meta: Option<&MetaPlaneIndex>,
+    default_contexts: &[crate::axql::AxqlContextSpec],
+    snapshot_key: &str,
+    query_cache: &mut crate::axql::AxqlPreparedQueryCache,
+    args: &serde_json::Value,
+    tool: &str,
+    limit_cap: Option<usize>,
+) -> Result<crate::query_ir::PreparedQueryV1> {
+    fn default_query_contexts_ir(
+        default_contexts: &[crate::axql::AxqlContextSpec],
+    ) -> Vec<crate::query_ir::QueryContextIrV1> {
+        default_contexts
+            .iter()
+            .map(|ctx| match ctx {
+                crate::axql::AxqlContextSpec::EntityId(id) => {
+                    crate::query_ir::QueryContextIrV1::EntityId(*id)
+                }
+                crate::axql::AxqlContextSpec::Name(name) => {
+                    crate::query_ir::QueryContextIrV1::Name(name.clone())
+                }
+            })
+            .collect()
+    }
+
+    let mut query_ir = parse_query_from_tool_args(args, tool)?;
+    if query_ir.contexts.is_empty() && !default_contexts.is_empty() {
+        query_ir.contexts = default_query_contexts_ir(default_contexts);
+    }
+    if let Some(limit_cap) = limit_cap {
+        let requested_limit = query_ir.limit.unwrap_or(20);
+        query_ir.limit = Some(requested_limit.min(limit_cap).max(1));
+    }
+    query_ir.prepare_with_meta_cached(db, meta, snapshot_key, query_cache)
 }
 
 fn db_entity_attr_string(db: &PathDB, entity_id: u32, key: &str) -> Option<String> {
@@ -8725,6 +9276,7 @@ Rules:
 - For fuzzy/semantic lookup (“what does this mean”, “find related”, “where is X mentioned”), use `semantic_search` and then follow up with `describe_entity` / `axql_run`.
 - For doc evidence, use `fts_chunks` or `semantic_search` and then `docchunk_get` to fetch a specific chunk body.
 - If the user asks to compare snapshots (“A vs B”, “what changed between snapshots”), use `snapshots_list` to resolve ids if needed, then use `snapshot_diff` (do not claim you lack a diff tool if it is available).
+- For ontology engineering questions about rule applicability, implementation coverage, or engineering next actions, use `semantic_business_rule`, `semantic_coverage`, or `semantic_agent_report`.
 - For explicit *witness* artifacts (type-theory-ish structure):
   - `PathWitness` nodes encode a derivation/path (typically via edges `from`/`to` plus attrs like `repr`).
   - `Homotopy` nodes encode “two derivations / two paths with the same meaning” (often `from`/`to` plus `lhs`/`rhs` pointing at `PathWitness` nodes).

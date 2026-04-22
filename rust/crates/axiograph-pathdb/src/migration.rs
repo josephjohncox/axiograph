@@ -13,6 +13,14 @@ use serde::{Deserialize, Serialize};
 
 pub type Name = String;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationFunctorKindV1 {
+    DeltaF,
+    SigmaF,
+    PiF,
+}
+
 // =============================================================================
 // Minimal categorical schema/instance IR (for Δ_F/Σ_F)
 // =============================================================================
@@ -180,6 +188,7 @@ impl SchemaMorphismV1 {
 /// from `(morphism, source_schema, target_instance)` and comparing the result.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeltaFMigrationProofV1 {
+    pub operator: MigrationFunctorKindV1,
     pub morphism: SchemaMorphismV1,
     pub source_schema: SchemaV1,
     pub target_instance: InstanceV1,
@@ -189,6 +198,7 @@ pub struct DeltaFMigrationProofV1 {
 /// Proof payload for Σ_F (placeholder).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SigmaFMigrationProofV1 {
+    pub operator: MigrationFunctorKindV1,
     pub morphism: SchemaMorphismV1,
     pub source_instance: InstanceV1,
     pub migrated_instance: InstanceV1,

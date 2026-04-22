@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
 use axiograph_pathdb::axi_semantics::{
     ConstraintDecl, MetaPlaneIndex, NamedBlockConstraintDecl, RewriteRuleDecl,
 };
-use axiograph_pathdb::AcceptedSnapshotId;
+use axiograph_pathdb::kernel_ir::{RuntimeTheoryFragmentSummaryV1, TheorySubjectRefIr};
+use axiograph_pathdb::{AcceptedSnapshotId, RelationId, TheoryId};
 
 use crate::proposals_validate::{CompetencyGateReportV1, ProposalValidationTrustContractV1};
 
@@ -61,9 +63,12 @@ pub enum RuntimeRuleScopeClassV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RuntimeRuleScopeV1 {
+    #[serde(default)]
     pub scope_id: String,
     pub schema: String,
     pub scope_class: RuntimeRuleScopeClassV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_ref: Option<TheorySubjectRefIr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,6 +81,10 @@ impl RuntimeRuleScopeV1 {
             scope_id: relation_scope_id(schema, relation),
             schema: schema.to_string(),
             scope_class: RuntimeRuleScopeClassV1::Relation,
+            scope_ref: Some(TheorySubjectRefIr::Relation {
+                relation_id: RelationId::new(format!("relation:{}:{}", schema, relation)),
+                relation_name: relation.to_string(),
+            }),
             relation: Some(relation.to_string()),
             theory: None,
         }
@@ -86,9 +95,60 @@ impl RuntimeRuleScopeV1 {
             scope_id: theory_scope_id(schema, theory),
             schema: schema.to_string(),
             scope_class: RuntimeRuleScopeClassV1::Theory,
+            scope_ref: Some(TheorySubjectRefIr::Theory {
+                theory_id: TheoryId::new(format!("theory:{}:{}", schema, theory)),
+            }),
             relation: None,
             theory: Some(theory.to_string()),
         }
+    }
+
+    pub fn inferred_scope_ref(&self) -> Option<TheorySubjectRefIr> {
+        self.scope_ref.clone().or_else(|| match self.scope_class {
+            RuntimeRuleScopeClassV1::Relation => {
+                self.relation
+                    .as_ref()
+                    .map(|relation| TheorySubjectRefIr::Relation {
+                        relation_id: RelationId::new(format!(
+                            "relation:{}:{}",
+                            self.schema, relation
+                        )),
+                        relation_name: relation.clone(),
+                    })
+            }
+            RuntimeRuleScopeClassV1::Theory => {
+                self.theory
+                    .as_ref()
+                    .map(|theory| TheorySubjectRefIr::Theory {
+                        theory_id: TheoryId::new(format!("theory:{}:{}", self.schema, theory)),
+                    })
+            }
+        })
+    }
+
+    pub fn inferred_scope_id(&self) -> Option<String> {
+        if !self.scope_id.is_empty() {
+            return Some(self.scope_id.clone());
+        }
+        match self.scope_class {
+            RuntimeRuleScopeClassV1::Relation => self
+                .relation
+                .as_ref()
+                .map(|relation| relation_scope_id(&self.schema, relation)),
+            RuntimeRuleScopeClassV1::Theory => self
+                .theory
+                .as_ref()
+                .map(|theory| theory_scope_id(&self.schema, theory)),
+        }
+    }
+
+    pub fn normalized(&self) -> Self {
+        let mut out = self.clone();
+        if let Some(scope_id) = self.inferred_scope_id() {
+            out.scope_id = scope_id;
+        }
+        out.scope_ref = self.inferred_scope_ref();
+        out
     }
 }
 
@@ -230,6 +290,8 @@ pub struct BusinessRuleApplicabilityReportV1 {
     pub certificate_subset_rules: usize,
     #[serde(default)]
     pub rules: Vec<RuntimeRuleV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_fragment_summary: Option<RuntimeTheoryFragmentSummaryV1>,
     #[serde(default)]
     pub missing_obligations: Vec<String>,
     #[serde(default)]
@@ -262,6 +324,18 @@ pub struct ImplementationSurfaceRefV1 {
     pub code_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+}
+
+impl ImplementationSurfaceRefV1 {
+    fn normalized(&self) -> Self {
+        let mut out = self.clone();
+        out.scopes = self
+            .scopes
+            .iter()
+            .map(RuntimeRuleScopeV1::normalized)
+            .collect();
+        out
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -330,6 +404,8 @@ pub struct CoverageEdgeV1 {
 pub struct CoverageRuleStatusV1 {
     pub rule_id: String,
     pub scope_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_ref: Option<TheorySubjectRefIr>,
     pub trust_class: RuntimeRuleTrustClassV1,
     pub best_status: CoverageStatusV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -387,6 +463,8 @@ pub struct AgentEngineeringReportV1 {
     pub checked_surface: String,
     #[serde(default)]
     pub matched_scope_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_scope_refs: Vec<TheorySubjectRefIr>,
     #[serde(default)]
     pub matched_rule_ids: Vec<String>,
     #[serde(default)]
@@ -891,6 +969,7 @@ fn applicability_from_rule_report(
     lifecycle_state: &str,
     checked_surface: &str,
     report: RuntimeRuleReportV1,
+    runtime_theory_fragment_summary: Option<RuntimeTheoryFragmentSummaryV1>,
 ) -> BusinessRuleApplicabilityReportV1 {
     let strength = claim_strength_for_report(lifecycle_state, &report);
 
@@ -940,6 +1019,22 @@ fn applicability_from_rule_report(
             report.certificate_subset_rules
         ));
     }
+    if let Some(fragment_summary) = runtime_theory_fragment_summary.as_ref() {
+        if fragment_summary.opaque_or_out_of_fragment_obligations > 0 {
+            missing_obligations.push(format!(
+                "{} theory obligation(s) remain opaque or outside the current runtime theory fragment",
+                fragment_summary.opaque_or_out_of_fragment_obligations
+            ));
+            next_actions.push(
+                "lower opaque theory obligations into the current structured runtime fragment or keep them explicit as review-only/runtime-opaque obligations"
+                    .to_string(),
+            );
+        }
+        notes.push(
+            "attached runtime theory fragment summary is a Rust-side operational artifact outside the trusted-kernel/certificate boundary; it does not claim completeness or ontology closure"
+                .to_string(),
+        );
+    }
 
     BusinessRuleApplicabilityReportV1 {
         version: BUSINESS_RULE_APPLICABILITY_REPORT_VERSION_V1.to_string(),
@@ -954,6 +1049,7 @@ fn applicability_from_rule_report(
         review_only_rules: report.review_only_rules,
         certificate_subset_rules: report.certificate_subset_rules,
         rules: report.rules,
+        runtime_theory_fragment_summary,
         missing_obligations,
         next_actions,
         notes,
@@ -973,6 +1069,7 @@ pub fn business_rule_applicability_for_relation(
         lifecycle_state,
         "relation_scope",
         runtime_rule_report_for_relation(meta, schema, relation),
+        None,
     )
 }
 
@@ -989,7 +1086,44 @@ pub fn business_rule_applicability_for_theory(
         lifecycle_state,
         "theory_scope",
         runtime_rule_report_for_theory(meta, schema, theory),
+        None,
     )
+}
+
+#[allow(dead_code)]
+pub fn business_rule_applicability_for_theory_with_runtime_fragment(
+    meta: &MetaPlaneIndex,
+    accepted_snapshot_id: Option<AcceptedSnapshotId>,
+    lifecycle_state: &str,
+    schema: &str,
+    theory: &str,
+    runtime_theory_fragment_summary: RuntimeTheoryFragmentSummaryV1,
+) -> Result<BusinessRuleApplicabilityReportV1> {
+    let expected_theory_id = TheoryId::new(format!("theory:{}:{}", schema, theory));
+    match &runtime_theory_fragment_summary.theory_ref {
+        TheorySubjectRefIr::Theory { theory_id } if theory_id == &expected_theory_id => {}
+        TheorySubjectRefIr::Theory { theory_id } => {
+            return Err(anyhow!(
+                "runtime theory fragment summary references `{}` but theory applicability requested `{}`",
+                theory_id,
+                expected_theory_id
+            ));
+        }
+        other => {
+            return Err(anyhow!(
+                "runtime theory fragment summary must be anchored to a theory ref, got `{}`",
+                other.display_name()
+            ));
+        }
+    }
+
+    Ok(applicability_from_rule_report(
+        accepted_snapshot_id,
+        lifecycle_state,
+        "theory_scope",
+        runtime_rule_report_for_theory(meta, schema, theory),
+        Some(runtime_theory_fragment_summary),
+    ))
 }
 
 fn aggregate_rules_for_scopes(
@@ -1015,6 +1149,7 @@ pub fn implementation_surface_rule_report(
     lifecycle_state: &str,
     surface: &ImplementationSurfaceRefV1,
 ) -> ImplementationSurfaceRuleReportV1 {
+    let surface = surface.normalized();
     let catalog = runtime_rule_catalog(meta);
     let rules = aggregate_rules_for_scopes(&catalog, &surface.scopes);
     let runtime_enforced_rules = rules
@@ -1102,7 +1237,7 @@ pub fn implementation_surface_rule_report(
         version: IMPLEMENTATION_SURFACE_RULE_REPORT_VERSION_V1.to_string(),
         accepted_snapshot_id,
         lifecycle_state: lifecycle_state.to_string(),
-        surface: surface.clone(),
+        surface,
         trust_class,
         strength,
         checked_surface: "implementation_surface".to_string(),
@@ -1153,6 +1288,10 @@ pub fn semantic_coverage_report(
     edges: &[CoverageEdgeV1],
 ) -> CoverageReportV1 {
     let catalog = runtime_rule_catalog(meta);
+    let surfaces = surfaces
+        .iter()
+        .map(ImplementationSurfaceRefV1::normalized)
+        .collect::<Vec<_>>();
     let surface_reports = surfaces
         .iter()
         .map(|surface| {
@@ -1267,6 +1406,7 @@ pub fn semantic_coverage_report(
         rule_statuses.push(CoverageRuleStatusV1 {
             rule_id: rule.rule_id.clone(),
             scope_id: rule.scope.scope_id.clone(),
+            scope_ref: rule.scope.scope_ref.clone(),
             trust_class: rule.trust_class,
             best_status,
             surface_ids,
@@ -1316,6 +1456,10 @@ pub fn agent_engineering_report(
     surfaces: &[ImplementationSurfaceRefV1],
     edges: &[CoverageEdgeV1],
 ) -> AgentEngineeringReportV1 {
+    let surfaces = surfaces
+        .iter()
+        .map(ImplementationSurfaceRefV1::normalized)
+        .collect::<Vec<_>>();
     let surface_reports = surfaces
         .iter()
         .map(|surface| {
@@ -1331,7 +1475,7 @@ pub fn agent_engineering_report(
         meta,
         accepted_snapshot_id.clone(),
         lifecycle_state,
-        surfaces,
+        &surfaces,
         edges,
     );
 
@@ -1342,6 +1486,19 @@ pub fn agent_engineering_report(
         .into_iter()
         .collect::<Vec<_>>();
     matched_scope_ids.sort();
+
+    let mut matched_scope_refs = surfaces
+        .iter()
+        .flat_map(|surface| {
+            surface
+                .scopes
+                .iter()
+                .filter_map(|scope| scope.inferred_scope_ref())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    matched_scope_refs.sort();
 
     let mut matched_rule_ids = surface_reports
         .iter()
@@ -1440,6 +1597,7 @@ pub fn agent_engineering_report(
         strength,
         checked_surface: "agent_engineering_task".to_string(),
         matched_scope_ids,
+        matched_scope_refs,
         matched_rule_ids,
         surface_reports,
         coverage,
@@ -1648,8 +1806,13 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::*;
+    use axiograph_dsl::axi_v1::parse_axi_v1;
     use axiograph_pathdb::axi_semantics::{
         NamedBlockConstraintDecl, RewriteRuleDecl, SchemaIndex, SubtypeDecl,
+    };
+    use axiograph_pathdb::{
+        validate_axi_v1_module, RuntimeTheoryObligationFragmentStatusV1,
+        RuntimeTheoryObligationTrustClassV1, TheoryObligationRefIr,
     };
 
     fn sample_trust() -> ProposalValidationTrustContractV1 {
@@ -1745,6 +1908,33 @@ mod tests {
             },
         );
         meta
+    }
+
+    fn sample_runtime_theory_fragment_summary() -> RuntimeTheoryFragmentSummaryV1 {
+        let axi = r#"
+module Family
+
+schema Family:
+  object Person
+  relation parent(child: Person, parent: Person)
+
+theory FamilyTheory on Family:
+  constraint key parent(child, parent)
+  equation opaque_business_rule:
+    ParentCompose(a,b,c) = c
+  rewrite parent_assoc:
+    vars: x: Person, y: Person
+    lhs: step(x, parent, y)
+    rhs: step(x, parent, y)
+"#;
+
+        let module = parse_axi_v1(axi).expect("parse family theory summary module");
+        let validated =
+            validate_axi_v1_module(module).expect("typecheck family theory summary module");
+        validated
+            .runtime_theory_fragment_summary("Family", "FamilyTheory")
+            .expect("runtime theory fragment summary")
+            .expect("family theory summary present")
     }
 
     #[test]
@@ -1861,10 +2051,80 @@ mod tests {
         assert_eq!(report.trust_class, RuntimeRuleTrustClassV1::RuntimeAdvisory);
         assert_eq!(report.strength, SemanticClaimStrengthV1::Weak);
         assert_eq!(report.certificate_subset_rules, 1);
+        assert!(report.runtime_theory_fragment_summary.is_none());
         assert!(report
             .notes
             .iter()
             .any(|note| note.contains("certificate-emittable subset")));
+    }
+
+    #[test]
+    fn business_rule_applicability_for_theory_threads_runtime_fragment_summary() {
+        let fragment_summary = sample_runtime_theory_fragment_summary();
+        let report = business_rule_applicability_for_theory_with_runtime_fragment(
+            &sample_meta(),
+            Some(AcceptedSnapshotId::new("accepted:family")),
+            "accepted",
+            "Family",
+            "FamilyTheory",
+            fragment_summary.clone(),
+        )
+        .expect("theory fragment summary should match requested theory");
+
+        let attached = report
+            .runtime_theory_fragment_summary
+            .as_ref()
+            .expect("attached runtime theory fragment summary");
+        assert_eq!(attached.theory_ref, fragment_summary.theory_ref);
+        assert_eq!(attached.runtime_checked_obligations, 2);
+        assert_eq!(attached.opaque_or_out_of_fragment_obligations, 1);
+        assert!(attached.obligation_statuses.iter().any(|status| {
+            matches!(
+                status.obligation_ref,
+                TheoryObligationRefIr::OpaqueEquation { ref name, .. }
+                    if name == "opaque_business_rule"
+            ) && status.fragment_status
+                == RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment
+                && status.trust_class == RuntimeTheoryObligationTrustClassV1::ReviewOnly
+        }));
+        assert!(attached.obligation_statuses.iter().any(|status| {
+            matches!(
+                status.obligation_ref,
+                TheoryObligationRefIr::RewriteRule { ref name, .. }
+                    if name == "parent_assoc"
+            ) && status.fragment_status == RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked
+                && status.trust_class == RuntimeTheoryObligationTrustClassV1::RuntimeAdvisory
+        }));
+        assert!(report
+            .missing_obligations
+            .iter()
+            .any(|item| item.contains("opaque or outside the current runtime theory fragment")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("outside the trusted-kernel/certificate boundary")));
+    }
+
+    #[test]
+    fn business_rule_applicability_for_theory_rejects_mismatched_runtime_fragment_summary() {
+        let mut fragment_summary = sample_runtime_theory_fragment_summary();
+        fragment_summary.theory_ref = TheorySubjectRefIr::Theory {
+            theory_id: TheoryId::new("theory:Family:OtherTheory"),
+        };
+
+        let err = business_rule_applicability_for_theory_with_runtime_fragment(
+            &sample_meta(),
+            Some(AcceptedSnapshotId::new("accepted:family")),
+            "accepted",
+            "Family",
+            "FamilyTheory",
+            fragment_summary,
+        )
+        .expect_err("mismatched runtime fragment summary should be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("runtime theory fragment summary references"));
     }
 
     #[test]
@@ -1882,6 +2142,23 @@ mod tests {
             .missing_obligations
             .iter()
             .any(|item| item.contains("no typed business rules")));
+    }
+
+    #[test]
+    fn runtime_rule_scope_normalized_infers_missing_relation_scope_id() {
+        let raw: RuntimeRuleScopeV1 = serde_json::from_value(serde_json::json!({
+            "schema": "Family",
+            "scope_class": "relation",
+            "relation": "parent"
+        }))
+        .expect("deserialize relation scope without scope_id");
+
+        let normalized = raw.normalized();
+        assert_eq!(normalized.scope_id, "schema/family/relation/parent");
+        assert_eq!(
+            normalized.scope_ref,
+            RuntimeRuleScopeV1::relation("Family", "parent").scope_ref
+        );
     }
 
     #[test]
@@ -1910,6 +2187,10 @@ mod tests {
         assert_eq!(report.runtime_enforced_rules, 1);
         assert_eq!(report.review_only_rules, 2);
         assert_eq!(report.certificate_subset_rules, 1);
+        assert!(report.rules.iter().any(|rule| matches!(
+            rule.scope.scope_ref.as_ref(),
+            Some(TheorySubjectRefIr::Relation { relation_name, .. }) if relation_name == "parent"
+        )));
         assert!(report
             .missing_obligations
             .iter()
@@ -1948,6 +2229,10 @@ mod tests {
             .any(|id| id == "schema/family/relation/ancestor/rule/at-most/0"));
         assert!(coverage.missing_obligations.iter().any(|item| item
             .contains("runtime-enforced rule `schema/family/relation/ancestor/rule/at-most/0`")));
+        assert!(coverage.rule_statuses.iter().any(|status| matches!(
+            status.scope_ref.as_ref(),
+            Some(TheorySubjectRefIr::Relation { relation_name, .. }) if relation_name == "parent"
+        )));
     }
 
     #[test]
@@ -2043,6 +2328,10 @@ mod tests {
             .matched_scope_ids
             .iter()
             .any(|id| id == "schema/family/relation/parent"));
+        assert!(report.matched_scope_refs.iter().any(|scope| matches!(
+            scope,
+            TheorySubjectRefIr::Relation { relation_name, .. } if relation_name == "parent"
+        )));
         assert!(report
             .matched_rule_ids
             .iter()

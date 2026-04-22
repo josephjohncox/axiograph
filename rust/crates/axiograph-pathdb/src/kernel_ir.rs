@@ -4,41 +4,46 @@
 //! endpoint choice becomes a compiled schema fact instead of being repeated as
 //! local heuristics across import/check paths.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use axiograph_dsl::digest::{axi_digest_v1, axi_fact_id_v1};
 use axiograph_dsl::schema_v1::{
     parse_path_expr_v3, CarrierFieldsV1, ConstraintV1, PathExprV3, RewriteRuleV1, RewriteVarTypeV1,
-    SchemaV1Schema, SchemaV1Theory,
+    SchemaV1Instance, SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1,
 };
 
 use crate::{
-    ConstraintId, EquationId, ObjectTypeId, RelationId, RewriteRuleId, RoleId, SchemaId, TheoryId,
+    AxiDigest, ConstraintId, EquationId, InstanceId, ObjectTypeId, RelationId, RewriteRuleId,
+    RoleId, SchemaId, StableFactId, TheoryId,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum RoleKind {
     Data,
     Context,
     Temporal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum CarrierSource {
     HomotopyConvention,
     EndpointConvention,
     DeclaredOrder,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WitnessViewIr {
     None,
     Morphism { from_role: u16, to_role: u16 },
     Homotopy { lhs_role: u16, rhs_role: u16 },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoleIr {
     pub role_id: RoleId,
     pub name: String,
@@ -47,7 +52,7 @@ pub struct RoleIr {
     pub kind: RoleKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CarrierSpecIr {
     pub source_role: u16,
     pub target_role: u16,
@@ -55,7 +60,7 @@ pub struct CarrierSpecIr {
     pub source: CarrierSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RelationSemanticsIr {
     pub relation_id: RelationId,
     pub name: String,
@@ -65,7 +70,7 @@ pub struct RelationSemanticsIr {
     pub witness_view: WitnessViewIr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoleInterfaceIr {
     pub role_id: RoleId,
     pub scoped_role_name: String,
@@ -76,7 +81,19 @@ pub struct RoleInterfaceIr {
     pub admissible_player_types: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DirectSubtypeFamilyIr {
+    pub supertype: String,
+    pub subtypes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SubtypeRoleProjectionIr {
+    pub relations: Vec<String>,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompiledSchemaIr {
     pub schema_id: SchemaId,
     pub object_types: HashSet<String>,
@@ -87,7 +104,45 @@ pub struct CompiledSchemaIr {
     pub role_interfaces: HashMap<String, RoleInterfaceIr>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KernelModuleIr {
+    pub module_digest: AxiDigest,
+    pub schemas: Vec<CompiledSchemaIr>,
+    pub theories: Vec<TheoryIr>,
+    pub instances: Vec<InstanceIr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstanceIr {
+    pub instance_id: InstanceId,
+    pub schema_id: SchemaId,
+    pub object_members: Vec<ObjectMembershipIr>,
+    pub relation_facts: Vec<RelationFactIr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectMembershipIr {
+    pub object_type_id: ObjectTypeId,
+    pub object_type_name: String,
+    pub members: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelationFactIr {
+    pub fact_id: StableFactId,
+    pub relation_id: RelationId,
+    pub relation_name: String,
+    pub role_values: Vec<RoleValueIr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleValueIr {
+    pub role_id: RoleId,
+    pub role_name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConstraintIr {
     pub constraint_id: ConstraintId,
     pub kind: String,
@@ -100,7 +155,7 @@ pub struct ConstraintIr {
     pub param_role_ids: Vec<RoleId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PathEquationIr {
     pub equation_id: EquationId,
     pub name: String,
@@ -110,7 +165,7 @@ pub struct PathEquationIr {
     pub relation_ids: Vec<RelationId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpaqueEquationIr {
     pub equation_id: EquationId,
     pub name: String,
@@ -118,12 +173,13 @@ pub struct OpaqueEquationIr {
     pub rhs: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum RewriteRuleSource {
     AcceptedAxi,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RewriteRuleIr {
     pub rule_id: RewriteRuleId,
     pub name: String,
@@ -137,7 +193,7 @@ pub struct RewriteRuleIr {
     pub source: RewriteRuleSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RewriteEndpointIr {
     pub from_var: String,
     pub to_var: String,
@@ -145,7 +201,7 @@ pub struct RewriteEndpointIr {
     pub to_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TheoryIr {
     pub theory_id: TheoryId,
     pub schema_id: SchemaId,
@@ -154,6 +210,8 @@ pub struct TheoryIr {
     pub opaque_equations: Vec<OpaqueEquationIr>,
     pub rewrite_rules: Vec<RewriteRuleIr>,
 }
+
+pub const RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1: &str = "runtime_theory_fragment_summary_v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -224,6 +282,54 @@ impl TheoryObligationRefIr {
             | Self::RewriteRule { name, .. } => name.clone(),
         }
     }
+
+    pub fn matches_artifact_id(&self, artifact_id: &str) -> bool {
+        let artifact_local = local_name(artifact_id);
+        match self {
+            Self::Constraint {
+                constraint_id,
+                relation_name,
+                summary,
+                ..
+            } => {
+                let legacy_prefix = strip_trailing_numeric_segment(artifact_id);
+                constraint_id.as_str() == artifact_id
+                    || legacy_prefix.is_some_and(|prefix| {
+                        constraint_id.as_str().starts_with(&format!("{prefix}:"))
+                    })
+                    || relation_name
+                        .as_ref()
+                        .is_some_and(|relation| local_name(relation) == artifact_local)
+                    || summary == artifact_id
+            }
+            Self::PathEquation {
+                equation_id, name, ..
+            }
+            | Self::OpaqueEquation {
+                equation_id, name, ..
+            } => {
+                equation_id.as_str() == artifact_id
+                    || strip_trailing_numeric_segment(artifact_id)
+                        .is_some_and(|normalized| normalized == equation_id.as_str())
+                    || local_name(name) == artifact_local
+            }
+            Self::RewriteRule { rule_id, name, .. } => {
+                rule_id.as_str() == artifact_id
+                    || strip_trailing_numeric_segment(artifact_id)
+                        .is_some_and(|normalized| normalized == rule_id.as_str())
+                    || local_name(name) == artifact_local
+            }
+        }
+    }
+}
+
+fn strip_trailing_numeric_segment(raw: &str) -> Option<&str> {
+    let (prefix, suffix) = raw.rsplit_once(':')?;
+    if !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(prefix)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -280,6 +386,90 @@ impl TheorySubjectRefIr {
             } => format!("{relation_name}.{role_name}"),
         }
     }
+
+    pub fn matches_artifact_id(&self, artifact_id: &str) -> bool {
+        let artifact_local = local_name(artifact_id);
+        match self {
+            Self::Theory { theory_id } => {
+                theory_id.as_str() == artifact_id
+                    || local_name(theory_id.as_str()) == artifact_local
+            }
+            Self::Relation {
+                relation_id,
+                relation_name,
+            } => relation_id.as_str() == artifact_id || local_name(relation_name) == artifact_local,
+            Self::Role {
+                role_id,
+                relation_name,
+                role_name,
+                ..
+            } => {
+                role_id.as_str() == artifact_id
+                    || format!("{relation_name}.{role_name}") == artifact_id
+                    || local_name(role_name) == artifact_local
+            }
+        }
+    }
+}
+
+/// Rust-side operational classification for a compiled theory obligation.
+///
+/// This is intentionally outside the trusted-kernel/certificate boundary: it
+/// only reports whether the current runtime checker lowers an obligation into
+/// its explicit fragment, not whether Lean has certified the obligation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTheoryObligationFragmentStatusV1 {
+    RuntimeChecked,
+    OpaqueOrOutOfFragment,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTheoryObligationTrustClassV1 {
+    RuntimeEnforced,
+    RuntimeAdvisory,
+    ReviewOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTheoryObligationStatusV1 {
+    pub obligation_ref: TheoryObligationRefIr,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_refs: Vec<TheorySubjectRefIr>,
+    pub fragment_status: RuntimeTheoryObligationFragmentStatusV1,
+    pub trust_class: RuntimeTheoryObligationTrustClassV1,
+    pub detail: String,
+}
+
+/// Summary of which compiled theory obligations lower into the current Rust
+/// runtime theory fragment.
+///
+/// This is an operational runtime artifact for reporting/refinement only. It is
+/// not a certificate, does not extend the trusted kernel, and does not claim
+/// completeness or ontology closure.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTheoryFragmentSummaryV1 {
+    pub version: String,
+    pub theory_ref: TheorySubjectRefIr,
+    #[serde(default)]
+    pub total_obligations: usize,
+    #[serde(default)]
+    pub runtime_checked_obligations: usize,
+    #[serde(default)]
+    pub opaque_or_out_of_fragment_obligations: usize,
+    #[serde(default)]
+    pub obligation_statuses: Vec<RuntimeTheoryObligationStatusV1>,
+    pub trust_boundary: String,
+    pub completeness_claim: String,
+    pub ontology_closure_claim: String,
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+fn local_name(raw: &str) -> &str {
+    raw.rsplit('.').next().unwrap_or(raw)
 }
 
 impl RelationSemanticsIr {
@@ -358,6 +548,90 @@ impl CompiledSchemaIr {
             .collect::<Vec<_>>();
         players.sort();
         players
+    }
+
+    pub fn direct_supertypes_of(&self, sub: &str) -> Vec<String> {
+        let Some(all_supertypes) = self.supertypes_of.get(sub) else {
+            return Vec::new();
+        };
+        let mut direct = all_supertypes
+            .iter()
+            .filter(|candidate| candidate.as_str() != sub)
+            .filter(|candidate| {
+                !all_supertypes.iter().any(|mid| {
+                    mid != *candidate
+                        && mid.as_str() != sub
+                        && self.type_matches_or_subtypes(mid, candidate)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        direct.sort();
+        direct
+    }
+
+    pub fn direct_subtypes_of(&self, supertype: &str) -> Vec<String> {
+        let mut direct = self
+            .object_types
+            .iter()
+            .filter(|candidate| self.is_direct_subtype(candidate, supertype))
+            .cloned()
+            .collect::<Vec<_>>();
+        direct.sort();
+        direct
+    }
+
+    pub fn is_direct_subtype(&self, sub: &str, supertype: &str) -> bool {
+        self.direct_supertypes_of(sub)
+            .iter()
+            .any(|candidate| candidate == supertype)
+    }
+
+    pub fn direct_subtype_families(&self) -> Vec<DirectSubtypeFamilyIr> {
+        let mut supertypes = self.object_types.iter().cloned().collect::<Vec<_>>();
+        supertypes.sort();
+        supertypes
+            .into_iter()
+            .filter_map(|supertype| {
+                let subtypes = self.direct_subtypes_of(&supertype);
+                if subtypes.is_empty() {
+                    None
+                } else {
+                    Some(DirectSubtypeFamilyIr {
+                        supertype,
+                        subtypes,
+                    })
+                }
+            })
+            .collect()
+    }
+
+    pub fn subtype_role_projection(
+        &self,
+        _supertype: &str,
+        subtypes: &[String],
+    ) -> SubtypeRoleProjectionIr {
+        let subtype_set = subtypes.iter().map(String::as_str).collect::<HashSet<_>>();
+        let mut relations = BTreeSet::new();
+        let mut fields = BTreeSet::new();
+
+        for relation in self.relations.values() {
+            let mut relation_touches_family = false;
+            for role in &relation.roles {
+                if subtype_set.contains(role.target_type.as_str()) {
+                    relation_touches_family = true;
+                    fields.insert(format!("{}.{}", relation.name, role.name));
+                }
+            }
+            if relation_touches_family {
+                relations.insert(relation.name.clone());
+            }
+        }
+
+        SubtypeRoleProjectionIr {
+            relations: relations.into_iter().collect(),
+            fields: fields.into_iter().collect(),
+        }
     }
 }
 
@@ -507,6 +781,331 @@ impl TheoryIr {
             })
             .collect()
     }
+
+    pub fn runtime_fragment_summary(&self) -> RuntimeTheoryFragmentSummaryV1 {
+        let theory_ref = TheorySubjectRefIr::Theory {
+            theory_id: self.theory_id.clone(),
+        };
+        let obligation_statuses = self
+            .obligation_refs()
+            .into_iter()
+            .map(|obligation_ref| self.runtime_fragment_status_for_obligation(obligation_ref))
+            .collect::<Vec<_>>();
+        let runtime_checked_obligations = obligation_statuses
+            .iter()
+            .filter(|status| {
+                status.fragment_status == RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked
+            })
+            .count();
+        let opaque_or_out_of_fragment_obligations = obligation_statuses
+            .iter()
+            .filter(|status| {
+                status.fragment_status
+                    == RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment
+            })
+            .count();
+
+        let mut notes = vec![
+            "this summary is a Rust runtime artifact outside the trusted-kernel and certificate boundary"
+                .to_string(),
+            "runtime_checked means the obligation lowered into the current Rust-side theory fragment and passed its local structural/type checks; it does not by itself mean runtime-enforced, certificate-backed, Lean-checked, complete, or ontology-closed"
+                .to_string(),
+        ];
+        if opaque_or_out_of_fragment_obligations > 0 {
+            notes.push(format!(
+                "{} obligation(s) remain opaque or outside the current runtime theory fragment",
+                opaque_or_out_of_fragment_obligations
+            ));
+        }
+
+        RuntimeTheoryFragmentSummaryV1 {
+            version: RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1.to_string(),
+            theory_ref,
+            total_obligations: obligation_statuses.len(),
+            runtime_checked_obligations,
+            opaque_or_out_of_fragment_obligations,
+            obligation_statuses,
+            trust_boundary: "outside_trusted_kernel".to_string(),
+            completeness_claim: "not_claimed".to_string(),
+            ontology_closure_claim: "not_claimed".to_string(),
+            notes,
+        }
+    }
+
+    fn runtime_fragment_status_for_obligation(
+        &self,
+        obligation_ref: TheoryObligationRefIr,
+    ) -> RuntimeTheoryObligationStatusV1 {
+        let subject_refs = self.subject_refs_for_obligation(&obligation_ref);
+        let (fragment_status, trust_class, detail) = match &obligation_ref {
+            TheoryObligationRefIr::Constraint { constraint_id, .. } => self
+                .constraints
+                .iter()
+                .find(|candidate| &candidate.constraint_id == constraint_id)
+                .map(runtime_fragment_status_for_constraint)
+                .unwrap_or_else(|| {
+                    (
+                        RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment,
+                        RuntimeTheoryObligationTrustClassV1::ReviewOnly,
+                        "constraint is indexed by stable id, but the compiled runtime record is missing"
+                            .to_string(),
+                    )
+                }),
+            TheoryObligationRefIr::PathEquation { .. } => (
+                RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked,
+                RuntimeTheoryObligationTrustClassV1::RuntimeAdvisory,
+                "equation lowered into the current parsed path fragment with runtime endpoint checking"
+                    .to_string(),
+            ),
+            TheoryObligationRefIr::OpaqueEquation { .. } => (
+                RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment,
+                RuntimeTheoryObligationTrustClassV1::ReviewOnly,
+                "equation text is preserved, but it did not lower into the current runtime path fragment"
+                    .to_string(),
+            ),
+            TheoryObligationRefIr::RewriteRule { .. } => (
+                RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked,
+                RuntimeTheoryObligationTrustClassV1::RuntimeAdvisory,
+                "rewrite rule lowered into the current typed path fragment with runtime endpoint checking"
+                    .to_string(),
+            ),
+        };
+
+        RuntimeTheoryObligationStatusV1 {
+            label: obligation_ref.display_name(),
+            obligation_ref,
+            subject_refs,
+            fragment_status,
+            trust_class,
+            detail,
+        }
+    }
+}
+
+fn runtime_fragment_status_for_constraint(
+    constraint: &ConstraintIr,
+) -> (
+    RuntimeTheoryObligationFragmentStatusV1,
+    RuntimeTheoryObligationTrustClassV1,
+    String,
+) {
+    match constraint.kind.as_str() {
+        "typing" => (
+            RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment,
+            RuntimeTheoryObligationTrustClassV1::RuntimeAdvisory,
+            "typing constraint stays indexed by stable refs, but its rule body remains opaque runtime metadata"
+                .to_string(),
+        ),
+        "named_block" => (
+            RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment,
+            RuntimeTheoryObligationTrustClassV1::ReviewOnly,
+            "named-block constraint is preserved for review, but its body remains outside the current runtime theory fragment"
+                .to_string(),
+        ),
+        "unknown" => (
+            RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment,
+            RuntimeTheoryObligationTrustClassV1::ReviewOnly,
+            "unknown constraint text is preserved, but it remains outside the current runtime theory fragment"
+                .to_string(),
+        ),
+        "functional" | "at_most" | "key" => (
+            RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked,
+            RuntimeTheoryObligationTrustClassV1::RuntimeEnforced,
+            format!(
+                "structured `{}` constraint lowered into the current runtime theory fragment with resolved stable refs",
+                constraint.kind
+            ),
+        ),
+        "symmetric_where_in" | "symmetric" | "transitive" => (
+            RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked,
+            RuntimeTheoryObligationTrustClassV1::ReviewOnly,
+            format!(
+                "structured `{}` constraint lowered into the current runtime theory fragment, but remains review-only in the current runtime trust model",
+                constraint.kind
+            ),
+        ),
+        other => (
+            RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment,
+            RuntimeTheoryObligationTrustClassV1::ReviewOnly,
+            format!(
+                "constraint kind `{other}` is indexed, but it is not classified inside the current runtime theory fragment"
+            ),
+        ),
+    }
+}
+
+pub fn compile_kernel_module_ir(
+    module: &SchemaV1Module,
+    axi_text: &str,
+) -> Result<KernelModuleIr, String> {
+    let schemas = module
+        .schemas
+        .iter()
+        .map(compile_schema_ir)
+        .collect::<Vec<_>>();
+
+    let schema_by_name = schemas
+        .iter()
+        .map(|schema| (schema.schema_id.as_str().to_string(), schema))
+        .collect::<HashMap<_, _>>();
+
+    let theories = module
+        .theories
+        .iter()
+        .map(|theory| {
+            let compiled_schema = schema_by_name.get(&theory.schema).ok_or_else(|| {
+                format!(
+                    "theory `{}` references unknown schema `{}` in module `{}`",
+                    theory.name, theory.schema, module.module_name
+                )
+            })?;
+            compile_theory_ir(compiled_schema, theory)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let instances = module
+        .instances
+        .iter()
+        .map(|instance| {
+            let compiled_schema = schema_by_name.get(&instance.schema).ok_or_else(|| {
+                format!(
+                    "instance `{}` references unknown schema `{}` in module `{}`",
+                    instance.name, instance.schema, module.module_name
+                )
+            })?;
+            let schema_ast = module
+                .schemas
+                .iter()
+                .find(|schema| schema.name == instance.schema)
+                .ok_or_else(|| {
+                    format!(
+                        "instance `{}` schema `{}` missing from module `{}`",
+                        instance.name, instance.schema, module.module_name
+                    )
+                })?;
+            compile_instance_ir(&module.module_name, compiled_schema, schema_ast, instance)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(KernelModuleIr {
+        module_digest: AxiDigest::from_axi_text(axi_text),
+        schemas,
+        theories,
+        instances,
+    })
+}
+
+pub fn compile_instance_ir(
+    module_name: &str,
+    compiled_schema: &CompiledSchemaIr,
+    schema: &SchemaV1Schema,
+    instance: &SchemaV1Instance,
+) -> Result<InstanceIr, String> {
+    let assignment_by_name = instance
+        .assignments
+        .iter()
+        .map(|assignment| (assignment.name.as_str(), &assignment.value))
+        .collect::<HashMap<_, _>>();
+
+    let mut object_members = Vec::new();
+    for object_name in &schema.objects {
+        let Some(value) = assignment_by_name.get(object_name.as_str()) else {
+            continue;
+        };
+        let object_type_id = compiled_schema
+            .object_type_id(object_name)
+            .cloned()
+            .ok_or_else(|| format!("compiled schema missing object type `{object_name}`"))?;
+        let members = value
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                SetItemV1::Ident { name } => Some(name.clone()),
+                SetItemV1::Tuple { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        object_members.push(ObjectMembershipIr {
+            object_type_id,
+            object_type_name: object_name.clone(),
+            members,
+        });
+    }
+
+    let mut relation_facts = Vec::new();
+    for relation in &schema.relations {
+        let Some(value) = assignment_by_name.get(relation.name.as_str()) else {
+            continue;
+        };
+        let relation_ir = compiled_schema
+            .relation(&relation.name)
+            .ok_or_else(|| format!("compiled schema missing relation `{}`", relation.name))?;
+        let role_lookup = relation_ir
+            .roles
+            .iter()
+            .map(|role| (role.name.as_str(), role))
+            .collect::<HashMap<_, _>>();
+
+        for item in &value.items {
+            let SetItemV1::Tuple { fields } = item else {
+                continue;
+            };
+            let mut role_values = Vec::new();
+            let mut fields_in_decl_order = Vec::new();
+            for field in &relation.fields {
+                let value = fields
+                    .iter()
+                    .find(|(name, _)| name == &field.field)
+                    .map(|(_, value)| value.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "instance `{}` relation `{}` tuple missing field `{}`",
+                            instance.name, relation.name, field.field
+                        )
+                    })?;
+                let role = role_lookup.get(field.field.as_str()).ok_or_else(|| {
+                    format!(
+                        "compiled relation `{}` missing role `{}`",
+                        relation.name, field.field
+                    )
+                })?;
+                role_values.push(RoleValueIr {
+                    role_id: role.role_id.clone(),
+                    role_name: role.name.clone(),
+                    value: value.clone(),
+                });
+                fields_in_decl_order.push((field.field.clone(), value));
+            }
+
+            let fact_fields = fields_in_decl_order
+                .iter()
+                .map(|(field, value)| (field.as_str(), value.as_str()))
+                .collect::<Vec<_>>();
+
+            relation_facts.push(RelationFactIr {
+                fact_id: StableFactId::new(axi_fact_id_v1(
+                    module_name,
+                    &schema.name,
+                    &instance.name,
+                    &relation.name,
+                    &fact_fields,
+                )),
+                relation_id: relation_ir.relation_id.clone(),
+                relation_name: relation.name.clone(),
+                role_values,
+            });
+        }
+    }
+
+    Ok(InstanceIr {
+        instance_id: InstanceId::new(format!(
+            "instance:{}:{}",
+            compiled_schema.schema_id.as_str(),
+            instance.name
+        )),
+        schema_id: compiled_schema.schema_id.clone(),
+        object_members,
+        relation_facts,
+    })
 }
 
 pub fn compile_schema_ir(schema: &SchemaV1Schema) -> CompiledSchemaIr {
@@ -627,7 +1226,7 @@ pub fn compile_theory_ir(
     let mut equation_names = HashSet::new();
     let mut path_equations = Vec::new();
     let mut opaque_equations = Vec::new();
-    for (index, equation) in theory.equations.iter().enumerate() {
+    for equation in &theory.equations {
         if equation.name.trim().is_empty() {
             return Err(format!(
                 "theory `{}` has an equation with an empty name",
@@ -640,12 +1239,8 @@ pub fn compile_theory_ir(
                 theory.name, equation.name
             ));
         }
-        let equation_id = EquationId::new(format!(
-            "equation:{}:{}:{}",
-            theory_id.as_str(),
-            equation.name,
-            index
-        ));
+        let equation_id =
+            EquationId::new(format!("equation:{}:{}", theory_id.as_str(), equation.name));
         match (
             parse_path_expr_v3(&equation.lhs),
             parse_path_expr_v3(&equation.rhs),
@@ -743,7 +1338,7 @@ fn compile_constraint_ir(
     compiled_schema: &CompiledSchemaIr,
     theory: &SchemaV1Theory,
     theory_id: &TheoryId,
-    index: usize,
+    _index: usize,
     constraint: &ConstraintV1,
 ) -> Result<ConstraintIr, String> {
     let relation_name = constraint_relation_name(constraint).map(ToOwned::to_owned);
@@ -769,8 +1364,15 @@ fn compile_constraint_ir(
         .map(|relation| role_ids_for_fields(relation, &param_fields))
         .transpose()?
         .unwrap_or_default();
+    let constraint_id = stable_constraint_id(
+        theory_id,
+        constraint,
+        relation_name.as_deref(),
+        &field_refs,
+        &param_fields,
+    );
     Ok(ConstraintIr {
-        constraint_id: ConstraintId::new(format!("constraint:{}:{}", theory_id.as_str(), index)),
+        constraint_id,
         kind: constraint_kind_name(constraint).to_string(),
         summary: format_constraint_summary(constraint),
         relation_name,
@@ -780,6 +1382,29 @@ fn compile_constraint_ir(
         param_fields,
         param_role_ids,
     })
+}
+
+fn stable_constraint_id(
+    theory_id: &TheoryId,
+    constraint: &ConstraintV1,
+    relation_name: Option<&str>,
+    field_refs: &[String],
+    param_fields: &[String],
+) -> ConstraintId {
+    let digest_input = format!(
+        "{}|{}|{}|{}|{}|{}",
+        theory_id.as_str(),
+        constraint_kind_name(constraint),
+        relation_name.unwrap_or("_"),
+        field_refs.join(","),
+        param_fields.join(","),
+        format_constraint_summary(constraint)
+    );
+    ConstraintId::new(format!(
+        "constraint:{}:{}",
+        theory_id.as_str(),
+        axi_digest_v1(&digest_input)
+    ))
 }
 
 fn compile_rewrite_rule_ir(
@@ -2104,7 +2729,7 @@ mod tests {
                         relation_name,
                         ..
                     } if theory_id.as_str() == "theory:S:T"
-                        && constraint_id.as_str() == "constraint:theory:S:T:0"
+                        && constraint_id.as_str().starts_with("constraint:theory:S:T:fnv1a64:")
                         && relation_name.as_deref() == Some("Parent")
                 )
             })
@@ -2113,12 +2738,12 @@ mod tests {
         assert!(obligation_refs.iter().any(|obligation| matches!(
             obligation,
             TheoryObligationRefIr::PathEquation { equation_id, name, .. }
-            if equation_id.as_str() == "equation:theory:S:T:parent_path:0" && name == "parent_path"
+            if equation_id.as_str() == "equation:theory:S:T:parent_path" && name == "parent_path"
         )));
         assert!(obligation_refs.iter().any(|obligation| matches!(
             obligation,
             TheoryObligationRefIr::OpaqueEquation { equation_id, name, .. }
-            if equation_id.as_str() == "equation:theory:S:T:opaque_business_rule:1"
+            if equation_id.as_str() == "equation:theory:S:T:opaque_business_rule"
                 && name == "opaque_business_rule"
         )));
         let rewrite_obligation = obligation_refs
@@ -2186,6 +2811,144 @@ mod tests {
         assert!(relation_obligations
             .iter()
             .any(|obligation| obligation == &rewrite_obligation));
+
+        assert!(constraint_obligation.matches_artifact_id("constraint:theory:S:T:0"));
+        assert!(obligation_refs.iter().any(|obligation| {
+            matches!(obligation, TheoryObligationRefIr::PathEquation { .. })
+                && obligation.matches_artifact_id("equation:theory:S:T:parent_path:0")
+        }));
+        assert!(rewrite_obligation.matches_artifact_id("rewrite:theory:S:T:parent_refl:0"));
+    }
+
+    #[test]
+    fn runtime_theory_fragment_summary_marks_opaque_runtime_gaps_explicitly() {
+        let schema = SchemaV1Schema {
+            name: "S".to_string(),
+            objects: vec!["Person".to_string()],
+            subtypes: Vec::new(),
+            relations: vec![RelationDeclV1 {
+                name: "Parent".to_string(),
+                fields: vec![
+                    FieldDeclV1 {
+                        field: "from".to_string(),
+                        ty: "Person".to_string(),
+                    },
+                    FieldDeclV1 {
+                        field: "to".to_string(),
+                        ty: "Person".to_string(),
+                    },
+                ],
+            }],
+        };
+
+        let compiled = compile_schema_ir(&schema);
+        let theory = SchemaV1Theory {
+            name: "T".to_string(),
+            schema: "S".to_string(),
+            constraints: vec![
+                ConstraintV1::Key {
+                    relation: "Parent".to_string(),
+                    fields: vec!["from".to_string(), "to".to_string()],
+                },
+                ConstraintV1::Typing {
+                    relation: "Parent".to_string(),
+                    rule: "from,to : Person".to_string(),
+                },
+            ],
+            equations: vec![
+                EquationV1 {
+                    name: "runtime_path".to_string(),
+                    lhs: "step(x,Parent,y)".to_string(),
+                    rhs: "step(x,Parent,y)".to_string(),
+                },
+                EquationV1 {
+                    name: "opaque_business_rule".to_string(),
+                    lhs: "ParentCompose(a,b,c)".to_string(),
+                    rhs: "c".to_string(),
+                },
+            ],
+            rewrite_rules: vec![RewriteRuleV1 {
+                name: "parent_refl".to_string(),
+                orientation: RewriteOrientationV1::Forward,
+                vars: vec![
+                    RewriteVarDeclV1 {
+                        name: "x".to_string(),
+                        ty: RewriteVarTypeV1::Object {
+                            ty: "Person".to_string(),
+                        },
+                    },
+                    RewriteVarDeclV1 {
+                        name: "y".to_string(),
+                        ty: RewriteVarTypeV1::Object {
+                            ty: "Person".to_string(),
+                        },
+                    },
+                ],
+                lhs: PathExprV3::Step {
+                    from: "x".to_string(),
+                    rel: "Parent".to_string(),
+                    to: "y".to_string(),
+                },
+                rhs: PathExprV3::Step {
+                    from: "x".to_string(),
+                    rel: "Parent".to_string(),
+                    to: "y".to_string(),
+                },
+            }],
+        };
+
+        let ir = compile_theory_ir(&compiled, &theory).expect("compile theory ir");
+        let summary = ir.runtime_fragment_summary();
+        assert_eq!(summary.version, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1);
+        assert_eq!(summary.trust_boundary, "outside_trusted_kernel");
+        assert_eq!(summary.completeness_claim, "not_claimed");
+        assert_eq!(summary.ontology_closure_claim, "not_claimed");
+        assert_eq!(summary.total_obligations, 5);
+        assert_eq!(summary.runtime_checked_obligations, 3);
+        assert_eq!(summary.opaque_or_out_of_fragment_obligations, 2);
+        assert!(matches!(
+            summary.theory_ref,
+            TheorySubjectRefIr::Theory { ref theory_id } if theory_id.as_str() == "theory:S:T"
+        ));
+        assert!(summary.obligation_statuses.iter().any(|status| {
+            matches!(
+                status.obligation_ref,
+                TheoryObligationRefIr::Constraint { ref summary, .. }
+                    if summary == "typing Parent: from,to : Person"
+            ) && status.fragment_status
+                == RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment
+                && status.trust_class == RuntimeTheoryObligationTrustClassV1::RuntimeAdvisory
+                && status.detail.contains("opaque runtime metadata")
+        }));
+        assert!(summary.obligation_statuses.iter().any(|status| {
+            matches!(
+                status.obligation_ref,
+                TheoryObligationRefIr::OpaqueEquation { ref name, .. }
+                    if name == "opaque_business_rule"
+            ) && status.fragment_status
+                == RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment
+                && status.trust_class == RuntimeTheoryObligationTrustClassV1::ReviewOnly
+        }));
+        assert!(summary.obligation_statuses.iter().any(|status| {
+            matches!(
+                status.obligation_ref,
+                TheoryObligationRefIr::Constraint { ref summary, .. }
+                    if summary == "key Parent(from, to)"
+            ) && status.fragment_status == RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked
+                && status.trust_class == RuntimeTheoryObligationTrustClassV1::RuntimeEnforced
+        }));
+        assert!(summary.obligation_statuses.iter().any(|status| {
+            matches!(
+                status.obligation_ref,
+                TheoryObligationRefIr::RewriteRule { ref name, .. }
+                    if name == "parent_refl"
+            ) && status.fragment_status == RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked
+                && status.trust_class == RuntimeTheoryObligationTrustClassV1::RuntimeAdvisory
+        }));
+        assert!(summary
+            .notes
+            .iter()
+            .any(|note| note.contains("outside the trusted-kernel")));
     }
 
     #[test]
@@ -2250,6 +3013,59 @@ mod tests {
     }
 
     #[test]
+    fn compile_kernel_module_ir_emits_instances_and_stable_fact_ids() {
+        let axi_text = r#"
+module Demo
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person, ctx: Context)
+
+theory T on S:
+  constraint key Parent(child, parent, ctx)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Context = {FamilyTree}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=FamilyTree)
+  }
+"#;
+        let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text).expect("parse module");
+
+        let ir = compile_kernel_module_ir(&module, axi_text).expect("compile kernel module ir");
+        assert!(ir.module_digest.as_str().starts_with("fnv1a64:"));
+        assert_eq!(ir.schemas.len(), 1);
+        assert_eq!(ir.theories.len(), 1);
+        assert_eq!(ir.instances.len(), 1);
+
+        let instance = &ir.instances[0];
+        assert_eq!(instance.instance_id.as_str(), "instance:S:I");
+        assert_eq!(instance.schema_id.as_str(), "S");
+        assert!(instance.object_members.iter().any(|membership| {
+            membership.object_type_name == "Person"
+                && membership.members == vec!["Alice".to_string(), "Bob".to_string()]
+        }));
+        assert!(instance.object_members.iter().any(|membership| {
+            membership.object_type_name == "Context"
+                && membership.members == vec!["FamilyTree".to_string()]
+        }));
+        assert_eq!(instance.relation_facts.len(), 1);
+        let fact = &instance.relation_facts[0];
+        assert_eq!(fact.relation_name, "Parent");
+        assert_eq!(fact.relation_id.as_str(), "relation:S:Parent");
+        assert!(fact.fact_id.as_str().starts_with("factfnv1a64:"));
+        assert_eq!(
+            fact.role_values
+                .iter()
+                .map(|role| (role.role_name.as_str(), role.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("child", "Alice"), ("parent", "Bob"), ("ctx", "FamilyTree")]
+        );
+    }
+
+    #[test]
     fn role_interfaces_track_scoped_names_and_admissible_players() {
         let schema = SchemaV1Schema {
             name: "Org".to_string(),
@@ -2287,6 +3103,106 @@ mod tests {
         assert_eq!(
             approver.admissible_player_types,
             vec!["Person".to_string(), "Reviewer".to_string()]
+        );
+    }
+
+    #[test]
+    fn direct_subtype_helpers_surface_immediate_families_and_role_projections() {
+        let schema = SchemaV1Schema {
+            name: "Plant".to_string(),
+            objects: vec![
+                "PlantAsset".to_string(),
+                "Pump".to_string(),
+                "Compressor".to_string(),
+                "SpecialPump".to_string(),
+                "Batch".to_string(),
+                "Context".to_string(),
+            ],
+            subtypes: vec![
+                axiograph_dsl::schema_v1::SubtypeDeclV1 {
+                    sub: "Pump".to_string(),
+                    sup: "PlantAsset".to_string(),
+                    inclusion: None,
+                },
+                axiograph_dsl::schema_v1::SubtypeDeclV1 {
+                    sub: "Compressor".to_string(),
+                    sup: "PlantAsset".to_string(),
+                    inclusion: None,
+                },
+                axiograph_dsl::schema_v1::SubtypeDeclV1 {
+                    sub: "SpecialPump".to_string(),
+                    sup: "Pump".to_string(),
+                    inclusion: None,
+                },
+            ],
+            relations: vec![
+                RelationDeclV1 {
+                    name: "Certification".to_string(),
+                    fields: vec![
+                        FieldDeclV1 {
+                            field: "asset".to_string(),
+                            ty: "Pump".to_string(),
+                        },
+                        FieldDeclV1 {
+                            field: "batch".to_string(),
+                            ty: "Batch".to_string(),
+                        },
+                    ],
+                },
+                RelationDeclV1 {
+                    name: "Maintenance".to_string(),
+                    fields: vec![
+                        FieldDeclV1 {
+                            field: "asset".to_string(),
+                            ty: "Compressor".to_string(),
+                        },
+                        FieldDeclV1 {
+                            field: "ctx".to_string(),
+                            ty: "Context".to_string(),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let compiled = compile_schema_ir(&schema);
+
+        assert_eq!(
+            compiled.direct_supertypes_of("Pump"),
+            vec!["PlantAsset".to_string()]
+        );
+        assert_eq!(
+            compiled.direct_supertypes_of("SpecialPump"),
+            vec!["Pump".to_string()]
+        );
+        assert!(compiled.is_direct_subtype("Pump", "PlantAsset"));
+        assert!(!compiled.is_direct_subtype("SpecialPump", "PlantAsset"));
+        assert_eq!(
+            compiled.direct_subtypes_of("PlantAsset"),
+            vec!["Compressor".to_string(), "Pump".to_string()]
+        );
+
+        let family = compiled
+            .direct_subtype_families()
+            .into_iter()
+            .find(|family| family.supertype == "PlantAsset")
+            .expect("PlantAsset family");
+        assert_eq!(
+            family.subtypes,
+            vec!["Compressor".to_string(), "Pump".to_string()]
+        );
+
+        let projection = compiled.subtype_role_projection(&family.supertype, &family.subtypes);
+        assert_eq!(
+            projection.relations,
+            vec!["Certification".to_string(), "Maintenance".to_string()]
+        );
+        assert_eq!(
+            projection.fields,
+            vec![
+                "Certification.asset".to_string(),
+                "Maintenance.asset".to_string()
+            ]
         );
     }
 }

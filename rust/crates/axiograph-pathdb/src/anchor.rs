@@ -78,6 +78,7 @@ semantic_id_type!(ProposalDigest);
 semantic_id_type!(WorldModelRunId);
 semantic_id_type!(SchemaId);
 semantic_id_type!(TheoryId);
+semantic_id_type!(InstanceId);
 semantic_id_type!(ObjectTypeId);
 semantic_id_type!(RelationId);
 semantic_id_type!(RoleId);

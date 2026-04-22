@@ -271,7 +271,7 @@ pub enum AxqlTerm {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AxqlResult {
     pub selected_vars: Vec<String>,
     pub rows: Vec<BTreeMap<String, u32>>,
@@ -851,6 +851,7 @@ pub struct AxqlElaborationRewriteStepV1 {
 /// - the lowered query,
 /// - the initial candidate bitmaps + join order,
 /// - and the compiled RPQ automata (plus per-source reachability cache).
+#[derive(Debug, Clone)]
 pub(crate) struct PreparedAxqlQuery {
     db_token: DbToken,
     lowered: LoweredQuery,
@@ -860,21 +861,25 @@ pub(crate) struct PreparedAxqlQuery {
 }
 
 /// A compiled AxQL query that may contain disjunction (OR).
+#[derive(Debug, Clone)]
 struct PreparedAxqlQueryExpr {
     inner: PreparedAxqlQueryExprInner,
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct PreparedQueryHandle {
     inner: PreparedAxqlQueryExpr,
     certifiability: QueryCertifiability,
     context_count: usize,
 }
 
+#[derive(Debug, Clone)]
 enum PreparedAxqlQueryExprInner {
     Conjunction(PreparedAxqlQuery),
     Disjunction(PreparedAxqlDisjunction),
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct PreparedAxqlDisjunction {
     disjuncts: Vec<PreparedAxqlQuery>,
     elaboration: AxqlElaborationReport,
@@ -7175,12 +7180,13 @@ struct CompiledRpq {
     simple_chain: Option<Vec<String>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct RpqCache {
     forward: HashMap<(u32, usize), RoaringBitmap>,
     reverse: HashMap<(u32, usize), RoaringBitmap>,
 }
 
+#[derive(Debug, Clone)]
 struct RpqContext {
     compiled: Vec<CompiledRpq>,
     cache: RpqCache,
@@ -8055,7 +8061,7 @@ schema S1:
   relation ZRel(from: Person, to: Person)
   relation YRel(from: Supplier, to: Supplier)
   relation XRel(from: Supplier, to: Supplier)
-  relation Witness(from: Person, to: Person)
+  relation Witness(from: Supplier, to: Supplier)
 
 schema S2:
   object Person
@@ -8064,7 +8070,7 @@ schema S2:
 theory T on S1:
   rewrite z_to_y:
     orientation: bidirectional
-    vars: x: Person, y: Person
+    vars: x: Supplier, y: Supplier
     lhs: step(x, ZRel, y)
     rhs: step(x, YRel, y)
 
@@ -8092,10 +8098,10 @@ instance I2 of S2:
 
         let meta = MetaPlaneIndex::from_db(&db)?;
 
-        // `ZRel` is ambiguous across schemas, so endpoint inference won't fire.
-        // `z_to_y` still applies because `Witness` implies `?x/?y : Person`.
-        // After rewriting to `YRel`, endpoint inference adds `Supplier`, enabling
-        // the second rewrite `y_to_x`.
+        // `ZRel` is ambiguous across schemas, so endpoint inference on the edge
+        // itself won't disambiguate to the supplier-only rewrite chain.
+        // The `Witness` fact pins `?x/?y` to `Supplier`, which keeps the
+        // `z_to_y` and `y_to_x` rewrites inside the well-typed subtype path.
         let q = parse_axql_query(
             r#"select ?x ?y where ?f = Witness(from=?x, to=?y), ?x -ZRel-> ?y limit 5"#,
         )?;

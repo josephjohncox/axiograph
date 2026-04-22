@@ -15,6 +15,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
+use std::marker::PhantomData;
 
 use crate::axql::PreparedQueryHandle;
 use crate::axql::{
@@ -29,6 +30,7 @@ use crate::trust_contract::{
 
 use axiograph_pathdb::certificate::CertificateV2;
 use axiograph_pathdb::kernel_ir::{CompiledSchemaIr, TheoryIr};
+use axiograph_pathdb::{AcceptedAxiAnchor, AxiDigest, Certified, LifecycleState, Validated};
 
 pub const QUERY_IR_V1_VERSION: u32 = 1;
 
@@ -374,6 +376,42 @@ impl QueryIrV1 {
         })
     }
 
+    /// Compile, typecheck, and prepare this query with prepared-handle reuse.
+    ///
+    /// This keeps the typed `PreparedQueryV1` boundary while allowing callers
+    /// that already maintain an AxQL prepared-query cache to preserve reuse.
+    #[allow(dead_code)]
+    pub fn prepare_with_meta_cached(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        snapshot_key: &str,
+        cache: &mut crate::axql::AxqlPreparedQueryCache,
+    ) -> Result<PreparedQueryV1> {
+        let query = self.to_axql_query()?;
+        let handle = crate::axql::get_or_prepare_axql_query_handle_mut(
+            db,
+            &query,
+            meta,
+            snapshot_key,
+            cache,
+        )?
+        .clone();
+        let trust = query_user_visible_trust_contract_with_meta(
+            &query,
+            &handle.certifiability(),
+            false,
+            None,
+            meta,
+        );
+        Ok(PreparedQueryV1 {
+            query_ir: QueryIrV1::from_axql_query(&query),
+            query,
+            handle,
+            trust,
+        })
+    }
+
     /// Classify whether this query can be executed in the current certified subset.
     ///
     /// Returns a parsing or validation error only if the IR itself is invalid for
@@ -414,19 +452,6 @@ impl QueryIrV1 {
             None,
             meta,
         ))
-    }
-
-    /// Lower-level access to the prepared query handle.
-    ///
-    /// Prefer the typed wrapper in new code; this exists for internal seams
-    /// that still need direct prepared-handle access.
-    #[allow(dead_code)]
-    pub fn prepare_handle_with_meta(
-        &self,
-        db: &axiograph_pathdb::PathDB,
-        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-    ) -> Result<PreparedQueryHandle> {
-        crate::axql::prepare_query_ir_handle_with_meta(db, self, meta)
     }
 
     /// Render the IR as an AxQL query string (best-effort, for debugging).
@@ -508,8 +533,125 @@ pub struct PreparedQueryV1 {
     trust: QueryTrustContract,
 }
 
+/// A temporary anchor-bound view over a prepared query.
+///
+/// This keeps the existing `PreparedQueryV1` caches and ownership model intact
+/// while allowing callers that already know an accepted module anchor to run the
+/// query workflow in an anchor-aware lifecycle path.
+#[allow(dead_code)]
+pub struct AcceptedAnchoredPreparedQueryV1<'a> {
+    accepted_axi_anchor: AcceptedAxiAnchor,
+    prepared: &'a mut PreparedQueryV1,
+}
+
+/// A typed query answer artifact that preserves the workflow state of a query
+/// result after execution and optional certification.
+///
+/// This extends the existing typestate pattern used by `Module<Validated>` /
+/// `Module<Reviewed>` into the query workflow without changing the underlying
+/// AxQL execution engine.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct QueryAnswer<S> {
+    result: AxqlResult,
+    trust: QueryTrustContract,
+    query_fingerprint: String,
+    anchor_digest: Option<AxiDigest>,
+    certificate: Option<CertificateV2>,
+    _state: PhantomData<S>,
+}
+
+/// A query answer artifact that preserves the accepted-snapshot/module anchor
+/// throughout validated and certified query-answer lifecycle transitions.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct AcceptedAnchoredQueryAnswer<S> {
+    accepted_axi_anchor: AcceptedAxiAnchor,
+    answer: QueryAnswer<S>,
+}
+
+#[allow(dead_code)]
+impl<S: LifecycleState> QueryAnswer<S> {
+    pub fn result(&self) -> &AxqlResult {
+        &self.result
+    }
+
+    pub fn trust_contract(&self) -> &QueryTrustContract {
+        &self.trust
+    }
+
+    pub fn lifecycle_state_name(&self) -> &'static str {
+        S::NAME
+    }
+}
+
+#[allow(dead_code)]
+impl QueryAnswer<Certified> {
+    pub fn anchor_digest(&self) -> &AxiDigest {
+        self.anchor_digest
+            .as_ref()
+            .expect("certified query answers always carry an anchor digest")
+    }
+
+    pub fn certificate(&self) -> &CertificateV2 {
+        self.certificate
+            .as_ref()
+            .expect("certified query answers always carry a certificate")
+    }
+}
+
+#[allow(dead_code)]
+impl<S: LifecycleState> AcceptedAnchoredQueryAnswer<S> {
+    pub fn accepted_axi_anchor(&self) -> &AcceptedAxiAnchor {
+        &self.accepted_axi_anchor
+    }
+
+    pub fn accepted_snapshot_id(&self) -> &axiograph_pathdb::AcceptedSnapshotId {
+        &self.accepted_axi_anchor.accepted_snapshot_id
+    }
+
+    pub fn axi_digest(&self) -> &AxiDigest {
+        &self.accepted_axi_anchor.axi_digest
+    }
+
+    pub fn result(&self) -> &AxqlResult {
+        self.answer.result()
+    }
+
+    pub fn trust_contract(&self) -> &QueryTrustContract {
+        self.answer.trust_contract()
+    }
+
+    pub fn lifecycle_state_name(&self) -> &'static str {
+        self.answer.lifecycle_state_name()
+    }
+}
+
+#[allow(dead_code)]
+impl AcceptedAnchoredQueryAnswer<Certified> {
+    pub fn anchor_digest(&self) -> &AxiDigest {
+        self.answer.anchor_digest()
+    }
+
+    pub fn certificate(&self) -> &CertificateV2 {
+        self.answer.certificate()
+    }
+}
+
 #[allow(dead_code)]
 impl PreparedQueryV1 {
+    /// Bind this prepared query to an accepted module anchor for an
+    /// anchor-aware validated/certified answer workflow.
+    pub fn bind_accepted_axi_anchor<'a>(
+        &'a mut self,
+        accepted_axi_anchor: AcceptedAxiAnchor,
+    ) -> AcceptedAnchoredPreparedQueryV1<'a> {
+        AcceptedAnchoredPreparedQueryV1 {
+            accepted_axi_anchor,
+            prepared: self,
+        }
+    }
+
     fn apply_refinement_handle_internal(
         &self,
         db: &axiograph_pathdb::PathDB,
@@ -557,9 +699,74 @@ impl PreparedQueryV1 {
         self.handle.execute(db, meta)
     }
 
+    /// Execute the prepared query and package the result as a lifecycle-typed
+    /// workflow artifact.
+    pub fn execute_answer(
+        &mut self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<QueryAnswer<Validated>> {
+        Ok(QueryAnswer {
+            result: self.handle.execute(db, meta)?,
+            trust: self.trust_contract_with_meta(meta),
+            query_fingerprint: crate::axql::axql_query_ir_digest_v1(&self.query),
+            anchor_digest: None,
+            certificate: None,
+            _state: PhantomData,
+        })
+    }
+
+    /// Certify a previously executed validated answer for this exact prepared
+    /// query.
+    pub fn certify_answer_with_anchor(
+        &mut self,
+        answer: QueryAnswer<Validated>,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        axi_digest: AxiDigest,
+    ) -> Result<QueryAnswer<Certified>> {
+        let expected_fingerprint = crate::axql::axql_query_ir_digest_v1(&self.query);
+        if answer.query_fingerprint != expected_fingerprint {
+            return Err(anyhow!(
+                "validated query answer does not belong to this prepared query"
+            ));
+        }
+
+        let rerun_result = self.handle.execute(db, meta)?;
+        if rerun_result != answer.result {
+            return Err(anyhow!(
+                "validated query answer no longer matches the prepared query result for this runtime"
+            ));
+        }
+
+        let certificate =
+            self.handle
+                .certify_typed_with_anchor(db, &self.query, meta, axi_digest.as_str())?;
+        let trust = query_user_visible_trust_contract_with_meta(
+            &self.query,
+            &self.certifiability(),
+            true,
+            None,
+            meta,
+        );
+        Ok(QueryAnswer {
+            result: answer.result,
+            trust,
+            query_fingerprint: expected_fingerprint,
+            anchor_digest: Some(axi_digest),
+            certificate: Some(certificate),
+            _state: PhantomData,
+        })
+    }
+
     /// Return the fully elaborated plan shape as human-readable text.
     pub fn explain_plan_lines(&self) -> Vec<String> {
         self.handle.explain_plan_lines()
+    }
+
+    /// Return the elaborated query text that the runtime actually prepared.
+    pub fn elaborated_query_text(&self) -> String {
+        self.handle.elaborated_query_text()
     }
 
     /// Return structured trust metadata for this prepared query.
@@ -901,11 +1108,105 @@ impl PreparedQueryV1 {
         self.handle
             .certify_typed_with_anchor(db, &self.query, meta, axi_digest_v1)
     }
+}
 
-    /// Unwrap the low-level prepared execution handle for callers that need
-    /// direct access to `axql::PreparedQueryHandle`.
-    pub fn into_handle(self) -> PreparedQueryHandle {
-        self.handle
+#[allow(dead_code)]
+impl<'a> AcceptedAnchoredPreparedQueryV1<'a> {
+    pub fn accepted_axi_anchor(&self) -> &AcceptedAxiAnchor {
+        &self.accepted_axi_anchor
+    }
+
+    pub fn accepted_snapshot_id(&self) -> &axiograph_pathdb::AcceptedSnapshotId {
+        &self.accepted_axi_anchor.accepted_snapshot_id
+    }
+
+    pub fn axi_digest(&self) -> &AxiDigest {
+        &self.accepted_axi_anchor.axi_digest
+    }
+
+    pub fn query_ir_v1(&self) -> &QueryIrV1 {
+        self.prepared.query_ir_v1()
+    }
+
+    pub fn elaborated_query_text(&self) -> String {
+        self.prepared.elaborated_query_text()
+    }
+
+    pub fn elaboration_report(&self) -> &AxqlElaborationReport {
+        self.prepared.elaboration_report()
+    }
+
+    pub fn explain_plan_lines(&self) -> Vec<String> {
+        self.prepared.explain_plan_lines()
+    }
+
+    pub fn trust_contract_with_meta(
+        &self,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> QueryTrustContract {
+        self.prepared.trust_contract_with_meta(meta)
+    }
+
+    pub fn exploration_view(&self, focus_variable: Option<&str>) -> PreparedQueryExplorationV1 {
+        self.prepared.exploration_view(focus_variable)
+    }
+
+    pub fn certifiability(&self) -> QueryCertifiability {
+        self.prepared.certifiability()
+    }
+
+    pub fn execute(
+        &mut self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<AxqlResult> {
+        self.prepared.execute(db, meta)
+    }
+
+    pub fn execute_answer(
+        &mut self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<AcceptedAnchoredQueryAnswer<Validated>> {
+        Ok(AcceptedAnchoredQueryAnswer {
+            accepted_axi_anchor: self.accepted_axi_anchor.clone(),
+            answer: self.prepared.execute_answer(db, meta)?,
+        })
+    }
+
+    pub fn certify_typed(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<CertificateV2> {
+        self.prepared.certify_typed_with_anchor(
+            db,
+            meta,
+            self.accepted_axi_anchor.axi_digest.as_str(),
+        )
+    }
+
+    pub fn certify_answer(
+        &mut self,
+        answer: AcceptedAnchoredQueryAnswer<Validated>,
+        db: &axiograph_pathdb::PathDB,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<AcceptedAnchoredQueryAnswer<Certified>> {
+        if answer.accepted_axi_anchor != self.accepted_axi_anchor {
+            return Err(anyhow!(
+                "validated query answer is bound to a different accepted anchor"
+            ));
+        }
+
+        Ok(AcceptedAnchoredQueryAnswer {
+            accepted_axi_anchor: self.accepted_axi_anchor.clone(),
+            answer: self.prepared.certify_answer_with_anchor(
+                answer.answer,
+                db,
+                meta,
+                self.accepted_axi_anchor.axi_digest.clone(),
+            )?,
+        })
     }
 }
 
@@ -2694,6 +2995,267 @@ instance I of S:
             }
             other => panic!("expected query_result_v3 typed witness, got {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_query_v1_execute_answer_returns_validated_artifact() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema S:
+  object Node
+
+instance I of S:
+  Node = {a}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"}
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        let mut prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let answer = prepared.execute_answer(&db, Some(&meta))?;
+        assert_eq!(answer.lifecycle_state_name(), "validated");
+        assert_eq!(answer.trust_contract().trust_class, "certifiable");
+        assert_eq!(answer.result().selected_vars, vec!["?x"]);
+        assert_eq!(answer.result().rows.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn validated_query_answer_can_transition_to_certified() -> Result<()> {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+            });
+        let axi_path = repo_root.join("examples/Family.axi");
+        let axi_text = std::fs::read_to_string(&axi_path)?;
+        let digest = AxiDigest::from_axi_text(&axi_text);
+        let db = crate::load_pathdb_for_cli(&axi_path)?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["p"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Fam.Parent",
+                  "fields": {
+                    "child": "Carol",
+                    "parent": "?p",
+                    "ctx": "CensusData",
+                    "time": "T2020"
+                  }
+                }
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        let mut prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let answer = prepared.execute_answer(&db, Some(&meta))?;
+        let certified =
+            prepared.certify_answer_with_anchor(answer, &db, Some(&meta), digest.clone())?;
+
+        assert_eq!(certified.lifecycle_state_name(), "certified");
+        assert_eq!(certified.anchor_digest(), &digest);
+        assert_eq!(
+            certified.trust_contract().soundness,
+            "certificate_emitted_row_soundness_unverified"
+        );
+        match &certified.certificate().payload {
+            axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } => {
+                assert!(!proof.rows.is_empty());
+            }
+            other => panic!("expected query_result_v3 typed witness, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_anchor_bound_prepared_query_carries_anchor_through_answer_states() -> Result<()> {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+            });
+        let axi_path = repo_root.join("examples/Family.axi");
+        let axi_text = std::fs::read_to_string(&axi_path)?;
+        let digest = AxiDigest::from_axi_text(&axi_text);
+        let accepted_axi_anchor = AcceptedAxiAnchor::new(
+            axiograph_pathdb::AcceptedSnapshotId::new("accepted:test-family"),
+            digest.clone(),
+        );
+        let db = crate::load_pathdb_for_cli(&axi_path)?;
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["p"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Fam.Parent",
+                  "fields": {
+                    "child": "Carol",
+                    "parent": "?p",
+                    "ctx": "CensusData",
+                    "time": "T2020"
+                  }
+                }
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        let mut prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let validated = prepared
+            .bind_accepted_axi_anchor(accepted_axi_anchor.clone())
+            .execute_answer(&db, Some(&meta))?;
+
+        assert_eq!(validated.lifecycle_state_name(), "validated");
+        assert_eq!(validated.accepted_axi_anchor(), &accepted_axi_anchor);
+        assert_eq!(
+            validated.accepted_snapshot_id().as_str(),
+            "accepted:test-family"
+        );
+        assert_eq!(validated.axi_digest(), &digest);
+
+        let certified = prepared
+            .bind_accepted_axi_anchor(accepted_axi_anchor.clone())
+            .certify_answer(validated, &db, Some(&meta))?;
+
+        assert_eq!(certified.lifecycle_state_name(), "certified");
+        assert_eq!(certified.accepted_axi_anchor(), &accepted_axi_anchor);
+        assert_eq!(certified.anchor_digest(), &digest);
+        match &certified.certificate().payload {
+            axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } => {
+                assert!(!proof.rows.is_empty());
+            }
+            other => panic!("expected query_result_v3 typed witness, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_anchor_bound_prepared_query_rejects_mismatched_anchor_answer() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+
+instance I of Demo:
+  Node = {a}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"}
+              ],
+              "limit": 10
+            }"#,
+        )?;
+
+        let mut prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let answer = prepared
+            .bind_accepted_axi_anchor(AcceptedAxiAnchor::new(
+                axiograph_pathdb::AcceptedSnapshotId::new("accepted:a"),
+                AxiDigest::new("fnv1a64:anchor-a"),
+            ))
+            .execute_answer(&db, Some(&meta))?;
+
+        let err = prepared
+            .bind_accepted_axi_anchor(AcceptedAxiAnchor::new(
+                axiograph_pathdb::AcceptedSnapshotId::new("accepted:b"),
+                AxiDigest::new("fnv1a64:anchor-b"),
+            ))
+            .certify_answer(answer, &db, Some(&meta))
+            .expect_err("mismatched accepted anchor should be rejected");
+        assert!(err
+            .to_string()
+            .contains("validated query answer is bound to a different accepted anchor"));
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_query_v1_certify_answer_rejects_mismatched_query_answer() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+
+instance I of Demo:
+  Node = {a, b}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q1: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"}
+              ],
+              "limit": 1
+            }"#,
+        )?;
+        let q2: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["x"],
+              "where": [
+                {"kind": "type", "term": "?x", "type": "Node"}
+              ],
+              "limit": 2
+            }"#,
+        )?;
+
+        let mut prepared_one = q1.prepare_with_meta(&db, Some(&meta))?;
+        let mut prepared_two = q2.prepare_with_meta(&db, Some(&meta))?;
+        let answer_one = prepared_one.execute_answer(&db, Some(&meta))?;
+        let err = prepared_two
+            .certify_answer_with_anchor(
+                answer_one,
+                &db,
+                Some(&meta),
+                AxiDigest::new("fnv1a64:test"),
+            )
+            .expect_err("mismatched prepared query should be rejected");
+        assert!(err
+            .to_string()
+            .contains("does not belong to this prepared query"));
         Ok(())
     }
 

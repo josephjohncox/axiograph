@@ -2,8 +2,8 @@
 #
 # Demonstrates:
 # - importing a canonical `axi_v1` module (schema/theory/instance)
-# - morphisms as first-class *witness nodes* (reified tuples tagged `Morphism`)
-# - homotopies as first-class *witness nodes* (reified tuples tagged `Homotopy`)
+# - morphisms as first-class witness nodes (reified tuples tagged `Morphism`)
+# - schema-equivalence witnesses carried by `SchemaEquiv`
 # - visualization of a schema-evolution neighborhood (migrations + equivalences)
 #
 # Run (from repo root):
@@ -30,8 +30,8 @@ stats
 q select ?src where name("AddCategories") -MigrationFrom-> ?src limit 10
 q select ?dst where name("AddCategories") -MigrationTo-> ?dst limit 10
 
-# Schema equivalence: these are also tagged as Homotopy witnesses during import.
-q select ?h ?lhs ?rhs where ?h is Homotopy, ?h -lhs-> ?lhs, ?h -rhs-> ?rhs limit 10
+# Schema equivalence: inspect the explicit equivalence witness relation.
+q select ?fwd ?bwd where ?eq = SchemaEquiv(s1=ProductV3, s2=ProductV3_alt, forward=?fwd, backward=?bwd, proof=?proof) limit 10
 
 # Generic morphism view (works across many relations).
 q select ?m ?from ?to where ?m is Morphism, ?m -from-> ?from, ?m -to-> ?to limit 10
@@ -44,7 +44,7 @@ viz build/schema_evolution_axi_schema.html format html plane meta focus_name Ont
 viz build/schema_evolution_axi_addcategories_both.dot format dot plane both focus_name AddCategories hops 2 max_nodes 260
 viz build/schema_evolution_axi_addcategories_both.html format html plane both focus_name AddCategories hops 2 max_nodes 260
 
-# Visualize a schema node neighborhood (shows SchemaEquiv homotopy witness nodes).
+# Visualize a schema node neighborhood (shows SchemaEquiv witness nodes).
 viz build/schema_evolution_axi_productv3_both.dot format dot plane both focus_name ProductV3 hops 2 max_nodes 260
 viz build/schema_evolution_axi_productv3_both.html format html plane both focus_name ProductV3 hops 2 max_nodes 260
 

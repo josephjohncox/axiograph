@@ -274,10 +274,10 @@ pub struct CompetencyQuestionRefinementApplyResultV1 {
     pub query_apply: crate::query_ir::QueryRefinementApplyResultV1,
 }
 
-fn query_refinement_handle_for_competency_question<'a>(
+fn runtime_query_refinement_handle_for_competency_question(
     question: &CompetencyQuestionV1,
-    handle: &'a crate::typed_refinement::RuntimeRefinementHandleV1,
-) -> Result<&'a crate::axql::AxqlRefinementHandleV1> {
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+) -> Result<crate::typed_refinement::RuntimeRefinementHandleV1> {
     handle.validate()?;
     match &handle.payload {
         crate::typed_refinement::RuntimeRefinementPayloadV1::CompetencyQuestionRepair {
@@ -292,14 +292,66 @@ fn query_refinement_handle_for_competency_question<'a>(
                     question.name
                 ));
             }
-            Ok(handle)
+            Ok(crate::typed_refinement::RuntimeRefinementHandleV1::from_query(handle.clone()))
         }
-        crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } => Ok(handle),
+        crate::typed_refinement::RuntimeRefinementPayloadV1::Query { .. } => Ok(handle.clone()),
         _ => Err(anyhow!(
             "runtime refinement handle `{}` is not a competency-question/query refinement",
             handle.id
         )),
     }
+}
+
+fn wrap_runtime_refinement_candidate_for_competency_question(
+    question_name: &str,
+    candidate: crate::typed_refinement::RuntimeRefinementCandidateV1,
+) -> Result<crate::typed_refinement::RuntimeRefinementCandidateV1> {
+    let crate::typed_refinement::RuntimeRefinementCandidateV1 {
+        kind,
+        summary,
+        handle,
+        preview_fragment: _,
+        relation,
+        schema,
+        role,
+        target_type,
+        target_box,
+        question_name: _,
+        obligation_id,
+        artifact_id,
+        resolution,
+        theory_obligation_ref,
+        theory_subject_refs,
+        theory_subject_ref,
+    } = candidate;
+    let crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } = handle.payload
+    else {
+        return Err(anyhow!(
+            "runtime refinement candidate `{summary}` is not query-scoped"
+        ));
+    };
+    let handle = crate::typed_refinement::RuntimeRefinementHandleV1::new_competency_question_repair(
+        question_name.to_string(),
+        handle,
+    );
+    Ok(crate::typed_refinement::RuntimeRefinementCandidateV1 {
+        kind,
+        summary: format!("repair competency question `{question_name}`: {summary}"),
+        preview_fragment: handle.preview_fragment(),
+        handle,
+        relation,
+        schema,
+        role,
+        target_type,
+        target_box,
+        question_name: Some(question_name.to_string()),
+        obligation_id,
+        artifact_id,
+        resolution,
+        theory_obligation_ref,
+        theory_subject_refs,
+        theory_subject_ref,
+    })
 }
 
 #[allow(dead_code)]
@@ -309,11 +361,12 @@ pub fn apply_runtime_refinement_handle_to_competency_question_result(
     question: &CompetencyQuestionV1,
     handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
 ) -> Result<CompetencyQuestionRefinementApplyResultV1> {
-    let query_handle = query_refinement_handle_for_competency_question(question, handle)?;
+    let runtime_query_handle =
+        runtime_query_refinement_handle_for_competency_question(question, handle)?;
     let axql = crate::axql::parse_axql_query(&question.query)?;
     let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&axql);
     let prepared = query_ir.prepare_with_meta(db, meta)?;
-    let query_apply = prepared.apply_refinement_handle(db, meta, query_handle)?;
+    let query_apply = prepared.apply_runtime_refinement_handle(db, meta, &runtime_query_handle)?;
     let mut refined_question = question.clone();
     refined_question.query = query_apply.refined_query_ir_v1.to_axql_text()?;
     Ok(CompetencyQuestionRefinementApplyResultV1 {
@@ -333,14 +386,15 @@ pub fn apply_runtime_refinement_handle_to_competency_question_result_with_theory
     compiled_schema: &CompiledSchemaIr,
     theories: &[TheoryIr],
 ) -> Result<CompetencyQuestionRefinementApplyResultV1> {
-    let query_handle = query_refinement_handle_for_competency_question(question, handle)?;
+    let runtime_query_handle =
+        runtime_query_refinement_handle_for_competency_question(question, handle)?;
     let axql = crate::axql::parse_axql_query(&question.query)?;
     let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&axql);
     let prepared = query_ir.prepare_with_meta(db, meta)?;
-    let query_apply = prepared.apply_refinement_handle_with_theory_graph(
+    let query_apply = prepared.apply_runtime_refinement_handle_with_theory_graph(
         db,
         meta,
-        query_handle,
+        &runtime_query_handle,
         compiled_schema,
         theories,
     )?;
@@ -435,17 +489,13 @@ pub fn evaluate_competency_questions_with_trust(
         let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
         let refinement_candidates = prepared
             .exploration_view(None)
-            .exploration_suggestions
+            .refinement_candidates
             .into_iter()
-            .flat_map(|suggestion| suggestion.refinement_candidates.into_iter())
             .filter(|candidate| !candidate.handle.preview_fragment().contains("?_lookup"))
             .map(|candidate| {
-                crate::typed_refinement::RuntimeRefinementCandidateV1::wrap_axql_for_competency_question(
-                    q.name.clone(),
-                    candidate,
-                )
+                wrap_runtime_refinement_candidate_for_competency_question(&q.name, candidate)
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         let trust = crate::trust_contract::query_user_visible_trust_contract_with_meta(
             &query,
             &prepared.certifiability(),
@@ -519,19 +569,13 @@ pub fn evaluate_competency_questions_with_trust_and_theory_graph(
         let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
         let refinement_candidates = prepared
             .exploration_view_with_theory_graph(None, compiled_schema, theories)
-            .exploration_suggestions
+            .refinement_candidates
             .into_iter()
-            .flat_map(|suggestion| suggestion.refinement_candidates.into_iter())
             .filter(|candidate| !candidate.handle.preview_fragment().contains("?_lookup"))
             .map(|candidate| {
-                crate::typed_refinement::RuntimeRefinementCandidateV1::wrap_axql_for_competency_question_with_theory(
-                    q.name.clone(),
-                    candidate,
-                    compiled_schema,
-                    theories,
-                )
+                wrap_runtime_refinement_candidate_for_competency_question(&q.name, candidate)
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         let trust = crate::trust_contract::query_user_visible_trust_contract_with_meta(
             &query,
             &prepared.certifiability(),

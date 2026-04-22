@@ -3,6 +3,7 @@
   "description": "Canonical Axiograph .axi corpus used to drive Lean/Rust parser and semantics parity.",
   "modules": [
     { "path": "examples/economics/EconomicFlows.axi", "dialect": "axi_v1" },
+    { "path": "examples/industrial/RegulatedProductionLine.axi", "dialect": "axi_v1" },
     { "path": "examples/learning/MachinistLearning.axi", "dialect": "axi_v1" },
     { "path": "examples/ontology/SchemaEvolution.axi", "dialect": "axi_v1" }
   ]

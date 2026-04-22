@@ -34,7 +34,7 @@ pub struct ProposalAxiTypecheckReportV1 {
     pub errors: Vec<ProposalAxiTypecheckErrorV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct CompetencyGatePolicyV1 {
     #[serde(default)]
     pub fail_on_regression: bool,
@@ -42,7 +42,7 @@ pub struct CompetencyGatePolicyV1 {
     pub fail_on_unsatisfied_after: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CompetencyQuestionDeltaV1 {
     pub name: String,
     pub min_rows: usize,
@@ -63,7 +63,7 @@ pub struct CompetencyQuestionDeltaV1 {
     pub after_trust_reasons: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CompetencyGateReportV1 {
     pub total: usize,
     pub satisfied_before: usize,
@@ -80,7 +80,7 @@ pub struct CompetencyGateReportV1 {
     pub questions: Vec<CompetencyQuestionDeltaV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProposalValidationTrustContractV1 {
     pub trust_class: String,
     pub soundness: String,
@@ -106,6 +106,8 @@ pub struct ProposalsValidationV1 {
     pub import_summary: crate::proposals_import::ImportProposalsSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evolution_preview: Option<crate::evolution_preview::EvolutionPreviewV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_report_path: Option<String>,
     pub axi_typecheck: ProposalAxiTypecheckReportV1,
     pub quality_delta: crate::quality::QualityReportV1,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -415,6 +417,7 @@ pub fn validate_proposals_with_options_v1(
         version: "proposals_validation_v1".to_string(),
         import_summary,
         evolution_preview: Some(evolution_preview),
+        stored_report_path: None,
         axi_typecheck,
         quality_delta,
         competency_gate: competency_gate.clone(),

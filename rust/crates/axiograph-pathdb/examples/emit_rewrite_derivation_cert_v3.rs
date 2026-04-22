@@ -50,7 +50,7 @@ fn main() {
     };
 
     let cert = CertificateV2::rewrite_derivation_v3(proof).with_anchor(AxiAnchorV1 {
-        axi_digest_v1: digest,
+        axi_digest_v1: digest.into(),
     });
     println!(
         "{}",

@@ -42,8 +42,8 @@ use url::form_urlencoded;
 
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::{
-    read_sidecar_file, AcceptedSnapshotId, AxiDigest, IndexSidecarWriter, PathDB, PathdbSnapshotId,
-    WorldModelRunId,
+    read_sidecar_file, AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, IndexSidecarWriter,
+    PathDB, PathdbSnapshotId, WorldModelRunId,
 };
 
 use crate::accepted_plane::{AcceptedPlaneEventV1, AcceptedPlaneSnapshotV1};
@@ -118,6 +118,11 @@ struct LoadedSnapshot {
     snapshot_label: String,
     /// For store-based loads, the resolved accepted-plane snapshot id.
     accepted_snapshot_id: Option<AcceptedSnapshotId>,
+    /// For store-backed snapshots that resolve to exactly one accepted module,
+    /// the accepted-module anchor bound to this loaded runtime.
+    accepted_axi_anchor: Option<AcceptedAxiAnchor>,
+    /// Canonical `.axi` text for the accepted anchor above, when available.
+    accepted_axi_text: Option<String>,
     /// For store-based loads, the resolved PathDB WAL snapshot id.
     pathdb_snapshot_id: Option<PathdbSnapshotId>,
     loaded_at_unix_secs: u64,
@@ -136,7 +141,7 @@ struct QueryCacheKey {
 
 #[derive(Default)]
 struct QueryPlanCache {
-    entries: HashMap<QueryCacheKey, Arc<Mutex<crate::axql::PreparedQueryHandle>>>,
+    entries: HashMap<QueryCacheKey, Arc<Mutex<crate::query_ir::PreparedQueryV1>>>,
     lru: VecDeque<QueryCacheKey>,
 }
 
@@ -155,13 +160,13 @@ impl QueryPlanCache {
         self.lru.push_back(key.clone());
     }
 
-    fn get(&mut self, key: &QueryCacheKey) -> Option<Arc<Mutex<crate::axql::PreparedQueryHandle>>> {
+    fn get(&mut self, key: &QueryCacheKey) -> Option<Arc<Mutex<crate::query_ir::PreparedQueryV1>>> {
         let value = self.entries.get(key).cloned()?;
         self.touch(key);
         Some(value)
     }
 
-    fn insert(&mut self, key: QueryCacheKey, value: Arc<Mutex<crate::axql::PreparedQueryHandle>>) {
+    fn insert(&mut self, key: QueryCacheKey, value: Arc<Mutex<crate::query_ir::PreparedQueryV1>>) {
         self.entries.insert(key.clone(), value);
         self.touch(&key);
 
@@ -654,6 +659,10 @@ async fn handle_request(
             Ok(v) => json_response(StatusCode::OK, &v),
             Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         },
+        (Method::GET, "/capabilities") => match capabilities_payload(&state) {
+            Ok(v) => json_response(StatusCode::OK, &v),
+            Err(e) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        },
         (Method::GET, "/snapshots") => match snapshots_payload(&state, req.uri().query()) {
             Ok(v) => json_response(StatusCode::OK, &v),
             Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
@@ -1043,6 +1052,88 @@ fn status_payload(state: &ServerState) -> Result<serde_json::Value> {
             "lean_verifier_bin": verifier_bin.as_ref().map(|p| p.display().to_string()),
             "lean_verifier_timeout_secs": state.config.cert_verify.timeout.map(|d| d.as_secs()),
         },
+    }))
+}
+
+fn capabilities_payload(state: &ServerState) -> Result<serde_json::Value> {
+    let loaded = state
+        .loaded
+        .read()
+        .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
+
+    let store_ctx = match &state.config.source {
+        SnapshotSource::Store { dir, layer, .. } => Some(crate::llm::ToolLoopStoreContext {
+            dir: dir.clone(),
+            default_layer: layer.clone(),
+        }),
+        _ => None,
+    };
+    let tool_loop_tools = crate::llm::tool_loop_tools_schema(
+        store_ctx.as_ref(),
+        !matches!(
+            state.config.world_model.backend,
+            WorldModelBackend::Disabled
+        ),
+    );
+    let mut semantic_services = vec![
+        serde_json::json!({
+            "name": "discover_check_olog",
+            "endpoint": "/discover/check-olog",
+            "returns": ["typed_holes", "refinement_candidates", "evolution_preview"]
+        }),
+        serde_json::json!({
+            "name": "semantic_coverage",
+            "endpoint": "/semantic/coverage",
+            "returns": ["coverage", "rule_statuses", "uncovered_rule_ids"]
+        }),
+        serde_json::json!({
+            "name": "semantic_business_rule",
+            "endpoint": "/semantic/business-rule",
+            "returns": ["report", "rules", "next_actions"]
+        }),
+        serde_json::json!({
+            "name": "semantic_agent_report",
+            "endpoint": "/semantic/agent-report",
+            "returns": ["report", "matched_scope_ids", "matched_scope_refs", "matched_rule_ids"]
+        }),
+        serde_json::json!({
+            "name": "proposals_relation",
+            "endpoint": "/proposals/relation",
+            "returns": ["proposals_json", "validation"]
+        }),
+        serde_json::json!({
+            "name": "proposals_relations",
+            "endpoint": "/proposals/relations",
+            "returns": ["proposals_json", "validation"]
+        }),
+    ];
+    if store_ctx.is_some() {
+        semantic_services.push(serde_json::json!({
+            "name": "promote_reviewed_module",
+            "endpoint": "/admin/accept/promote",
+            "returns": ["snapshot_id", "validation_report_path", "stored_report_path"]
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "version": "axiograph_capabilities_v1",
+        "snapshot": {
+            "snapshot_key": loaded.snapshot_key,
+            "accepted_snapshot_id": loaded.accepted_snapshot_id,
+            "pathdb_snapshot_id": loaded.pathdb_snapshot_id,
+        },
+        "query": {
+            "machine_contract": "query_ir_v1",
+            "raw_query_text_supported": false,
+            "prepared_query_wrapper": "PreparedQueryV1",
+            "trust_contract_fields": ["trust_class", "soundness", "coverage", "scope"],
+        },
+        "semantic_services": semantic_services,
+        "tool_loop": {
+            "contract": "tool_specs_v1",
+            "tools": tool_loop_tools,
+        },
+        "trust_classes": ["runtime_enforced", "runtime_advisory", "review_only"],
     }))
 }
 
@@ -1562,6 +1653,10 @@ struct QueryResponseV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     plan: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    accepted_axi_anchor: Option<AcceptedAxiAnchor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    support_summary: Option<crate::evidence_support::EvidenceSupportSummaryV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     anchor_digest: Option<AxiDigest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     certificate: Option<serde_json::Value>,
@@ -1655,27 +1750,37 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
     let state = state.clone();
 
     tokio::task::spawn_blocking(move || {
-        let (db, meta, snapshot_key) = if let Some(snapshot) = snapshot_override.as_deref() {
-            let SnapshotSource::Store { dir, layer, .. } = &state.config.source else {
-                return Err(anyhow!(
-                    "query snapshot override requires a store-backed server (`--dir ...`)"
-                ));
+        let (db, meta, snapshot_key, accepted_axi_anchor, accepted_axi_text) =
+            if let Some(snapshot) = snapshot_override.as_deref() {
+                let SnapshotSource::Store { dir, layer, .. } = &state.config.source else {
+                    return Err(anyhow!(
+                        "query snapshot override requires a store-backed server (`--dir ...`)"
+                    ));
+                };
+                let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
+                (
+                    loaded.db,
+                    loaded.meta,
+                    loaded.snapshot_key,
+                    loaded.accepted_axi_anchor,
+                    loaded.accepted_axi_text,
+                )
+            } else {
+                let loaded = state
+                    .loaded
+                    .read()
+                    .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
+                (
+                    loaded.db.clone(),
+                    loaded.meta.clone(),
+                    loaded.snapshot_key.clone(),
+                    loaded.accepted_axi_anchor.clone(),
+                    loaded.accepted_axi_text.clone(),
+                )
             };
-            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
-            (loaded.db, loaded.meta, loaded.snapshot_key)
-        } else {
-            let loaded = state
-                .loaded
-                .read()
-                .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
-            (
-                loaded.db.clone(),
-                loaded.meta.clone(),
-                loaded.snapshot_key.clone(),
-            )
-        };
 
         let parsed = query_request_to_axql_query(&req)?;
+        let query_ir_v1 = crate::query_ir::QueryIrV1::from_axql_query(&parsed);
         let query_ir = crate::axql::axql_query_ir_digest_v1(&parsed);
         let cache_key = QueryCacheKey {
             snapshot: snapshot_key,
@@ -1691,8 +1796,7 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
             if let Some(p) = cache.get(&cache_key) {
                 p
             } else {
-                let prepared =
-                    crate::axql::prepare_axql_query_with_meta(&db, &parsed, meta.as_ref())?;
+                let prepared = query_ir_v1.prepare_with_meta(&db, meta.as_ref())?;
                 let prepared = Arc::new(Mutex::new(prepared));
                 cache.insert(cache_key.clone(), prepared.clone());
                 prepared
@@ -1702,71 +1806,127 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
         let mut prepared = prepared
             .lock()
             .map_err(|_| anyhow!("prepared query lock poisoned"))?;
-        let compiled_query_ir_v1 =
-            show_elaboration.then(|| crate::query_ir::QueryIrV1::from_axql_query(&parsed));
+        let compiled_query_ir_v1 = show_elaboration.then_some(query_ir_v1.clone());
         let elaborated_query = show_elaboration.then(|| prepared.elaborated_query_text());
         let elaborated_query_ir_v1 = if show_elaboration {
-            let elaborated_query = prepared.elaborated_query_text();
-            Some(crate::query_ir::QueryIrV1::from_axql_query(
-                &crate::axql::parse_axql_query(&elaborated_query)?,
-            ))
+            Some(prepared.elaborated_query_ir_v1()?)
         } else {
             None
         };
         let elaboration = show_elaboration.then(|| prepared.elaboration_report().clone());
         let plan = show_elaboration.then(|| prepared.explain_plan_lines());
         let certifiability = prepared.certifiability();
-        let res = prepared.execute(&db, meta.as_ref())?;
-        let elapsed_ms = start.elapsed().as_millis();
 
-        let vars = res.selected_vars.clone();
+        let mut accepted_query_anchor: Option<AcceptedAxiAnchor> = None;
         let mut rows: Vec<BTreeMap<String, EntityViewV1>> = Vec::new();
-        for row in &res.rows {
-            let mut out: BTreeMap<String, EntityViewV1> = BTreeMap::new();
-            for (k, id) in row {
-                out.insert(k.clone(), EntityViewV1::from_id(&db, *id));
-            }
-            rows.push(out);
-        }
-
+        let vars;
+        let truncated;
+        let elapsed_ms;
         let mut anchor_digest: Option<AxiDigest> = None;
+        let mut support_summary: Option<crate::evidence_support::EvidenceSupportSummaryV1> = None;
         let mut certificate: Option<serde_json::Value> = None;
         let mut certificate_verified: Option<bool> = None;
         let mut certificate_verify_output: Option<String> = None;
 
-        if want_cert {
-            let (digest, axi) = export_canonical_module_axi(&db)?;
-            anchor_digest = Some(digest.clone());
-            let cert = crate::axql::certify_axql_query_typed_with_meta(
-                &db,
-                &parsed,
-                meta.as_ref(),
-                digest.as_str(),
-            )?
-            .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
-            let cert_json = serde_json::to_value(&cert)?;
-            certificate = Some(cert_json);
-
-            if want_verify {
-                let cert_text = serde_json::to_string_pretty(&cert)?;
-                let (ok, out) = verify_certificate_with_lean(&state.config, &axi, &cert_text)?;
-                certificate_verified = Some(ok);
-                certificate_verify_output = Some(out);
+        if let Some(accepted_axi_anchor) = accepted_axi_anchor {
+            let validated = prepared
+                .bind_accepted_axi_anchor(accepted_axi_anchor.clone())
+                .execute_answer(&db, meta.as_ref())?;
+            elapsed_ms = start.elapsed().as_millis();
+            vars = validated.result().selected_vars.clone();
+            truncated = validated.result().truncated;
+            accepted_query_anchor = Some(validated.accepted_axi_anchor().clone());
+            for row in &validated.result().rows {
+                let mut out: BTreeMap<String, EntityViewV1> = BTreeMap::new();
+                for (k, id) in row {
+                    out.insert(k.clone(), EntityViewV1::from_id(&db, *id));
+                }
+                rows.push(out);
             }
+
+            if want_cert {
+                let certified = prepared
+                    .bind_accepted_axi_anchor(accepted_axi_anchor.clone())
+                    .certify_answer(validated, &db, meta.as_ref())?;
+                let digest = certified.anchor_digest().clone();
+                anchor_digest = Some(digest.clone());
+                let cert = certified
+                    .certificate()
+                    .clone()
+                    .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
+                let cert_json = serde_json::to_value(&cert)?;
+                certificate = Some(cert_json);
+
+                if want_verify {
+                    let axi = accepted_axi_text.as_deref().ok_or_else(|| {
+                        anyhow!(
+                            "accepted anchor bound query certificate is missing canonical `.axi` text"
+                        )
+                    })?;
+                    let cert_text = serde_json::to_string_pretty(&cert)?;
+                    let (ok, out) = verify_certificate_with_lean(&state.config, axi, &cert_text)?;
+                    certificate_verified = Some(ok);
+                    certificate_verify_output = Some(out);
+                }
+            }
+        } else {
+            let answer = prepared.execute_answer(&db, meta.as_ref())?;
+            elapsed_ms = start.elapsed().as_millis();
+            vars = answer.result().selected_vars.clone();
+            truncated = answer.result().truncated;
+            for row in &answer.result().rows {
+                let mut out: BTreeMap<String, EntityViewV1> = BTreeMap::new();
+                for (k, id) in row {
+                    out.insert(k.clone(), EntityViewV1::from_id(&db, *id));
+                }
+                rows.push(out);
+            }
+
+            if want_cert {
+                let (digest, axi) = export_canonical_module_axi(&db)?;
+                let certified_answer =
+                    prepared.certify_answer_with_anchor(answer, &db, meta.as_ref(), digest.clone())?;
+                anchor_digest = Some(certified_answer.anchor_digest().clone());
+                let cert = certified_answer
+                    .certificate()
+                    .clone()
+                    .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(digest));
+                let cert_json = serde_json::to_value(&cert)?;
+                certificate = Some(cert_json);
+
+                if want_verify {
+                    let cert_text = serde_json::to_string_pretty(&cert)?;
+                    let (ok, out) = verify_certificate_with_lean(&state.config, &axi, &cert_text)?;
+                    certificate_verified = Some(ok);
+                    certificate_verify_output = Some(out);
+                }
+            }
+        }
+
+        let query_trust = crate::trust_contract::query_trust_contract_with_meta(
+            &parsed,
+            &certifiability,
+            certificate.is_some(),
+            certificate_verified,
+            meta.as_ref(),
+        );
+
+        if let (Some(anchor), Some(cert_json)) = (accepted_query_anchor.clone(), certificate.as_ref()) {
+            let cert: axiograph_pathdb::certificate::CertificateV2 = serde_json::from_value(cert_json.clone())?;
+            support_summary = crate::evidence_support::evidence_support_summary_from_certificate(
+                &db,
+                anchor,
+                query_trust.clone(),
+                &cert,
+            );
         }
 
         Ok(QueryResponseV1 {
             vars,
             rows,
-            truncated: res.truncated,
+            truncated,
             elapsed_ms,
-            trust: crate::trust_contract::query_trust_contract_with_meta(
-                &parsed,
-                &certifiability,
-                certificate.is_some(),
-                certificate_verified,
-                meta.as_ref(),
-            ),
+            trust: query_trust,
             compiled_query_ir_v1,
             elaborated_query_ir_v1,
             elaborated_query,
@@ -1777,6 +1937,8 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
                 .as_ref()
                 .map(|e| e.exploration_suggestions.clone()),
             plan,
+            accepted_axi_anchor: accepted_query_anchor,
+            support_summary,
             anchor_digest,
             certificate,
             certificate_verified,
@@ -1967,6 +2129,8 @@ async fn handle_llm_agent(
             embeddings,
             snapshot_key,
             accepted_snapshot_id,
+            accepted_axi_anchor,
+            accepted_axi_text,
             pathdb_snapshot_id,
             snapshot_label,
         ) = if let Some(snapshot) = snapshot_override.as_deref() {
@@ -1982,6 +2146,8 @@ async fn handle_llm_agent(
                 loaded.embeddings,
                 loaded.snapshot_key,
                 loaded.accepted_snapshot_id,
+                loaded.accepted_axi_anchor,
+                loaded.accepted_axi_text,
                 loaded.pathdb_snapshot_id,
                 loaded.snapshot_label,
             )
@@ -1996,6 +2162,8 @@ async fn handle_llm_agent(
                 loaded.embeddings.clone(),
                 loaded.snapshot_key.clone(),
                 loaded.accepted_snapshot_id.clone(),
+                loaded.accepted_axi_anchor.clone(),
+                loaded.accepted_axi_text.clone(),
                 loaded.pathdb_snapshot_id.clone(),
                 loaded.snapshot_label.clone(),
             )
@@ -2082,6 +2250,8 @@ async fn handle_llm_agent(
             meta.as_ref(),
             &contexts,
             &snapshot_key,
+            accepted_snapshot_id.as_ref(),
+            accepted_axi_anchor.as_ref(),
             store_ctx.as_ref(),
             world_model_ctx.as_ref(),
             embeddings.as_deref(),
@@ -2095,7 +2265,17 @@ async fn handle_llm_agent(
         let mut query_certs: Option<Vec<serde_json::Value>> = None;
         if certify_queries {
             let want_verify = verify_queries;
-            let (digest, axi) = export_canonical_module_axi(&db)?;
+            let (digest, axi, accepted_query_anchor) = if let Some(anchor) = accepted_axi_anchor {
+                let axi = accepted_axi_text.ok_or_else(|| {
+                    anyhow!(
+                        "accepted anchor bound tool-loop query certification is missing canonical `.axi` text"
+                    )
+                })?;
+                (anchor.axi_digest.clone(), axi, Some(anchor))
+            } else {
+                let (digest, axi) = export_canonical_module_axi(&db)?;
+                (digest, axi, None)
+            };
 
             let mut out: Vec<serde_json::Value> = Vec::new();
             for (i, step) in outcome.steps.iter().enumerate() {
@@ -2140,6 +2320,7 @@ async fn handle_llm_agent(
                         out.push(serde_json::json!({
                             "step_index": i,
                             "query": q,
+                            "accepted_axi_anchor": accepted_query_anchor.clone(),
                             "certificate": cert_json,
                             "certificate_verified": verified,
                             "certificate_verify_output": verify_out,
@@ -3462,6 +3643,8 @@ struct PromoteResponseV1 {
     snapshot_id: AcceptedSnapshotId,
     #[serde(skip_serializing_if = "Option::is_none")]
     validation_report_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stored_report_path: Option<String>,
 }
 
 async fn handle_promote(state: &Arc<ServerState>, body: &[u8]) -> Result<PromoteResponseV1> {
@@ -3523,6 +3706,7 @@ async fn handle_promote(state: &Arc<ServerState>, body: &[u8]) -> Result<Promote
     Ok(PromoteResponseV1 {
         snapshot_id: result.snapshot_id,
         validation_report_path: result.validation_report_path,
+        stored_report_path: result.stored_report_path,
     })
 }
 
@@ -3968,6 +4152,8 @@ fn load_from_axpd(path: &Path, config: &ServerConfig) -> Result<LoadedSnapshot> 
         snapshot_key: snapshot_key.clone(),
         snapshot_label: format!("axpd:{} ({})", path.display(), snapshot_key),
         accepted_snapshot_id: None,
+        accepted_axi_anchor: None,
+        accepted_axi_text: None,
         pathdb_snapshot_id: None,
         loaded_at_unix_secs: now_unix_secs(),
         entities: db.entities.len(),
@@ -4003,6 +4189,15 @@ fn load_from_store(
             Some(snap),
         )
     };
+    let accepted_anchor_before_build =
+        if let Some(accepted_snapshot_id) = accepted_snapshot_id.as_ref() {
+            crate::accepted_plane::read_single_module_accepted_axi_anchor_and_text(
+                dir,
+                accepted_snapshot_id,
+            )?
+        } else {
+            None
+        };
 
     let tmp = write_temp_file("axpd", ""); // reserve a unique name
     let tmp = tmp?;
@@ -4019,6 +4214,25 @@ fn load_from_store(
 
     let bytes = std::fs::read(&tmp)?;
     let _ = std::fs::remove_file(&tmp);
+    let accepted_anchor_after_build =
+        if let Some(accepted_snapshot_id) = accepted_snapshot_id.as_ref() {
+            crate::accepted_plane::read_single_module_accepted_axi_anchor_and_text(
+                dir,
+                accepted_snapshot_id,
+            )?
+        } else {
+            None
+        };
+    if accepted_anchor_before_build != accepted_anchor_after_build {
+        return Err(anyhow!(
+            "accepted snapshot anchor changed while rebuilding store-backed runtime; refusing to bind accepted anchor"
+        ));
+    }
+    let (accepted_axi_anchor, accepted_axi_text) = match accepted_anchor_after_build {
+        Some((anchor, text)) => (Some(anchor), Some(text)),
+        None => (None, None),
+    };
+
     let snapshot_key = if layer == "pathdb" {
         pathdb_snapshot_id
             .as_ref()
@@ -4089,6 +4303,8 @@ fn load_from_store(
             snapshot_key
         ),
         accepted_snapshot_id,
+        accepted_axi_anchor,
+        accepted_axi_text,
         pathdb_snapshot_id,
         loaded_at_unix_secs: now_unix_secs(),
         entities: db.entities.len(),
@@ -4096,6 +4312,81 @@ fn load_from_store(
         db,
         meta,
         embeddings,
+    })
+}
+
+#[derive(Clone)]
+pub(crate) struct ReadOnlySemanticRuntime {
+    #[allow(dead_code)]
+    pub snapshot_key: String,
+    pub accepted_snapshot_id: Option<AcceptedSnapshotId>,
+    pub accepted_axi_anchor: Option<AcceptedAxiAnchor>,
+    pub db: Arc<PathDB>,
+    pub meta: Option<MetaPlaneIndex>,
+}
+
+pub(crate) fn load_read_only_semantic_runtime(
+    axpd: Option<&Path>,
+    dir: Option<&Path>,
+    layer: &str,
+    snapshot: &str,
+) -> Result<ReadOnlySemanticRuntime> {
+    let source = match (axpd, dir) {
+        (Some(_), Some(_)) => {
+            return Err(anyhow!(
+                "choose exactly one snapshot source: either `--axpd` or `--dir`"
+            ))
+        }
+        (Some(path), None) => SnapshotSource::Axpd(path.to_path_buf()),
+        (None, Some(store_dir)) => SnapshotSource::Store {
+            dir: store_dir.to_path_buf(),
+            layer: layer.to_string(),
+            snapshot: snapshot.to_string(),
+        },
+        (None, None) => {
+            return Err(anyhow!(
+            "missing snapshot source: pass either `--axpd <file>` or `--dir <accepted_plane_dir>`"
+        ))
+        }
+    };
+
+    let config = ServerConfig {
+        listen: "127.0.0.1:0"
+            .parse()
+            .expect("static loopback listen address should parse"),
+        role: ServerRole::Standalone,
+        source: source.clone(),
+        watch_head: false,
+        poll_interval: Duration::from_secs(0),
+        admin_token: None,
+        ready_file: None,
+        cert_verify: CertVerifyConfig {
+            verifier_bin: None,
+            timeout: None,
+        },
+        llm: LlmState::default(),
+        world_model: WorldModelState::default(),
+        world_model_workers: 0,
+        path_index_lru_capacity: 0,
+        path_index_lru_async: false,
+        path_index_lru_queue: 1024,
+    };
+
+    let loaded = match source {
+        SnapshotSource::Axpd(path) => load_from_axpd(&path, &config)?,
+        SnapshotSource::Store {
+            dir,
+            layer,
+            snapshot,
+        } => load_from_store(&dir, &layer, &snapshot, &config)?,
+    };
+
+    Ok(ReadOnlySemanticRuntime {
+        snapshot_key: loaded.snapshot_key,
+        accepted_snapshot_id: loaded.accepted_snapshot_id,
+        accepted_axi_anchor: loaded.accepted_axi_anchor,
+        db: loaded.db,
+        meta: loaded.meta,
     })
 }
 
@@ -4109,10 +4400,15 @@ mod tests {
         let promote = PromoteResponseV1 {
             snapshot_id: AcceptedSnapshotId::new("accepted:42"),
             validation_report_path: Some("sem/validations/demo.json".to_string()),
+            stored_report_path: Some("sem/validations/demo.json".to_string()),
         };
         assert_eq!(
             serde_json::to_value(&promote).expect("serialize promote response"),
-            json!({ "snapshot_id": "accepted:42", "validation_report_path": "sem/validations/demo.json" })
+            json!({
+                "snapshot_id": "accepted:42",
+                "validation_report_path": "sem/validations/demo.json",
+                "stored_report_path": "sem/validations/demo.json"
+            })
         );
 
         let commit = PathdbCommitResponseV1 {
@@ -4128,6 +4424,63 @@ mod tests {
                 "ops_added": 3
             })
         );
+    }
+
+    #[test]
+    fn capabilities_payload_exposes_typed_service_manifest() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory Rules on S:
+  constraint key Parent(child, parent)
+
+instance Tiny of S:
+  Person = {Alice, Bob}
+  Parent = {
+    (child=Alice, parent=Bob)
+  }
+"#,
+        );
+
+        let payload = capabilities_payload(state.as_ref()).expect("capabilities payload");
+        assert_eq!(payload["version"], json!("axiograph_capabilities_v1"));
+        assert_eq!(payload["query"]["machine_contract"], json!("query_ir_v1"));
+        assert!(payload["semantic_services"]
+            .as_array()
+            .is_some_and(|services| services.iter().any(|service| {
+                service["name"] == json!("semantic_agent_report")
+                    && service["endpoint"] == json!("/semantic/agent-report")
+            })));
+        assert!(payload["tool_loop"]["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == json!("axql_run"))));
+    }
+
+    #[test]
+    fn capabilities_payload_hides_promotion_when_not_store_backed() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+
+instance Tiny of S:
+  Person = {Alice}
+"#,
+        );
+
+        let payload = capabilities_payload(state.as_ref()).expect("capabilities payload");
+        assert!(payload["semantic_services"]
+            .as_array()
+            .is_some_and(|services| services
+                .iter()
+                .all(|service| { service["name"] != json!("promote_reviewed_module") })));
     }
 
     #[test]
@@ -4160,14 +4513,71 @@ mod tests {
             typed_holes: None,
             exploration_suggestions: None,
             plan: None,
+            accepted_axi_anchor: Some(AcceptedAxiAnchor::new(
+                AcceptedSnapshotId::new("accepted:42"),
+                AxiDigest::new("fnv1a64:abc"),
+            )),
+            support_summary: Some(crate::evidence_support::EvidenceSupportSummaryV1 {
+                version: crate::evidence_support::EVIDENCE_SUPPORT_SUMMARY_VERSION_V1.to_string(),
+                accepted_axi_anchor: AcceptedAxiAnchor::new(
+                    AcceptedSnapshotId::new("accepted:42"),
+                    AxiDigest::new("fnv1a64:abc"),
+                ),
+                trust: crate::trust_contract::TrustContractV1 {
+                    trust_class: "certifiable".to_string(),
+                    soundness: "certificate_available_but_not_emitted".to_string(),
+                    coverage: "full_query".to_string(),
+                    scope: crate::trust_contract::TrustScopeV1 {
+                        anchor: "snapshot_scoped".to_string(),
+                        context: "single_context".to_string(),
+                    },
+                    reasons: Vec::new(),
+                    certifiable_disjuncts: None,
+                    execution_only_disjuncts: None,
+                    semantic_coverage: None,
+                    semantic_claims: Vec::new(),
+                    gaps: Vec::new(),
+                },
+                supported_facts: vec![crate::evidence_support::FactSupportRefV1 {
+                    axi_fact_id: "factfnv1a64:abc".to_string(),
+                    fact_entity_id: Some(17),
+                    relation_name: Some("Fam.Parent".to_string()),
+                    contexts: vec![crate::evidence_support::SupportEntityRefV1 {
+                        entity_id: 30,
+                        entity_type: "Context".to_string(),
+                        name: Some("CensusData".to_string()),
+                        chunk_id: None,
+                    }],
+                    evidence: Vec::new(),
+                    unresolved_chunk_ids: Vec::new(),
+                    notes: Vec::new(),
+                }],
+                notes: vec!["runtime-only support summary".to_string()],
+            }),
             anchor_digest: Some(AxiDigest::new("fnv1a64:abc")),
             certificate: None,
             certificate_verified: None,
             certificate_verify_output: None,
         };
+        let query_json = serde_json::to_value(&query).expect("serialize query response");
+        assert_eq!(query_json["anchor_digest"], json!("fnv1a64:abc"));
         assert_eq!(
-            serde_json::to_value(&query).expect("serialize query response")["anchor_digest"],
-            json!("fnv1a64:abc")
+            query_json["accepted_axi_anchor"],
+            json!({
+                "accepted_snapshot_id": "accepted:42",
+                "axi_digest": "fnv1a64:abc"
+            })
+        );
+        assert_eq!(
+            query_json["support_summary"]["accepted_axi_anchor"],
+            json!({
+                "accepted_snapshot_id": "accepted:42",
+                "axi_digest": "fnv1a64:abc"
+            })
+        );
+        assert_eq!(
+            query_json["support_summary"]["supported_facts"][0]["axi_fact_id"],
+            json!("factfnv1a64:abc")
         );
 
         let cert = CertResponseV1 {
@@ -4321,6 +4731,66 @@ mod tests {
                 snapshot_key: "test-snapshot".to_string(),
                 snapshot_label: "test snapshot".to_string(),
                 accepted_snapshot_id: None,
+                accepted_axi_anchor: None,
+                accepted_axi_text: None,
+                pathdb_snapshot_id: None,
+                loaded_at_unix_secs: 0,
+                entities: db.entities.len(),
+                relations: db.relations.len(),
+                db,
+                meta,
+                embeddings: None,
+            }),
+            query_cache: Mutex::new(QueryPlanCache::default()),
+            world_model_executor: WorldModelExecutor::new(1),
+        })
+    }
+
+    fn test_server_state_with_store_backed_axi(axi_text: &str) -> Arc<ServerState> {
+        let mut db = PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi_text)
+            .expect("import canonical axi text into pathdb");
+        db.build_indexes();
+        let db = Arc::new(db);
+        let meta = MetaPlaneIndex::from_db(&db).ok();
+        let digest = AxiDigest::from_axi_text(axi_text);
+
+        Arc::new(ServerState {
+            config: ServerConfig {
+                listen: "127.0.0.1:0".parse().expect("socket addr"),
+                role: ServerRole::Standalone,
+                source: SnapshotSource::Store {
+                    dir: PathBuf::from("test-store"),
+                    layer: "accepted".to_string(),
+                    snapshot: "head".to_string(),
+                },
+                watch_head: false,
+                poll_interval: Duration::from_secs(60),
+                admin_token: None,
+                ready_file: None,
+                cert_verify: CertVerifyConfig {
+                    verifier_bin: None,
+                    timeout: None,
+                },
+                llm: LlmState::default(),
+                world_model: WorldModelState {
+                    backend: WorldModelBackend::Disabled,
+                    model: None,
+                },
+                world_model_workers: 1,
+                path_index_lru_capacity: 1024,
+                path_index_lru_async: false,
+                path_index_lru_queue: 128,
+            },
+            loaded: RwLock::new(LoadedSnapshot {
+                snapshot_key: "test-store-backed-snapshot".to_string(),
+                snapshot_label: "test store snapshot".to_string(),
+                accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:test")),
+                accepted_axi_anchor: Some(AcceptedAxiAnchor::new(
+                    AcceptedSnapshotId::new("accepted:test"),
+                    digest.clone(),
+                )),
+                accepted_axi_text: Some(axi_text.to_string()),
                 pathdb_snapshot_id: None,
                 loaded_at_unix_secs: 0,
                 entities: db.entities.len(),
@@ -4380,6 +4850,116 @@ instance I of S:
         );
         assert_eq!(resp.trust.scope.anchor, "snapshot_scoped");
         assert_eq!(resp.trust.scope.context, "unscoped");
+    }
+
+    #[tokio::test]
+    async fn handle_query_store_backed_certified_response_includes_support_summary() {
+        let state = test_server_state_with_store_backed_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person) @context Context
+
+instance I of S:
+  Person = {Alice, Bob}
+  Context = {CensusData}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=CensusData)
+  }
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    {
+                        "kind": "fact",
+                        "fact": "?f",
+                        "relation": "S.Parent",
+                        "fields": {
+                            "child": "Alice",
+                            "parent": "?p",
+                            "ctx": "CensusData"
+                        }
+                    }
+                ],
+                "limit": 10
+            },
+            "certify": true
+        }))
+        .expect("serialize query request");
+
+        let resp = handle_query(&state, &body)
+            .await
+            .expect("store-backed certified query should execute");
+
+        let support = resp
+            .support_summary
+            .as_ref()
+            .expect("support summary should be present for anchored certified queries");
+        assert_eq!(
+            support.accepted_axi_anchor.accepted_snapshot_id.as_str(),
+            "accepted:test"
+        );
+        assert!(!support.supported_facts.is_empty());
+        assert!(support.supported_facts.iter().any(|fact| {
+            fact.contexts
+                .iter()
+                .any(|ctx| ctx.name.as_deref() == Some("CensusData"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn handle_query_uses_default_contexts_in_compiled_query_ir() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object A
+  object Context
+  relation Parent(child: A, parent: A) @context Context
+
+instance I of S:
+  A = {x, y}
+  Context = {FamilyTree}
+  Parent = {
+    (child=x, parent=y, ctx=FamilyTree)
+  }
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?x"],
+                "where": [
+                    { "kind": "type", "term": "?x", "type": "A" }
+                ],
+                "limit": 10
+            },
+            "contexts": ["FamilyTree"],
+            "show_elaboration": true
+        }))
+        .expect("serialize query request");
+
+        let resp = handle_query(&state, &body)
+            .await
+            .expect("query with default contexts should execute");
+
+        assert_eq!(
+            resp.compiled_query_ir_v1
+                .as_ref()
+                .map(|ir| ir.contexts.len()),
+            Some(1)
+        );
     }
 
     #[tokio::test]
@@ -4515,6 +5095,16 @@ instance I of S:
         assert_eq!(
             resp["typed_authoring"]["axi_well_typed_proof_v1"]["module_name"].as_str(),
             Some("DraftFamily")
+        );
+        assert_eq!(
+            resp["typed_authoring"]["kernel_module_ir"]["instances"][0]["instance_id"].as_str(),
+            Some("instance:DraftFam:DraftFamilyInst")
+        );
+        assert_eq!(
+            resp["typed_authoring"]["kernel_module_ir"]["instances"][0]["relation_facts"]
+                .as_array()
+                .map(|facts| facts.len()),
+            Some(1)
         );
         assert_eq!(
             resp["exploration_preview"]["kind"].as_str(),
@@ -4784,7 +5374,6 @@ instance I of S:
                 "kind": "endpoint",
                 "label": "GET /parent",
                 "scopes": [{
-                    "scope_id": "schema/s/relation/parent",
                     "schema": "S",
                     "scope_class": "relation",
                     "relation": "Parent"
@@ -4814,6 +5403,10 @@ instance I of S:
         assert_eq!(resp["coverage"]["total_rules"].as_u64(), Some(1));
         assert_eq!(resp["coverage"]["tested_rules"].as_u64(), Some(1));
         assert_eq!(resp["coverage"]["covered_rules"].as_u64(), Some(1));
+        assert_eq!(
+            resp["coverage"]["surface_reports"][0]["surface"]["scopes"][0]["scope_id"].as_str(),
+            Some("schema/s/relation/parent")
+        );
     }
 
     #[tokio::test]
@@ -4898,7 +5491,6 @@ instance I of S:
                 "kind": "endpoint",
                 "label": "GET /family/tree",
                 "scopes": [{
-                    "scope_id": "schema/s/relation/parent",
                     "schema": "S",
                     "scope_class": "relation",
                     "relation": "Parent"
@@ -4936,6 +5528,10 @@ instance I of S:
         assert_eq!(
             resp["report"]["coverage"]["implemented_rules"].as_u64(),
             Some(1)
+        );
+        assert_eq!(
+            resp["report"]["matched_scope_ids"][0].as_str(),
+            Some("schema/s/relation/parent")
         );
         assert!(resp["report"]["matched_rule_ids"]
             .as_array()

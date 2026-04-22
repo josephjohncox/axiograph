@@ -2,7 +2,10 @@ use axiograph_dsl::axi_v1::parse_axi_v1;
 use axiograph_pathdb::axi_module_typecheck::{
     review_axi_v1_module, validate_axi_v1_module, Module, ReviewStamp,
 };
-use axiograph_pathdb::{Reviewed, Validated};
+use axiograph_pathdb::{
+    Reviewed, RuntimeTheoryObligationFragmentStatusV1, RuntimeTheoryObligationTrustClassV1,
+    TheoryObligationRefIr, Validated, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
+};
 
 #[test]
 fn typecheck_accepts_minimal_well_typed_module() {
@@ -387,6 +390,51 @@ theory T on S:
         theory.rewrite_rules[0].relation_refs,
         vec!["Parent".to_string()]
     );
+}
+
+#[test]
+fn validated_module_exposes_runtime_theory_fragment_summary() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory T on S:
+  constraint key Parent(child, parent)
+  equation opaque_business_rule:
+    ParentCompose(a,b,c) = c
+  rewrite normalize_parent:
+    vars: x: Person, y: Person
+    lhs: step(x, Parent, y)
+    rhs: step(x, Parent, y)
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    let typed: Module<Validated> = validate_axi_v1_module(module).expect("typecheck");
+    let summary = typed
+        .runtime_theory_fragment_summary("S", "T")
+        .expect("runtime fragment summary")
+        .expect("theory present");
+
+    assert_eq!(summary.version, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1);
+    assert_eq!(summary.total_obligations, 3);
+    assert_eq!(summary.runtime_checked_obligations, 2);
+    assert_eq!(summary.opaque_or_out_of_fragment_obligations, 1);
+    assert!(summary.obligation_statuses.iter().any(|status| {
+        matches!(
+            status.obligation_ref,
+            TheoryObligationRefIr::OpaqueEquation { ref name, .. }
+                if name == "opaque_business_rule"
+        ) && status.fragment_status
+            == RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment
+            && status.trust_class == RuntimeTheoryObligationTrustClassV1::ReviewOnly
+    }));
+    assert!(summary
+        .notes
+        .iter()
+        .any(|note| note.contains("Rust runtime artifact")));
 }
 
 #[test]

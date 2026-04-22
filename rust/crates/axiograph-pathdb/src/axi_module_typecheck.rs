@@ -30,7 +30,7 @@ use axiograph_dsl::schema_v1::{
 use crate::certificate::AxiWellTypedProofV1;
 use crate::kernel_ir::{
     classify_role, compile_relation_semantics, compile_theory_ir, CompiledSchemaIr,
-    RelationSemanticsIr, RoleIr, TheoryIr,
+    RelationSemanticsIr, RoleIr, RuntimeTheoryFragmentSummaryV1, TheoryIr,
 };
 use crate::lifecycle::{LifecycleState, Reviewed, Validated};
 
@@ -134,6 +134,16 @@ impl<S: WellTypedModuleState> Module<S> {
             return Ok(None);
         };
         Ok(Some(typecheck_theory(theory, &schema_indexes)?))
+    }
+
+    pub fn runtime_theory_fragment_summary(
+        &self,
+        schema_name: &str,
+        theory_name: &str,
+    ) -> Result<Option<RuntimeTheoryFragmentSummaryV1>> {
+        Ok(self
+            .compiled_theory_ir(schema_name, theory_name)?
+            .map(|theory| theory.runtime_fragment_summary()))
     }
 }
 

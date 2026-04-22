@@ -1,4 +1,4 @@
-# Type Theory Demos: Paths, Homotopies, Queries, and Certificates
+# Type Theory Demos: Paths, Witnesses, Queries, and Certificates
 
 **Diataxis:** Tutorial  
 **Audience:** users (and contributors)
@@ -21,7 +21,7 @@ At runtime, PathDB is “just a graph”, but the design treats:
 - **entities** as *points*,
 - **relations** as *generating arrows*,
 - **paths** as *composites*,
-- and **homotopies** as *explicit witnesses that two derivations are equivalent*.
+- and **equivalence witnesses** as explicit artifacts that tie alternative derivations together.
 
 This is the core HoTT/groupoid intuition: “paths between paths” are first-class.
 
@@ -36,7 +36,7 @@ not just *that* it does.
 
 ## 1) Proof-irrelevant exploration (REPL)
 
-The quickest way to see the “paths + homotopies” structure is to use scenario generators.
+The quickest way to see the “paths + witness” structure is to use scenario generators.
 
 Run a scenario script:
 
@@ -46,7 +46,7 @@ cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/enterprise_
 ```
 
 Or import a canonical module that contains explicit schema morphisms / equivalences
-(and visualize the resulting `Morphism` / `Homotopy` witness nodes):
+(and visualize the resulting witness nodes):
 
 ```bash
 cd rust
@@ -60,13 +60,8 @@ Try the proof-relevant-shaped queries inside the script (also runnable manually)
 q select ?svc where name("doc_0_0") -mentionsService-> ?svc limit 10
 q select ?svc where name("doc_0_0") -mentionsEndpoint/belongsTo-> ?svc max_hops 4 limit 10
 
-# A Homotopy object ties those derivations together:
-q select ?h ?lhs ?rhs where
-  ?h is Homotopy,
-  ?h -from-> name("doc_0_0"),
-  ?h -lhs-> ?lhs,
-  ?h -rhs-> ?rhs
-limit 10
+# Inspect the alternative path witnesses directly:
+q select ?p where ?p is PathWitness, ?p -from-> name("doc_0_0") limit 10
 ```
 
 In this mode you get answers fast; you *don’t* get a machine-checkable witness.
@@ -150,7 +145,7 @@ The `proto_api` scenario demonstrates this:
 
 - `workflow_suggests_order` (heuristic)
 - `observed_next` (another signal)
-- `Homotopy` between the two “order derivations”
+- explicit path witnesses for the two “order derivations"
 
 Run:
 
@@ -164,7 +159,7 @@ Then inspect:
 ```text
 q select ?next where name("acme.svc0.v1.Service0.CreateWidget") -workflow_suggests_order-> ?next limit 10
 q select ?next where name("acme.svc0.v1.Service0.CreateWidget") -observed_next-> ?next limit 10
-q select ?lhs ?rhs where name("homotopy_CreateWidget_to_GetWidget_0") -lhs-> ?lhs, name("homotopy_CreateWidget_to_GetWidget_0") -rhs-> ?rhs limit 10
+q select ?p where ?p is PathWitness, ?p -from-> name("acme.svc0.v1.Service0.CreateWidget") limit 10
 ```
 
 Key point: a certificate proves **derivability from inputs**, not truth of inputs.

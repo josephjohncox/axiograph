@@ -64,12 +64,9 @@ instance Demo of S:
   Spouse = {(a=Alice, b=Bob, ctx=C0)}
 "#;
 
-    let module = validated_module(text);
-    let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
-    assert!(
-        err.to_string().contains("duplicate param field"),
-        "err={err}"
-    );
+    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let err = validate_axi_v1_module(module).expect_err("should fail during typecheck");
+    assert!(err.to_string().contains("repeats field `ctx`"), "err={err}");
 }
 
 #[test]
@@ -114,13 +111,9 @@ instance Demo of S:
   Spouse = {(a=Alice, b=Bob)}
 "#;
 
-    let module = validated_module(text);
-    let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
-    assert!(
-        err.to_string().contains("param field `ctx`")
-            && err.to_string().contains("not a declared field"),
-        "err={err}"
-    );
+    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let err = validate_axi_v1_module(module).expect_err("should fail during typecheck");
+    assert!(err.to_string().contains("has no field `ctx`"), "err={err}");
 }
 
 #[test]
@@ -202,12 +195,9 @@ instance Demo of S:
   Accessible = {(from=A, to=B, ctx=C0)}
 "#;
 
-    let module = validated_module(text);
-    let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
-    assert!(
-        err.to_string().contains("duplicate param field"),
-        "err={err}"
-    );
+    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let err = validate_axi_v1_module(module).expect_err("should fail during typecheck");
+    assert!(err.to_string().contains("repeats field `ctx`"), "err={err}");
 }
 
 #[test]
@@ -252,13 +242,9 @@ instance Demo of S:
   Accessible = {(from=A, to=B)}
 "#;
 
-    let module = validated_module(text);
-    let err = check_axi_constraints_ok_v1(&module).expect_err("should fail");
-    assert!(
-        err.to_string().contains("param field `ctx`")
-            && err.to_string().contains("not a declared field"),
-        "err={err}"
-    );
+    let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
+    let err = validate_axi_v1_module(module).expect_err("should fail during typecheck");
+    assert!(err.to_string().contains("has no field `ctx`"), "err={err}");
 }
 
 #[test]

@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+use axiograph_pathdb::MigrationFunctorKindV1;
+
 pub const RUNTIME_REFINEMENT_HANDLE_V1_VERSION: u32 = 1;
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -164,15 +166,33 @@ fn theory_handles_for_candidate(
     (obligation, subjects)
 }
 
+fn primary_theory_subject_ref(
+    theory_subject_refs: &[axiograph_pathdb::kernel_ir::TheorySubjectRefIr],
+) -> Option<axiograph_pathdb::kernel_ir::TheorySubjectRefIr> {
+    theory_subject_refs
+        .iter()
+        .find(|subject| {
+            !matches!(
+                subject,
+                axiograph_pathdb::kernel_ir::TheorySubjectRefIr::Theory { .. }
+            )
+        })
+        .or_else(|| theory_subject_refs.first())
+        .cloned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MigrationRefinementOpV1 {
     AddressTransportObligation {
+        operator: MigrationFunctorKindV1,
         obligation_id: String,
         obligation_kind: String,
         subject_ref: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theory_obligation_ref: Option<axiograph_pathdb::kernel_ir::TheoryObligationRefIr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theory_subject_ref: Option<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         theory_subject_refs: Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
     },
@@ -185,7 +205,9 @@ impl MigrationRefinementOpV1 {
                 obligation_id,
                 obligation_kind,
                 subject_ref,
+                operator,
                 theory_obligation_ref,
+                theory_subject_ref,
                 theory_subject_refs,
             } => {
                 let typed_subject = theory_obligation_ref
@@ -215,7 +237,20 @@ impl MigrationRefinementOpV1 {
                     )
                 };
                 format!(
-                    "address transport obligation {obligation_id} ({obligation_kind}) for {subject_ref}{typed_subject}{typed_targets}"
+                    "address {} obligation {obligation_id} ({obligation_kind}) for {}{typed_subject}{typed_targets}",
+                    match operator {
+                        MigrationFunctorKindV1::DeltaF => "delta_f",
+                        MigrationFunctorKindV1::SigmaF => "sigma_f",
+                        MigrationFunctorKindV1::PiF => "pi_f",
+                    },
+                    theory_subject_ref
+                        .as_ref()
+                        .map(|subject| format!(
+                            "{}:{}",
+                            theory_subject_kind_label(subject.subject_kind()),
+                            subject.stable_id()
+                        ))
+                        .unwrap_or_else(|| subject_ref.clone())
                 )
             }
         }
@@ -236,6 +271,8 @@ pub enum ReconciliationRefinementOpV1 {
         resolution: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         theory_obligation_ref: Option<axiograph_pathdb::kernel_ir::TheoryObligationRefIr>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        theory_subject_ref: Option<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         theory_subject_refs: Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
     },
@@ -249,6 +286,7 @@ impl ReconciliationRefinementOpV1 {
                 artifact_id,
                 resolution,
                 theory_obligation_ref,
+                theory_subject_ref,
                 theory_subject_refs,
                 ..
             } => {
@@ -279,7 +317,11 @@ impl ReconciliationRefinementOpV1 {
                     )
                 };
                 format!(
-                    "resolve {artifact_kind} `{artifact_id}` via `{resolution}`{typed_obligation}{typed_subjects}"
+                    "resolve {artifact_kind} `{}` via `{resolution}`{typed_obligation}{typed_subjects}",
+                    theory_subject_ref
+                        .as_ref()
+                        .map(|subject| subject.display_name())
+                        .unwrap_or_else(|| artifact_id.clone())
                 )
             }
         }
@@ -570,7 +612,7 @@ impl RuntimeRefinementCandidateV1 {
             enriched.role.as_deref(),
         );
         enriched.theory_obligation_ref = theory_obligation_ref;
-        enriched.theory_subject_ref = theory_subject_refs.first().cloned();
+        enriched.theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
         enriched.theory_subject_refs = theory_subject_refs;
         enriched
     }
@@ -615,7 +657,7 @@ impl RuntimeRefinementCandidateV1 {
     ) -> Self {
         let handle = RuntimeRefinementHandleV1::new_migration(op);
         let preview_fragment = handle.preview_fragment();
-        let theory_subject_ref = theory_subject_refs.first().cloned();
+        let theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
         Self {
             kind: RuntimeRefinementCandidateKindV1::AddressTransportObligation,
             summary,
@@ -646,7 +688,7 @@ impl RuntimeRefinementCandidateV1 {
     ) -> Self {
         let handle = RuntimeRefinementHandleV1::new_reconciliation(op);
         let preview_fragment = handle.preview_fragment();
-        let theory_subject_ref = theory_subject_refs.first().cloned();
+        let theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
         Self {
             kind: RuntimeRefinementCandidateKindV1::ResolveConflict,
             summary,
@@ -665,71 +707,6 @@ impl RuntimeRefinementCandidateV1 {
             theory_subject_refs,
             theory_subject_ref,
         }
-    }
-
-    pub fn wrap_axql_for_competency_question(
-        question_name: impl Into<String>,
-        candidate: crate::axql::AxqlRefinementCandidateV1,
-    ) -> Self {
-        let question_name = question_name.into();
-        let handle = RuntimeRefinementHandleV1::new_competency_question_repair(
-            question_name.clone(),
-            candidate.handle,
-        );
-        Self {
-            kind: match candidate.kind {
-                crate::axql::AxqlRefinementCandidateKindV1::AddTypeGuard => {
-                    RuntimeRefinementCandidateKindV1::AddTypeGuard
-                }
-                crate::axql::AxqlRefinementCandidateKindV1::ExtendOutgoingPath => {
-                    RuntimeRefinementCandidateKindV1::ExtendOutgoingPath
-                }
-                crate::axql::AxqlRefinementCandidateKindV1::ExtendIncomingPath => {
-                    RuntimeRefinementCandidateKindV1::ExtendIncomingPath
-                }
-                crate::axql::AxqlRefinementCandidateKindV1::BindFactRelation => {
-                    RuntimeRefinementCandidateKindV1::BindFactRelation
-                }
-            },
-            summary: format!(
-                "repair competency question `{}`: {}",
-                question_name, candidate.summary
-            ),
-            preview_fragment: handle.preview_fragment(),
-            handle,
-            relation: candidate.relation,
-            schema: candidate.schema,
-            role: candidate.role,
-            target_type: candidate.target_type,
-            target_box: None,
-            question_name: Some(question_name),
-            obligation_id: None,
-            artifact_id: None,
-            resolution: None,
-            theory_obligation_ref: None,
-            theory_subject_refs: Vec::new(),
-            theory_subject_ref: None,
-        }
-    }
-
-    pub fn wrap_axql_for_competency_question_with_theory(
-        question_name: impl Into<String>,
-        candidate: crate::axql::AxqlRefinementCandidateV1,
-        compiled_schema: &axiograph_pathdb::kernel_ir::CompiledSchemaIr,
-        theories: &[axiograph_pathdb::kernel_ir::TheoryIr],
-    ) -> Self {
-        let question_name = question_name.into();
-        let mut enriched = Self::wrap_axql_for_competency_question(question_name, candidate);
-        let (theory_obligation_ref, theory_subject_refs) = theory_handles_for_candidate(
-            compiled_schema,
-            theories,
-            enriched.relation.as_deref(),
-            enriched.role.as_deref(),
-        );
-        enriched.theory_obligation_ref = theory_obligation_ref;
-        enriched.theory_subject_ref = theory_subject_refs.first().cloned();
-        enriched.theory_subject_refs = theory_subject_refs;
-        enriched
     }
 }
 

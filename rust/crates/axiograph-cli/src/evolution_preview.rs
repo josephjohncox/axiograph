@@ -8,7 +8,7 @@ use axiograph_pathdb::{
         CompiledSchemaIr, RelationSemanticsIr, RoleKind, TheoryIr, TheoryObligationKindIr,
         TheoryObligationRefIr, TheorySubjectRefIr, WitnessViewIr,
     },
-    migration::{SchemaMorphismV1, SchemaV1},
+    migration::{MigrationFunctorKindV1, SchemaMorphismV1, SchemaV1},
     AcceptedSnapshotId, AxiDigest, ProposalDigest,
 };
 
@@ -46,6 +46,7 @@ pub enum EvolutionPrimitiveV1 {
         rationale: Option<String>,
     },
     TransportAlongSchemaMorphism {
+        operator: MigrationFunctorKindV1,
         morphism_id: String,
         source_schema: String,
         target_schema: String,
@@ -204,6 +205,7 @@ impl EvolutionPrimitiveV1 {
     }
 
     pub fn transport_along_schema_morphism(
+        operator: MigrationFunctorKindV1,
         morphism_id: impl Into<String>,
         source_schema: impl Into<String>,
         target_schema: impl Into<String>,
@@ -211,6 +213,7 @@ impl EvolutionPrimitiveV1 {
         arrow_mappings: usize,
     ) -> Self {
         Self::TransportAlongSchemaMorphism {
+            operator,
             morphism_id: morphism_id.into(),
             source_schema: source_schema.into(),
             target_schema: target_schema.into(),
@@ -432,7 +435,7 @@ pub struct EvolutionSemanticDeltaV1 {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct TrustDeltaQuestionV1 {
     pub name: String,
     pub before_trust_class: String,
@@ -633,7 +636,7 @@ pub struct EvolutionCoverageSummaryV1 {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct TrustDeltaV1 {
     pub preview_trust_class: String,
     pub preview_soundness: String,
@@ -655,7 +658,7 @@ pub struct TrustDeltaV1 {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EvolutionPreviewV1 {
     pub version: String,
     pub kind: String,
@@ -687,11 +690,14 @@ pub struct EvolutionPreviewV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct MigrationTransportObligationV1 {
+    pub operator: MigrationFunctorKindV1,
     pub obligation_id: String,
     pub obligation_kind: String,
     pub subject_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theory_obligation_ref: Option<TheoryObligationRefIr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theory_subject_ref: Option<TheorySubjectRefIr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub theory_subject_refs: Vec<TheorySubjectRefIr>,
     pub detail: String,
@@ -1321,10 +1327,12 @@ fn migration_refinement_candidates(
             crate::typed_refinement::RuntimeRefinementCandidateV1::new_migration(
                 summary,
                 crate::typed_refinement::MigrationRefinementOpV1::AddressTransportObligation {
+                    operator: obligation.operator.clone(),
                     obligation_id: obligation.obligation_id.clone(),
                     obligation_kind: obligation.obligation_kind.clone(),
                     subject_ref: obligation.subject_ref.clone(),
                     theory_obligation_ref: obligation.theory_obligation_ref.clone(),
+                    theory_subject_ref: obligation.theory_subject_ref.clone(),
                     theory_subject_refs: obligation.theory_subject_refs.clone(),
                 },
                 obligation.obligation_id.clone(),
@@ -1350,10 +1358,12 @@ pub fn apply_runtime_refinement_handle_to_migration_transport_obligations(
         ));
     };
     let crate::typed_refinement::MigrationRefinementOpV1::AddressTransportObligation {
+        operator,
         obligation_id,
         obligation_kind,
         subject_ref,
         theory_obligation_ref,
+        theory_subject_ref,
         theory_subject_refs,
     } = op;
 
@@ -1384,6 +1394,15 @@ pub fn apply_runtime_refinement_handle_to_migration_transport_obligations(
             existing.obligation_kind
         ));
     }
+    if existing.operator != *operator {
+        return Err(anyhow!(
+            "migration refinement handle `{}` expects operator `{:?}` but current obligation `{}` has operator `{:?}`",
+            handle.id,
+            operator,
+            obligation_id,
+            existing.operator
+        ));
+    }
     if existing.subject_ref != *subject_ref {
         return Err(anyhow!(
             "migration refinement handle `{}` expects subject `{}` but current obligation `{}` targets `{}`",
@@ -1391,6 +1410,13 @@ pub fn apply_runtime_refinement_handle_to_migration_transport_obligations(
             subject_ref,
             obligation_id,
             existing.subject_ref
+        ));
+    }
+    if existing.theory_subject_ref != *theory_subject_ref {
+        return Err(anyhow!(
+            "migration refinement handle `{}` carries a mismatched primary theory subject for `{}`",
+            handle.id,
+            obligation_id
         ));
     }
     if existing.theory_obligation_ref != *theory_obligation_ref {
@@ -1564,41 +1590,33 @@ fn typed_subject_refs_for_relation(
     refs
 }
 
+fn primary_theory_subject_ref(subject_refs: &[TheorySubjectRefIr]) -> Option<TheorySubjectRefIr> {
+    subject_refs
+        .iter()
+        .find(|subject| !matches!(subject, TheorySubjectRefIr::Theory { .. }))
+        .or_else(|| subject_refs.first())
+        .cloned()
+}
+
 fn obligation_matches_artifact(
     artifact_kind: &str,
     artifact_id: &str,
     obligation: &TheoryObligationRefIr,
 ) -> bool {
     let lowered_kind = artifact_kind.trim().to_ascii_lowercase();
-    let artifact_local = local_name(artifact_id);
     match obligation {
-        TheoryObligationRefIr::Constraint {
-            constraint_id,
-            relation_name,
-            summary,
-            ..
-        } => {
-            lowered_kind.contains("constraint")
-                && (constraint_id.as_str() == artifact_id
-                    || relation_name
-                        .as_ref()
-                        .is_some_and(|relation| local_name(relation) == artifact_local)
-                    || summary == artifact_id)
+        TheoryObligationRefIr::Constraint { .. } => {
+            lowered_kind.contains("constraint") && obligation.matches_artifact_id(artifact_id)
         }
-        TheoryObligationRefIr::PathEquation {
-            equation_id, name, ..
-        }
-        | TheoryObligationRefIr::OpaqueEquation {
-            equation_id, name, ..
-        } => {
+        TheoryObligationRefIr::PathEquation { .. }
+        | TheoryObligationRefIr::OpaqueEquation { .. } => {
             (lowered_kind.contains("equation")
                 || lowered_kind.contains("path")
                 || lowered_kind.contains("rewrite"))
-                && (equation_id.as_str() == artifact_id || local_name(name) == artifact_local)
+                && obligation.matches_artifact_id(artifact_id)
         }
-        TheoryObligationRefIr::RewriteRule { rule_id, name, .. } => {
-            lowered_kind.contains("rewrite")
-                && (rule_id.as_str() == artifact_id || local_name(name) == artifact_local)
+        TheoryObligationRefIr::RewriteRule { .. } => {
+            lowered_kind.contains("rewrite") && obligation.matches_artifact_id(artifact_id)
         }
     }
 }
@@ -1609,33 +1627,18 @@ fn subject_matches_artifact(
     subject: &TheorySubjectRefIr,
 ) -> bool {
     let lowered_kind = artifact_kind.trim().to_ascii_lowercase();
-    let artifact_local = local_name(artifact_id);
     match subject {
-        TheorySubjectRefIr::Theory { theory_id } => {
-            lowered_kind.contains("theory")
-                && (theory_id.as_str() == artifact_id
-                    || local_name(theory_id.as_str()) == artifact_local)
+        TheorySubjectRefIr::Theory { .. } => {
+            lowered_kind.contains("theory") && subject.matches_artifact_id(artifact_id)
         }
-        TheorySubjectRefIr::Relation {
-            relation_id,
-            relation_name,
-        } => {
+        TheorySubjectRefIr::Relation { .. } => {
             (lowered_kind.contains("relation")
                 || lowered_kind.contains("schema")
                 || lowered_kind.contains("fact"))
-                && (relation_id.as_str() == artifact_id
-                    || local_name(relation_name) == artifact_local)
+                && subject.matches_artifact_id(artifact_id)
         }
-        TheorySubjectRefIr::Role {
-            role_id,
-            relation_name,
-            role_name,
-            ..
-        } => {
-            lowered_kind.contains("role")
-                && (role_id.as_str() == artifact_id
-                    || format!("{relation_name}.{role_name}") == artifact_id
-                    || local_name(role_name) == artifact_local)
+        TheorySubjectRefIr::Role { .. } => {
+            lowered_kind.contains("role") && subject.matches_artifact_id(artifact_id)
         }
     }
 }
@@ -1735,15 +1738,16 @@ pub fn build_migration_transport_obligations_from_compiled_theory_v1(
         if matched.is_empty() {
             let obligation_id = format!("transport:{}:relation", local_name(&mapping.source_arrow));
             if seen_ids.insert(obligation_id.clone()) {
+                let theory_subject_refs =
+                    typed_subject_refs_for_relation(compiled_schema, &mapping.source_arrow);
                 obligations.push(MigrationTransportObligationV1 {
+                    operator: MigrationFunctorKindV1::DeltaF,
                     obligation_id,
                     obligation_kind: transport_kind_for_obligation(relation, None),
                     subject_ref: mapping.source_arrow.clone(),
                     theory_obligation_ref: None,
-                    theory_subject_refs: typed_subject_refs_for_relation(
-                        compiled_schema,
-                        &mapping.source_arrow,
-                    ),
+                    theory_subject_ref: primary_theory_subject_ref(&theory_subject_refs),
+                    theory_subject_refs,
                     detail: format!(
                         "transport `{}` along target path `{}` and review relation/role attachments explicitly",
                         mapping.source_arrow, target_path
@@ -1763,6 +1767,7 @@ pub fn build_migration_transport_obligations_from_compiled_theory_v1(
                 continue;
             }
             obligations.push(MigrationTransportObligationV1 {
+                operator: MigrationFunctorKindV1::DeltaF,
                 obligation_id,
                 obligation_kind: transport_kind_for_obligation(
                     relation,
@@ -1770,6 +1775,7 @@ pub fn build_migration_transport_obligations_from_compiled_theory_v1(
                 ),
                 subject_ref: mapping.source_arrow.clone(),
                 theory_obligation_ref: Some(obligation.clone()),
+                theory_subject_ref: primary_theory_subject_ref(&subject_refs),
                 theory_subject_refs: subject_refs,
                 detail: format!(
                     "transport `{}` along target path `{}` while preserving theory obligation `{}`",
@@ -1805,6 +1811,7 @@ pub fn enrich_reconciliation_with_compiled_theory_v1(
             &conflict.artifact.artifact_id,
         );
         conflict.artifact.theory_obligation_ref = theory_obligation_ref;
+        conflict.artifact.theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
         conflict.artifact.theory_subject_refs = theory_subject_refs;
     }
     for decision in &mut enriched.decisions {
@@ -1820,6 +1827,7 @@ pub fn enrich_reconciliation_with_compiled_theory_v1(
             &decision.artifact.artifact_id,
         );
         decision.artifact.theory_obligation_ref = theory_obligation_ref;
+        decision.artifact.theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
         decision.artifact.theory_subject_refs = theory_subject_refs;
     }
     enriched
@@ -1885,6 +1893,9 @@ fn reconciliation_refinement_candidates(
                         artifact_id: conflict.artifact.artifact_id.clone(),
                         resolution: resolution.to_string(),
                         theory_obligation_ref: conflict.artifact.theory_obligation_ref.clone(),
+                        theory_subject_ref: primary_theory_subject_ref(
+                            &conflict.artifact.theory_subject_refs,
+                        ),
                         theory_subject_refs: conflict.artifact.theory_subject_refs.clone(),
                     },
                     conflict.artifact.artifact_id.clone(),
@@ -2124,6 +2135,7 @@ pub fn migration_typed_change_summary(
         morphism.target_schema.clone(),
     ]);
     let mut primitives = vec![EvolutionPrimitiveV1::TransportAlongSchemaMorphism {
+        operator: MigrationFunctorKindV1::DeltaF,
         morphism_id: morphism_id.clone(),
         source_schema: morphism.source_schema.clone(),
         target_schema: morphism.target_schema.clone(),
@@ -2345,7 +2357,8 @@ pub fn build_migration_evolution_preview_v1(
         None,
         transport_obligations.iter().map(|obligation| {
             format!(
-                "{} [{}] {}: {}",
+                "{:?} {} [{}] {}: {}",
+                obligation.operator,
                 obligation.obligation_id,
                 obligation.obligation_kind,
                 obligation.subject_ref,
@@ -2546,37 +2559,6 @@ pub fn build_reconciliation_evolution_preview_v1(
     preview
 }
 
-fn direct_subtype_families(compiled_ir: &CompiledSchemaIr) -> BTreeMap<String, Vec<String>> {
-    let mut families: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for object in &compiled_ir.object_types {
-        let Some(supertypes) = compiled_ir.supertypes_of.get(object) else {
-            continue;
-        };
-        for supertype in supertypes {
-            let is_direct = !supertypes.iter().any(|mid| {
-                mid != supertype
-                    && mid != object
-                    && compiled_ir
-                        .supertypes_of
-                        .get(mid)
-                        .is_some_and(|supers| supers.contains(supertype))
-            });
-            if is_direct {
-                families
-                    .entry(supertype.clone())
-                    .or_default()
-                    .push(object.clone());
-            }
-        }
-    }
-    for subtypes in families.values_mut() {
-        subtypes.sort();
-        subtypes.dedup();
-    }
-    families.retain(|_, subtypes| subtypes.len() > 1);
-    families
-}
-
 pub fn compiled_ir_exploration_typed_change_summary(
     compiled_ir: &CompiledSchemaIr,
 ) -> TypedChangeSummaryV1 {
@@ -2586,6 +2568,8 @@ pub fn compiled_ir_exploration_typed_change_summary(
     let mut dependent_family_candidates = 0usize;
     let mut carrier_lift_candidates = 0usize;
     let mut rewrite_candidates = 0usize;
+    let mut introduced_subtypes = 0usize;
+    let mut split_candidates = 0usize;
     let mut factor_candidates = 0usize;
 
     let mut relations = compiled_ir.relations.values().collect::<Vec<_>>();
@@ -2668,19 +2652,48 @@ pub fn compiled_ir_exploration_typed_change_summary(
         }
     }
 
-    for (supertype, subtypes) in direct_subtype_families(compiled_ir) {
-        subjects.insert(supertype.clone());
-        factor_candidates += 1;
-        primitives.push(EvolutionPrimitiveV1::FactorCommonStructureToSupertype {
-            supertype,
-            source_types: subtypes,
-            relations: Vec::new(),
-            fields: Vec::new(),
-            rationale: Some(
-                "compiled subtype lattice exposes a supertype with multiple direct refinements; review whether shared rules/roles should be factored explicitly"
-                    .to_string(),
-            ),
-        });
+    for family in compiled_ir.direct_subtype_families() {
+        subjects.insert(family.supertype.clone());
+        for subtype in &family.subtypes {
+            subjects.insert(subtype.clone());
+            introduced_subtypes += 1;
+            primitives.push(EvolutionPrimitiveV1::IntroduceSubtype {
+                sub: subtype.clone(),
+                sup: family.supertype.clone(),
+                affected_subject_refs: Vec::new(),
+                rationale: Some(
+                    "compiled subtype lattice already contains this immediate refinement; review whether query/migration surfaces expose it explicitly"
+                        .to_string(),
+                ),
+            });
+        }
+        if family.subtypes.len() > 1 {
+            split_candidates += 1;
+            primitives.push(EvolutionPrimitiveV1::SplitTypeIntoSubtypes {
+                source: family.supertype.clone(),
+                subtypes: family.subtypes.clone(),
+                discriminator: None,
+                affected_subject_refs: Vec::new(),
+                rationale: Some(
+                    "compiled subtype lattice exposes a reviewable family of immediate refinements; treat the split as an explicit evolution move rather than implicit metadata"
+                        .to_string(),
+                ),
+            });
+
+            let projection =
+                compiled_ir.subtype_role_projection(&family.supertype, &family.subtypes);
+            factor_candidates += 1;
+            primitives.push(EvolutionPrimitiveV1::FactorCommonStructureToSupertype {
+                supertype: family.supertype,
+                source_types: family.subtypes,
+                relations: projection.relations,
+                fields: projection.fields,
+                rationale: Some(
+                    "compiled subtype families and their attached relation roles should stay reviewable as explicit factoring candidates"
+                        .to_string(),
+                ),
+            });
+        }
     }
 
     let mut counts = BTreeMap::new();
@@ -2702,6 +2715,8 @@ pub fn compiled_ir_exploration_typed_change_summary(
         carrier_lift_candidates,
     );
     counts.insert("rewrite_candidates_total".to_string(), rewrite_candidates);
+    counts.insert("introduced_subtypes_total".to_string(), introduced_subtypes);
+    counts.insert("split_candidates_total".to_string(), split_candidates);
     counts.insert(
         "supertype_factor_candidates_total".to_string(),
         factor_candidates,
@@ -2721,7 +2736,12 @@ pub fn compiled_ir_exploration_typed_change_summary(
                 .to_string(),
         ],
         schema: TypedChangeBucketV1 {
-            added: relation_object_candidates + dependent_family_candidates + carrier_lift_candidates + factor_candidates,
+            added: relation_object_candidates
+                + dependent_family_candidates
+                + carrier_lift_candidates
+                + introduced_subtypes
+                + split_candidates
+                + factor_candidates,
             reused: compiled_ir.object_types.len() + compiled_ir.relations.len(),
             notes: vec![
                 "schema bucket counts candidate semantic structure surfaced directly from compiled IR"
@@ -3120,6 +3140,7 @@ mod tests {
                 std::iter::empty::<String>(),
             ),
             EvolutionPrimitiveV1::transport_along_schema_morphism(
+                MigrationFunctorKindV1::DeltaF,
                 "Plant->Ops",
                 "Plant",
                 "Ops",
@@ -3509,6 +3530,10 @@ theory PlantTransport on Plant:
                 subject,
                 TheorySubjectRefIr::Relation { relation_name, .. } if relation_name == "installed_at"
             )));
+        assert!(matches!(
+            preview.refinement_candidates[0].theory_subject_ref.as_ref(),
+            Some(TheorySubjectRefIr::Relation { relation_name, .. }) if relation_name == "installed_at"
+        ));
     }
 
     #[test]
@@ -3553,6 +3578,14 @@ theory PlantTransport on Plant:
                 .as_ref(),
             Some(TheoryObligationRefIr::Constraint { relation_name, .. })
                 if relation_name.as_deref() == Some("installed_at")
+        ));
+        assert!(matches!(
+            applied
+                .transport_apply
+                .resolved_transport_obligation
+                .theory_subject_ref
+                .as_ref(),
+            Some(TheorySubjectRefIr::Relation { relation_name, .. }) if relation_name == "installed_at"
         ));
         assert!(applied.evolution_preview.ok);
         assert!(applied.evolution_preview.residual_obligations.is_empty());
@@ -3648,6 +3681,7 @@ theory DemoRules on Demo:
                         artifact_kind: "schema_relation".to_string(),
                         artifact_id: "WorksFor".to_string(),
                         theory_obligation_ref: None,
+                        theory_subject_ref: None,
                         theory_subject_refs: Vec::new(),
                     },
                     detail: "left changes carrier roles, right changes subtype target".to_string(),
@@ -3657,6 +3691,7 @@ theory DemoRules on Demo:
                         artifact_kind: "rewrite_rule".to_string(),
                         artifact_id: "normalize_parent".to_string(),
                         theory_obligation_ref: None,
+                        theory_subject_ref: None,
                         theory_subject_refs: Vec::new(),
                     },
                     detail: "conflicting normalization scopes".to_string(),
@@ -3667,6 +3702,7 @@ theory DemoRules on Demo:
                     artifact_kind: "rewrite_rule".to_string(),
                     artifact_id: "normalize_parent".to_string(),
                     theory_obligation_ref: None,
+                    theory_subject_ref: None,
                     theory_subject_refs: Vec::new(),
                 },
                 resolution: "prefer_right".to_string(),
@@ -3721,6 +3757,18 @@ theory DemoRules on Demo:
                     TheorySubjectRefIr::Relation { relation_name, .. } if relation_name == "WorksFor"
                 ))
         }));
+        assert!(preview.refinement_candidates.iter().any(|candidate| {
+            candidate.artifact_id.as_deref() == Some("WorksFor")
+                && matches!(
+                    candidate.handle.payload,
+                    crate::typed_refinement::RuntimeRefinementPayloadV1::ReconciliationReview {
+                        op: crate::typed_refinement::ReconciliationRefinementOpV1::ResolveConflictByDecision {
+                            theory_subject_ref: Some(TheorySubjectRefIr::Relation { ref relation_name, .. }),
+                            ..
+                        }
+                    } if relation_name == "WorksFor"
+                )
+        }));
         assert!(!preview
             .refinement_candidates
             .iter()
@@ -3744,6 +3792,7 @@ schema Plant:
   subtype Pump <: PlantAsset
   subtype Compressor <: PlantAsset
   relation Certification(asset: Pump, batch: Batch, ctx: Context, time: Time)
+  relation Maintenance(asset: Compressor, batch: Batch, ctx: Context, time: Time)
   relation ProcessEquiv(lhs: Process, rhs: Process)
 
 instance PlantInst of Plant:
@@ -3798,6 +3847,26 @@ instance PlantInst of Plant:
                 EvolutionPrimitiveV1::AddRewriteRule { rule_id, .. }
                 if rule_id == "candidate_rewrite_ProcessEquiv"
             )));
+        assert!(preview
+            .typed_change
+            .primitives
+            .iter()
+            .any(|primitive| matches!(
+                primitive,
+                EvolutionPrimitiveV1::IntroduceSubtype { sub, sup, .. }
+                if sub == "Pump" && sup == "PlantAsset"
+            )));
+        assert!(preview
+            .typed_change
+            .primitives
+            .iter()
+            .any(|primitive| matches!(
+                primitive,
+                EvolutionPrimitiveV1::SplitTypeIntoSubtypes { source, subtypes, .. }
+                if source == "PlantAsset"
+                    && subtypes.iter().any(|t| t == "Pump")
+                    && subtypes.iter().any(|t| t == "Compressor")
+            )));
         assert!(
             preview.typed_change.primitives.iter().any(|primitive| matches!(
                 primitive,
@@ -3807,6 +3876,22 @@ instance PlantInst of Plant:
                     && source_types.iter().any(|t| t == "Compressor")
             ))
         );
+        assert!(preview
+            .typed_change
+            .primitives
+            .iter()
+            .any(|primitive| matches!(
+                primitive,
+                EvolutionPrimitiveV1::FactorCommonStructureToSupertype {
+                    relations,
+                    fields,
+                    ..
+                }
+                if relations.iter().any(|relation| relation == "Certification")
+                    && relations.iter().any(|relation| relation == "Maintenance")
+                    && fields.iter().any(|field| field == "Certification.asset")
+                    && fields.iter().any(|field| field == "Maintenance.asset")
+            )));
         assert!(
             preview
                 .exploration_next_actions
@@ -3814,5 +3899,9 @@ instance PlantInst of Plant:
                 .any(|action| action.contains("indexed relation family `Certification`")),
             "expected dependent-family discovery to drive next actions"
         );
+        assert!(preview
+            .exploration_next_actions
+            .iter()
+            .any(|action| action.contains("splitting `PlantAsset` into `Compressor`, `Pump`")));
     }
 }

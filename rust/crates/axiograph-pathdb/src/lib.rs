@@ -72,8 +72,8 @@ use std::time::Duration;
 // Re-export key types
 pub use anchor::{
     AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, ConstraintId, ContextId, EquationId,
-    ObjectTypeId, PathdbSnapshotId, ProposalDigest, RelationId, RewriteRuleId, RoleId, SchemaId,
-    StableFactId, TheoryId, WorldModelRunId,
+    InstanceId, ObjectTypeId, PathdbSnapshotId, ProposalDigest, RelationId, RewriteRuleId, RoleId,
+    SchemaId, StableFactId, TheoryId, WorldModelRunId,
 };
 pub use axi_module_typecheck::{
     review_axi_v1_module, validate_axi_v1_module, Module, ReviewStamp, WellTypedModuleState,
@@ -94,13 +94,17 @@ pub use index_sidecar::{
     PATHDB_INDEX_SIDECAR_VERSION_V1,
 };
 pub use kernel_ir::{
-    TheoryObligationKindIr, TheoryObligationRefIr, TheorySubjectKindIr, TheorySubjectRefIr,
+    compile_instance_ir, compile_kernel_module_ir, InstanceIr, KernelModuleIr, ObjectMembershipIr,
+    RelationFactIr, RoleValueIr, RuntimeTheoryFragmentSummaryV1,
+    RuntimeTheoryObligationFragmentStatusV1, RuntimeTheoryObligationStatusV1,
+    RuntimeTheoryObligationTrustClassV1, TheoryObligationKindIr, TheoryObligationRefIr,
+    TheorySubjectKindIr, TheorySubjectRefIr, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
 };
 pub use lifecycle::{Accepted, Certified, LifecycleState, Parsed, Reviewed, Validated};
 pub use migration::{
-    ArrowDeclV1, ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1, Name,
-    ObjectElementsV1, ObjectMappingV1, SchemaMorphismV1, SchemaV1, SigmaFMigrationProofV1,
-    SubtypeDeclV1,
+    ArrowDeclV1, ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1,
+    MigrationFunctorKindV1, Name, ObjectElementsV1, ObjectMappingV1, SchemaMorphismV1, SchemaV1,
+    SigmaFMigrationProofV1, SubtypeDeclV1,
 };
 pub use modal::{ModalFrame, ModalPathDB, ModalWorld, Modality};
 pub use optimizer::{MigrationOperatorV1, OptimizerRuleV1, ProofProducingOptimizer};

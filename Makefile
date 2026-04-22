@@ -18,6 +18,7 @@
 .PHONY: all all-exe rust lean lean-cache lean-system-cc lean-exe verify-lean verify-lean-cert verify-lean-e2e verify-lean-v2 verify-lean-e2e-v2 \
 	verify-lean-axi-schema-v1 \
 	verify-lean-axi-v1 \
+	verify-axi-digest-e2e \
 	verify-axi-parse-e2e \
 	verify-pathdb-export-axi-v1 \
 	verify-verus \
@@ -274,6 +275,23 @@ verify-axi-parse-e2e: lean
 		echo "⚠️  lake (Lean) not found - cannot run parse e2e"; \
 	fi
 
+verify-axi-digest-e2e: lean dirs
+	@echo "━━━ Canonical .axi digest parity (Rust ↔ Lean) ━━━"
+	@if command -v $(LAKE) >/dev/null 2>&1; then \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest_v1 -- ../examples/economics/EconomicFlows.axi > ../$(BUILD_DIR)/axi_digest_rust_economic.txt ) && \
+		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/economics/EconomicFlows.axi | sed -n 's/^ok: loaded axi module digest=\([^ ]*\) file=.*$$/\1/p' > ../$(BUILD_DIR)/axi_digest_lean_economic.txt ) && \
+		diff -u $(BUILD_DIR)/axi_digest_rust_economic.txt $(BUILD_DIR)/axi_digest_lean_economic.txt && \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest_v1 -- ../examples/learning/MachinistLearning.axi > ../$(BUILD_DIR)/axi_digest_rust_learning.txt ) && \
+		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/learning/MachinistLearning.axi | sed -n 's/^ok: loaded axi module digest=\([^ ]*\) file=.*$$/\1/p' > ../$(BUILD_DIR)/axi_digest_lean_learning.txt ) && \
+		diff -u $(BUILD_DIR)/axi_digest_rust_learning.txt $(BUILD_DIR)/axi_digest_lean_learning.txt && \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest_v1 -- ../examples/ontology/SchemaEvolution.axi > ../$(BUILD_DIR)/axi_digest_rust_ontology.txt ) && \
+		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/ontology/SchemaEvolution.axi | sed -n 's/^ok: loaded axi module digest=\([^ ]*\) file=.*$$/\1/p' > ../$(BUILD_DIR)/axi_digest_lean_ontology.txt ) && \
+		diff -u $(BUILD_DIR)/axi_digest_rust_ontology.txt $(BUILD_DIR)/axi_digest_lean_ontology.txt && \
+		echo "✓ Rust and Lean digests agree on the canonical corpus"; \
+	else \
+		echo "⚠️  lake (Lean) not found - cannot run digest parity e2e"; \
+	fi
+
 verify-pathdb-export-axi-v1: lean dirs
 	@echo "━━━ Parsing PathDB export snapshot (Rust ↔ Lean, axi_v1) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
@@ -289,7 +307,7 @@ verify-pathdb-export-axi-v1: lean dirs
 verify-lean-e2e: dirs
 	@echo "━━━ Rust → Lean certificate check ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_reachability_cert > ../$(BUILD_DIR)/reachability_from_rust.json ) && \
+		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_reachability_cert_v2 > ../$(BUILD_DIR)/reachability_from_rust.json ) && \
 			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_from_rust.json ) && \
 		echo "✓ Rust → Lean certificate verified"; \
 	else \
@@ -445,7 +463,7 @@ test: rust-test verify-semantics
 	@echo ""
 	@echo "━━━ All Tests Complete ━━━"
 
-verify-semantics: rust-test-semantics verify-lean-certificates verify-lean-e2e-suite verify-axi-parse-e2e verify-pathdb-export-axi-v1
+verify-semantics: rust-test-semantics verify-lean-certificates verify-lean-e2e-suite verify-axi-parse-e2e verify-axi-digest-e2e verify-pathdb-export-axi-v1
 	@echo ""
 	@echo "━━━ Semantics Verification Complete ━━━"
 

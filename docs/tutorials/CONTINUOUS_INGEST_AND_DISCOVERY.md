@@ -236,7 +236,7 @@ It starts from a base `enterprise` scenario, then applies two ingest ticks:
 
 - new `Doc` entities arrive
 - low-confidence evidence edges are added (`mentionsService`, `suggestsSameColumn`, …)
-- explicit witness objects are created (`PathWitness`, `Homotopy`)
+- explicit path witnesses and equivalence links are created
 - after each tick it writes neighborhood visualizations:
   - `build/continuous_ingest_round0.{dot,html}`
   - `build/continuous_ingest_round1.{dot,html}`

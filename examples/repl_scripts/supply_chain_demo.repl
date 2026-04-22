@@ -10,7 +10,7 @@
 # Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/supply_chain_demo.repl
 
-# Generate a supply-chain dataset with alternate routes and explicit homotopies.
+# Generate a supply-chain dataset with alternate routes and explicit path witnesses.
 gen supply_chain 3 3 1
 
 stats
@@ -21,11 +21,8 @@ q select ?f where name("supplier_0") -supplies-> ?f limit 10
 # Alternate route: supplier → warehouse → factory.
 q select ?f where name("supplier_0") -suppliesVia/transfers-> ?f max_hops 4 limit 10
 
-# Homotopies witness “path independence”.
-q select ?h where ?h is Homotopy, ?h -from-> name("supplier_0") limit 10
-
-# Proof-relevant structure: two route witnesses between the same endpoints.
-q select ?lhs ?rhs where name("homotopy_supplier_to_factory_0") -lhs-> ?lhs, name("homotopy_supplier_to_factory_0") -rhs-> ?rhs limit 10
+# Proof-relevant structure: route witnesses between the same endpoints.
+q select ?p where ?p is PathWitness, ?p -from-> name("supplier_0") limit 10
 
 # Material capability edges.
 q select ?m where name("supplier_0") -suppliesMaterial-> ?m limit 10

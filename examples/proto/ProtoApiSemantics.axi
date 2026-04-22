@@ -22,16 +22,10 @@ schema ProtoApiSemantics:
   object HttpEndpoint
   object DocChunk
 
-  -- Optional: some examples (and test harnesses) use `Homotopy` as a generic
-  -- "witness node" type. We include one here so default REPL smoke queries can
-  -- always return something.
-  object Homotopy
-
   subtype ProtoService < Entity
   subtype ProtoRpc < Entity
   subtype HttpEndpoint < Entity
   subtype DocChunk < Entity
-  subtype Homotopy < Entity
 
   -- Core structural relations.
   relation proto_service_has_rpc(service: ProtoService, rpc: ProtoRpc)
@@ -102,7 +96,6 @@ instance ProtoApiTiny of ProtoApiSemantics:
   ProtoRpc = {GetUser, CreateUser}
   HttpEndpoint = {GET_v1_users_user_id, POST_v1_users}
   DocChunk = {Doc_UserService_Overview}
-  Homotopy = {homotopy_doc_mentions_getuser_0}
 
   proto_service_has_rpc = {
     (service=UserService, rpc=GetUser),

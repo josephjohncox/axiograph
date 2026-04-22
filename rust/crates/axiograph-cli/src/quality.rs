@@ -20,7 +20,7 @@ use axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT;
 use axiograph_pathdb::axi_semantics::{ConstraintDecl, MetaPlaneIndex};
 use axiograph_pathdb::PathDB;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QualityReportV1 {
     pub version: String,
     pub generated_at_unix_secs: u64,
@@ -31,14 +31,14 @@ pub struct QualityReportV1 {
     pub findings: Vec<QualityFindingV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct QualitySummaryV1 {
     pub error_count: usize,
     pub warning_count: usize,
     pub info_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct QualityFindingV1 {
     pub level: String, // "error" | "warning" | "info"
     pub code: String,

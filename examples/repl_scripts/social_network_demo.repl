@@ -27,8 +27,7 @@ q select ?p where ?p is RelationshipPath, ?p -from-> name("Alice_0") limit 10
 # Trust paths (with witnesses).
 q select ?t where ?t is TrustPath, ?t -from-> name("Alice_0") limit 10
 
-# Homotopies / history equivalences.
-q select ?h where ?h is Homotopy, ?h -from-> name("Alice_0") limit 10
+# History/path equivalence witnesses.
 q select ?e where ?e is HistoryEquivalence, ?e -from-> name("Alice_0") limit 10
 
 # Proof-relevant structure: two history witnesses and their equivalence.

@@ -28,9 +28,13 @@ mod competency_questions;
 mod db_server;
 mod doc_chunks;
 mod embeddings;
+mod evidence_support;
 mod evolution_preview;
 mod github;
+mod industrial_harness;
+mod industrial_harness_tools;
 mod llm;
+mod mcp;
 mod nlq;
 mod pathdb_wal;
 mod perf;
@@ -43,11 +47,15 @@ mod quality;
 mod query_ir;
 mod relation_resolution;
 mod repl;
+mod route_preview;
+mod route_preview_tools;
 mod schema_discovery;
 mod semantic_claim;
+mod semantic_tools;
 mod sqlish;
 mod store_sync;
 mod synthetic_pathdb;
+mod transport_preview_tools;
 mod trust_contract;
 mod typed_authoring;
 mod typed_refinement;
@@ -115,6 +123,9 @@ enum Commands {
         #[command(subcommand)]
         command: DbCommands,
     },
+
+    /// Run a read-only stdio MCP transport over typed semantic services.
+    Mcp(McpArgs),
 
     /// Ingest SQL DDL → `proposals.json`
     #[command(hide = true)]
@@ -258,6 +269,12 @@ enum Commands {
     Accept {
         #[command(subcommand)]
         command: AcceptedCommands,
+    },
+
+    /// Semantic VCS commands over refs, semantic commits, and reconciliations.
+    Sem {
+        #[command(subcommand)]
+        command: SemCommands,
     },
 
     /// Ingest a directory of heterogeneous sources (docs, SQL, RDF/OWL, JSON, Confluence)
@@ -474,6 +491,12 @@ enum ToolsCommands {
     /// Visualize a `.axpd` snapshot or imported `.axi` module as a neighborhood graph.
     Viz(VizArgs),
 
+    /// Read-only industrial shadow-harness helpers.
+    IndustrialHarness {
+        #[command(subcommand)]
+        command: IndustrialHarnessCommands,
+    },
+
     /// Tooling-focused analysis commands (untrusted / evidence-plane friendly).
     Analyze {
         #[command(subcommand)]
@@ -484,6 +507,31 @@ enum ToolsCommands {
     Perf {
         #[command(subcommand)]
         command: perf::PerfCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum IndustrialHarnessCommands {
+    /// Materialize the regulated production line seed harness against an accepted snapshot.
+    RunRegulatedSeed {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Accepted snapshot id (or `head` / `latest`).
+        #[arg(long, default_value = "head")]
+        snapshot: String,
+        /// Root directory under which `_cache/industrial_harness/...` will be written.
+        #[arg(long, default_value = ".")]
+        cache_root: PathBuf,
+        /// Deterministic run id for this materialization.
+        #[arg(long)]
+        run_id: String,
+        /// Deterministic timestamp for this run.
+        #[arg(long)]
+        created_at_unix_secs: u64,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -671,6 +719,29 @@ struct DbServeArgs {
     /// Async queue size for deeper-path LRU updates (ignored unless async is enabled).
     #[arg(long, default_value_t = 1024)]
     path_index_lru_queue: usize,
+}
+
+#[derive(Args, Debug, Clone)]
+struct McpArgs {
+    /// Load a `.axpd` snapshot directly.
+    #[arg(long)]
+    axpd: Option<PathBuf>,
+
+    /// Load from a snapshot store directory (accepted plane + PathDB WAL).
+    #[arg(long)]
+    dir: Option<PathBuf>,
+
+    /// Which store layer to load when using `--dir`: `accepted` or `pathdb`.
+    #[arg(long, default_value = "pathdb")]
+    layer: String,
+
+    /// Snapshot id (or `head`/`latest`) when loading from `--dir`.
+    #[arg(long, default_value = "head")]
+    snapshot: String,
+
+    /// Hard cap for rows returned by `axql_run` calls.
+    #[arg(long, default_value_t = 50)]
+    tool_max_rows: usize,
 }
 
 #[derive(Subcommand)]
@@ -1277,6 +1348,12 @@ enum DiscoverCommands {
     /// apply one typed refinement handle before re-checking.
     CheckOlog(DiscoverCheckOlogArgs),
 
+    /// Preview a concrete route and optional route equivalence over a snapshot.
+    RoutePreview(DiscoverRoutePreviewArgs),
+
+    /// Preview schema-morphism transport over canonical `.axi` as an EvolutionPreviewV1.
+    TransportPreview(DiscoverTransportPreviewArgs),
+
     /// Run a world model plugin to propose new facts/relations (evidence plane).
     WorldModelPropose(WorldModelProposeArgs),
 }
@@ -1295,6 +1372,42 @@ struct DiscoverCheckOlogArgs {
     schema: Option<String>,
 
     /// Optional runtime refinement handle id to apply before returning the report.
+    #[arg(long)]
+    apply_refinement_handle_id: Option<String>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverRoutePreviewArgs {
+    /// Input `.axpd` or `.axi` snapshot.
+    input: PathBuf,
+
+    /// Input JSON file containing `RoutePreviewRequestV1`.
+    #[arg(long)]
+    request: PathBuf,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverTransportPreviewArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Input JSON file containing `SchemaMorphismV1`.
+    #[arg(long)]
+    morphism: PathBuf,
+
+    /// Optional schema name if the module contains multiple schemas.
+    #[arg(long)]
+    schema: Option<String>,
+
+    /// Optional runtime refinement handle id to apply before returning the preview.
     #[arg(long)]
     apply_refinement_handle_id: Option<String>,
 
@@ -1852,6 +1965,97 @@ enum AcceptedCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum SemCommands {
+    /// Show a summary of semantic refs, semantic head, reconciliations, and world-model runs.
+    Status {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a semantic ref, commit, or world-model run from the semantic store.
+    Show {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Optional ref name (e.g. heads/main, heads/review/demo, heads/wm/run).
+        #[arg(long)]
+        r#ref: Option<String>,
+        /// Optional commit id.
+        #[arg(long)]
+        commit: Option<String>,
+        /// Optional reconciliation id.
+        #[arg(long)]
+        reconciliation: Option<String>,
+        /// Optional world-model run id.
+        #[arg(long)]
+        world_model_run: Option<String>,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage semantic refs.
+    Ref {
+        #[command(subcommand)]
+        command: SemRefCommands,
+    },
+    /// Build a semantic merge preview from two refs, or materialize it into a merge commit.
+    Merge {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Source semantic ref.
+        #[arg(long)]
+        source: String,
+        /// Target semantic ref.
+        #[arg(long)]
+        target: String,
+        /// Merge/reconciliation policy label.
+        #[arg(long, default_value = "semantic_merge_dry_run")]
+        policy: String,
+        /// Do not materialize a merge commit; emit the candidate reconciliation and preview only.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show semantic commit history from sem/HEAD.
+    Log {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Maximum number of commits to print.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SemRefCommands {
+    /// Set a semantic ref to a specific semantic commit id.
+    Set {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Semantic ref name (for example `heads/main` or `heads/custom/demo`).
+        #[arg(long)]
+        r#ref: String,
+        /// Semantic commit id to write into the ref pointer.
+        #[arg(long)]
+        commit: String,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let profiler = profiling::Profiler::start(&cli.profile)?;
@@ -2040,6 +2244,9 @@ fn main() -> Result<()> {
                 ToolsCommands::Viz(args) => {
                     cmd_viz_from_args(&args)?;
                 }
+                ToolsCommands::IndustrialHarness { command } => {
+                    cmd_industrial_harness(command)?;
+                }
                 ToolsCommands::Analyze { command } => {
                     analyze::cmd_analyze(command)?;
                 }
@@ -2058,6 +2265,9 @@ fn main() -> Result<()> {
                     db_server::cmd_db_serve(args)?;
                 }
             },
+            Commands::Mcp(args) => {
+                mcp::cmd_mcp(args)?;
+            }
             Commands::Sql { input, out } => {
                 cmd_sql(&input, &out, None)?;
             }
@@ -2384,12 +2594,21 @@ fn main() -> Result<()> {
                 DiscoverCommands::CheckOlog(args) => {
                     cmd_discover_check_olog(&args)?;
                 }
+                DiscoverCommands::RoutePreview(args) => {
+                    cmd_discover_route_preview(&args)?;
+                }
+                DiscoverCommands::TransportPreview(args) => {
+                    cmd_discover_transport_preview(&args)?;
+                }
                 DiscoverCommands::WorldModelPropose(args) => {
                     cmd_world_model_propose(&args)?;
                 }
             },
             Commands::Accept { command } => {
                 cmd_accept(command)?;
+            }
+            Commands::Sem { command } => {
+                cmd_sem(command)?;
             }
             Commands::IngestDir {
                 root,
@@ -2603,6 +2822,9 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             if let Some(report) = result.validation_report_path.as_ref() {
                 eprintln!("validation report: {}", report.bold());
             }
+            if let Some(report) = result.stored_report_path.as_ref() {
+                eprintln!("stored preview: {}", report.bold());
+            }
             eprintln!(
                 "next: {}",
                 format!(
@@ -2749,6 +2971,339 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn cmd_industrial_harness(command: IndustrialHarnessCommands) -> Result<()> {
+    match command {
+        IndustrialHarnessCommands::RunRegulatedSeed {
+            dir,
+            snapshot,
+            cache_root,
+            run_id,
+            created_at_unix_secs,
+            json,
+        } => {
+            let response = industrial_harness::run_regulated_production_line_seed_harness_from_accepted_snapshot(
+                &cache_root,
+                &dir,
+                &snapshot,
+                &run_id,
+                created_at_unix_secs,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                println!("industrial harness");
+                println!("  campaign: {}", response.campaign_id);
+                println!("  run: {}", response.run_id);
+                println!(
+                    "  accepted anchor: {} @ {}",
+                    response.accepted_axi_anchor.accepted_snapshot_id,
+                    response.accepted_axi_anchor.axi_digest
+                );
+                println!("  cache root: {}", response.cache_root);
+                println!("  campaign manifest: {}", response.campaign_manifest_path);
+                println!("  run artifact: {}", response.artifacts.run);
+                println!("  cq results: {}", response.artifacts.cq_results);
+                println!("  coverage: {}", response.artifacts.coverage);
+                println!("  agent report: {}", response.artifacts.agent_report);
+                println!("  distill: {}", response.artifacts.distill);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_sem(command: SemCommands) -> Result<()> {
+    match command {
+        SemCommands::Status { dir, json } => {
+            let status = accepted_plane::sem_status(&dir)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                println!("sem status");
+                println!("  version: {}", status.version);
+                println!(
+                    "  sem head: {}",
+                    status
+                        .sem_head_commit_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "(none)".to_string())
+                );
+                println!(
+                    "  main ref: {}",
+                    status
+                        .main_ref
+                        .as_ref()
+                        .map(|pointer| format!("{} -> {}", pointer.ref_name, pointer.commit_id))
+                        .unwrap_or_else(|| "(none)".to_string())
+                );
+                println!("  review refs: {}", status.review_refs.len());
+                for pointer in &status.review_refs {
+                    println!("    - {} -> {}", pointer.ref_name, pointer.commit_id);
+                }
+                println!("  world-model refs: {}", status.world_model_refs.len());
+                for pointer in &status.world_model_refs {
+                    println!("    - {} -> {}", pointer.ref_name, pointer.commit_id);
+                }
+                println!("  reconciliations: {}", status.reconciliation_ids.len());
+                for reconciliation_id in &status.reconciliation_ids {
+                    println!("    - {}", reconciliation_id);
+                }
+                println!("  world-model runs: {}", status.world_model_run_ids.len());
+                for run_id in &status.world_model_run_ids {
+                    println!("    - {}", run_id);
+                }
+            }
+        }
+        SemCommands::Show {
+            dir,
+            r#ref,
+            commit,
+            reconciliation,
+            world_model_run,
+            json,
+        } => {
+            let provided = [
+                r#ref.is_some(),
+                commit.is_some(),
+                reconciliation.is_some(),
+                world_model_run.is_some(),
+            ]
+            .into_iter()
+            .filter(|v| *v)
+            .count();
+            if provided != 1 {
+                return Err(anyhow!(
+                    "sem show requires exactly one of --ref, --commit, --reconciliation, or --world-model-run"
+                ));
+            }
+
+            if let Some(ref_name) = r#ref {
+                let view = accepted_plane::read_sem_ref_view(&dir, &ref_name)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&view)?);
+                } else {
+                    println!("sem ref");
+                    println!("  ref: {}", view.pointer.ref_name);
+                    println!("  commit: {}", view.pointer.commit_id);
+                    println!("  kind: {:?}", view.commit.kind);
+                    println!("  action: {}", view.commit.action);
+                    println!("  module: {}", view.commit.module_name);
+                    if let Some(message) = view.commit.message.as_deref() {
+                        println!("  message: {}", message);
+                    }
+                    println!("  accepted snapshot: {}", view.commit.accepted_snapshot_id);
+                }
+            } else if let Some(commit_id) = commit {
+                let commit = accepted_plane::read_semantic_commit_for_cli(
+                    &dir,
+                    &axiograph_pathdb::AxiDigest::new(commit_id),
+                )?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&commit)?);
+                } else {
+                    println!("sem commit");
+                    println!("  id: {}", commit.commit_id);
+                    println!("  kind: {:?}", commit.kind);
+                    println!("  action: {}", commit.action);
+                    if let Some(parent_commit_id) = commit.parent_commit_id.as_ref() {
+                        println!("  parent: {}", parent_commit_id);
+                    }
+                    println!("  policy: {}", commit.policy);
+                    println!("  module: {}", commit.module_name);
+                    println!("  accepted snapshot: {}", commit.accepted_snapshot_id);
+                    if let Some(pathdb_snapshot_id) = commit.pathdb_snapshot_id.as_ref() {
+                        println!("  pathdb snapshot: {}", pathdb_snapshot_id);
+                    }
+                    if let Some(message) = commit.message.as_deref() {
+                        println!("  message: {}", message);
+                    }
+                }
+            } else if let Some(reconciliation_id) = reconciliation {
+                let view = accepted_plane::read_sem_reconciliation_view(
+                    &dir,
+                    &axiograph_pathdb::AxiDigest::new(reconciliation_id),
+                )?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&view)?);
+                } else {
+                    println!("sem reconciliation");
+                    println!("  id: {}", view.reconciliation.reconciliation_id);
+                    println!("  stored record: {}", view.stored_reconciliation_path);
+                    if let Some(source_ref_name) = view.reconciliation.source_ref_name.as_deref() {
+                        println!("  source ref: {}", source_ref_name);
+                    }
+                    if let Some(target_ref_name) = view.reconciliation.target_ref_name.as_deref() {
+                        println!("  target ref: {}", target_ref_name);
+                    }
+                    if let Some(resolved_ref_name) =
+                        view.reconciliation.resolved_ref_name.as_deref()
+                    {
+                        println!("  resolved ref: {}", resolved_ref_name);
+                    }
+                    println!("  base commit: {}", view.reconciliation.base_commit_id);
+                    println!("  left commit: {}", view.reconciliation.left_commit_id);
+                    println!("  right commit: {}", view.reconciliation.right_commit_id);
+                    println!("  policy: {}", view.reconciliation.policy);
+                    println!("  conflicts: {}", view.reconciliation.conflicts.len());
+                    println!("  decisions: {}", view.reconciliation.decisions.len());
+                    println!(
+                        "  refinement candidates: {}",
+                        view.preview.evolution_preview.refinement_candidates.len()
+                    );
+                    println!("  ok: {}", view.preview.ok);
+                }
+            } else if let Some(run_id) = world_model_run {
+                let run = accepted_plane::read_world_model_run_record(
+                    &dir,
+                    &axiograph_pathdb::WorldModelRunId::new(run_id),
+                )?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&run)?);
+                } else {
+                    println!("world model run");
+                    println!("  run: {}", run.run_id);
+                    println!("  status: {:?}", run.status);
+                    println!("  backend: {}", run.backend);
+                    println!("  proposals: {}", run.proposal_count);
+                }
+            }
+        }
+        SemCommands::Ref { command } => match command {
+            SemRefCommands::Set {
+                dir,
+                r#ref,
+                commit,
+                json,
+            } => {
+                let commit_id = axiograph_pathdb::AxiDigest::new(commit);
+                let pointer = accepted_plane::persist_semantic_ref(&dir, &r#ref, &commit_id)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&pointer)?);
+                } else {
+                    println!("sem ref set");
+                    println!("  ref: {}", pointer.ref_name);
+                    println!("  commit: {}", pointer.commit_id);
+                }
+            }
+        },
+        SemCommands::Merge {
+            dir,
+            source,
+            target,
+            policy,
+            dry_run,
+            json,
+        } => {
+            let result = accepted_plane::sem_merge_dry_run(&dir, &source, &target, &policy)?;
+            if dry_run {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    println!("sem merge --dry-run");
+                    println!(
+                        "  source: {} -> {}",
+                        result.source.pointer.ref_name, result.source.pointer.commit_id
+                    );
+                    println!(
+                        "  target: {} -> {}",
+                        result.target.pointer.ref_name, result.target.pointer.commit_id
+                    );
+                    println!(
+                        "  merge base: {}",
+                        result.reconciliation.reconciliation.base_commit_id
+                    );
+                    println!(
+                        "  reconciliation: {}",
+                        result.reconciliation.reconciliation.reconciliation_id
+                    );
+                    println!(
+                        "  stored record: {}",
+                        result.reconciliation.stored_reconciliation_path
+                    );
+                    println!(
+                        "  preview kind: {}",
+                        result.reconciliation.preview.evolution_preview.kind
+                    );
+                    println!(
+                        "  refinement candidates: {}",
+                        result
+                            .reconciliation
+                            .preview
+                            .evolution_preview
+                            .refinement_candidates
+                            .len()
+                    );
+                    println!("  ok: {}", result.reconciliation.preview.ok);
+                    println!(
+                        "  inspect: axiograph sem show --dir {} --reconciliation {}",
+                        dir.display(),
+                        result.reconciliation.reconciliation.reconciliation_id
+                    );
+                }
+            } else {
+                let commit = accepted_plane::persist_reconciliation_semantic_commit(
+                    &dir,
+                    &result.reconciliation.reconciliation,
+                    &accepted_plane::ReconciliationSemanticCommitOptionsV1::default(),
+                )?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&commit)?);
+                } else {
+                    println!("sem merge");
+                    println!(
+                        "  source: {} -> {}",
+                        result.source.pointer.ref_name, result.source.pointer.commit_id
+                    );
+                    println!(
+                        "  target: {} -> {}",
+                        result.target.pointer.ref_name, result.target.pointer.commit_id
+                    );
+                    println!(
+                        "  merge base: {}",
+                        result.reconciliation.reconciliation.base_commit_id
+                    );
+                    println!(
+                        "  reconciliation: {}",
+                        result.reconciliation.reconciliation.reconciliation_id
+                    );
+                    println!("  commit: {}", commit.commit_id);
+                    if let Some(ref_name) = result
+                        .reconciliation
+                        .reconciliation
+                        .resolved_ref_name
+                        .as_deref()
+                    {
+                        println!("  updated ref: {} -> {}", ref_name, commit.commit_id);
+                    }
+                    if let Some(report) = commit.validation_report_path.as_deref() {
+                        println!("  validation report: {}", report);
+                    }
+                }
+            }
+        }
+        SemCommands::Log { dir, limit, json } => {
+            let commits = accepted_plane::sem_log(&dir, limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&commits)?);
+            } else {
+                println!("sem log");
+                for commit in commits {
+                    println!("  {} {:?} {}", commit.commit_id, commit.kind, commit.action);
+                    if let Some(message) = commit.message.as_deref() {
+                        println!("    message: {}", message);
+                    }
+                    if let Some(parent) = commit.parent_commit_id.as_ref() {
+                        println!("    parent: {}", parent);
+                    }
+                    println!("    accepted snapshot: {}", commit.accepted_snapshot_id);
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -6751,6 +7306,138 @@ fn discover_check_olog_report_from_inputs(
     )
 }
 
+fn migration_preview_schema_from_axi_schema(
+    schema: &axiograph_dsl::schema_v1::SchemaV1Schema,
+) -> Result<axiograph_pathdb::migration::SchemaV1> {
+    let arrows = schema
+        .relations
+        .iter()
+        .map(|relation| {
+            if relation.fields.len() < 2 {
+                return Err(anyhow!(
+                    "relation `{}` in schema `{}` cannot be lowered into SchemaV1: expected at least two fields",
+                    relation.name,
+                    schema.name
+                ));
+            }
+            Ok(axiograph_pathdb::migration::ArrowDeclV1 {
+                name: relation.name.clone(),
+                src: relation.fields[0].ty.clone(),
+                dst: relation.fields[1].ty.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(axiograph_pathdb::migration::SchemaV1 {
+        name: schema.name.clone(),
+        objects: schema.objects.clone(),
+        arrows,
+        subtypes: schema
+            .subtypes
+            .iter()
+            .map(|subtype| axiograph_pathdb::migration::SubtypeDeclV1 {
+                sub: subtype.sub.clone(),
+                sup: subtype.sup.clone(),
+                incl: subtype
+                    .inclusion
+                    .clone()
+                    .unwrap_or_else(|| format!("{}_incl", subtype.sub)),
+            })
+            .collect(),
+    })
+}
+
+fn select_transport_preview_schema<'a>(
+    module: &'a axiograph_dsl::schema_v1::SchemaV1Module,
+    requested_schema_name: Option<&str>,
+    morphism_source_schema: &str,
+) -> Result<&'a axiograph_dsl::schema_v1::SchemaV1Schema> {
+    if let Some(schema_name) = requested_schema_name {
+        return module
+            .schemas
+            .iter()
+            .find(|schema| schema.name == schema_name)
+            .ok_or_else(|| anyhow!("module contains no schema `{schema_name}`"));
+    }
+
+    if let Some(schema) = module
+        .schemas
+        .iter()
+        .find(|schema| schema.name == morphism_source_schema)
+    {
+        return Ok(schema);
+    }
+
+    if module.schemas.len() == 1 {
+        return Ok(&module.schemas[0]);
+    }
+
+    let mut schema_names = module
+        .schemas
+        .iter()
+        .map(|schema| schema.name.clone())
+        .collect::<Vec<_>>();
+    schema_names.sort();
+    Err(anyhow!(
+        "module contains multiple schemas; pass --schema (available: {})",
+        schema_names.join(", ")
+    ))
+}
+
+pub(crate) fn discover_transport_preview_from_inputs(
+    axi_text: &str,
+    schema_name: Option<&str>,
+    morphism_json: &str,
+    apply_refinement_handle_id: Option<&str>,
+) -> Result<crate::evolution_preview::EvolutionPreviewV1> {
+    let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
+    let validated = canonical.module();
+    let module = validated.module();
+    let morphism: axiograph_pathdb::migration::SchemaMorphismV1 =
+        serde_json::from_str(morphism_json)
+            .map_err(|e| anyhow!("failed to parse schema morphism JSON: {e}"))?;
+    let schema = select_transport_preview_schema(module, schema_name, &morphism.source_schema)?;
+    if schema.name != morphism.source_schema {
+        return Err(anyhow!(
+            "selected schema `{}` does not match morphism source schema `{}`",
+            schema.name,
+            morphism.source_schema
+        ));
+    }
+    let source_schema = migration_preview_schema_from_axi_schema(schema)?;
+    let compiled_schema = validated
+        .compiled_schema_ir(&schema.name)?
+        .ok_or_else(|| anyhow!("failed to compile schema IR for `{}`", schema.name))?;
+    let theories = validated.compiled_theories_for_schema(&schema.name)?;
+    let candidate_label = format!("{}->{}", morphism.source_schema, morphism.target_schema);
+
+    if let Some(handle_id) = apply_refinement_handle_id {
+        return Ok(
+            crate::evolution_preview::apply_runtime_refinement_by_id_to_migration_preview_from_compiled_theory_v1(
+                None,
+                candidate_label,
+                &compiled_schema,
+                &theories,
+                &morphism,
+                &source_schema,
+                handle_id,
+            )?
+            .evolution_preview,
+        );
+    }
+
+    Ok(
+        crate::evolution_preview::build_migration_evolution_preview_from_compiled_theory_v1(
+            None,
+            candidate_label,
+            &morphism,
+            &source_schema,
+            &compiled_schema,
+            &theories,
+        ),
+    )
+}
+
 fn cmd_discover_check_olog(args: &DiscoverCheckOlogArgs) -> Result<()> {
     let axi_text = fs::read_to_string(&args.input)?;
     let fragment_json = fs::read_to_string(&args.fragment)?;
@@ -6768,6 +7455,26 @@ fn cmd_discover_check_olog(args: &DiscoverCheckOlogArgs) -> Result<()> {
         println!("{json}");
     }
     Ok(())
+}
+
+fn cmd_discover_route_preview(args: &DiscoverRoutePreviewArgs) -> Result<()> {
+    let db = load_pathdb_for_cli(&args.input)?;
+    let request_json = fs::read_to_string(&args.request)?;
+    let report =
+        crate::route_preview::discover_route_preview_from_request_json(&db, &request_json)?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_transport_preview(args: &DiscoverTransportPreviewArgs) -> Result<()> {
+    let axi_text = fs::read_to_string(&args.input)?;
+    let morphism_json = fs::read_to_string(&args.morphism)?;
+    let preview = discover_transport_preview_from_inputs(
+        &axi_text,
+        args.schema.as_deref(),
+        &morphism_json,
+        args.apply_refinement_handle_id.as_deref(),
+    )?;
+    write_json_output(&preview, args.out.as_ref())
 }
 
 fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<()> {
@@ -7783,6 +8490,20 @@ fn cmd_ingest_merge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "axiograph-cli-main-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
 
     #[test]
     fn discover_check_olog_report_from_inputs_can_apply_handle() {
@@ -7862,5 +8583,334 @@ instance I of S:
             .role_bindings
             .iter()
             .any(|binding| binding.role == "employer" && binding.target_box == "team"));
+    }
+
+    #[test]
+    fn discover_transport_preview_from_inputs_can_apply_handle() {
+        let axi_text = r#"
+module Plant
+
+schema Plant:
+  object PlantAsset
+  object Pump
+  object Compressor
+  object Context
+  relation installed_at(asset: PlantAsset, site: PlantAsset, ctx: Context)
+  subtype Pump < PlantAsset
+  subtype Compressor < PlantAsset
+
+theory PlantTransport on Plant:
+  constraint key installed_at(asset, site, ctx)
+"#;
+        let morphism_json = serde_json::to_string(&serde_json::json!({
+            "source_schema": "Plant",
+            "target_schema": "Ops",
+            "objects": [
+                {"source_object": "PlantAsset", "target_object": "Equipment"},
+                {"source_object": "Pump", "target_object": "Equipment"},
+                {"source_object": "Compressor", "target_object": "Equipment"}
+            ],
+            "arrows": [
+                {"source_arrow": "installed_at", "target_path": ["owned_by", "located_at"]}
+            ]
+        }))
+        .expect("serialize morphism json");
+
+        let first_preview =
+            discover_transport_preview_from_inputs(axi_text, Some("Plant"), &morphism_json, None)
+                .expect("initial transport preview");
+        let handle_id = first_preview
+            .refinement_candidates
+            .first()
+            .map(|candidate| candidate.handle.id.clone())
+            .expect("expected migration refinement handle");
+
+        let preview = discover_transport_preview_from_inputs(
+            axi_text,
+            Some("Plant"),
+            &morphism_json,
+            Some(handle_id.as_str()),
+        )
+        .expect("applied transport preview");
+
+        assert_eq!(preview.kind, "migration_preview");
+        assert!(preview.ok);
+        assert!(preview.residual_obligations.is_empty());
+        assert!(preview.refinement_candidates.is_empty());
+        assert!(preview
+            .typed_change
+            .primitives
+            .iter()
+            .any(|primitive| matches!(
+                primitive,
+                crate::evolution_preview::EvolutionPrimitiveV1::TransportAlongSchemaMorphism {
+                    source_schema,
+                    target_schema,
+                    ..
+                } if source_schema == "Plant" && target_schema == "Ops"
+            )));
+    }
+
+    #[test]
+    fn discover_route_preview_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "route-preview",
+            "/tmp/demo.axpd",
+            "--request",
+            "/tmp/route.json",
+            "--out",
+            "/tmp/route_preview.json",
+        ])
+        .expect("parse discover route-preview");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::RoutePreview(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axpd"));
+                assert_eq!(args.request, PathBuf::from("/tmp/route.json"));
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/route_preview.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn sem_ref_set_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "sem",
+            "ref",
+            "set",
+            "--dir",
+            "/tmp/accepted",
+            "--ref",
+            "heads/custom/demo",
+            "--commit",
+            "fnv1a64:demo-commit",
+            "--json",
+        ])
+        .expect("parse sem ref set");
+
+        match cli.command {
+            Commands::Sem {
+                command:
+                    SemCommands::Ref {
+                        command:
+                            SemRefCommands::Set {
+                                dir,
+                                r#ref,
+                                commit,
+                                json,
+                            },
+                    },
+            } => {
+                assert_eq!(dir, PathBuf::from("/tmp/accepted"));
+                assert_eq!(r#ref, "heads/custom/demo");
+                assert_eq!(commit, "fnv1a64:demo-commit");
+                assert!(json);
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_transport_preview_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "transport-preview",
+            "/tmp/demo.axi",
+            "--morphism",
+            "/tmp/morphism.json",
+            "--schema",
+            "Plant",
+            "--apply-refinement-handle-id",
+            "migration_refine_v1:demo",
+            "--out",
+            "/tmp/preview.json",
+        ])
+        .expect("parse discover transport-preview");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::TransportPreview(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axi"));
+                assert_eq!(args.morphism, PathBuf::from("/tmp/morphism.json"));
+                assert_eq!(args.schema.as_deref(), Some("Plant"));
+                assert_eq!(
+                    args.apply_refinement_handle_id.as_deref(),
+                    Some("migration_refine_v1:demo")
+                );
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/preview.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn sem_ref_set_command_persists_generic_ref_pointer() {
+        let dir = temp_test_dir("sem-ref-set-command");
+        accepted_plane::init_accepted_plane_dir(&dir).expect("init accepted dir");
+        let family_axi = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("examples/Family.axi");
+        accepted_plane::promote_reviewed_module(&family_axi, &dir, Some("seed"), "off")
+            .expect("seed accepted-plane semantic commit");
+        let commit_id = accepted_plane::read_sem_ref_pointer(&dir, "heads/main")
+            .expect("read main ref after seed")
+            .commit_id;
+
+        cmd_sem(SemCommands::Ref {
+            command: SemRefCommands::Set {
+                dir: dir.clone(),
+                r#ref: "heads/custom/demo".to_string(),
+                commit: commit_id.to_string(),
+                json: false,
+            },
+        })
+        .expect("run sem ref set");
+
+        let pointer = accepted_plane::read_sem_ref_pointer(&dir, "heads/custom/demo")
+            .expect("read persisted semantic ref");
+        assert_eq!(pointer.ref_name, "heads/custom/demo");
+        assert_eq!(pointer.commit_id, commit_id);
+        assert!(dir.join("sem/refs/heads/custom/demo").exists());
+
+        fs::remove_dir_all(&dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn sem_ref_set_command_rejects_missing_commit() {
+        let dir = temp_test_dir("sem-ref-set-missing-commit");
+        accepted_plane::init_accepted_plane_dir(&dir).expect("init accepted dir");
+
+        let err = cmd_sem(SemCommands::Ref {
+            command: SemRefCommands::Set {
+                dir: dir.clone(),
+                r#ref: "heads/custom/demo".to_string(),
+                commit: "fnv1a64:missing-commit".to_string(),
+                json: false,
+            },
+        })
+        .expect_err("missing commit should fail");
+
+        assert!(err.to_string().contains("failed to read semantic commit"));
+        fs::remove_dir_all(&dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn industrial_harness_run_regulated_seed_command_parses() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "tools",
+            "industrial-harness",
+            "run-regulated-seed",
+            "--dir",
+            "/tmp/accepted",
+            "--snapshot",
+            "head",
+            "--cache-root",
+            "/tmp/cache",
+            "--run-id",
+            "regulated-seed-001",
+            "--created-at-unix-secs",
+            "1713810000",
+            "--json",
+        ])
+        .expect("parse industrial harness runner command");
+
+        match cli.command {
+            Commands::Tools {
+                command:
+                    ToolsCommands::IndustrialHarness {
+                        command:
+                            IndustrialHarnessCommands::RunRegulatedSeed {
+                                dir,
+                                snapshot,
+                                cache_root,
+                                run_id,
+                                created_at_unix_secs,
+                                json,
+                            },
+                    },
+            } => {
+                assert_eq!(dir, PathBuf::from("/tmp/accepted"));
+                assert_eq!(snapshot, "head");
+                assert_eq!(cache_root, PathBuf::from("/tmp/cache"));
+                assert_eq!(run_id, "regulated-seed-001");
+                assert_eq!(created_at_unix_secs, 1_713_810_000);
+                assert!(json);
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn industrial_harness_run_regulated_seed_command_materializes_cache() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+        let accepted_dir = temp_test_dir("industrial-harness-accepted");
+        let cache_root = temp_test_dir("industrial-harness-cache");
+        let axi_path = repo_root.join("examples/industrial/RegulatedProductionLine.axi");
+
+        accepted_plane::promote_reviewed_module(
+            &axi_path,
+            &accepted_dir,
+            Some("seed regulated line"),
+            "off",
+        )
+        .expect("promote regulated line to accepted plane");
+
+        cmd_industrial_harness(IndustrialHarnessCommands::RunRegulatedSeed {
+            dir: accepted_dir.clone(),
+            snapshot: "head".to_string(),
+            cache_root: cache_root.clone(),
+            run_id: "run-seed-001".to_string(),
+            created_at_unix_secs: 1_713_810_000,
+            json: false,
+        })
+        .expect("run regulated seed harness");
+
+        let run_path = cache_root.join(
+            "_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/run.json",
+        );
+        let cq_path = cache_root
+            .join("_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/cq_results.json");
+        let coverage_path = cache_root
+            .join("_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/coverage.json");
+        let agent_report_path = cache_root
+            .join("_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/agent_report.json");
+        let distill_path = cache_root
+            .join("_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/distill.json");
+
+        assert!(run_path.exists());
+        assert!(cq_path.exists());
+        assert!(coverage_path.exists());
+        assert!(agent_report_path.exists());
+        assert!(distill_path.exists());
+
+        let run: crate::industrial_harness::IndustrialHarnessRunV1 =
+            serde_json::from_str(&fs::read_to_string(&run_path).expect("read run artifact"))
+                .expect("deserialize run artifact");
+        assert_eq!(run.run_id, "run-seed-001");
+        assert_eq!(run.created_at_unix_secs, 1_713_810_000);
+        assert!(
+            run.anchor
+                .accepted_snapshot_id
+                .as_str()
+                .starts_with("fnv1a64:"),
+            "expected accepted snapshot id in run anchor, got {}",
+            run.anchor.accepted_snapshot_id
+        );
+        assert_eq!(run.trust.trust_class, "runtime_guarded");
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup accepted dir");
+        fs::remove_dir_all(&cache_root).expect("cleanup cache dir");
     }
 }
