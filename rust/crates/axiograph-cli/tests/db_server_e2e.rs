@@ -234,6 +234,39 @@ fn init_store_backed_pathdb_head(bin: &Path, run_dir: &Path, input: &Path) -> Pa
     accepted_dir
 }
 
+fn init_store_backed_accepted_head_from_axi_text(
+    bin: &Path,
+    run_dir: &Path,
+    label: &str,
+    axi_text: &str,
+) -> PathBuf {
+    let accepted_dir = run_dir.join("build/accepted_plane");
+    fs::create_dir_all(&accepted_dir).expect("create accepted dir");
+
+    let input = run_dir.join("build").join(format!("{label}.axi"));
+    fs::write(&input, axi_text).expect("write accepted-plane axi input");
+
+    let status = Command::new(bin)
+        .current_dir(run_dir)
+        .arg("db")
+        .arg("accept")
+        .arg("promote")
+        .arg(&input)
+        .arg("--dir")
+        .arg(&accepted_dir)
+        .arg("--message")
+        .arg(format!("e2e: accept promote ({label})"))
+        .status()
+        .expect("run axiograph db accept promote");
+    assert!(
+        status.success(),
+        "accept promote failed (exit={})",
+        status.code().unwrap_or(-1)
+    );
+
+    accepted_dir
+}
+
 fn write_world_model_plugin_script(
     run_dir: &Path,
     label: &str,
@@ -867,6 +900,191 @@ fn db_serve_query_smoke() {
     assert!(
         snap_json.get("error").is_some(),
         "expected /snapshots error payload"
+    );
+}
+
+#[test]
+fn db_serve_store_backed_query_support_summary_without_certify() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(
+        &repo_root,
+        "db_serve_store_backed_support_summary_no_certify",
+    );
+    let accepted_dir = init_store_backed_accepted_head_from_axi_text(
+        &bin,
+        &run_dir,
+        "support_summary_no_certify",
+        r#"module Demo
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person) @context Context
+
+instance I of S:
+  Person = {Alice, Bob}
+  Context = {CensusData}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=CensusData)
+  }
+"#,
+    );
+
+    let ready_file = run_dir.join("build/ready.json");
+    let child = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("serve")
+        .arg("--dir")
+        .arg(&accepted_dir)
+        .arg("--layer")
+        .arg("accepted")
+        .arg("--snapshot")
+        .arg("head")
+        .arg("--listen")
+        .arg("127.0.0.1:0")
+        .arg("--ready-file")
+        .arg(&ready_file)
+        .spawn()
+        .expect("spawn db serve (support summary no certify)");
+    let _guard = ChildGuard { child };
+
+    let addr = wait_for_ready_addr(&ready_file);
+    let (status_code, response) = http_post_json(
+        &addr,
+        "/query",
+        &serde_json::json!({
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    {
+                        "kind": "fact",
+                        "fact": "?f",
+                        "relation": "S.Parent",
+                        "fields": {
+                            "child": "Alice",
+                            "parent": "?p",
+                            "ctx": "CensusData"
+                        }
+                    }
+                ],
+                "limit": 10
+            }
+        }),
+    );
+    assert_eq!(
+        status_code, 200,
+        "expected 200, got {status_code}: {response}"
+    );
+    assert!(
+        response.get("certificate").is_none(),
+        "did not expect /query certificate when certify=false: {response}"
+    );
+    assert_eq!(
+        response["support_summary"]["basis"]["certificate_kind"].as_str(),
+        Some("query_result_v3")
+    );
+    assert_eq!(
+        response["support_summary"]["basis"]["certificate_emitted_to_client"].as_bool(),
+        Some(false)
+    );
+    assert!(response["support_summary"]["supported_facts"]
+        .as_array()
+        .is_some_and(|facts| facts.iter().all(|fact| {
+            fact["witness_rows"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+        })));
+}
+
+#[test]
+fn db_serve_store_backed_query_support_summary_with_certify() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "db_serve_store_backed_support_summary_certify");
+    let accepted_dir = init_store_backed_accepted_head_from_axi_text(
+        &bin,
+        &run_dir,
+        "support_summary_certify",
+        r#"module Demo
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person) @context Context
+
+instance I of S:
+  Person = {Alice, Bob}
+  Context = {CensusData}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=CensusData)
+  }
+"#,
+    );
+
+    let ready_file = run_dir.join("build/ready.json");
+    let child = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("serve")
+        .arg("--dir")
+        .arg(&accepted_dir)
+        .arg("--layer")
+        .arg("accepted")
+        .arg("--snapshot")
+        .arg("head")
+        .arg("--listen")
+        .arg("127.0.0.1:0")
+        .arg("--ready-file")
+        .arg(&ready_file)
+        .spawn()
+        .expect("spawn db serve (support summary certify)");
+    let _guard = ChildGuard { child };
+
+    let addr = wait_for_ready_addr(&ready_file);
+    let (status_code, response) = http_post_json(
+        &addr,
+        "/query",
+        &serde_json::json!({
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    {
+                        "kind": "fact",
+                        "fact": "?f",
+                        "relation": "S.Parent",
+                        "fields": {
+                            "child": "Alice",
+                            "parent": "?p",
+                            "ctx": "CensusData"
+                        }
+                    }
+                ],
+                "limit": 10
+            },
+            "certify": true
+        }),
+    );
+    assert_eq!(
+        status_code, 200,
+        "expected 200, got {status_code}: {response}"
+    );
+    assert!(
+        response.get("certificate").is_some(),
+        "expected /query certificate when certify=true: {response}"
+    );
+    assert_eq!(
+        response["support_summary"]["basis"]["certificate_kind"].as_str(),
+        Some("query_result_v3")
+    );
+    assert_eq!(
+        response["support_summary"]["basis"]["certificate_emitted_to_client"].as_bool(),
+        Some(true)
     );
 }
 

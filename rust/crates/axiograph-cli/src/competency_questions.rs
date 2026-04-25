@@ -262,6 +262,8 @@ pub struct CompetencyCoverageWithTrustV1 {
     pub satisfied: usize,
     pub coverage: f64,
     pub cost: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
     #[serde(default)]
     pub questions: Vec<CompetencyQuestionEvaluationV1>,
 }
@@ -543,6 +545,7 @@ pub fn evaluate_competency_questions_with_trust(
         satisfied,
         coverage,
         cost: total_cost,
+        runtime_theory_check: None,
         questions: results,
     })
 }
@@ -623,6 +626,7 @@ pub fn evaluate_competency_questions_with_trust_and_theory_graph(
         satisfied,
         coverage,
         cost: total_cost,
+        runtime_theory_check: None,
         questions: results,
     })
 }

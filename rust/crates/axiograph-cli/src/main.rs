@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -24,18 +24,20 @@ mod axi_fmt;
 mod axi_input;
 mod axql;
 mod backend_pushdown;
+mod behavior_case;
 mod competency_questions;
+mod context_report;
 mod db_server;
 mod doc_chunks;
 mod embeddings;
 mod evidence_support;
 mod evolution_preview;
 mod github;
-mod industrial_harness;
-mod industrial_harness_tools;
 mod llm;
 mod mcp;
 mod nlq;
+mod path_cert;
+mod path_cert_tools;
 mod pathdb_wal;
 mod perf;
 mod profiling;
@@ -49,8 +51,10 @@ mod relation_resolution;
 mod repl;
 mod route_preview;
 mod route_preview_tools;
+mod runtime_theory_check;
 mod schema_discovery;
 mod semantic_claim;
+mod semantic_merge_lattice;
 mod semantic_tools;
 mod sqlish;
 mod store_sync;
@@ -444,6 +448,9 @@ enum CheckCommands {
         input: PathBuf,
     },
 
+    /// Check compiled theory obligations, closure tier, and runtime completeness claims.
+    Theory(CheckTheoryArgs),
+
     /// Format a canonical `.axi` module (surgically; preserves comments).
     ///
     /// Today this focuses on canonicalizing `constraint ...` syntax so
@@ -486,16 +493,32 @@ enum CheckCommands {
     },
 }
 
+#[derive(Args, Debug, Clone)]
+struct CheckTheoryArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Optional theory id or local theory name filter.
+    #[arg(long)]
+    theory: Option<String>,
+
+    /// Closure tier: finite_fragment|evidence_weighted|global_indexed.
+    #[arg(long, default_value = "finite_fragment")]
+    closure_tier: String,
+
+    /// Emit JSON to stdout unless --out is provided.
+    #[arg(long)]
+    json: bool,
+
+    /// Output JSON path.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 enum ToolsCommands {
     /// Visualize a `.axpd` snapshot or imported `.axi` module as a neighborhood graph.
     Viz(VizArgs),
-
-    /// Read-only industrial shadow-harness helpers.
-    IndustrialHarness {
-        #[command(subcommand)]
-        command: IndustrialHarnessCommands,
-    },
 
     /// Tooling-focused analysis commands (untrusted / evidence-plane friendly).
     Analyze {
@@ -507,31 +530,6 @@ enum ToolsCommands {
     Perf {
         #[command(subcommand)]
         command: perf::PerfCommands,
-    },
-}
-
-#[derive(Subcommand)]
-enum IndustrialHarnessCommands {
-    /// Materialize the regulated production line seed harness against an accepted snapshot.
-    RunRegulatedSeed {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Accepted snapshot id (or `head` / `latest`).
-        #[arg(long, default_value = "head")]
-        snapshot: String,
-        /// Root directory under which `_cache/industrial_harness/...` will be written.
-        #[arg(long, default_value = ".")]
-        cache_root: PathBuf,
-        /// Deterministic run id for this materialization.
-        #[arg(long)]
-        run_id: String,
-        /// Deterministic timestamp for this run.
-        #[arg(long)]
-        created_at_unix_secs: u64,
-        /// Print raw JSON.
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -757,6 +755,20 @@ enum CertCommands {
 
         /// Query text (quote it in your shell).
         query: String,
+
+        /// Write certificate JSON to this path (defaults to stdout).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Certify one concrete relation-id path over a `.axpd` or `.axi` snapshot.
+    Path {
+        /// Input `.axpd` or `.axi` snapshot.
+        input: PathBuf,
+
+        /// Input JSON file containing `PathCertRequestV1`.
+        #[arg(long)]
+        request: PathBuf,
 
         /// Write certificate JSON to this path (defaults to stdout).
         #[arg(short, long)]
@@ -1348,11 +1360,24 @@ enum DiscoverCommands {
     /// apply one typed refinement handle before re-checking.
     CheckOlog(DiscoverCheckOlogArgs),
 
+    /// Compose a read-only bounded-context report over existing semantic, CQ,
+    /// trust, and optional evolution-preview contracts.
+    ContextReport(DiscoverContextReportArgs),
+
+    /// Check a JSON BehaviorCaseV1 and emit trust receipts plus Rust/TS test skeletons.
+    BehaviorCase(DiscoverBehaviorCaseArgs),
+
     /// Preview a concrete route and optional route equivalence over a snapshot.
     RoutePreview(DiscoverRoutePreviewArgs),
 
     /// Preview schema-morphism transport over canonical `.axi` as an EvolutionPreviewV1.
     TransportPreview(DiscoverTransportPreviewArgs),
+
+    /// Emit runtime theory-obligation graphs from a canonical `.axi` module.
+    TheoryGraph(DiscoverTheoryGraphArgs),
+
+    /// Emit runtime theory checker closure/completeness reports from canonical `.axi`.
+    TheoryCheck(DiscoverTheoryCheckArgs),
 
     /// Run a world model plugin to propose new facts/relations (evidence plane).
     WorldModelPropose(WorldModelProposeArgs),
@@ -1374,6 +1399,66 @@ struct DiscoverCheckOlogArgs {
     /// Optional runtime refinement handle id to apply before returning the report.
     #[arg(long)]
     apply_refinement_handle_id: Option<String>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverTheoryGraphArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Optional theory id or local theory name filter.
+    #[arg(long)]
+    theory: Option<String>,
+
+    /// Output JSON path. Defaults to stdout.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverTheoryCheckArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Optional theory id or local theory name filter.
+    #[arg(long)]
+    theory: Option<String>,
+
+    /// Closure tier: finite_fragment|evidence_weighted|global_indexed.
+    #[arg(long, default_value = "finite_fragment")]
+    closure_tier: String,
+
+    /// Output JSON path. Defaults to stdout.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverContextReportArgs {
+    /// Input `.axpd` or canonical `.axi` snapshot.
+    input: PathBuf,
+
+    /// Input JSON file containing `ContextReportRequestV1`.
+    #[arg(long)]
+    request: PathBuf,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverBehaviorCaseArgs {
+    /// Input `.axpd` or canonical `.axi` snapshot.
+    input: PathBuf,
+
+    /// Input JSON file containing `BehaviorCaseCheckRequestV1`.
+    #[arg(long)]
+    request: PathBuf,
 
     /// Output JSON path (defaults to stdout).
     #[arg(short, long)]
@@ -2016,12 +2101,44 @@ enum SemCommands {
         /// Merge/reconciliation policy label.
         #[arg(long, default_value = "semantic_merge_dry_run")]
         policy: String,
+        /// Optional JSON SemanticSliceSelectorV1 for the source ref.
+        #[arg(long)]
+        source_slice: Option<PathBuf>,
+        /// Optional JSON SemanticSliceSelectorV1 for the target ref.
+        #[arg(long)]
+        target_slice: Option<PathBuf>,
         /// Do not materialize a merge commit; emit the candidate reconciliation and preview only.
         #[arg(long)]
         dry_run: bool,
         /// Print raw JSON.
         #[arg(long)]
         json: bool,
+    },
+    /// Build a semantic rebase preview by transporting one ref onto another.
+    Rebase {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Source semantic ref to transport.
+        #[arg(long)]
+        source: String,
+        /// Target semantic ref to rebase onto.
+        #[arg(long)]
+        onto: String,
+        /// Optional JSON SemanticSliceSelectorV1 applied to the source ref.
+        #[arg(long)]
+        slice: Option<PathBuf>,
+        /// Rebase/transport policy label.
+        #[arg(long, default_value = "semantic_rebase_dry_run")]
+        policy: String,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build, show, or diff persisted semantic slice manifests.
+    Slice {
+        #[command(subcommand)]
+        command: SemSliceCommands,
     },
     /// Show semantic commit history from sem/HEAD.
     Log {
@@ -2050,6 +2167,52 @@ enum SemRefCommands {
         /// Semantic commit id to write into the ref pointer.
         #[arg(long)]
         commit: String,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SemSliceCommands {
+    /// Build and persist a semantic slice manifest under sem/slices/.
+    Build {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Semantic ref to slice.
+        #[arg(long)]
+        r#ref: String,
+        /// Optional JSON SemanticSliceSelectorV1.
+        #[arg(long)]
+        selector: Option<PathBuf>,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a persisted semantic slice manifest.
+    Show {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Slice id, relative sem/slices path, or manifest path.
+        #[arg(long)]
+        slice: String,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Diff two persisted semantic slice manifests.
+    Diff {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Left slice id, relative sem/slices path, or manifest path.
+        #[arg(long)]
+        left: String,
+        /// Right slice id, relative sem/slices path, or manifest path.
+        #[arg(long)]
+        right: String,
         /// Print raw JSON.
         #[arg(long)]
         json: bool,
@@ -2210,6 +2373,9 @@ fn main() -> Result<()> {
                 CheckCommands::Validate { input } => {
                     cmd_validate(&input)?;
                 }
+                CheckCommands::Theory(args) => {
+                    cmd_check_theory(&args)?;
+                }
                 CheckCommands::Fmt { input, out, write } => {
                     axi_fmt::cmd_fmt_axi(&input, out.as_deref(), write)?;
                 }
@@ -2233,6 +2399,13 @@ fn main() -> Result<()> {
                 } => {
                     cmd_query_cert(&input, &lang, &query, out.as_ref())?;
                 }
+                CertCommands::Path {
+                    input,
+                    request,
+                    out,
+                } => {
+                    cmd_path_cert(&input, &request, out.as_ref())?;
+                }
                 CertCommands::Typecheck { input, out } => {
                     cmd_typecheck_cert(&input, out.as_ref())?;
                 }
@@ -2243,9 +2416,6 @@ fn main() -> Result<()> {
             Commands::Tools { command } => match command {
                 ToolsCommands::Viz(args) => {
                     cmd_viz_from_args(&args)?;
-                }
-                ToolsCommands::IndustrialHarness { command } => {
-                    cmd_industrial_harness(command)?;
                 }
                 ToolsCommands::Analyze { command } => {
                     analyze::cmd_analyze(command)?;
@@ -2594,11 +2764,23 @@ fn main() -> Result<()> {
                 DiscoverCommands::CheckOlog(args) => {
                     cmd_discover_check_olog(&args)?;
                 }
+                DiscoverCommands::ContextReport(args) => {
+                    cmd_discover_context_report(&args)?;
+                }
+                DiscoverCommands::BehaviorCase(args) => {
+                    cmd_discover_behavior_case(&args)?;
+                }
                 DiscoverCommands::RoutePreview(args) => {
                     cmd_discover_route_preview(&args)?;
                 }
                 DiscoverCommands::TransportPreview(args) => {
                     cmd_discover_transport_preview(&args)?;
+                }
+                DiscoverCommands::TheoryGraph(args) => {
+                    cmd_discover_theory_graph(&args)?;
+                }
+                DiscoverCommands::TheoryCheck(args) => {
+                    cmd_discover_theory_check(&args)?;
                 }
                 DiscoverCommands::WorldModelPropose(args) => {
                     cmd_world_model_propose(&args)?;
@@ -2974,47 +3156,6 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
     Ok(())
 }
 
-fn cmd_industrial_harness(command: IndustrialHarnessCommands) -> Result<()> {
-    match command {
-        IndustrialHarnessCommands::RunRegulatedSeed {
-            dir,
-            snapshot,
-            cache_root,
-            run_id,
-            created_at_unix_secs,
-            json,
-        } => {
-            let response = industrial_harness::run_regulated_production_line_seed_harness_from_accepted_snapshot(
-                &cache_root,
-                &dir,
-                &snapshot,
-                &run_id,
-                created_at_unix_secs,
-            )?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&response)?);
-            } else {
-                println!("industrial harness");
-                println!("  campaign: {}", response.campaign_id);
-                println!("  run: {}", response.run_id);
-                println!(
-                    "  accepted anchor: {} @ {}",
-                    response.accepted_axi_anchor.accepted_snapshot_id,
-                    response.accepted_axi_anchor.axi_digest
-                );
-                println!("  cache root: {}", response.cache_root);
-                println!("  campaign manifest: {}", response.campaign_manifest_path);
-                println!("  run artifact: {}", response.artifacts.run);
-                println!("  cq results: {}", response.artifacts.cq_results);
-                println!("  coverage: {}", response.artifacts.coverage);
-                println!("  agent report: {}", response.artifacts.agent_report);
-                println!("  distill: {}", response.artifacts.distill);
-            }
-        }
-    }
-    Ok(())
-}
-
 fn cmd_sem(command: SemCommands) -> Result<()> {
     match command {
         SemCommands::Status { dir, json } => {
@@ -3195,13 +3336,28 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
             source,
             target,
             policy,
+            source_slice,
+            target_slice,
             dry_run,
             json,
         } => {
             let result = accepted_plane::sem_merge_dry_run(&dir, &source, &target, &policy)?;
+            let merge_plan = crate::semantic_merge_lattice::semantic_merge_plan_from_dry_run(
+                &result,
+                crate::semantic_merge_lattice::SemanticMergeOperationKindV1::Merge,
+                read_semantic_slice_selector(source_slice.as_ref())?,
+                read_semantic_slice_selector(target_slice.as_ref())?,
+            );
             if dry_run {
                 if json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "version": "semantic_merge_dry_run_with_plan_v1",
+                            "dry_run": result,
+                            "merge_plan": merge_plan,
+                        }))?
+                    );
                 } else {
                     println!("sem merge --dry-run");
                     println!(
@@ -3237,6 +3393,11 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
                             .refinement_candidates
                             .len()
                     );
+                    println!("  merge plan: {}", merge_plan.plan_id);
+                    println!("  auto decisions: {}", merge_plan.auto_join_decisions.len());
+                    println!("  conflicts: {}", merge_plan.conflicts.len());
+                    println!("  resolver steps: {}", merge_plan.resolver_steps.len());
+                    println!("  can materialize: {}", merge_plan.can_materialize);
                     println!("  ok: {}", result.reconciliation.preview.ok);
                     println!(
                         "  inspect: axiograph sem show --dir {} --reconciliation {}",
@@ -3245,6 +3406,14 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
                     );
                 }
             } else {
+                if !merge_plan.can_materialize {
+                    return Err(anyhow!(
+                        "semantic merge plan `{}` is not materializable; {} resolver step(s), {} residual obligation(s)",
+                        merge_plan.plan_id,
+                        merge_plan.resolver_steps.len(),
+                        merge_plan.residual_obligations.len()
+                    ));
+                }
                 let commit = accepted_plane::persist_reconciliation_semantic_commit(
                     &dir,
                     &result.reconciliation.reconciliation,
@@ -3270,6 +3439,7 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
                         "  reconciliation: {}",
                         result.reconciliation.reconciliation.reconciliation_id
                     );
+                    println!("  merge plan: {}", merge_plan.plan_id);
                     println!("  commit: {}", commit.commit_id);
                     if let Some(ref_name) = result
                         .reconciliation
@@ -3285,6 +3455,111 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
                 }
             }
         }
+        SemCommands::Rebase {
+            dir,
+            source,
+            onto,
+            slice,
+            policy,
+            json,
+        } => {
+            let result = accepted_plane::sem_merge_dry_run(&dir, &source, &onto, &policy)?;
+            let rebase_plan = crate::semantic_merge_lattice::semantic_merge_plan_from_dry_run(
+                &result,
+                crate::semantic_merge_lattice::SemanticMergeOperationKindV1::Rebase,
+                read_semantic_slice_selector(slice.as_ref())?,
+                crate::semantic_merge_lattice::SemanticSliceSelectorV1::default(),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rebase_plan)?);
+            } else {
+                println!("sem rebase --dry-run");
+                println!("  source: {source}");
+                println!("  onto: {onto}");
+                println!("  plan: {}", rebase_plan.plan_id);
+                println!(
+                    "  auto decisions: {}",
+                    rebase_plan.auto_join_decisions.len()
+                );
+                println!("  conflicts: {}", rebase_plan.conflicts.len());
+                println!("  resolver steps: {}", rebase_plan.resolver_steps.len());
+                println!("  can materialize: {}", rebase_plan.can_materialize);
+            }
+        }
+        SemCommands::Slice { command } => match command {
+            SemSliceCommands::Build {
+                dir,
+                r#ref,
+                selector,
+                json,
+            } => {
+                let view = accepted_plane::read_sem_ref_view(&dir, &r#ref)?;
+                let selector = read_semantic_slice_selector(selector.as_ref())?;
+                let manifest =
+                    crate::semantic_merge_lattice::semantic_slice_from_ref_view(&view, selector);
+                let manifest =
+                    enrich_semantic_slice_manifest_from_accepted_snapshot(&dir, manifest)?;
+                let stored_path = accepted_plane::persist_semantic_slice_manifest(&dir, &manifest)?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "version": "semantic_slice_build_result_v1",
+                            "stored_path": stored_path,
+                            "slice": manifest,
+                        }))?
+                    );
+                } else {
+                    println!("sem slice build");
+                    println!("  ref: {}", manifest.base_ref_name);
+                    println!("  slice: {}", manifest.slice_id);
+                    println!("  selected refs: {}", manifest.selected_refs.len());
+                    println!("  trust: {:?}", manifest.trust_class);
+                    println!("  stored: {stored_path}");
+                }
+            }
+            SemSliceCommands::Show { dir, slice, json } => {
+                let manifest = accepted_plane::read_semantic_slice_manifest(&dir, &slice)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&manifest)?);
+                } else {
+                    println!("sem slice");
+                    println!("  slice: {}", manifest.slice_id);
+                    println!("  label: {}", manifest.label);
+                    println!("  ref: {}", manifest.base_ref_name);
+                    println!("  commit: {}", manifest.commit_id);
+                    println!("  accepted snapshot: {}", manifest.accepted_snapshot_id);
+                    if let Some(kernel_ir_digest) = manifest.kernel_ir_digest.as_ref() {
+                        println!("  kernel ir: {kernel_ir_digest}");
+                    }
+                    println!("  selected refs: {}", manifest.selected_refs.len());
+                    println!("  trust: {:?}", manifest.trust_class);
+                    for note in &manifest.notes {
+                        println!("  note: {note}");
+                    }
+                }
+            }
+            SemSliceCommands::Diff {
+                dir,
+                left,
+                right,
+                json,
+            } => {
+                let left = accepted_plane::read_semantic_slice_manifest(&dir, &left)?;
+                let right = accepted_plane::read_semantic_slice_manifest(&dir, &right)?;
+                let diff = crate::semantic_merge_lattice::semantic_slice_diff(&left, &right);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&diff)?);
+                } else {
+                    println!("sem slice diff");
+                    println!("  left: {}", diff.left_slice_id);
+                    println!("  right: {}", diff.right_slice_id);
+                    println!("  added refs: {}", diff.added_refs.len());
+                    println!("  removed refs: {}", diff.removed_refs.len());
+                    println!("  shared refs: {}", diff.shared_refs.len());
+                }
+            }
+        },
         SemCommands::Log { dir, limit, json } => {
             let commits = accepted_plane::sem_log(&dir, limit)?;
             if json {
@@ -3305,6 +3580,71 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn read_semantic_slice_selector(
+    path: Option<&PathBuf>,
+) -> Result<crate::semantic_merge_lattice::SemanticSliceSelectorV1> {
+    let Some(path) = path else {
+        return Ok(crate::semantic_merge_lattice::SemanticSliceSelectorV1::default());
+    };
+    let text = fs::read_to_string(path)?;
+    serde_json::from_str(&text).map_err(|err| {
+        anyhow!(
+            "failed to parse SemanticSliceSelectorV1 at {}: {err}",
+            path.display()
+        )
+    })
+}
+
+fn enrich_semantic_slice_manifest_from_accepted_snapshot(
+    accepted_dir: &Path,
+    mut manifest: crate::semantic_merge_lattice::SemanticSliceManifestV1,
+) -> Result<crate::semantic_merge_lattice::SemanticSliceManifestV1> {
+    let snapshot = accepted_plane::read_snapshot_for_cli(
+        accepted_dir,
+        manifest.accepted_snapshot_id.as_str(),
+    )?;
+    for module_ref in snapshot.modules.values() {
+        let module_path = accepted_stored_module_path(accepted_dir, &module_ref.stored_path)?;
+        let text = fs::read_to_string(&module_path).map_err(|err| {
+            anyhow!(
+                "failed to read accepted module `{}` for semantic slice enrichment: {err}",
+                module_path.display()
+            )
+        })?;
+        let canonical = crate::axi_input::require_canonical_axi_text(&text).map_err(|err| {
+            anyhow!(
+                "accepted module `{}` is not canonical .axi and cannot enrich semantic slices: {err}",
+                module_path.display()
+            )
+        })?;
+        let kernel = axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), &text)
+            .map_err(|err| {
+                anyhow!(
+                    "failed to compile KernelModuleIr for accepted module `{}`: {err}",
+                    module_path.display()
+                )
+            })?;
+        manifest = crate::semantic_merge_lattice::enrich_semantic_slice_with_kernel_module_ir(
+            manifest, &kernel,
+        );
+    }
+    Ok(manifest)
+}
+
+fn accepted_stored_module_path(accepted_dir: &Path, stored_path: &str) -> Result<PathBuf> {
+    let stored = Path::new(stored_path);
+    if stored.is_absolute()
+        || stored
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(anyhow!(
+            "accepted module stored_path must be relative and stay under accepted dir: `{stored_path}`"
+        ));
+    }
+    Ok(accepted_dir.join(stored))
 }
 
 // =============================================================================
@@ -4356,6 +4696,27 @@ fn cmd_query_cert(
     }
 
     Ok(())
+}
+
+fn cmd_path_cert(input: &PathBuf, request: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
+    let db = load_pathdb_for_cli(input)?;
+    let request_json = fs::read_to_string(request)?;
+    let verifier: &crate::path_cert::PathCertVerifier =
+        &crate::db_server::verify_certificate_with_default_resolution;
+    let report =
+        crate::path_cert::certify_path_from_request_json(&db, &request_json, Some(verifier))?;
+
+    if matches!(report.certificate_verified, Some(false)) {
+        return Err(anyhow!(
+            "path certificate failed Lean verification: {}",
+            report
+                .certificate_verify_output
+                .as_deref()
+                .unwrap_or("no verifier output")
+        ));
+    }
+
+    write_json_output(&report.certificate, out)
 }
 
 fn cmd_typecheck_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
@@ -5658,7 +6019,55 @@ fn cmd_validate(input: &PathBuf) -> Result<()> {
         );
     }
 
+    if !m.theories.is_empty() {
+        let theory_report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
+            &text,
+            None,
+            axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
+        )?;
+        if theory_report.blocking_errors > 0 {
+            return Err(anyhow!(
+                "runtime theory check found {} blocking error(s)",
+                theory_report.blocking_errors
+            ));
+        }
+        println!(
+            "  Runtime theory: {} report(s), {} blocking error(s)",
+            theory_report.reports.len(),
+            theory_report.blocking_errors
+        );
+    }
+
     println!("{}", "Valid.".green());
+    Ok(())
+}
+
+fn cmd_check_theory(args: &CheckTheoryArgs) -> Result<()> {
+    let text = fs::read_to_string(&args.input)?;
+    let closure_tier =
+        crate::runtime_theory_check::parse_runtime_theory_closure_tier(&args.closure_tier)?;
+    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
+        &text,
+        args.theory.as_deref(),
+        closure_tier,
+    )?;
+
+    if args.json || args.out.is_some() {
+        write_json_output(&report, args.out.as_ref())?;
+    } else {
+        println!(
+            "{}",
+            crate::runtime_theory_check::runtime_theory_check_human_summary(&report)
+        );
+    }
+
+    if report.blocking_errors > 0 {
+        return Err(anyhow!(
+            "runtime theory check found {} blocking error(s)",
+            report.blocking_errors
+        ));
+    }
+
     Ok(())
 }
 
@@ -7306,6 +7715,65 @@ fn discover_check_olog_report_from_inputs(
     )
 }
 
+#[derive(Debug, Serialize)]
+struct DiscoverTheoryGraphReportV1 {
+    version: String,
+    module_digest: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    graphs: Vec<axiograph_pathdb::kernel_ir::TheoryObligationGraphV1>,
+    trust_boundary: String,
+    completeness_claim: String,
+    ontology_closure_claim: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<String>,
+}
+
+fn discover_theory_graph_report_from_axi_text(
+    axi_text: &str,
+    theory_filter: Option<&str>,
+) -> Result<DiscoverTheoryGraphReportV1> {
+    let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
+    let kernel = axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), axi_text)
+        .map_err(|err| anyhow!("failed to compile KernelModuleIr: {err}"))?;
+    let mut graphs = kernel
+        .theories
+        .iter()
+        .filter(|theory| {
+            let Some(filter) = theory_filter else {
+                return true;
+            };
+            theory.theory_id.as_str() == filter
+                || theory
+                    .theory_id
+                    .as_str()
+                    .rsplit_once(':')
+                    .is_some_and(|(_, local)| local == filter)
+        })
+        .map(axiograph_pathdb::kernel_ir::TheoryIr::obligation_graph)
+        .collect::<Vec<_>>();
+    graphs.sort_by(|a, b| a.theory_ref.stable_id().cmp(&b.theory_ref.stable_id()));
+    if graphs.is_empty() {
+        return Err(anyhow!(
+            "no compiled theories matched{}",
+            theory_filter
+                .map(|filter| format!(" `{filter}`"))
+                .unwrap_or_default()
+        ));
+    }
+    Ok(DiscoverTheoryGraphReportV1 {
+        version: "discover_theory_graph_report_v1".to_string(),
+        module_digest: canonical.digest().to_string(),
+        graphs,
+        trust_boundary: "rust_runtime_operational_not_lean_certificate".to_string(),
+        completeness_claim: "not_claimed".to_string(),
+        ontology_closure_claim: "not_claimed".to_string(),
+        notes: vec![
+            "theory obligation graphs are runtime-addressable indexes for exploration, CQ repair, migration, and reconciliation".to_string(),
+            "runtime graph emission does not certify completeness, ontology closure, or Lean proof obligations".to_string(),
+        ],
+    })
+}
+
 fn migration_preview_schema_from_axi_schema(
     schema: &axiograph_dsl::schema_v1::SchemaV1Schema,
 ) -> Result<axiograph_pathdb::migration::SchemaV1> {
@@ -7455,6 +7923,48 @@ fn cmd_discover_check_olog(args: &DiscoverCheckOlogArgs) -> Result<()> {
         println!("{json}");
     }
     Ok(())
+}
+
+fn cmd_discover_theory_graph(args: &DiscoverTheoryGraphArgs) -> Result<()> {
+    let axi_text = fs::read_to_string(&args.input)?;
+    let report = discover_theory_graph_report_from_axi_text(&axi_text, args.theory.as_deref())?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_theory_check(args: &DiscoverTheoryCheckArgs) -> Result<()> {
+    let axi_text = fs::read_to_string(&args.input)?;
+    let closure_tier =
+        crate::runtime_theory_check::parse_runtime_theory_closure_tier(&args.closure_tier)?;
+    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
+        &axi_text,
+        args.theory.as_deref(),
+        closure_tier,
+    )?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_context_report(args: &DiscoverContextReportArgs) -> Result<()> {
+    let db = load_pathdb_for_cli(&args.input)?;
+    let request_json = fs::read_to_string(&args.request)?;
+    let report = crate::context_report::discover_context_report_from_request_json(
+        &db,
+        None,
+        None,
+        &request_json,
+    )?;
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_behavior_case(args: &DiscoverBehaviorCaseArgs) -> Result<()> {
+    let db = load_pathdb_for_cli(&args.input)?;
+    let request_json = fs::read_to_string(&args.request)?;
+    let report = crate::behavior_case::discover_behavior_case_report_from_request_json(
+        &db,
+        None,
+        None,
+        &request_json,
+    )?;
+    write_json_output(&report, args.out.as_ref())
 }
 
 fn cmd_discover_route_preview(args: &DiscoverRoutePreviewArgs) -> Result<()> {
@@ -8678,6 +9188,92 @@ theory PlantTransport on Plant:
     }
 
     #[test]
+    fn discover_context_report_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "context-report",
+            "/tmp/demo.axpd",
+            "--request",
+            "/tmp/context.json",
+            "--out",
+            "/tmp/context_report.json",
+        ])
+        .expect("parse discover context-report");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::ContextReport(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axpd"));
+                assert_eq!(args.request, PathBuf::from("/tmp/context.json"));
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/context_report.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_behavior_case_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "behavior-case",
+            "/tmp/demo.axpd",
+            "--request",
+            "/tmp/behavior_case.json",
+            "--out",
+            "/tmp/behavior_case_report.json",
+        ])
+        .expect("parse discover behavior-case");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::BehaviorCase(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axpd"));
+                assert_eq!(args.request, PathBuf::from("/tmp/behavior_case.json"));
+                assert_eq!(
+                    args.out,
+                    Some(PathBuf::from("/tmp/behavior_case_report.json"))
+                );
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn cert_path_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "cert",
+            "path",
+            "/tmp/demo.axpd",
+            "--request",
+            "/tmp/path_cert.json",
+            "--out",
+            "/tmp/path_cert_out.json",
+        ])
+        .expect("parse cert path");
+
+        match cli.command {
+            Commands::Cert {
+                command:
+                    CertCommands::Path {
+                        input,
+                        request,
+                        out,
+                    },
+            } => {
+                assert_eq!(input, PathBuf::from("/tmp/demo.axpd"));
+                assert_eq!(request, PathBuf::from("/tmp/path_cert.json"));
+                assert_eq!(out, Some(PathBuf::from("/tmp/path_cert_out.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
     fn sem_ref_set_command_parses_nested_subcommand() {
         let cli = Cli::try_parse_from([
             "axiograph",
@@ -8710,6 +9306,45 @@ theory PlantTransport on Plant:
                 assert_eq!(dir, PathBuf::from("/tmp/accepted"));
                 assert_eq!(r#ref, "heads/custom/demo");
                 assert_eq!(commit, "fnv1a64:demo-commit");
+                assert!(json);
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn sem_slice_build_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "sem",
+            "slice",
+            "build",
+            "--dir",
+            "/tmp/accepted",
+            "--ref",
+            "heads/main",
+            "--selector",
+            "/tmp/slice-selector.json",
+            "--json",
+        ])
+        .expect("parse sem slice build");
+
+        match cli.command {
+            Commands::Sem {
+                command:
+                    SemCommands::Slice {
+                        command:
+                            SemSliceCommands::Build {
+                                dir,
+                                r#ref,
+                                selector,
+                                json,
+                            },
+                    },
+            } => {
+                assert_eq!(dir, PathBuf::from("/tmp/accepted"));
+                assert_eq!(r#ref, "heads/main");
+                assert_eq!(selector, Some(PathBuf::from("/tmp/slice-selector.json")));
                 assert!(json);
             }
             _ => panic!("unexpected command parse result"),
@@ -8752,6 +9387,89 @@ theory PlantTransport on Plant:
     }
 
     #[test]
+    fn discover_theory_graph_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "theory-graph",
+            "/tmp/family.axi",
+            "--theory",
+            "FamRules",
+            "--out",
+            "/tmp/theory_graph.json",
+        ])
+        .expect("parse discover theory-graph");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::TheoryGraph(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/family.axi"));
+                assert_eq!(args.theory.as_deref(), Some("FamRules"));
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/theory_graph.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn check_theory_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "check",
+            "theory",
+            "/tmp/family.axi",
+            "--theory",
+            "FamRules",
+            "--closure-tier",
+            "evidence_weighted",
+            "--json",
+        ])
+        .expect("parse check theory");
+
+        match cli.command {
+            Commands::Check {
+                command: CheckCommands::Theory(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/family.axi"));
+                assert_eq!(args.theory.as_deref(), Some("FamRules"));
+                assert_eq!(args.closure_tier, "evidence_weighted");
+                assert!(args.json);
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_theory_check_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "theory-check",
+            "/tmp/family.axi",
+            "--theory",
+            "FamRules",
+            "--closure-tier",
+            "global_indexed",
+            "--out",
+            "/tmp/theory_check.json",
+        ])
+        .expect("parse discover theory-check");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::TheoryCheck(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/family.axi"));
+                assert_eq!(args.theory.as_deref(), Some("FamRules"));
+                assert_eq!(args.closure_tier, "global_indexed");
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/theory_check.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
     fn sem_ref_set_command_persists_generic_ref_pointer() {
         let dir = temp_test_dir("sem-ref-set-command");
         accepted_plane::init_accepted_plane_dir(&dir).expect("init accepted dir");
@@ -8784,6 +9502,99 @@ theory PlantTransport on Plant:
     }
 
     #[test]
+    fn sem_slice_build_command_persists_manifest() {
+        let dir = temp_test_dir("sem-slice-build-command");
+        accepted_plane::init_accepted_plane_dir(&dir).expect("init accepted dir");
+        let family_axi = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("examples/Family.axi");
+        accepted_plane::promote_reviewed_module(&family_axi, &dir, Some("seed"), "off")
+            .expect("seed accepted-plane semantic commit");
+
+        cmd_sem(SemCommands::Slice {
+            command: SemSliceCommands::Build {
+                dir: dir.clone(),
+                r#ref: "heads/main".to_string(),
+                selector: None,
+                json: false,
+            },
+        })
+        .expect("run sem slice build");
+
+        let mut entries = fs::read_dir(dir.join("sem/slices"))
+            .expect("read sem slices")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect sem slices");
+        entries.sort_by_key(|entry| entry.path());
+        assert_eq!(entries.len(), 1);
+        let manifest: crate::semantic_merge_lattice::SemanticSliceManifestV1 =
+            serde_json::from_str(
+                &fs::read_to_string(entries[0].path()).expect("read slice manifest"),
+            )
+            .expect("parse slice manifest");
+        assert_eq!(
+            manifest.version,
+            crate::semantic_merge_lattice::SEMANTIC_SLICE_MANIFEST_VERSION_V1
+        );
+        assert_eq!(manifest.base_ref_name, "heads/main");
+        assert!(!manifest.selected_refs.is_empty());
+        assert!(manifest.selected_refs.iter().any(|reference| {
+            reference.kind == crate::semantic_merge_lattice::SemanticSliceRefKindV1::SchemaObject
+                && reference.label.as_deref() == Some("Person")
+        }));
+        assert!(manifest.selected_refs.iter().any(|reference| {
+            reference.kind == crate::semantic_merge_lattice::SemanticSliceRefKindV1::RelationObject
+                && reference.label.as_deref() == Some("Parent")
+        }));
+        assert!(manifest.selected_refs.iter().any(|reference| {
+            reference.kind == crate::semantic_merge_lattice::SemanticSliceRefKindV1::RoleProjection
+                && reference
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains("Parent.child"))
+        }));
+        assert!(manifest.selected_refs.iter().any(|reference| {
+            reference.kind
+                == crate::semantic_merge_lattice::SemanticSliceRefKindV1::TheoryObligation
+                && reference
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains("Parent"))
+        }));
+        assert!(manifest.selected_refs.iter().any(|reference| {
+            reference.kind == crate::semantic_merge_lattice::SemanticSliceRefKindV1::InstanceFunctor
+                && reference.id.contains("TinyFamily")
+        }));
+
+        fs::remove_dir_all(&dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn discover_theory_graph_report_exposes_runtime_obligation_graphs() {
+        let family_axi = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("examples/Family.axi");
+        let axi_text = fs::read_to_string(family_axi).expect("read Family.axi");
+        let report = discover_theory_graph_report_from_axi_text(&axi_text, Some("FamRules"))
+            .expect("build theory graph report");
+
+        assert_eq!(report.version, "discover_theory_graph_report_v1");
+        assert_eq!(report.graphs.len(), 1);
+        let graph = &report.graphs[0];
+        assert!(!graph.nodes.is_empty());
+        assert!(!graph.edges.is_empty());
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == axiograph_pathdb::kernel_ir::TheoryObligationGraphNodeKindV1::Obligation
+                && node.label.contains("Parent")
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.kind
+                == axiograph_pathdb::kernel_ir::TheoryObligationGraphEdgeKindV1::SubjectSupportsObligation
+        }));
+        assert_eq!(graph.completeness_claim, "not_claimed");
+    }
+
+    #[test]
     fn sem_ref_set_command_rejects_missing_commit() {
         let dir = temp_test_dir("sem-ref-set-missing-commit");
         accepted_plane::init_accepted_plane_dir(&dir).expect("init accepted dir");
@@ -8802,115 +9613,4 @@ theory PlantTransport on Plant:
         fs::remove_dir_all(&dir).expect("cleanup temp dir");
     }
 
-    #[test]
-    fn industrial_harness_run_regulated_seed_command_parses() {
-        let cli = Cli::try_parse_from([
-            "axiograph",
-            "tools",
-            "industrial-harness",
-            "run-regulated-seed",
-            "--dir",
-            "/tmp/accepted",
-            "--snapshot",
-            "head",
-            "--cache-root",
-            "/tmp/cache",
-            "--run-id",
-            "regulated-seed-001",
-            "--created-at-unix-secs",
-            "1713810000",
-            "--json",
-        ])
-        .expect("parse industrial harness runner command");
-
-        match cli.command {
-            Commands::Tools {
-                command:
-                    ToolsCommands::IndustrialHarness {
-                        command:
-                            IndustrialHarnessCommands::RunRegulatedSeed {
-                                dir,
-                                snapshot,
-                                cache_root,
-                                run_id,
-                                created_at_unix_secs,
-                                json,
-                            },
-                    },
-            } => {
-                assert_eq!(dir, PathBuf::from("/tmp/accepted"));
-                assert_eq!(snapshot, "head");
-                assert_eq!(cache_root, PathBuf::from("/tmp/cache"));
-                assert_eq!(run_id, "regulated-seed-001");
-                assert_eq!(created_at_unix_secs, 1_713_810_000);
-                assert!(json);
-            }
-            _ => panic!("unexpected command parse result"),
-        }
-    }
-
-    #[test]
-    fn industrial_harness_run_regulated_seed_command_materializes_cache() {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .canonicalize()
-            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
-        let accepted_dir = temp_test_dir("industrial-harness-accepted");
-        let cache_root = temp_test_dir("industrial-harness-cache");
-        let axi_path = repo_root.join("examples/industrial/RegulatedProductionLine.axi");
-
-        accepted_plane::promote_reviewed_module(
-            &axi_path,
-            &accepted_dir,
-            Some("seed regulated line"),
-            "off",
-        )
-        .expect("promote regulated line to accepted plane");
-
-        cmd_industrial_harness(IndustrialHarnessCommands::RunRegulatedSeed {
-            dir: accepted_dir.clone(),
-            snapshot: "head".to_string(),
-            cache_root: cache_root.clone(),
-            run_id: "run-seed-001".to_string(),
-            created_at_unix_secs: 1_713_810_000,
-            json: false,
-        })
-        .expect("run regulated seed harness");
-
-        let run_path = cache_root.join(
-            "_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/run.json",
-        );
-        let cq_path = cache_root
-            .join("_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/cq_results.json");
-        let coverage_path = cache_root
-            .join("_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/coverage.json");
-        let agent_report_path = cache_root
-            .join("_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/agent_report.json");
-        let distill_path = cache_root
-            .join("_cache/industrial_harness/regulated_production_line_seed/runs/run-seed-001/distill.json");
-
-        assert!(run_path.exists());
-        assert!(cq_path.exists());
-        assert!(coverage_path.exists());
-        assert!(agent_report_path.exists());
-        assert!(distill_path.exists());
-
-        let run: crate::industrial_harness::IndustrialHarnessRunV1 =
-            serde_json::from_str(&fs::read_to_string(&run_path).expect("read run artifact"))
-                .expect("deserialize run artifact");
-        assert_eq!(run.run_id, "run-seed-001");
-        assert_eq!(run.created_at_unix_secs, 1_713_810_000);
-        assert!(
-            run.anchor
-                .accepted_snapshot_id
-                .as_str()
-                .starts_with("fnv1a64:"),
-            "expected accepted snapshot id in run anchor, got {}",
-            run.anchor.accepted_snapshot_id
-        );
-        assert_eq!(run.trust.trust_class, "runtime_guarded");
-
-        fs::remove_dir_all(&accepted_dir).expect("cleanup accepted dir");
-        fs::remove_dir_all(&cache_root).expect("cleanup cache dir");
-    }
 }

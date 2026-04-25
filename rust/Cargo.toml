@@ -16,6 +16,7 @@ members = [
     "crates/axiograph-ingest-json",
     "crates/axiograph-ingest-proto",
     "crates/axiograph-ingest-rdfowl",
+    "crates/axiograph-example-industrial",
     "crates/axiograph-pathdb",
     "crates/axiograph-llm-sync",
     "crates/axiograph-storage",

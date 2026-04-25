@@ -27,6 +27,7 @@ If you only read one thing, read the “book”:
 1. `README.md` (build + quick start)
 2. `docs/explanation/SYSTEM_OVERVIEW.md` (conceptual map of the system)
 3. `docs/explanation/BOOK.md` (end-to-end: semantics → certificates → production readiness → use cases)
+4. `examples/README.md` (pedagogical example catalog and runnable teaching path)
 
 ---
 
@@ -40,6 +41,7 @@ If you only read one thing, read the “book”:
 - `docs/tutorials/SCHEMA_DISCOVERY.md` — automated ontology engineering loop (structured + LLM-assisted)
 - `docs/tutorials/CONTINUOUS_INGEST_AND_DISCOVERY.md` — continuous ingest/discovery prototype loop
 - `docs/tutorials/WORLD_MODEL_LOOP.md` — JEPA/world-model loop with guardrails + promotion
+- `docs/tutorials/INDUSTRIAL_ENGINEERING_EXAMPLE.md` — industrial/business/process example harness outside the core CLI
 
 ---
 
@@ -61,12 +63,18 @@ If you only read one thing, read the “book”:
 - `docs/reference/CERTIFICATES.md` — certificate schema, versions, and how the Lean checker validates them
 - `docs/reference/TRUSTED_KERNEL.md` — exact boundary of the Lean trusted kernel and certificate trust classes
 - `docs/reference/KERNEL_IR.md` — canonical schema/category IR target spec
+- `docs/reference/RUNTIME_THEORY_CHECKER.md` — Rust runtime theory judgments, closure tiers, completeness claims, and non-claims
+- `docs/reference/AGENT_CONTEXT.md` — current agent-facing architecture, trust, type-system, and compatibility context
 - `docs/reference/AXI_STYLE.md` — canonical `.axi` authoring/style guide for examples and reviews
 - `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle state + anchor-aware artifact model
 - `docs/reference/QUERY_LANG.md` — AxQL + SQL-ish dialect reference (and “certified querying” roadmap)
 - `docs/reference/SEMANTIC_VCS.md` — semantic refs/commits/reconciliation/world-model lineage spec
 - `docs/reference/LLM_REPL_PLUGIN.md` — plugin protocol (`axiograph_llm_plugin_v2`)
 - `docs/reference/WORLD_MODEL_PLUGIN.md` — world model plugin protocol (`axiograph_world_model_v1`)
+
+## Research (design sources)
+
+- `docs/research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md` — applied category theory, dependent contexts, HoTT/groupoid paths, institutions, RDF/SHACL, and DDD/fDDD grounding for runtime theory checking
 
 ---
 
@@ -82,8 +90,10 @@ If you only read one thing, read the “book”:
 - `docs/explanation/PATH_VERIFICATION.md` — path verification and witness design
 - `docs/explanation/MATHEMATICAL_FOUNDATIONS.md` — core math notes (category theory, HoTT/groupoids, etc.)
 - `docs/explanation/TYPED_ONTOLOGY_ENGINEERING.md` — practical type theory + denotational semantics + ologs + AI-assisted ontology discovery/axiomitization
+- `docs/explanation/DDD_CONTEXT_WRAPPERS.md` — how bounded contexts / fDDD / wrapper vocabulary fit over the existing ontology/query/report seams
 - `docs/explanation/HOTT_FOR_KNOWLEDGE_GRAPHS.md` — HoTT framing (paths/groupoids for KGs)
 - `docs/explanation/TYPE_THEORY_DESIGN.md` — the type-theory surface for `.axi` and PathDB
+- `docs/explanation/QUERY_SPEC_CONVERGENCE.md` — how query IR, AxQL, CQ gating, refinement, and spec/scenario work may converge without a greenfield language rewrite
 - `docs/explanation/TOPOS_THEORY.md` — topos/sheaf semantics roadmap for contexts/modalities (explanation-level)
 - `docs/explanation/RUST_DEPENDENT_TYPES.md` — “dependent” encodings + branding/typestate patterns in Rust
 - `docs/explanation/SEMANTIC_WEB_INTEROP.md` — RDF/OWL/SHACL/PROV boundary design
@@ -97,7 +107,9 @@ If you only read one thing, read the “book”:
 
 ## Roadmaps (tracked plans)
 
+- `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md`
 - `docs/roadmaps/ROADMAP_PRODUCTION_READINESS.md`
 - `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`
 - `docs/roadmaps/ROADMAP_MATHEMATICAL.md`
 - `docs/roadmaps/ROADMAP_SEMANTIC_KERNEL_AND_VCS.md`
+- `docs/roadmaps/ROADMAP_SEMANTIC_MERGE_LATTICE.md`

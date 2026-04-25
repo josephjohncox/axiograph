@@ -582,6 +582,11 @@ Instead:
   stays auditable and machine-parseable.
 - `SemCommitV1` should include stable accepted/pathdb anchor pairs before/after whenever it changes state.
 - Reconciliations must be explicit `SemReconciliationV1` objects.
+- Slice manifests persisted under `sem/slices/` should be built from accepted
+  canonical modules compiled to `KernelModuleIr` whenever the accepted snapshot
+  is available. This keeps semantic VCS merge/rebase planning attached to
+  schema/category refs, theory obligations, and instance-functor refs instead
+  of commit-summary metadata alone.
 
 ## Evolution Preview Sidecars
 

@@ -1,5 +1,14 @@
+//! Runtime-layer support summaries for anchored query answers.
+//!
+//! The support basis in this tranche is proof-native: `query_result_v3` witness
+//! rows, specifically `QueryAtomWitnessV3::Path` witnesses and their
+//! `axi_fact_id` path steps. Context and evidence links remain best-effort
+//! attachment-layer enrichments resolved from PathDB after support extraction.
+//! This module strengthens the `support_summary` contract without changing the
+//! trusted kernel or certificate family.
+
 use anyhow::Result;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axiograph_pathdb::axi_meta::{ATTR_AXI_FACT_ID, REL_AXI_FACT_IN_CONTEXT};
 use axiograph_pathdb::certificate::{
@@ -11,7 +20,36 @@ use serde::{Deserialize, Serialize};
 
 use crate::trust_contract::TrustContractV1;
 
-pub const EVIDENCE_SUPPORT_SUMMARY_VERSION_V1: &str = "evidence_support_summary_v1";
+pub const SUPPORT_SUMMARY_VERSION_V2: &str = "support_summary_v2";
+
+const SUPPORT_CERTIFICATE_KIND_QUERY_RESULT_V3: &str = "query_result_v3";
+const SUPPORT_SOURCE_INTERNAL_RUNTIME_CERTIFICATE: &str = "internal_runtime_certificate";
+const SUPPORT_SOURCE_RESPONSE_CERTIFICATE: &str = "response_certificate";
+const SUPPORT_KIND_QUERY_RESULT_V3_PATH_STEP: &str = "query_result_v3_path_step";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SupportBasisV1 {
+    pub certificate_kind: String,
+    pub source: String,
+    pub certificate_emitted_to_client: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_verified: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SupportCoverageV1 {
+    pub rows_total: usize,
+    pub rows_with_support: usize,
+    pub witnesses_total: usize,
+    pub path_witnesses_supported: usize,
+    pub unsupported_witness_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SupportRowRefV1 {
+    pub row_index: usize,
+    pub disjunct: u32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SupportEntityRefV1 {
@@ -36,6 +74,8 @@ pub struct FactSupportRefV1 {
     pub fact_entity_id: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relation_name: Option<String>,
+    pub support_kind: String,
+    pub witness_rows: Vec<SupportRowRefV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contexts: Vec<SupportEntityRefV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -51,6 +91,8 @@ pub struct EvidenceSupportSummaryV1 {
     pub version: String,
     pub accepted_axi_anchor: AcceptedAxiAnchor,
     pub trust: TrustContractV1,
+    pub basis: SupportBasisV1,
+    pub coverage: SupportCoverageV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_facts: Vec<FactSupportRefV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -62,17 +104,31 @@ pub fn evidence_support_summary_from_certificate(
     accepted_axi_anchor: AcceptedAxiAnchor,
     trust: TrustContractV1,
     cert: &CertificateV2,
+    certificate_emitted_to_client: bool,
+    certificate_verified: Option<bool>,
 ) -> Option<EvidenceSupportSummaryV1> {
     let CertificatePayloadV2::QueryResultV3 { proof } = &cert.payload else {
         return None;
     };
+    let (supported_facts, coverage) = collect_fact_supports(db, proof);
     Some(EvidenceSupportSummaryV1 {
-        version: EVIDENCE_SUPPORT_SUMMARY_VERSION_V1.to_string(),
+        version: SUPPORT_SUMMARY_VERSION_V2.to_string(),
         accepted_axi_anchor,
         trust,
-        supported_facts: collect_fact_supports(db, proof),
+        basis: SupportBasisV1 {
+            certificate_kind: SUPPORT_CERTIFICATE_KIND_QUERY_RESULT_V3.to_string(),
+            source: if certificate_emitted_to_client {
+                SUPPORT_SOURCE_RESPONSE_CERTIFICATE.to_string()
+            } else {
+                SUPPORT_SOURCE_INTERNAL_RUNTIME_CERTIFICATE.to_string()
+            },
+            certificate_emitted_to_client,
+            certificate_verified,
+        },
+        coverage,
+        supported_facts,
         notes: vec![
-            "support summaries are runtime artifacts derived from anchored query witnesses, context edges, and evidence chunk links".to_string(),
+            "support summaries are runtime/report-layer artifacts grounded in query_result_v3 path witnesses; contexts and evidence links are attachment-layer enrichments resolved from PathDB".to_string(),
             "they are outside the trusted-kernel/certificate boundary and do not claim completeness or ontology closure".to_string(),
         ],
     })
@@ -100,7 +156,7 @@ pub fn execute_anchored_query_with_support_summary(
     let trust = crate::trust_contract::query_trust_contract_with_meta(
         prepared.as_query(),
         &certifiability,
-        true,
+        false,
         None,
         meta,
     );
@@ -109,24 +165,76 @@ pub fn execute_anchored_query_with_support_summary(
         accepted_axi_anchor,
         trust,
         certified.certificate(),
+        false,
+        None,
     );
 
     Ok((result, support_summary))
 }
 
-fn collect_fact_supports(db: &PathDB, proof: &QueryResultProofV3) -> Vec<FactSupportRefV1> {
-    let mut axi_fact_ids = BTreeSet::new();
-    for row in &proof.rows {
+fn collect_fact_supports(
+    db: &PathDB,
+    proof: &QueryResultProofV3,
+) -> (Vec<FactSupportRefV1>, SupportCoverageV1) {
+    let mut fact_rows: BTreeMap<String, BTreeSet<SupportRowRefV1>> = BTreeMap::new();
+    let mut rows_with_support = 0usize;
+    let mut witnesses_total = 0usize;
+    let mut path_witnesses_supported = 0usize;
+    let mut unsupported_witness_kinds = BTreeSet::new();
+
+    for (row_index, row) in proof.rows.iter().enumerate() {
+        let mut row_has_supported_witness = false;
+        witnesses_total += row.witnesses.len();
+
         for witness in &row.witnesses {
-            if let QueryAtomWitnessV3::Path { proof } = witness {
-                collect_axi_fact_ids(proof, &mut axi_fact_ids);
+            match witness {
+                QueryAtomWitnessV3::Path { proof } => {
+                    path_witnesses_supported += 1;
+                    row_has_supported_witness = true;
+                    let mut axi_fact_ids = BTreeSet::new();
+                    collect_axi_fact_ids(proof, &mut axi_fact_ids);
+                    let row_ref = SupportRowRefV1 {
+                        row_index,
+                        disjunct: row.disjunct,
+                    };
+                    for axi_fact_id in axi_fact_ids {
+                        fact_rows
+                            .entry(axi_fact_id)
+                            .or_default()
+                            .insert(row_ref.clone());
+                    }
+                }
+                QueryAtomWitnessV3::Type { .. } => {
+                    unsupported_witness_kinds.insert("type".to_string());
+                }
+                QueryAtomWitnessV3::AttrEq { .. } => {
+                    unsupported_witness_kinds.insert("attr_eq".to_string());
+                }
             }
         }
+
+        if row_has_supported_witness {
+            rows_with_support += 1;
+        }
     }
-    axi_fact_ids
+
+    let supported_facts = fact_rows
         .into_iter()
-        .map(|axi_fact_id| resolve_fact_support(db, axi_fact_id))
-        .collect()
+        .map(|(axi_fact_id, witness_rows)| {
+            resolve_fact_support(db, axi_fact_id, witness_rows.into_iter().collect())
+        })
+        .collect();
+
+    (
+        supported_facts,
+        SupportCoverageV1 {
+            rows_total: proof.rows.len(),
+            rows_with_support,
+            witnesses_total,
+            path_witnesses_supported,
+            unsupported_witness_kinds: unsupported_witness_kinds.into_iter().collect(),
+        },
+    )
 }
 
 fn collect_axi_fact_ids(proof: &ReachabilityProofV3, out: &mut BTreeSet<String>) {
@@ -141,12 +249,18 @@ fn collect_axi_fact_ids(proof: &ReachabilityProofV3, out: &mut BTreeSet<String>)
     }
 }
 
-fn resolve_fact_support(db: &PathDB, axi_fact_id: String) -> FactSupportRefV1 {
+fn resolve_fact_support(
+    db: &PathDB,
+    axi_fact_id: String,
+    witness_rows: Vec<SupportRowRefV1>,
+) -> FactSupportRefV1 {
     let Some(attr_id) = db.interner.id_of(ATTR_AXI_FACT_ID) else {
         return FactSupportRefV1 {
             axi_fact_id,
             fact_entity_id: None,
             relation_name: None,
+            support_kind: SUPPORT_KIND_QUERY_RESULT_V3_PATH_STEP.to_string(),
+            witness_rows,
             contexts: Vec::new(),
             evidence: Vec::new(),
             unresolved_chunk_ids: Vec::new(),
@@ -160,6 +274,8 @@ fn resolve_fact_support(db: &PathDB, axi_fact_id: String) -> FactSupportRefV1 {
             axi_fact_id,
             fact_entity_id: None,
             relation_name: None,
+            support_kind: SUPPORT_KIND_QUERY_RESULT_V3_PATH_STEP.to_string(),
+            witness_rows,
             contexts: Vec::new(),
             evidence: Vec::new(),
             unresolved_chunk_ids: Vec::new(),
@@ -173,6 +289,8 @@ fn resolve_fact_support(db: &PathDB, axi_fact_id: String) -> FactSupportRefV1 {
             axi_fact_id,
             fact_entity_id: None,
             relation_name: None,
+            support_kind: SUPPORT_KIND_QUERY_RESULT_V3_PATH_STEP.to_string(),
+            witness_rows,
             contexts: Vec::new(),
             evidence: Vec::new(),
             unresolved_chunk_ids: Vec::new(),
@@ -230,6 +348,8 @@ fn resolve_fact_support(db: &PathDB, axi_fact_id: String) -> FactSupportRefV1 {
         axi_fact_id,
         fact_entity_id: Some(fact_entity_id),
         relation_name,
+        support_kind: SUPPORT_KIND_QUERY_RESULT_V3_PATH_STEP.to_string(),
+        witness_rows,
         contexts,
         evidence,
         unresolved_chunk_ids,
@@ -357,10 +477,20 @@ mod tests {
             anchor.clone(),
             sample_trust(),
             certified.certificate(),
+            false,
+            None,
         )
         .expect("support summary");
 
         assert_eq!(summary.accepted_axi_anchor, anchor);
+        let value = serde_json::to_value(&summary).expect("serialize support summary");
+        assert_eq!(value["basis"]["certificate_kind"], "query_result_v3");
+        assert_eq!(value["basis"]["certificate_emitted_to_client"], false);
+        assert_eq!(value["coverage"]["rows_total"], 1);
+        assert_eq!(value["coverage"]["rows_with_support"], 1);
+        assert!(value["coverage"]["path_witnesses_supported"]
+            .as_u64()
+            .is_some_and(|count| count >= 1));
         assert!(!summary.supported_facts.is_empty());
         assert!(summary.supported_facts.iter().any(|fact| {
             fact.contexts
@@ -371,6 +501,17 @@ mod tests {
                     .iter()
                     .any(|ev| ev.entity.entity_type == "DocChunk")
         }));
+        assert!(value["supported_facts"]
+            .as_array()
+            .is_some_and(|facts| facts.iter().any(|fact| {
+                fact["support_kind"].as_str() == Some("query_result_v3_path_step")
+                    && fact["witness_rows"].as_array().is_some_and(|rows| {
+                        rows.iter().any(|row| {
+                            row["row_index"].as_u64() == Some(0)
+                                && row["disjunct"].as_u64() == Some(0)
+                        })
+                    })
+            })));
 
         match &certified.certificate().payload {
             CertificatePayloadV2::QueryResultV3 { proof } => {
@@ -381,18 +522,105 @@ mod tests {
     }
 
     #[test]
+    fn evidence_support_summary_reports_unsupported_non_path_witness_kinds() {
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {
+    (child=Alice, parent=Bob)
+  }
+"#;
+        let digest = AxiDigest::from_axi_text(axi);
+        let anchor = AcceptedAxiAnchor::new(
+            AcceptedSnapshotId::new("accepted:unsupported-witness-test"),
+            digest,
+        );
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import demo axi");
+        db.build_indexes();
+
+        let meta = MetaPlaneIndex::from_db(&db).expect("meta plane");
+        let q: crate::query_ir::QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["?p"],
+              "where": [
+                { "kind": "type", "term": "?p", "type": "Person" },
+                { "kind": "edge", "left": "Alice", "path": "S.Parent", "right": "?p" }
+              ],
+              "limit": 10
+            }"#,
+        )
+        .expect("parse query");
+        let mut prepared = q
+            .prepare_with_meta(&db, Some(&meta))
+            .expect("prepare query");
+        let validated = prepared
+            .bind_accepted_axi_anchor(anchor.clone())
+            .execute_answer(&db, Some(&meta))
+            .expect("execute anchored answer");
+        let certified = prepared
+            .bind_accepted_axi_anchor(anchor.clone())
+            .certify_answer(validated, &db, Some(&meta))
+            .expect("certify anchored answer");
+
+        let summary = evidence_support_summary_from_certificate(
+            &db,
+            anchor,
+            sample_trust(),
+            certified.certificate(),
+            false,
+            None,
+        )
+        .expect("support summary");
+        let value = serde_json::to_value(&summary).expect("serialize support summary");
+
+        assert!(value["coverage"]["witnesses_total"]
+            .as_u64()
+            .is_some_and(|count| count >= 2));
+        assert!(value["coverage"]["unsupported_witness_kinds"]
+            .as_array()
+            .is_some_and(|kinds| kinds.iter().any(|kind| kind.as_str() == Some("type"))));
+    }
+
+    #[test]
     fn evidence_support_summary_serializes_anchor_and_supported_facts() {
         let summary = EvidenceSupportSummaryV1 {
-            version: EVIDENCE_SUPPORT_SUMMARY_VERSION_V1.to_string(),
+            version: SUPPORT_SUMMARY_VERSION_V2.to_string(),
             accepted_axi_anchor: AcceptedAxiAnchor::new(
                 AcceptedSnapshotId::new("accepted:test"),
                 AxiDigest::new("fnv1a64:test"),
             ),
             trust: sample_trust(),
+            basis: SupportBasisV1 {
+                certificate_kind: SUPPORT_CERTIFICATE_KIND_QUERY_RESULT_V3.to_string(),
+                source: SUPPORT_SOURCE_INTERNAL_RUNTIME_CERTIFICATE.to_string(),
+                certificate_emitted_to_client: false,
+                certificate_verified: None,
+            },
+            coverage: SupportCoverageV1 {
+                rows_total: 1,
+                rows_with_support: 1,
+                witnesses_total: 1,
+                path_witnesses_supported: 1,
+                unsupported_witness_kinds: Vec::new(),
+            },
             supported_facts: vec![FactSupportRefV1 {
                 axi_fact_id: "factfnv1a64:test".to_string(),
                 fact_entity_id: Some(42),
                 relation_name: Some("Fam.Parent".to_string()),
+                support_kind: SUPPORT_KIND_QUERY_RESULT_V3_PATH_STEP.to_string(),
+                witness_rows: vec![SupportRowRefV1 {
+                    row_index: 0,
+                    disjunct: 0,
+                }],
                 contexts: vec![SupportEntityRefV1 {
                     entity_id: 7,
                     entity_type: "Context".to_string(),
@@ -423,6 +651,16 @@ mod tests {
         assert_eq!(
             value["supported_facts"][0]["axi_fact_id"],
             "factfnv1a64:test"
+        );
+        assert_eq!(value["basis"]["certificate_kind"], "query_result_v3");
+        assert_eq!(value["coverage"]["rows_total"], 1);
+        assert_eq!(
+            value["supported_facts"][0]["support_kind"],
+            "query_result_v3_path_step"
+        );
+        assert_eq!(
+            value["supported_facts"][0]["witness_rows"][0]["row_index"],
+            0
         );
         assert_eq!(
             value["supported_facts"][0]["evidence"][0]["entity"]["entity_type"],

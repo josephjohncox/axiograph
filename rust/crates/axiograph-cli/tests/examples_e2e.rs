@@ -129,6 +129,50 @@ fn scenario_query_axql(scenario: &str) -> String {
 }
 
 #[test]
+fn example_catalog_paths_exist_and_stay_teaching_oriented() {
+    let repo_root = repo_root();
+    let catalog_path = repo_root.join("examples/catalog.json");
+    let text = fs::read_to_string(&catalog_path).expect("read examples/catalog.json");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&text).expect("parse examples/catalog.json");
+    assert_eq!(catalog["version"], serde_json::json!(1));
+
+    let examples = catalog["examples"]
+        .as_array()
+        .expect("catalog examples must be an array");
+    assert!(
+        examples.len() >= 8,
+        "expected a pedagogical catalog with multiple routes"
+    );
+
+    for example in examples {
+        let id = example["id"].as_str().expect("example id string");
+        let path = example["path"].as_str().expect("example path string");
+        assert!(
+            repo_root.join(path).exists(),
+            "catalog example `{id}` points to missing path `{path}`"
+        );
+
+        let tags = example["feature_tags"]
+            .as_array()
+            .expect("feature_tags must be an array");
+        assert!(
+            !tags.is_empty(),
+            "catalog example `{id}` needs feature tags so agents can route it"
+        );
+
+        let commands = example["commands"].as_array().expect("commands array");
+        for command in commands {
+            let command = command.as_str().expect("command string");
+            assert!(
+                !command.contains("export_axi build/"),
+                "catalog example `{id}` should not foreground PathDBExportV1 export-era scripts"
+            );
+        }
+    }
+}
+
+#[test]
 fn validate_all_examples_axi() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
@@ -168,6 +212,49 @@ fn validate_all_examples_axi() {
             status.code().unwrap_or(-1)
         );
     }
+}
+
+#[test]
+fn behavior_case_example_fixture_runs() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "behavior_case_example");
+    let out_path = run_dir.join("build/regulated_ship_release_behavior_case_report.json");
+
+    let status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("discover")
+        .arg("behavior-case")
+        .arg("examples/industrial/RegulatedProductionLine.axi")
+        .arg("--request")
+        .arg("examples/behavior_cases/regulated_ship_release.json")
+        .arg("--out")
+        .arg(&out_path)
+        .status()
+        .expect("run behavior-case example fixture");
+
+    assert!(
+        status.success(),
+        "behavior-case example fixture failed (exit={})",
+        status.code().unwrap_or(-1)
+    );
+
+    let report_text = fs::read_to_string(&out_path).expect("read behavior-case report");
+    let report: serde_json::Value =
+        serde_json::from_str(&report_text).expect("parse behavior-case report");
+    assert_eq!(report["version"], serde_json::json!("behavior_case_report_v1"));
+    assert_eq!(
+        report["behavior_case"]["case_id"],
+        serde_json::json!("industrial.ship_released_order")
+    );
+    assert!(
+        report["codegen_previews"]
+            .as_array()
+            .expect("codegen_previews array")
+            .iter()
+            .any(|preview| preview["language"] == serde_json::json!("rust")),
+        "expected Rust test skeleton preview"
+    );
 }
 
 #[test]

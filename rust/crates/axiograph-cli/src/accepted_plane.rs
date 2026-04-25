@@ -45,6 +45,7 @@ const ACCEPTED_PLANE_CERTS_DIR: &str = "certs";
 const ACCEPTED_PLANE_SEM_DIR: &str = "sem";
 const ACCEPTED_PLANE_SEM_COMMITS_DIR: &str = "sem/commits";
 const ACCEPTED_PLANE_SEM_RECONCILIATIONS_DIR: &str = "sem/reconciliations";
+const ACCEPTED_PLANE_SEM_SLICES_DIR: &str = "sem/slices";
 #[allow(dead_code)]
 const ACCEPTED_PLANE_SEM_HEADS_MAIN_FILE: &str = "sem/refs/heads/main";
 const ACCEPTED_PLANE_SEM_HEADS_MAIN_REF: &str = "heads/main";
@@ -1768,6 +1769,7 @@ fn ensure_layout(accepted_dir: &Path) -> Result<()> {
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_COMMITS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_RECONCILIATIONS_DIR))?;
+    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_SLICES_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_REVIEW_DIR))?;
@@ -3259,6 +3261,59 @@ pub fn read_sem_ref_view(accepted_dir: &Path, ref_name: &str) -> Result<SemRefVi
     let pointer = read_sem_ref_pointer(accepted_dir, ref_name)?;
     let commit = read_semantic_commit(accepted_dir, &pointer.commit_id)?;
     Ok(SemRefViewV1 { pointer, commit })
+}
+
+pub fn persist_semantic_slice_manifest(
+    accepted_dir: &Path,
+    manifest: &crate::semantic_merge_lattice::SemanticSliceManifestV1,
+) -> Result<String> {
+    ensure_layout(accepted_dir)?;
+    let path = semantic_slice_manifest_path(accepted_dir, &manifest.slice_id);
+    fs::write(&path, serde_json::to_string_pretty(manifest)?)?;
+    Ok(path_relative_to_accepted_dir(accepted_dir, &path))
+}
+
+pub fn read_semantic_slice_manifest(
+    accepted_dir: &Path,
+    slice_id_or_path: &str,
+) -> Result<crate::semantic_merge_lattice::SemanticSliceManifestV1> {
+    ensure_layout(accepted_dir)?;
+    let input_path = Path::new(slice_id_or_path);
+    let accepted_relative_path = accepted_dir.join(input_path);
+    let path = if input_path.exists() {
+        input_path.to_path_buf()
+    } else if accepted_relative_path.exists() {
+        accepted_relative_path
+    } else {
+        semantic_slice_manifest_path(accepted_dir, &AxiDigest::new(slice_id_or_path))
+    };
+    let text = fs::read_to_string(&path).map_err(|err| {
+        anyhow!(
+            "failed to read semantic slice manifest `{}`: {err}",
+            path.display()
+        )
+    })?;
+    let manifest: crate::semantic_merge_lattice::SemanticSliceManifestV1 =
+        serde_json::from_str(&text).map_err(|err| {
+            anyhow!(
+                "failed to parse semantic slice manifest `{}`: {err}",
+                path.display()
+            )
+        })?;
+    if manifest.version != crate::semantic_merge_lattice::SEMANTIC_SLICE_MANIFEST_VERSION_V1 {
+        return Err(anyhow!(
+            "unsupported semantic slice manifest version `{}` in `{}`",
+            manifest.version,
+            path.display()
+        ));
+    }
+    Ok(manifest)
+}
+
+fn semantic_slice_manifest_path(accepted_dir: &Path, slice_id: &AxiDigest) -> PathBuf {
+    accepted_dir
+        .join(ACCEPTED_PLANE_SEM_SLICES_DIR)
+        .join(format!("{}.json", digest_to_filename(slice_id)))
 }
 
 pub fn read_sem_reconciliation_view(
@@ -5427,6 +5482,40 @@ theory RefundRules on Refund:
         let round_trip = read_reconciliation(&accepted_dir, &reconciliation.reconciliation_id)
             .expect("read reconciliation");
         assert_eq!(round_trip, reconciliation);
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn semantic_slice_manifest_round_trips_under_sem_slices() {
+        let accepted_dir = temp_test_dir("sem-slice-manifest");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-slice",
+            None,
+            "SliceModule",
+            "fnv1a64:module-slice",
+            "slice",
+        );
+        persist_semantic_ref(&accepted_dir, "heads/main", &commit.commit_id)
+            .expect("persist main ref");
+        let view = read_sem_ref_view(&accepted_dir, "heads/main").expect("read ref view");
+        let manifest = crate::semantic_merge_lattice::semantic_slice_from_ref_view(
+            &view,
+            crate::semantic_merge_lattice::SemanticSliceSelectorV1::default(),
+        );
+
+        let stored_path =
+            persist_semantic_slice_manifest(&accepted_dir, &manifest).expect("persist slice");
+        assert!(
+            stored_path.starts_with("sem/slices/"),
+            "unexpected stored path: {stored_path}"
+        );
+        let round_trip = read_semantic_slice_manifest(&accepted_dir, manifest.slice_id.as_str())
+            .expect("read slice by id");
+        assert_eq!(round_trip, manifest);
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }

@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "description": "Pedagogical example catalog for agents, docs, and smoke tests. Canonical examples teach typed Axiograph surfaces; debug export-era scripts are deliberately not the primary route.",
+  "examples": [
+    {
+      "id": "family-core",
+      "title": "Minimal typed family ontology",
+      "path": "examples/Family.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["schema", "instance", "context", "constraints"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/Family.axi"
+      ]
+    },
+    {
+      "id": "family-hott",
+      "title": "Family paths and HoTT-flavored witnesses",
+      "path": "examples/family/FamilyHoTT.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["hott", "paths", "typed-query", "free-groupoid"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/family/FamilyHoTT.axi"
+      ]
+    },
+    {
+      "id": "ontology-rewrites",
+      "title": "Runtime theory graph and rewrite surface",
+      "path": "examples/ontology/OntologyRewrites.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["theory-ir", "rewrites", "constraints", "typed-exploration"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover theory-graph examples/ontology/OntologyRewrites.axi --out build/examples/ontology_rewrites_theory_graph.json"
+      ]
+    },
+    {
+      "id": "schema-evolution",
+      "title": "Schema/category evolution and transport",
+      "path": "examples/ontology/SchemaEvolution.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["schema-evolution", "migration-preview", "transport", "semantic-vcs"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/ontology/SchemaEvolution.axi"
+      ]
+    },
+    {
+      "id": "supply-chain-hott",
+      "title": "Supply-chain path semantics",
+      "path": "examples/manufacturing/SupplyChainHoTT.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["hott", "supply-chain", "certified-query", "paths"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- cert query examples/manufacturing/SupplyChainHoTT.axi --lang axql 'select ?to where name(\"RawMetal_A\") -Flow-> ?to limit 10' --out build/examples/supply_chain_query_cert.json"
+      ]
+    },
+    {
+      "id": "industrial-regulated-line",
+      "title": "Regulated production line with business and implementation surfaces",
+      "path": "examples/industrial/RegulatedProductionLine.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["bdd", "ddd", "fddd", "business-rules", "cq", "coverage", "agent-report"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-example-industrial --bin axiograph-industrial-example -- run-regulated-seed --axi examples/industrial/RegulatedProductionLine.axi --cache-root build/examples/industrial --run-id demo-001 --created-at-unix-secs 1713810000 --json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/industrial/RegulatedProductionLine.axi --request examples/behavior_cases/regulated_ship_release.json --out build/examples/regulated_ship_release_behavior_case_report.json"
+      ]
+    },
+    {
+      "id": "physics-ontology",
+      "title": "Scientific ontology and measurement semantics",
+      "path": "examples/physics/PhysicsOntology.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["physics", "scientific-ontology", "typed-relations"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/physics/PhysicsOntology.axi"
+      ]
+    },
+    {
+      "id": "proto-api-semantics",
+      "title": "Proto/API semantics lowered to canonical ontology",
+      "path": "examples/proto/ProtoApiSemantics.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["proto", "api", "schema-discovery", "implementation-surface"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/proto/ProtoApiSemantics.axi"
+      ]
+    },
+    {
+      "id": "rdf-shacl-boundary",
+      "title": "RDF and SHACL boundary-layer fixtures",
+      "path": "examples/rdfowl",
+      "kind": "interop_fixture",
+      "feature_tags": ["rdf", "shacl", "interop", "backend-projection"],
+      "commands": []
+    }
+  ]
+}

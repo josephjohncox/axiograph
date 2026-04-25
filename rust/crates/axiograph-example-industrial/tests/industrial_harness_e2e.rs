@@ -12,8 +12,8 @@ fn repo_root() -> PathBuf {
         .expect("canonicalize repo root")
 }
 
-fn axiograph_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_axiograph"))
+fn industrial_example_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_axiograph-industrial-example"))
 }
 
 fn unique_run_dir(repo_root: &Path, label: &str) -> PathBuf {
@@ -30,44 +30,18 @@ fn unique_run_dir(repo_root: &Path, label: &str) -> PathBuf {
     dir
 }
 
-fn count_snapshot_manifests(accepted_dir: &Path) -> usize {
-    fs::read_dir(accepted_dir.join("snapshots"))
-        .expect("read snapshots dir")
-        .filter_map(Result::ok)
-        .count()
-}
-
 #[test]
-fn regulated_line_cli_materializes_cache_from_accepted_snapshot_without_mutation() {
+fn regulated_line_example_cli_materializes_cache_from_canonical_axi() {
     let repo_root = repo_root();
     let test_root = unique_run_dir(&repo_root, "regulated_line_cli");
-    let accepted_dir = test_root.join("accepted_plane");
     let cache_root = test_root.join("cache_root");
     let axi_path = repo_root.join("examples/industrial/RegulatedProductionLine.axi");
-    let bin = axiograph_bin();
-
-    let promote_status = Command::new(&bin)
-        .arg("db")
-        .arg("accept")
-        .arg("promote")
-        .arg(&axi_path)
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .status()
-        .expect("promote regulated line module");
-    assert!(promote_status.success(), "promotion command should succeed");
-
-    let head_before = fs::read_to_string(accepted_dir.join("HEAD")).expect("read accepted HEAD");
-    let snapshot_count_before = count_snapshot_manifests(&accepted_dir);
+    let bin = industrial_example_bin();
 
     let output = Command::new(&bin)
-        .arg("tools")
-        .arg("industrial-harness")
         .arg("run-regulated-seed")
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--snapshot")
-        .arg("head")
+        .arg("--axi")
+        .arg(&axi_path)
         .arg("--cache-root")
         .arg(&cache_root)
         .arg("--run-id")
@@ -89,6 +63,14 @@ fn regulated_line_cli_materializes_cache_from_accepted_snapshot_without_mutation
     assert_eq!(response["campaign_id"], "regulated_production_line_seed");
     assert_eq!(response["run_id"], "regulated-seed-e2e");
     assert_eq!(response["trust"]["trust_class"], "runtime_guarded");
+    let expected_snapshot_id = response["accepted_axi_anchor"]["accepted_snapshot_id"]
+        .as_str()
+        .expect("accepted snapshot id")
+        .to_string();
+    let expected_axi_digest = response["accepted_axi_anchor"]["axi_digest"]
+        .as_str()
+        .expect("axi digest")
+        .to_string();
 
     let harness_run_dir = cache_root
         .join("_cache/industrial_harness/regulated_production_line_seed/runs/regulated-seed-e2e");
@@ -138,13 +120,80 @@ fn regulated_line_cli_materializes_cache_from_accepted_snapshot_without_mutation
         .iter()
         .any(|surface| surface["surface"] == "Release review SOP"));
 
-    let head_after =
-        fs::read_to_string(accepted_dir.join("HEAD")).expect("read accepted HEAD after run");
-    let snapshot_count_after = count_snapshot_manifests(&accepted_dir);
-    assert_eq!(head_before, head_after, "accepted HEAD must stay unchanged");
+    let inspect_text_output = Command::new(&bin)
+        .arg("inspect")
+        .arg("--cache-root")
+        .arg(&cache_root)
+        .arg("--campaign-id")
+        .arg("regulated_production_line_seed")
+        .arg("--run-id")
+        .arg("regulated-seed-e2e")
+        .output()
+        .expect("inspect industrial harness CLI text output");
+    assert!(
+        inspect_text_output.status.success(),
+        "industrial harness inspect text command failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&inspect_text_output.stdout),
+        String::from_utf8_lossy(&inspect_text_output.stderr)
+    );
+    let inspect_text = String::from_utf8_lossy(&inspect_text_output.stdout);
+    assert!(inspect_text.contains("status\n"));
+    assert!(inspect_text.contains("  run: regulated-seed-e2e"));
+    assert!(inspect_text.contains("report\n"));
+    assert!(inspect_text.contains("readback\n"));
+    assert!(inspect_text.contains(&run_path.display().to_string()));
+
+    let inspect_json_output = Command::new(&bin)
+        .arg("inspect")
+        .arg("--cache-root")
+        .arg(&cache_root)
+        .arg("--campaign-id")
+        .arg("regulated_production_line_seed")
+        .arg("--run-id")
+        .arg("regulated-seed-e2e")
+        .arg("--json")
+        .output()
+        .expect("inspect industrial harness CLI json output");
+    assert!(
+        inspect_json_output.status.success(),
+        "industrial harness inspect json command failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&inspect_json_output.stdout),
+        String::from_utf8_lossy(&inspect_json_output.stderr)
+    );
+    let inspect_json: Value = serde_json::from_slice(&inspect_json_output.stdout)
+        .expect("deserialize inspect CLI JSON response");
     assert_eq!(
-        snapshot_count_before, snapshot_count_after,
-        "accepted snapshot manifests must stay unchanged"
+        inspect_json["bundle"]["run"]["run_id"].as_str(),
+        Some("regulated-seed-e2e")
+    );
+    assert_eq!(inspect_json["verification"]["failed"].as_u64(), Some(0));
+
+    let inspect_verified_output = Command::new(&bin)
+        .arg("inspect")
+        .arg("--cache-root")
+        .arg(&cache_root)
+        .arg("--campaign-id")
+        .arg("regulated_production_line_seed")
+        .arg("--run-id")
+        .arg("regulated-seed-e2e")
+        .arg("--expected-snapshot-id")
+        .arg(expected_snapshot_id)
+        .arg("--expected-axi-digest")
+        .arg(expected_axi_digest)
+        .arg("--json")
+        .output()
+        .expect("inspect industrial harness CLI json output with accepted anchor");
+    assert!(
+        inspect_verified_output.status.success(),
+        "industrial harness inspect verification command failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&inspect_verified_output.stdout),
+        String::from_utf8_lossy(&inspect_verified_output.stderr)
+    );
+    let inspect_verified_json: Value = serde_json::from_slice(&inspect_verified_output.stdout)
+        .expect("deserialize inspect verification CLI JSON response");
+    assert_eq!(
+        inspect_verified_json["verification"]["failed"].as_u64(),
+        Some(0)
     );
 
     fs::remove_dir_all(&test_root).ok();

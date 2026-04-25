@@ -207,7 +207,7 @@ impl SemanticMcpServer {
                 }),
         );
         tools.extend(
-            crate::transport_preview_tools::transport_preview_tool_specs()
+            crate::path_cert_tools::path_cert_tool_specs()
                 .into_iter()
                 .map(|tool| {
                     json!({
@@ -219,14 +219,14 @@ impl SemanticMcpServer {
                 }),
         );
         tools.extend(
-            crate::industrial_harness_tools::industrial_harness_tool_specs()
+            crate::transport_preview_tools::transport_preview_tool_specs()
                 .into_iter()
                 .map(|tool| {
                     json!({
                         "name": tool.name,
                         "description": tool.description,
                         "inputSchema": tool.input_schema,
-                        "annotations": { "readOnlyHint": tool.read_only_hint }
+                        "annotations": { "readOnlyHint": true }
                     })
                 }),
         );
@@ -258,21 +258,19 @@ impl SemanticMcpServer {
                     arguments,
                 )
             }
+            name if crate::path_cert_tools::is_path_cert_tool(name) => {
+                crate::path_cert_tools::invoke_path_cert_tool(
+                    name,
+                    crate::path_cert_tools::PathCertToolContext {
+                        db: self.runtime.db.as_ref(),
+                    },
+                    arguments,
+                )
+            }
             name if crate::transport_preview_tools::is_transport_preview_tool(name) => {
                 crate::transport_preview_tools::invoke_transport_preview_tool(
                     name,
                     crate::transport_preview_tools::TransportPreviewToolContext,
-                    arguments,
-                )
-            }
-            name if crate::industrial_harness_tools::is_industrial_harness_tool(name) => {
-                crate::industrial_harness_tools::invoke_industrial_harness_tool(
-                    name,
-                    crate::industrial_harness_tools::IndustrialHarnessToolContext {
-                        db: Some(self.runtime.db.as_ref()),
-                        meta: self.runtime.meta.as_ref(),
-                        accepted_axi_anchor: self.runtime.accepted_axi_anchor.as_ref(),
-                    },
                     arguments,
                 )
             }
@@ -334,12 +332,13 @@ impl SemanticMcpServer {
         let trust = prepared.trust_contract_with_meta(self.runtime.meta.as_ref());
         let mut support_summary = None;
         let result = if let Some(accepted_axi_anchor) = self.runtime.accepted_axi_anchor.clone() {
-            let (result, summary) = crate::evidence_support::execute_anchored_query_with_support_summary(
-                &mut prepared,
-                self.runtime.db.as_ref(),
-                self.runtime.meta.as_ref(),
-                accepted_axi_anchor,
-            )?;
+            let (result, summary) =
+                crate::evidence_support::execute_anchored_query_with_support_summary(
+                    &mut prepared,
+                    self.runtime.db.as_ref(),
+                    self.runtime.meta.as_ref(),
+                    accepted_axi_anchor,
+                )?;
             support_summary = summary;
             result
         } else {
@@ -360,7 +359,10 @@ impl SemanticMcpServer {
         if let Some(summary) = support_summary {
             out.as_object_mut()
                 .expect("MCP tool output should be a JSON object")
-                .insert("support_summary".to_string(), serde_json::to_value(summary)?);
+                .insert(
+                    "support_summary".to_string(),
+                    serde_json::to_value(summary)?,
+                );
         }
 
         Ok(out)
@@ -531,48 +533,9 @@ fn pretty_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use axiograph_pathdb::{AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest};
-
-    fn sample_anchor() -> AcceptedAxiAnchor {
-        AcceptedAxiAnchor::new(
-            AcceptedSnapshotId::new("accepted:regulated-line"),
-            AxiDigest::new("fnv1a64:regulated-line"),
-        )
-    }
-
-    fn sample_trust() -> crate::trust_contract::TrustContractV1 {
-        crate::trust_contract::TrustContractV1 {
-            trust_class: "runtime_guarded".to_string(),
-            soundness: "seed_cache_artifacts_are_anchor_scoped".to_string(),
-            coverage: "regulated_line_seed_shadow_harness".to_string(),
-            scope: crate::trust_contract::TrustScopeV1 {
-                anchor: "accepted:regulated-line@fnv1a64:regulated-line".to_string(),
-                context: "regulated_production_line_seed".to_string(),
-            },
-            reasons: Vec::new(),
-            certifiable_disjuncts: None,
-            execution_only_disjuncts: None,
-            semantic_coverage: None,
-            semantic_claims: Vec::new(),
-            gaps: Vec::new(),
-        }
-    }
-
-    fn temp_test_dir(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("time should be after unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "axiograph-mcp-industrial-harness-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).expect("temp test dir");
-        path
-    }
 
     fn test_server(accepted_axi_anchor: Option<AcceptedAxiAnchor>) -> SemanticMcpServer {
         SemanticMcpServer {
@@ -587,27 +550,32 @@ mod tests {
         }
     }
 
-    fn test_server_with_regulated_line_runtime() -> SemanticMcpServer {
-        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .canonicalize()
-            .unwrap_or_else(|_| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
-            });
-        let axi_path = repo_root.join("examples/industrial/RegulatedProductionLine.axi");
-        let axi_text = std::fs::read_to_string(&axi_path).expect("read regulated line axi");
-        let anchor = AcceptedAxiAnchor::new(
-            AcceptedSnapshotId::new("accepted:regulated-line"),
-            AxiDigest::from_axi_text(&axi_text),
-        );
-        let db = crate::load_pathdb_for_cli(&axi_path).expect("load regulated line pathdb");
-        let meta =
-            axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db).expect("meta plane");
+    fn test_server_with_semantic_family_runtime() -> SemanticMcpServer {
+        let axi = r#"
+module Family
+
+schema Family:
+  object Person
+  relation parent(child: Person, parent: Person)
+
+theory FamilyTheory on Family:
+  constraint functional parent.child -> parent.parent
+
+instance FamilyInst of Family:
+  Person = {Alice, Bob}
+  parent = {(child=Bob, parent=Alice)}
+"#;
+        let mut db = PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import semantic family module");
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)
+            .expect("semantic family meta plane");
         SemanticMcpServer {
             runtime: crate::db_server::ReadOnlySemanticRuntime {
-                snapshot_key: "regulated-line-snapshot".to_string(),
-                accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:regulated-line")),
-                accepted_axi_anchor: Some(anchor),
+                snapshot_key: "semantic-family-snapshot".to_string(),
+                accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:family")),
+                accepted_axi_anchor: None,
                 db: Arc::new(db),
                 meta: Some(meta),
             },
@@ -638,6 +606,71 @@ mod tests {
         )
     }
 
+    fn test_server_with_path_cert_runtime() -> (SemanticMcpServer, u32, u32, u32) {
+        let axi = r#"
+module Demo
+
+schema S:
+  object Node
+  relation road(from: Node, to: Node)
+
+instance I of S:
+  Node = {A, B}
+  road = {(from=A, to=B)}
+"#;
+        let mut db = PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import canonical module");
+        db.build_indexes();
+        let meta =
+            axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db).expect("meta plane");
+        let find_named_entity = |type_name: &str, name: &str| {
+            let ids = db.find_by_type(type_name).expect("type ids");
+            let key = db.interner.id_of("name").expect("name attr key");
+            ids.iter()
+                .find(|id| {
+                    db.entities
+                        .get_attr(*id, key)
+                        .and_then(|value| db.interner.lookup(value))
+                        .as_deref()
+                        == Some(name)
+                })
+                .expect("named entity")
+        };
+        let a = find_named_entity("Node", "A");
+        let b = find_named_entity("Node", "B");
+        let ab = (0..db.relations.len() as u32)
+            .find(|rel_id| {
+                let Some(rel) = db.relations.get_relation(*rel_id) else {
+                    return false;
+                };
+                rel.source == a
+                    && rel.target == b
+                    && db.interner.lookup(rel.rel_type).as_deref() == Some("road")
+            })
+            .expect("find road relation");
+        let anchor = AcceptedAxiAnchor::new(
+            AcceptedSnapshotId::new("accepted:path-cert"),
+            AxiDigest::from_axi_text(axi),
+        );
+
+        (
+            SemanticMcpServer {
+                runtime: crate::db_server::ReadOnlySemanticRuntime {
+                    snapshot_key: "path-cert-snapshot".to_string(),
+                    accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:path-cert")),
+                    accepted_axi_anchor: Some(anchor),
+                    db: Arc::new(db),
+                    meta: Some(meta),
+                },
+                tool_max_rows: 25,
+            },
+            a,
+            b,
+            ab,
+        )
+    }
+
     #[test]
     fn tool_definitions_include_shared_semantic_report_tools() {
         let server = test_server(None);
@@ -651,18 +684,23 @@ mod tests {
         assert!(names.iter().any(|name| name == "semantic_business_rule"));
         assert!(names.iter().any(|name| name == "semantic_coverage"));
         assert!(names.iter().any(|name| name == "semantic_agent_report"));
+        assert!(names.iter().any(|name| name == "semantic_context_report"));
+        assert!(names.iter().any(|name| name == "semantic_behavior_case"));
+        assert!(names.iter().any(|name| name == "semantic_slice_build"));
+        assert!(names.iter().any(|name| name == "semantic_slice_show"));
+        assert!(names.iter().any(|name| name == "semantic_slice_diff"));
+        assert!(names.iter().any(|name| name == "semantic_merge_plan"));
+        assert!(names.iter().any(|name| name == "semantic_rebase_plan"));
+        assert!(names.iter().any(|name| name == "semantic_resolver_steps"));
         assert!(names
             .iter()
             .any(|name| name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME));
         assert!(names
             .iter()
+            .any(|name| name == crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME));
+        assert!(names
+            .iter()
             .any(|name| name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME));
-        assert!(names
-            .iter()
-            .any(|name| name == "industrial_harness_inspect"));
-        assert!(names
-            .iter()
-            .any(|name| name == "industrial_harness_run_regulated_seed"));
     }
 
     fn sample_transport_preview_arguments() -> Value {
@@ -788,12 +826,163 @@ theory PlantTransport on Plant:
     }
 
     #[test]
-    fn tools_list_advertises_transport_preview_schema() {
+    fn tools_call_dispatches_semantic_context_report() {
+        let mut server = test_server_with_semantic_family_runtime();
+        let response = server
+            .handle_message(json!({
+                "jsonrpc": "2.0",
+                "id": 121,
+                "method": "tools/call",
+                "params": {
+                    "name": "semantic_context_report",
+                    "arguments": {
+                        "context": {
+                            "context_id": "domain:family_lookup",
+                            "label": "Family lookup",
+                            "scopes": [{
+                                "schema": "Family",
+                                "scope_class": "relation",
+                                "relation": "parent"
+                            }],
+                            "surfaces": [{
+                                "surface_id": "endpoint:family_lookup",
+                                "kind": "endpoint",
+                                "label": "GET /family/lookup",
+                                "scopes": [{
+                                    "schema": "Family",
+                                    "scope_class": "relation",
+                                    "relation": "parent"
+                                }]
+                            }],
+                            "edges": [{
+                                "surface_id": "endpoint:family_lookup",
+                                "rule_id": "schema/family/relation/parent/rule/functional/0",
+                                "status": "tested"
+                            }],
+                            "competency_questions": [{
+                                "name": "family_lookup_returns_bob",
+                                "query": "select ?f where ?f = Family.parent(child=Bob, parent=Alice) limit 1",
+                                "min_rows": 1,
+                                "weight": 1.0
+                            }]
+                        }
+                    }
+                }
+            }))
+            .expect("tools/call response");
+
+        assert_eq!(
+            response.pointer("/result/isError").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            response
+                .pointer("/result/structuredContent/version")
+                .and_then(Value::as_str),
+            Some("axiograph_semantic_context_report_v1")
+        );
+        assert_eq!(
+            response
+                .pointer("/result/structuredContent/report/context/context_id")
+                .and_then(Value::as_str),
+            Some("domain:family_lookup")
+        );
+        assert_eq!(
+            response
+                .pointer("/result/structuredContent/report/coverage/tested_rules")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            response
+                .pointer("/result/structuredContent/report/competency_coverage/total")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn tools_list_advertises_path_cert_schema() {
         let mut server = test_server(None);
         let response = server
             .handle_message(json!({
                 "jsonrpc": "2.0",
                 "id": 13,
+                "method": "tools/list"
+            }))
+            .expect("tools/list response");
+
+        let tool = response
+            .pointer("/result/tools")
+            .and_then(Value::as_array)
+            .expect("tool array")
+            .iter()
+            .find(|tool| {
+                tool.get("name").and_then(Value::as_str)
+                    == Some(crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME)
+            })
+            .cloned()
+            .expect("path cert tool should be advertised");
+
+        let expected = crate::path_cert_tools::path_cert_tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME)
+            .expect("path cert tool spec");
+
+        assert_eq!(
+            tool.get("description").and_then(Value::as_str),
+            Some(expected.description)
+        );
+        assert_eq!(tool.get("inputSchema"), Some(&expected.input_schema));
+        assert_eq!(
+            tool.pointer("/annotations/readOnlyHint")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn tools_call_dispatches_path_cert() {
+        let (mut server, a, _b, ab) = test_server_with_path_cert_runtime();
+        let response = server
+            .handle_message(json!({
+                "jsonrpc": "2.0",
+                "id": 14,
+                "method": "tools/call",
+                "params": {
+                    "name": crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME,
+                    "arguments": {
+                        "start": a,
+                        "relation_ids": [ab],
+                        "verify": false
+                    }
+                }
+            }))
+            .expect("tools/call response");
+
+        assert_eq!(
+            response.pointer("/result/isError").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            response
+                .pointer("/result/structuredContent/certificate/kind")
+                .and_then(Value::as_str),
+            Some("reachability_v3")
+        );
+        assert!(response
+            .pointer("/result/structuredContent/anchor_digest")
+            .and_then(Value::as_str)
+            .is_some());
+    }
+
+    #[test]
+    fn tools_list_advertises_transport_preview_schema() {
+        let mut server = test_server(None);
+        let response = server
+            .handle_message(json!({
+                "jsonrpc": "2.0",
+                "id": 15,
                 "method": "tools/list"
             }))
             .expect("tools/list response");
@@ -833,7 +1022,7 @@ theory PlantTransport on Plant:
         let response = server
             .handle_message(json!({
                 "jsonrpc": "2.0",
-                "id": 14,
+                "id": 16,
                 "method": "tools/call",
                 "params": {
                     "name": crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME,
@@ -864,180 +1053,6 @@ theory PlantTransport on Plant:
                 .and_then(Value::as_str),
             Some("Plant->Ops")
         );
-    }
-
-    #[test]
-    fn tools_list_advertises_industrial_harness_inspect_schema() {
-        let mut server = test_server(None);
-        let response = server
-            .handle_message(json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/list"
-            }))
-            .expect("tools/list response");
-
-        let tool = response
-            .pointer("/result/tools")
-            .and_then(Value::as_array)
-            .expect("tool array")
-            .iter()
-            .find(|tool| {
-                tool.get("name").and_then(Value::as_str)
-                    == Some(crate::industrial_harness_tools::INDUSTRIAL_HARNESS_INSPECT_TOOL_NAME)
-            })
-            .cloned()
-            .expect("industrial harness tool should be advertised");
-
-        let expected = crate::industrial_harness_tools::industrial_harness_tool_specs()
-            .into_iter()
-            .find(|tool| {
-                tool.name == crate::industrial_harness_tools::INDUSTRIAL_HARNESS_INSPECT_TOOL_NAME
-            })
-            .expect("industrial harness tool spec");
-
-        assert_eq!(
-            tool.get("description").and_then(Value::as_str),
-            Some(expected.description)
-        );
-        assert_eq!(tool.get("inputSchema"), Some(&expected.input_schema));
-        assert_eq!(
-            tool.pointer("/annotations/readOnlyHint")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn tools_call_dispatches_industrial_harness_inspect() -> Result<()> {
-        let anchor = sample_anchor();
-        let cache_root = temp_test_dir("dispatch");
-        crate::industrial_harness::materialize_regulated_production_line_seed_harness(
-            &cache_root,
-            "mcp-inspect-run",
-            4242,
-            anchor.clone(),
-            sample_trust(),
-        )?;
-
-        let mut server = test_server(Some(anchor));
-        let response = server
-            .handle_message(json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": crate::industrial_harness_tools::INDUSTRIAL_HARNESS_INSPECT_TOOL_NAME,
-                    "arguments": {
-                        "cache_root": cache_root.to_string_lossy().to_string(),
-                        "campaign_id": crate::industrial_harness::REGULATED_PRODUCTION_LINE_CAMPAIGN_ID,
-                        "run_id": "mcp-inspect-run"
-                    }
-                }
-            }))
-            .expect("tools/call response");
-
-        assert_eq!(
-            response.pointer("/result/isError").and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            response
-                .pointer("/result/structuredContent/bundle/run/run_id")
-                .and_then(Value::as_str),
-            Some("mcp-inspect-run")
-        );
-        assert_eq!(
-            response
-                .pointer("/result/structuredContent/verification/failed")
-                .and_then(Value::as_u64),
-            Some(0)
-        );
-        std::fs::remove_dir_all(&cache_root).expect("cleanup temp dir");
-        Ok(())
-    }
-
-    #[test]
-    fn tools_list_advertises_industrial_harness_run_schema() {
-        let mut server = test_server(None);
-        let response = server
-            .handle_message(json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/list"
-            }))
-            .expect("tools/list response");
-
-        let tool = response
-            .pointer("/result/tools")
-            .and_then(Value::as_array)
-            .expect("tool array")
-            .iter()
-            .find(|tool| {
-                tool.get("name").and_then(Value::as_str)
-                    == Some(crate::industrial_harness_tools::INDUSTRIAL_HARNESS_RUN_REGULATED_SEED_TOOL_NAME)
-            })
-            .cloned()
-            .expect("industrial harness run tool should be advertised");
-
-        let expected = crate::industrial_harness_tools::industrial_harness_tool_specs()
-            .into_iter()
-            .find(|tool| {
-                tool.name
-                    == crate::industrial_harness_tools::INDUSTRIAL_HARNESS_RUN_REGULATED_SEED_TOOL_NAME
-            })
-            .expect("industrial harness run tool spec");
-
-        assert_eq!(
-            tool.get("description").and_then(Value::as_str),
-            Some(expected.description)
-        );
-        assert_eq!(tool.get("inputSchema"), Some(&expected.input_schema));
-        assert_eq!(
-            tool.pointer("/annotations/readOnlyHint")
-                .and_then(Value::as_bool),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn tools_call_dispatches_industrial_harness_run_regulated_seed() -> Result<()> {
-        let cache_root = temp_test_dir("dispatch-run");
-        let mut server = test_server_with_regulated_line_runtime();
-        let response = server
-            .handle_message(json!({
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {
-                    "name": crate::industrial_harness_tools::INDUSTRIAL_HARNESS_RUN_REGULATED_SEED_TOOL_NAME,
-                    "arguments": {
-                        "cache_root": cache_root.to_string_lossy().to_string(),
-                        "run_id": "mcp-run-seed",
-                        "created_at_unix_secs": 4242
-                    }
-                }
-            }))
-            .expect("tools/call response");
-
-        assert_eq!(
-            response.pointer("/result/isError").and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            response
-                .pointer("/result/structuredContent/run_id")
-                .and_then(Value::as_str),
-            Some("mcp-run-seed")
-        );
-        assert_eq!(
-            response
-                .pointer("/result/structuredContent/trust/trust_class")
-                .and_then(Value::as_str),
-            Some("runtime_guarded")
-        );
-        std::fs::remove_dir_all(&cache_root).expect("cleanup temp dir");
-        Ok(())
     }
 
     #[test]
@@ -1106,11 +1121,30 @@ instance I of S:
         );
         assert_eq!(
             response["support_summary"]["trust"]["soundness"].as_str(),
-            Some("certificate_emitted_row_soundness_unverified")
+            Some("certificate_available_but_not_emitted")
+        );
+        assert_eq!(
+            response["support_summary"]["basis"]["certificate_kind"].as_str(),
+            Some("query_result_v3")
+        );
+        assert_eq!(
+            response["support_summary"]["basis"]["certificate_emitted_to_client"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            response["support_summary"]["coverage"]["rows_total"].as_u64(),
+            Some(1)
         );
         assert!(response["support_summary"]["supported_facts"]
             .as_array()
             .is_some_and(|facts| !facts.is_empty()));
+        assert!(response["support_summary"]["supported_facts"]
+            .as_array()
+            .is_some_and(|facts| facts.iter().all(|fact| {
+                fact["witness_rows"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty())
+            })));
         Ok(())
     }
 }

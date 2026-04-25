@@ -54,6 +54,7 @@ pub mod migration;
 pub mod modal;
 pub mod optimizer;
 pub mod proof_mode;
+pub mod runtime_theory_checker;
 pub mod text_index;
 pub mod typestate;
 pub mod verified;
@@ -94,11 +95,14 @@ pub use index_sidecar::{
     PATHDB_INDEX_SIDECAR_VERSION_V1,
 };
 pub use kernel_ir::{
-    compile_instance_ir, compile_kernel_module_ir, InstanceIr, KernelModuleIr, ObjectMembershipIr,
-    RelationFactIr, RoleValueIr, RuntimeTheoryFragmentSummaryV1,
-    RuntimeTheoryObligationFragmentStatusV1, RuntimeTheoryObligationStatusV1,
-    RuntimeTheoryObligationTrustClassV1, TheoryObligationKindIr, TheoryObligationRefIr,
-    TheorySubjectKindIr, TheorySubjectRefIr, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
+    compile_instance_functor_ir, compile_instance_ir, compile_kernel_module_ir,
+    compile_schema_category_ir, InstanceArrowImageIr, InstanceArrowMappingIr, InstanceFunctorIr,
+    InstanceIr, InstanceObjectImageIr, KernelModuleIr, ObjectMembershipIr, RelationFactIr,
+    RoleValueIr, RuntimeTheoryFragmentSummaryV1, RuntimeTheoryObligationFragmentStatusV1,
+    RuntimeTheoryObligationStatusV1, RuntimeTheoryObligationTrustClassV1, SchemaCategoryArrowIr,
+    SchemaCategoryArrowKindIr, SchemaCategoryArrowRefIr, SchemaCategoryIr, SchemaCategoryObjectIr,
+    SchemaCategoryObjectRefIr, TheoryObligationKindIr, TheoryObligationRefIr, TheorySubjectKindIr,
+    TheorySubjectRefIr, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
 };
 pub use lifecycle::{Accepted, Certified, LifecycleState, Parsed, Reviewed, Validated};
 pub use migration::{
@@ -109,6 +113,14 @@ pub use migration::{
 pub use modal::{ModalFrame, ModalPathDB, ModalWorld, Modality};
 pub use optimizer::{MigrationOperatorV1, OptimizerRuleV1, ProofProducingOptimizer};
 pub use proof_mode::{NoProof, ProofJournal, ProofMode, Proved, WithProof};
+pub use runtime_theory_checker::{
+    check_runtime_theory_v1, check_runtime_theory_with_options_v1, default_evidence_policy_v1,
+    default_world_assumption_v1, CompletenessClaimV1, EvidencePolicyV1,
+    EvidenceWeightSemanticsV1, OntologyClosureClaimV1, RuntimeTheoryCheckReportV1,
+    RuntimeTheoryCheckSeverityV1, RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureReportV1,
+    RuntimeTheoryClosureTierV1, RuntimeTheoryFragmentV1, RuntimeTheoryJudgmentV1,
+    RuntimeTheoryNonClaimV1, WorldAssumptionV1, RUNTIME_THEORY_CHECK_REPORT_VERSION_V1,
+};
 pub use typestate::{NormalizedPathExprV2, UnnormalizedPathExprV2};
 pub use verified::{BinaryHeader, ReachabilityProof, VerifiedPathSig, VerifiedProb};
 

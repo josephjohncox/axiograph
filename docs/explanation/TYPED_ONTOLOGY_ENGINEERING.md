@@ -19,6 +19,10 @@ The short answer is:
   silently becoming the source of truth.
 - migration should be type-annotated and reviewable, because meaning changes are the
   highest-risk ontology events.
+- runtime theory checking should expose scoped closure/completeness claims when
+  the assumptions are explicit. The relevant surface is
+  `docs/reference/RUNTIME_THEORY_CHECKER.md`, grounded by
+  `docs/research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md`.
 
 That backend point should be read narrowly. "Stable across backends" does not
 mean every graph store is an equally good semantic home. It means advanced graph
@@ -211,8 +215,20 @@ Near-term Axiograph should converge on a small runtime-typed artifact family:
 | --- | --- | --- |
 | Evolution preview | review ontology change before mutation | typed `schema` / `theory` / `instance` / `context` deltas, CQ status, trust contract, residual obligations |
 | Business-rule applicability report | answer which obligations apply under explicit anchors | matched rule/theory/CQ ids, snapshot/world scope, trust strength, checked surfaces, next actions |
+| Theory obligation graph | let exploration, CQ repair, migration, and reconciliation point at the same obligations | typed theory, obligation, relation, and role nodes; support/touches edges; runtime fragment/trust status |
 | Semantic coverage / drift report | show what the ontology actually covers in implementation and interop | ontology-object/rule/CQ coverage, uncovered areas, drift reasons, anchors, caveats |
 | Agent-facing semantic report | let coding agents make disciplined engineering claims | proposition/task, matched ontology objects, trust, evidence/checks used, residual unknowns, suggested repairs |
+
+The current CLI entrypoint for the theory graph is
+`axiograph discover theory-graph <module.axi> [--theory <id-or-name>]`. Its JSON
+output is intended for type-directed exploration and repair planning: agents can
+ask which obligations touch a relation or role before proposing code, tests,
+migrations, olog changes, or reconciliation decisions.
+
+The same surface is exposed to tool-loop/MCP-style agents as
+`semantic_theory_graph`, which accepts canonical `.axi` text and returns the
+same runtime graph with explicit non-claims around completeness, ontology
+closure, and Lean certification.
 
 Lean will certify the strongest fragment of some of these artifacts, but the
 existence of the artifact family itself is a runtime design requirement rather
@@ -719,6 +735,23 @@ A useful migration preview therefore includes:
 - trust-contract deltas (what remains certified vs execution-only),
 - and a provenance chain from source accepted snapshot to proposal set and target
   anchor.
+
+The current runtime direction is to make the theory part of that preview
+addressable before it becomes prose. `TheoryTransportPlanIr` classifies each
+compiled `TheoryIr` obligation under a `SchemaMorphismV1` as:
+
+- preserved,
+- transported,
+- blocked by missing object images,
+- blocked by missing arrow images,
+- or opaque/outside the runtime fragment.
+
+That is a practical dependent-type effect: a migration obligation is not just a
+string saying "review this". It is indexed by source theory, schema morphism,
+operator, subject refs, obligation refs, and the missing transport basis. This
+lets authoring, rebase, merge, and CQ repair share resolver handles over the
+same typed theory objects while keeping the trust claim narrow: runtime
+well-typed transport planning is not a Lean proof of migration soundness.
 
 The product value is practical only when migration outputs include both the
 resulting model and an explicit rationale artifact:

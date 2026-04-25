@@ -134,6 +134,13 @@ When `show_elaboration:true`, the response includes:
   - `soundness`: whether row soundness is only available, emitted as a certificate, or Lean-verified
   - `coverage`: whether the response trust applies to the whole query or only a mixed/runtime-only execution mode
   - `scope`: currently always snapshot-scoped, with explicit context mode (`unscoped`, `single_context`, `multi_context`)
+- `support_summary` may appear for accepted-anchor certifiable queries even when
+  `certify:false`:
+  - the wire field stays `support_summary`,
+  - `basis.certificate_emitted_to_client` tells you whether the support basis was
+    returned as the top-level `certificate` or kept internal to the runtime,
+  - `basis.certificate_kind` is currently `query_result_v3`,
+  - and `contexts` / `evidence` are supplemental attachments, not the support basis.
 
 Certified queries (optional)
 

@@ -33,12 +33,34 @@ The literature in Appendix C of `docs/explanation/BOOK.md` points to a very conc
 - [ ] Add a `sigma_f_v1` scaffold certificate kind (explicit TODOs: ID generation, quotienting/colimits).
 - [ ] Anchor certificates to canonical `.axi` inputs (module digest + extracted fact IDs).
 - [ ] Add a provenance/explanation algebra for query certificates (query provenance / semiring-style composition), aligning certificate composition with query operators.
+- [x] Add a Rust runtime theory-transport plan over compiled `TheoryIr` and
+  `SchemaMorphismV1` so migration/rebase tooling can classify preserved,
+  transported, missing-image, and opaque obligations before certificate work.
+- [x] Add a deterministic Rust `TheoryObligationGraphV1` over compiled
+  `TheoryIr` so runtime type-directed exploration, CQ repair, migration
+  authoring, and reconciliation can address the same theory obligations and
+  subjects before Lean proof work.
+- [x] Add a Rust `RuntimeTheoryCheckReportV1` over compiled `TheoryIr` and
+  `TheoryObligationGraphV1` so runtime tooling can make scoped claims about
+  well-typedness, admissibility, finite/evidence/global-indexed closure, and
+  completeness under explicit assumptions without overclaiming Lean proof.
+- [x] Add research/reference docs for the runtime checker:
+  `docs/research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md` and
+  `docs/reference/RUNTIME_THEORY_CHECKER.md`.
 
 ### Next (1–2 months): functoriality + equivalences
 
 - [ ] Define schema morphisms + **natural transformations** (2-cells) as first-class.
 - [ ] Implement `Π_F` (right Kan extension) scaffold + certificates.
 - [ ] Represent relations as **edge objects** (with projection arrows) in the core semantics so all migration operators treat relations uniformly.
+- [~] Feed runtime theory-transport plans into migration/rebase/merge previews
+  as the operational bridge toward future certified `Δ/Σ/Π` transport claims.
+- [ ] Feed `TheoryObligationGraphV1` into query refinement, CQ repair,
+  migration authoring, and semantic reconciliation builders as the default
+  obligation/subject index.
+- [ ] Feed `RuntimeTheoryCheckReportV1` into behavior-case reports, bounded
+  context reports, CQ gates, migration preview, reconciliation preview,
+  semantic merge/rebase plans, and coding-agent semantic coverage reports.
 - [ ] Add proof-carrying rewrite derivations beyond normalization/equivalence (reconciliation explanations, domain/unit rewrites).
 
 ### Hardening track (parallel, optional)

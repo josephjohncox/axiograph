@@ -1,20 +1,18 @@
-#![cfg_attr(not(test), allow(dead_code))]
+//! Industrial engineering example harness.
+//!
+//! This crate is intentionally outside `axiograph-cli`: it demonstrates how a
+//! domain package can consume canonical `.axi`, import it through the shared
+//! runtime substrate, and produce anchored teaching artifacts without becoming
+//! part of the ontology kernel.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
-use axiograph_pathdb::{AcceptedAxiAnchor, PathDB};
+use axiograph_pathdb::{AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, PathDB};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-
-use crate::competency_questions::CompetencyCoverageWithTrustV1;
-use crate::semantic_claim::{
-    AgentTaskRefV1, CoverageEdgeV1, CoverageReportV1, ImplementationSurfaceKindV1,
-    ImplementationSurfaceRefV1, RuntimeRuleCatalogV1, RuntimeRuleScopeV1,
-};
-use crate::trust_contract::TrustContractV1;
 
 pub const INDUSTRIAL_HARNESS_CAMPAIGN_VERSION_V1: &str = "industrial_harness_campaign_v1";
 pub const INDUSTRIAL_HARNESS_RUN_VERSION_V1: &str = "industrial_harness_run_v1";
@@ -31,6 +29,91 @@ pub const REGULATED_PRODUCTION_LINE_CQ_PATH: &str =
     "examples/competency_questions/regulated_production_line_cq.json";
 pub const REGULATED_PRODUCTION_LINE_MODULE_NAME: &str = "RegulatedProductionLine";
 pub const REGULATED_PRODUCTION_LINE_SEED_NAME: &str = "RegulatedLineSeed";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrustScopeV1 {
+    pub anchor: String,
+    pub context: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrustContractV1 {
+    pub trust_class: String,
+    pub soundness: String,
+    pub coverage: String,
+    pub scope: TrustScopeV1,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompetencyQuestionV1 {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    pub query: String,
+    #[serde(default = "default_min_rows")]
+    pub min_rows: usize,
+    #[serde(default = "default_weight")]
+    pub weight: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contexts: Vec<String>,
+}
+
+fn default_min_rows() -> usize {
+    1
+}
+
+fn default_weight() -> f64 {
+    1.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompetencyQuestionTrustV1 {
+    pub trust_class: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompetencyQuestionEvaluationV1 {
+    pub name: String,
+    pub rows: usize,
+    pub min_rows: usize,
+    pub satisfied: bool,
+    pub weight: f64,
+    pub cost: f64,
+    pub trust: CompetencyQuestionTrustV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CompetencyCoverageWithTrustV1 {
+    pub total: usize,
+    pub satisfied: usize,
+    pub coverage: f64,
+    pub cost: f64,
+    #[serde(default)]
+    pub questions: Vec<CompetencyQuestionEvaluationV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceCoverageHintV1 {
+    Tested,
+    Implemented,
+    DocumentedOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndustrialSurfaceV1 {
+    surface_id: &'static str,
+    label: &'static str,
+    relation_names: &'static [&'static str],
+    hint: SurfaceCoverageHintV1,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -323,6 +406,21 @@ pub fn industrial_harness_distill_path(
     industrial_harness_run_dir(cache_root, campaign_id, run_id).join("distill.json")
 }
 
+pub fn industrial_harness_persisted_run_paths(
+    cache_root: &Path,
+    campaign_id: &str,
+    run_id: &str,
+) -> IndustrialHarnessPersistedRunPathsV1 {
+    IndustrialHarnessPersistedRunPathsV1 {
+        campaign_manifest_path: industrial_harness_campaign_manifest_path(cache_root, campaign_id),
+        run_path: industrial_harness_run_manifest_path(cache_root, campaign_id, run_id),
+        cq_results_path: industrial_harness_cq_results_path(cache_root, campaign_id, run_id),
+        coverage_path: industrial_harness_coverage_path(cache_root, campaign_id, run_id),
+        agent_report_path: industrial_harness_agent_report_path(cache_root, campaign_id, run_id),
+        distill_path: industrial_harness_distill_path(cache_root, campaign_id, run_id),
+    }
+}
+
 pub fn industrial_harness_artifact_paths(
     campaign_id: &str,
     run_id: &str,
@@ -368,161 +466,6 @@ pub fn regulated_production_line_campaign(
     }
 }
 
-pub fn regulated_production_line_run_bundle(
-    campaign_id: &str,
-    run_id: &str,
-    created_at_unix_secs: u64,
-    anchor: AcceptedAxiAnchor,
-    trust: TrustContractV1,
-) -> IndustrialHarnessRunBundleV1 {
-    let artifacts = industrial_harness_artifact_paths(campaign_id, run_id);
-    let cq_results = vec![
-        IndustrialHarnessCqResultEntryV1 {
-            cq_id: "shipment_lineage_traceable".to_string(),
-            title: "Shipment remains traceable to its released work order".to_string(),
-            outcome: IndustrialHarnessCheckOutcomeV1::Pass,
-            detail: "Seed artifact preserves the released shipment/work-order lineage required for a shadow harness replay.".to_string(),
-        },
-        IndustrialHarnessCqResultEntryV1 {
-            cq_id: "certificate_release_link_complete".to_string(),
-            title: "Supplier certificate linkage is fully stitched into release review".to_string(),
-            outcome: IndustrialHarnessCheckOutcomeV1::Fail,
-            detail: "Seed artifact intentionally leaves the certificate-to-release stitch as an explicit harness gap so regulated-line follow-up work has a deterministic placeholder.".to_string(),
-        },
-    ];
-    let cq_summary = IndustrialHarnessCqResultsSummaryV1 {
-        total: cq_results.len(),
-        passed: cq_results
-            .iter()
-            .filter(|entry| entry.outcome == IndustrialHarnessCheckOutcomeV1::Pass)
-            .count(),
-        failed: cq_results
-            .iter()
-            .filter(|entry| entry.outcome == IndustrialHarnessCheckOutcomeV1::Fail)
-            .count(),
-        not_run: cq_results
-            .iter()
-            .filter(|entry| entry.outcome == IndustrialHarnessCheckOutcomeV1::NotRun)
-            .count(),
-    };
-
-    let coverage_surfaces = vec![
-        IndustrialHarnessCoverageSurfaceV1 {
-            surface: "ontology.RegulatedLine.ShipmentFulfills".to_string(),
-            status: IndustrialHarnessCoverageStatusV1::Covered,
-            detail: "Seed artifacts carry shipment/order/work-order anchor lineage.".to_string(),
-        },
-        IndustrialHarnessCoverageSurfaceV1 {
-            surface: "implementation.PLC_ChargeSequence".to_string(),
-            status: IndustrialHarnessCoverageStatusV1::Covered,
-            detail: "PLC routine remains visible in the regulated-line seed trace.".to_string(),
-        },
-        IndustrialHarnessCoverageSurfaceV1 {
-            surface: "implementation.HMI_BlendOverview".to_string(),
-            status: IndustrialHarnessCoverageStatusV1::Partial,
-            detail: "UI surface is named but not yet paired with replay evidence in this slice.".to_string(),
-        },
-        IndustrialHarnessCoverageSurfaceV1 {
-            surface: "quality.SupplierCertificate_to_ReleaseDecision".to_string(),
-            status: IndustrialHarnessCoverageStatusV1::Gap,
-            detail: "The shadow harness still lacks a typed stitched artifact for certificate-backed release review.".to_string(),
-        },
-    ];
-    let coverage_summary = IndustrialHarnessCoverageSummaryV1 {
-        total_surfaces: coverage_surfaces.len(),
-        covered_surfaces: coverage_surfaces
-            .iter()
-            .filter(|surface| surface.status == IndustrialHarnessCoverageStatusV1::Covered)
-            .count(),
-        partial_surfaces: coverage_surfaces
-            .iter()
-            .filter(|surface| surface.status == IndustrialHarnessCoverageStatusV1::Partial)
-            .count(),
-        gap_surfaces: coverage_surfaces
-            .iter()
-            .filter(|surface| surface.status == IndustrialHarnessCoverageStatusV1::Gap)
-            .count(),
-    };
-
-    let notes = vec![
-        "Cache artifacts are read-only with respect to accepted ontology state.".to_string(),
-        "This slice only materializes deterministic harness files under _cache/industrial_harness."
-            .to_string(),
-    ];
-
-    IndustrialHarnessRunBundleV1 {
-        run: IndustrialHarnessRunV1 {
-            version: INDUSTRIAL_HARNESS_RUN_VERSION_V1.to_string(),
-            campaign_id: campaign_id.to_string(),
-            run_id: run_id.to_string(),
-            scenario: IndustrialHarnessScenarioV1::RegulatedProductionLineSeed,
-            created_at_unix_secs,
-            status: IndustrialHarnessRunStatusV1::Materialized,
-            anchor: anchor.clone(),
-            trust: trust.clone(),
-            artifacts: artifacts.clone(),
-            notes,
-        },
-        cq_results: IndustrialHarnessCqResultsV1 {
-            version: INDUSTRIAL_HARNESS_CQ_RESULTS_VERSION_V1.to_string(),
-            campaign_id: campaign_id.to_string(),
-            run_id: run_id.to_string(),
-            anchor: anchor.clone(),
-            trust: trust.clone(),
-            summary: cq_summary,
-            results: cq_results,
-        },
-        coverage: IndustrialHarnessCoverageV1 {
-            version: INDUSTRIAL_HARNESS_COVERAGE_VERSION_V1.to_string(),
-            campaign_id: campaign_id.to_string(),
-            run_id: run_id.to_string(),
-            anchor: anchor.clone(),
-            trust: trust.clone(),
-            summary: coverage_summary,
-            surfaces: coverage_surfaces,
-        },
-        agent_report: IndustrialHarnessAgentReportV1 {
-            version: INDUSTRIAL_HARNESS_AGENT_REPORT_VERSION_V1.to_string(),
-            campaign_id: campaign_id.to_string(),
-            run_id: run_id.to_string(),
-            anchor: anchor.clone(),
-            trust: trust.clone(),
-            summary: "Seed harness confirms shipment lineage while preserving one explicit regulated release gap for follow-up hardening.".to_string(),
-            findings: vec![
-                IndustrialHarnessFindingV1 {
-                    severity: "info".to_string(),
-                    subject: "ShipmentFulfills".to_string(),
-                    detail: "A typed anchor is attached to the run artifacts so replay outputs stay bound to one accepted snapshot/module pair.".to_string(),
-                },
-                IndustrialHarnessFindingV1 {
-                    severity: "warning".to_string(),
-                    subject: "SupplierCertificate".to_string(),
-                    detail: "Certificate-backed release stitching is still a declared gap in the seed slice.".to_string(),
-                },
-            ],
-            next_actions: vec![
-                "Add real CQ execution outputs once the shadow-harness runner can query the accepted snapshot deterministically.".to_string(),
-                "Attach a first typed release-review artifact that stitches supplier certificates into regulated release decisions.".to_string(),
-            ],
-        },
-        distill: IndustrialHarnessDistillV1 {
-            version: INDUSTRIAL_HARNESS_DISTILL_VERSION_V1.to_string(),
-            campaign_id: campaign_id.to_string(),
-            run_id: run_id.to_string(),
-            anchor,
-            trust,
-            summary: "Regulated-line seed artifacts now have a deterministic cache contract that carries accepted anchors and trust metadata.".to_string(),
-            retained_insights: vec![
-                "Shipment/order/work-order lineage is the first stable industrial shadow-harness seam.".to_string(),
-                "Accepted snapshot and axi digest anchors are persisted directly on each run artifact.".to_string(),
-            ],
-            residual_risks: vec![
-                "This slice materializes deterministic cache files only; it does not yet execute live replay or promotion workflows.".to_string(),
-            ],
-        },
-    }
-}
-
 pub fn persist_industrial_harness_run_bundle(
     cache_root: &Path,
     campaign: &IndustrialHarnessCampaignV1,
@@ -564,41 +507,6 @@ pub fn persist_industrial_harness_run_bundle(
     })
 }
 
-pub fn materialize_regulated_production_line_seed_harness(
-    cache_root: &Path,
-    run_id: &str,
-    created_at_unix_secs: u64,
-    anchor: AcceptedAxiAnchor,
-    trust: TrustContractV1,
-) -> Result<IndustrialHarnessPersistedRunPathsV1> {
-    let campaign =
-        regulated_production_line_campaign(cache_root, REGULATED_PRODUCTION_LINE_CAMPAIGN_ID);
-    let bundle = regulated_production_line_run_bundle(
-        REGULATED_PRODUCTION_LINE_CAMPAIGN_ID,
-        run_id,
-        created_at_unix_secs,
-        anchor,
-        trust,
-    );
-    persist_industrial_harness_run_bundle(cache_root, &campaign, &bundle)
-}
-
-#[allow(dead_code)]
-pub fn materialize_regulated_production_line_seed_harness_now(
-    cache_root: &Path,
-    run_id: &str,
-    anchor: AcceptedAxiAnchor,
-    trust: TrustContractV1,
-) -> Result<IndustrialHarnessPersistedRunPathsV1> {
-    materialize_regulated_production_line_seed_harness(
-        cache_root,
-        run_id,
-        now_unix_secs(),
-        anchor,
-        trust,
-    )
-}
-
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
@@ -606,8 +514,7 @@ fn repo_root() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."))
 }
 
-fn regulated_production_line_cq_questions() -> Result<Vec<crate::world_model::CompetencyQuestionV1>>
-{
+fn regulated_production_line_cq_questions() -> Result<Vec<CompetencyQuestionV1>> {
     let path = repo_root().join(REGULATED_PRODUCTION_LINE_CQ_PATH);
     let text = fs::read_to_string(&path).with_context(|| {
         format!(
@@ -623,132 +530,33 @@ fn regulated_production_line_cq_questions() -> Result<Vec<crate::world_model::Co
     })
 }
 
-fn regulated_production_line_surfaces() -> Vec<ImplementationSurfaceRefV1> {
+fn regulated_production_line_surfaces() -> Vec<IndustrialSurfaceV1> {
     vec![
-        ImplementationSurfaceRefV1 {
-            surface_id: "workflow:released_order_lineage".to_string(),
-            kind: ImplementationSurfaceKindV1::Workflow,
-            label: "Released order lineage".to_string(),
-            scopes: vec![
-                RuntimeRuleScopeV1::relation("RegulatedLine", "WorkOrderForSalesOrder"),
-                RuntimeRuleScopeV1::relation("RegulatedLine", "ShipmentFulfills"),
-            ],
-            code_refs: vec!["examples/industrial/RegulatedProductionLine.axi".to_string()],
-            notes: vec![
-                "Tracks sales-order to work-order to shipment lineage in the regulated seed."
-                    .to_string(),
-            ],
+        IndustrialSurfaceV1 {
+            surface_id: "workflow:released_order_lineage",
+            label: "Released order lineage",
+            relation_names: &["WorkOrderForSalesOrder", "ShipmentFulfills"],
+            hint: SurfaceCoverageHintV1::Tested,
         },
-        ImplementationSurfaceRefV1 {
-            surface_id: "workflow:plc_charge_sequence".to_string(),
-            kind: ImplementationSurfaceKindV1::Workflow,
-            label: "PLC charge sequence".to_string(),
-            scopes: vec![
-                RuntimeRuleScopeV1::relation("RegulatedLine", "InspectionForWorkOrder"),
-                RuntimeRuleScopeV1::relation("RegulatedLine", "LotHasCertificate"),
-            ],
-            code_refs: vec!["examples/industrial/RegulatedProductionLine.axi".to_string()],
-            notes: vec![
-                "Represents one automation/control seam that should stay aligned with release review."
-                    .to_string(),
-            ],
+        IndustrialSurfaceV1 {
+            surface_id: "workflow:plc_charge_sequence",
+            label: "PLC charge sequence",
+            relation_names: &["InspectionForWorkOrder", "LotHasCertificate"],
+            hint: SurfaceCoverageHintV1::Implemented,
         },
-        ImplementationSurfaceRefV1 {
-            surface_id: "report:hmi_blend_overview".to_string(),
-            kind: ImplementationSurfaceKindV1::Report,
-            label: "HMI blend overview".to_string(),
-            scopes: vec![RuntimeRuleScopeV1::relation(
-                "RegulatedLine",
-                "DeliveryCommitment",
-            )],
-            code_refs: vec!["examples/industrial/RegulatedProductionLine.axi".to_string()],
-            notes: vec![
-                "Represents the operator-facing planning/price/delivery reporting surface."
-                    .to_string(),
-            ],
+        IndustrialSurfaceV1 {
+            surface_id: "report:hmi_blend_overview",
+            label: "HMI blend overview",
+            relation_names: &["DeliveryCommitment"],
+            hint: SurfaceCoverageHintV1::DocumentedOnly,
         },
-        ImplementationSurfaceRefV1 {
-            surface_id: "doc_section:release_review_sop".to_string(),
-            kind: ImplementationSurfaceKindV1::DocSection,
-            label: "Release review SOP".to_string(),
-            scopes: vec![RuntimeRuleScopeV1::relation(
-                "RegulatedLine",
-                "ShipmentFulfills",
-            )],
-            code_refs: vec!["examples/industrial/RegulatedProductionLine.axi".to_string()],
-            notes: vec![
-                "Represents the human review/governance surface for regulated shipment release."
-                    .to_string(),
-            ],
+        IndustrialSurfaceV1 {
+            surface_id: "doc_section:release_review_sop",
+            label: "Release review SOP",
+            relation_names: &["ShipmentFulfills"],
+            hint: SurfaceCoverageHintV1::DocumentedOnly,
         },
     ]
-}
-
-fn coverage_edges_for_relation(
-    catalog: &RuntimeRuleCatalogV1,
-    schema: &str,
-    relation: &str,
-    surface_id: &str,
-    status: crate::semantic_claim::CoverageStatusV1,
-) -> Vec<CoverageEdgeV1> {
-    catalog
-        .relation_rules(schema, relation)
-        .into_iter()
-        .map(|rule| CoverageEdgeV1 {
-            surface_id: surface_id.to_string(),
-            rule_id: rule.rule_id.clone(),
-            status,
-            notes: Vec::new(),
-        })
-        .collect()
-}
-
-fn regulated_production_line_coverage_edges(meta: &MetaPlaneIndex) -> Vec<CoverageEdgeV1> {
-    let catalog = crate::semantic_claim::runtime_rule_catalog(meta);
-    let mut edges = Vec::new();
-    edges.extend(coverage_edges_for_relation(
-        &catalog,
-        "RegulatedLine",
-        "WorkOrderForSalesOrder",
-        "workflow:released_order_lineage",
-        crate::semantic_claim::CoverageStatusV1::Tested,
-    ));
-    edges.extend(coverage_edges_for_relation(
-        &catalog,
-        "RegulatedLine",
-        "ShipmentFulfills",
-        "workflow:released_order_lineage",
-        crate::semantic_claim::CoverageStatusV1::Implemented,
-    ));
-    edges.extend(coverage_edges_for_relation(
-        &catalog,
-        "RegulatedLine",
-        "InspectionForWorkOrder",
-        "workflow:plc_charge_sequence",
-        crate::semantic_claim::CoverageStatusV1::Implemented,
-    ));
-    edges.extend(coverage_edges_for_relation(
-        &catalog,
-        "RegulatedLine",
-        "LotHasCertificate",
-        "workflow:plc_charge_sequence",
-        crate::semantic_claim::CoverageStatusV1::DocumentedOnly,
-    ));
-    edges.extend(coverage_edges_for_relation(
-        &catalog,
-        "RegulatedLine",
-        "DeliveryCommitment",
-        "report:hmi_blend_overview",
-        crate::semantic_claim::CoverageStatusV1::DocumentedOnly,
-    ));
-    edges.extend(coverage_edges_for_relation(
-        &catalog,
-        "RegulatedLine",
-        "ShipmentFulfills",
-        "doc_section:release_review_sop",
-        crate::semantic_claim::CoverageStatusV1::DocumentedOnly,
-    ));
-    edges
 }
 
 fn regulated_production_line_run_trust(anchor: &AcceptedAxiAnchor) -> TrustContractV1 {
@@ -756,22 +564,97 @@ fn regulated_production_line_run_trust(anchor: &AcceptedAxiAnchor) -> TrustContr
         trust_class: "runtime_guarded".to_string(),
         soundness: "accepted_anchor_scoped_shadow_harness_run".to_string(),
         coverage: "regulated_line_seed_runtime_reports".to_string(),
-        scope: crate::trust_contract::TrustScopeV1 {
+        scope: TrustScopeV1 {
             anchor: format!("{}@{}", anchor.accepted_snapshot_id, anchor.axi_digest),
             context: "regulated_production_line_seed".to_string(),
         },
         reasons: vec![
-            "runner reads an accepted snapshot through the existing read-only runtime loader"
-                .to_string(),
+            "runner imports canonical .axi through the shared PathDB runtime importer".to_string(),
             "artifacts are cache-only and do not mutate accepted ontology state".to_string(),
             "all outputs remain scoped to the accepted snapshot/module anchor used for the run"
                 .to_string(),
         ],
-        certifiable_disjuncts: None,
-        execution_only_disjuncts: None,
-        semantic_coverage: None,
-        semantic_claims: Vec::new(),
         gaps: Vec::new(),
+    }
+}
+
+fn relation_refs_in_query(query: &str) -> Vec<(String, String)> {
+    let re = Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\(")
+        .expect("relation reference regex should compile");
+    let mut refs = re
+        .captures_iter(query)
+        .map(|capture| (capture[1].to_string(), capture[2].to_string()))
+        .collect::<Vec<_>>();
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn fact_count_for_relation(db: &PathDB, schema: &str, relation: &str) -> usize {
+    db.fact_nodes_by_axi_schema_relation(schema, relation)
+        .len() as usize
+}
+
+fn evaluate_competency_questions_with_trust(
+    db: &PathDB,
+    questions: &[CompetencyQuestionV1],
+) -> CompetencyCoverageWithTrustV1 {
+    if questions.is_empty() {
+        return CompetencyCoverageWithTrustV1::default();
+    }
+
+    let mut satisfied = 0usize;
+    let mut total_cost = 0.0;
+    let mut results = Vec::new();
+
+    for question in questions {
+        let refs = relation_refs_in_query(&question.query);
+        let min_rows = question.min_rows.max(1);
+        let weight = if question.weight <= 0.0 {
+            1.0
+        } else {
+            question.weight
+        };
+        let rows = if refs.is_empty() {
+            0
+        } else {
+            refs.iter()
+                .map(|(schema, relation)| fact_count_for_relation(db, schema, relation))
+                .min()
+                .unwrap_or(0)
+        };
+        let ok = rows >= min_rows;
+        if ok {
+            satisfied += 1;
+        }
+        let cost = if ok { 0.0 } else { weight };
+        total_cost += cost;
+        results.push(CompetencyQuestionEvaluationV1 {
+            name: question.name.clone(),
+            rows,
+            min_rows,
+            satisfied: ok,
+            weight,
+            cost,
+            trust: CompetencyQuestionTrustV1 {
+                trust_class: "runtime_guarded".to_string(),
+                coverage: Some("relation_presence_over_imported_axi_instance".to_string()),
+                reasons: vec![
+                    "example harness evaluates canonical .axi relation presence through PathDB fact metadata".to_string(),
+                    "this is a pedagogical smoke check, not a full AxQL completeness claim"
+                        .to_string(),
+                ],
+            },
+        });
+    }
+
+    let total = questions.len();
+    CompetencyCoverageWithTrustV1 {
+        total,
+        satisfied,
+        coverage: satisfied as f64 / total as f64,
+        cost: total_cost,
+        questions: results,
     }
 }
 
@@ -781,7 +664,7 @@ fn lower_runtime_cq_results(
     anchor: &AcceptedAxiAnchor,
     trust: &TrustContractV1,
     coverage: CompetencyCoverageWithTrustV1,
-    questions: &[crate::world_model::CompetencyQuestionV1],
+    questions: &[CompetencyQuestionV1],
 ) -> IndustrialHarnessCqResultsV1 {
     let results = coverage
         .questions
@@ -828,33 +711,38 @@ fn lower_runtime_coverage(
     run_id: &str,
     anchor: &AcceptedAxiAnchor,
     trust: &TrustContractV1,
-    coverage: CoverageReportV1,
+    db: &PathDB,
+    surfaces: Vec<IndustrialSurfaceV1>,
 ) -> IndustrialHarnessCoverageV1 {
-    let surfaces = coverage
-        .surface_reports
+    let surfaces = surfaces
         .into_iter()
         .map(|surface| {
-            let status = if surface.rules.is_empty() {
+            let present = surface
+                .relation_names
+                .iter()
+                .filter(|relation| fact_count_for_relation(db, "RegulatedLine", relation) > 0)
+                .count();
+            let status = if present == 0 {
                 IndustrialHarnessCoverageStatusV1::Gap
-            } else if surface.missing_obligations.is_empty() {
+            } else if present == surface.relation_names.len() {
                 IndustrialHarnessCoverageStatusV1::Covered
             } else {
                 IndustrialHarnessCoverageStatusV1::Partial
             };
-            let detail = if surface.missing_obligations.is_empty() {
-                format!(
-                    "trust_class={:?} runtime_enforced={} review_only={}",
-                    surface.trust_class, surface.runtime_enforced_rules, surface.review_only_rules
-                )
-            } else {
-                format!(
-                    "trust_class={:?} missing={}",
-                    surface.trust_class,
-                    surface.missing_obligations.join("; ")
-                )
+            let hint = match surface.hint {
+                SurfaceCoverageHintV1::Tested => "tested",
+                SurfaceCoverageHintV1::Implemented => "implemented",
+                SurfaceCoverageHintV1::DocumentedOnly => "documented_only",
             };
+            let detail = format!(
+                "surface_id={} hint={} present_relations={} required_relations={}",
+                surface.surface_id,
+                hint,
+                present,
+                surface.relation_names.len()
+            );
             IndustrialHarnessCoverageSurfaceV1 {
-                surface: surface.surface.label,
+                surface: surface.label.to_string(),
                 status,
                 detail,
             }
@@ -891,7 +779,8 @@ fn lower_runtime_agent_report(
     run_id: &str,
     anchor: &AcceptedAxiAnchor,
     trust: &TrustContractV1,
-    report: crate::semantic_claim::AgentEngineeringReportV1,
+    cq_results: &IndustrialHarnessCqResultsV1,
+    coverage: &IndustrialHarnessCoverageV1,
 ) -> IndustrialHarnessAgentReportV1 {
     let mut findings = vec![IndustrialHarnessFindingV1 {
         severity: "info".to_string(),
@@ -901,13 +790,32 @@ fn lower_runtime_agent_report(
             anchor.accepted_snapshot_id, anchor.axi_digest
         ),
     }];
-    findings.extend(report.residual_unknowns.into_iter().map(|detail| {
-        IndustrialHarnessFindingV1 {
+
+    if cq_results.summary.failed > 0 {
+        findings.push(IndustrialHarnessFindingV1 {
             severity: "warning".to_string(),
-            subject: "residual_unknown".to_string(),
-            detail,
-        }
-    }));
+            subject: "competency_questions".to_string(),
+            detail: format!(
+                "{} competency question(s) are not satisfied by the imported .axi instance",
+                cq_results.summary.failed
+            ),
+        });
+    }
+    if coverage.summary.gap_surfaces > 0 || coverage.summary.partial_surfaces > 0 {
+        findings.push(IndustrialHarnessFindingV1 {
+            severity: "warning".to_string(),
+            subject: "implementation_surface_coverage".to_string(),
+            detail: format!(
+                "{} partial and {} gap surface(s) remain in the example coverage map",
+                coverage.summary.partial_surfaces, coverage.summary.gap_surfaces
+            ),
+        });
+    }
+    let next_actions = vec![
+        "open the canonical .axi module and inspect relation objects, roles, contexts, and instance facts".to_string(),
+        "add a new competency question when a domain behavior is missing from the model".to_string(),
+        "promote successful example deltas through the core semantic VCS rather than mutating this cache".to_string(),
+    ];
 
     IndustrialHarnessAgentReportV1 {
         version: INDUSTRIAL_HARNESS_AGENT_REPORT_VERSION_V1.to_string(),
@@ -916,13 +824,15 @@ fn lower_runtime_agent_report(
         anchor: anchor.clone(),
         trust: trust.clone(),
         summary: format!(
-            "matched_scopes={} matched_rules={} trust_class={:?}",
-            report.matched_scope_ids.len(),
-            report.matched_rule_ids.len(),
-            report.trust_class
+            "cq_passed={} cq_total={} covered_surfaces={} partial_surfaces={} gap_surfaces={}",
+            cq_results.summary.passed,
+            cq_results.summary.total,
+            coverage.summary.covered_surfaces,
+            coverage.summary.partial_surfaces,
+            coverage.summary.gap_surfaces
         ),
         findings,
-        next_actions: report.next_actions,
+        next_actions,
     }
 }
 
@@ -963,7 +873,7 @@ fn lower_runtime_distill(
 
 pub fn build_regulated_production_line_runtime_bundle(
     db: &PathDB,
-    meta: &MetaPlaneIndex,
+    _meta: &MetaPlaneIndex,
     campaign_id: &str,
     run_id: &str,
     created_at_unix_secs: u64,
@@ -971,35 +881,8 @@ pub fn build_regulated_production_line_runtime_bundle(
 ) -> Result<IndustrialHarnessRunBundleV1> {
     let trust = regulated_production_line_run_trust(&anchor);
     let questions = regulated_production_line_cq_questions()?;
-    let cq_coverage =
-        crate::competency_questions::evaluate_competency_questions_with_trust(db, &questions)?;
+    let cq_coverage = evaluate_competency_questions_with_trust(db, &questions);
     let surfaces = regulated_production_line_surfaces();
-    let edges = regulated_production_line_coverage_edges(meta);
-    let coverage = crate::semantic_claim::semantic_coverage_report(
-        meta,
-        Some(anchor.accepted_snapshot_id.clone()),
-        "accepted",
-        &surfaces,
-        &edges,
-    );
-    let agent_report = crate::semantic_claim::agent_engineering_report(
-        meta,
-        Some(anchor.accepted_snapshot_id.clone()),
-        "accepted",
-        &AgentTaskRefV1 {
-            task_id: "industrial_harness.regulated_line_seed".to_string(),
-            label: "Regulated line shadow harness".to_string(),
-            objective: Some(
-                "check regulated line lineage, release review, and implementation surface coverage under one accepted anchor"
-                    .to_string(),
-            ),
-            languages: vec!["ontology".to_string(), "plc".to_string(), "hmi".to_string(), "sop".to_string()],
-            artifact_refs: vec![REGULATED_PRODUCTION_LINE_MODULE_PATH.to_string()],
-            notes: Vec::new(),
-        },
-        &surfaces,
-        &edges,
-    );
 
     let cq_results = lower_runtime_cq_results(
         campaign_id,
@@ -1009,9 +892,9 @@ pub fn build_regulated_production_line_runtime_bundle(
         cq_coverage,
         &questions,
     );
-    let coverage = lower_runtime_coverage(campaign_id, run_id, &anchor, &trust, coverage);
+    let coverage = lower_runtime_coverage(campaign_id, run_id, &anchor, &trust, db, surfaces);
     let agent_report =
-        lower_runtime_agent_report(campaign_id, run_id, &anchor, &trust, agent_report);
+        lower_runtime_agent_report(campaign_id, run_id, &anchor, &trust, &cq_results, &coverage);
     let distill = lower_runtime_distill(
         campaign_id,
         run_id,
@@ -1043,46 +926,6 @@ pub fn build_regulated_production_line_runtime_bundle(
         coverage,
         agent_report,
         distill,
-    })
-}
-
-pub fn run_regulated_production_line_seed_harness(
-    cache_root: &Path,
-    accepted_snapshot_runtime: &crate::db_server::ReadOnlySemanticRuntime,
-    run_id: &str,
-    created_at_unix_secs: u64,
-) -> Result<IndustrialHarnessRunResponseV1> {
-    let anchor = accepted_snapshot_runtime
-        .accepted_axi_anchor
-        .clone()
-        .ok_or_else(|| anyhow!("industrial harness requires a single accepted-module anchor"))?;
-    let meta = accepted_snapshot_runtime
-        .meta
-        .as_ref()
-        .ok_or_else(|| anyhow!("industrial harness requires meta-plane data"))?;
-    let campaign =
-        regulated_production_line_campaign(cache_root, REGULATED_PRODUCTION_LINE_CAMPAIGN_ID);
-    let bundle = build_regulated_production_line_runtime_bundle(
-        accepted_snapshot_runtime.db.as_ref(),
-        meta,
-        REGULATED_PRODUCTION_LINE_CAMPAIGN_ID,
-        run_id,
-        created_at_unix_secs,
-        anchor.clone(),
-    )?;
-    let persisted = persist_industrial_harness_run_bundle(cache_root, &campaign, &bundle)?;
-    Ok(IndustrialHarnessRunResponseV1 {
-        version: "industrial_harness_run_response_v1".to_string(),
-        cache_root: cache_root.to_string_lossy().to_string(),
-        campaign_id: bundle.run.campaign_id.clone(),
-        run_id: bundle.run.run_id.clone(),
-        accepted_axi_anchor: anchor,
-        trust: bundle.run.trust.clone(),
-        campaign_manifest_path: persisted
-            .campaign_manifest_path
-            .to_string_lossy()
-            .to_string(),
-        artifacts: bundle.run.artifacts,
     })
 }
 
@@ -1120,20 +963,32 @@ pub fn run_regulated_production_line_seed_harness_from_runtime_parts(
     })
 }
 
-pub fn run_regulated_production_line_seed_harness_from_accepted_snapshot(
+pub fn run_regulated_production_line_seed_harness_from_axi_module(
     cache_root: &Path,
-    accepted_dir: &Path,
-    snapshot: &str,
+    axi_path: &Path,
+    accepted_snapshot_id: Option<AcceptedSnapshotId>,
     run_id: &str,
     created_at_unix_secs: u64,
 ) -> Result<IndustrialHarnessRunResponseV1> {
-    let runtime = crate::db_server::load_read_only_semantic_runtime(
-        None,
-        Some(accepted_dir),
-        "accepted",
-        snapshot,
-    )?;
-    run_regulated_production_line_seed_harness(cache_root, &runtime, run_id, created_at_unix_secs)
+    let axi_text = fs::read_to_string(axi_path)
+        .with_context(|| format!("read industrial .axi module `{}`", axi_path.display()))?;
+    let mut db = PathDB::new();
+    axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, &axi_text)
+        .with_context(|| format!("import industrial .axi module `{}`", axi_path.display()))?;
+    db.build_indexes();
+    let meta = MetaPlaneIndex::from_db(&db)?;
+    let digest = AxiDigest::from_axi_text(&axi_text);
+    let snapshot_id =
+        accepted_snapshot_id.unwrap_or_else(|| AcceptedSnapshotId::new(format!("axi:{digest}")));
+    let anchor = AcceptedAxiAnchor::new(snapshot_id, digest);
+    run_regulated_production_line_seed_harness_from_runtime_parts(
+        cache_root,
+        &db,
+        &meta,
+        anchor,
+        run_id,
+        created_at_unix_secs,
+    )
 }
 
 pub fn inspect_industrial_harness_run(
@@ -1224,6 +1079,60 @@ pub fn inspect_industrial_harness_run(
             notes,
         },
     })
+}
+
+fn render_value_label<T>(value: &T) -> String
+where
+    T: Serialize + std::fmt::Debug,
+{
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| format!("{value:?}"))
+}
+
+pub fn render_industrial_harness_inspection(
+    cache_root: &Path,
+    inspection: &IndustrialHarnessInspectionResultV1,
+) -> String {
+    let bundle = &inspection.bundle;
+    let paths = industrial_harness_persisted_run_paths(
+        cache_root,
+        &bundle.run.campaign_id,
+        &bundle.run.run_id,
+    );
+
+    format!(
+        "status\n  campaign: {}\n  run: {}\n  scenario: {}\n  created_at_unix_secs: {}\n  status: {}\n  accepted anchor: {} @ {}\n  verification: total={} failed={}\nreport\n  cq: total={} passed={} failed={} not_run={}\n  coverage: total_surfaces={} covered={} partial={} gap={}\n  agent: {}\n  agent findings: {}\n  next actions: {}\n  distill: {}\n  residual risks: {}\nreadback\n  campaign manifest: {}\n  run artifact: {}\n  cq results: {}\n  coverage: {}\n  agent report: {}\n  distill: {}",
+        bundle.run.campaign_id,
+        bundle.run.run_id,
+        render_value_label(&bundle.run.scenario),
+        bundle.run.created_at_unix_secs,
+        render_value_label(&bundle.run.status),
+        bundle.run.anchor.accepted_snapshot_id,
+        bundle.run.anchor.axi_digest,
+        inspection.verification.total,
+        inspection.verification.failed,
+        bundle.cq_results.summary.total,
+        bundle.cq_results.summary.passed,
+        bundle.cq_results.summary.failed,
+        bundle.cq_results.summary.not_run,
+        bundle.coverage.summary.total_surfaces,
+        bundle.coverage.summary.covered_surfaces,
+        bundle.coverage.summary.partial_surfaces,
+        bundle.coverage.summary.gap_surfaces,
+        bundle.agent_report.summary,
+        bundle.agent_report.findings.len(),
+        bundle.agent_report.next_actions.len(),
+        bundle.distill.summary,
+        bundle.distill.residual_risks.len(),
+        paths.campaign_manifest_path.display(),
+        paths.run_path.display(),
+        paths.cq_results_path.display(),
+        paths.coverage_path.display(),
+        paths.agent_report_path.display(),
+        paths.distill_path.display(),
+    )
 }
 
 fn write_pretty_json<T: Serialize>(cache_root: &Path, path: &Path, value: &T) -> Result<()> {
@@ -1319,19 +1228,12 @@ fn create_dir_all_without_symlinks(cache_root: &Path, path: &Path) -> Result<()>
     Ok(())
 }
 
-#[allow(dead_code)]
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axiograph_pathdb::{AcceptedSnapshotId, AxiDigest};
     use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -1346,32 +1248,34 @@ mod tests {
         path
     }
 
-    fn sample_anchor() -> AcceptedAxiAnchor {
-        AcceptedAxiAnchor::new(
+    fn regulated_line_runtime_parts() -> (PathDB, MetaPlaneIndex, AcceptedAxiAnchor) {
+        let axi_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join(REGULATED_PRODUCTION_LINE_MODULE_PATH);
+        let axi_text = fs::read_to_string(&axi_path).expect("read regulated line axi");
+        let mut db = PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, &axi_text)
+            .expect("import regulated line pathdb");
+        db.build_indexes();
+        let meta = MetaPlaneIndex::from_db(&db).expect("meta plane");
+        let anchor = AcceptedAxiAnchor::new(
             AcceptedSnapshotId::new("accepted:regulated-line"),
-            AxiDigest::new("fnv1a64:regulated-line"),
-        )
+            AxiDigest::from_axi_text(&axi_text),
+        );
+        (db, meta, anchor)
     }
 
-    fn sample_trust() -> TrustContractV1 {
-        TrustContractV1 {
-            trust_class: "runtime_guarded".to_string(),
-            soundness: "seed_cache_artifacts_are_anchor_scoped".to_string(),
-            coverage: "regulated_line_seed_shadow_harness".to_string(),
-            scope: crate::trust_contract::TrustScopeV1 {
-                anchor: "accepted:regulated-line@fnv1a64:regulated-line".to_string(),
-                context: "regulated_production_line_seed".to_string(),
-            },
-            reasons: vec![
-                "cache-only seed artifacts carry accepted anchors".to_string(),
-                "no accepted-plane mutation occurs in this helper".to_string(),
-            ],
-            certifiable_disjuncts: None,
-            execution_only_disjuncts: None,
-            semantic_coverage: None,
-            semantic_claims: Vec::new(),
-            gaps: Vec::new(),
-        }
+    fn regulated_line_runtime_bundle(run_id: &str) -> IndustrialHarnessRunBundleV1 {
+        let (db, meta, anchor) = regulated_line_runtime_parts();
+        build_regulated_production_line_runtime_bundle(
+            &db,
+            &meta,
+            REGULATED_PRODUCTION_LINE_CAMPAIGN_ID,
+            run_id,
+            1_713_810_000,
+            anchor,
+        )
+        .expect("build runtime regulated line bundle")
     }
 
     #[test]
@@ -1404,80 +1308,37 @@ mod tests {
 
     #[test]
     fn run_bundle_json_shape_carries_anchor_and_trust() {
-        let bundle = regulated_production_line_run_bundle(
-            REGULATED_PRODUCTION_LINE_CAMPAIGN_ID,
-            "seed-run-001",
-            1_713_810_000,
-            sample_anchor(),
-            sample_trust(),
-        );
+        let bundle = regulated_line_runtime_bundle("seed-run-001");
 
         let run_json = serde_json::to_value(&bundle.run).expect("serialize run");
+        assert_eq!(run_json["version"], json!("industrial_harness_run_v1"));
+        assert_eq!(run_json["campaign_id"], json!("regulated_production_line_seed"));
+        assert_eq!(run_json["run_id"], json!("seed-run-001"));
+        assert_eq!(run_json["scenario"], json!("regulated_production_line_seed"));
+        assert_eq!(run_json["status"], json!("materialized"));
+        assert_eq!(run_json["trust"]["trust_class"], json!("runtime_guarded"));
         assert_eq!(
-            run_json,
-            json!({
-                "version": "industrial_harness_run_v1",
-                "campaign_id": "regulated_production_line_seed",
-                "run_id": "seed-run-001",
-                "scenario": "regulated_production_line_seed",
-                "created_at_unix_secs": 1713810000u64,
-                "status": "materialized",
-                "anchor": {
-                    "accepted_snapshot_id": "accepted:regulated-line",
-                    "axi_digest": "fnv1a64:regulated-line"
-                },
-                "trust": {
-                    "trust_class": "runtime_guarded",
-                    "soundness": "seed_cache_artifacts_are_anchor_scoped",
-                    "coverage": "regulated_line_seed_shadow_harness",
-                    "scope": {
-                        "anchor": "accepted:regulated-line@fnv1a64:regulated-line",
-                        "context": "regulated_production_line_seed"
-                    },
-                    "reasons": [
-                        "cache-only seed artifacts carry accepted anchors",
-                        "no accepted-plane mutation occurs in this helper"
-                    ]
-                },
-                "artifacts": {
-                    "run": "_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/run.json",
-                    "cq_results": "_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/cq_results.json",
-                    "coverage": "_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/coverage.json",
-                    "agent_report": "_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/agent_report.json",
-                    "distill": "_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/distill.json"
-                },
-                "notes": [
-                    "Cache artifacts are read-only with respect to accepted ontology state.",
-                    "This slice only materializes deterministic harness files under _cache/industrial_harness."
-                ]
-            })
+            run_json["trust"]["soundness"],
+            json!("accepted_anchor_scoped_shadow_harness_run")
+        );
+        assert_eq!(
+            run_json["artifacts"]["run"],
+            json!("_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/run.json")
         );
 
         let cq_json = serde_json::to_value(&bundle.cq_results).expect("serialize cq results");
-        assert_eq!(
-            cq_json["summary"],
-            json!({
-                "total": 2,
-                "passed": 1,
-                "failed": 1,
-                "not_run": 0
-            })
-        );
-        assert_eq!(cq_json["results"][0]["outcome"], json!("pass"));
-        assert_eq!(cq_json["results"][1]["outcome"], json!("fail"));
+        assert_eq!(cq_json["summary"]["total"], json!(6));
+        assert!(cq_json["summary"]["passed"].as_u64().unwrap_or(0) >= 1);
     }
 
     #[test]
     fn materialized_regulated_line_seed_writes_expected_cache_files() {
         let cache_root = temp_test_dir("regulated-line-seed");
-        let persisted = materialize_regulated_production_line_seed_harness(
-            &cache_root,
-            "run/seed:42",
-            4242,
-            sample_anchor(),
-            sample_trust(),
-        )
-        .expect("materialize harness");
+        let campaign =
+            regulated_production_line_campaign(&cache_root, REGULATED_PRODUCTION_LINE_CAMPAIGN_ID);
+        let bundle = regulated_line_runtime_bundle("run/seed:42");
+        let persisted = persist_industrial_harness_run_bundle(&cache_root, &campaign, &bundle)
+            .expect("materialize harness");
 
         assert!(persisted.campaign_manifest_path.exists());
         assert!(persisted.run_path.exists());
@@ -1499,8 +1360,8 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&persisted.run_path).expect("read run"))
                 .expect("deserialize run");
         assert_eq!(run.run_id, "run/seed:42");
-        assert_eq!(run.anchor, sample_anchor());
-        assert_eq!(run.trust, sample_trust());
+        assert_eq!(run.anchor, bundle.run.anchor);
+        assert_eq!(run.trust, bundle.run.trust);
         assert!(persisted.run_path.ends_with(
             "_cache/industrial_harness/regulated_production_line_seed/runs/run_seed_42/run.json"
         ));
@@ -1523,13 +1384,12 @@ mod tests {
             symlink(&redirect_target, artifact_dir.join("run.json"))
                 .expect("create symlinked run path");
 
-            let err = materialize_regulated_production_line_seed_harness(
+            let campaign = regulated_production_line_campaign(
                 &cache_root,
-                "run-symlinked",
-                4242,
-                sample_anchor(),
-                sample_trust(),
-            )
+                REGULATED_PRODUCTION_LINE_CAMPAIGN_ID,
+            );
+            let bundle = regulated_line_runtime_bundle("run-symlinked");
+            let err = persist_industrial_harness_run_bundle(&cache_root, &campaign, &bundle)
             .expect_err("symlinked artifact path should be rejected");
             assert!(
                 err.to_string()
@@ -1543,17 +1403,7 @@ mod tests {
 
     #[test]
     fn runtime_regulated_line_bundle_uses_real_reports() {
-        let axi_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join(REGULATED_PRODUCTION_LINE_MODULE_PATH);
-        let db = crate::load_pathdb_for_cli(&axi_path).expect("load regulated line pathdb");
-        let meta = MetaPlaneIndex::from_db(&db).expect("meta plane");
-        let anchor = AcceptedAxiAnchor::new(
-            AcceptedSnapshotId::new("accepted:regulated-line"),
-            AxiDigest::from_axi_text(
-                &fs::read_to_string(&axi_path).expect("read regulated line axi"),
-            ),
-        );
+        let (db, meta, anchor) = regulated_line_runtime_parts();
 
         let bundle = build_regulated_production_line_runtime_bundle(
             &db,
@@ -1568,10 +1418,7 @@ mod tests {
         assert_eq!(bundle.run.anchor, anchor);
         assert_eq!(bundle.cq_results.summary.total, 6);
         assert!(!bundle.coverage.surfaces.is_empty());
-        assert!(
-            bundle.agent_report.summary.contains("matched_scopes="),
-            "expected agent report summary to come from runtime report lowering"
-        );
+        assert!(bundle.agent_report.summary.contains("cq_passed="));
         assert!(
             bundle
                 .distill

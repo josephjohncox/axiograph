@@ -232,8 +232,8 @@ fn now_unix_nanos() -> u128 {
         .as_nanos()
 }
 
-fn resolve_verifier_bin(config: &ServerConfig) -> Option<PathBuf> {
-    if let Some(p) = config.cert_verify.verifier_bin.as_ref() {
+fn resolve_verifier_bin(config: &CertVerifyConfig) -> Option<PathBuf> {
+    if let Some(p) = config.verifier_bin.as_ref() {
         return Some(p.clone());
     }
     if let Ok(p) = std::env::var("AXIOGRAPH_VERIFY_BIN") {
@@ -318,7 +318,7 @@ fn run_command_output_with_timeout(
 }
 
 fn verify_certificate_with_lean(
-    config: &ServerConfig,
+    config: &CertVerifyConfig,
     module_axi: &str,
     certificate_json: &str,
 ) -> Result<(bool, String)> {
@@ -331,7 +331,7 @@ fn verify_certificate_with_lean(
     let module_path = write_temp_file_unique("verify_module_input.axi", module_axi)?;
     let cert_path = write_temp_file_unique("cert.json", certificate_json)?;
 
-    let timeout = config.cert_verify.timeout;
+    let timeout = config.timeout;
     let mut cmd = Command::new(&verifier);
     cmd.arg(&module_path).arg(&cert_path);
     let output = run_command_output_with_timeout(cmd, timeout);
@@ -344,6 +344,20 @@ fn verify_certificate_with_lean(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
     Ok((output.status.success(), combined.trim().to_string()))
+}
+
+pub(crate) fn verify_certificate_with_default_resolution(
+    module_axi: &str,
+    certificate_json: &str,
+) -> Result<(bool, String)> {
+    verify_certificate_with_lean(
+        &CertVerifyConfig {
+            verifier_bin: None,
+            timeout: Some(Duration::from_secs(30)),
+        },
+        module_axi,
+        certificate_json,
+    )
 }
 
 pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
@@ -849,6 +863,27 @@ async fn handle_request(
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
+        (Method::POST, "/semantic/context-report") => {
+            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            match handle_semantic_context_report(&state, &body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/behavior-case") => {
+            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            match handle_semantic_behavior_case(&state, &body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/theory-check") => {
+            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            match handle_semantic_theory_check(&body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
         (Method::POST, "/proposals/relation") => {
             let body = req.into_body().collect().await?.to_bytes().to_vec();
             match handle_proposals_relation(&state, &body).await {
@@ -1021,7 +1056,7 @@ fn status_payload(state: &ServerState) -> Result<serde_json::Value> {
         WorldModelBackend::Command { program, .. } => format!("command({})", program.display()),
         WorldModelBackend::Http { url } => format!("http({url})"),
     };
-    let verifier_bin = resolve_verifier_bin(&state.config);
+    let verifier_bin = resolve_verifier_bin(&state.config.cert_verify);
     Ok(serde_json::json!({
         "version": "axiograph_db_server_status_v1",
         "role": format!("{:?}", state.config.role).to_ascii_lowercase(),
@@ -1095,6 +1130,21 @@ fn capabilities_payload(state: &ServerState) -> Result<serde_json::Value> {
             "name": "semantic_agent_report",
             "endpoint": "/semantic/agent-report",
             "returns": ["report", "matched_scope_ids", "matched_scope_refs", "matched_rule_ids"]
+        }),
+        serde_json::json!({
+            "name": "semantic_context_report",
+            "endpoint": "/semantic/context-report",
+            "returns": ["report", "rule_reports", "coverage", "competency_coverage"]
+        }),
+        serde_json::json!({
+            "name": "semantic_behavior_case",
+            "endpoint": "/semantic/behavior-case",
+            "returns": ["report", "case_receipt", "codegen_previews", "context_report"]
+        }),
+        serde_json::json!({
+            "name": "semantic_theory_check",
+            "endpoint": "/semantic/theory-check",
+            "returns": ["runtime_theory_check_report", "closure", "completeness_claim", "ontology_closure_claim"]
         }),
         serde_json::json!({
             "name": "proposals_relation",
@@ -1824,6 +1874,9 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
         let elapsed_ms;
         let mut anchor_digest: Option<AxiDigest> = None;
         let mut support_summary: Option<crate::evidence_support::EvidenceSupportSummaryV1> = None;
+        let mut support_certificate: Option<axiograph_pathdb::certificate::CertificateV2> = None;
+        let mut support_certificate_emitted_to_client = false;
+        let mut support_certificate_verified: Option<bool> = None;
         let mut certificate: Option<serde_json::Value> = None;
         let mut certificate_verified: Option<bool> = None;
         let mut certificate_verify_output: Option<String> = None;
@@ -1848,6 +1901,11 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
                 let certified = prepared
                     .bind_accepted_axi_anchor(accepted_axi_anchor.clone())
                     .certify_answer(validated, &db, meta.as_ref())?;
+                if certifiability.is_certifiable() {
+                    support_certificate = Some(certified.certificate().clone());
+                    support_certificate_emitted_to_client = true;
+                }
+
                 let digest = certified.anchor_digest().clone();
                 anchor_digest = Some(digest.clone());
                 let cert = certified
@@ -1864,9 +1922,22 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
                         )
                     })?;
                     let cert_text = serde_json::to_string_pretty(&cert)?;
-                    let (ok, out) = verify_certificate_with_lean(&state.config, axi, &cert_text)?;
+                    let (ok, out) = verify_certificate_with_lean(
+                        &state.config.cert_verify,
+                        axi,
+                        &cert_text,
+                    )?;
                     certificate_verified = Some(ok);
                     certificate_verify_output = Some(out);
+                    support_certificate_verified = Some(ok);
+                }
+            } else if certifiability.is_certifiable() {
+                if let Ok(certified) = prepared
+                    .bind_accepted_axi_anchor(accepted_axi_anchor.clone())
+                    .certify_answer(validated, &db, meta.as_ref())
+                {
+                    support_certificate = Some(certified.certificate().clone());
+                    support_certificate_emitted_to_client = false;
                 }
             }
         } else {
@@ -1896,7 +1967,11 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
 
                 if want_verify {
                     let cert_text = serde_json::to_string_pretty(&cert)?;
-                    let (ok, out) = verify_certificate_with_lean(&state.config, &axi, &cert_text)?;
+                    let (ok, out) = verify_certificate_with_lean(
+                        &state.config.cert_verify,
+                        &axi,
+                        &cert_text,
+                    )?;
                     certificate_verified = Some(ok);
                     certificate_verify_output = Some(out);
                 }
@@ -1911,13 +1986,21 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
             meta.as_ref(),
         );
 
-        if let (Some(anchor), Some(cert_json)) = (accepted_query_anchor.clone(), certificate.as_ref()) {
-            let cert: axiograph_pathdb::certificate::CertificateV2 = serde_json::from_value(cert_json.clone())?;
+        if let (Some(anchor), Some(cert)) = (accepted_query_anchor.clone(), support_certificate.as_ref()) {
+            let support_trust = crate::trust_contract::query_trust_contract_with_meta(
+                &parsed,
+                &certifiability,
+                support_certificate_emitted_to_client,
+                support_certificate_verified,
+                meta.as_ref(),
+            );
             support_summary = crate::evidence_support::evidence_support_summary_from_certificate(
                 &db,
                 anchor,
-                query_trust.clone(),
-                &cert,
+                support_trust,
+                cert,
+                support_certificate_emitted_to_client,
+                support_certificate_verified,
             );
         }
 
@@ -1951,37 +2034,26 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
 
 #[derive(Debug, Clone, Deserialize)]
 struct ReachabilityCertRequestV1 {
-    start: u32,
-    relation_ids: Vec<u32>,
-    #[serde(default)]
-    verify: bool,
+    #[serde(flatten)]
+    request: crate::path_cert::PathCertRequestV1,
     /// Optional snapshot id override when running in store-backed mode.
     #[serde(default)]
     snapshot: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct CertResponseV1 {
-    anchor_digest: AxiDigest,
-    trust: crate::trust_contract::TrustContractV1,
-    certificate: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    certificate_verified: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    certificate_verify_output: Option<String>,
-}
+type CertResponseV1 = crate::path_cert::PathCertReportV1;
 
 async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Result<CertResponseV1> {
     let req: ReachabilityCertRequestV1 = serde_json::from_slice(body)
         .map_err(|e| anyhow!("failed to parse reachability cert request JSON: {e}"))?;
-    if req.relation_ids.is_empty() {
+    if req.request.relation_ids.is_empty() {
         return Err(anyhow!(
             "reachability cert requires non-empty `relation_ids`"
         ));
     }
 
     let snapshot_override = req.snapshot.clone();
-    let verify = req.verify;
+    let request = req.request.clone();
     let state = state.clone();
 
     tokio::task::spawn_blocking(move || {
@@ -2001,36 +2073,10 @@ async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Resu
             loaded.db.clone()
         };
 
-        let (digest, axi) = export_canonical_module_axi(&db)?;
-        let proof = axiograph_pathdb::witness::reachability_proof_v3_from_relation_ids(
-            &db,
-            req.start,
-            &req.relation_ids,
-        )?
-        .into_inner_in_db(&db)
-        .map_err(|e| anyhow!(e))?;
-
-        let cert = axiograph_pathdb::certificate::CertificateV2::reachability_v3(proof)
-            .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(
-                digest.clone(),
-            ));
-
-        let cert_json = serde_json::to_value(&cert)?;
-        let (verified, verify_out) = if verify {
-            let cert_text = serde_json::to_string_pretty(&cert)?;
-            let (ok, out) = verify_certificate_with_lean(&state.config, &axi, &cert_text)?;
-            (Some(ok), Some(out))
-        } else {
-            (None, None)
+        let verifier = move |module_axi: &str, certificate_json: &str| {
+            verify_certificate_with_lean(&state.config.cert_verify, module_axi, certificate_json)
         };
-
-        Ok::<_, anyhow::Error>(CertResponseV1 {
-            anchor_digest: digest,
-            trust: crate::trust_contract::certificate_trust_contract(verified),
-            certificate: cert_json,
-            certificate_verified: verified,
-            certificate_verify_output: verify_out,
-        })
+        crate::path_cert::certify_path(&db, &request, Some(&verifier))
     })
     .await
     .map_err(|e| anyhow!("reachability cert task join failed: {e}"))?
@@ -2309,7 +2355,11 @@ async fn handle_llm_agent(
 
                         let (verified, verify_out, verify_err) = if want_verify {
                             let cert_text = serde_json::to_string_pretty(&cert)?;
-                            match verify_certificate_with_lean(&state2.config, &axi, &cert_text) {
+                    match verify_certificate_with_lean(
+                        &state2.config.cert_verify,
+                        &axi,
+                        &cert_text,
+                    ) {
                                 Ok((ok, out_text)) => (Some(ok), Some(out_text), None),
                                 Err(e) => (Some(false), None, Some(e.to_string())),
                             }
@@ -3242,6 +3292,10 @@ async fn handle_semantic_coverage(
         surfaces: Vec<crate::semantic_claim::ImplementationSurfaceRefV1>,
         #[serde(default)]
         edges: Vec<crate::semantic_claim::CoverageEdgeV1>,
+        #[serde(default)]
+        runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
+        #[serde(default)]
+        runtime_theory_check_input: Option<crate::runtime_theory_check::RuntimeTheoryCheckInputV1>,
     }
 
     let req: Req = serde_json::from_slice(body)
@@ -3266,12 +3320,17 @@ async fn handle_semantic_coverage(
             "runtime_checked".to_string()
         }
     });
+    let runtime_theory_check = resolve_runtime_theory_check_summary(
+        req.runtime_theory_check,
+        req.runtime_theory_check_input,
+    )?;
     let coverage = crate::semantic_claim::semantic_coverage_report(
         &meta,
         accepted_snapshot_id.clone(),
         &lifecycle_state,
         &req.surfaces,
         &req.edges,
+        runtime_theory_check,
     );
 
     Ok(serde_json::json!({
@@ -3366,6 +3425,10 @@ async fn handle_semantic_agent_report(
         surfaces: Vec<crate::semantic_claim::ImplementationSurfaceRefV1>,
         #[serde(default)]
         edges: Vec<crate::semantic_claim::CoverageEdgeV1>,
+        #[serde(default)]
+        runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
+        #[serde(default)]
+        runtime_theory_check_input: Option<crate::runtime_theory_check::RuntimeTheoryCheckInputV1>,
     }
 
     let req: Req = serde_json::from_slice(body)
@@ -3390,6 +3453,10 @@ async fn handle_semantic_agent_report(
             "runtime_checked".to_string()
         }
     });
+    let runtime_theory_check = resolve_runtime_theory_check_summary(
+        req.runtime_theory_check,
+        req.runtime_theory_check_input,
+    )?;
     let report = crate::semantic_claim::agent_engineering_report(
         &meta,
         accepted_snapshot_id.clone(),
@@ -3397,6 +3464,7 @@ async fn handle_semantic_agent_report(
         &req.task,
         &req.surfaces,
         &req.edges,
+        runtime_theory_check,
     );
 
     Ok(serde_json::json!({
@@ -3404,6 +3472,104 @@ async fn handle_semantic_agent_report(
         "accepted_snapshot_id": accepted_snapshot_id,
         "report": report,
     }))
+}
+
+async fn handle_semantic_context_report(
+    state: &Arc<ServerState>,
+    body: &[u8],
+) -> Result<serde_json::Value> {
+    let req: crate::context_report::ContextReportRequestV1 = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/context-report request JSON: {e}"))?;
+
+    let (db, accepted_snapshot_id, meta_from_state) = {
+        let loaded = state.loaded.read().unwrap();
+        (
+            loaded.db.clone(),
+            loaded.accepted_snapshot_id.clone(),
+            loaded.meta.clone(),
+        )
+    };
+    let report = crate::context_report::build_context_report_from_request(
+        &db,
+        meta_from_state.as_ref(),
+        accepted_snapshot_id.clone(),
+        req,
+    )?;
+
+    Ok(serde_json::json!({
+        "version": "axiograph_semantic_context_report_v1",
+        "accepted_snapshot_id": accepted_snapshot_id,
+        "report": report,
+    }))
+}
+
+async fn handle_semantic_behavior_case(
+    state: &Arc<ServerState>,
+    body: &[u8],
+) -> Result<serde_json::Value> {
+    let req: crate::behavior_case::BehaviorCaseCheckRequestV1 = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/behavior-case request JSON: {e}"))?;
+
+    let (db, accepted_snapshot_id, meta_from_state) = {
+        let loaded = state.loaded.read().unwrap();
+        (
+            loaded.db.clone(),
+            loaded.accepted_snapshot_id.clone(),
+            loaded.meta.clone(),
+        )
+    };
+    let report = crate::behavior_case::build_behavior_case_report_from_request(
+        &db,
+        meta_from_state.as_ref(),
+        accepted_snapshot_id.clone(),
+        req,
+    )?;
+
+    Ok(serde_json::json!({
+        "version": "axiograph_semantic_behavior_case_v1",
+        "accepted_snapshot_id": accepted_snapshot_id,
+        "report": report,
+    }))
+}
+
+async fn handle_semantic_theory_check(body: &[u8]) -> Result<serde_json::Value> {
+    #[derive(Debug, Clone, Deserialize)]
+    struct Req {
+        axi_text: String,
+        #[serde(default)]
+        theory: Option<String>,
+        #[serde(default)]
+        closure_tier: Option<String>,
+    }
+
+    let req: Req = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/theory-check request JSON: {e}"))?;
+    let closure_tier = crate::runtime_theory_check::parse_runtime_theory_closure_tier(
+        req.closure_tier.as_deref().unwrap_or("finite_fragment"),
+    )?;
+    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
+        &req.axi_text,
+        req.theory.as_deref(),
+        closure_tier,
+    )?;
+
+    Ok(serde_json::json!({
+        "version": "axiograph_semantic_theory_check_v1",
+        "report": report,
+    }))
+}
+
+fn resolve_runtime_theory_check_summary(
+    provided: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
+    input: Option<crate::runtime_theory_check::RuntimeTheoryCheckInputV1>,
+) -> Result<Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>> {
+    if let Some(summary) = provided {
+        return Ok(Some(summary));
+    }
+    input
+        .as_ref()
+        .map(crate::runtime_theory_check::runtime_theory_check_summary_from_input)
+        .transpose()
 }
 
 fn viz_request_from_query(query: Option<&str>) -> Result<VizRequestV1> {
@@ -4456,6 +4622,24 @@ instance Tiny of S:
                 service["name"] == json!("semantic_agent_report")
                     && service["endpoint"] == json!("/semantic/agent-report")
             })));
+        assert!(payload["semantic_services"]
+            .as_array()
+            .is_some_and(|services| services.iter().any(|service| {
+                service["name"] == json!("semantic_context_report")
+                    && service["endpoint"] == json!("/semantic/context-report")
+            })));
+        assert!(payload["semantic_services"]
+            .as_array()
+            .is_some_and(|services| services.iter().any(|service| {
+                service["name"] == json!("semantic_behavior_case")
+                    && service["endpoint"] == json!("/semantic/behavior-case")
+            })));
+        assert!(payload["semantic_services"]
+            .as_array()
+            .is_some_and(|services| services.iter().any(|service| {
+                service["name"] == json!("semantic_theory_check")
+                    && service["endpoint"] == json!("/semantic/theory-check")
+            })));
         assert!(payload["tool_loop"]["tools"]
             .as_array()
             .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == json!("axql_run"))));
@@ -4518,7 +4702,7 @@ instance Tiny of S:
                 AxiDigest::new("fnv1a64:abc"),
             )),
             support_summary: Some(crate::evidence_support::EvidenceSupportSummaryV1 {
-                version: crate::evidence_support::EVIDENCE_SUPPORT_SUMMARY_VERSION_V1.to_string(),
+                version: crate::evidence_support::SUPPORT_SUMMARY_VERSION_V2.to_string(),
                 accepted_axi_anchor: AcceptedAxiAnchor::new(
                     AcceptedSnapshotId::new("accepted:42"),
                     AxiDigest::new("fnv1a64:abc"),
@@ -4538,10 +4722,28 @@ instance Tiny of S:
                     semantic_claims: Vec::new(),
                     gaps: Vec::new(),
                 },
+                basis: crate::evidence_support::SupportBasisV1 {
+                    certificate_kind: "query_result_v3".to_string(),
+                    source: "internal_runtime_certificate".to_string(),
+                    certificate_emitted_to_client: false,
+                    certificate_verified: None,
+                },
+                coverage: crate::evidence_support::SupportCoverageV1 {
+                    rows_total: 1,
+                    rows_with_support: 1,
+                    witnesses_total: 1,
+                    path_witnesses_supported: 1,
+                    unsupported_witness_kinds: Vec::new(),
+                },
                 supported_facts: vec![crate::evidence_support::FactSupportRefV1 {
                     axi_fact_id: "factfnv1a64:abc".to_string(),
                     fact_entity_id: Some(17),
                     relation_name: Some("Fam.Parent".to_string()),
+                    support_kind: "query_result_v3_path_step".to_string(),
+                    witness_rows: vec![crate::evidence_support::SupportRowRefV1 {
+                        row_index: 0,
+                        disjunct: 0,
+                    }],
                     contexts: vec![crate::evidence_support::SupportEntityRefV1 {
                         entity_id: 30,
                         entity_type: "Context".to_string(),
@@ -4578,6 +4780,18 @@ instance Tiny of S:
         assert_eq!(
             query_json["support_summary"]["supported_facts"][0]["axi_fact_id"],
             json!("factfnv1a64:abc")
+        );
+        assert_eq!(
+            query_json["support_summary"]["basis"]["certificate_kind"],
+            json!("query_result_v3")
+        );
+        assert_eq!(
+            query_json["support_summary"]["coverage"]["rows_total"],
+            json!(1)
+        );
+        assert_eq!(
+            query_json["support_summary"]["supported_facts"][0]["witness_rows"][0]["row_index"],
+            json!(0)
         );
 
         let cert = CertResponseV1 {
@@ -4660,6 +4874,53 @@ instance Tiny of S:
             commit.accepted_snapshot.as_ref().map(|id| id.as_str()),
             Some("accepted:pathdb")
         );
+    }
+
+    #[test]
+    fn reachability_cert_request_keeps_existing_server_wire_shape() {
+        let req: ReachabilityCertRequestV1 = serde_json::from_value(json!({
+            "start": 7,
+            "relation_ids": [11, 13],
+            "verify": true,
+            "snapshot": "pathdb:test"
+        }))
+        .expect("deserialize reachability cert request");
+
+        assert_eq!(req.request.start, 7);
+        assert_eq!(req.request.relation_ids, vec![11, 13]);
+        assert!(req.request.verify);
+        assert_eq!(req.snapshot.as_deref(), Some("pathdb:test"));
+    }
+
+    #[tokio::test]
+    async fn reachability_cert_endpoint_still_rejects_empty_relation_ids() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema Demo:
+  object Node
+  relation road(src: Node, dst: Node)
+
+instance DemoData of Demo:
+  Node = {A, B}
+  road = {(src=A, dst=B)}
+"#,
+        );
+        let request_json = serde_json::to_string(&json!({
+            "start": 0,
+            "relation_ids": [],
+            "verify": false
+        }))
+        .expect("serialize request");
+
+        let err = handle_reachability_cert(&state, request_json.as_bytes())
+            .await
+            .expect_err("expected empty relation_ids error");
+
+        assert!(err
+            .to_string()
+            .contains("reachability cert requires non-empty `relation_ids`"));
     }
 
     #[test]
@@ -4907,12 +5168,87 @@ instance I of S:
             support.accepted_axi_anchor.accepted_snapshot_id.as_str(),
             "accepted:test"
         );
+        assert_eq!(support.basis.certificate_kind, "query_result_v3");
+        assert!(support.basis.certificate_emitted_to_client);
+        assert_eq!(
+            support.trust.soundness,
+            "certificate_emitted_row_soundness_unverified"
+        );
         assert!(!support.supported_facts.is_empty());
+        assert!(support
+            .supported_facts
+            .iter()
+            .all(|fact| !fact.witness_rows.is_empty()));
         assert!(support.supported_facts.iter().any(|fact| {
             fact.contexts
                 .iter()
                 .any(|ctx| ctx.name.as_deref() == Some("CensusData"))
         }));
+    }
+
+    #[tokio::test]
+    async fn handle_query_store_backed_response_includes_support_summary_without_certify() {
+        let state = test_server_state_with_store_backed_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person) @context Context
+
+instance I of S:
+  Person = {Alice, Bob}
+  Context = {CensusData}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=CensusData)
+  }
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?p"],
+                "where": [
+                    {
+                        "kind": "fact",
+                        "fact": "?f",
+                        "relation": "S.Parent",
+                        "fields": {
+                            "child": "Alice",
+                            "parent": "?p",
+                            "ctx": "CensusData"
+                        }
+                    }
+                ],
+                "limit": 10
+            }
+        }))
+        .expect("serialize query request");
+
+        let resp = handle_query(&state, &body)
+            .await
+            .expect("store-backed query should execute");
+
+        assert!(resp.certificate.is_none());
+        let support = resp
+            .support_summary
+            .as_ref()
+            .expect("support summary should be present for anchored certifiable queries");
+        assert_eq!(support.basis.certificate_kind, "query_result_v3");
+        assert!(!support.basis.certificate_emitted_to_client);
+        assert_eq!(
+            support.trust.soundness,
+            "certificate_available_but_not_emitted"
+        );
+        assert_eq!(support.coverage.rows_total, 1);
+        assert_eq!(support.coverage.rows_with_support, 1);
+        assert!(support
+            .supported_facts
+            .iter()
+            .all(|fact| !fact.witness_rows.is_empty()));
     }
 
     #[tokio::test]
@@ -5536,5 +5872,209 @@ instance I of S:
         assert!(resp["report"]["matched_rule_ids"]
             .as_array()
             .is_some_and(|items| !items.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn handle_semantic_context_report_returns_bounded_context_report() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory TRules on S:
+  constraint functional Parent.child -> Parent.parent
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(child=Alice, parent=Bob)}
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "context": {
+                "context_id": "domain:family_lookup",
+                "label": "Family lookup",
+                "scopes": [{
+                    "schema": "S",
+                    "scope_class": "relation",
+                    "relation": "Parent"
+                }],
+                "surfaces": [{
+                    "surface_id": "endpoint:family_lookup",
+                    "kind": "endpoint",
+                    "label": "GET /family/lookup",
+                    "scopes": [{
+                        "schema": "S",
+                        "scope_class": "relation",
+                        "relation": "Parent"
+                    }],
+                    "code_refs": ["src/family.rs"]
+                }],
+                "edges": [{
+                    "surface_id": "endpoint:family_lookup",
+                    "rule_id": "schema/s/relation/parent/rule/functional/0",
+                    "status": "tested"
+                }],
+                "competency_questions": [{
+                    "name": "family_lookup_returns_bob",
+                    "query": "select ?f where ?f = S.Parent(child=Alice, parent=Bob) limit 1",
+                    "min_rows": 1,
+                    "weight": 1.0
+                }]
+            }
+        }))
+        .expect("serialize semantic context report request");
+
+        let resp = handle_semantic_context_report(&state, &body)
+            .await
+            .expect("semantic/context-report endpoint should succeed");
+        assert_eq!(
+            resp["version"].as_str(),
+            Some("axiograph_semantic_context_report_v1")
+        );
+        assert_eq!(
+            resp["report"]["version"].as_str(),
+            Some(crate::context_report::CONTEXT_REPORT_VERSION_V1)
+        );
+        assert_eq!(
+            resp["report"]["context"]["context_id"].as_str(),
+            Some("domain:family_lookup")
+        );
+        assert_eq!(resp["report"]["coverage"]["tested_rules"].as_u64(), Some(1));
+        assert_eq!(
+            resp["report"]["competency_coverage"]["satisfied"].as_u64(),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_semantic_behavior_case_returns_receipt_and_codegen() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory TRules on S:
+  constraint functional Parent.child -> Parent.parent
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(child=Alice, parent=Bob)}
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "behavior_case": {
+                "case_id": "family.parent_lookup",
+                "title": "Family lookup returns parent",
+                "context": {
+                    "context_id": "domain:family_lookup",
+                    "label": "Family lookup",
+                    "scopes": [{
+                        "schema": "S",
+                        "scope_class": "relation",
+                        "relation": "Parent"
+                    }],
+                    "surfaces": [{
+                        "surface_id": "endpoint:family_lookup",
+                        "kind": "endpoint",
+                        "label": "GET /family/lookup",
+                        "scopes": [{
+                            "schema": "S",
+                            "scope_class": "relation",
+                            "relation": "Parent"
+                        }],
+                        "code_refs": ["src/family.rs"]
+                    }],
+                    "edges": [{
+                        "surface_id": "endpoint:family_lookup",
+                        "rule_id": "schema/s/relation/parent/rule/functional/0",
+                        "status": "tested"
+                    }]
+                },
+                "then": {
+                    "expected_outcomes": ["Alice has Bob as parent"],
+                    "competency_questions": [{
+                        "name": "family_lookup_returns_bob",
+                        "query": "select ?f where ?f = S.Parent(child=Alice, parent=Bob) limit 1",
+                        "min_rows": 1,
+                        "weight": 1.0
+                    }],
+                    "rule_scopes": [{
+                        "schema": "S",
+                        "scope_class": "relation",
+                        "relation": "Parent"
+                    }],
+                    "trust_target": "strong"
+                }
+            }
+        }))
+        .expect("serialize semantic behavior case request");
+
+        let resp = handle_semantic_behavior_case(&state, &body)
+            .await
+            .expect("semantic/behavior-case endpoint should succeed");
+        assert_eq!(
+            resp["version"].as_str(),
+            Some("axiograph_semantic_behavior_case_v1")
+        );
+        assert_eq!(
+            resp["report"]["version"].as_str(),
+            Some(crate::behavior_case::BEHAVIOR_CASE_REPORT_VERSION_V1)
+        );
+        assert_eq!(
+            resp["report"]["receipt"]["case_id"].as_str(),
+            Some("family.parent_lookup")
+        );
+        assert_eq!(
+            resp["report"]["receipt"]["competency_satisfied"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            resp["report"]["codegen_previews"].as_array().map(Vec::len),
+            Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_semantic_theory_check_returns_closure_report() {
+        let body = serde_json::to_vec(&json!({
+            "axi_text": r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory TRules on S:
+  constraint functional Parent.child -> Parent.parent
+"#,
+            "theory": "TRules",
+            "closure_tier": "finite_fragment"
+        }))
+        .expect("serialize semantic theory check request");
+
+        let resp = handle_semantic_theory_check(&body)
+            .await
+            .expect("semantic/theory-check endpoint should succeed");
+        assert_eq!(
+            resp["version"].as_str(),
+            Some("axiograph_semantic_theory_check_v1")
+        );
+        assert_eq!(
+            resp["report"]["reports"][0]["version"].as_str(),
+            Some(axiograph_pathdb::RUNTIME_THEORY_CHECK_REPORT_VERSION_V1)
+        );
+        assert_eq!(resp["report"]["blocking_errors"].as_u64(), Some(0));
+        assert_eq!(
+            resp["report"]["reports"][0]["closure"]["complete"].as_bool(),
+            Some(true)
+        );
     }
 }

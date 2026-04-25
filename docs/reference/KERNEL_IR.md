@@ -17,6 +17,8 @@ Current implemented slice (2026-04):
 
 - `axiograph_pathdb::kernel_ir` currently provides:
   - `CompiledSchemaIr`
+  - `SchemaCategoryIr`
+  - `InstanceFunctorIr`
   - `RelationSemanticsIr`
   - `RoleIr`
   - deterministic semantic ids for compiled schema objects
@@ -24,6 +26,20 @@ Current implemented slice (2026-04):
   - `RoleKind::{Data, Context, Temporal}`
   - `CarrierSpecIr`
   - `WitnessViewIr`
+- `SchemaCategoryIr` is now the first runtime category-shaped view over a
+  compiled schema:
+  - object types and relation objects are category objects,
+  - relation roles lower to projection arrows,
+  - subtype declarations lower to inclusion arrows,
+  - and binary graph edges remain derived traversal views rather than kernel
+    arrows.
+- `InstanceFunctorIr` is now the first runtime interpretation of an instance as
+  a functor out of that schema category:
+  - object types map to closed membership sets,
+  - relation objects map to stable fact-id sets,
+  - role projections map fact ids to typed role values,
+  - and subtype inclusions transport subtype members into supertype images by
+    identity.
 - the first runtime `TheoryIr` slice now exists in the compiled IR:
   - `ConstraintIr`
   - `PathEquationIr`
@@ -40,6 +56,45 @@ Current implemented slice (2026-04):
   - explicit obligation→subject and subject→obligation cross-links via
     `TheoryIr::subject_refs_for_obligation(...)` and
     `TheoryIr::obligation_refs_for_subject(...)`
+  - `TheoryObligationGraphV1`, a deterministic runtime graph of theory nodes,
+    obligation nodes, subject nodes, and support/touches edges for shared query
+    refinement, CQ repair, migration authoring, and reconciliation tooling
+  - `axiograph discover theory-graph <module.axi>`, which emits those graphs as
+    JSON for agent/tool-loop inspection
+  - `semantic_theory_graph`, the matching semantic tool-loop surface for agents
+- runtime theory checking now sits on top of compiled `TheoryIr`:
+  - `RuntimeTheoryCheckReportV1`
+  - `RuntimeTheoryJudgmentV1`
+  - `RuntimeTheoryClosureTierV1::{FiniteFragment, EvidenceWeighted, GlobalIndexed}`
+  - `CompletenessClaimV1`
+  - `OntologyClosureClaimV1`
+  - `axiograph check theory <module.axi> --json`
+  - `axiograph discover theory-check <module.axi>`
+  - `semantic_theory_check`
+  This checker makes scoped runtime claims about well-typedness,
+  admissibility, closure, and completeness under declared world/evidence/ref
+  assumptions. It is still outside the Lean trusted checker. See
+  `docs/reference/RUNTIME_THEORY_CHECKER.md`.
+- theory transport is now runtime-addressable:
+  - `TheoryTransportPlanIr`
+  - `TheoryTransportItemIr`
+  - `TheoryTransportStatusIr::{Preserved, Transported, MissingObjectImage, MissingArrowImage, OpaqueOrOutOfFragment}`
+  - `build_theory_transport_plan_ir(...)`
+  - `TheoryIr::theory_transport_plan(...)`
+  These plans classify each compiled theory obligation under a
+  `SchemaMorphismV1` before migration/rebase tooling turns it into resolver
+  handles. They are operational typed transport plans, not Lean certificates.
+- semantic slice manifests built by `axiograph sem slice build` now enrich
+  semantic-commit refs with compiled `KernelModuleIr` refs from accepted
+  canonical modules:
+  - schema/category object refs,
+  - relation-object refs,
+  - role projection arrow refs,
+  - subtype inclusion arrow refs,
+  - runtime-addressable theory obligations,
+  - and instance-functor refs.
+  This makes merge/rebase slice planning operate over the same category/theory
+  handles as migration and authoring instead of only over commit summaries.
 - `compile_theory_ir(...)` is now a checked projector rather than a blind
   format step:
   - structured constraints validate relation/field/param references,

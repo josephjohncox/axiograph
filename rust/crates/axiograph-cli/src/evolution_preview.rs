@@ -4,12 +4,15 @@ use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
 use axiograph_pathdb::{
+    check_runtime_theory_with_options_v1, default_evidence_policy_v1,
+    default_world_assumption_v1,
     kernel_ir::{
         CompiledSchemaIr, RelationSemanticsIr, RoleKind, TheoryIr, TheoryObligationKindIr,
-        TheoryObligationRefIr, TheorySubjectRefIr, WitnessViewIr,
+        TheoryObligationRefIr, TheorySubjectRefIr, TheoryTransportStatusIr, WitnessViewIr,
     },
     migration::{MigrationFunctorKindV1, SchemaMorphismV1, SchemaV1},
-    AcceptedSnapshotId, AxiDigest, ProposalDigest,
+    AcceptedSnapshotId, AxiDigest, ProposalDigest, RuntimeTheoryCheckStatusV1,
+    RuntimeTheoryClosureTierV1,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -674,6 +677,8 @@ pub struct EvolutionPreviewV1 {
     pub trust_summary: SemTrustSummaryV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_semantics: Option<crate::semantic_claim::RuntimeSemanticSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
     pub rule_summary: SemRuleSummaryV1,
     pub coverage_summary: EvolutionCoverageSummaryV1,
     #[serde(default)]
@@ -1598,6 +1603,37 @@ fn primary_theory_subject_ref(subject_refs: &[TheorySubjectRefIr]) -> Option<The
         .cloned()
 }
 
+fn relation_names_from_theory_subject_refs(subject_refs: &[TheorySubjectRefIr]) -> Vec<String> {
+    let mut relation_names = BTreeSet::new();
+    for subject in subject_refs {
+        match subject {
+            TheorySubjectRefIr::Relation { relation_name, .. }
+            | TheorySubjectRefIr::Role { relation_name, .. } => {
+                relation_names.insert(relation_name.clone());
+            }
+            TheorySubjectRefIr::Theory { .. } => {}
+        }
+    }
+    relation_names.into_iter().collect()
+}
+
+fn transport_kind_for_theory_transport_status(
+    status: TheoryTransportStatusIr,
+    relation: Option<&RelationSemanticsIr>,
+    obligation_kind: TheoryObligationKindIr,
+) -> String {
+    let base = transport_kind_for_obligation(relation, Some(obligation_kind));
+    match status {
+        TheoryTransportStatusIr::Preserved => base,
+        TheoryTransportStatusIr::Transported => base,
+        TheoryTransportStatusIr::MissingObjectImage => format!("missing_object_image_{base}"),
+        TheoryTransportStatusIr::MissingArrowImage => format!("missing_arrow_image_{base}"),
+        TheoryTransportStatusIr::OpaqueOrOutOfFragment => {
+            format!("opaque_or_out_of_fragment_{base}")
+        }
+    }
+}
+
 fn obligation_matches_artifact(
     artifact_kind: &str,
     artifact_id: &str,
@@ -1706,9 +1742,58 @@ pub fn build_migration_transport_obligations_from_compiled_theory_v1(
 ) -> Vec<MigrationTransportObligationV1> {
     let mut obligations = Vec::new();
     let mut seen_ids: BTreeSet<String> = BTreeSet::new();
+    let mut covered_relation_transport: BTreeSet<String> = BTreeSet::new();
+
+    for theory in theories {
+        let plan =
+            theory.theory_transport_plan(compiled_schema, morphism, MigrationFunctorKindV1::DeltaF);
+        for item in plan.items {
+            for relation_name in relation_names_from_theory_subject_refs(&item.subject_refs) {
+                covered_relation_transport.insert(relation_name);
+            }
+            if !item.status.requires_resolver() {
+                continue;
+            }
+            let relation_name = relation_names_from_theory_subject_refs(&item.subject_refs)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| item.obligation_ref.display_name());
+            let relation = relation_semantics_for_name(compiled_schema, &relation_name);
+            let obligation_id = format!(
+                "transport:{}:{}",
+                local_name(&relation_name),
+                item.obligation_ref.stable_id()
+            );
+            if !seen_ids.insert(obligation_id.clone()) {
+                continue;
+            }
+            let subject_ref = primary_theory_subject_ref(&item.subject_refs)
+                .map(|subject| subject.display_name())
+                .unwrap_or_else(|| relation_name.clone());
+            let mut detail = item.detail.clone();
+            if !item.transport_basis.is_empty() {
+                detail.push_str(&format!(" (basis: {})", item.transport_basis.join("; ")));
+            }
+            obligations.push(MigrationTransportObligationV1 {
+                operator: item.operator,
+                obligation_id,
+                obligation_kind: transport_kind_for_theory_transport_status(
+                    item.status,
+                    relation,
+                    item.obligation_ref.obligation_kind(),
+                ),
+                subject_ref,
+                theory_obligation_ref: Some(item.obligation_ref.clone()),
+                theory_subject_ref: primary_theory_subject_ref(&item.subject_refs),
+                theory_subject_refs: item.subject_refs,
+                detail,
+            });
+        }
+    }
 
     for mapping in morphism.arrows.iter().filter(|mapping| {
         !(mapping.target_path.len() == 1 && mapping.target_path[0] == mapping.source_arrow)
+            && !covered_relation_transport.contains(&mapping.source_arrow)
     }) {
         let relation = relation_semantics_for_name(compiled_schema, &mapping.source_arrow);
         let target_path = if mapping.target_path.is_empty() {
@@ -1716,72 +1801,21 @@ pub fn build_migration_transport_obligations_from_compiled_theory_v1(
         } else {
             mapping.target_path.join(" ; ")
         };
-        let relation_subject = relation.and_then(|relation| {
-            Some(TheorySubjectRefIr::Relation {
-                relation_id: relation.relation_id.clone(),
-                relation_name: relation.name.clone(),
-            })
-        });
-
-        let mut matched = Vec::new();
-        if let Some(subject) = relation_subject.as_ref() {
-            for theory in theories {
-                for obligation in theory.obligation_refs_for_subject(subject) {
-                    matched.push((
-                        obligation.clone(),
-                        theory.subject_refs_for_obligation(&obligation),
-                    ));
-                }
-            }
-        }
-
-        if matched.is_empty() {
-            let obligation_id = format!("transport:{}:relation", local_name(&mapping.source_arrow));
-            if seen_ids.insert(obligation_id.clone()) {
-                let theory_subject_refs =
-                    typed_subject_refs_for_relation(compiled_schema, &mapping.source_arrow);
-                obligations.push(MigrationTransportObligationV1 {
-                    operator: MigrationFunctorKindV1::DeltaF,
-                    obligation_id,
-                    obligation_kind: transport_kind_for_obligation(relation, None),
-                    subject_ref: mapping.source_arrow.clone(),
-                    theory_obligation_ref: None,
-                    theory_subject_ref: primary_theory_subject_ref(&theory_subject_refs),
-                    theory_subject_refs,
-                    detail: format!(
-                        "transport `{}` along target path `{}` and review relation/role attachments explicitly",
-                        mapping.source_arrow, target_path
-                    ),
-                });
-            }
-            continue;
-        }
-
-        for (obligation, subject_refs) in matched {
-            let obligation_id = format!(
-                "transport:{}:{}",
-                local_name(&mapping.source_arrow),
-                obligation.stable_id()
-            );
-            if !seen_ids.insert(obligation_id.clone()) {
-                continue;
-            }
+        let obligation_id = format!("transport:{}:relation", local_name(&mapping.source_arrow));
+        if seen_ids.insert(obligation_id.clone()) {
+            let theory_subject_refs =
+                typed_subject_refs_for_relation(compiled_schema, &mapping.source_arrow);
             obligations.push(MigrationTransportObligationV1 {
                 operator: MigrationFunctorKindV1::DeltaF,
                 obligation_id,
-                obligation_kind: transport_kind_for_obligation(
-                    relation,
-                    Some(obligation.obligation_kind()),
-                ),
+                obligation_kind: transport_kind_for_obligation(relation, None),
                 subject_ref: mapping.source_arrow.clone(),
-                theory_obligation_ref: Some(obligation.clone()),
-                theory_subject_ref: primary_theory_subject_ref(&subject_refs),
-                theory_subject_refs: subject_refs,
+                theory_obligation_ref: None,
+                theory_subject_ref: primary_theory_subject_ref(&theory_subject_refs),
+                theory_subject_refs,
                 detail: format!(
-                    "transport `{}` along target path `{}` while preserving theory obligation `{}`",
-                    mapping.source_arrow,
-                    target_path,
-                    obligation.display_name()
+                    "transport `{}` along target path `{}` and review relation/role attachments explicitly",
+                    mapping.source_arrow, target_path
                 ),
             });
         }
@@ -1847,13 +1881,20 @@ pub fn build_migration_evolution_preview_from_compiled_theory_v1(
         theories,
         morphism,
     );
-    build_migration_evolution_preview_v1(
+    let mut preview = build_migration_evolution_preview_v1(
         base_snapshot_id,
         candidate_label,
         morphism,
         source_schema,
         &transport_obligations,
-    )
+    );
+    preview.runtime_theory_check = runtime_theory_check_summary_for_compiled_theories_v1(
+        compiled_schema,
+        theories,
+        Some(morphism),
+        "migration_transport_preview",
+    );
+    preview
 }
 
 #[allow(dead_code)]
@@ -1865,7 +1906,88 @@ pub fn build_reconciliation_evolution_preview_from_compiled_theory_v1(
 ) -> EvolutionPreviewV1 {
     let enriched =
         enrich_reconciliation_with_compiled_theory_v1(compiled_schema, theories, reconciliation);
-    build_reconciliation_evolution_preview_v1(base_snapshot_id, &enriched)
+    let mut preview = build_reconciliation_evolution_preview_v1(base_snapshot_id, &enriched);
+    preview.runtime_theory_check = runtime_theory_check_summary_for_compiled_theories_v1(
+        compiled_schema,
+        theories,
+        None,
+        "semantic_reconciliation_preview",
+    );
+    preview
+}
+
+fn runtime_theory_check_summary_for_compiled_theories_v1(
+    compiled_schema: &CompiledSchemaIr,
+    theories: &[TheoryIr],
+    morphism: Option<&SchemaMorphismV1>,
+    surface: &str,
+) -> Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1> {
+    if theories.is_empty() {
+        return None;
+    }
+    let closure_tier = RuntimeTheoryClosureTierV1::FiniteFragment;
+    let reports = theories
+        .iter()
+        .map(|theory| {
+            if let Some(morphism) = morphism {
+                let transport_plan = theory.theory_transport_plan(
+                    compiled_schema,
+                    morphism,
+                    MigrationFunctorKindV1::DeltaF,
+                );
+                check_runtime_theory_with_options_v1(
+                    compiled_schema,
+                    theory,
+                    closure_tier,
+                    default_world_assumption_v1(),
+                    default_evidence_policy_v1(),
+                    Some(&transport_plan),
+                )
+            } else {
+                check_runtime_theory_with_options_v1(
+                    compiled_schema,
+                    theory,
+                    closure_tier,
+                    default_world_assumption_v1(),
+                    default_evidence_policy_v1(),
+                    None,
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    let blocking_errors = reports
+        .iter()
+        .flat_map(|report| report.judgments.iter())
+        .filter(|judgment| judgment.status == RuntimeTheoryCheckStatusV1::Blocked)
+        .count();
+    let all_complete = reports
+        .iter()
+        .all(|report| report.completeness_claim.claimed);
+    let all_closed = reports
+        .iter()
+        .all(|report| report.ontology_closure_claim.claimed);
+    let completeness_claim = if all_complete {
+        "claimed_under_finite_fragment".to_string()
+    } else {
+        "not_claimed_for_all_obligations".to_string()
+    };
+    let ontology_closure_claim = if all_closed {
+        "claimed_under_finite_fragment".to_string()
+    } else {
+        "not_claimed_for_all_obligations".to_string()
+    };
+    Some(crate::runtime_theory_check::runtime_theory_check_summary_from_reports(
+        &compiled_schema.schema_id.to_string(),
+        &reports,
+        blocking_errors,
+        completeness_claim,
+        ontology_closure_claim,
+        vec![
+            format!("runtime theory check attached by {surface}"),
+            "summary is runtime-operational and remains below Lean-certified proof strength"
+                .to_string(),
+        ],
+    ))
 }
 
 fn reconciliation_refinement_candidates(
@@ -1950,6 +2072,7 @@ where
         trust: trust.clone(),
         trust_summary,
         runtime_semantics,
+        runtime_theory_check: None,
         rule_summary,
         coverage_summary,
         trust_delta,
@@ -3465,6 +3588,11 @@ theory PlantTransport on Plant:
 
         assert_eq!(preview.kind, "migration_preview");
         assert_eq!(preview.typed_change.kind, "schema_transport_delta");
+        assert!(preview.runtime_theory_check.is_some());
+        assert!(preview
+            .runtime_theory_check
+            .as_ref()
+            .is_some_and(|summary| !summary.residual_obligation_ids.is_empty()));
         assert!(
             preview.typed_change.primitives.iter().any(|primitive| matches!(
                 primitive,

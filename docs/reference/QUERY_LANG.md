@@ -49,6 +49,13 @@ Operational note:
   - `coverage`
   - `scope`
   so clients do not need to infer trust semantics from ad hoc booleans.
+- accepted-anchor certifiable `/query` / `axql_run` executions may also return
+  `support_summary` behind the existing wire field:
+  - it is a runtime-layer contract, not a kernel claim,
+  - its basis is `query_result_v3` witness rows,
+  - `supported_facts[*].witness_rows` point back to the supporting witness rows,
+  - and `contexts` / `evidence` remain attachment-layer enrichments rather than
+    the support basis itself.
 
 `PreparedQueryV1` keeps the parsed AxQL body with the prepared low-level runtime handle
 and the trust/semantic profile computed at preparation time, so callers don’t

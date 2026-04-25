@@ -11,6 +11,7 @@ Companion target specs:
 - `docs/reference/KERNEL_IR.md`
 - `docs/reference/RUST_LIFECYCLE_TYPES.md`
 - `docs/reference/SEMANTIC_VCS.md`
+- `docs/roadmaps/ROADMAP_SEMANTIC_MERGE_LATTICE.md`
 
 It assumes the following framing:
 
@@ -203,14 +204,27 @@ Make the ontology kernel explicit and independent of any one execution backend.
 - [ ] Represent equations in two classes:
   - `PathEquation` for equations the Lean/path kernel can interpret,
   - `OpaqueEquation` for reviewed but non-kernel semantic guidance.
-- [ ] Introduce concrete kernel IR modules:
-  - `rust/crates/axiograph-dsl/src/schema_category_ir.rs`
-  - `rust/crates/axiograph-dsl/src/instance_ir.rs`
+- [~] Introduce concrete runtime schema-category and instance-functor IR:
+  - current slice lives in `rust/crates/axiograph-pathdb/src/kernel_ir.rs`
+    rather than a separate DSL crate,
+  - `SchemaCategoryIr` exposes object types, relation objects, role projection
+    arrows, and subtype inclusion arrows,
+  - `InstanceFunctorIr` interprets object memberships, relation fact-id sets,
+    role projections, and subtype transport,
+  - next step: decide whether these stay in `axiograph-pathdb` or move to a
+    dedicated kernel-IR crate once Lean/export/query/migration reuse increases.
 - [ ] Consider promoting the kernel IR into a dedicated crate if reuse pressure increases:
   - `rust/crates/axiograph-kernel-ir/`
 - [ ] Reuse / absorb the current migration-side category scaffold instead of inventing a second parallel IR:
   - the new canonical IR should subsume the useful parts of `rust/crates/axiograph-pathdb/src/migration.rs`.
 - [ ] Make migrations and query elaboration consume the kernel IR first and only then lower to convenience projections.
+- [~] Make theory transport runtime-addressable:
+  - current slice adds `TheoryTransportPlanIr` / `TheoryTransportItemIr` over
+    compiled `TheoryIr` plus `SchemaMorphismV1`,
+  - migration preview now consumes these statuses before emitting resolver
+    handles,
+  - next step: use the same plan object in semantic rebase/merge and future
+    Lean migration witnesses.
 - [ ] Make all semantics-bearing artifacts cite IR-level ids:
   - authoring deltas,
   - prepared queries,
@@ -523,6 +537,13 @@ Merge should remain semantic reconciliation, not text concatenation.
   - candidate reconciliation object
   - CQ/trust preview result
   - residual obligations
+- [~] Route merge/rebase planning through typed semantic slices and a finite
+  runtime merge lattice:
+  - see `docs/roadmaps/ROADMAP_SEMANTIC_MERGE_LATTICE.md`
+  - current first slice adds `SemanticSliceManifestV1`,
+    `SemanticMergeLatticeV1`, `SemanticMergePlanV1`, and MCP-visible resolver
+    steps over existing semantic merge dry-runs
+  - auto-merge stays conservative and materialization remains fail-closed
 - [ ] Only materialize a merge commit after a persisted reconciliation object exists when there are semantic conflicts.
 - [ ] Require `SemReconciliationV1` to reference:
   - base/left/right commit ids
@@ -687,6 +708,16 @@ merge, and promotion paths.
   - `completeness_claim = not_claimed`
   - `ontology_closure_claim = not_claimed`
 - single-context typed queries are certifiable today; multi-context unions and approximate operators remain execution-only.
+- theory checking now has a separate runtime report family:
+  - `RuntimeTheoryCheckReportV1`
+  - `RuntimeTheoryClosureTierV1`
+  - `CompletenessClaimV1`
+  - `OntologyClosureClaimV1`
+  - `axiograph check theory`
+  - `semantic_theory_check`
+  These claims are scoped to compiled theory obligations and declared
+  world/evidence/ref assumptions. They do not upgrade query-result trust
+  contracts into answer-set completeness or full ontology closure.
 
 ### Trust-contract unification
 
@@ -702,6 +733,9 @@ merge, and promotion paths.
   - no ontology-closure claim
   - no global semantic-equivalence claim unless explicitly checked
 - [ ] Make semantic coverage and semantic claims available to preview/reporting paths, not only to query execution.
+- [ ] Attach runtime theory-check reports to semantic merge/rebase and
+  reconciliation previews so merge gates can distinguish checked, review-only,
+  residual, and blocking theory obligations.
 
 ### Typed query certifiability actions
 

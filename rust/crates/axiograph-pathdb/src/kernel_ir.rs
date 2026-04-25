@@ -15,6 +15,7 @@ use axiograph_dsl::schema_v1::{
 };
 
 use crate::{
+    migration::{MigrationFunctorKindV1, SchemaMorphismV1},
     AxiDigest, ConstraintId, EquationId, InstanceId, ObjectTypeId, RelationId, RewriteRuleId,
     RoleId, SchemaId, StableFactId, TheoryId,
 };
@@ -110,6 +111,105 @@ pub struct KernelModuleIr {
     pub schemas: Vec<CompiledSchemaIr>,
     pub theories: Vec<TheoryIr>,
     pub instances: Vec<InstanceIr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SchemaCategoryObjectRefIr {
+    ObjectType {
+        object_type_id: ObjectTypeId,
+        name: String,
+    },
+    RelationObject {
+        relation_id: RelationId,
+        name: String,
+    },
+}
+
+impl SchemaCategoryObjectRefIr {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::ObjectType { name, .. } | Self::RelationObject { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SchemaCategoryArrowRefIr {
+    RoleProjection {
+        role_id: RoleId,
+        relation_id: RelationId,
+        role_name: String,
+    },
+    SubtypeInclusion {
+        schema_id: SchemaId,
+        subtype: String,
+        supertype: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaCategoryArrowKindIr {
+    RoleProjection,
+    SubtypeInclusion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SchemaCategoryObjectIr {
+    pub object: SchemaCategoryObjectRefIr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SchemaCategoryArrowIr {
+    pub arrow_ref: SchemaCategoryArrowRefIr,
+    pub name: String,
+    pub source: SchemaCategoryObjectRefIr,
+    pub target: SchemaCategoryObjectRefIr,
+    pub kind: SchemaCategoryArrowKindIr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SchemaCategoryIr {
+    pub schema_id: SchemaId,
+    pub objects: Vec<SchemaCategoryObjectIr>,
+    pub arrows: Vec<SchemaCategoryArrowIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstanceObjectImageIr {
+    pub object: SchemaCategoryObjectRefIr,
+    pub elements: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstanceArrowMappingIr {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstanceArrowImageIr {
+    pub arrow_ref: SchemaCategoryArrowRefIr,
+    pub source: SchemaCategoryObjectRefIr,
+    pub target: SchemaCategoryObjectRefIr,
+    pub mappings: Vec<InstanceArrowMappingIr>,
+    pub total_on_source_elements: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstanceFunctorIr {
+    pub instance_id: InstanceId,
+    pub schema_id: SchemaId,
+    pub object_images: Vec<InstanceObjectImageIr>,
+    pub arrow_images: Vec<InstanceArrowImageIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -468,6 +568,131 @@ pub struct RuntimeTheoryFragmentSummaryV1 {
     pub notes: Vec<String>,
 }
 
+pub const THEORY_OBLIGATION_GRAPH_VERSION_V1: &str = "theory_obligation_graph_v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TheoryObligationGraphNodeKindV1 {
+    Theory,
+    Obligation,
+    Subject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TheoryObligationGraphNodeV1 {
+    pub node_id: String,
+    pub kind: TheoryObligationGraphNodeKindV1,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obligation_ref: Option<TheoryObligationRefIr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_ref: Option<TheorySubjectRefIr>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fragment_status: Option<RuntimeTheoryObligationFragmentStatusV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_class: Option<RuntimeTheoryObligationTrustClassV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TheoryObligationGraphEdgeKindV1 {
+    TheoryContainsObligation,
+    ObligationTouchesSubject,
+    SubjectSupportsObligation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TheoryObligationGraphEdgeV1 {
+    pub source_node_id: String,
+    pub target_node_id: String,
+    pub kind: TheoryObligationGraphEdgeKindV1,
+    pub detail: String,
+}
+
+/// Deterministic graph of compiled theory obligations and their typed subjects.
+///
+/// This is the runtime-addressable object that query refinement, CQ repair,
+/// migration authoring, and semantic reconciliation should share when they need
+/// to point at "the rule/equation/constraint affected by this change". It is a
+/// typed operational graph, not a proof of completeness or ontology closure.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TheoryObligationGraphV1 {
+    pub version: String,
+    pub theory_ref: TheorySubjectRefIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes: Vec<TheoryObligationGraphNodeV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<TheoryObligationGraphEdgeV1>,
+    #[serde(default)]
+    pub total_obligations: usize,
+    #[serde(default)]
+    pub runtime_checked_obligations: usize,
+    #[serde(default)]
+    pub opaque_or_out_of_fragment_obligations: usize,
+    pub trust_boundary: String,
+    pub completeness_claim: String,
+    pub ontology_closure_claim: String,
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+pub const THEORY_TRANSPORT_PLAN_VERSION_V1: &str = "theory_transport_plan_v1";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TheoryTransportStatusIr {
+    Preserved,
+    Transported,
+    MissingObjectImage,
+    MissingArrowImage,
+    OpaqueOrOutOfFragment,
+}
+
+impl TheoryTransportStatusIr {
+    pub fn requires_resolver(self) -> bool {
+        !matches!(self, Self::Preserved)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TheoryTransportItemIr {
+    pub operator: MigrationFunctorKindV1,
+    pub obligation_ref: TheoryObligationRefIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_refs: Vec<TheorySubjectRefIr>,
+    pub status: TheoryTransportStatusIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transport_basis: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_object_images: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_arrow_images: Vec<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TheoryTransportPlanIr {
+    pub version: String,
+    pub operator: MigrationFunctorKindV1,
+    pub source_theory: TheorySubjectRefIr,
+    pub source_schema_id: SchemaId,
+    pub target_schema: String,
+    #[serde(default)]
+    pub total_obligations: usize,
+    #[serde(default)]
+    pub preserved_obligations: usize,
+    #[serde(default)]
+    pub transported_obligations: usize,
+    #[serde(default)]
+    pub blocked_obligations: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<TheoryTransportItemIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub non_claims: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
 fn local_name(raw: &str) -> &str {
     raw.rsplit('.').next().unwrap_or(raw)
 }
@@ -782,6 +1007,52 @@ impl TheoryIr {
             .collect()
     }
 
+    pub fn relation_names_for_obligation(&self, obligation: &TheoryObligationRefIr) -> Vec<String> {
+        let mut relation_names = BTreeSet::new();
+        match obligation {
+            TheoryObligationRefIr::Constraint { constraint_id, .. } => {
+                if let Some(constraint) = self
+                    .constraints
+                    .iter()
+                    .find(|candidate| &candidate.constraint_id == constraint_id)
+                {
+                    if let Some(relation_name) = constraint.relation_name.as_ref() {
+                        relation_names.insert(relation_name.clone());
+                    }
+                }
+            }
+            TheoryObligationRefIr::PathEquation { equation_id, .. } => {
+                if let Some(equation) = self
+                    .path_equations
+                    .iter()
+                    .find(|candidate| &candidate.equation_id == equation_id)
+                {
+                    relation_names.extend(equation.relation_refs.iter().cloned());
+                }
+            }
+            TheoryObligationRefIr::OpaqueEquation { .. } => {}
+            TheoryObligationRefIr::RewriteRule { rule_id, .. } => {
+                if let Some(rule) = self
+                    .rewrite_rules
+                    .iter()
+                    .find(|candidate| &candidate.rule_id == rule_id)
+                {
+                    relation_names.extend(rule.relation_refs.iter().cloned());
+                }
+            }
+        }
+        relation_names.into_iter().collect()
+    }
+
+    pub fn theory_transport_plan(
+        &self,
+        compiled_schema: &CompiledSchemaIr,
+        morphism: &SchemaMorphismV1,
+        operator: MigrationFunctorKindV1,
+    ) -> TheoryTransportPlanIr {
+        build_theory_transport_plan_ir(compiled_schema, self, morphism, operator)
+    }
+
     pub fn runtime_fragment_summary(&self) -> RuntimeTheoryFragmentSummaryV1 {
         let theory_ref = TheorySubjectRefIr::Theory {
             theory_id: self.theory_id.clone(),
@@ -826,9 +1097,111 @@ impl TheoryIr {
             opaque_or_out_of_fragment_obligations,
             obligation_statuses,
             trust_boundary: "outside_trusted_kernel".to_string(),
-            completeness_claim: "not_claimed".to_string(),
-            ontology_closure_claim: "not_claimed".to_string(),
+            completeness_claim:
+                "use RuntimeTheoryCheckReportV1 for scoped runtime completeness claims"
+                    .to_string(),
+            ontology_closure_claim:
+                "use RuntimeTheoryCheckReportV1 for scoped runtime closure claims".to_string(),
             notes,
+        }
+    }
+
+    pub fn obligation_graph(&self) -> TheoryObligationGraphV1 {
+        let summary = self.runtime_fragment_summary();
+        let theory_ref = TheorySubjectRefIr::Theory {
+            theory_id: self.theory_id.clone(),
+        };
+        let theory_node_id = theory_graph_subject_node_id(&theory_ref);
+        let mut nodes = vec![TheoryObligationGraphNodeV1 {
+            node_id: theory_node_id.clone(),
+            kind: TheoryObligationGraphNodeKindV1::Theory,
+            label: self.theory_id.to_string(),
+            obligation_ref: None,
+            subject_ref: Some(theory_ref.clone()),
+            fragment_status: None,
+            trust_class: None,
+        }];
+        let mut edges = Vec::new();
+        let mut subject_nodes = BTreeSet::new();
+
+        for status in &summary.obligation_statuses {
+            let obligation_node_id = theory_graph_obligation_node_id(&status.obligation_ref);
+            nodes.push(TheoryObligationGraphNodeV1 {
+                node_id: obligation_node_id.clone(),
+                kind: TheoryObligationGraphNodeKindV1::Obligation,
+                label: status.label.clone(),
+                obligation_ref: Some(status.obligation_ref.clone()),
+                subject_ref: None,
+                fragment_status: Some(status.fragment_status),
+                trust_class: Some(status.trust_class),
+            });
+            edges.push(TheoryObligationGraphEdgeV1 {
+                source_node_id: theory_node_id.clone(),
+                target_node_id: obligation_node_id.clone(),
+                kind: TheoryObligationGraphEdgeKindV1::TheoryContainsObligation,
+                detail: "compiled theory contains this runtime-addressable obligation".to_string(),
+            });
+
+            for subject_ref in &status.subject_refs {
+                let subject_node_id = theory_graph_subject_node_id(subject_ref);
+                if subject_nodes.insert(subject_node_id.clone()) {
+                    nodes.push(TheoryObligationGraphNodeV1 {
+                        node_id: subject_node_id.clone(),
+                        kind: TheoryObligationGraphNodeKindV1::Subject,
+                        label: subject_ref.display_name(),
+                        obligation_ref: None,
+                        subject_ref: Some(subject_ref.clone()),
+                        fragment_status: None,
+                        trust_class: None,
+                    });
+                }
+                edges.push(TheoryObligationGraphEdgeV1 {
+                    source_node_id: obligation_node_id.clone(),
+                    target_node_id: subject_node_id.clone(),
+                    kind: TheoryObligationGraphEdgeKindV1::ObligationTouchesSubject,
+                    detail: "obligation references this typed theory subject".to_string(),
+                });
+                edges.push(TheoryObligationGraphEdgeV1 {
+                    source_node_id: subject_node_id,
+                    target_node_id: obligation_node_id.clone(),
+                    kind: TheoryObligationGraphEdgeKindV1::SubjectSupportsObligation,
+                    detail: "subject can be used to find affected obligations for repair, migration, or reconciliation".to_string(),
+                });
+            }
+        }
+
+        nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        nodes.dedup_by(|a, b| a.node_id == b.node_id);
+        edges.sort_by(|a, b| {
+            a.source_node_id
+                .cmp(&b.source_node_id)
+                .then_with(|| a.target_node_id.cmp(&b.target_node_id))
+                .then_with(|| format!("{:?}", a.kind).cmp(&format!("{:?}", b.kind)))
+        });
+        edges.dedup_by(|a, b| {
+            a.source_node_id == b.source_node_id
+                && a.target_node_id == b.target_node_id
+                && a.kind == b.kind
+        });
+
+        TheoryObligationGraphV1 {
+            version: THEORY_OBLIGATION_GRAPH_VERSION_V1.to_string(),
+            theory_ref,
+            nodes,
+            edges,
+            total_obligations: summary.total_obligations,
+            runtime_checked_obligations: summary.runtime_checked_obligations,
+            opaque_or_out_of_fragment_obligations: summary
+                .opaque_or_out_of_fragment_obligations,
+            trust_boundary: summary.trust_boundary,
+            completeness_claim: summary.completeness_claim,
+            ontology_closure_claim: summary.ontology_closure_claim,
+            notes: vec![
+                "theory obligation graph is a deterministic runtime index for typed exploration, CQ repair, migration, and reconciliation"
+                    .to_string(),
+                "graph edges are operational dependency links, not categorical completeness or Lean proof edges"
+                    .to_string(),
+            ],
         }
     }
 
@@ -882,6 +1255,19 @@ impl TheoryIr {
     }
 }
 
+fn theory_graph_obligation_node_id(obligation_ref: &TheoryObligationRefIr) -> String {
+    format!("theory_obligation:{}", obligation_ref.stable_id())
+}
+
+fn theory_graph_subject_node_id(subject_ref: &TheorySubjectRefIr) -> String {
+    let kind = match subject_ref.subject_kind() {
+        TheorySubjectKindIr::Theory => "theory",
+        TheorySubjectKindIr::Relation => "relation",
+        TheorySubjectKindIr::Role => "role",
+    };
+    format!("theory_subject:{kind}:{}", subject_ref.stable_id())
+}
+
 fn runtime_fragment_status_for_constraint(
     constraint: &ConstraintIr,
 ) -> (
@@ -931,6 +1317,197 @@ fn runtime_fragment_status_for_constraint(
                 "constraint kind `{other}` is indexed, but it is not classified inside the current runtime theory fragment"
             ),
         ),
+    }
+}
+
+pub fn build_theory_transport_plan_ir(
+    compiled_schema: &CompiledSchemaIr,
+    theory: &TheoryIr,
+    morphism: &SchemaMorphismV1,
+    operator: MigrationFunctorKindV1,
+) -> TheoryTransportPlanIr {
+    let items = theory
+        .obligation_refs()
+        .into_iter()
+        .map(|obligation_ref| {
+            theory_transport_item_ir(
+                compiled_schema,
+                theory,
+                morphism,
+                operator.clone(),
+                obligation_ref,
+            )
+        })
+        .collect::<Vec<_>>();
+    let preserved_obligations = items
+        .iter()
+        .filter(|item| item.status == TheoryTransportStatusIr::Preserved)
+        .count();
+    let transported_obligations = items
+        .iter()
+        .filter(|item| item.status == TheoryTransportStatusIr::Transported)
+        .count();
+    let blocked_obligations = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.status,
+                TheoryTransportStatusIr::MissingObjectImage
+                    | TheoryTransportStatusIr::MissingArrowImage
+                    | TheoryTransportStatusIr::OpaqueOrOutOfFragment
+            )
+        })
+        .count();
+
+    let mut notes = Vec::new();
+    if compiled_schema.schema_id.as_str() != morphism.source_schema {
+        notes.push(format!(
+            "morphism source schema `{}` does not match compiled schema `{}`; transport plan is still emitted for review but should not be materialized",
+            morphism.source_schema, compiled_schema.schema_id
+        ));
+    }
+    if blocked_obligations > 0 {
+        notes.push(format!(
+            "{blocked_obligations} theory obligation(s) require resolver work before transport can be treated as well-typed"
+        ));
+    }
+
+    TheoryTransportPlanIr {
+        version: THEORY_TRANSPORT_PLAN_VERSION_V1.to_string(),
+        operator,
+        source_theory: TheorySubjectRefIr::Theory {
+            theory_id: theory.theory_id.clone(),
+        },
+        source_schema_id: compiled_schema.schema_id.clone(),
+        target_schema: morphism.target_schema.clone(),
+        total_obligations: items.len(),
+        preserved_obligations,
+        transported_obligations,
+        blocked_obligations,
+        items,
+        non_claims: vec![
+            "runtime theory transport is a typed planning artifact, not a Lean certificate"
+                .to_string(),
+            "preserved means relation/role object images are identity-like under this runtime morphism view; it is not a proof of full semantic conservativity"
+                .to_string(),
+            "transported means the obligation remains addressable but needs review/certification before strong migration soundness can be claimed"
+                .to_string(),
+            "no completeness or ontology-closure claim is made for transported obligations"
+                .to_string(),
+        ],
+        notes,
+    }
+}
+
+fn theory_transport_item_ir(
+    compiled_schema: &CompiledSchemaIr,
+    theory: &TheoryIr,
+    morphism: &SchemaMorphismV1,
+    operator: MigrationFunctorKindV1,
+    obligation_ref: TheoryObligationRefIr,
+) -> TheoryTransportItemIr {
+    let subject_refs = theory.subject_refs_for_obligation(&obligation_ref);
+    let relation_names = theory.relation_names_for_obligation(&obligation_ref);
+    let mut transport_basis = BTreeSet::new();
+    let mut missing_object_images = BTreeSet::new();
+    let mut missing_arrow_images = BTreeSet::new();
+    let mut transported = false;
+
+    if matches!(obligation_ref, TheoryObligationRefIr::OpaqueEquation { .. }) {
+        return TheoryTransportItemIr {
+            operator,
+            obligation_ref,
+            subject_refs,
+            status: TheoryTransportStatusIr::OpaqueOrOutOfFragment,
+            transport_basis: Vec::new(),
+            missing_object_images: Vec::new(),
+            missing_arrow_images: Vec::new(),
+            detail: "opaque equation is preserved as review text, but it is outside the runtime path/rewrite transport fragment".to_string(),
+        };
+    }
+
+    for relation_name in &relation_names {
+        match morphism.arrow_image(relation_name) {
+            Some(target_path) => {
+                let target_path_label = if target_path.is_empty() {
+                    "identity".to_string()
+                } else {
+                    target_path.join(" ; ")
+                };
+                transport_basis.insert(format!("arrow {relation_name} -> {target_path_label}"));
+                if !(target_path.len() == 1 && target_path[0].as_str() == relation_name.as_str()) {
+                    transported = true;
+                }
+            }
+            None => {
+                missing_arrow_images.insert(relation_name.clone());
+            }
+        }
+
+        if let Some(relation) = compiled_schema
+            .relation(relation_name)
+            .or_else(|| compiled_schema.relation(local_name(relation_name)))
+        {
+            for role in &relation.roles {
+                match morphism.object_image(&role.target_type) {
+                    Some(target_object) => {
+                        transport_basis
+                            .insert(format!("object {} -> {target_object}", role.target_type));
+                        if target_object != role.target_type {
+                            transported = true;
+                        }
+                    }
+                    None => {
+                        missing_object_images.insert(role.target_type.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let missing_object_images = missing_object_images.into_iter().collect::<Vec<_>>();
+    let missing_arrow_images = missing_arrow_images.into_iter().collect::<Vec<_>>();
+    let transport_basis = transport_basis.into_iter().collect::<Vec<_>>();
+    let status = if !missing_object_images.is_empty() {
+        TheoryTransportStatusIr::MissingObjectImage
+    } else if !missing_arrow_images.is_empty() {
+        TheoryTransportStatusIr::MissingArrowImage
+    } else if transported {
+        TheoryTransportStatusIr::Transported
+    } else {
+        TheoryTransportStatusIr::Preserved
+    };
+
+    let detail = match status {
+        TheoryTransportStatusIr::Preserved => {
+            "obligation is preserved by identity-like object and arrow images in the runtime morphism view"
+                .to_string()
+        }
+        TheoryTransportStatusIr::Transported => {
+            "obligation remains typed and addressable, but non-identity object or arrow images require transport review".to_string()
+        }
+        TheoryTransportStatusIr::MissingObjectImage => format!(
+            "obligation cannot be transported until object image(s) are supplied: {}",
+            missing_object_images.join(", ")
+        ),
+        TheoryTransportStatusIr::MissingArrowImage => format!(
+            "obligation cannot be transported until arrow image(s) are supplied: {}",
+            missing_arrow_images.join(", ")
+        ),
+        TheoryTransportStatusIr::OpaqueOrOutOfFragment => {
+            "obligation is outside the runtime transport fragment".to_string()
+        }
+    };
+
+    TheoryTransportItemIr {
+        operator,
+        obligation_ref,
+        subject_refs,
+        status,
+        transport_basis,
+        missing_object_images,
+        missing_arrow_images,
+        detail,
     }
 }
 
@@ -993,6 +1570,270 @@ pub fn compile_kernel_module_ir(
         theories,
         instances,
     })
+}
+
+pub fn compile_schema_category_ir(compiled_schema: &CompiledSchemaIr) -> SchemaCategoryIr {
+    let mut object_names = compiled_schema
+        .object_types
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    object_names.sort();
+
+    let mut objects = object_names
+        .iter()
+        .filter_map(|name| {
+            compiled_schema
+                .object_type_id(name)
+                .cloned()
+                .map(|object_type_id| SchemaCategoryObjectIr {
+                    object: SchemaCategoryObjectRefIr::ObjectType {
+                        object_type_id,
+                        name: name.clone(),
+                    },
+                })
+        })
+        .collect::<Vec<_>>();
+
+    let mut relation_semantics = compiled_schema.relations.values().collect::<Vec<_>>();
+    relation_semantics.sort_by(|a, b| a.name.cmp(&b.name));
+    objects.extend(
+        relation_semantics
+            .iter()
+            .map(|relation| SchemaCategoryObjectIr {
+                object: relation_object_ref(relation),
+            }),
+    );
+    objects.sort_by(|a, b| a.object.cmp(&b.object));
+
+    let mut arrows = Vec::new();
+    for subtype in &object_names {
+        for supertype in compiled_schema.direct_supertypes_of(subtype) {
+            if let (Some(source), Some(target)) = (
+                object_type_ref(compiled_schema, subtype),
+                object_type_ref(compiled_schema, &supertype),
+            ) {
+                arrows.push(SchemaCategoryArrowIr {
+                    arrow_ref: SchemaCategoryArrowRefIr::SubtypeInclusion {
+                        schema_id: compiled_schema.schema_id.clone(),
+                        subtype: subtype.clone(),
+                        supertype: supertype.clone(),
+                    },
+                    name: format!("{subtype}_to_{supertype}"),
+                    source,
+                    target,
+                    kind: SchemaCategoryArrowKindIr::SubtypeInclusion,
+                });
+            }
+        }
+    }
+
+    for relation in relation_semantics {
+        let source = relation_object_ref(relation);
+        for role in relation.roles.iter().cloned() {
+            if let Some(target) = object_type_ref(compiled_schema, &role.target_type) {
+                arrows.push(SchemaCategoryArrowIr {
+                    arrow_ref: SchemaCategoryArrowRefIr::RoleProjection {
+                        role_id: role.role_id.clone(),
+                        relation_id: relation.relation_id.clone(),
+                        role_name: role.name.clone(),
+                    },
+                    name: format!("{}.{}", relation.name, role.name),
+                    source: source.clone(),
+                    target,
+                    kind: SchemaCategoryArrowKindIr::RoleProjection,
+                });
+            }
+        }
+    }
+    arrows.sort_by(|a, b| a.arrow_ref.cmp(&b.arrow_ref));
+
+    SchemaCategoryIr {
+        schema_id: compiled_schema.schema_id.clone(),
+        objects,
+        arrows,
+        notes: vec![
+            "schema category uses relation-as-object semantics: relation tuples are objects and relation roles are projection arrows".to_string(),
+            "subtype declarations lower to inclusion arrows; binary graph edges remain derived traversal views".to_string(),
+        ],
+    }
+}
+
+pub fn compile_instance_functor_ir(
+    compiled_schema: &CompiledSchemaIr,
+    instance: &InstanceIr,
+) -> Result<InstanceFunctorIr, String> {
+    if instance.schema_id != compiled_schema.schema_id {
+        return Err(format!(
+            "instance `{}` belongs to schema `{}`, not `{}`",
+            instance.instance_id, instance.schema_id, compiled_schema.schema_id
+        ));
+    }
+
+    let category = compile_schema_category_ir(compiled_schema);
+    let object_members = closed_object_members(compiled_schema, instance);
+    let relation_facts = instance
+        .relation_facts
+        .iter()
+        .map(|fact| {
+            (
+                SchemaCategoryObjectRefIr::RelationObject {
+                    relation_id: fact.relation_id.clone(),
+                    name: fact.relation_name.clone(),
+                },
+                fact.fact_id.as_str().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let mut object_images = Vec::new();
+    for object in &category.objects {
+        let elements = match &object.object {
+            SchemaCategoryObjectRefIr::ObjectType { name, .. } => object_members
+                .get(name)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            SchemaCategoryObjectRefIr::RelationObject { relation_id, .. } => relation_facts
+                .iter()
+                .filter_map(|(object_ref, fact_id)| match object_ref {
+                    SchemaCategoryObjectRefIr::RelationObject {
+                        relation_id: candidate,
+                        ..
+                    } if candidate == relation_id => Some(fact_id.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        };
+        object_images.push(InstanceObjectImageIr {
+            object: object.object.clone(),
+            elements,
+        });
+    }
+
+    let mut arrow_images = Vec::new();
+    for arrow in &category.arrows {
+        let (mappings, notes) = match &arrow.arrow_ref {
+            SchemaCategoryArrowRefIr::RoleProjection {
+                role_id,
+                relation_id,
+                ..
+            } => {
+                let mut mappings = Vec::new();
+                for fact in instance
+                    .relation_facts
+                    .iter()
+                    .filter(|fact| &fact.relation_id == relation_id)
+                {
+                    if let Some(value) = fact
+                        .role_values
+                        .iter()
+                        .find(|value| &value.role_id == role_id)
+                    {
+                        mappings.push(InstanceArrowMappingIr {
+                            source: fact.fact_id.as_str().to_string(),
+                            target: value.value.clone(),
+                        });
+                    }
+                }
+                (mappings, Vec::new())
+            }
+            SchemaCategoryArrowRefIr::SubtypeInclusion { subtype, .. } => {
+                let mappings = object_members
+                    .get(subtype)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|member| InstanceArrowMappingIr {
+                        source: member.clone(),
+                        target: member,
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    mappings,
+                    vec![
+                        "subtype inclusion image uses closed object membership, so subtype elements are transported into supertype images by identity".to_string(),
+                    ],
+                )
+            }
+        };
+        let source_size = object_images
+            .iter()
+            .find(|image| image.object == arrow.source)
+            .map(|image| image.elements.len())
+            .unwrap_or_default();
+        let total_on_source_elements = mappings.len() == source_size;
+        arrow_images.push(InstanceArrowImageIr {
+            arrow_ref: arrow.arrow_ref.clone(),
+            source: arrow.source.clone(),
+            target: arrow.target.clone(),
+            mappings,
+            total_on_source_elements,
+            notes,
+        });
+    }
+
+    Ok(InstanceFunctorIr {
+        instance_id: instance.instance_id.clone(),
+        schema_id: instance.schema_id.clone(),
+        object_images,
+        arrow_images,
+        notes: vec![
+            "instance functor interprets object types as closed sets and relation objects as stable fact-id sets".to_string(),
+            "role projection arrows interpret facts as mappings from stable fact ids to typed role values".to_string(),
+        ],
+    })
+}
+
+fn object_type_ref(
+    compiled_schema: &CompiledSchemaIr,
+    name: &str,
+) -> Option<SchemaCategoryObjectRefIr> {
+    compiled_schema
+        .object_type_id(name)
+        .cloned()
+        .map(|object_type_id| SchemaCategoryObjectRefIr::ObjectType {
+            object_type_id,
+            name: name.to_string(),
+        })
+}
+
+fn relation_object_ref(relation: &RelationSemanticsIr) -> SchemaCategoryObjectRefIr {
+    SchemaCategoryObjectRefIr::RelationObject {
+        relation_id: relation.relation_id.clone(),
+        name: relation.tuple_type_name.clone(),
+    }
+}
+
+fn closed_object_members(
+    compiled_schema: &CompiledSchemaIr,
+    instance: &InstanceIr,
+) -> HashMap<String, BTreeSet<String>> {
+    let mut object_members = instance
+        .object_members
+        .iter()
+        .map(|membership| {
+            (
+                membership.object_type_name.clone(),
+                membership.members.iter().cloned().collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for (subtype, supertypes) in &compiled_schema.supertypes_of {
+        let Some(subtype_members) = object_members.get(subtype).cloned() else {
+            continue;
+        };
+        for supertype in supertypes {
+            object_members
+                .entry(supertype.clone())
+                .or_default()
+                .extend(subtype_members.iter().cloned());
+        }
+    }
+
+    object_members
 }
 
 pub fn compile_instance_ir(
@@ -2818,6 +3659,198 @@ mod tests {
                 && obligation.matches_artifact_id("equation:theory:S:T:parent_path:0")
         }));
         assert!(rewrite_obligation.matches_artifact_id("rewrite:theory:S:T:parent_refl:0"));
+
+        let graph = ir.obligation_graph();
+        assert_eq!(graph.version, THEORY_OBLIGATION_GRAPH_VERSION_V1);
+        assert_eq!(graph.total_obligations, 4);
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == TheoryObligationGraphNodeKindV1::Theory
+                && node.node_id == "theory_subject:theory:theory:S:T"
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == TheoryObligationGraphNodeKindV1::Obligation
+                && node
+                    .obligation_ref
+                    .as_ref()
+                    .is_some_and(|obligation| obligation == &rewrite_obligation)
+                && node.fragment_status
+                    == Some(RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked)
+        }));
+        assert!(graph.nodes.iter().any(|node| {
+            node.kind == TheoryObligationGraphNodeKindV1::Subject
+                && node.subject_ref.as_ref() == Some(&relation_subject)
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.kind == TheoryObligationGraphEdgeKindV1::SubjectSupportsObligation
+                && edge.source_node_id == "theory_subject:relation:relation:S:Parent"
+                && edge.target_node_id.starts_with("theory_obligation:")
+        }));
+    }
+
+    #[test]
+    fn theory_transport_plan_classifies_preserved_and_blocked_obligations() {
+        let schema = SchemaV1Schema {
+            name: "Plant".to_string(),
+            objects: vec![
+                "PlantAsset".to_string(),
+                "Context".to_string(),
+                "Time".to_string(),
+            ],
+            subtypes: Vec::new(),
+            relations: vec![RelationDeclV1 {
+                name: "installed_at".to_string(),
+                fields: vec![
+                    FieldDeclV1 {
+                        field: "asset".to_string(),
+                        ty: "PlantAsset".to_string(),
+                    },
+                    FieldDeclV1 {
+                        field: "site".to_string(),
+                        ty: "PlantAsset".to_string(),
+                    },
+                    FieldDeclV1 {
+                        field: "ctx".to_string(),
+                        ty: "Context".to_string(),
+                    },
+                    FieldDeclV1 {
+                        field: "time".to_string(),
+                        ty: "Time".to_string(),
+                    },
+                ],
+            }],
+        };
+        let compiled = compile_schema_ir(&schema);
+        let theory = SchemaV1Theory {
+            name: "PlantRules".to_string(),
+            schema: "Plant".to_string(),
+            constraints: vec![ConstraintV1::Key {
+                relation: "installed_at".to_string(),
+                fields: vec![
+                    "asset".to_string(),
+                    "site".to_string(),
+                    "ctx".to_string(),
+                    "time".to_string(),
+                ],
+            }],
+            equations: vec![EquationV1 {
+                name: "opaque_transport_law".to_string(),
+                lhs: "BusinessPlantRule(x)".to_string(),
+                rhs: "x".to_string(),
+            }],
+            rewrite_rules: Vec::new(),
+        };
+        let theory_ir = compile_theory_ir(&compiled, &theory).expect("compile theory");
+        let morphism = SchemaMorphismV1 {
+            source_schema: "Plant".to_string(),
+            target_schema: "Ops".to_string(),
+            objects: vec![crate::migration::ObjectMappingV1 {
+                source_object: "PlantAsset".to_string(),
+                target_object: "Equipment".to_string(),
+            }],
+            arrows: vec![crate::migration::ArrowMappingV1 {
+                source_arrow: "installed_at".to_string(),
+                target_path: vec!["owned_by".to_string(), "located_at".to_string()],
+            }],
+        };
+
+        let plan =
+            theory_ir.theory_transport_plan(&compiled, &morphism, MigrationFunctorKindV1::DeltaF);
+
+        assert_eq!(plan.version, THEORY_TRANSPORT_PLAN_VERSION_V1);
+        assert_eq!(plan.total_obligations, 2);
+        assert_eq!(plan.blocked_obligations, 2);
+        let constraint_item = plan
+            .items
+            .iter()
+            .find(|item| {
+                matches!(
+                    item.obligation_ref,
+                    TheoryObligationRefIr::Constraint { .. }
+                )
+            })
+            .expect("constraint transport item");
+        assert_eq!(
+            constraint_item.status,
+            TheoryTransportStatusIr::MissingObjectImage
+        );
+        assert_eq!(
+            constraint_item.missing_object_images,
+            vec!["Context".to_string(), "Time".to_string()]
+        );
+        assert!(constraint_item
+            .transport_basis
+            .iter()
+            .any(|basis| basis == "arrow installed_at -> owned_by ; located_at"));
+        assert!(constraint_item.subject_refs.iter().any(|subject| matches!(
+            subject,
+            TheorySubjectRefIr::Role { role_name, .. } if role_name == "ctx"
+        )));
+        assert!(plan.items.iter().any(|item| {
+            matches!(
+                item.obligation_ref,
+                TheoryObligationRefIr::OpaqueEquation { .. }
+            ) && item.status == TheoryTransportStatusIr::OpaqueOrOutOfFragment
+        }));
+    }
+
+    #[test]
+    fn theory_transport_plan_preserves_identity_mapped_theory_fragment() {
+        let schema = SchemaV1Schema {
+            name: "S".to_string(),
+            objects: vec!["Person".to_string()],
+            subtypes: Vec::new(),
+            relations: vec![RelationDeclV1 {
+                name: "Parent".to_string(),
+                fields: vec![
+                    FieldDeclV1 {
+                        field: "from".to_string(),
+                        ty: "Person".to_string(),
+                    },
+                    FieldDeclV1 {
+                        field: "to".to_string(),
+                        ty: "Person".to_string(),
+                    },
+                ],
+            }],
+        };
+        let compiled = compile_schema_ir(&schema);
+        let theory = SchemaV1Theory {
+            name: "T".to_string(),
+            schema: "S".to_string(),
+            constraints: vec![ConstraintV1::Functional {
+                relation: "Parent".to_string(),
+                src_field: "from".to_string(),
+                dst_field: "to".to_string(),
+            }],
+            equations: Vec::new(),
+            rewrite_rules: Vec::new(),
+        };
+        let theory_ir = compile_theory_ir(&compiled, &theory).expect("compile theory");
+        let morphism = SchemaMorphismV1 {
+            source_schema: "S".to_string(),
+            target_schema: "S".to_string(),
+            objects: vec![crate::migration::ObjectMappingV1 {
+                source_object: "Person".to_string(),
+                target_object: "Person".to_string(),
+            }],
+            arrows: vec![crate::migration::ArrowMappingV1 {
+                source_arrow: "Parent".to_string(),
+                target_path: vec!["Parent".to_string()],
+            }],
+        };
+
+        let plan = build_theory_transport_plan_ir(
+            &compiled,
+            &theory_ir,
+            &morphism,
+            MigrationFunctorKindV1::DeltaF,
+        );
+
+        assert_eq!(plan.total_obligations, 1);
+        assert_eq!(plan.preserved_obligations, 1);
+        assert_eq!(plan.blocked_obligations, 0);
+        assert_eq!(plan.items[0].status, TheoryTransportStatusIr::Preserved);
+        assert!(!plan.items[0].status.requires_resolver());
     }
 
     #[test]
@@ -2901,8 +3934,12 @@ mod tests {
         let summary = ir.runtime_fragment_summary();
         assert_eq!(summary.version, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1);
         assert_eq!(summary.trust_boundary, "outside_trusted_kernel");
-        assert_eq!(summary.completeness_claim, "not_claimed");
-        assert_eq!(summary.ontology_closure_claim, "not_claimed");
+        assert!(summary
+            .completeness_claim
+            .contains("RuntimeTheoryCheckReportV1"));
+        assert!(summary
+            .ontology_closure_claim
+            .contains("RuntimeTheoryCheckReportV1"));
         assert_eq!(summary.total_obligations, 5);
         assert_eq!(summary.runtime_checked_obligations, 3);
         assert_eq!(summary.opaque_or_out_of_fragment_obligations, 2);
@@ -3063,6 +4100,118 @@ instance I of S:
                 .collect::<Vec<_>>(),
             vec![("child", "Alice"), ("parent", "Bob"), ("ctx", "FamilyTree")]
         );
+    }
+
+    #[test]
+    fn schema_category_and_instance_functor_preserve_relation_objects_and_subtype_transport() {
+        let axi_text = r#"
+module Demo
+
+schema S:
+  object Person
+  object Engineer
+  object Artifact
+  subtype Engineer < Person
+  relation Review(reviewer: Engineer, artifact: Artifact)
+
+instance I of S:
+  Engineer = {Eve}
+  Artifact = {Design}
+  Review = {
+    (reviewer=Eve, artifact=Design)
+  }
+"#;
+        let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text).expect("parse module");
+        let ir = compile_kernel_module_ir(&module, axi_text).expect("compile kernel module ir");
+        let schema = &ir.schemas[0];
+        let instance = &ir.instances[0];
+
+        let category = compile_schema_category_ir(schema);
+        assert!(category.objects.iter().any(|object| matches!(
+            &object.object,
+            SchemaCategoryObjectRefIr::RelationObject { name, .. } if name == "Review"
+        )));
+        assert!(category.arrows.iter().any(|arrow| matches!(
+            &arrow.arrow_ref,
+            SchemaCategoryArrowRefIr::SubtypeInclusion {
+                subtype,
+                supertype,
+                ..
+            } if subtype == "Engineer" && supertype == "Person"
+        )));
+        assert!(category.arrows.iter().any(|arrow| matches!(
+            &arrow.arrow_ref,
+            SchemaCategoryArrowRefIr::RoleProjection { role_name, .. } if role_name == "reviewer"
+        )));
+
+        let functor =
+            compile_instance_functor_ir(schema, instance).expect("compile instance functor ir");
+        let person_image = functor
+            .object_images
+            .iter()
+            .find(|image| {
+                matches!(
+                    &image.object,
+                    SchemaCategoryObjectRefIr::ObjectType { name, .. } if name == "Person"
+                )
+            })
+            .expect("Person image");
+        assert_eq!(person_image.elements, vec!["Eve".to_string()]);
+
+        let review_image = functor
+            .object_images
+            .iter()
+            .find(|image| {
+                matches!(
+                    &image.object,
+                    SchemaCategoryObjectRefIr::RelationObject { name, .. } if name == "Review"
+                )
+            })
+            .expect("Review relation object image");
+        assert_eq!(review_image.elements.len(), 1);
+
+        let reviewer_projection = functor
+            .arrow_images
+            .iter()
+            .find(|image| {
+                matches!(
+                    &image.arrow_ref,
+                    SchemaCategoryArrowRefIr::RoleProjection { role_name, .. } if role_name == "reviewer"
+                )
+            })
+            .expect("reviewer projection image");
+        assert_eq!(
+            reviewer_projection
+                .mappings
+                .iter()
+                .map(|mapping| mapping.target.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Eve"]
+        );
+        assert!(reviewer_projection.total_on_source_elements);
+
+        let subtype_inclusion = functor
+            .arrow_images
+            .iter()
+            .find(|image| {
+                matches!(
+                    &image.arrow_ref,
+                    SchemaCategoryArrowRefIr::SubtypeInclusion {
+                        subtype,
+                        supertype,
+                        ..
+                    } if subtype == "Engineer" && supertype == "Person"
+                )
+            })
+            .expect("subtype inclusion image");
+        assert_eq!(
+            subtype_inclusion.mappings,
+            vec![InstanceArrowMappingIr {
+                source: "Eve".to_string(),
+                target: "Eve".to_string(),
+            }]
+        );
+        assert!(subtype_inclusion.total_on_source_elements);
     }
 
     #[test]

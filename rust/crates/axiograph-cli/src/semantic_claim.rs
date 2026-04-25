@@ -441,6 +441,8 @@ pub struct CoverageReportV1 {
     pub surface_reports: Vec<ImplementationSurfaceRuleReportV1>,
     #[serde(default)]
     pub rule_statuses: Vec<CoverageRuleStatusV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
     #[serde(default)]
     pub uncovered_rule_ids: Vec<String>,
     #[serde(default)]
@@ -470,6 +472,8 @@ pub struct AgentEngineeringReportV1 {
     #[serde(default)]
     pub surface_reports: Vec<ImplementationSurfaceRuleReportV1>,
     pub coverage: CoverageReportV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
     #[serde(default)]
     pub residual_unknowns: Vec<String>,
     #[serde(default)]
@@ -1286,6 +1290,7 @@ pub fn semantic_coverage_report(
     lifecycle_state: &str,
     surfaces: &[ImplementationSurfaceRefV1],
     edges: &[CoverageEdgeV1],
+    runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
 ) -> CoverageReportV1 {
     let catalog = runtime_rule_catalog(meta);
     let surfaces = surfaces
@@ -1421,6 +1426,31 @@ pub fn semantic_coverage_report(
             "declare endpoints/workflows/jobs/reports as implementation surfaces so ontology coverage can be computed".to_string(),
         );
     }
+    if let Some(summary) = runtime_theory_check.as_ref() {
+        if summary.blocking_errors > 0 {
+            missing_obligations.push(format!(
+                "runtime theory check has {} blocking error(s)",
+                summary.blocking_errors
+            ));
+            next_actions.push(
+                "resolve RuntimeTheoryCheckReportV1 blocking judgments before claiming semantic coverage is promotion-ready".to_string(),
+            );
+        }
+        if !summary.residual_obligation_ids.is_empty() {
+            missing_obligations.push(format!(
+                "{} runtime theory residual obligation(s) remain outside strong coverage",
+                summary.residual_obligation_ids.len()
+            ));
+            next_actions.push(
+                "review runtime theory residual obligations alongside uncovered rule coverage"
+                    .to_string(),
+            );
+        }
+        notes.push(format!(
+            "runtime theory check summary attached: completeness={}, ontology_closure={}",
+            summary.completeness_claim, summary.ontology_closure_claim
+        ));
+    }
 
     CoverageReportV1 {
         version: SEMANTIC_COVERAGE_REPORT_VERSION_V1.to_string(),
@@ -1441,6 +1471,7 @@ pub fn semantic_coverage_report(
         unknown_rules,
         surface_reports,
         rule_statuses,
+        runtime_theory_check,
         uncovered_rule_ids,
         missing_obligations,
         next_actions,
@@ -1455,6 +1486,7 @@ pub fn agent_engineering_report(
     task: &AgentTaskRefV1,
     surfaces: &[ImplementationSurfaceRefV1],
     edges: &[CoverageEdgeV1],
+    runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
 ) -> AgentEngineeringReportV1 {
     let surfaces = surfaces
         .iter()
@@ -1477,6 +1509,7 @@ pub fn agent_engineering_report(
         lifecycle_state,
         &surfaces,
         edges,
+        runtime_theory_check.clone(),
     );
 
     let mut matched_scope_ids = surfaces
@@ -1562,6 +1595,20 @@ pub fn agent_engineering_report(
             coverage.unknown_rules
         ));
     }
+    if let Some(summary) = runtime_theory_check.as_ref() {
+        if summary.blocking_errors > 0 {
+            residual_unknowns.push(format!(
+                "runtime theory check has {} blocking error(s)",
+                summary.blocking_errors
+            ));
+        }
+        if !summary.residual_obligation_ids.is_empty() {
+            residual_unknowns.push(format!(
+                "{} runtime theory residual obligation(s) remain before this agent task has strong semantic coverage",
+                summary.residual_obligation_ids.len()
+            ));
+        }
+    }
 
     let mut next_actions_set = surface_reports
         .iter()
@@ -1587,6 +1634,12 @@ pub fn agent_engineering_report(
             coverage.drifted_rules
         ));
     }
+    if let Some(summary) = runtime_theory_check.as_ref() {
+        notes.push(format!(
+            "runtime theory check is attached for agent planning: completeness={}, ontology_closure={}",
+            summary.completeness_claim, summary.ontology_closure_claim
+        ));
+    }
 
     AgentEngineeringReportV1 {
         version: AGENT_ENGINEERING_REPORT_VERSION_V1.to_string(),
@@ -1601,6 +1654,7 @@ pub fn agent_engineering_report(
         matched_rule_ids,
         surface_reports,
         coverage,
+        runtime_theory_check,
         residual_unknowns,
         next_actions,
         notes,
@@ -1825,6 +1879,26 @@ mod tests {
                 "preview is scoped to the current snapshot plus imported proposal delta"
                     .to_string(),
             ],
+        }
+    }
+
+    fn sample_runtime_theory_summary() -> crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1 {
+        crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1 {
+            version: "runtime_theory_check_summary_v1".to_string(),
+            report_version: "runtime_theory_check_report_v1".to_string(),
+            module_digest: "fnv1a64:test".to_string(),
+            theory_count: 1,
+            checked_obligations: 2,
+            review_only_obligations: 0,
+            residual_obligations: 1,
+            blocked_obligations: 0,
+            excluded_by_evidence: 0,
+            blocking_errors: 0,
+            closure_tiers: vec!["finite_fragment".to_string()],
+            completeness_claim: "not_claimed_for_all_obligations".to_string(),
+            ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
+            residual_obligation_ids: vec!["theory:family/residual/path".to_string()],
+            notes: vec!["test sidecar".to_string()],
         }
     }
 
@@ -2217,6 +2291,7 @@ theory FamilyTheory on Family:
                 status: CoverageStatusV1::Implemented,
                 notes: vec!["enforced in handler".to_string()],
             }],
+            None,
         );
 
         assert_eq!(coverage.version, SEMANTIC_COVERAGE_REPORT_VERSION_V1);
@@ -2255,6 +2330,7 @@ theory FamilyTheory on Family:
                 status: CoverageStatusV1::Drifted,
                 notes: vec!["job no longer respects ctx parameter".to_string()],
             }],
+            None,
         );
 
         assert_eq!(coverage.drifted_rules, 1);
@@ -2266,6 +2342,36 @@ theory FamilyTheory on Family:
             .notes
             .iter()
             .all(|note| !note.contains("unknown implementation surface")));
+    }
+
+    #[test]
+    fn semantic_coverage_report_surfaces_runtime_theory_summary() {
+        let summary = sample_runtime_theory_summary();
+        let coverage = semantic_coverage_report(
+            &sample_meta(),
+            Some(AcceptedSnapshotId::new("accepted:family")),
+            "accepted",
+            &[ImplementationSurfaceRefV1 {
+                surface_id: "endpoint:family_tree".to_string(),
+                kind: ImplementationSurfaceKindV1::Endpoint,
+                label: "GET /family/tree".to_string(),
+                scopes: vec![RuntimeRuleScopeV1::relation("Family", "parent")],
+                code_refs: vec!["src/family/tree.rs".to_string()],
+                notes: Vec::new(),
+            }],
+            &[],
+            Some(summary),
+        );
+
+        assert!(coverage.runtime_theory_check.is_some());
+        assert!(coverage
+            .missing_obligations
+            .iter()
+            .any(|item| item.contains("runtime theory residual obligation")));
+        assert!(coverage
+            .notes
+            .iter()
+            .any(|item| item.contains("runtime theory check summary attached")));
     }
 
     #[test]
@@ -2317,6 +2423,7 @@ theory FamilyTheory on Family:
                     notes: vec!["job no longer respects ctx parameter".to_string()],
                 },
             ],
+            None,
         );
 
         assert_eq!(report.version, AGENT_ENGINEERING_REPORT_VERSION_V1);
