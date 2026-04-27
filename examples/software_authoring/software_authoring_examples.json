@@ -1,0 +1,31 @@
+{
+  "examples": [
+    {
+      "id": "order_fulfillment",
+      "title": "Order fulfillment reserve-credit and shipment eligibility",
+      "axi": "examples/software_authoring/OrderFulfillmentDomain.axi",
+      "overlay": "examples/software_authoring/order_fulfillment_tooling_overlay.json",
+      "behavior_case": "examples/software_authoring/order_fulfillment_behavior_case.json",
+      "coverage_query": "examples/software_authoring/order_fulfillment_coverage_query.json",
+      "definition_queries": "examples/software_authoring/order_fulfillment_definition_queries.json"
+    },
+    {
+      "id": "subscription_billing",
+      "title": "Subscription billing entitlement after paid invoice",
+      "axi": "examples/software_authoring/SubscriptionBillingDomain.axi",
+      "overlay": "examples/software_authoring/subscription_billing_tooling_overlay.json",
+      "behavior_case": "examples/software_authoring/subscription_billing_behavior_case.json",
+      "coverage_query": "examples/software_authoring/subscription_billing_coverage_query.json",
+      "definition_queries": "examples/software_authoring/subscription_billing_definition_queries.json"
+    },
+    {
+      "id": "process_control",
+      "title": "Process-control charge authorization with simulator/HMI/PLC surfaces",
+      "axi": "examples/software_authoring/ProcessControlDomain.axi",
+      "overlay": "examples/software_authoring/process_control_tooling_overlay.json",
+      "behavior_case": "examples/software_authoring/process_control_behavior_case.json",
+      "coverage_query": "examples/software_authoring/process_control_coverage_query.json",
+      "definition_queries": "examples/software_authoring/process_control_definition_queries.json"
+    }
+  ]
+}

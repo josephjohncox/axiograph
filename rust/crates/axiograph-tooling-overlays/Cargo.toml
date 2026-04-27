@@ -1,0 +1,15 @@
+[package]
+name = "axiograph-tooling-overlays"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Typed tooling overlays for Axiograph DDD/fDDD, coverage, codegen, and weak definition queries"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+axiograph-dsl = { path = "../axiograph-dsl" }
+axiograph-pathdb = { path = "../axiograph-pathdb" }
+serde.workspace = true
+serde_json.workspace = true

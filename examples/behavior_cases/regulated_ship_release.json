@@ -2,65 +2,7 @@
   "behavior_case": {
     "case_id": "industrial.ship_released_order",
     "title": "Released work order can fulfill the customer shipment",
-    "summary": "BDD/DDD case for the regulated production line bounded context.",
-    "context": {
-      "context_id": "bounded-context:regulated-line-release",
-      "label": "Regulated line release to ship",
-      "summary": "Connects ERP order lineage, work-order release, inspection, shipment, and implementation surfaces.",
-      "scopes": [
-        {
-          "schema": "RegulatedLine",
-          "scope_class": "relation",
-          "relation": "ShipmentFulfills"
-        },
-        {
-          "schema": "RegulatedLine",
-          "scope_class": "relation",
-          "relation": "InspectionDecision"
-        }
-      ],
-      "surfaces": [
-        {
-          "surface_id": "workflow:regulated-line:release-to-ship",
-          "kind": "workflow",
-          "label": "Release-to-ship workflow",
-          "scopes": [
-            {
-              "schema": "RegulatedLine",
-              "scope_class": "relation",
-              "relation": "ShipmentFulfills"
-            }
-          ],
-          "code_refs": [
-            "plc/charge_sequence.st",
-            "hmi/blend_overview.tsx",
-            "erp/release_to_ship.py"
-          ],
-          "notes": [
-            "This is a pedagogical implementation-surface link, not a claim that those files exist in this repo."
-          ]
-        }
-      ],
-      "edges": [
-        {
-          "surface_id": "workflow:regulated-line:release-to-ship",
-          "rule_id": "schema/regulatedline/relation/shipmentfulfills/rule/key/0",
-          "status": "tested"
-        }
-      ],
-      "competency_questions": [
-        {
-          "name": "released_shipment_has_work_order",
-          "question": "Can the accepted ontology show that the released shipment fulfills a concrete work order?",
-          "query": "select ?f where ?f = RegulatedLine.ShipmentFulfills(shipment=Shipment_7001, order=SalesOrder_1001, work_order=WorkOrder_5001, ctx=Released, time=T1) limit 1",
-          "min_rows": 1,
-          "weight": 1.0
-        }
-      ],
-      "notes": [
-        "BDD/DDD wrappers must stay anchored to canonical .axi and typed scopes."
-      ]
-    },
+    "summary": "Domain-only BDD case for the regulated production line release flow. DDD/fDDD and implementation surfaces are supplied by an overlay.",
     "given": {
       "snapshot_label": "accepted regulated line seed",
       "world": "main",
@@ -97,11 +39,8 @@
       "trust_target": "strong"
     },
     "notes": [
-      "This example demonstrates BehaviorCaseV1 as a JSON-first import surface. Gherkin can be an import/export view later."
+      "This example demonstrates BehaviorCaseV1 as a domain-only JSON import surface. Gherkin can be an import/export view later."
     ]
   },
-  "lifecycle_state": "accepted",
-  "codegen": {
-    "languages": ["rust", "typescript"]
-  }
+  "lifecycle_state": "accepted"
 }

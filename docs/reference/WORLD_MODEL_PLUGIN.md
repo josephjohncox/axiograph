@@ -180,11 +180,14 @@ axiograph ingest world-model \
 
 ## Integration points
 
-- CLI: `axiograph ingest world-model` (legacy: `axiograph discover world-model-propose`)
+- CLI: `axiograph ingest world-model`
 - CLI (built-in plugin): `axiograph ingest world-model-plugin-llm`
 - CLI: `--world-model-llm` and `--world-model-http` (server + propose)
 - REPL: `wm` subcommand (`wm use llm` / `wm use http <url>` / `wm use command ...`)
 - Server: `POST /world_model/propose`, `POST /world_model/plan`
+
+Temporary migration aliases may exist in greenfield builds, but they are not
+the documented integration contract.
 
 When these entrypoints start from a live PathDB snapshot, they first export the
 selected canonical module and attach typed lineage anchors

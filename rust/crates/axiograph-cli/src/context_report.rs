@@ -666,9 +666,12 @@ pub fn build_context_report(
                 summary.blocking_errors
             ));
         }
-        residual_unknowns.extend(summary.residual_obligation_ids.iter().map(|id| {
-            format!("runtime theory check leaves residual obligation `{id}`")
-        }));
+        residual_unknowns.extend(
+            summary
+                .residual_obligation_ids
+                .iter()
+                .map(|id| format!("runtime theory check leaves residual obligation `{id}`")),
+        );
     }
 
     let mut next_actions = rule_reports
@@ -894,6 +897,8 @@ theory PlantTransport on Plant:
             excluded_by_evidence: 0,
             blocking_errors: 0,
             closure_tiers: vec!["finite_fragment".to_string()],
+            closure_trace: Default::default(),
+            transport_summary: Default::default(),
             completeness_claim: "not_claimed_for_all_obligations".to_string(),
             ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
             residual_obligation_ids: vec!["context/theory/residual".to_string()],

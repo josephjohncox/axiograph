@@ -59,8 +59,54 @@
       "kind": "canonical_axi",
       "feature_tags": ["bdd", "ddd", "fddd", "business-rules", "cq", "coverage", "agent-report"],
       "commands": [
+        "./examples/behavior_cases/run_regulated_release_flow.sh",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-example-industrial --bin axiograph-industrial-example -- run-regulated-seed --axi examples/industrial/RegulatedProductionLine.axi --cache-root build/examples/industrial --run-id demo-001 --created-at-unix-secs 1713810000 --json",
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/industrial/RegulatedProductionLine.axi --request examples/behavior_cases/regulated_ship_release.json --out build/examples/regulated_ship_release_behavior_case_report.json"
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/industrial/RegulatedProductionLine.axi --request examples/behavior_cases/regulated_ship_release.json --overlay examples/behavior_cases/regulated_ship_release_overlay.json --out build/examples/regulated_ship_release_behavior_case_report.json"
+      ]
+    },
+    {
+      "id": "software-authoring-order-fulfillment",
+      "title": "DDD/fDDD software authoring from typed overlay tools",
+      "path": "examples/software_authoring/OrderFulfillmentDomain.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "weak-definition-query", "behavior-case", "runtime-theory", "codegen", "continuous-coverage", "semantic-coverage"],
+      "commands": [
+        "./examples/software_authoring/run_authoring_flow.sh",
+        "./examples/software_authoring/run_codegen_examples.sh",
+        "./examples/software_authoring/run_definition_queries.sh",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/software_authoring/OrderFulfillmentDomain.axi",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check theory examples/software_authoring/OrderFulfillmentDomain.axi --closure-tier finite_fragment",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring tool-specs --out build/examples/software_authoring/tool_specs.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring lsp-capabilities --out build/examples/software_authoring/lsp_capabilities.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring integration-manifest --out build/examples/software_authoring/integration_manifest.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring codegen-plan --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/codegen_plan.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover overlay-check examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover define examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --prompt \"define the shipment eligibility business rule\" --kind-hint business_rule --include-queries",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/software_authoring/OrderFulfillmentDomain.axi --request examples/software_authoring/order_fulfillment_behavior_case.json --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/order_fulfillment_behavior_case_report.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check software-coverage examples/software_authoring/OrderFulfillmentDomain.axi --behavior-case examples/software_authoring/order_fulfillment_behavior_case.json --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/order_fulfillment_software_coverage.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-example-software-authoring --bin axiograph-software-authoring-example -- continuous-check --behavior-report build/examples/order_fulfillment_behavior_case_report.json --repo-root . --out build/examples/order_fulfillment_example_crate_continuous_coverage.json"
+      ]
+    },
+    {
+      "id": "software-authoring-subscription-billing",
+      "title": "Subscription billing codegen from typed ontology overlays",
+      "path": "examples/software_authoring/SubscriptionBillingDomain.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "subscription", "billing", "entitlements", "codegen", "continuous-coverage"],
+      "commands": [
+        "EXAMPLE_ID=subscription_billing ./examples/software_authoring/run_codegen_examples.sh",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/software_authoring/SubscriptionBillingDomain.axi --request examples/software_authoring/subscription_billing_behavior_case.json --overlay examples/software_authoring/subscription_billing_tooling_overlay.json --out build/examples/subscription_billing_behavior_case_report.json"
+      ]
+    },
+    {
+      "id": "software-authoring-process-control",
+      "title": "Process-control codegen and coverage over simulator/HMI/PLC surfaces",
+      "path": "examples/software_authoring/ProcessControlDomain.axi",
+      "kind": "canonical_axi",
+      "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "industrial", "process-control", "hmi", "plc", "simulator", "codegen", "continuous-coverage"],
+      "commands": [
+        "EXAMPLE_ID=process_control ./examples/software_authoring/run_codegen_examples.sh",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/software_authoring/ProcessControlDomain.axi --request examples/software_authoring/process_control_behavior_case.json --overlay examples/software_authoring/process_control_tooling_overlay.json --out build/examples/process_control_behavior_case_report.json"
       ]
     },
     {

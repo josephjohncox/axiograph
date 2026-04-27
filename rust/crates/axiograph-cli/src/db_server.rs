@@ -28,7 +28,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE};
 use hyper::server::conn::http1;
@@ -653,6 +653,14 @@ async fn handle_request(
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    macro_rules! request_body {
+        ($req:expr) => {
+            match read_request_body($req).await {
+                Ok(body) => body,
+                Err(response) => return Ok(response),
+            }
+        };
+    }
 
     if method == Method::GET && path.starts_with("/viz/") {
         if path == "/viz/" || path == "/viz/index.html" {
@@ -724,21 +732,21 @@ async fn handle_request(
             }
         }
         (Method::POST, "/query") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_query(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/cert/reachability") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_reachability_cert(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/llm/to_query") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_llm_to_query(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
@@ -750,7 +758,7 @@ async fn handle_request(
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
 
             let parsed: LlmAgentRequestV1 = match serde_json::from_slice(&body) {
                 Ok(v) => v,
@@ -778,7 +786,7 @@ async fn handle_request(
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
 
             let parsed: WorldModelProposeRequestV1 = match serde_json::from_slice(&body) {
                 Ok(v) => v,
@@ -806,7 +814,7 @@ async fn handle_request(
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
 
             let parsed: WorldModelPlanRequestV1 = match serde_json::from_slice(&body) {
                 Ok(v) => v,
@@ -829,77 +837,112 @@ async fn handle_request(
             }
         }
         (Method::POST, "/discover/draft-axi") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_discover_draft_axi(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/discover/check-olog") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_discover_check_olog(&body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/semantic/coverage") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_semantic_coverage(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/semantic/business-rule") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_semantic_business_rule(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/semantic/agent-report") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_semantic_agent_report(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/semantic/context-report") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_semantic_context_report(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/semantic/behavior-case") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_semantic_behavior_case(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
+        (Method::POST, "/semantic/overlay-check") => {
+            let body = request_body!(req);
+            match handle_semantic_overlay_check(&body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/software-coverage") => {
+            let body = request_body!(req);
+            match handle_semantic_software_coverage(&body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/codegen-plan") => {
+            let body = request_body!(req);
+            match handle_semantic_codegen_plan(&body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/coverage-query") => {
+            let body = request_body!(req);
+            match handle_semantic_coverage_query(&body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
+        (Method::POST, "/semantic/definition-query") => {
+            let body = request_body!(req);
+            match handle_semantic_definition_query(&body).await {
+                Ok(v) => json_response(StatusCode::OK, &v),
+                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
+            }
+        }
         (Method::POST, "/semantic/theory-check") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_semantic_theory_check(&body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/proposals/relation") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_proposals_relation(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/proposals/relations") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_proposals_relations(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
         (Method::POST, "/viz") => {
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_viz_post(&state, &body).await {
                 Ok(r) => r,
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
@@ -918,7 +961,7 @@ async fn handle_request(
             if let Err(e) = require_admin(&req, &state) {
                 return Ok(e);
             }
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_promote(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
@@ -928,7 +971,7 @@ async fn handle_request(
             if let Err(e) = require_admin(&req, &state) {
                 return Ok(e);
             }
-            let body = req.into_body().collect().await?.to_bytes().to_vec();
+            let body = request_body!(req);
             match handle_pathdb_commit(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
@@ -946,6 +989,26 @@ fn text_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Full::new(Bytes::from(body.to_string())))
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::from_static(b"internal error"))))
+}
+
+const MAX_JSON_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+async fn read_request_body(
+    req: Request<Incoming>,
+) -> std::result::Result<Vec<u8>, Response<Full<Bytes>>> {
+    Limited::new(req.into_body(), MAX_JSON_REQUEST_BODY_BYTES)
+        .collect()
+        .await
+        .map(|body| body.to_bytes().to_vec())
+        .map_err(|err| {
+            json_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                &format!(
+                    "request body exceeds {} byte limit or failed to read: {err}",
+                    MAX_JSON_REQUEST_BODY_BYTES
+                ),
+            )
+        })
 }
 
 fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response<Full<Bytes>> {
@@ -1144,7 +1207,7 @@ fn capabilities_payload(state: &ServerState) -> Result<serde_json::Value> {
         serde_json::json!({
             "name": "semantic_theory_check",
             "endpoint": "/semantic/theory-check",
-            "returns": ["runtime_theory_check_report", "closure", "completeness_claim", "ontology_closure_claim"]
+            "returns": ["runtime_theory_check_report", "closure", "closure_trace", "transport_summary", "completeness_claim", "ontology_closure_claim"]
         }),
         serde_json::json!({
             "name": "proposals_relation",
@@ -3532,26 +3595,47 @@ async fn handle_semantic_behavior_case(
     }))
 }
 
-async fn handle_semantic_theory_check(body: &[u8]) -> Result<serde_json::Value> {
-    #[derive(Debug, Clone, Deserialize)]
-    struct Req {
-        axi_text: String,
-        #[serde(default)]
-        theory: Option<String>,
-        #[serde(default)]
-        closure_tier: Option<String>,
-    }
+async fn handle_semantic_overlay_check(body: &[u8]) -> Result<serde_json::Value> {
+    let args: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/overlay-check request JSON: {e}"))?;
+    serde_json::to_value(crate::semantic_tools::call_semantic_overlay_check(args)?)
+        .map_err(Into::into)
+}
 
-    let req: Req = serde_json::from_slice(body)
+async fn handle_semantic_software_coverage(body: &[u8]) -> Result<serde_json::Value> {
+    let args: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/software-coverage request JSON: {e}"))?;
+    serde_json::to_value(crate::semantic_tools::call_semantic_software_coverage(
+        args,
+    )?)
+    .map_err(Into::into)
+}
+
+async fn handle_semantic_codegen_plan(body: &[u8]) -> Result<serde_json::Value> {
+    let args: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/codegen-plan request JSON: {e}"))?;
+    serde_json::to_value(crate::semantic_tools::call_semantic_codegen_plan(args)?)
+        .map_err(Into::into)
+}
+
+async fn handle_semantic_coverage_query(body: &[u8]) -> Result<serde_json::Value> {
+    let args: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/coverage-query request JSON: {e}"))?;
+    serde_json::to_value(crate::semantic_tools::call_semantic_coverage_query(args)?)
+        .map_err(Into::into)
+}
+
+async fn handle_semantic_definition_query(body: &[u8]) -> Result<serde_json::Value> {
+    let args: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| anyhow!("failed to parse semantic/definition-query request JSON: {e}"))?;
+    serde_json::to_value(crate::semantic_tools::call_semantic_definition_query(args)?)
+        .map_err(Into::into)
+}
+
+async fn handle_semantic_theory_check(body: &[u8]) -> Result<serde_json::Value> {
+    let req: crate::runtime_theory_check::RuntimeTheoryCheckInputV1 = serde_json::from_slice(body)
         .map_err(|e| anyhow!("failed to parse semantic/theory-check request JSON: {e}"))?;
-    let closure_tier = crate::runtime_theory_check::parse_runtime_theory_closure_tier(
-        req.closure_tier.as_deref().unwrap_or("finite_fragment"),
-    )?;
-    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
-        &req.axi_text,
-        req.theory.as_deref(),
-        closure_tier,
-    )?;
+    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_input(&req)?;
 
     Ok(serde_json::json!({
         "version": "axiograph_semantic_theory_check_v1",
@@ -5973,31 +6057,6 @@ instance I of S:
             "behavior_case": {
                 "case_id": "family.parent_lookup",
                 "title": "Family lookup returns parent",
-                "context": {
-                    "context_id": "domain:family_lookup",
-                    "label": "Family lookup",
-                    "scopes": [{
-                        "schema": "S",
-                        "scope_class": "relation",
-                        "relation": "Parent"
-                    }],
-                    "surfaces": [{
-                        "surface_id": "endpoint:family_lookup",
-                        "kind": "endpoint",
-                        "label": "GET /family/lookup",
-                        "scopes": [{
-                            "schema": "S",
-                            "scope_class": "relation",
-                            "relation": "Parent"
-                        }],
-                        "code_refs": ["src/family.rs"]
-                    }],
-                    "edges": [{
-                        "surface_id": "endpoint:family_lookup",
-                        "rule_id": "schema/s/relation/parent/rule/functional/0",
-                        "status": "tested"
-                    }]
-                },
                 "then": {
                     "expected_outcomes": ["Alice has Bob as parent"],
                     "competency_questions": [{
@@ -6012,6 +6071,39 @@ instance I of S:
                         "relation": "Parent"
                     }],
                     "trust_target": "strong"
+                }
+            },
+            "overlay": {
+                "version": axiograph_tooling_overlays::TOOLING_OVERLAY_BUNDLE_VERSION_V1,
+                "fddd_context_map": {
+                    "context_id": "domain:family_lookup",
+                    "label": "Family lookup",
+                    "scopes": [{
+                        "kind": "relation",
+                        "schema": "S",
+                        "name": "Parent"
+                    }]
+                },
+                "implementation_surfaces": {
+                    "surfaces": [{
+                        "surface_id": "endpoint:family_lookup",
+                        "kind": "endpoint",
+                        "label": "GET /family/lookup",
+                        "ontology_refs": [{
+                            "kind": "relation",
+                            "schema": "S",
+                            "name": "Parent"
+                        }],
+                        "code_refs": ["src/family.rs"]
+                    }],
+                    "coverage_edges": [{
+                        "surface_id": "endpoint:family_lookup",
+                        "rule_id": "schema/s/relation/parent/rule/functional/0",
+                        "status": "tested"
+                    }]
+                },
+                "codegen_plan": {
+                    "languages": ["rust", "typescript"]
                 }
             }
         }))
@@ -6039,6 +6131,74 @@ instance I of S:
         assert_eq!(
             resp["report"]["codegen_previews"].as_array().map(Vec::len),
             Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_semantic_authoring_endpoints_return_overlay_and_codegen_reports() {
+        let axi_text = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+"#;
+        let overlay = json!({
+            "version": axiograph_tooling_overlays::TOOLING_OVERLAY_BUNDLE_VERSION_V1,
+            "fddd_context_map": {
+                "context_id": "domain:family_lookup",
+                "label": "Family lookup",
+                "scopes": [{
+                    "kind": "relation",
+                    "schema": "S",
+                    "name": "Parent"
+                }]
+            },
+            "implementation_surfaces": {
+                "surfaces": [{
+                    "surface_id": "endpoint:family_lookup",
+                    "kind": "endpoint",
+                    "label": "GET /family/lookup",
+                    "ontology_refs": [{
+                        "kind": "relation",
+                        "schema": "S",
+                        "name": "Parent"
+                    }],
+                    "code_refs": ["src/family.rs"]
+                }]
+            },
+            "codegen_plan": {
+                "languages": ["rust", "typescript"],
+                "test_name": "family_lookup"
+            }
+        });
+
+        let overlay_body = serde_json::to_vec(&json!({
+            "axi_text": axi_text,
+            "overlay": overlay
+        }))
+        .expect("serialize overlay-check request");
+        let overlay_resp = handle_semantic_overlay_check(&overlay_body)
+            .await
+            .expect("semantic/overlay-check endpoint should succeed");
+        assert_eq!(
+            overlay_resp["version"].as_str(),
+            Some("axiograph_semantic_overlay_check_v1")
+        );
+        assert_eq!(overlay_resp["report"]["valid"].as_bool(), Some(true));
+
+        let codegen_body = serde_json::to_vec(&json!({ "overlay": overlay }))
+            .expect("serialize codegen-plan request");
+        let codegen_resp = handle_semantic_codegen_plan(&codegen_body)
+            .await
+            .expect("semantic/codegen-plan endpoint should succeed");
+        assert_eq!(
+            codegen_resp["version"].as_str(),
+            Some("axiograph_semantic_codegen_plan_v1")
+        );
+        assert_eq!(
+            codegen_resp["report"]["version"].as_str(),
+            Some(axiograph_tooling_overlays::CODEGEN_PLAN_REPORT_VERSION_V1)
         );
     }
 
@@ -6075,6 +6235,10 @@ theory TRules on S:
         assert_eq!(
             resp["report"]["reports"][0]["closure"]["complete"].as_bool(),
             Some(true)
+        );
+        assert_eq!(
+            resp["report"]["reports"][0]["closure"]["steps"][0]["kind"].as_str(),
+            Some("checked_seed")
         );
     }
 }

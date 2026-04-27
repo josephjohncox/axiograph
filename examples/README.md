@@ -15,6 +15,7 @@ and Rust/Lean parity corpus is `examples/canonical/corpus.json`.
 | Rewrites and equations | `examples/ontology/OntologyRewrites.axi` | runtime theory graph, rewrite/constraint surfaces |
 | Schema evolution | `examples/ontology/SchemaEvolution.axi` | migration-preview and typed transport examples |
 | Business process | `examples/industrial/RegulatedProductionLine.axi` | BDD/DDD/fDDD, CQs, coverage, implementation surfaces |
+| Software authoring | `examples/software_authoring/OrderFulfillmentDomain.axi` | pure domain `.axi` plus DDD/fDDD tooling overlays, weak definition queries, typed theory checks, continuous semantic coverage, code skeleton previews |
 | Physics/domain modeling | `examples/physics/PhysicsOntology.axi` | scientific ontology and typed relation design |
 | Backend/interop | `examples/rdfowl/` | RDF/SHACL boundary-layer examples, not the kernel |
 
@@ -74,6 +75,36 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   --out build/examples/regulated_ship_release_behavior_case_report.json
 ```
 
+Run the software-authoring DDD/fDDD example and emit code skeleton previews:
+
+```bash
+./examples/software_authoring/run_authoring_flow.sh
+```
+
+Run the software-authoring example crate over a generated behavior report:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml \
+  -p axiograph-example-software-authoring \
+  --bin axiograph-software-authoring-example -- \
+  continuous-check \
+  --behavior-report build/examples/software_authoring/behavior_case_report.json \
+  --repo-root . \
+  --out build/examples/software_authoring/example_crate_continuous_coverage.json
+```
+
+Run the full software-authoring/codegen suite:
+
+```bash
+./examples/software_authoring/run_codegen_examples.sh
+```
+
+Run only weak definition queries for authoring and agent planning:
+
+```bash
+./examples/software_authoring/run_definition_queries.sh
+```
+
 ## Pedagogical Map
 
 | Directory | Role |
@@ -85,6 +116,7 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
 | `examples/economics/` | business/economic flow ontology |
 | `examples/family/` | HoTT/path-oriented family examples |
 | `examples/industrial/` | co-evolving industrial process, business, and implementation example |
+| `examples/software_authoring/` | pure-domain software-authoring example with typed tooling overlays |
 | `examples/manufacturing/` | supply-chain HoTT/modal examples |
 | `examples/ontology/` | rewrites, schema evolution, and migration-preview examples |
 | `examples/physics/` | scientific ontology and measurement examples |
@@ -98,6 +130,8 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
 - Prefer canonical `.axi`, typed reports, certificates, and semantic previews.
 - Keep domain harnesses outside core CLI unless they define reusable runtime
   infrastructure.
+- Example crates should consume the reusable runtime/library surfaces and teach
+  application integration; they should not become parallel ontology kernels.
 - Keep mutations through Axiograph semantic workflows. Example harnesses may
   write reports and cache artifacts, but they should not directly mutate
   accepted ontology state.

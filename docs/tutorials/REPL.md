@@ -587,7 +587,8 @@ Full demo script (non-interactive, uses Ollama + `nemotron-3-nano` by default):
 If Ollama isn't running, start it with `ollama serve` (or launch the Ollama app).
 To point at a non-default host/port, set `OLLAMA_HOST` before starting the REPL.
 
-External command plugin (reference mock implementation in this repo):
+External command plugin (debug/adapter example). Use the built-in mock, OpenAI,
+Anthropic, or Ollama backends for normal REPL flows:
 
 ```text
 axiograph> llm use command python3 scripts/axiograph_llm_plugin_mock.py

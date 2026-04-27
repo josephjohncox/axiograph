@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
@@ -116,6 +117,12 @@ enum Commands {
     Tools {
         #[command(subcommand)]
         command: ToolsCommands,
+    },
+
+    /// Software-authoring, codegen, overlay, and editor-integration commands.
+    Authoring {
+        #[command(subcommand)]
+        command: AuthoringCommands,
     },
 
     /// Database commands (snapshot store + PathDB snapshots/WAL).
@@ -451,6 +458,9 @@ enum CheckCommands {
     /// Check compiled theory obligations, closure tier, and runtime completeness claims.
     Theory(CheckTheoryArgs),
 
+    /// Check behavior-case software coverage against a typed tooling overlay.
+    SoftwareCoverage(CheckSoftwareCoverageArgs),
+
     /// Format a canonical `.axi` module (surgically; preserves comments).
     ///
     /// Today this focuses on canonicalizing `constraint ...` syntax so
@@ -506,11 +516,77 @@ struct CheckTheoryArgs {
     #[arg(long, default_value = "finite_fragment")]
     closure_tier: String,
 
+    /// Declared world id for scoped closure.
+    #[arg(long)]
+    world_id: Option<String>,
+
+    /// Treat the declared world as non-finite, making closure advisory.
+    #[arg(long = "non-finite-world", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    finite_world: bool,
+
+    /// Include a semantic ref in the declared global/indexed universe.
+    #[arg(long = "included-ref")]
+    included_refs: Vec<String>,
+
+    /// Include a world id in the declared global/indexed universe.
+    #[arg(long = "included-world")]
+    included_worlds: Vec<String>,
+
+    /// Include a semantic slice id in the declared global/indexed universe.
+    #[arg(long = "included-slice")]
+    included_slices: Vec<String>,
+
+    /// Include an import anchor in the declared global/indexed universe.
+    #[arg(long = "included-import")]
+    included_imports: Vec<String>,
+
+    /// Declare an import that should make global_indexed closure fail closed.
+    #[arg(long = "undeclared-import")]
+    undeclared_imports: Vec<String>,
+
+    /// Evidence threshold in parts per million.
+    #[arg(long)]
+    evidence_threshold_ppm: Option<u32>,
+
+    /// Evidence semantics: thresholded_world|weighted_lattice|deferred.
+    #[arg(long, default_value = "thresholded_world")]
+    evidence_semantics: String,
+
+    /// Enable conservative weighted-lattice propagation before thresholding.
+    #[arg(long)]
+    weighted_evidence: bool,
+
+    /// Per-obligation evidence weight as obligation_id=ppm.
+    #[arg(long = "evidence-weight")]
+    evidence_weights: Vec<String>,
+
     /// Emit JSON to stdout unless --out is provided.
     #[arg(long)]
     json: bool,
 
     /// Output JSON path.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct CheckSoftwareCoverageArgs {
+    /// Input `.axpd` or canonical `.axi` snapshot.
+    input: PathBuf,
+
+    /// Input JSON file containing domain-only `BehaviorCaseCheckRequestV1`.
+    #[arg(long)]
+    behavior_case: PathBuf,
+
+    /// Input JSON file containing `ToolingOverlayBundleV1`.
+    #[arg(long)]
+    overlay: PathBuf,
+
+    /// Repository root used to resolve code_refs.
+    #[arg(long, default_value = ".")]
+    repo_root: PathBuf,
+
+    /// Output JSON path. Defaults to stdout.
     #[arg(short, long)]
     out: Option<PathBuf>,
 }
@@ -531,6 +607,94 @@ enum ToolsCommands {
         #[command(subcommand)]
         command: perf::PerfCommands,
     },
+}
+
+#[derive(Subcommand)]
+enum AuthoringCommands {
+    /// Return codegen skeleton file hints from a typed tooling overlay.
+    CodegenPlan {
+        /// Input JSON file containing `ToolingOverlayBundleV1`.
+        #[arg(long)]
+        overlay: PathBuf,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Materialize generated test skeleton previews from a behavior-case report.
+    MaterializeSkeletons {
+        /// Path to a behavior_case_report_v1 JSON file.
+        #[arg(long)]
+        behavior_report: PathBuf,
+        /// Output directory for generated skeletons.
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Optional comma-separated language filter.
+        #[arg(long, value_delimiter = ',')]
+        language: Vec<String>,
+        /// Overwrite existing generated files.
+        #[arg(long)]
+        overwrite: bool,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Check a behavior-case report as a continuous software-coverage gate.
+    ContinuousCheck {
+        /// Path to a behavior_case_report_v1 JSON file.
+        #[arg(long)]
+        behavior_report: PathBuf,
+        /// Repository root used to resolve code_refs from the behavior report.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+        /// Comma-separated list of generated languages required in codegen_previews.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            default_value = "rust,typescript,python,go"
+        )]
+        require_codegen: Vec<String>,
+        /// Fail when ontology rules are not mapped to implementation/test coverage.
+        #[arg(long)]
+        strict_coverage: bool,
+        /// Fail when code_refs do not exist on disk.
+        #[arg(long)]
+        require_code_refs: bool,
+        /// Fail unless the report carries a runtime theory-check summary.
+        #[arg(long)]
+        require_runtime_theory: bool,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Emit read-only plugin/tool metadata for agent and editor integrations.
+    ToolSpecs {
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Emit minimal LSP capability metadata for editor integrations.
+    LspCapabilities {
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Emit LSP/MCP/background-process launch metadata.
+    IntegrationManifest {
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Run the SDK-backed stdio LSP software-authoring server.
+    Lsp,
+
+    /// Run the read-only stdio MCP software-authoring server.
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -1364,6 +1528,15 @@ enum DiscoverCommands {
     /// trust, and optional evolution-preview contracts.
     ContextReport(DiscoverContextReportArgs),
 
+    /// Validate a typed DDD/fDDD/software tooling overlay against canonical `.axi`.
+    OverlayCheck(DiscoverOverlayCheckArgs),
+
+    /// Run a weak/queryable software coverage probe over ontology plus optional overlay.
+    CoverageQuery(DiscoverCoverageQueryArgs),
+
+    /// Define a process, function, business rule, relation, or surface from weak prompts.
+    Define(DiscoverDefineArgs),
+
     /// Check a JSON BehaviorCaseV1 and emit trust receipts plus Rust/TS test skeletons.
     BehaviorCase(DiscoverBehaviorCaseArgs),
 
@@ -1432,6 +1605,50 @@ struct DiscoverTheoryCheckArgs {
     #[arg(long, default_value = "finite_fragment")]
     closure_tier: String,
 
+    /// Declared world id for scoped closure.
+    #[arg(long)]
+    world_id: Option<String>,
+
+    /// Treat the declared world as non-finite, making closure advisory.
+    #[arg(long = "non-finite-world", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    finite_world: bool,
+
+    /// Include a semantic ref in the declared global/indexed universe.
+    #[arg(long = "included-ref")]
+    included_refs: Vec<String>,
+
+    /// Include a world id in the declared global/indexed universe.
+    #[arg(long = "included-world")]
+    included_worlds: Vec<String>,
+
+    /// Include a semantic slice id in the declared global/indexed universe.
+    #[arg(long = "included-slice")]
+    included_slices: Vec<String>,
+
+    /// Include an import anchor in the declared global/indexed universe.
+    #[arg(long = "included-import")]
+    included_imports: Vec<String>,
+
+    /// Declare an import that should make global_indexed closure fail closed.
+    #[arg(long = "undeclared-import")]
+    undeclared_imports: Vec<String>,
+
+    /// Evidence threshold in parts per million.
+    #[arg(long)]
+    evidence_threshold_ppm: Option<u32>,
+
+    /// Evidence semantics: thresholded_world|weighted_lattice|deferred.
+    #[arg(long, default_value = "thresholded_world")]
+    evidence_semantics: String,
+
+    /// Enable conservative weighted-lattice propagation before thresholding.
+    #[arg(long)]
+    weighted_evidence: bool,
+
+    /// Per-obligation evidence weight as obligation_id=ppm.
+    #[arg(long = "evidence-weight")]
+    evidence_weights: Vec<String>,
+
     /// Output JSON path. Defaults to stdout.
     #[arg(short, long)]
     out: Option<PathBuf>,
@@ -1452,6 +1669,72 @@ struct DiscoverContextReportArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+struct DiscoverOverlayCheckArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Input JSON file containing `ToolingOverlayBundleV1`.
+    #[arg(long)]
+    overlay: PathBuf,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverCoverageQueryArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Input JSON file containing `CoverageQueryV1`.
+    #[arg(long)]
+    query: PathBuf,
+
+    /// Optional input JSON file containing `ToolingOverlayBundleV1`.
+    #[arg(long)]
+    overlay: Option<PathBuf>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverDefineArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
+
+    /// Weak prompt such as "define the reserve-credit process".
+    #[arg(long)]
+    prompt: String,
+
+    /// Optional kind hint: process|function|business_rule|domain_object|relation|invariant|policy|implementation_surface.
+    #[arg(long)]
+    kind_hint: Option<String>,
+
+    /// Optional context hint for authoring/discovery.
+    #[arg(long)]
+    context_hint: Option<String>,
+
+    /// Optional input JSON file containing `ToolingOverlayBundleV1`.
+    #[arg(long)]
+    overlay: Option<PathBuf>,
+
+    /// Include suggested AxQL query fragments in candidates.
+    #[arg(long)]
+    include_queries: bool,
+
+    /// Maximum candidate definitions to return.
+    #[arg(long)]
+    max_matches: Option<usize>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
 struct DiscoverBehaviorCaseArgs {
     /// Input `.axpd` or canonical `.axi` snapshot.
     input: PathBuf,
@@ -1459,6 +1742,11 @@ struct DiscoverBehaviorCaseArgs {
     /// Input JSON file containing `BehaviorCaseCheckRequestV1`.
     #[arg(long)]
     request: PathBuf,
+
+    /// Optional typed tooling overlay; when present, DDD/fDDD context,
+    /// implementation surfaces, coverage edges, and codegen are loaded from it.
+    #[arg(long)]
+    overlay: Option<PathBuf>,
 
     /// Output JSON path (defaults to stdout).
     #[arg(short, long)]
@@ -2376,6 +2664,9 @@ fn main() -> Result<()> {
                 CheckCommands::Theory(args) => {
                     cmd_check_theory(&args)?;
                 }
+                CheckCommands::SoftwareCoverage(args) => {
+                    cmd_check_software_coverage(&args)?;
+                }
                 CheckCommands::Fmt { input, out, write } => {
                     axi_fmt::cmd_fmt_axi(&input, out.as_deref(), write)?;
                 }
@@ -2424,6 +2715,9 @@ fn main() -> Result<()> {
                     perf::cmd_perf(command)?;
                 }
             },
+            Commands::Authoring { command } => {
+                cmd_authoring(command)?;
+            }
             Commands::Db { command } => match command {
                 DbCommands::Accept { command } => {
                     cmd_accept(command)?;
@@ -2766,6 +3060,15 @@ fn main() -> Result<()> {
                 }
                 DiscoverCommands::ContextReport(args) => {
                     cmd_discover_context_report(&args)?;
+                }
+                DiscoverCommands::OverlayCheck(args) => {
+                    cmd_discover_overlay_check(&args)?;
+                }
+                DiscoverCommands::CoverageQuery(args) => {
+                    cmd_discover_coverage_query(&args)?;
+                }
+                DiscoverCommands::Define(args) => {
+                    cmd_discover_define(&args)?;
                 }
                 DiscoverCommands::BehaviorCase(args) => {
                     cmd_discover_behavior_case(&args)?;
@@ -6020,11 +6323,12 @@ fn cmd_validate(input: &PathBuf) -> Result<()> {
     }
 
     if !m.theories.is_empty() {
-        let theory_report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
-            &text,
-            None,
-            axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
-        )?;
+        let theory_report =
+            crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
+                &text,
+                None,
+                axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
+            )?;
         if theory_report.blocking_errors > 0 {
             return Err(anyhow!(
                 "runtime theory check found {} blocking error(s)",
@@ -6046,11 +6350,27 @@ fn cmd_check_theory(args: &CheckTheoryArgs) -> Result<()> {
     let text = fs::read_to_string(&args.input)?;
     let closure_tier =
         crate::runtime_theory_check::parse_runtime_theory_closure_tier(&args.closure_tier)?;
-    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
-        &text,
-        args.theory.as_deref(),
-        closure_tier,
+    let (world, evidence_policy) = runtime_theory_cli_assumptions(
+        args.world_id.as_deref(),
+        args.finite_world,
+        &args.included_refs,
+        &args.included_worlds,
+        &args.included_slices,
+        &args.included_imports,
+        &args.undeclared_imports,
+        args.evidence_threshold_ppm,
+        &args.evidence_semantics,
+        args.weighted_evidence,
+        &args.evidence_weights,
     )?;
+    let report =
+        crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text_with_assumptions(
+            &text,
+            args.theory.as_deref(),
+            closure_tier,
+            world,
+            evidence_policy,
+        )?;
 
     if args.json || args.out.is_some() {
         write_json_output(&report, args.out.as_ref())?;
@@ -6069,6 +6389,167 @@ fn cmd_check_theory(args: &CheckTheoryArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn cmd_check_software_coverage(args: &CheckSoftwareCoverageArgs) -> Result<()> {
+    let db = load_pathdb_for_cli(&args.input)?;
+    let overlay = load_tooling_overlay(&args.overlay)?;
+    let mut request = load_behavior_case_request(&args.behavior_case)?;
+    request.overlay = Some(overlay.clone());
+    request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
+    let behavior_report =
+        crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
+    let behavior_report_json = serde_json::to_value(&behavior_report)?;
+    let report = axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
+        &behavior_report_json,
+        &overlay,
+        &args.repo_root,
+    );
+    write_json_output(&report, args.out.as_ref())?;
+    if !report.pass {
+        return Err(anyhow!("software coverage check failed"));
+    }
+    Ok(())
+}
+
+fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
+    match command {
+        AuthoringCommands::CodegenPlan { overlay, out } => {
+            let overlay = load_tooling_overlay(&overlay)?;
+            let report = axiograph_tooling_overlays::codegen_plan_report(&overlay);
+            write_json_output(&report, out.as_ref())
+        }
+        AuthoringCommands::MaterializeSkeletons {
+            behavior_report,
+            out_dir,
+            language,
+            overwrite,
+            out,
+        } => {
+            let report_json = read_json_file(&behavior_report)?;
+            let report = axiograph_software_authoring::materialize_skeletons_from_report(
+                &report_json,
+                &behavior_report,
+                &axiograph_software_authoring::MaterializeSkeletonsOptions {
+                    out_dir,
+                    language,
+                    overwrite,
+                },
+            )?;
+            write_json_output(&report, out.as_ref())
+        }
+        AuthoringCommands::ContinuousCheck {
+            behavior_report,
+            repo_root,
+            require_codegen,
+            strict_coverage,
+            require_code_refs,
+            require_runtime_theory,
+            out,
+        } => {
+            let report_json = read_json_file(&behavior_report)?;
+            let report = axiograph_software_authoring::build_continuous_software_coverage_report(
+                &report_json,
+                &axiograph_software_authoring::ContinuousCheckOptions {
+                    repo_root,
+                    require_codegen,
+                    strict_coverage,
+                    require_code_refs,
+                    require_runtime_theory,
+                },
+            )?;
+            write_json_output(&report, out.as_ref())?;
+            if !report.pass {
+                return Err(anyhow!("continuous software coverage check failed"));
+            }
+            Ok(())
+        }
+        AuthoringCommands::ToolSpecs { out } => {
+            let specs = axiograph_software_authoring::software_authoring_tool_specs_v1();
+            write_json_output(&specs, out.as_ref())
+        }
+        AuthoringCommands::LspCapabilities { out } => {
+            let capabilities =
+                axiograph_software_authoring::software_authoring_lsp_capabilities_v1();
+            write_json_output(&capabilities, out.as_ref())
+        }
+        AuthoringCommands::IntegrationManifest { out } => {
+            let manifest =
+                axiograph_software_authoring::software_authoring_integration_manifest_v1();
+            write_json_output(&manifest, out.as_ref())
+        }
+        AuthoringCommands::Lsp => axiograph_software_authoring::run_lsp_stdio(),
+        AuthoringCommands::Mcp => axiograph_software_authoring::run_mcp_stdio(),
+    }
+}
+
+fn read_json_file(path: &Path) -> Result<Value> {
+    let text = fs::read_to_string(path)?;
+    serde_json::from_str(&text)
+        .map_err(|err| anyhow!("failed to parse `{}` as JSON: {err}", path.display()))
+}
+
+fn runtime_theory_cli_assumptions(
+    world_id: Option<&str>,
+    finite_world: bool,
+    included_refs: &[String],
+    included_worlds: &[String],
+    included_slices: &[String],
+    included_imports: &[String],
+    undeclared_imports: &[String],
+    evidence_threshold_ppm: Option<u32>,
+    evidence_semantics: &str,
+    weighted_evidence: bool,
+    evidence_weights: &[String],
+) -> Result<(
+    axiograph_pathdb::WorldAssumptionV1,
+    axiograph_pathdb::EvidencePolicyV1,
+)> {
+    let mut world = axiograph_pathdb::default_world_assumption_v1();
+    if let Some(world_id) = world_id {
+        world.world_id = world_id.to_string();
+    }
+    world.finite = finite_world;
+    if !included_refs.is_empty() {
+        world.included_refs = included_refs.to_vec();
+    }
+    if !included_worlds.is_empty() {
+        world.included_worlds = included_worlds.to_vec();
+    }
+    if !included_slices.is_empty() {
+        world.included_slices = included_slices.to_vec();
+    }
+    if !included_imports.is_empty() {
+        world.included_imports = included_imports.to_vec();
+    }
+    if !undeclared_imports.is_empty() {
+        world.undeclared_imports = undeclared_imports.to_vec();
+    }
+
+    let mut evidence_policy = axiograph_pathdb::default_evidence_policy_v1();
+    if let Some(threshold) = evidence_threshold_ppm {
+        if threshold > 1_000_000 {
+            return Err(anyhow!(
+                "invalid --evidence-threshold-ppm {threshold}: must be <= 1000000"
+            ));
+        }
+        evidence_policy.threshold_ppm = threshold;
+    }
+    evidence_policy.semantics = if weighted_evidence {
+        axiograph_pathdb::EvidenceWeightSemanticsV1::WeightedLattice
+    } else {
+        crate::runtime_theory_check::parse_evidence_weight_semantics(evidence_semantics)?
+    };
+    evidence_policy.weighted_propagation_enabled = weighted_evidence;
+    for raw in evidence_weights {
+        let (obligation_id, ppm) =
+            crate::runtime_theory_check::parse_evidence_weight_assignment(raw)?;
+        evidence_policy
+            .obligation_weights_ppm
+            .insert(obligation_id, ppm);
+    }
+
+    Ok((world, evidence_policy))
 }
 
 fn cmd_repo_index(
@@ -7935,11 +8416,27 @@ fn cmd_discover_theory_check(args: &DiscoverTheoryCheckArgs) -> Result<()> {
     let axi_text = fs::read_to_string(&args.input)?;
     let closure_tier =
         crate::runtime_theory_check::parse_runtime_theory_closure_tier(&args.closure_tier)?;
-    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
-        &axi_text,
-        args.theory.as_deref(),
-        closure_tier,
+    let (world, evidence_policy) = runtime_theory_cli_assumptions(
+        args.world_id.as_deref(),
+        args.finite_world,
+        &args.included_refs,
+        &args.included_worlds,
+        &args.included_slices,
+        &args.included_imports,
+        &args.undeclared_imports,
+        args.evidence_threshold_ppm,
+        &args.evidence_semantics,
+        args.weighted_evidence,
+        &args.evidence_weights,
     )?;
+    let report =
+        crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text_with_assumptions(
+            &axi_text,
+            args.theory.as_deref(),
+            closure_tier,
+            world,
+            evidence_policy,
+        )?;
     write_json_output(&report, args.out.as_ref())
 }
 
@@ -7955,16 +8452,140 @@ fn cmd_discover_context_report(args: &DiscoverContextReportArgs) -> Result<()> {
     write_json_output(&report, args.out.as_ref())
 }
 
+fn cmd_discover_overlay_check(args: &DiscoverOverlayCheckArgs) -> Result<()> {
+    let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
+    let overlay = load_tooling_overlay(&args.overlay)?;
+    let report = axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &overlay);
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_coverage_query(args: &DiscoverCoverageQueryArgs) -> Result<()> {
+    let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
+    let query_json = fs::read_to_string(&args.query)?;
+    let query: axiograph_tooling_overlays::CoverageQueryV1 = serde_json::from_str(&query_json)
+        .map_err(|err| anyhow!("failed to parse CoverageQueryV1 JSON: {err}"))?;
+    let overlay = args
+        .overlay
+        .as_ref()
+        .map(load_tooling_overlay)
+        .transpose()?;
+    let report =
+        axiograph_tooling_overlays::coverage_query_report(&kernel, overlay.as_ref(), &query);
+    write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_define(args: &DiscoverDefineArgs) -> Result<()> {
+    let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
+    let overlay = args
+        .overlay
+        .as_ref()
+        .map(load_tooling_overlay)
+        .transpose()?;
+    let query = axiograph_tooling_overlays::DefinitionQueryV1 {
+        prompt: args.prompt.clone(),
+        kind_hint: parse_definition_kind_hint(args.kind_hint.as_deref())?,
+        context_hint: args.context_hint.clone(),
+        candidate_refs: Vec::new(),
+        max_matches: args.max_matches,
+        include_queries: args.include_queries,
+    };
+    let report =
+        axiograph_tooling_overlays::definition_query_report(&kernel, overlay.as_ref(), &query);
+    write_json_output(&report, args.out.as_ref())
+}
+
 fn cmd_discover_behavior_case(args: &DiscoverBehaviorCaseArgs) -> Result<()> {
     let db = load_pathdb_for_cli(&args.input)?;
-    let request_json = fs::read_to_string(&args.request)?;
-    let report = crate::behavior_case::discover_behavior_case_report_from_request_json(
-        &db,
-        None,
-        None,
-        &request_json,
-    )?;
+    let mut request = load_behavior_case_request(&args.request)?;
+    if let Some(overlay_path) = args.overlay.as_ref() {
+        let overlay = load_tooling_overlay(overlay_path)?;
+        request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
+        request.overlay = Some(overlay);
+    } else if let Some(overlay) = request.overlay.as_ref() {
+        request.codegen = behavior_codegen_request_from_overlay(overlay)?;
+    }
+    let report =
+        crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
     write_json_output(&report, args.out.as_ref())
+}
+
+fn compile_kernel_for_tooling_overlay(
+    input: &PathBuf,
+) -> Result<axiograph_pathdb::kernel_ir::KernelModuleIr> {
+    let axi_text = fs::read_to_string(input)?;
+    axiograph_tooling_overlays::compile_kernel_from_axi_text(&axi_text)
+}
+
+fn load_tooling_overlay(
+    path: &PathBuf,
+) -> Result<axiograph_tooling_overlays::ToolingOverlayBundleV1> {
+    let json_text = fs::read_to_string(path)?;
+    axiograph_tooling_overlays::parse_overlay_bundle(&json_text)
+}
+
+fn load_behavior_case_request(
+    path: &PathBuf,
+) -> Result<crate::behavior_case::BehaviorCaseCheckRequestV1> {
+    let request_json = fs::read_to_string(path)?;
+    serde_json::from_str(&request_json)
+        .map_err(|err| anyhow!("failed to parse BehaviorCaseCheckRequestV1 JSON: {err}"))
+}
+
+fn behavior_codegen_request_from_overlay(
+    overlay: &axiograph_tooling_overlays::ToolingOverlayBundleV1,
+) -> Result<crate::behavior_case::BehaviorCaseCodegenRequestV1> {
+    let languages = overlay
+        .codegen_plan
+        .languages
+        .iter()
+        .map(|language| parse_behavior_codegen_language(language))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(crate::behavior_case::BehaviorCaseCodegenRequestV1 { languages })
+}
+
+fn parse_behavior_codegen_language(
+    language: &str,
+) -> Result<crate::behavior_case::BehaviorCaseCodegenLanguageV1> {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "go" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Go),
+        "python" | "py" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Python),
+        "rust" | "rs" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Rust),
+        "typescript" | "ts" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Typescript),
+        other => Err(anyhow!(
+            "unsupported behavior-case codegen language `{other}` (expected go|python|rust|typescript)"
+        )),
+    }
+}
+
+fn parse_definition_kind_hint(
+    kind: Option<&str>,
+) -> Result<Option<axiograph_tooling_overlays::DefinitionQueryKindV1>> {
+    let Some(kind) = kind else {
+        return Ok(None);
+    };
+    let parsed = match kind.trim().to_ascii_lowercase().as_str() {
+        "process" => axiograph_tooling_overlays::DefinitionQueryKindV1::Process,
+        "function" => axiograph_tooling_overlays::DefinitionQueryKindV1::Function,
+        "business_rule" | "business-rule" | "rule" => {
+            axiograph_tooling_overlays::DefinitionQueryKindV1::BusinessRule
+        }
+        "domain_object" | "domain-object" | "object" => {
+            axiograph_tooling_overlays::DefinitionQueryKindV1::DomainObject
+        }
+        "relation" => axiograph_tooling_overlays::DefinitionQueryKindV1::Relation,
+        "invariant" => axiograph_tooling_overlays::DefinitionQueryKindV1::Invariant,
+        "policy" => axiograph_tooling_overlays::DefinitionQueryKindV1::Policy,
+        "implementation_surface" | "implementation-surface" | "surface" => {
+            axiograph_tooling_overlays::DefinitionQueryKindV1::ImplementationSurface
+        }
+        "unknown" => axiograph_tooling_overlays::DefinitionQueryKindV1::Unknown,
+        other => {
+            return Err(anyhow!(
+                "unknown definition kind hint `{other}` (expected process|function|business_rule|domain_object|relation|invariant|policy|implementation_surface)"
+            ))
+        }
+    };
+    Ok(Some(parsed))
 }
 
 fn cmd_discover_route_preview(args: &DiscoverRoutePreviewArgs) -> Result<()> {
@@ -9423,6 +10044,13 @@ theory PlantTransport on Plant:
             "FamRules",
             "--closure-tier",
             "evidence_weighted",
+            "--world-id",
+            "review:family",
+            "--evidence-threshold-ppm",
+            "700000",
+            "--weighted-evidence",
+            "--evidence-weight",
+            "rule:family=250000",
             "--json",
         ])
         .expect("parse check theory");
@@ -9434,6 +10062,10 @@ theory PlantTransport on Plant:
                 assert_eq!(args.input, PathBuf::from("/tmp/family.axi"));
                 assert_eq!(args.theory.as_deref(), Some("FamRules"));
                 assert_eq!(args.closure_tier, "evidence_weighted");
+                assert_eq!(args.world_id.as_deref(), Some("review:family"));
+                assert_eq!(args.evidence_threshold_ppm, Some(700_000));
+                assert!(args.weighted_evidence);
+                assert_eq!(args.evidence_weights, vec!["rule:family=250000"]);
                 assert!(args.json);
             }
             _ => panic!("unexpected command parse result"),
@@ -9451,6 +10083,14 @@ theory PlantTransport on Plant:
             "FamRules",
             "--closure-tier",
             "global_indexed",
+            "--included-ref",
+            "refs/heads/main",
+            "--included-slice",
+            "slice:billing",
+            "--included-import",
+            "import:erp",
+            "--undeclared-import",
+            "import:rogue",
             "--out",
             "/tmp/theory_check.json",
         ])
@@ -9463,6 +10103,10 @@ theory PlantTransport on Plant:
                 assert_eq!(args.input, PathBuf::from("/tmp/family.axi"));
                 assert_eq!(args.theory.as_deref(), Some("FamRules"));
                 assert_eq!(args.closure_tier, "global_indexed");
+                assert_eq!(args.included_refs, vec!["refs/heads/main"]);
+                assert_eq!(args.included_slices, vec!["slice:billing"]);
+                assert_eq!(args.included_imports, vec!["import:erp"]);
+                assert_eq!(args.undeclared_imports, vec!["import:rogue"]);
                 assert_eq!(args.out, Some(PathBuf::from("/tmp/theory_check.json")));
             }
             _ => panic!("unexpected command parse result"),
@@ -9591,7 +10235,10 @@ theory PlantTransport on Plant:
             edge.kind
                 == axiograph_pathdb::kernel_ir::TheoryObligationGraphEdgeKindV1::SubjectSupportsObligation
         }));
-        assert_eq!(graph.completeness_claim, "not_claimed");
+        assert_eq!(
+            graph.completeness_claim,
+            "use RuntimeTheoryCheckReportV1 for scoped runtime completeness claims"
+        );
     }
 
     #[test]
@@ -9612,5 +10259,4 @@ theory PlantTransport on Plant:
         assert!(err.to_string().contains("failed to read semantic commit"));
         fs::remove_dir_all(&dir).expect("cleanup temp dir");
     }
-
 }

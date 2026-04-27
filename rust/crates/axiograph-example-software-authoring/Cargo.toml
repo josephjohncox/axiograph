@@ -1,0 +1,19 @@
+[package]
+name = "axiograph-example-software-authoring"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Software-authoring example harness for continuous semantic coverage checks"
+publish = false
+
+[[bin]]
+name = "axiograph-software-authoring-example"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axiograph-software-authoring = { path = "../axiograph-software-authoring" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

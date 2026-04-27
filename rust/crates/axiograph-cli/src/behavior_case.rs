@@ -85,10 +85,10 @@ pub struct BehaviorThenV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BehaviorCaseV1 {
     pub case_id: BehaviorCaseId,
     pub title: String,
-    pub context: crate::context_report::BoundedContextV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,16 +98,14 @@ pub struct BehaviorCaseV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub then: Option<BehaviorThenV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub implementation_surfaces: Vec<crate::semantic_claim::ImplementationSurfaceRefV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub coverage_edges: Vec<crate::semantic_claim::CoverageEdgeV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum BehaviorCaseCodegenLanguageV1 {
+    Go,
+    Python,
     Rust,
     Typescript,
 }
@@ -129,6 +127,8 @@ impl Default for BehaviorCaseCodegenRequestV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BehaviorCaseCheckRequestV1 {
     pub behavior_case: BehaviorCaseV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,9 +204,12 @@ pub struct BehaviorCaseReportV1 {
 
 pub fn semantic_slice_selector_for_behavior_case(
     behavior_case: &BehaviorCaseV1,
+    overlay: Option<&axiograph_tooling_overlays::ToolingOverlayBundleV1>,
 ) -> Result<crate::semantic_merge_lattice::SemanticSliceSelectorV1> {
     validate_behavior_case(behavior_case)?;
-    let enriched_context = enriched_context_for_behavior_case(behavior_case);
+    let overlay = overlay
+        .ok_or_else(|| anyhow!("BehaviorCaseV1 semantic slicing requires a tooling overlay"))?;
+    let enriched_context = bounded_context_from_overlay(behavior_case, overlay)?;
     let mut selector =
         crate::context_report::semantic_slice_selector_for_bounded_context(&enriched_context)?;
     selector
@@ -234,12 +237,14 @@ pub fn build_behavior_case_report_from_request(
         accepted_snapshot_id,
         request.lifecycle_state.as_deref(),
         &request.behavior_case,
+        request.overlay.as_ref(),
         request.evolution_preview,
         runtime_theory_check,
         &request.codegen,
     )
 }
 
+#[cfg(test)]
 pub fn discover_behavior_case_report_from_request_json(
     db: &PathDB,
     meta: Option<&MetaPlaneIndex>,
@@ -257,12 +262,18 @@ pub fn build_behavior_case_report(
     accepted_snapshot_id: Option<AcceptedSnapshotId>,
     lifecycle_state: Option<&str>,
     behavior_case: &BehaviorCaseV1,
+    overlay: Option<&axiograph_tooling_overlays::ToolingOverlayBundleV1>,
     evolution_preview: Option<crate::evolution_preview::EvolutionPreviewV1>,
     runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
     codegen: &BehaviorCaseCodegenRequestV1,
 ) -> Result<BehaviorCaseReportV1> {
     validate_behavior_case(behavior_case)?;
-    let enriched_context = enriched_context_for_behavior_case(behavior_case);
+    let overlay = overlay.ok_or_else(|| {
+        anyhow!(
+            "BehaviorCaseV1 now requires a tooling overlay; move DDD/fDDD context, implementation surfaces, and coverage edges out of the behavior case JSON"
+        )
+    })?;
+    let enriched_context = bounded_context_from_overlay(behavior_case, overlay)?;
     let context_report = crate::context_report::build_context_report(
         db,
         meta,
@@ -273,7 +284,8 @@ pub fn build_behavior_case_report(
         runtime_theory_check.clone(),
     )?;
     let receipt = build_case_receipt(behavior_case, &context_report);
-    let semantic_slice_selector = semantic_slice_selector_for_behavior_case(behavior_case)?;
+    let semantic_slice_selector =
+        semantic_slice_selector_for_behavior_case(behavior_case, Some(overlay))?;
     let codegen_previews =
         build_codegen_previews(behavior_case, &context_report, &receipt, codegen);
 
@@ -391,15 +403,37 @@ fn validate_behavior_case(behavior_case: &BehaviorCaseV1) -> Result<()> {
     Ok(())
 }
 
-fn enriched_context_for_behavior_case(
+fn bounded_context_from_overlay(
     behavior_case: &BehaviorCaseV1,
-) -> crate::context_report::BoundedContextV1 {
-    let mut context = behavior_case.context.clone();
-    extend_surfaces(
-        &mut context.surfaces,
-        &behavior_case.implementation_surfaces,
-    );
-    extend_edges(&mut context.edges, &behavior_case.coverage_edges);
+    overlay: &axiograph_tooling_overlays::ToolingOverlayBundleV1,
+) -> Result<crate::context_report::BoundedContextV1> {
+    let fddd = overlay.fddd_context_map.as_ref().ok_or_else(|| {
+        anyhow!("tooling overlay requires `fddd_context_map` for behavior-case planning")
+    })?;
+    let mut context = crate::context_report::BoundedContextV1 {
+        context_id: crate::context_report::DomainContextId::new(fddd.context_id.clone()),
+        label: fddd.label.clone(),
+        summary: fddd.summary.clone(),
+        scopes: fddd
+            .scopes
+            .iter()
+            .filter_map(scope_from_overlay_ref)
+            .collect(),
+        surfaces: overlay
+            .implementation_surfaces
+            .surfaces
+            .iter()
+            .map(surface_from_overlay)
+            .collect(),
+        edges: overlay
+            .implementation_surfaces
+            .coverage_edges
+            .iter()
+            .map(edge_from_overlay)
+            .collect(),
+        competency_questions: Vec::new(),
+        notes: fddd.notes.clone(),
+    };
     if let Some(when) = behavior_case
         .when
         .as_ref()
@@ -413,7 +447,102 @@ fn enriched_context_for_behavior_case(
             push_competency_question_if_new(&mut context.competency_questions, question);
         }
     }
-    context
+    Ok(context)
+}
+
+fn surface_from_overlay(
+    surface: &axiograph_tooling_overlays::ImplementationSurfaceOverlayV1,
+) -> crate::semantic_claim::ImplementationSurfaceRefV1 {
+    crate::semantic_claim::ImplementationSurfaceRefV1 {
+        surface_id: surface.surface_id.clone(),
+        kind: match surface.kind {
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::Endpoint => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::Endpoint
+            }
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::Workflow => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::Workflow
+            }
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::Report => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::Report
+            }
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::Job => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::Job
+            }
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::Migration => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::Migration
+            }
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::Config => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::Config
+            }
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::DocSection => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::DocSection
+            }
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::AgentTask => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::AgentTask
+            }
+            axiograph_tooling_overlays::ImplementationSurfaceKindV1::Ui
+            | axiograph_tooling_overlays::ImplementationSurfaceKindV1::Plc
+            | axiograph_tooling_overlays::ImplementationSurfaceKindV1::Simulator
+            | axiograph_tooling_overlays::ImplementationSurfaceKindV1::Unknown => {
+                crate::semantic_claim::ImplementationSurfaceKindV1::Workflow
+            }
+        },
+        label: surface.label.clone(),
+        scopes: surface
+            .ontology_refs
+            .iter()
+            .filter_map(scope_from_overlay_ref)
+            .collect(),
+        code_refs: surface.code_refs.clone(),
+        notes: surface.notes.clone(),
+    }
+}
+
+fn edge_from_overlay(
+    edge: &axiograph_tooling_overlays::CoverageEdgeOverlayV1,
+) -> crate::semantic_claim::CoverageEdgeV1 {
+    crate::semantic_claim::CoverageEdgeV1 {
+        surface_id: edge.surface_id.clone(),
+        rule_id: edge.rule_id.clone(),
+        status: match edge.status {
+            axiograph_tooling_overlays::CoverageStatusV1::Tested => {
+                crate::semantic_claim::CoverageStatusV1::Tested
+            }
+            axiograph_tooling_overlays::CoverageStatusV1::Implemented => {
+                crate::semantic_claim::CoverageStatusV1::Implemented
+            }
+            axiograph_tooling_overlays::CoverageStatusV1::DocumentedOnly => {
+                crate::semantic_claim::CoverageStatusV1::DocumentedOnly
+            }
+            axiograph_tooling_overlays::CoverageStatusV1::OntologyOnly => {
+                crate::semantic_claim::CoverageStatusV1::OntologyOnly
+            }
+            axiograph_tooling_overlays::CoverageStatusV1::Drifted => {
+                crate::semantic_claim::CoverageStatusV1::Drifted
+            }
+            axiograph_tooling_overlays::CoverageStatusV1::Unknown => {
+                crate::semantic_claim::CoverageStatusV1::Unknown
+            }
+        },
+        notes: edge.notes.clone(),
+    }
+}
+
+fn scope_from_overlay_ref(
+    reference: &axiograph_tooling_overlays::OverlayRefV1,
+) -> Option<crate::semantic_claim::RuntimeRuleScopeV1> {
+    let schema = reference.schema.as_deref()?;
+    match reference.kind {
+        axiograph_tooling_overlays::OverlayRefKindV1::Relation => reference
+            .name
+            .as_deref()
+            .map(|relation| crate::semantic_claim::RuntimeRuleScopeV1::relation(schema, relation)),
+        axiograph_tooling_overlays::OverlayRefKindV1::Theory => reference
+            .name
+            .as_deref()
+            .map(|theory| crate::semantic_claim::RuntimeRuleScopeV1::theory(schema, theory)),
+        _ => None,
+    }
 }
 
 fn extend_scopes(
@@ -432,37 +561,6 @@ fn extend_scopes(
             }
         } else {
             target.push(normalized);
-        }
-    }
-}
-
-fn extend_surfaces(
-    target: &mut Vec<crate::semantic_claim::ImplementationSurfaceRefV1>,
-    extra: &[crate::semantic_claim::ImplementationSurfaceRefV1],
-) {
-    let mut seen = target
-        .iter()
-        .map(|surface| surface.surface_id.clone())
-        .collect::<BTreeSet<_>>();
-    for surface in extra {
-        if seen.insert(surface.surface_id.clone()) {
-            target.push(surface.clone());
-        }
-    }
-}
-
-fn extend_edges(
-    target: &mut Vec<crate::semantic_claim::CoverageEdgeV1>,
-    extra: &[crate::semantic_claim::CoverageEdgeV1],
-) {
-    let mut seen = target
-        .iter()
-        .map(|edge| format!("{}|{}|{:?}", edge.surface_id, edge.rule_id, edge.status))
-        .collect::<BTreeSet<_>>();
-    for edge in extra {
-        let key = format!("{}|{}|{:?}", edge.surface_id, edge.rule_id, edge.status);
-        if seen.insert(key) {
-            target.push(edge.clone());
         }
     }
 }
@@ -584,6 +682,32 @@ fn build_codegen_preview_for_language(
                 ],
             }
         }
+        BehaviorCaseCodegenLanguageV1::Python => {
+            let content = python_test_skeleton(behavior_case, context_report, receipt, &test_name);
+            BehaviorCaseCodegenPreviewV1 {
+                language,
+                file_hint: format!("tests/behavior_cases/test_{test_name}.py"),
+                test_name,
+                content,
+                anchors,
+                notes: vec![
+                    "generated pytest skeleton should be wired to the real application service and Axiograph receipt before acceptance".to_string(),
+                ],
+            }
+        }
+        BehaviorCaseCodegenLanguageV1::Go => {
+            let content = go_test_skeleton(behavior_case, context_report, receipt, &test_name);
+            BehaviorCaseCodegenPreviewV1 {
+                language,
+                file_hint: format!("internal/behaviorcases/{test_name}_test.go"),
+                test_name,
+                content,
+                anchors,
+                notes: vec![
+                    "generated Go skeleton keeps Axiograph receipt metadata read-only; bind it to the domain service under test".to_string(),
+                ],
+            }
+        }
         BehaviorCaseCodegenLanguageV1::Typescript => {
             let content =
                 typescript_test_skeleton(behavior_case, context_report, receipt, &test_name);
@@ -623,6 +747,86 @@ fn behavior_case_{test_name}() {{
         case_receipt_json.contains("\"receipt_id\""),
         "wire this BehaviorCaseV1 receipt to the real system under test"
     );
+}}
+"##
+    )
+}
+
+fn python_test_skeleton(
+    behavior_case: &BehaviorCaseV1,
+    context_report: &crate::context_report::ContextReportV1,
+    receipt: &CaseReceiptV1,
+    test_name: &str,
+) -> String {
+    let case_id = behavior_case.case_id.as_str();
+    let context_id = context_report.context.context_id.as_str();
+    let receipt_json = serde_json::to_string_pretty(receipt).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        r##"import json
+
+
+def test_behavior_case_{test_name}():
+    case_id = "{case_id}"
+    context_id = "{context_id}"
+    case_receipt = json.loads(r'''{receipt_json}''')
+
+    assert case_id
+    assert context_id
+    assert case_receipt["case_id"] == case_id
+    # Bind this receipt to the real application service and domain event assertions.
+"##
+    )
+}
+
+fn go_test_skeleton(
+    behavior_case: &BehaviorCaseV1,
+    context_report: &crate::context_report::ContextReportV1,
+    receipt: &CaseReceiptV1,
+    test_name: &str,
+) -> String {
+    let case_id = behavior_case.case_id.as_str();
+    let context_id = context_report.context.context_id.as_str();
+    let receipt_json = serde_json::to_string_pretty(receipt).unwrap_or_else(|_| "{}".to_string());
+    let go_test_name = test_name
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut out = String::new();
+                    out.push(first.to_ascii_uppercase());
+                    out.extend(chars);
+                    out
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<String>();
+    format!(
+        r##"package behaviorcases
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestBehaviorCase{go_test_name}(t *testing.T) {{
+	caseID := "{case_id}"
+	contextID := "{context_id}"
+	caseReceiptJSON := `{receipt_json}`
+
+	if caseID == "" || contextID == "" {{
+		t.Fatal("missing behavior-case identity")
+	}}
+	var caseReceipt map[string]any
+	if err := json.Unmarshal([]byte(caseReceiptJSON), &caseReceipt); err != nil {{
+		t.Fatalf("invalid Axiograph receipt: %v", err)
+	}}
+	if caseReceipt["case_id"] != caseID {{
+		t.Fatalf("receipt case_id mismatch: %v", caseReceipt["case_id"])
+	}}
+	// Bind this receipt to the real application service and domain event assertions.
 }}
 "##
     )
@@ -724,28 +928,6 @@ instance I of Family:
             case_id: BehaviorCaseId::new("family.parent_lookup"),
             title: "Parent lookup returns the accepted parent".to_string(),
             summary: Some("BDD/DDD case for the family lookup bounded context".to_string()),
-            context: crate::context_report::BoundedContextV1 {
-                context_id: crate::context_report::DomainContextId::new("domain:family_lookup"),
-                label: "Family lookup".to_string(),
-                summary: Some("Read model for family lookup".to_string()),
-                scopes: vec![relation_scope.clone()],
-                surfaces: vec![crate::semantic_claim::ImplementationSurfaceRefV1 {
-                    surface_id: "endpoint:family_lookup".to_string(),
-                    kind: crate::semantic_claim::ImplementationSurfaceKindV1::Endpoint,
-                    label: "GET /family/lookup".to_string(),
-                    scopes: vec![relation_scope.clone()],
-                    code_refs: vec!["src/family.rs".to_string()],
-                    notes: Vec::new(),
-                }],
-                edges: vec![crate::semantic_claim::CoverageEdgeV1 {
-                    surface_id: "endpoint:family_lookup".to_string(),
-                    rule_id: "schema/family/relation/parent/rule/functional/0".to_string(),
-                    status: crate::semantic_claim::CoverageStatusV1::Tested,
-                    notes: Vec::new(),
-                }],
-                competency_questions: Vec::new(),
-                notes: Vec::new(),
-            },
             given: Some(BehaviorGivenV1 {
                 snapshot_label: Some("accepted family snapshot".to_string()),
                 world: Some("main".to_string()),
@@ -774,8 +956,66 @@ instance I of Family:
                 trust_target: Some(crate::semantic_claim::SemanticClaimStrengthV1::Strong),
                 notes: Vec::new(),
             }),
-            implementation_surfaces: Vec::new(),
-            coverage_edges: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    fn sample_overlay() -> axiograph_tooling_overlays::ToolingOverlayBundleV1 {
+        use axiograph_tooling_overlays::{
+            CodegenPlanV1, CoverageEdgeOverlayV1, CoverageModeV1, CoveragePolicyV1,
+            CoverageStatusV1, FdddContextMapV1, ImplementationSurfaceKindV1,
+            ImplementationSurfaceManifestV1, ImplementationSurfaceOverlayV1, OverlayRefKindV1,
+            OverlayRefV1, ToolingOverlayBundleV1, TOOLING_OVERLAY_BUNDLE_VERSION_V1,
+        };
+
+        let parent_ref = OverlayRefV1 {
+            kind: OverlayRefKindV1::Relation,
+            schema: Some("Family".to_string()),
+            name: Some("Parent".to_string()),
+            stable_id: None,
+            role: None,
+        };
+        ToolingOverlayBundleV1 {
+            version: TOOLING_OVERLAY_BUNDLE_VERSION_V1.to_string(),
+            fddd_context_map: Some(FdddContextMapV1 {
+                context_id: "domain:family_lookup".to_string(),
+                label: "Family lookup".to_string(),
+                summary: Some("Read model for family lookup".to_string()),
+                scopes: vec![parent_ref.clone()],
+                bounded_contexts: Vec::new(),
+                aggregates: Vec::new(),
+                functions: Vec::new(),
+                processes: Vec::new(),
+                business_rules: Vec::new(),
+                notes: Vec::new(),
+            }),
+            implementation_surfaces: ImplementationSurfaceManifestV1 {
+                surfaces: vec![ImplementationSurfaceOverlayV1 {
+                    surface_id: "endpoint:family_lookup".to_string(),
+                    kind: ImplementationSurfaceKindV1::Endpoint,
+                    label: "GET /family/lookup".to_string(),
+                    ontology_refs: vec![parent_ref],
+                    code_refs: vec!["src/family.rs".to_string()],
+                    test_refs: Vec::new(),
+                    languages: vec!["rust".to_string()],
+                    notes: Vec::new(),
+                }],
+                coverage_edges: vec![CoverageEdgeOverlayV1 {
+                    surface_id: "endpoint:family_lookup".to_string(),
+                    rule_id: "schema/family/relation/parent/rule/functional/0".to_string(),
+                    status: CoverageStatusV1::Tested,
+                    notes: Vec::new(),
+                }],
+            },
+            coverage_policy: CoveragePolicyV1 {
+                coverage_mode: CoverageModeV1::Advisory,
+                ..CoveragePolicyV1::default()
+            },
+            codegen_plan: CodegenPlanV1 {
+                languages: vec!["rust".to_string(), "typescript".to_string()],
+                test_name: None,
+                notes: Vec::new(),
+            },
             notes: Vec::new(),
         }
     }
@@ -793,6 +1033,8 @@ instance I of Family:
             excluded_by_evidence: 0,
             blocking_errors: 0,
             closure_tiers: vec!["finite_fragment".to_string()],
+            closure_trace: Default::default(),
+            transport_summary: Default::default(),
             completeness_claim: "not_claimed_for_all_obligations".to_string(),
             ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
             residual_obligation_ids: vec!["behavior/theory/residual".to_string()],
@@ -809,6 +1051,7 @@ instance I of Family:
             Some(AcceptedSnapshotId::new("accepted:family")),
             Some("accepted"),
             &sample_behavior_case(),
+            Some(&sample_overlay()),
             None,
             None,
             &BehaviorCaseCodegenRequestV1::default(),
@@ -858,6 +1101,7 @@ instance I of Family:
             Some(AcceptedSnapshotId::new("accepted:family")),
             Some("accepted"),
             &sample_behavior_case(),
+            Some(&sample_overlay()),
             None,
             Some(sample_runtime_theory_summary()),
             &BehaviorCaseCodegenRequestV1::default(),
@@ -881,6 +1125,7 @@ instance I of Family:
         let (db, meta) = sample_db_and_meta()?;
         let request = BehaviorCaseCheckRequestV1 {
             behavior_case: sample_behavior_case(),
+            overlay: Some(sample_overlay()),
             lifecycle_state: Some("accepted".to_string()),
             evolution_preview: None,
             runtime_theory_check: None,

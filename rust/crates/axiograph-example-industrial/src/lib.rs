@@ -591,8 +591,7 @@ fn relation_refs_in_query(query: &str) -> Vec<(String, String)> {
 }
 
 fn fact_count_for_relation(db: &PathDB, schema: &str, relation: &str) -> usize {
-    db.fact_nodes_by_axi_schema_relation(schema, relation)
-        .len() as usize
+    db.fact_nodes_by_axi_schema_relation(schema, relation).len() as usize
 }
 
 fn evaluate_competency_questions_with_trust(
@@ -1312,9 +1311,15 @@ mod tests {
 
         let run_json = serde_json::to_value(&bundle.run).expect("serialize run");
         assert_eq!(run_json["version"], json!("industrial_harness_run_v1"));
-        assert_eq!(run_json["campaign_id"], json!("regulated_production_line_seed"));
+        assert_eq!(
+            run_json["campaign_id"],
+            json!("regulated_production_line_seed")
+        );
         assert_eq!(run_json["run_id"], json!("seed-run-001"));
-        assert_eq!(run_json["scenario"], json!("regulated_production_line_seed"));
+        assert_eq!(
+            run_json["scenario"],
+            json!("regulated_production_line_seed")
+        );
         assert_eq!(run_json["status"], json!("materialized"));
         assert_eq!(run_json["trust"]["trust_class"], json!("runtime_guarded"));
         assert_eq!(
@@ -1390,7 +1395,7 @@ mod tests {
             );
             let bundle = regulated_line_runtime_bundle("run-symlinked");
             let err = persist_industrial_harness_run_bundle(&cache_root, &campaign, &bundle)
-            .expect_err("symlinked artifact path should be rejected");
+                .expect_err("symlinked artifact path should be rejected");
             assert!(
                 err.to_string()
                     .contains("refusing to overwrite symlinked harness artifact path"),

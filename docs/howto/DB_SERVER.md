@@ -61,6 +61,9 @@ CLI HTML exports now write a directory with `index.html`, `graph.json`, and
 curl -sS http://127.0.0.1:7878/status | jq .
 ```
 
+`jq` is used only to pretty-print curl responses in these examples. Omit the
+pipe or use any JSON viewer.
+
 Structured query IR is the machine-facing query contract for HTTP/tooling:
 
 ```bash

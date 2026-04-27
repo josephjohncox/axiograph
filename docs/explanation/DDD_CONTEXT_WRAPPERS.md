@@ -110,12 +110,30 @@ Practical reading:
 - CQ-backed executable spec,
 - typed use case.
 
+Important boundary: DDD/fDDD wrappers are tooling overlays over the ontology,
+not the default ontology representation itself. A business `.axi` module should
+normally model domain meaning; bounded contexts, aggregates, commands,
+implementation surfaces, code refs, coverage policies, and generated test
+plans should live in typed manifests that reference compiled IR ids. Modeling
+those tool concepts in `.axi` is reserved for a separate Axiograph metamodel or
+self-validation track.
+
 Current operational seam:
 
 - `BehaviorCaseReportV1.semantic_slice_selector` includes the case id, context
   scopes, implementation surfaces, and competency questions.
 - This lets a behavior case become a typed merge/rebase slice for review
   branches, implementation work, and CQ-gated ontology evolution.
+- See `examples/software_authoring/` for the concrete authoring loop: a pure
+  domain `.axi` module, a typed tooling overlay, weak definition/coverage
+  queries, a JSON behavior case, runtime theory closure checks, continuous
+  software coverage gates, and multi-language test skeleton previews for Go,
+  Python, Rust, and TypeScript.
+- The `axiograph-software-authoring` crate provides the current
+  usability bar: a CI-style check should read the behavior-case report, verify
+  required generated language surfaces, report code-ref materialization gaps,
+  detect CQ/rule drift, and surface unresolved semantic obligations before a
+  team treats a generated skeleton as accepted implementation.
 
 ### 3. `ContextMapV1`
 

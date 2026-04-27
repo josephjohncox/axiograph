@@ -58,15 +58,22 @@ Unsupported higher-order/dependent obligations are not discarded. They remain
 runtime-addressable with explicit non-claim status so exploration, CQ repair,
 and semantic merge can point at them.
 
+When a transport plan is supplied, every affected judgment and closure step
+carries structured `transport_status`, `transport_basis`, missing object images,
+and missing arrow images. Migration, rebase, and merge resolvers should consume
+those fields directly instead of interpreting diagnostic strings.
+
 ## Closure Tiers
 
 `finite_fragment` is the default. It claims closure only for a finite accepted
 world, terminating supported rules, explicit context/world indices, and declared
 imports.
 
-`evidence_weighted` first filters obligations through a thresholded evidence
-world. Optional semiring/lattice propagation can be enabled later; when disabled
-the report says so as a non-claim.
+`evidence_weighted` first propagates weights conservatively across shared
+non-theory typed subjects when `weighted_lattice` propagation is enabled, then
+filters obligations through a thresholded evidence world. When weighted
+propagation is disabled or requested under the wrong evidence semantics, the
+report says so as a non-claim.
 
 `global_indexed` is closure over a finite declared semantic VCS/world/slice/
 import universe. It refuses undeclared imports. It is not unrestricted global
@@ -74,11 +81,19 @@ ontology truth.
 
 ## Completeness And Closure
 
-`CompletenessClaimV1` means every obligation in the declared scope was either
-checked in the fragment or explicitly classified as residual/review/blocking.
+`CompletenessClaimV1` means every in-scope obligation was checked in the
+supported fragment after world/evidence filtering. Review-only, residual, and
+blocking obligations are named, but they prevent a completeness claim.
 
 `OntologyClosureClaimV1` means the checker saturated the supported obligation
 fragment to a fixpoint under the declared world/evidence/ref assumptions.
+
+`RuntimeTheoryClosureReportV1.steps` is the operational trace. It records each
+checked seed, evidence-filtered obligation, review residual, blocking error, and
+the final fixpoint status over typed dependency subjects from the
+`TheoryObligationGraphV1`. This is the surface migration, reconciliation, CQ
+repair, and agent tooling should inspect instead of re-deriving closure from
+counts.
 
 Neither claim means:
 
@@ -114,8 +129,55 @@ Neither claim means:
     "semantics": "thresholded_world",
     "weighted_propagation_enabled": false
   },
-  "judgments": [],
-  "closure": {},
+  "judgments": [
+    {
+      "obligation_ref": {},
+      "status": "checked",
+      "admissible": true,
+      "transport_status": "preserved",
+      "transport_basis": ["object Person -> Person", "arrow Parent -> Parent"],
+      "typed_endpoint": {
+        "source": "rewrite_rule",
+        "from_var": "a",
+        "to_var": "b",
+        "from_type": "Person",
+        "to_type": "Person",
+        "lhs_steps": 1,
+        "rhs_steps": 1,
+        "endpoint_preserved": true,
+        "relation_names": ["Parent"],
+        "relation_ids": ["relation:Family:Parent"],
+        "axis_roles": []
+      }
+    }
+  ],
+  "closure": {
+    "closure_tier": "finite_fragment",
+    "complete": true,
+    "closed": true,
+    "fixpoint_reached": true,
+    "steps": [
+      {
+        "step_index": 0,
+        "kind": "checked_seed",
+        "obligation_ref": {},
+        "dependency_subjects": [],
+        "derived_obligations": ["rewrite:Family:keep_parent"],
+        "transport_status": "preserved",
+        "status": "checked",
+        "admissible": true,
+        "complete_under_assumptions": true,
+        "closed_under_assumptions": true,
+        "evidence_weight_ppm": 1000000
+      },
+      {
+        "step_index": 1,
+        "kind": "fixpoint_reached",
+        "status": "checked",
+        "detail": "runtime closure reached a finite fixpoint over in-scope typed obligations"
+      }
+    ]
+  },
   "completeness_claim": {},
   "ontology_closure_claim": {},
   "non_claims": []
@@ -129,6 +191,19 @@ CLI:
 ```bash
 axiograph check theory module.axi --json
 axiograph check theory module.axi --closure-tier finite_fragment --out report.json
+axiograph check theory module.axi \
+  --closure-tier evidence_weighted \
+  --world-id review:pricing \
+  --evidence-threshold-ppm 750000 \
+  --weighted-evidence \
+  --evidence-weight theory:pricing/rule:discount=500000 \
+  --json
+axiograph discover theory-check module.axi \
+  --closure-tier global_indexed \
+  --included-ref refs/heads/main \
+  --included-slice slice:erp-pricing \
+  --included-import import:erp-master-data \
+  --out report.json
 axiograph discover theory-check module.axi --out report.json
 ```
 
@@ -136,12 +211,25 @@ Tool-loop/server surface:
 
 - `semantic_theory_check`
 
+The tool-loop/server input uses the same `RuntimeTheoryCheckInputV1` family as
+behavior-case, context, CQ, migration, and merge surfaces: `axi_text`,
+`theory`, `closure_tier`, `world_id`, finite-world flag, included
+refs/worlds/slices/imports, undeclared imports, evidence threshold, evidence
+semantics, weighted-evidence toggle, and `evidence_weights` entries of the form
+`obligation_id=ppm`.
+
 Shared summary sidecar:
 
 - `RuntimeTheoryCheckSummaryV1` is the compact attachment used by semantic
   coverage, agent-engineering reports, bounded-context reports, behavior-case
   reports, CQ coverage, migration/reconciliation previews, and semantic
   merge/rebase plans.
+- `closure_trace` summarizes checked seeds, evidence-filtered obligations,
+  review residuals, blocking errors, and final fixpoint status so downstream
+  tools do not need the full trace to make gate decisions.
+- `transport_summary` summarizes preserved, transported, missing-object,
+  missing-arrow, opaque/out-of-fragment, and resolver-required obligations for
+  migration/rebase/merge tooling.
 - A sidecar may be supplied directly, or derived from `RuntimeTheoryCheckInputV1`
   when a tool/server request carries canonical `.axi` text plus an optional
   theory filter and closure tier.

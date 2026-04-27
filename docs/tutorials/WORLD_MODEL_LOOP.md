@@ -157,11 +157,12 @@ bin/axiograph ingest world-model \
 
 ---
 
-## 7) Python plugin (optional; legacy)
+## 7) External Python adapters (optional/debug)
 
-If you still want a Python-backed LLM proposer, use:
-`scripts/axiograph_world_model_plugin_real.py`. The built-in plugin is now the
-default for demos.
+The built-in LLM world-model plugin is the default demo path. Python scripts
+are adapter examples for research, offline model experiments, or integration
+debugging, not the core world-model protocol surface. If you need a
+Python-backed proposer, use `scripts/axiograph_world_model_plugin_real.py`.
 
 ---
 

@@ -1895,6 +1895,8 @@ mod tests {
             excluded_by_evidence: 0,
             blocking_errors: 0,
             closure_tiers: vec!["finite_fragment".to_string()],
+            closure_trace: Default::default(),
+            transport_summary: Default::default(),
             completeness_claim: "not_claimed_for_all_obligations".to_string(),
             ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
             residual_obligation_ids: vec!["theory:family/residual/path".to_string()],

@@ -4,14 +4,13 @@
 //! - Graph database path query optimization (Gubichev et al.)
 //! - Roaring Bitmaps for set operations (Lemire et al.)
 //! - Succinct data structures for compact representation
-//! - Zero-copy deserialization (rkyv)
+//! - Checked binary deserialization for runtime `.axpd` artifacts
 //!
 //! Key innovations:
 //! 1. **String Interning**: All strings stored once, referenced by u32 ID
 //! 2. **Path Indexing**: Pre-computed path signatures for fast traversal
 //! 3. **Bitmap Joins**: Set operations on entity IDs using Roaring bitmaps
-//! 4. **Memory Mapping**: Large KGs accessed via mmap without full load
-//! 5. **Columnar Storage**: Relations stored column-wise for cache efficiency
+//! 4. **Columnar Storage**: Relations stored column-wise for cache efficiency
 //!
 //! ## Verification
 //!
@@ -115,11 +114,12 @@ pub use optimizer::{MigrationOperatorV1, OptimizerRuleV1, ProofProducingOptimize
 pub use proof_mode::{NoProof, ProofJournal, ProofMode, Proved, WithProof};
 pub use runtime_theory_checker::{
     check_runtime_theory_v1, check_runtime_theory_with_options_v1, default_evidence_policy_v1,
-    default_world_assumption_v1, CompletenessClaimV1, EvidencePolicyV1,
-    EvidenceWeightSemanticsV1, OntologyClosureClaimV1, RuntimeTheoryCheckReportV1,
+    default_world_assumption_v1, CompletenessClaimV1, EvidencePolicyV1, EvidenceWeightSemanticsV1,
+    OntologyClosureClaimV1, RuntimeTheoryAxisRoleV1, RuntimeTheoryCheckReportV1,
     RuntimeTheoryCheckSeverityV1, RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureReportV1,
-    RuntimeTheoryClosureTierV1, RuntimeTheoryFragmentV1, RuntimeTheoryJudgmentV1,
-    RuntimeTheoryNonClaimV1, WorldAssumptionV1, RUNTIME_THEORY_CHECK_REPORT_VERSION_V1,
+    RuntimeTheoryClosureStepKindV1, RuntimeTheoryClosureStepV1, RuntimeTheoryClosureTierV1,
+    RuntimeTheoryFragmentV1, RuntimeTheoryJudgmentV1, RuntimeTheoryNonClaimV1,
+    RuntimeTheoryTypedEndpointV1, WorldAssumptionV1, RUNTIME_THEORY_CHECK_REPORT_VERSION_V1,
 };
 pub use typestate::{NormalizedPathExprV2, UnnormalizedPathExprV2};
 pub use verified::{BinaryHeader, ReachabilityProof, VerifiedPathSig, VerifiedProb};
@@ -1785,21 +1785,27 @@ impl PathDB {
         let mut offset = 8;
 
         // Interner
-        let interner_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into()?) as usize;
-        offset += 8;
-        let interner = StringInterner::from_bytes(&bytes[offset..offset + interner_len])?;
-        offset += interner_len;
+        let interner_len =
+            read_pathdb_len(bytes, &mut offset, "interner length")?;
+        let interner_bytes = read_pathdb_slice(bytes, &mut offset, interner_len, "interner")?;
+        let interner = StringInterner::from_bytes(interner_bytes)?;
 
         // DB
-        let db_len = u64::from_le_bytes(bytes[offset..offset + 8].try_into()?) as usize;
-        offset += 8;
+        let db_len = read_pathdb_len(bytes, &mut offset, "database length")?;
+        let db_bytes = read_pathdb_slice(bytes, &mut offset, db_len, "database")?;
+        if offset != bytes.len() {
+            return Err(anyhow::anyhow!(
+                "Invalid PathDB file: {} trailing byte(s)",
+                bytes.len().saturating_sub(offset)
+            ));
+        }
         let (entities, relations, path_index, equivalences, confidence_index): (
             EntityStore,
             RelationStore,
             PathIndex,
             HashMap<u32, Vec<(u32, StrId)>>,
             Vec<f32>,
-        ) = bincode::deserialize(&bytes[offset..offset + db_len])?;
+        ) = bincode::deserialize(db_bytes)?;
 
         Ok(Self {
             db_token: DbToken::new(),
@@ -1814,6 +1820,32 @@ impl PathDB {
             index_sidecar: Mutex::new(None),
         })
     }
+}
+
+fn read_pathdb_len(bytes: &[u8], offset: &mut usize, what: &str) -> Result<usize> {
+    let len_bytes = read_pathdb_slice(bytes, offset, 8, what)?;
+    let len = u64::from_le_bytes(len_bytes.try_into()?);
+    usize::try_from(len).map_err(|_| anyhow::anyhow!("Invalid PathDB file: {what} too large"))
+}
+
+fn read_pathdb_slice<'a>(
+    bytes: &'a [u8],
+    offset: &mut usize,
+    len: usize,
+    what: &str,
+) -> Result<&'a [u8]> {
+    let end = offset
+        .checked_add(len)
+        .ok_or_else(|| anyhow::anyhow!("Invalid PathDB file: {what} length overflow"))?;
+    if end > bytes.len() {
+        return Err(anyhow::anyhow!(
+            "Invalid PathDB file: truncated {what} (need {len} byte(s), have {})",
+            bytes.len().saturating_sub(*offset)
+        ));
+    }
+    let slice = &bytes[*offset..end];
+    *offset = end;
+    Ok(slice)
 }
 
 impl Default for PathDB {
@@ -2384,5 +2416,58 @@ mod tests {
         // Path query
         let two_hop = db.follow_path(alice, &["knows", "knows"]);
         assert!(two_hop.contains(carol));
+    }
+
+    #[test]
+    fn pathdb_from_bytes_round_trips_v1_envelope() {
+        let mut db = PathDB::new();
+        let alice = db.add_entity("Person", vec![("name", "Alice")]);
+        let bob = db.add_entity("Person", vec![("name", "Bob")]);
+        db.add_relation("knows", alice, bob, 1.0, vec![]);
+        db.build_indexes();
+
+        let bytes = db.to_bytes().expect("serialize PathDB");
+        let round_trip = PathDB::from_bytes(&bytes).expect("deserialize PathDB");
+
+        assert!(round_trip.follow_one(alice, "knows").contains(bob));
+    }
+
+    #[test]
+    fn pathdb_from_bytes_rejects_truncated_v1_envelope_without_panic() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"AXPD");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+
+        let err = match PathDB::from_bytes(&bytes) {
+            Ok(_) => panic!("truncated length must fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("truncated interner length"));
+    }
+
+    #[test]
+    fn pathdb_from_bytes_rejects_truncated_section_without_panic() {
+        let db = PathDB::new();
+        let mut bytes = db.to_bytes().expect("serialize PathDB");
+        bytes.truncate(bytes.len().saturating_sub(1));
+
+        let err = match PathDB::from_bytes(&bytes) {
+            Ok(_) => panic!("truncated payload must fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("truncated database"));
+    }
+
+    #[test]
+    fn pathdb_from_bytes_rejects_trailing_bytes() {
+        let db = PathDB::new();
+        let mut bytes = db.to_bytes().expect("serialize PathDB");
+        bytes.push(0);
+
+        let err = match PathDB::from_bytes(&bytes) {
+            Ok(_) => panic!("trailing bytes must fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("trailing byte"));
     }
 }

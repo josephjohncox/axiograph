@@ -2,14 +2,15 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
 use axiograph_pathdb::{
-    check_runtime_theory_with_options_v1, default_evidence_policy_v1,
-    default_world_assumption_v1, RuntimeTheoryCheckReportV1, RuntimeTheoryCheckStatusV1,
-    RuntimeTheoryClosureTierV1,
+    check_runtime_theory_with_options_v1, default_evidence_policy_v1, default_world_assumption_v1,
+    EvidencePolicyV1, EvidenceWeightSemanticsV1, RuntimeTheoryCheckReportV1,
+    RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureStepKindV1, RuntimeTheoryClosureTierV1,
+    WorldAssumptionV1,
 };
 
-pub(crate) fn parse_runtime_theory_closure_tier(
-    raw: &str,
-) -> Result<RuntimeTheoryClosureTierV1> {
+use axiograph_pathdb::kernel_ir::TheoryTransportStatusIr;
+
+pub(crate) fn parse_runtime_theory_closure_tier(raw: &str) -> Result<RuntimeTheoryClosureTierV1> {
     match raw {
         "finite_fragment" | "finite" => Ok(RuntimeTheoryClosureTierV1::FiniteFragment),
         "evidence_weighted" | "evidence" => Ok(RuntimeTheoryClosureTierV1::EvidenceWeighted),
@@ -20,6 +21,36 @@ pub(crate) fn parse_runtime_theory_closure_tier(
     }
 }
 
+pub(crate) fn parse_evidence_weight_semantics(raw: &str) -> Result<EvidenceWeightSemanticsV1> {
+    match raw {
+        "thresholded_world" | "thresholded" | "threshold" => {
+            Ok(EvidenceWeightSemanticsV1::ThresholdedWorld)
+        }
+        "weighted_lattice" | "weighted" | "lattice" => {
+            Ok(EvidenceWeightSemanticsV1::WeightedLattice)
+        }
+        "deferred" => Ok(EvidenceWeightSemanticsV1::Deferred),
+        other => Err(anyhow!(
+            "unknown evidence semantics `{other}` (expected thresholded_world, weighted_lattice, or deferred)"
+        )),
+    }
+}
+
+pub(crate) fn parse_evidence_weight_assignment(raw: &str) -> Result<(String, u32)> {
+    let (obligation_id, ppm) = raw
+        .split_once('=')
+        .ok_or_else(|| anyhow!("evidence weight `{raw}` must be obligation_id=ppm"))?;
+    let ppm = ppm
+        .parse::<u32>()
+        .map_err(|err| anyhow!("invalid evidence weight ppm in `{raw}`: {err}"))?;
+    if ppm > 1_000_000 {
+        return Err(anyhow!(
+            "invalid evidence weight `{raw}`: ppm must be <= 1000000"
+        ));
+    }
+    Ok((obligation_id.to_string(), ppm))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct RuntimeTheoryCheckInputV1 {
     pub axi_text: String,
@@ -27,6 +58,62 @@ pub(crate) struct RuntimeTheoryCheckInputV1 {
     pub theory: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closure_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finite_world: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub included_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub included_worlds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub included_slices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub included_imports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undeclared_imports: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_threshold_ppm: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_semantics: Option<String>,
+    #[serde(default)]
+    pub weighted_evidence: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_weights: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct RuntimeTheoryClosureTraceSummaryV1 {
+    #[serde(default)]
+    pub total_steps: usize,
+    #[serde(default)]
+    pub checked_seed_steps: usize,
+    #[serde(default)]
+    pub evidence_filtered_steps: usize,
+    #[serde(default)]
+    pub review_residual_steps: usize,
+    #[serde(default)]
+    pub blocking_error_steps: usize,
+    #[serde(default)]
+    pub fixpoint_reached_steps: usize,
+    #[serde(default)]
+    pub fixpoint_blocked_steps: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct RuntimeTheoryTransportSummaryV1 {
+    #[serde(default)]
+    pub preserved_obligations: usize,
+    #[serde(default)]
+    pub transported_obligations: usize,
+    #[serde(default)]
+    pub missing_object_image_obligations: usize,
+    #[serde(default)]
+    pub missing_arrow_image_obligations: usize,
+    #[serde(default)]
+    pub opaque_or_out_of_fragment_obligations: usize,
+    #[serde(default)]
+    pub resolver_required_obligations: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,6 +137,10 @@ pub(crate) struct RuntimeTheoryCheckSummaryV1 {
     pub blocking_errors: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closure_tiers: Vec<String>,
+    #[serde(default)]
+    pub closure_trace: RuntimeTheoryClosureTraceSummaryV1,
+    #[serde(default)]
+    pub transport_summary: RuntimeTheoryTransportSummaryV1,
     pub completeness_claim: String,
     pub ontology_closure_claim: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -76,6 +167,22 @@ pub(crate) fn runtime_theory_check_reports_from_axi_text(
     axi_text: &str,
     theory_filter: Option<&str>,
     closure_tier: RuntimeTheoryClosureTierV1,
+) -> Result<RuntimeTheoryCheckModuleReportV1> {
+    runtime_theory_check_reports_from_axi_text_with_assumptions(
+        axi_text,
+        theory_filter,
+        closure_tier,
+        default_world_assumption_v1(),
+        default_evidence_policy_v1(),
+    )
+}
+
+pub(crate) fn runtime_theory_check_reports_from_axi_text_with_assumptions(
+    axi_text: &str,
+    theory_filter: Option<&str>,
+    closure_tier: RuntimeTheoryClosureTierV1,
+    world: WorldAssumptionV1,
+    evidence_policy: EvidencePolicyV1,
 ) -> Result<RuntimeTheoryCheckModuleReportV1> {
     let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
     let kernel = axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), axi_text)
@@ -108,8 +215,8 @@ pub(crate) fn runtime_theory_check_reports_from_axi_text(
             schema,
             theory,
             closure_tier,
-            default_world_assumption_v1(),
-            default_evidence_policy_v1(),
+            world.clone(),
+            evidence_policy.clone(),
             None,
         ));
     }
@@ -179,15 +286,77 @@ pub(crate) fn runtime_theory_check_reports_from_axi_text(
 pub(crate) fn runtime_theory_check_summary_from_input(
     input: &RuntimeTheoryCheckInputV1,
 ) -> Result<RuntimeTheoryCheckSummaryV1> {
+    Ok(runtime_theory_check_reports_from_input(input)?.summary)
+}
+
+pub(crate) fn runtime_theory_check_reports_from_input(
+    input: &RuntimeTheoryCheckInputV1,
+) -> Result<RuntimeTheoryCheckModuleReportV1> {
     let closure_tier = parse_runtime_theory_closure_tier(
         input.closure_tier.as_deref().unwrap_or("finite_fragment"),
     )?;
-    Ok(runtime_theory_check_reports_from_axi_text(
+    let (world, evidence_policy) = runtime_theory_assumptions_from_input(input)?;
+    runtime_theory_check_reports_from_axi_text_with_assumptions(
         &input.axi_text,
         input.theory.as_deref(),
         closure_tier,
-    )?
-    .summary)
+        world,
+        evidence_policy,
+    )
+}
+
+pub(crate) fn runtime_theory_assumptions_from_input(
+    input: &RuntimeTheoryCheckInputV1,
+) -> Result<(WorldAssumptionV1, EvidencePolicyV1)> {
+    let mut world = default_world_assumption_v1();
+    if let Some(world_id) = input.world_id.as_ref() {
+        world.world_id = world_id.clone();
+    }
+    world.finite = input.finite_world.unwrap_or(true);
+    if !input.included_refs.is_empty() {
+        world.included_refs = input.included_refs.clone();
+    }
+    if !input.included_worlds.is_empty() {
+        world.included_worlds = input.included_worlds.clone();
+    }
+    if !input.included_slices.is_empty() {
+        world.included_slices = input.included_slices.clone();
+    }
+    if !input.included_imports.is_empty() {
+        world.included_imports = input.included_imports.clone();
+    }
+    if !input.undeclared_imports.is_empty() {
+        world.undeclared_imports = input.undeclared_imports.clone();
+    }
+
+    let mut evidence_policy = default_evidence_policy_v1();
+    if let Some(threshold) = input.evidence_threshold_ppm {
+        if threshold > 1_000_000 {
+            return Err(anyhow!(
+                "invalid evidence_threshold_ppm {threshold}: must be <= 1000000"
+            ));
+        }
+        evidence_policy.threshold_ppm = threshold;
+    }
+    evidence_policy.semantics = if input.weighted_evidence {
+        EvidenceWeightSemanticsV1::WeightedLattice
+    } else {
+        parse_evidence_weight_semantics(
+            input
+                .evidence_semantics
+                .as_deref()
+                .unwrap_or("thresholded_world"),
+        )?
+    };
+    evidence_policy.weighted_propagation_enabled = input.weighted_evidence;
+    for raw in &input.evidence_weights {
+        let (obligation_id, ppm) = parse_evidence_weight_assignment(raw)?;
+        evidence_policy
+            .obligation_weights_ppm
+            .insert(obligation_id, ppm);
+    }
+
+    Ok((world, evidence_policy))
 }
 
 pub(crate) fn runtime_theory_check_summary_from_reports(
@@ -215,6 +384,8 @@ pub(crate) fn runtime_theory_check_summary_from_reports(
             "{blocking_errors} runtime theory judgment(s) are blocking"
         ));
     }
+    let closure_trace = runtime_theory_closure_trace_summary_from_reports(reports);
+    let transport_summary = runtime_theory_transport_summary_from_reports(reports);
 
     RuntimeTheoryCheckSummaryV1 {
         version: "runtime_theory_check_summary_v1".to_string(),
@@ -243,11 +414,71 @@ pub(crate) fn runtime_theory_check_summary_from_reports(
             .sum(),
         blocking_errors,
         closure_tiers,
+        closure_trace,
+        transport_summary,
         completeness_claim,
         ontology_closure_claim,
         residual_obligation_ids,
         notes,
     }
+}
+
+fn runtime_theory_closure_trace_summary_from_reports(
+    reports: &[RuntimeTheoryCheckReportV1],
+) -> RuntimeTheoryClosureTraceSummaryV1 {
+    let mut summary = RuntimeTheoryClosureTraceSummaryV1::default();
+    for step in reports
+        .iter()
+        .flat_map(|report| report.closure.steps.iter())
+    {
+        summary.total_steps += 1;
+        match step.kind {
+            RuntimeTheoryClosureStepKindV1::CheckedSeed => summary.checked_seed_steps += 1,
+            RuntimeTheoryClosureStepKindV1::EvidenceFiltered => {
+                summary.evidence_filtered_steps += 1;
+            }
+            RuntimeTheoryClosureStepKindV1::ReviewResidual => summary.review_residual_steps += 1,
+            RuntimeTheoryClosureStepKindV1::BlockingError => summary.blocking_error_steps += 1,
+            RuntimeTheoryClosureStepKindV1::FixpointReached => {
+                summary.fixpoint_reached_steps += 1;
+            }
+            RuntimeTheoryClosureStepKindV1::FixpointBlocked => {
+                summary.fixpoint_blocked_steps += 1;
+            }
+        }
+    }
+    summary
+}
+
+fn runtime_theory_transport_summary_from_reports(
+    reports: &[RuntimeTheoryCheckReportV1],
+) -> RuntimeTheoryTransportSummaryV1 {
+    let mut summary = RuntimeTheoryTransportSummaryV1::default();
+    for judgment in reports.iter().flat_map(|report| report.judgments.iter()) {
+        let Some(status) = judgment.transport_status else {
+            continue;
+        };
+        match status {
+            TheoryTransportStatusIr::Preserved => summary.preserved_obligations += 1,
+            TheoryTransportStatusIr::Transported => {
+                summary.transported_obligations += 1;
+                summary.resolver_required_obligations += 1;
+            }
+            TheoryTransportStatusIr::MissingObjectImage => {
+                summary.missing_object_image_obligations += 1;
+                summary.resolver_required_obligations += 1;
+            }
+            TheoryTransportStatusIr::MissingArrowImage => {
+                summary.missing_arrow_image_obligations += 1;
+                summary.resolver_required_obligations += 1;
+            }
+            TheoryTransportStatusIr::OpaqueOrOutOfFragment => {
+                summary.opaque_or_out_of_fragment_obligations += 1;
+                summary.resolver_required_obligations += 1;
+            }
+        }
+    }
+    summary
 }
 
 pub(crate) fn runtime_theory_check_human_summary(
@@ -259,6 +490,33 @@ pub(crate) fn runtime_theory_check_human_summary(
         report.reports.len(),
         report.blocking_errors
     ));
+    lines.push(format!(
+        "closure trace: steps={}, checked_seed={}, evidence_filtered={}, review_residual={}, blocking={}, fixpoint_reached={}, fixpoint_blocked={}",
+        report.summary.closure_trace.total_steps,
+        report.summary.closure_trace.checked_seed_steps,
+        report.summary.closure_trace.evidence_filtered_steps,
+        report.summary.closure_trace.review_residual_steps,
+        report.summary.closure_trace.blocking_error_steps,
+        report.summary.closure_trace.fixpoint_reached_steps,
+        report.summary.closure_trace.fixpoint_blocked_steps,
+    ));
+    if report
+        .summary
+        .transport_summary
+        .resolver_required_obligations
+        > 0
+        || report.summary.transport_summary.preserved_obligations > 0
+    {
+        lines.push(format!(
+            "transport: preserved={}, transported={}, missing_object={}, missing_arrow={}, opaque={}, resolver_required={}",
+            report.summary.transport_summary.preserved_obligations,
+            report.summary.transport_summary.transported_obligations,
+            report.summary.transport_summary.missing_object_image_obligations,
+            report.summary.transport_summary.missing_arrow_image_obligations,
+            report.summary.transport_summary.opaque_or_out_of_fragment_obligations,
+            report.summary.transport_summary.resolver_required_obligations,
+        ));
+    }
     for theory_report in &report.reports {
         lines.push(format!(
             "- {}: checked={}, review_only={}, residual={}, blocked={}, closure_complete={}, ontology_closed={}",

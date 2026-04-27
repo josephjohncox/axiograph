@@ -16,6 +16,8 @@ this file back into a backlog or session transcript.
   trust, live-byte, accepted-plane, or operational contract.
 - Avoid preserving stale protocol versions, fallback paths, historical exports,
   or old examples when a cleaner typed surface exists.
+- Prefer maintained, widely used Rust crates for protocol/core infrastructure
+  over custom implementations unless Axiograph semantics require custom logic.
 - Keep `AGENTS.md` below 150 lines unless there is a specific reason.
 - Do not add living checkbox backlogs to `AGENTS.md`; put them in roadmaps.
 
@@ -50,6 +52,7 @@ this file back into a backlog or session transcript.
 - Trust boundary: `docs/reference/TRUSTED_KERNEL.md`
 - Compiled semantic IR: `docs/reference/KERNEL_IR.md`
 - Runtime theory checker: `docs/reference/RUNTIME_THEORY_CHECKER.md`
+- Software authoring/codegen tools: `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`
 - Rust lifecycle and anchor types: `docs/reference/RUST_LIFECYCLE_TYPES.md`
 - Semantic VCS and reconciliation: `docs/reference/SEMANTIC_VCS.md`
 - Current agent context: `docs/reference/AGENT_CONTEXT.md`
@@ -68,6 +71,7 @@ this file back into a backlog or session transcript.
 | Understand current trust claims | `docs/reference/TRUSTED_KERNEL.md` |
 | Work on schema/category IR | `docs/reference/KERNEL_IR.md` |
 | Work on runtime theory checking | `docs/reference/RUNTIME_THEORY_CHECKER.md` |
+| Work on software authoring/codegen | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` |
 | Work on Rust type/lifecycle surfaces | `docs/reference/RUST_LIFECYCLE_TYPES.md` |
 | Work on ontology usefulness and ologs | `docs/explanation/TYPED_ONTOLOGY_ENGINEERING.md` |
 | Work on semantic history or merge | `docs/reference/SEMANTIC_VCS.md` |

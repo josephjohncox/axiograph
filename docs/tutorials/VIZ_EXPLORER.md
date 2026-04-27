@@ -149,6 +149,9 @@ If the model answers via tool-loop queries, the UI will also highlight returned 
 curl -sS http://127.0.0.1:7878/status | jq .llm
 ```
 
+`jq` is only a JSON pretty-printer for curl examples. Omit the pipe or use any
+JSON viewer.
+
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/llm/to_query \
   -H 'Content-Type: application/json' \

@@ -1,0 +1,29 @@
+{
+  "coverage_mode": "exploratory",
+  "terms": [
+    "paid invoice",
+    "product access",
+    "account entitlement"
+  ],
+  "relation_names": [
+    "InvoicePaidBy",
+    "PaidInvoiceGrantsEntitlement",
+    "AccountGrantedEntitlement"
+  ],
+  "cq_names": [
+    "paid_invoice_grants_subscription_entitlement",
+    "account_has_product_access"
+  ],
+  "code_refs": [
+    "services/billing/internal/payments/apply_payment.go",
+    "workers/entitlements/src/grant_entitlement.rs",
+    "apps/billing/src/apply-payment.ts"
+  ],
+  "surface_hints": [
+    "billing",
+    "entitlement",
+    "product access"
+  ],
+  "axql": "select ?f where ?f = SubscriptionBilling.AccountGrantedEntitlement(account=Account_Acme, entitlement=Entitlement_API, ctx=Accepted, time=T1) limit 1",
+  "max_matches": 8
+}

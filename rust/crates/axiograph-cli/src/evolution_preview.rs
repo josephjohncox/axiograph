@@ -4,8 +4,7 @@ use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
 use axiograph_pathdb::{
-    check_runtime_theory_with_options_v1, default_evidence_policy_v1,
-    default_world_assumption_v1,
+    check_runtime_theory_with_options_v1, default_evidence_policy_v1, default_world_assumption_v1,
     kernel_ir::{
         CompiledSchemaIr, RelationSemanticsIr, RoleKind, TheoryIr, TheoryObligationKindIr,
         TheoryObligationRefIr, TheorySubjectRefIr, TheoryTransportStatusIr, WitnessViewIr,
@@ -595,6 +594,8 @@ pub struct SemGateSummaryV1 {
     pub competency: Option<SemCompetencySummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_semantics: Option<crate::semantic_claim::RuntimeSemanticSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<SemRuleSummaryV1>,
     #[serde(default)]
@@ -1275,6 +1276,7 @@ pub fn sem_gate_summary_from_evolution_preview(preview: &EvolutionPreviewV1) -> 
                 gate_passed: gate.gate_passed,
             }),
         runtime_semantics: preview.runtime_semantics.clone(),
+        runtime_theory_check: preview.runtime_theory_check.clone(),
         rule: Some(preview.rule_summary.clone()),
         residual_obligation_count: preview.residual_obligations.len(),
     }
@@ -1976,18 +1978,20 @@ fn runtime_theory_check_summary_for_compiled_theories_v1(
     } else {
         "not_claimed_for_all_obligations".to_string()
     };
-    Some(crate::runtime_theory_check::runtime_theory_check_summary_from_reports(
-        &compiled_schema.schema_id.to_string(),
-        &reports,
-        blocking_errors,
-        completeness_claim,
-        ontology_closure_claim,
-        vec![
-            format!("runtime theory check attached by {surface}"),
-            "summary is runtime-operational and remains below Lean-certified proof strength"
-                .to_string(),
-        ],
-    ))
+    Some(
+        crate::runtime_theory_check::runtime_theory_check_summary_from_reports(
+            &compiled_schema.schema_id.to_string(),
+            &reports,
+            blocking_errors,
+            completeness_claim,
+            ontology_closure_claim,
+            vec![
+                format!("runtime theory check attached by {surface}"),
+                "summary is runtime-operational and remains below Lean-certified proof strength"
+                    .to_string(),
+            ],
+        ),
+    )
 }
 
 fn reconciliation_refinement_candidates(

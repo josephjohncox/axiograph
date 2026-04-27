@@ -1,6 +1,4 @@
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -42,39 +40,7 @@ impl Drop for ChildGuard {
 }
 
 fn http_post_json(addr: &str, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
-    let mut stream = TcpStream::connect(addr).expect("connect");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-
-    let body_bytes = serde_json::to_vec(body).expect("serialize request");
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body_bytes.len()
-    );
-
-    stream.write_all(request.as_bytes()).expect("write request");
-    stream.write_all(&body_bytes).expect("write body");
-    stream.flush().ok();
-
-    let mut response_bytes = Vec::new();
-    stream
-        .read_to_end(&mut response_bytes)
-        .expect("read response");
-    let response = String::from_utf8_lossy(&response_bytes);
-
-    let mut lines = response.lines();
-    let status_line = lines.next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-
-    let (_, body_text) = response
-        .split_once("\r\n\r\n")
-        .unwrap_or(("", response.as_ref()));
-    let json: serde_json::Value = serde_json::from_str(body_text).expect("parse JSON response");
-    (status, json)
+    http_post_json_auth(addr, path, body, None)
 }
 
 fn http_post_json_auth(
@@ -83,73 +49,36 @@ fn http_post_json_auth(
     body: &serde_json::Value,
     auth_token: Option<&str>,
 ) -> (u16, serde_json::Value) {
-    let mut stream = TcpStream::connect(addr).expect("connect");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
-
-    let body_bytes = serde_json::to_vec(body).expect("serialize request");
-    let mut request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body_bytes.len()
-    );
-    if let Some(tok) = auth_token {
-        request.push_str(&format!("Authorization: Bearer {tok}\r\n"));
+    let client = db_server_http_client();
+    let mut request = client
+        .post(format!("http://{addr}{path}"))
+        .json(body);
+    if let Some(token) = auth_token {
+        request = request.bearer_auth(token);
     }
-    request.push_str("\r\n");
-
-    stream.write_all(request.as_bytes()).expect("write request");
-    stream.write_all(&body_bytes).expect("write body");
-    stream.flush().ok();
-
-    let mut response_bytes = Vec::new();
-    stream
-        .read_to_end(&mut response_bytes)
-        .expect("read response");
-    let response = String::from_utf8_lossy(&response_bytes);
-
-    let mut lines = response.lines();
-    let status_line = lines.next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-
-    let (_, body_text) = response
-        .split_once("\r\n\r\n")
-        .unwrap_or(("", response.as_ref()));
-    let json: serde_json::Value = serde_json::from_str(body_text).expect("parse JSON response");
-    (status, json)
+    json_response(request.send().expect("POST JSON request"))
 }
 
 fn http_get_json(addr: &str, path_and_query: &str) -> (u16, serde_json::Value) {
-    let mut stream = TcpStream::connect(addr).expect("connect");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+    let client = db_server_http_client();
+    json_response(
+        client
+            .get(format!("http://{addr}{path_and_query}"))
+            .send()
+            .expect("GET JSON request"),
+    )
+}
 
-    let request =
-        format!("GET {path_and_query} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-    stream.write_all(request.as_bytes()).expect("write request");
-    stream.flush().ok();
+fn db_server_http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("build DB server test HTTP client")
+}
 
-    let mut response_bytes = Vec::new();
-    stream
-        .read_to_end(&mut response_bytes)
-        .expect("read response");
-    let response = String::from_utf8_lossy(&response_bytes);
-
-    let mut lines = response.lines();
-    let status_line = lines.next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-
-    let (_, body_text) = response
-        .split_once("\r\n\r\n")
-        .unwrap_or(("", response.as_ref()));
-    let json: serde_json::Value = serde_json::from_str(body_text).expect("parse JSON response");
+fn json_response(response: reqwest::blocking::Response) -> (u16, serde_json::Value) {
+    let status = response.status().as_u16();
+    let json = response.json().expect("parse JSON response");
     (status, json)
 }
 

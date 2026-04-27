@@ -42,6 +42,7 @@ If you only read one thing, read the “book”:
 - `docs/tutorials/CONTINUOUS_INGEST_AND_DISCOVERY.md` — continuous ingest/discovery prototype loop
 - `docs/tutorials/WORLD_MODEL_LOOP.md` — JEPA/world-model loop with guardrails + promotion
 - `docs/tutorials/INDUSTRIAL_ENGINEERING_EXAMPLE.md` — industrial/business/process example harness outside the core CLI
+- `examples/software_authoring/README.md` — pure-domain software authoring with typed DDD/fDDD overlays, weak definition queries, continuous semantic coverage, an example crate, and codegen previews
 
 ---
 
@@ -64,6 +65,7 @@ If you only read one thing, read the “book”:
 - `docs/reference/TRUSTED_KERNEL.md` — exact boundary of the Lean trusted kernel and certificate trust classes
 - `docs/reference/KERNEL_IR.md` — canonical schema/category IR target spec
 - `docs/reference/RUNTIME_THEORY_CHECKER.md` — Rust runtime theory judgments, closure tiers, completeness claims, and non-claims
+- `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — software-authoring/codegen crates, CLI, MCP, DB HTTP server, plugin, editor/LSP, and maintained protocol-crate choices
 - `docs/reference/AGENT_CONTEXT.md` — current agent-facing architecture, trust, type-system, and compatibility context
 - `docs/reference/AXI_STYLE.md` — canonical `.axi` authoring/style guide for examples and reviews
 - `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle state + anchor-aware artifact model
@@ -108,6 +110,7 @@ If you only read one thing, read the “book”:
 ## Roadmaps (tracked plans)
 
 - `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md`
+- `docs/roadmaps/ROADMAP_TOOLING_OVERLAY_SEPARATION.md`
 - `docs/roadmaps/ROADMAP_PRODUCTION_READINESS.md`
 - `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`
 - `docs/roadmaps/ROADMAP_MATHEMATICAL.md`

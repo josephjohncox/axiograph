@@ -98,6 +98,42 @@ In other words, we should not ask one backend to do all jobs equally well.
 Property-graph engines may still become useful execution targets later, but
 they are not part of the current first-class support contract.
 
+## Representation vs Tooling Overlays
+
+Axiograph should keep a hard separation between the ontology representation and
+the software-engineering tools that use it.
+
+Canonical `.axi` modules are the representation layer. They should model domain
+meaning: objects, relations, contexts, worlds, constraints, equations, rewrites,
+accepted facts, and evidence-bearing domain events when those events are part of
+the business or scientific world.
+
+DDD/fDDD, BDD, semantic coverage, implementation surfaces, code refs, codegen,
+test mappings, agent plans, and CI gates are tooling overlays. They should be
+typed, validated, anchor-aware manifests over compiled IR ids. They should not
+usually be embedded as ordinary object types and relations in a business
+ontology.
+
+This distinction matters because the same domain ontology should support
+multiple engineering methods. A chemical-plant ontology, for example, should be
+usable by fDDD behavior-case tooling, simulator validation, ERP integration,
+PLC/HMI checks, and agentic code generation without forcing all of those tool
+vocabularies into the accepted domain model.
+
+The correct operational shape is:
+
+- `.axi` models the domain.
+- Compiled schema/category/theory/instance IR gives stable refs.
+- Tooling overlays reference those refs.
+- Reports and codegen outputs are derived artifacts with trust contracts.
+- Accepted ontology mutation remains separate from tool/report mutation.
+
+The only strong reason to model Axiograph tooling concepts in `.axi` is
+self-validation: an `AxiographMeta.axi` package can model report schemas,
+behavior-case schemas, semantic VCS objects, coverage policies, and tool
+contracts so Axiograph can validate Axiograph. That should be a separate
+metamodel track, not the default style for user business ontologies.
+
 ## TypeDB-inspired typing we should actually import
 
 TypeDB is useful to study because it gets several schema ideas right:

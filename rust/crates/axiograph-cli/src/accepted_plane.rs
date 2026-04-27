@@ -411,6 +411,8 @@ pub struct SemDeltaV1 {
     pub rule_summary: Option<crate::evolution_preview::SemRuleSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coverage_summary: Option<crate::evolution_preview::EvolutionCoverageSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_check: Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>,
     #[serde(default)]
     pub evidence_blobs_added: Vec<ProposalDigest>,
     #[serde(default)]
@@ -1408,11 +1410,19 @@ fn preview_reviewed_module_from_reviewed(
             &options.competency_gate,
         )?)
     };
+    let runtime_theory_check = runtime_theory_summary_for_promotion_text(text)?;
+    let runtime_theory_ok = runtime_theory_check.as_ref().is_none_or(|summary| {
+        summary.blocking_errors == 0
+            && summary.residual_obligation_ids.is_empty()
+            && summary.completeness_claim.starts_with("claimed_under_")
+            && summary.ontology_closure_claim.starts_with("claimed_under_")
+    });
     let ok = quality_delta.summary.error_count == 0
         && competency_gate
             .as_ref()
             .map(|gate| gate.gate_passed)
-            .unwrap_or(true);
+            .unwrap_or(true)
+        && runtime_theory_ok;
 
     let mut reasons = vec![
         "preview compares the current accepted snapshot against the would-be accepted snapshot"
@@ -1439,6 +1449,21 @@ fn preview_reviewed_module_from_reviewed(
             cq.total
         ));
     }
+    if let Some(summary) = runtime_theory_check.as_ref() {
+        reasons.push(format!(
+            "runtime theory check compared {} compiled theor{} with completeness={} and ontology_closure={}",
+            summary.theory_count,
+            if summary.theory_count == 1 { "y" } else { "ies" },
+            summary.completeness_claim,
+            summary.ontology_closure_claim
+        ));
+        if summary.blocking_errors > 0 {
+            reasons.push(format!(
+                "promotion preview has {} blocking runtime theory judgment(s)",
+                summary.blocking_errors
+            ));
+        }
+    }
 
     let trust = crate::proposals_validate::ProposalValidationTrustContractV1 {
         trust_class: "accepted_promotion_preview".to_string(),
@@ -1454,7 +1479,17 @@ fn preview_reviewed_module_from_reviewed(
     let after_meta =
         axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&after_db).unwrap_or_default();
     let import_summary: PromotionImportSummaryV1 = import_summary.unwrap_or_default().into();
-    let evolution_preview = crate::evolution_preview::build_evolution_preview_v1(
+    let runtime_theory_residuals = runtime_theory_check
+        .as_ref()
+        .into_iter()
+        .flat_map(|summary| {
+            summary
+                .residual_obligation_ids
+                .iter()
+                .map(|id| format!("runtime theory residual obligation `{id}`"))
+        })
+        .collect::<Vec<_>>();
+    let mut evolution_preview = crate::evolution_preview::build_evolution_preview_v1(
         "accepted_promotion_preview",
         previous_snapshot.map(|s| s.snapshot_id.clone()),
         reviewed.module().module_name.clone(),
@@ -1472,9 +1507,10 @@ fn preview_reviewed_module_from_reviewed(
             competency_gate.as_ref(),
             quality_delta.summary.error_count,
         )),
-        std::iter::empty::<String>(),
+        runtime_theory_residuals,
         ok,
     );
+    evolution_preview.runtime_theory_check = runtime_theory_check;
 
     Ok(PromotionPreviewReportV1 {
         version: ACCEPTED_PLANE_PROMOTION_PREVIEW_VERSION_V1.to_string(),
@@ -1489,6 +1525,23 @@ fn preview_reviewed_module_from_reviewed(
         ok,
         stored_report_path: None,
     })
+}
+
+fn runtime_theory_summary_for_promotion_text(
+    text: &str,
+) -> Result<Option<crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1>> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    match crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
+        text,
+        None,
+        axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
+    ) {
+        Ok(report) => Ok(Some(report.summary)),
+        Err(err) if err.to_string().contains("no compiled theories matched") => Ok(None),
+        Err(err) => Err(err),
+    }
 }
 
 fn empty_quality_delta_report(input: &str, plane: &str) -> crate::quality::QualityReportV1 {
@@ -2586,6 +2639,7 @@ fn semantic_commit_from_promotion(
             trust_summary: preview.map(|value| value.trust_summary.clone()),
             rule_summary: preview.map(|value| value.rule_summary.clone()),
             coverage_summary: preview.map(|value| value.coverage_summary.clone()),
+            runtime_theory_check: preview.and_then(|value| value.runtime_theory_check.clone()),
             evidence_blobs_added: Vec::new(),
             certificate_refs_added: event.constraints_cert_path.clone().into_iter().collect(),
             quality_report_refs_added: event.quality_report_path.clone().into_iter().collect(),
@@ -2681,6 +2735,7 @@ fn semantic_commit_from_reconciliation(
             trust_summary: Some(preview.trust_summary.clone()),
             rule_summary: Some(preview.rule_summary.clone()),
             coverage_summary: Some(preview.coverage_summary.clone()),
+            runtime_theory_check: preview.runtime_theory_check.clone(),
             evidence_blobs_added: Vec::new(),
             certificate_refs_added: reconciliation.certificate_refs.clone(),
             quality_report_refs_added: Vec::new(),
@@ -2883,6 +2938,7 @@ fn semantic_commit_from_projection_manifest(
             trust_summary: None,
             rule_summary: None,
             coverage_summary: None,
+            runtime_theory_check: None,
             evidence_blobs_added: Vec::new(),
             certificate_refs_added: Vec::new(),
             quality_report_refs_added: Vec::new(),
@@ -2959,6 +3015,10 @@ fn semantic_commit_from_pathdb_overlay(
             trust_summary: None,
             rule_summary: None,
             coverage_summary: None,
+            runtime_theory_check: options
+                .gate_summary
+                .as_ref()
+                .and_then(|summary| summary.runtime_theory_check.clone()),
             evidence_blobs_added: options.proposal_digests.clone(),
             certificate_refs_added: Vec::new(),
             quality_report_refs_added: Vec::new(),
@@ -3398,6 +3458,7 @@ fn sem_delta_is_empty(delta: &SemDeltaV1) -> bool {
         && delta.trust_summary.is_none()
         && delta.rule_summary.is_none()
         && delta.coverage_summary.is_none()
+        && delta.runtime_theory_check.is_none()
         && delta.evidence_blobs_added.is_empty()
         && delta.certificate_refs_added.is_empty()
         && delta.quality_report_refs_added.is_empty()
@@ -3465,6 +3526,10 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                 trust_summary: None,
                 rule_summary: None,
                 coverage_summary: None,
+                runtime_theory_check: commit
+                    .gate_summary
+                    .as_ref()
+                    .and_then(|summary| summary.runtime_theory_check.clone()),
                 evidence_blobs_added: commit.proposal_digests.clone(),
                 certificate_refs_added: Vec::new(),
                 quality_report_refs_added: Vec::new(),
@@ -3496,6 +3561,7 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                 trust_summary: None,
                 rule_summary: None,
                 coverage_summary: None,
+                runtime_theory_check: None,
                 evidence_blobs_added: Vec::new(),
                 certificate_refs_added: Vec::new(),
                 quality_report_refs_added: Vec::new(),
@@ -3512,6 +3578,10 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                 trust_summary: None,
                 rule_summary: None,
                 coverage_summary: None,
+                runtime_theory_check: commit
+                    .gate_summary
+                    .as_ref()
+                    .and_then(|summary| summary.runtime_theory_check.clone()),
                 evidence_blobs_added: Vec::new(),
                 certificate_refs_added: commit.constraints_cert_path.clone().into_iter().collect(),
                 quality_report_refs_added: commit.quality_report_path.clone().into_iter().collect(),
@@ -3934,8 +4004,30 @@ mod tests {
         }
     }
 
+    fn sample_runtime_theory_summary() -> crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1 {
+        crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1 {
+            version: "runtime_theory_check_summary_v1".to_string(),
+            report_version: "runtime_theory_check_report_v1".to_string(),
+            module_digest: "fnv1a64:promotion-module".to_string(),
+            theory_count: 1,
+            checked_obligations: 1,
+            review_only_obligations: 0,
+            residual_obligations: 0,
+            blocked_obligations: 0,
+            excluded_by_evidence: 0,
+            blocking_errors: 0,
+            closure_tiers: vec!["finite_fragment".to_string()],
+            closure_trace: Default::default(),
+            transport_summary: Default::default(),
+            completeness_claim: "claimed_under_finite_fragment".to_string(),
+            ontology_closure_claim: "claimed_under_finite_fragment".to_string(),
+            residual_obligation_ids: Vec::new(),
+            notes: vec!["test promotion theory summary".to_string()],
+        }
+    }
+
     fn sample_evolution_preview() -> crate::evolution_preview::EvolutionPreviewV1 {
-        crate::evolution_preview::build_evolution_preview_v1(
+        let mut preview = crate::evolution_preview::build_evolution_preview_v1(
             "accepted_promotion_preview",
             Some(AcceptedSnapshotId::new("fnv1a64:promotion-parent")),
             "PromotionDemo".to_string(),
@@ -3997,7 +4089,9 @@ mod tests {
             Some(sample_runtime_semantics()),
             std::iter::empty::<String>(),
             true,
-        )
+        );
+        preview.runtime_theory_check = Some(sample_runtime_theory_summary());
+        preview
     }
 
     fn seed_semantic_commit(
@@ -4521,6 +4615,9 @@ schema Fam:
   object Person
   relation Parent(child: Person, parent: Person)
 
+theory FamRules on Fam:
+  constraint functional Parent.child -> Parent.parent
+
 instance I of Fam:
   Person = {Alice, Bob, Carol}
   Parent = {(child=Carol, parent=Bob)}
@@ -4616,6 +4713,9 @@ schema Fam:
   object Person
   relation Parent(child: Person, parent: Person)
 
+theory FamRules on Fam:
+  constraint functional Parent.child -> Parent.parent
+
 instance I of Fam:
   Person = {Alice, Bob, Carol}
   Parent = {(child=Carol, parent=Bob)}
@@ -4680,6 +4780,15 @@ instance I of Fam:
             .expect("shared evolution preview");
         assert_eq!(evolution.kind, "accepted_promotion_preview");
         assert_eq!(evolution.typed_change.kind, "accepted_module_delta");
+        assert!(evolution.runtime_theory_check.is_some());
+        assert_eq!(
+            evolution
+                .runtime_theory_check
+                .as_ref()
+                .expect("runtime theory summary")
+                .completeness_claim,
+            "claimed_under_finite_fragment"
+        );
         assert!(evolution.typed_change.schema.added > 0);
         assert!(evolution.typed_change.instance.added > 0);
         assert_eq!(
@@ -4708,6 +4817,7 @@ instance I of Fam:
         let gate_summary = commit.gate_summary.as_ref().expect("commit gate summary");
         assert_eq!(gate_summary.kind, "accepted_promotion_preview");
         assert_eq!(gate_summary.candidate_label, "Promo");
+        assert!(gate_summary.runtime_theory_check.is_some());
         assert_eq!(
             gate_summary
                 .runtime_semantics
@@ -6172,6 +6282,15 @@ theory RefundRules on Refund:
             2
         );
         assert_eq!(
+            commit
+                .delta
+                .runtime_theory_check
+                .as_ref()
+                .expect("runtime theory check")
+                .completeness_claim,
+            "claimed_under_finite_fragment"
+        );
+        assert_eq!(
             commit.delta.quality_report_refs_added,
             vec!["quality/promotion.json".to_string()]
         );
@@ -6186,6 +6305,7 @@ theory RefundRules on Refund:
         );
         let gate_summary = commit.gate_summary.as_ref().expect("gate summary");
         assert_eq!(gate_summary.trust.trust_class, "accepted_promotion_preview");
+        assert!(gate_summary.runtime_theory_check.is_some());
         assert_eq!(
             gate_summary
                 .competency

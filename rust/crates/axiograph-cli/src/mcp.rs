@@ -1,14 +1,23 @@
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, BufReader, Write};
+use std::future::Future;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ErrorData, Implementation, JsonObject, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+};
+use rmcp::service::RequestContext;
+use rmcp::{RoleServer, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use axiograph_pathdb::PathDB;
 
+#[cfg(test)]
 const JSONRPC_VERSION: &str = "2.0";
-const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
+#[cfg(test)]
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 pub(crate) fn cmd_mcp(args: crate::McpArgs) -> Result<()> {
     let runtime = crate::db_server::load_read_only_semantic_runtime(
@@ -18,36 +27,27 @@ pub(crate) fn cmd_mcp(args: crate::McpArgs) -> Result<()> {
         &args.snapshot,
     )?;
 
-    let mut server = SemanticMcpServer {
+    let server = SemanticMcpServer {
         runtime,
         tool_max_rows: args.tool_max_rows.clamp(1, 200),
     };
 
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut writer = stdout.lock();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime for rmcp semantic MCP server")?;
+    runtime.block_on(run_rmcp_mcp_stdio(server))
+}
 
-    loop {
-        let message = match read_message(&mut reader) {
-            Ok(Some(message)) => message,
-            Ok(None) => break,
-            Err(err) => {
-                let response = error_response(
-                    Value::Null,
-                    -32700,
-                    &format!("failed to parse MCP message: {err}"),
-                );
-                write_message(&mut writer, &response)?;
-                continue;
-            }
-        };
-
-        if let Some(response) = server.handle_message(message) {
-            write_message(&mut writer, &response)?;
-        }
-    }
-
+async fn run_rmcp_mcp_stdio(server: SemanticMcpServer) -> Result<()> {
+    let service = SemanticRmcpServer { server }
+        .serve(rmcp::transport::stdio())
+        .await
+        .context("serve Axiograph semantic MCP server with rmcp stdio transport")?;
+    service
+        .waiting()
+        .await
+        .context("wait for Axiograph semantic MCP server shutdown")?;
     Ok(())
 }
 
@@ -56,7 +56,53 @@ struct SemanticMcpServer {
     tool_max_rows: usize,
 }
 
+struct SemanticRmcpServer {
+    server: SemanticMcpServer,
+}
+
+impl rmcp::handler::server::ServerHandler for SemanticRmcpServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("axiograph-mcp", env!("CARGO_PKG_VERSION")))
+            .with_instructions(
+                "Read-only typed semantic MCP surface over Axiograph query elaboration, exploration, execution, and semantic rule reporting.",
+            )
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = std::result::Result<ListToolsResult, ErrorData>> + Send + '_ {
+        async move {
+            let tools = self
+                .server
+                .tool_definitions()
+                .into_iter()
+                .map(rmcp_tool_from_spec_value)
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(ListToolsResult::with_all_items(tools))
+        }
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = std::result::Result<CallToolResult, ErrorData>> + Send + '_ {
+        async move {
+            let name = request.name.to_string();
+            let arguments = Value::Object(request.arguments.unwrap_or_default());
+            match self.server.call_tool(&name, arguments) {
+                Ok(structured) => Ok(rmcp_tool_result(structured, false)),
+                Err(err) => Ok(rmcp_tool_result(json!({ "error": err.to_string() }), true)),
+            }
+        }
+    }
+}
+
 impl SemanticMcpServer {
+    #[cfg(test)]
     fn handle_message(&mut self, message: Value) -> Option<Value> {
         let id = message.get("id").cloned();
         let method = message.get("method").and_then(Value::as_str)?;
@@ -233,7 +279,7 @@ impl SemanticMcpServer {
         tools
     }
 
-    fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value> {
+    fn call_tool(&self, name: &str, arguments: Value) -> Result<Value> {
         match name {
             "axql_elaborate" => self.call_axql_elaborate(arguments),
             "axql_explore" => self.call_axql_explore(arguments),
@@ -278,7 +324,7 @@ impl SemanticMcpServer {
         }
     }
 
-    fn call_axql_elaborate(&mut self, arguments: Value) -> Result<Value> {
+    fn call_axql_elaborate(&self, arguments: Value) -> Result<Value> {
         let args: QueryToolArgs = serde_json::from_value(arguments)
             .map_err(|err| anyhow!("axql_elaborate: invalid args: {err}"))?;
         let prepared = self.prepare_query(with_bounded_limit(
@@ -300,7 +346,7 @@ impl SemanticMcpServer {
         }))
     }
 
-    fn call_axql_explore(&mut self, arguments: Value) -> Result<Value> {
+    fn call_axql_explore(&self, arguments: Value) -> Result<Value> {
         let args: ExploreToolArgs = serde_json::from_value(arguments)
             .map_err(|err| anyhow!("axql_explore: invalid args: {err}"))?;
         let prepared = self.prepare_query(args.query_ir_v1)?;
@@ -318,7 +364,7 @@ impl SemanticMcpServer {
         }))
     }
 
-    fn call_axql_run(&mut self, arguments: Value) -> Result<Value> {
+    fn call_axql_run(&self, arguments: Value) -> Result<Value> {
         let args: QueryToolArgs = serde_json::from_value(arguments)
             .map_err(|err| anyhow!("axql_run: invalid args: {err}"))?;
         let mut prepared = self.prepare_query(with_bounded_limit(
@@ -376,6 +422,49 @@ impl SemanticMcpServer {
     }
 }
 
+fn rmcp_tool_from_spec_value(value: Value) -> std::result::Result<Tool, ErrorData> {
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ErrorData::internal_error("MCP tool spec is missing name", Some(value.clone()))
+        })?
+        .to_string();
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("Axiograph semantic MCP tool.")
+        .to_string();
+    let input_schema = value
+        .get("inputSchema")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_else(default_object_schema);
+
+    Ok(Tool::new(name, description, Arc::new(input_schema))
+        .with_raw_output_schema(Arc::new(default_object_schema()))
+        .with_annotations(ToolAnnotations::new().read_only(true).destructive(false)))
+}
+
+fn rmcp_tool_result(structured: Value, is_error: bool) -> CallToolResult {
+    if is_error {
+        CallToolResult::structured_error(structured)
+    } else {
+        CallToolResult::structured(structured)
+    }
+}
+
+fn default_object_schema() -> JsonObject {
+    match json!({
+        "type": "object",
+        "additionalProperties": true
+    }) {
+        Value::Object(map) => map,
+        _ => JsonObject::default(),
+    }
+}
+
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 struct ToolCallParams {
     name: String,
@@ -459,54 +548,7 @@ fn with_bounded_limit(
     query_ir_v1
 }
 
-fn read_message<R: BufRead>(reader: &mut R) -> Result<Option<Value>> {
-    let mut content_length: Option<usize> = None;
-    let mut line = String::new();
-
-    loop {
-        line.clear();
-        let read = reader.read_line(&mut line)?;
-        if read == 0 {
-            if content_length.is_none() {
-                return Ok(None);
-            }
-            return Err(anyhow!("unexpected EOF while reading MCP headers"));
-        }
-
-        if line == "\r\n" || line == "\n" {
-            break;
-        }
-
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if let Some(raw_len) = trimmed.strip_prefix("Content-Length:") {
-            content_length = Some(
-                raw_len
-                    .trim()
-                    .parse()
-                    .context("invalid Content-Length header")?,
-            );
-        }
-    }
-
-    let content_length = content_length.ok_or_else(|| anyhow!("missing Content-Length header"))?;
-    let mut body = vec![0_u8; content_length];
-    reader.read_exact(&mut body)?;
-    let value = serde_json::from_slice(&body).context("invalid MCP JSON body")?;
-    Ok(Some(value))
-}
-
-fn write_message<W: Write>(writer: &mut W, value: &Value) -> Result<()> {
-    let body = serde_json::to_vec(value)?;
-    write!(
-        writer,
-        "Content-Length: {}\r\nContent-Type: application/json\r\n\r\n",
-        body.len()
-    )?;
-    writer.write_all(&body)?;
-    writer.flush()?;
-    Ok(())
-}
-
+#[cfg(test)]
 fn success_response(id: Value, result: Value) -> Value {
     json!({
         "jsonrpc": JSONRPC_VERSION,
@@ -515,6 +557,7 @@ fn success_response(id: Value, result: Value) -> Value {
     })
 }
 
+#[cfg(test)]
 fn error_response(id: Value, code: i64, message: &str) -> Value {
     json!({
         "jsonrpc": JSONRPC_VERSION,
@@ -526,6 +569,7 @@ fn error_response(id: Value, code: i64, message: &str) -> Value {
     })
 }
 
+#[cfg(test)]
 fn pretty_json(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
@@ -1080,7 +1124,7 @@ instance I of S:
             AcceptedSnapshotId::new("accepted:test"),
             AxiDigest::from_axi_text(axi),
         );
-        let mut server = SemanticMcpServer {
+        let server = SemanticMcpServer {
             runtime: crate::db_server::ReadOnlySemanticRuntime {
                 snapshot_key: "support-summary-snapshot".to_string(),
                 accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:test")),

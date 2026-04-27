@@ -1098,8 +1098,7 @@ impl TheoryIr {
             obligation_statuses,
             trust_boundary: "outside_trusted_kernel".to_string(),
             completeness_claim:
-                "use RuntimeTheoryCheckReportV1 for scoped runtime completeness claims"
-                    .to_string(),
+                "use RuntimeTheoryCheckReportV1 for scoped runtime completeness claims".to_string(),
             ontology_closure_claim:
                 "use RuntimeTheoryCheckReportV1 for scoped runtime closure claims".to_string(),
             notes,

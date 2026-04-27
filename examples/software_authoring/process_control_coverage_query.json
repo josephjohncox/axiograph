@@ -1,0 +1,34 @@
+{
+  "coverage_mode": "exploratory",
+  "terms": [
+    "charge authorization",
+    "material certificate",
+    "safe charge window",
+    "PLC interlock",
+    "HMI release"
+  ],
+  "relation_names": [
+    "BatchHasCertifiedMaterial",
+    "SimulationSupportsAction",
+    "InterlockAllowsAction",
+    "BatchClearedForCharge"
+  ],
+  "cq_names": [
+    "batch_has_certified_material",
+    "batch_cleared_for_charge"
+  ],
+  "code_refs": [
+    "services/erp/internal/materials/certification.go",
+    "simulators/reactor_charge/model.py",
+    "plc/safety/interlocks/reactor_charge.st",
+    "apps/hmi/src/charge-release.tsx"
+  ],
+  "surface_hints": [
+    "erp",
+    "simulator",
+    "plc",
+    "hmi"
+  ],
+  "axql": "select ?f where ?f = ProcessControl.BatchClearedForCharge(batch=Batch_42, reactor=Reactor_A, ctx=Accepted, time=T1) limit 1",
+  "max_matches": 10
+}

@@ -228,6 +228,8 @@ fn behavior_case_example_fixture_runs() {
         .arg("examples/industrial/RegulatedProductionLine.axi")
         .arg("--request")
         .arg("examples/behavior_cases/regulated_ship_release.json")
+        .arg("--overlay")
+        .arg("examples/behavior_cases/regulated_ship_release_overlay.json")
         .arg("--out")
         .arg(&out_path)
         .status()
@@ -242,7 +244,10 @@ fn behavior_case_example_fixture_runs() {
     let report_text = fs::read_to_string(&out_path).expect("read behavior-case report");
     let report: serde_json::Value =
         serde_json::from_str(&report_text).expect("parse behavior-case report");
-    assert_eq!(report["version"], serde_json::json!("behavior_case_report_v1"));
+    assert_eq!(
+        report["version"],
+        serde_json::json!("behavior_case_report_v1")
+    );
     assert_eq!(
         report["behavior_case"]["case_id"],
         serde_json::json!("industrial.ship_released_order")
@@ -254,6 +259,579 @@ fn behavior_case_example_fixture_runs() {
             .iter()
             .any(|preview| preview["language"] == serde_json::json!("rust")),
         "expected Rust test skeleton preview"
+    );
+}
+
+#[test]
+fn software_authoring_behavior_case_emits_multi_language_skeletons() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "software_authoring_behavior_case");
+    let out_path = run_dir.join("build/order_fulfillment_behavior_case_report.json");
+
+    let status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("discover")
+        .arg("behavior-case")
+        .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
+        .arg("--request")
+        .arg("examples/software_authoring/order_fulfillment_behavior_case.json")
+        .arg("--overlay")
+        .arg("examples/software_authoring/order_fulfillment_tooling_overlay.json")
+        .arg("--out")
+        .arg(&out_path)
+        .status()
+        .expect("run software-authoring behavior-case example fixture");
+
+    assert!(
+        status.success(),
+        "software-authoring behavior-case example failed (exit={})",
+        status.code().unwrap_or(-1)
+    );
+
+    let report_text = fs::read_to_string(&out_path).expect("read behavior-case report");
+    let report: serde_json::Value =
+        serde_json::from_str(&report_text).expect("parse behavior-case report");
+    assert_eq!(
+        report["behavior_case"]["case_id"],
+        serde_json::json!("software_authoring.reserve_credit")
+    );
+
+    let languages = report["codegen_previews"]
+        .as_array()
+        .expect("codegen_previews array")
+        .iter()
+        .map(|preview| preview["language"].as_str().unwrap_or_default().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        languages,
+        ["go", "python", "rust", "typescript"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    );
+    assert!(
+        report["codegen_previews"]
+            .as_array()
+            .expect("codegen_previews array")
+            .iter()
+            .any(|preview| preview["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Bind this receipt to the real application service")),
+        "expected implementation-facing skeleton guidance"
+    );
+}
+
+#[test]
+fn software_authoring_example_crate_runs_continuous_semantic_coverage() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "software_authoring_example_crate");
+    let behavior_report = run_dir.join("build/order_fulfillment_behavior_case_report.json");
+    let continuous_report = run_dir.join("build/example_crate_continuous_coverage.json");
+
+    let behavior_status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("discover")
+        .arg("behavior-case")
+        .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
+        .arg("--request")
+        .arg("examples/software_authoring/order_fulfillment_behavior_case.json")
+        .arg("--overlay")
+        .arg("examples/software_authoring/order_fulfillment_tooling_overlay.json")
+        .arg("--out")
+        .arg(&behavior_report)
+        .status()
+        .expect("run behavior-case before software-authoring example crate");
+    assert!(
+        behavior_status.success(),
+        "behavior-case setup failed for software-authoring example crate"
+    );
+
+    let example_status = Command::new("cargo")
+        .current_dir(&repo_root)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg("rust/Cargo.toml")
+        .arg("-p")
+        .arg("axiograph-example-software-authoring")
+        .arg("--bin")
+        .arg("axiograph-software-authoring-example")
+        .arg("--")
+        .arg("continuous-check")
+        .arg("--behavior-report")
+        .arg(&behavior_report)
+        .arg("--repo-root")
+        .arg(&repo_root)
+        .arg("--out")
+        .arg(&continuous_report)
+        .status()
+        .expect("run software-authoring example crate");
+    assert!(
+        example_status.success(),
+        "software-authoring example crate failed"
+    );
+
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&continuous_report).expect("read continuous coverage report"),
+    )
+    .expect("parse continuous coverage report");
+    assert_eq!(
+        report["version"],
+        serde_json::json!("software_authoring_example_continuous_check_v1")
+    );
+    assert_eq!(report["coverage_report"]["pass"], serde_json::json!(true));
+    assert!(report["coverage_report"]["present_codegen_languages"]
+        .as_array()
+        .expect("present codegen languages")
+        .iter()
+        .any(|language| language == "rust"));
+}
+
+#[test]
+fn software_authoring_overlay_tools_support_weak_and_enforced_modes() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "software_authoring_overlay_tools");
+    let overlay_report = run_dir.join("build/order_fulfillment_overlay_report.json");
+    let define_report = run_dir.join("build/order_fulfillment_definition_report.json");
+    let coverage_query_report = run_dir.join("build/order_fulfillment_coverage_query_report.json");
+    let coverage_report = run_dir.join("build/order_fulfillment_software_coverage.json");
+
+    let overlay_status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("discover")
+        .arg("overlay-check")
+        .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
+        .arg("--overlay")
+        .arg("examples/software_authoring/order_fulfillment_tooling_overlay.json")
+        .arg("--out")
+        .arg(&overlay_report)
+        .status()
+        .expect("run overlay-check");
+    assert!(overlay_status.success(), "overlay-check failed");
+
+    let overlay_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&overlay_report).expect("read overlay report"))
+            .expect("parse overlay report");
+    assert_eq!(
+        overlay_json["version"],
+        serde_json::json!("overlay_validation_report_v1")
+    );
+    assert_eq!(overlay_json["valid"], serde_json::json!(true));
+
+    let define_status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("discover")
+        .arg("define")
+        .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
+        .arg("--overlay")
+        .arg("examples/software_authoring/order_fulfillment_tooling_overlay.json")
+        .arg("--prompt")
+        .arg("define the shipment eligibility business rule")
+        .arg("--kind-hint")
+        .arg("business_rule")
+        .arg("--include-queries")
+        .arg("--out")
+        .arg(&define_report)
+        .status()
+        .expect("run definition query");
+    assert!(define_status.success(), "definition query failed");
+    let define_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&define_report).expect("read define report"))
+            .expect("parse define report");
+    assert_eq!(
+        define_json["coverage_mode"],
+        serde_json::json!("definition_query")
+    );
+    assert!(
+        define_json["candidates"]
+            .as_array()
+            .expect("candidates array")
+            .iter()
+            .any(|candidate| candidate["ref_id"] == serde_json::json!("rule:shipment-eligibility")),
+        "definition query should surface the overlay business-rule binding"
+    );
+
+    let query_status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("discover")
+        .arg("coverage-query")
+        .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
+        .arg("--overlay")
+        .arg("examples/software_authoring/order_fulfillment_tooling_overlay.json")
+        .arg("--query")
+        .arg("examples/software_authoring/order_fulfillment_coverage_query.json")
+        .arg("--out")
+        .arg(&coverage_query_report)
+        .status()
+        .expect("run coverage query");
+    assert!(query_status.success(), "coverage query failed");
+    let query_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&coverage_query_report).expect("read coverage query report"),
+    )
+    .expect("parse coverage query report");
+    assert_eq!(
+        query_json["coverage_mode"],
+        serde_json::json!("exploratory")
+    );
+    assert!(query_json["caveats"]
+        .as_array()
+        .expect("caveats array")
+        .iter()
+        .any(|caveat| caveat
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot satisfy promotion gates")));
+
+    let coverage_status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("check")
+        .arg("software-coverage")
+        .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
+        .arg("--behavior-case")
+        .arg("examples/software_authoring/order_fulfillment_behavior_case.json")
+        .arg("--overlay")
+        .arg("examples/software_authoring/order_fulfillment_tooling_overlay.json")
+        .arg("--out")
+        .arg(&coverage_report)
+        .status()
+        .expect("run software coverage");
+    assert!(coverage_status.success(), "software coverage failed");
+    let coverage_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&coverage_report).expect("read coverage report"))
+            .expect("parse coverage report");
+    assert_eq!(
+        coverage_json["version"],
+        serde_json::json!("continuous_software_coverage_report_v1")
+    );
+    assert_eq!(
+        coverage_json["coverage_mode"],
+        serde_json::json!("advisory")
+    );
+}
+
+#[test]
+fn software_authoring_script_runs_authoring_flow() {
+    let repo_root = repo_root();
+    let run_dir = unique_run_dir(&repo_root, "software_authoring_script");
+    let out_dir = run_dir.join("build/authoring_flow");
+    let script = repo_root.join("examples/software_authoring/run_authoring_flow.sh");
+
+    let output = Command::new(&script)
+        .current_dir(&repo_root)
+        .env("AXIOGRAPH_BIN", axiograph_bin())
+        .arg(&out_dir)
+        .output()
+        .expect("run software-authoring script");
+
+    assert!(
+        output.status.success(),
+        "software-authoring script failed (exit={})\nstdout={}\nstderr={}",
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for file in [
+        "theory_check.json",
+        "overlay_validation.json",
+        "coverage_query.json",
+        "behavior_case_report.json",
+        "software_coverage.json",
+        "materialize_skeletons.json",
+        "definitions/define_reserve_credit_process.json",
+        "definitions/define_shipment_eligibility_business_rule.json",
+        "definitions/define_checkout_function.json",
+    ] {
+        assert!(
+            out_dir.join(file).exists(),
+            "script should produce {}",
+            out_dir.join(file).display()
+        );
+    }
+
+    let coverage_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(out_dir.join("software_coverage.json"))
+            .expect("read scripted software coverage"),
+    )
+    .expect("parse scripted software coverage");
+    assert_eq!(
+        coverage_json["version"],
+        serde_json::json!("continuous_software_coverage_report_v1")
+    );
+
+    let materialized_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(out_dir.join("materialize_skeletons.json"))
+            .expect("read materialization report"),
+    )
+    .expect("parse materialization report");
+    assert_eq!(
+        materialized_json["version"],
+        serde_json::json!("codegen_materialization_report_v1")
+    );
+    assert!(
+        materialized_json["written_files"]
+            .as_array()
+            .expect("written_files array")
+            .len()
+            >= 4,
+        "expected generated skeletons for the multi-language authoring example"
+    );
+}
+
+#[test]
+fn software_authoring_codegen_suite_runs_new_examples() {
+    let repo_root = repo_root();
+    let script = repo_root.join("examples/software_authoring/run_codegen_examples.sh");
+    let suite = repo_root.join("examples/software_authoring/software_authoring_examples.json");
+
+    for example_id in ["subscription_billing", "process_control"] {
+        let run_dir = unique_run_dir(
+            &repo_root,
+            &format!("software_authoring_codegen_suite_{example_id}"),
+        );
+        let out_root = run_dir.join("build/codegen_examples");
+
+        let output = Command::new(&script)
+            .current_dir(&repo_root)
+            .env("AXIOGRAPH_BIN", axiograph_bin())
+            .env("EXAMPLE_ID", example_id)
+            .arg(&suite)
+            .arg(&out_root)
+            .output()
+            .expect("run software-authoring codegen suite");
+
+        assert!(
+            output.status.success(),
+            "software-authoring codegen suite failed for {example_id} (exit={})\nstdout={}\nstderr={}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let example_out = out_root.join(example_id);
+        for file in [
+            "theory_check.json",
+            "overlay_validation.json",
+            "coverage_query.json",
+            "behavior_case_report.json",
+            "software_coverage.json",
+            "materialize_skeletons.json",
+        ] {
+            assert!(
+                example_out.join(file).exists(),
+                "suite should produce {}",
+                example_out.join(file).display()
+            );
+        }
+
+        let materialized_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(example_out.join("materialize_skeletons.json"))
+                .expect("read materialization report"),
+        )
+        .expect("parse materialization report");
+        assert_eq!(
+            materialized_json["version"],
+            serde_json::json!("codegen_materialization_report_v1")
+        );
+        assert!(
+            materialized_json["written_files"]
+                .as_array()
+                .expect("written_files array")
+                .len()
+                >= 4,
+            "expected multi-language skeletons for {example_id}"
+        );
+    }
+}
+
+#[test]
+fn software_authoring_cli_exposes_codegen_and_editor_contracts() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "software_authoring_cli_contracts");
+    let codegen_plan = run_dir.join("build/codegen_plan.json");
+    let tool_specs = run_dir.join("build/tool_specs.json");
+    let lsp = run_dir.join("build/lsp_capabilities.json");
+    let integration_manifest = run_dir.join("build/integration_manifest.json");
+
+    let codegen = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("authoring")
+        .arg("codegen-plan")
+        .arg("--overlay")
+        .arg("examples/software_authoring/process_control_tooling_overlay.json")
+        .arg("--out")
+        .arg(&codegen_plan)
+        .status()
+        .expect("run authoring codegen-plan");
+    assert!(codegen.success(), "authoring codegen-plan failed");
+
+    let specs = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("authoring")
+        .arg("tool-specs")
+        .arg("--out")
+        .arg(&tool_specs)
+        .status()
+        .expect("run authoring tool-specs");
+    assert!(specs.success(), "authoring tool-specs failed");
+
+    let lsp_status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("authoring")
+        .arg("lsp-capabilities")
+        .arg("--out")
+        .arg(&lsp)
+        .status()
+        .expect("run authoring lsp-capabilities");
+    assert!(lsp_status.success(), "authoring lsp-capabilities failed");
+
+    let manifest_status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("authoring")
+        .arg("integration-manifest")
+        .arg("--out")
+        .arg(&integration_manifest)
+        .status()
+        .expect("run authoring integration-manifest");
+    assert!(
+        manifest_status.success(),
+        "authoring integration-manifest failed"
+    );
+
+    let codegen_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&codegen_plan).expect("read codegen plan"))
+            .expect("parse codegen plan");
+    assert_eq!(
+        codegen_json["version"],
+        serde_json::json!("codegen_plan_report_v1")
+    );
+    assert!(codegen_json["file_hints"]
+        .as_array()
+        .expect("file_hints array")
+        .iter()
+        .any(|hint| hint.as_str().unwrap_or_default().ends_with(".rs")));
+
+    let specs_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&tool_specs).expect("read tool specs"))
+            .expect("parse tool specs");
+    assert_eq!(
+        specs_json["version"],
+        serde_json::json!("axiograph_software_authoring_tool_specs_v1")
+    );
+
+    let lsp_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&lsp).expect("read lsp capabilities"))
+            .expect("parse lsp capabilities");
+    assert_eq!(
+        lsp_json["version"],
+        serde_json::json!("axiograph_software_authoring_lsp_capabilities_v1")
+    );
+
+    let manifest_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&integration_manifest).expect("read integration manifest"),
+    )
+    .expect("parse integration manifest");
+    assert_eq!(
+        manifest_json["version"],
+        serde_json::json!("axiograph_software_authoring_integration_manifest_v1")
+    );
+    assert_eq!(
+        manifest_json["lsp"]["args"],
+        serde_json::json!(["authoring", "lsp"])
+    );
+    assert_eq!(
+        manifest_json["mcp"]["args"],
+        serde_json::json!(["authoring", "mcp"])
+    );
+    assert!(manifest_json["mcp"]["tools"]
+        .as_array()
+        .expect("mcp tools")
+        .iter()
+        .any(|tool| tool["name"] == serde_json::json!("axiograph_authoring_codegen_plan")));
+}
+
+#[test]
+fn stale_embedded_tooling_behavior_case_fields_fail_clearly() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "stale_behavior_case_schema");
+    let stale_request = run_dir.join("stale_behavior_case.json");
+    fs::write(
+        &stale_request,
+        r#"{
+  "behavior_case": {
+    "case_id": "software_authoring.stale",
+    "title": "Stale embedded tooling field",
+    "context": {
+      "context_id": "bounded-context:stale",
+      "label": "Stale"
+    }
+  }
+}
+"#,
+    )
+    .expect("write stale request");
+
+    let output = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("discover")
+        .arg("behavior-case")
+        .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
+        .arg("--request")
+        .arg(&stale_request)
+        .arg("--overlay")
+        .arg("examples/software_authoring/order_fulfillment_tooling_overlay.json")
+        .output()
+        .expect("run stale behavior-case");
+    assert!(
+        !output.status.success(),
+        "stale embedded behavior-case fields should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown field `context`") || stderr.contains("context"),
+        "expected stale schema error mentioning context, got: {stderr}"
+    );
+}
+
+#[test]
+fn software_authoring_runtime_theory_check_reports_closure_trace() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+
+    let output = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("check")
+        .arg("theory")
+        .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
+        .arg("--closure-tier")
+        .arg("evidence_weighted")
+        .arg("--world-id")
+        .arg("review:order-fulfillment")
+        .arg("--evidence-threshold-ppm")
+        .arg("700000")
+        .arg("--weighted-evidence")
+        .output()
+        .expect("run software-authoring runtime theory check");
+
+    assert!(
+        output.status.success(),
+        "software-authoring runtime theory check failed (exit={}) stderr={}",
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("closure trace:"),
+        "expected human summary to expose closure trace, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("ontology_closed=true"),
+        "expected ontology closure claim under declared assumptions, got: {stdout}"
     );
 }
 

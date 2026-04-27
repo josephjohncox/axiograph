@@ -1,0 +1,28 @@
+{
+  "description": "Generic editor/LSP config for launching the Rust lsp-server/lsp-types-backed Axiograph authoring diagnostics and code actions.",
+  "language_id": "axiograph",
+  "command": "axiograph",
+  "args": [
+    "authoring",
+    "lsp"
+  ],
+  "document_selector": [
+    {
+      "language": "axiograph",
+      "pattern": "**/*.axi"
+    },
+    {
+      "language": "json",
+      "pattern": "**/*tooling_overlay*.json"
+    },
+    {
+      "language": "json",
+      "pattern": "**/*behavior_case*.json"
+    }
+  ],
+  "notes": [
+    "Use the built axiograph binary on PATH, or replace command with an absolute path.",
+    "The canonical generated contract is `axiograph authoring integration-manifest`.",
+    "The LSP server is for diagnostics and read-only command execution; it does not mutate accepted ontology state."
+  ]
+}

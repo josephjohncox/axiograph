@@ -11,6 +11,7 @@ Related roadmaps:
 - `docs/roadmaps/ROADMAP_MATHEMATICAL.md`
 - `docs/roadmaps/ROADMAP_PRODUCTION_READINESS.md`
 - `docs/roadmaps/ROADMAP_SEMANTIC_MERGE_LATTICE.md`
+- `docs/roadmaps/ROADMAP_TOOLING_OVERLAY_SEPARATION.md`
 
 ## Highest-Priority Work
 
@@ -36,6 +37,10 @@ Related roadmaps:
   tooling through `query_ir_v1`, prepared query handles, structured
   diagnostics, anchor-aware answers, trust contracts, and soundness-scoped
   certificates.
+- [~] Prefer maintained Rust crates over custom protocol/core infrastructure
+  where Axiograph semantics do not require custom logic. Current choices:
+  `rmcp` for MCP stdio servers, `lsp-server`/`lsp-types` for LSP/editor
+  surfaces, and `hyper`/`http-body-util` for the DB HTTP server.
 - [~] Treat migration as typed transport plus explicit reindexing over stable
   semantic ids, including preserved, reindexed, split, merged, dropped, and
   residual comparability obligations. Current slice adds
@@ -69,6 +74,11 @@ Related roadmaps:
 - [ ] Make the typed lifecycle useful for co-evolving real engineering systems:
   simulators, optimizers, PLC logic, HMI views, reports, ERP/MRP surfaces, SOPs,
   code, tests, and deployment artifacts.
+- [ ] Refactor DDD/fDDD, BDD, implementation-surface, coverage, and codegen
+  concepts out of ordinary domain `.axi` examples and into typed overlay
+  manifests. Canonical `.axi` should model domain meaning; tools should use the
+  ontology through stable compiled IR refs. Track the detailed plan in
+  `docs/roadmaps/ROADMAP_TOOLING_OVERLAY_SEPARATION.md`.
 - [ ] Keep AI/world-model outputs evidence-plane but richly typed: run anchors,
   proposal-set digests, grounded evidence links, candidate schema/theory/olog
   deltas, and explicit preview failures.
@@ -126,6 +136,9 @@ Related roadmaps:
 - [x] Examples now have a teaching catalog, directory guides, a BehaviorCaseV1
   fixture, and an expanded canonical `.axi` corpus so agents can route examples
   by feature instead of by historical script names.
+- [~] First software-authoring continuous coverage crate exists, but its
+  current example still over-embeds DDD/tooling concepts in `.axi`; the next
+  slice is the overlay separation refactor.
 
 ## Lean And Certificates
 
@@ -185,6 +198,9 @@ Related roadmaps:
 - [ ] Make type-driven ontology usefulness explicit in user tooling:
   schema-first exploration, olog-fragment synthesis, candidate constraints,
   path equations, rewrite-rule discovery, and previewable `.axi` deltas.
+- [ ] Make DDD/fDDD/BDD/codegen/coverage tooling consume ontology refs instead
+  of requiring those engineering-method concepts to be represented inside the
+  business ontology.
 - [ ] Make olog authoring a review bundle over the canonical IR: stable ids,
   relation boxes, aspects, path equations, CQs, provenance, trust metadata, and
   typed refinement handles.

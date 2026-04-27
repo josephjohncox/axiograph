@@ -1,0 +1,68 @@
+{
+  "behavior_case": {
+    "case_id": "process_control.charge_authorization",
+    "title": "Certified material and safe charge window authorize reactor charge",
+    "summary": "Domain-only behavior case for plant process-control authorization. Simulator, HMI, PLC, ERP, and codegen surfaces are overlay data.",
+    "given": {
+      "snapshot_label": "accepted process-control ontology seed",
+      "world": "accepted",
+      "facts": [
+        "BatchUsesMaterial(batch=Batch_42, lot=Lot_17, ctx=Accepted, time=T0)",
+        "MaterialHasCertificate(lot=Lot_17, certificate=Cert_17, ctx=Accepted, time=T0)",
+        "SimulationSupportsAction(run=Sim_Charge_Window_42, action=OpenChargeValve, ctx=Accepted, time=T1)",
+        "InterlockAllowsAction(interlock=ChargeValveInterlock, action=OpenChargeValve, ctx=Accepted, time=T1)"
+      ],
+      "notes": [
+        "These are accepted semantic facts; simulator traces and PLC code refs live in the tooling overlay."
+      ]
+    },
+    "when": {
+      "kind": "query",
+      "label": "Ask whether the batch can be cleared for reactor charge"
+    },
+    "then": {
+      "expected_outcomes": [
+        "The material certificate is transported to the batch.",
+        "The simulation supports the charge action.",
+        "The interlock allows the charge action.",
+        "The batch is cleared for reactor charge in the accepted world."
+      ],
+      "competency_questions": [
+        {
+          "name": "batch_has_certified_material",
+          "question": "Can lot certification be seen at the batch level?",
+          "query": "select ?f where ?f = ProcessControl.BatchHasCertifiedMaterial(batch=Batch_42, certificate=Cert_17, ctx=Accepted, time=T1) limit 1",
+          "min_rows": 1,
+          "weight": 1.0
+        },
+        {
+          "name": "batch_cleared_for_charge",
+          "question": "Is the batch cleared for reactor charge under accepted evidence?",
+          "query": "select ?f where ?f = ProcessControl.BatchClearedForCharge(batch=Batch_42, reactor=Reactor_A, ctx=Accepted, time=T1) limit 1",
+          "min_rows": 1,
+          "weight": 1.0
+        }
+      ],
+      "rule_scopes": [
+        {
+          "schema": "ProcessControl",
+          "scope_class": "relation",
+          "relation": "BatchHasCertifiedMaterial"
+        },
+        {
+          "schema": "ProcessControl",
+          "scope_class": "relation",
+          "relation": "BatchClearedForCharge"
+        }
+      ],
+      "trust_target": "strong",
+      "notes": [
+        "This behavior case can drive service tests and coverage reports, but not direct PLC mutation."
+      ]
+    },
+    "notes": [
+      "The domain model remains representation-only; fDDD/tooling overlays drive engineering workflows."
+    ]
+  },
+  "lifecycle_state": "accepted"
+}

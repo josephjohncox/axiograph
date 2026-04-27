@@ -11,6 +11,14 @@ pub(crate) const SEMANTIC_AGENT_REPORT_TOOL_NAME: &str = "semantic_agent_report"
 pub(crate) const SEMANTIC_CONTEXT_REPORT_TOOL_NAME: &str = "semantic_context_report";
 pub(crate) const SEMANTIC_CONTEXT_MAP_TOOL_NAME: &str = "semantic_context_map";
 pub(crate) const SEMANTIC_BEHAVIOR_CASE_TOOL_NAME: &str = "semantic_behavior_case";
+pub(crate) const SEMANTIC_OVERLAY_CHECK_TOOL_NAME: &str = "semantic_overlay_check";
+pub(crate) const SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_NAME: &str = "semantic_behavior_case_plan";
+pub(crate) const SEMANTIC_SOFTWARE_COVERAGE_TOOL_NAME: &str = "semantic_software_coverage";
+pub(crate) const SEMANTIC_CODEGEN_PLAN_TOOL_NAME: &str = "semantic_codegen_plan";
+pub(crate) const SEMANTIC_OVERLAY_REFS_TOOL_NAME: &str = "semantic_overlay_refs";
+pub(crate) const SEMANTIC_COVERAGE_QUERY_TOOL_NAME: &str = "semantic_coverage_query";
+pub(crate) const SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME: &str = "semantic_weak_coverage_probe";
+pub(crate) const SEMANTIC_DEFINITION_QUERY_TOOL_NAME: &str = "semantic_definition_query";
 pub(crate) const SEMANTIC_SLICE_BUILD_TOOL_NAME: &str = "semantic_slice_build";
 pub(crate) const SEMANTIC_SLICE_SHOW_TOOL_NAME: &str = "semantic_slice_show";
 pub(crate) const SEMANTIC_SLICE_DIFF_TOOL_NAME: &str = "semantic_slice_diff";
@@ -26,6 +34,14 @@ const SEMANTIC_AGENT_REPORT_TOOL_VERSION: &str = "axiograph_semantic_agent_repor
 const SEMANTIC_CONTEXT_REPORT_TOOL_VERSION: &str = "axiograph_semantic_context_report_v1";
 const SEMANTIC_CONTEXT_MAP_TOOL_VERSION: &str = "axiograph_semantic_context_map_v1";
 const SEMANTIC_BEHAVIOR_CASE_TOOL_VERSION: &str = "axiograph_semantic_behavior_case_v1";
+const SEMANTIC_OVERLAY_CHECK_TOOL_VERSION: &str = "axiograph_semantic_overlay_check_v1";
+const SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_VERSION: &str = "axiograph_semantic_behavior_case_plan_v1";
+const SEMANTIC_SOFTWARE_COVERAGE_TOOL_VERSION: &str = "axiograph_semantic_software_coverage_v1";
+const SEMANTIC_CODEGEN_PLAN_TOOL_VERSION: &str = "axiograph_semantic_codegen_plan_v1";
+const SEMANTIC_OVERLAY_REFS_TOOL_VERSION: &str = "axiograph_semantic_overlay_refs_v1";
+const SEMANTIC_COVERAGE_QUERY_TOOL_VERSION: &str = "axiograph_semantic_coverage_query_v1";
+const SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_VERSION: &str = "axiograph_semantic_weak_coverage_probe_v1";
+const SEMANTIC_DEFINITION_QUERY_TOOL_VERSION: &str = "axiograph_semantic_definition_query_v1";
 const SEMANTIC_SLICE_BUILD_TOOL_VERSION: &str = "axiograph_semantic_slice_build_v1";
 const SEMANTIC_SLICE_SHOW_TOOL_VERSION: &str = "axiograph_semantic_slice_show_v1";
 const SEMANTIC_SLICE_DIFF_TOOL_VERSION: &str = "axiograph_semantic_slice_diff_v1";
@@ -131,6 +147,7 @@ pub(crate) struct SemanticContextMapArgs {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SemanticBehaviorCaseArgs {
     pub behavior_case: crate::behavior_case::BehaviorCaseV1,
+    pub overlay: axiograph_tooling_overlays::ToolingOverlayBundleV1,
     #[serde(default)]
     pub lifecycle_state: Option<String>,
     #[serde(default)]
@@ -141,6 +158,55 @@ pub(crate) struct SemanticBehaviorCaseArgs {
     pub runtime_theory_check_input: Option<crate::runtime_theory_check::RuntimeTheoryCheckInputV1>,
     #[serde(default)]
     pub codegen: crate::behavior_case::BehaviorCaseCodegenRequestV1,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticOverlayCheckArgs {
+    pub axi_text: String,
+    pub overlay: axiograph_tooling_overlays::ToolingOverlayBundleV1,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticSoftwareCoverageArgs {
+    pub behavior_report: Value,
+    pub overlay: axiograph_tooling_overlays::ToolingOverlayBundleV1,
+    #[serde(default)]
+    pub repo_root: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticCodegenPlanArgs {
+    pub overlay: axiograph_tooling_overlays::ToolingOverlayBundleV1,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticOverlayRefsArgs {
+    pub axi_text: String,
+    pub overlay: axiograph_tooling_overlays::ToolingOverlayBundleV1,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticCoverageQueryArgs {
+    pub axi_text: String,
+    pub query: axiograph_tooling_overlays::CoverageQueryV1,
+    #[serde(default)]
+    pub overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticWeakCoverageProbeArgs {
+    pub axi_text: String,
+    pub probe: axiograph_tooling_overlays::WeakCoverageProbeV1,
+    #[serde(default)]
+    pub overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticDefinitionQueryArgs {
+    pub axi_text: String,
+    pub query: axiograph_tooling_overlays::DefinitionQueryV1,
+    #[serde(default)]
+    pub overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -182,15 +248,6 @@ pub(crate) struct SemanticTheoryGraphArgs {
     pub theory: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct SemanticTheoryCheckArgs {
-    pub axi_text: String,
-    #[serde(default)]
-    pub theory: Option<String>,
-    #[serde(default)]
-    pub closure_tier: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SemanticBusinessRuleToolResultV1 {
     pub version: &'static str,
@@ -230,6 +287,43 @@ pub(crate) struct SemanticBehaviorCaseToolResultV1 {
     pub version: &'static str,
     pub accepted_snapshot_id: Option<AcceptedSnapshotId>,
     pub report: crate::behavior_case::BehaviorCaseReportV1,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SemanticOverlayCheckToolResultV1 {
+    pub version: &'static str,
+    pub report: axiograph_tooling_overlays::OverlayValidationReportV1,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SemanticSoftwareCoverageToolResultV1 {
+    pub version: &'static str,
+    pub report: axiograph_tooling_overlays::ContinuousSoftwareCoverageReportV1,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SemanticCodegenPlanToolResultV1 {
+    pub version: &'static str,
+    pub report: axiograph_tooling_overlays::CodegenPlanReportV1,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SemanticOverlayRefsToolResultV1 {
+    pub version: &'static str,
+    pub refs: Vec<axiograph_tooling_overlays::NormalizedOverlayRefV1>,
+    pub diagnostics: Vec<axiograph_tooling_overlays::OverlayDiagnosticV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SemanticCoverageQueryToolResultV1 {
+    pub version: &'static str,
+    pub report: axiograph_tooling_overlays::CoverageQueryReportV1,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SemanticDefinitionQueryToolResultV1 {
+    pub version: &'static str,
+    pub report: axiograph_tooling_overlays::DefinitionQueryReportV1,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -383,12 +477,13 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_BEHAVIOR_CASE_TOOL_NAME,
-            description: "Check a JSON BehaviorCaseV1 against bounded-context rules, CQ coverage, trust contracts, and emit a CaseReceiptV1 plus Rust/TypeScript test skeleton previews.",
+            description: "Check a domain-only BehaviorCaseV1 against a typed tooling overlay and emit a CaseReceiptV1 plus codegen previews.",
             input_schema: json!({
                 "type": "object",
-                "required": ["behavior_case"],
+                "required": ["behavior_case", "overlay"],
                 "properties": {
                     "behavior_case": behavior_case_json_schema(),
+                    "overlay": tooling_overlay_json_schema(),
                     "lifecycle_state": { "type": "string" },
                     "evolution_preview": { "type": "object" },
                     "runtime_theory_check": { "type": "object" },
@@ -400,11 +495,115 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                                 "type": "array",
                                 "items": {
                                     "type": "string",
-                                    "enum": ["rust", "typescript"]
+                                    "enum": ["go", "python", "rust", "typescript"]
                                 }
                             }
                         }
                     }
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_OVERLAY_CHECK_TOOL_NAME,
+            description: "Validate a typed DDD/fDDD/software tooling overlay against canonical .axi text and return resolvable refs plus diagnostics.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["axi_text", "overlay"],
+                "properties": {
+                    "axi_text": { "type": "string" },
+                    "overlay": tooling_overlay_json_schema()
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_NAME,
+            description: "Read-only alias for semantic_behavior_case for planning behavior cases from ontology plus tooling overlay.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["behavior_case", "overlay"],
+                "properties": {
+                    "behavior_case": behavior_case_json_schema(),
+                    "overlay": tooling_overlay_json_schema(),
+                    "lifecycle_state": { "type": "string" },
+                    "evolution_preview": { "type": "object" },
+                    "runtime_theory_check": { "type": "object" },
+                    "runtime_theory_check_input": { "type": "object" },
+                    "codegen": { "type": "object" }
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_SOFTWARE_COVERAGE_TOOL_NAME,
+            description: "Check a BehaviorCaseReportV1 JSON value against a typed overlay policy for continuous software coverage.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["behavior_report", "overlay"],
+                "properties": {
+                    "behavior_report": { "type": "object" },
+                    "overlay": tooling_overlay_json_schema(),
+                    "repo_root": { "type": "string" }
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_CODEGEN_PLAN_TOOL_NAME,
+            description: "Return codegen skeleton file hints from a typed overlay without materializing files.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["overlay"],
+                "properties": {
+                    "overlay": tooling_overlay_json_schema()
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_OVERLAY_REFS_TOOL_NAME,
+            description: "List resolvable overlay refs and missing bindings against canonical .axi text.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["axi_text", "overlay"],
+                "properties": {
+                    "axi_text": { "type": "string" },
+                    "overlay": tooling_overlay_json_schema()
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_COVERAGE_QUERY_TOOL_NAME,
+            description: "Run a loose coverage query over ontology refs, optional overlay refs, code refs, CQ names, relation names, and surface hints.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["axi_text", "query"],
+                "properties": {
+                    "axi_text": { "type": "string" },
+                    "query": { "type": "object" },
+                    "overlay": tooling_overlay_json_schema()
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME,
+            description: "Best-effort advisory coverage probe; never satisfies enforced gates or accepted correctness claims.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["axi_text", "probe"],
+                "properties": {
+                    "axi_text": { "type": "string" },
+                    "probe": { "type": "object" },
+                    "overlay": tooling_overlay_json_schema()
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_DEFINITION_QUERY_TOOL_NAME,
+            description: "Weak definition query for prompts like 'define this process/function/business rule' with candidates, caveats, and suggested AxQL.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["axi_text", "query"],
+                "properties": {
+                    "axi_text": { "type": "string" },
+                    "query": { "type": "object" },
+                    "overlay": tooling_overlay_json_schema()
                 }
             }),
         },
@@ -504,7 +703,21 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                     "closure_tier": {
                         "type": "string",
                         "enum": ["finite_fragment", "evidence_weighted", "global_indexed"]
-                    }
+                    },
+                    "world_id": { "type": "string" },
+                    "finite_world": { "type": "boolean" },
+                    "included_refs": { "type": "array", "items": { "type": "string" } },
+                    "included_worlds": { "type": "array", "items": { "type": "string" } },
+                    "included_slices": { "type": "array", "items": { "type": "string" } },
+                    "included_imports": { "type": "array", "items": { "type": "string" } },
+                    "undeclared_imports": { "type": "array", "items": { "type": "string" } },
+                    "evidence_threshold_ppm": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+                    "evidence_semantics": {
+                        "type": "string",
+                        "enum": ["thresholded_world", "weighted_lattice", "deferred"]
+                    },
+                    "weighted_evidence": { "type": "boolean" },
+                    "evidence_weights": { "type": "array", "items": { "type": "string" } }
                 }
             }),
         },
@@ -520,6 +733,14 @@ pub(crate) fn is_semantic_tool(name: &str) -> bool {
             | SEMANTIC_CONTEXT_REPORT_TOOL_NAME
             | SEMANTIC_CONTEXT_MAP_TOOL_NAME
             | SEMANTIC_BEHAVIOR_CASE_TOOL_NAME
+            | SEMANTIC_OVERLAY_CHECK_TOOL_NAME
+            | SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_NAME
+            | SEMANTIC_SOFTWARE_COVERAGE_TOOL_NAME
+            | SEMANTIC_CODEGEN_PLAN_TOOL_NAME
+            | SEMANTIC_OVERLAY_REFS_TOOL_NAME
+            | SEMANTIC_COVERAGE_QUERY_TOOL_NAME
+            | SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME
+            | SEMANTIC_DEFINITION_QUERY_TOOL_NAME
             | SEMANTIC_SLICE_BUILD_TOOL_NAME
             | SEMANTIC_SLICE_SHOW_TOOL_NAME
             | SEMANTIC_SLICE_DIFF_TOOL_NAME
@@ -558,6 +779,31 @@ pub(crate) fn invoke_semantic_tool(
         SEMANTIC_BEHAVIOR_CASE_TOOL_NAME => {
             serde_json::to_value(call_semantic_behavior_case(context, arguments)?)
                 .map_err(Into::into)
+        }
+        SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_NAME => {
+            serde_json::to_value(call_semantic_behavior_case_plan(context, arguments)?)
+                .map_err(Into::into)
+        }
+        SEMANTIC_OVERLAY_CHECK_TOOL_NAME => {
+            serde_json::to_value(call_semantic_overlay_check(arguments)?).map_err(Into::into)
+        }
+        SEMANTIC_SOFTWARE_COVERAGE_TOOL_NAME => {
+            serde_json::to_value(call_semantic_software_coverage(arguments)?).map_err(Into::into)
+        }
+        SEMANTIC_CODEGEN_PLAN_TOOL_NAME => {
+            serde_json::to_value(call_semantic_codegen_plan(arguments)?).map_err(Into::into)
+        }
+        SEMANTIC_OVERLAY_REFS_TOOL_NAME => {
+            serde_json::to_value(call_semantic_overlay_refs(arguments)?).map_err(Into::into)
+        }
+        SEMANTIC_COVERAGE_QUERY_TOOL_NAME => {
+            serde_json::to_value(call_semantic_coverage_query(arguments)?).map_err(Into::into)
+        }
+        SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME => {
+            serde_json::to_value(call_semantic_weak_coverage_probe(arguments)?).map_err(Into::into)
+        }
+        SEMANTIC_DEFINITION_QUERY_TOOL_NAME => {
+            serde_json::to_value(call_semantic_definition_query(arguments)?).map_err(Into::into)
         }
         SEMANTIC_SLICE_BUILD_TOOL_NAME => {
             serde_json::to_value(call_semantic_slice_build(arguments)?).map_err(Into::into)
@@ -654,8 +900,10 @@ pub(crate) fn call_semantic_coverage(
     let accepted_snapshot_id = context.accepted_snapshot_id();
     let lifecycle_state = context.lifecycle_state(args.lifecycle_state);
     let meta = context.meta_plane()?;
-    let runtime_theory_check =
-        resolve_runtime_theory_check_summary(args.runtime_theory_check, args.runtime_theory_check_input)?;
+    let runtime_theory_check = resolve_runtime_theory_check_summary(
+        args.runtime_theory_check,
+        args.runtime_theory_check_input,
+    )?;
     let coverage = crate::semantic_claim::semantic_coverage_report(
         &meta,
         accepted_snapshot_id.clone(),
@@ -681,8 +929,10 @@ pub(crate) fn call_semantic_agent_report(
     let accepted_snapshot_id = context.accepted_snapshot_id();
     let lifecycle_state = context.lifecycle_state(args.lifecycle_state);
     let meta = context.meta_plane()?;
-    let runtime_theory_check =
-        resolve_runtime_theory_check_summary(args.runtime_theory_check, args.runtime_theory_check_input)?;
+    let runtime_theory_check = resolve_runtime_theory_check_summary(
+        args.runtime_theory_check,
+        args.runtime_theory_check_input,
+    )?;
     let report = crate::semantic_claim::agent_engineering_report(
         &meta,
         accepted_snapshot_id.clone(),
@@ -707,8 +957,10 @@ pub(crate) fn call_semantic_context_report(
     let args: SemanticContextReportArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_context_report: invalid args: {err}"))?;
     let accepted_snapshot_id = context.accepted_snapshot_id();
-    let runtime_theory_check =
-        resolve_runtime_theory_check_summary(args.runtime_theory_check, args.runtime_theory_check_input)?;
+    let runtime_theory_check = resolve_runtime_theory_check_summary(
+        args.runtime_theory_check,
+        args.runtime_theory_check_input,
+    )?;
     let report = crate::context_report::build_context_report(
         context.db,
         context.meta,
@@ -749,22 +1001,157 @@ pub(crate) fn call_semantic_behavior_case(
     let args: SemanticBehaviorCaseArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_behavior_case: invalid args: {err}"))?;
     let accepted_snapshot_id = context.accepted_snapshot_id();
-    let runtime_theory_check =
-        resolve_runtime_theory_check_summary(args.runtime_theory_check, args.runtime_theory_check_input)?;
+    let runtime_theory_check = resolve_runtime_theory_check_summary(
+        args.runtime_theory_check,
+        args.runtime_theory_check_input,
+    )?;
+    let codegen = if args.codegen.languages.is_empty() {
+        behavior_codegen_request_from_overlay(&args.overlay)?
+    } else {
+        args.codegen
+    };
     let report = crate::behavior_case::build_behavior_case_report(
         context.db,
         context.meta,
         accepted_snapshot_id.clone(),
         args.lifecycle_state.as_deref(),
         &args.behavior_case,
+        Some(&args.overlay),
         args.evolution_preview,
         runtime_theory_check,
-        &args.codegen,
+        &codegen,
     )?;
 
     Ok(SemanticBehaviorCaseToolResultV1 {
         version: SEMANTIC_BEHAVIOR_CASE_TOOL_VERSION,
         accepted_snapshot_id,
+        report,
+    })
+}
+
+pub(crate) fn call_semantic_behavior_case_plan(
+    context: SemanticToolContext<'_>,
+    arguments: Value,
+) -> Result<SemanticBehaviorCaseToolResultV1> {
+    let mut result = call_semantic_behavior_case(context, arguments)?;
+    result.version = SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_VERSION;
+    Ok(result)
+}
+
+pub(crate) fn call_semantic_overlay_check(
+    arguments: Value,
+) -> Result<SemanticOverlayCheckToolResultV1> {
+    let args: SemanticOverlayCheckArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_overlay_check: invalid args: {err}"))?;
+    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+        .map_err(|err| anyhow!("semantic_overlay_check: {err}"))?;
+    let report = axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &args.overlay);
+    Ok(SemanticOverlayCheckToolResultV1 {
+        version: SEMANTIC_OVERLAY_CHECK_TOOL_VERSION,
+        report,
+    })
+}
+
+pub(crate) fn call_semantic_software_coverage(
+    arguments: Value,
+) -> Result<SemanticSoftwareCoverageToolResultV1> {
+    let args: SemanticSoftwareCoverageArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_software_coverage: invalid args: {err}"))?;
+    let repo_root = args.repo_root.unwrap_or_else(|| ".".to_string());
+    let report = axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
+        &args.behavior_report,
+        &args.overlay,
+        std::path::Path::new(&repo_root),
+    );
+    Ok(SemanticSoftwareCoverageToolResultV1 {
+        version: SEMANTIC_SOFTWARE_COVERAGE_TOOL_VERSION,
+        report,
+    })
+}
+
+pub(crate) fn call_semantic_codegen_plan(
+    arguments: Value,
+) -> Result<SemanticCodegenPlanToolResultV1> {
+    let args: SemanticCodegenPlanArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_codegen_plan: invalid args: {err}"))?;
+    Ok(SemanticCodegenPlanToolResultV1 {
+        version: SEMANTIC_CODEGEN_PLAN_TOOL_VERSION,
+        report: axiograph_tooling_overlays::codegen_plan_report(&args.overlay),
+    })
+}
+
+pub(crate) fn call_semantic_overlay_refs(
+    arguments: Value,
+) -> Result<SemanticOverlayRefsToolResultV1> {
+    let args: SemanticOverlayRefsArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_overlay_refs: invalid args: {err}"))?;
+    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+        .map_err(|err| anyhow!("semantic_overlay_refs: {err}"))?;
+    let report = axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &args.overlay);
+    Ok(SemanticOverlayRefsToolResultV1 {
+        version: SEMANTIC_OVERLAY_REFS_TOOL_VERSION,
+        refs: report.normalized_refs,
+        diagnostics: report.diagnostics,
+    })
+}
+
+pub(crate) fn call_semantic_coverage_query(
+    arguments: Value,
+) -> Result<SemanticCoverageQueryToolResultV1> {
+    let args: SemanticCoverageQueryArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_coverage_query: invalid args: {err}"))?;
+    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+        .map_err(|err| anyhow!("semantic_coverage_query: {err}"))?;
+    let report = axiograph_tooling_overlays::coverage_query_report(
+        &kernel,
+        args.overlay.as_ref(),
+        &args.query,
+    );
+    Ok(SemanticCoverageQueryToolResultV1 {
+        version: SEMANTIC_COVERAGE_QUERY_TOOL_VERSION,
+        report,
+    })
+}
+
+pub(crate) fn call_semantic_weak_coverage_probe(
+    arguments: Value,
+) -> Result<SemanticCoverageQueryToolResultV1> {
+    let args: SemanticWeakCoverageProbeArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_weak_coverage_probe: invalid args: {err}"))?;
+    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+        .map_err(|err| anyhow!("semantic_weak_coverage_probe: {err}"))?;
+    let query = axiograph_tooling_overlays::CoverageQueryV1 {
+        coverage_mode: axiograph_tooling_overlays::CoverageModeV1::Exploratory,
+        terms: args.probe.terms,
+        relation_names: Vec::new(),
+        cq_names: Vec::new(),
+        code_refs: args.probe.code_refs,
+        surface_hints: args.probe.surface_hints,
+        axql: None,
+        max_matches: Some(8),
+    };
+    let report =
+        axiograph_tooling_overlays::coverage_query_report(&kernel, args.overlay.as_ref(), &query);
+    Ok(SemanticCoverageQueryToolResultV1 {
+        version: SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_VERSION,
+        report,
+    })
+}
+
+pub(crate) fn call_semantic_definition_query(
+    arguments: Value,
+) -> Result<SemanticDefinitionQueryToolResultV1> {
+    let args: SemanticDefinitionQueryArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_definition_query: invalid args: {err}"))?;
+    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+        .map_err(|err| anyhow!("semantic_definition_query: {err}"))?;
+    let report = axiograph_tooling_overlays::definition_query_report(
+        &kernel,
+        args.overlay.as_ref(),
+        &args.query,
+    );
+    Ok(SemanticDefinitionQueryToolResultV1 {
+        version: SEMANTIC_DEFINITION_QUERY_TOOL_VERSION,
         report,
     })
 }
@@ -906,20 +1293,11 @@ pub(crate) fn call_semantic_theory_graph(
 pub(crate) fn call_semantic_theory_check(
     arguments: Value,
 ) -> Result<SemanticTheoryCheckToolResultV1> {
-    let args: SemanticTheoryCheckArgs = serde_json::from_value(arguments)
-        .map_err(|err| anyhow!("semantic_theory_check: invalid args: {err}"))?;
-    let closure_tier = crate::runtime_theory_check::parse_runtime_theory_closure_tier(
-        args.closure_tier
-            .as_deref()
-            .unwrap_or("finite_fragment"),
-    )
-    .map_err(|err| anyhow!("semantic_theory_check: {err}"))?;
-    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
-        &args.axi_text,
-        args.theory.as_deref(),
-        closure_tier,
-    )
-    .map_err(|err| anyhow!("semantic_theory_check: {err}"))?;
+    let args: crate::runtime_theory_check::RuntimeTheoryCheckInputV1 =
+        serde_json::from_value(arguments)
+            .map_err(|err| anyhow!("semantic_theory_check: invalid args: {err}"))?;
+    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_input(&args)
+        .map_err(|err| anyhow!("semantic_theory_check: {err}"))?;
     Ok(SemanticTheoryCheckToolResultV1 {
         version: SEMANTIC_THEORY_CHECK_TOOL_VERSION,
         report,
@@ -947,6 +1325,32 @@ fn normalized_business_rule_scope(
         }
     }
     Ok(normalized)
+}
+
+fn behavior_codegen_request_from_overlay(
+    overlay: &axiograph_tooling_overlays::ToolingOverlayBundleV1,
+) -> Result<crate::behavior_case::BehaviorCaseCodegenRequestV1> {
+    let languages = overlay
+        .codegen_plan
+        .languages
+        .iter()
+        .map(|language| parse_behavior_codegen_language(language))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(crate::behavior_case::BehaviorCaseCodegenRequestV1 { languages })
+}
+
+fn parse_behavior_codegen_language(
+    language: &str,
+) -> Result<crate::behavior_case::BehaviorCaseCodegenLanguageV1> {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "go" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Go),
+        "python" | "py" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Python),
+        "rust" | "rs" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Rust),
+        "typescript" | "ts" => Ok(crate::behavior_case::BehaviorCaseCodegenLanguageV1::Typescript),
+        other => Err(anyhow!(
+            "unsupported behavior-case codegen language `{other}` (expected go|python|rust|typescript)"
+        )),
+    }
 }
 
 fn semantic_scope_json_schema() -> Value {
@@ -1046,18 +1450,15 @@ fn bounded_context_json_schema() -> Value {
 }
 
 fn behavior_case_json_schema() -> Value {
-    let bounded_context_schema = bounded_context_json_schema();
-    let implementation_surface_schema = implementation_surface_json_schema();
-    let coverage_edge_schema = coverage_edge_json_schema();
     let semantic_scope_schema = semantic_scope_json_schema();
     json!({
         "type": "object",
-        "required": ["case_id", "title", "context"],
+        "required": ["case_id", "title"],
+        "additionalProperties": false,
         "properties": {
             "case_id": { "type": "string" },
             "title": { "type": "string" },
             "summary": { "type": "string" },
-            "context": bounded_context_schema,
             "given": { "type": "object" },
             "when": { "type": "object" },
             "then": {
@@ -1081,14 +1482,27 @@ fn behavior_case_json_schema() -> Value {
                     }
                 }
             },
-            "implementation_surfaces": {
+            "notes": {
                 "type": "array",
-                "items": implementation_surface_schema
+                "items": { "type": "string" }
+            }
+        }
+    })
+}
+
+fn tooling_overlay_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["version"],
+        "properties": {
+            "version": {
+                "type": "string",
+                "const": axiograph_tooling_overlays::TOOLING_OVERLAY_BUNDLE_VERSION_V1
             },
-            "coverage_edges": {
-                "type": "array",
-                "items": coverage_edge_schema
-            },
+            "fddd_context_map": { "type": "object" },
+            "implementation_surfaces": { "type": "object" },
+            "coverage_policy": { "type": "object" },
+            "codegen_plan": { "type": "object" },
             "notes": {
                 "type": "array",
                 "items": { "type": "string" }
@@ -1121,6 +1535,46 @@ instance FamilyInst of Family:
         db.build_indexes();
         let meta = MetaPlaneIndex::from_db(&db)?;
         Ok((db, meta))
+    }
+
+    fn sample_overlay() -> Value {
+        json!({
+            "version": axiograph_tooling_overlays::TOOLING_OVERLAY_BUNDLE_VERSION_V1,
+            "fddd_context_map": {
+                "context_id": "domain:family_lookup",
+                "label": "Family lookup",
+                "scopes": [{
+                    "kind": "relation",
+                    "schema": "Family",
+                    "name": "parent"
+                }]
+            },
+            "implementation_surfaces": {
+                "surfaces": [{
+                    "surface_id": "endpoint:family_lookup",
+                    "kind": "endpoint",
+                    "label": "GET /family/lookup",
+                    "ontology_refs": [{
+                        "kind": "relation",
+                        "schema": "Family",
+                        "name": "parent"
+                    }],
+                    "code_refs": ["src/family.rs"],
+                    "languages": ["rust"]
+                }],
+                "coverage_edges": [{
+                    "surface_id": "endpoint:family_lookup",
+                    "rule_id": "schema/family/relation/parent/rule/functional/0",
+                    "status": "tested"
+                }]
+            },
+            "coverage_policy": {
+                "coverage_mode": "advisory"
+            },
+            "codegen_plan": {
+                "languages": ["rust", "typescript"]
+            }
+        })
     }
 
     #[test]
@@ -1310,7 +1764,10 @@ theory FamilyTheory on Family:
         let out = call_semantic_theory_check(json!({
             "axi_text": axi,
             "theory": "FamilyTheory",
-            "closure_tier": "finite_fragment"
+            "closure_tier": "finite_fragment",
+            "world_id": "review:family",
+            "included_refs": ["refs/heads/main"],
+            "evidence_threshold_ppm": 650000
         }))?;
 
         assert_eq!(out.version, SEMANTIC_THEORY_CHECK_TOOL_VERSION);
@@ -1318,6 +1775,24 @@ theory FamilyTheory on Family:
         assert_eq!(out.report.blocking_errors, 0);
         assert_eq!(out.report.reports[0].checked_obligations, 1);
         assert!(out.report.reports[0].closure.complete);
+        assert!(out.report.reports[0].closure.steps.iter().any(|step| {
+            step.kind == axiograph_pathdb::RuntimeTheoryClosureStepKindV1::CheckedSeed
+        }));
+        assert_eq!(out.report.summary.closure_trace.checked_seed_steps, 1);
+        assert_eq!(out.report.summary.closure_trace.fixpoint_reached_steps, 1);
+        assert_eq!(
+            out.report
+                .summary
+                .transport_summary
+                .resolver_required_obligations,
+            0
+        );
+        assert_eq!(out.report.reports[0].world.world_id, "review:family");
+        assert_eq!(
+            out.report.reports[0].world.included_refs,
+            vec!["refs/heads/main".to_string()]
+        );
+        assert_eq!(out.report.reports[0].evidence_policy.threshold_ppm, 650_000);
         assert!(is_semantic_tool(SEMANTIC_THEORY_CHECK_TOOL_NAME));
         Ok(())
     }
@@ -1336,30 +1811,6 @@ theory FamilyTheory on Family:
                 "behavior_case": {
                     "case_id": "family.parent_lookup",
                     "title": "Family lookup returns parent",
-                    "context": {
-                        "context_id": "domain:family_lookup",
-                        "label": "Family lookup",
-                        "scopes": [{
-                            "schema": "Family",
-                            "scope_class": "relation",
-                            "relation": "parent"
-                        }],
-                        "surfaces": [{
-                            "surface_id": "endpoint:family_lookup",
-                            "kind": "endpoint",
-                            "label": "GET /family/lookup",
-                            "scopes": [{
-                                "schema": "Family",
-                                "scope_class": "relation",
-                                "relation": "parent"
-                            }]
-                        }],
-                        "edges": [{
-                            "surface_id": "endpoint:family_lookup",
-                            "rule_id": "schema/family/relation/parent/rule/functional/0",
-                            "status": "tested"
-                        }]
-                    },
                     "then": {
                         "expected_outcomes": ["Bob has Alice as parent"],
                         "competency_questions": [{
@@ -1375,7 +1826,8 @@ theory FamilyTheory on Family:
                         }],
                         "trust_target": "strong"
                     }
-                }
+                },
+                "overlay": sample_overlay()
             }),
         )?;
 
@@ -1395,10 +1847,7 @@ theory FamilyTheory on Family:
     #[test]
     fn semantic_tool_specs_expose_all_semantic_report_tools() {
         let specs = semantic_tool_specs();
-        let names = specs
-            .iter()
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>();
+        let names = specs.iter().map(|tool| tool.name).collect::<Vec<_>>();
         assert_eq!(
             names,
             vec![
@@ -1408,6 +1857,14 @@ theory FamilyTheory on Family:
                 SEMANTIC_CONTEXT_REPORT_TOOL_NAME,
                 SEMANTIC_CONTEXT_MAP_TOOL_NAME,
                 SEMANTIC_BEHAVIOR_CASE_TOOL_NAME,
+                SEMANTIC_OVERLAY_CHECK_TOOL_NAME,
+                SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_NAME,
+                SEMANTIC_SOFTWARE_COVERAGE_TOOL_NAME,
+                SEMANTIC_CODEGEN_PLAN_TOOL_NAME,
+                SEMANTIC_OVERLAY_REFS_TOOL_NAME,
+                SEMANTIC_COVERAGE_QUERY_TOOL_NAME,
+                SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME,
+                SEMANTIC_DEFINITION_QUERY_TOOL_NAME,
                 SEMANTIC_SLICE_BUILD_TOOL_NAME,
                 SEMANTIC_SLICE_SHOW_TOOL_NAME,
                 SEMANTIC_SLICE_DIFF_TOOL_NAME,

@@ -183,11 +183,11 @@ pub struct SemDeltaV1 {
 }
 ```
 
-`semantic_delta`, `trust_summary`, `rule_summary`, and `coverage_summary` are the
-compact typed sidecars copied from a stored `EvolutionPreviewV1` when a commit
-is derived from a proposal or promotion preview. They are intentionally small:
-enough for semantic history and diffing, not a duplicate of the full preview
-report.
+`semantic_delta`, `trust_summary`, `rule_summary`, `coverage_summary`, and
+`runtime_theory_check` are the compact typed sidecars copied from a stored
+`EvolutionPreviewV1` when a commit is derived from a proposal, promotion,
+migration, or reconciliation preview. They are intentionally small: enough for
+semantic history and diffing, not a duplicate of the full preview report.
 
 ```rust
 pub struct EvolutionSemanticDeltaV1 {
@@ -599,13 +599,14 @@ meant for semantic-history use:
 - `trust_summary`: compact trust/non-claim summary
 - `rule_summary`: compact runtime-visible/review-only rule inventory
 - `coverage_summary`: compact CQ/semantic-coverage surface summary
+- `runtime_theory_check`: compact closure/completeness summary for the supported Rust runtime theory fragment, including closure-trace counts and transport/resolver counts for merge/rebase gates
 - `exploration_next_actions`: directed follow-on review suggestions derived from structural evolution primitives
 
 The rule for semantic history is:
 
 - persist the full `EvolutionPreviewV1` under `sem/validations/`
 - copy the compact `semantic_delta` / `trust_summary` / `rule_summary` /
-  `coverage_summary` sidecars into `SemDeltaV1`
+  `coverage_summary` / `runtime_theory_check` sidecars into `SemDeltaV1`
 - copy only the compact gate summary into commits/refs
 - Review-critical reports should be stored under `sem/validations/` and cited by
   path/ref from semantic commits or reconciliations rather than reconstructed

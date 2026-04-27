@@ -17,6 +17,25 @@ technical reality changes.
 - The TypeScript viz frontend lives in `frontend/viz/`; server/tooling expects
   built assets from `frontend/viz/dist`.
 
+## Protocol And Core Infrastructure
+
+Prefer maintained, widely used Rust crates for protocol and core
+infrastructure unless Axiograph semantics require custom logic. Custom framing,
+dispatch, parsers, or runtimes should stay narrow, typed, and justified by the
+ontology/workbench layer rather than by generic protocol plumbing.
+
+Current protocol choices:
+
+- MCP stdio servers use `rmcp` for host lifecycle, transport, framing, tool
+  listing, and tool calls. Local JSON-RPC helpers are test harnesses, not the
+  production server contract.
+- LSP/editor surfaces use `lsp-server` for stdio transport/framing and
+  `lsp-types` for protocol capability and request/response types. Axiograph
+  code owns diagnostics, commands, and typed authoring reports.
+- The DB HTTP server uses `hyper` with `http-body-util` for HTTP serving and
+  body handling. Axiograph-specific code should stay at route dispatch,
+  request validation, typed reports, and snapshot/query semantics.
+
 ## Trust Boundary
 
 Axiograph is currently best described as a proof-carrying ontology workbench.

@@ -36,7 +36,10 @@ The model/agent layer is **untrusted**: it produces *candidate queries*, tool
 calls, or summaries. Axiograph is the source of truth for execution, typing,
 trust surfacing, and later certificate production for Lean.
 
-The same plugin protocol is also used by evidence-plane discovery augmentation:
+The same plugin protocol can be used by evidence-plane discovery augmentation
+when you need an external adapter. For normal local demos, prefer the built-in
+mock/OpenAI/Anthropic/Ollama paths; command plugins are debugging and adapter
+examples, not core protocol infrastructure:
 
 ```bash
 cd rust
@@ -295,7 +298,9 @@ execute sequentially:
 
 ## Reference implementation
 
-This repo includes a deterministic “mock LLM” plugin:
+This repo includes a deterministic “mock LLM” command adapter. Use it for
+debugging adapter behavior or offline protocol experiments; normal REPL flows
+should use the built-in mock/OpenAI/Anthropic/Ollama backends.
 
 - `scripts/axiograph_llm_plugin_mock.py`
 
