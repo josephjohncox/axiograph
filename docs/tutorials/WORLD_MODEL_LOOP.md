@@ -74,7 +74,9 @@ Grounding note:
 ## 3) Explicit relation masks (endpoint-focused)
 
 Sometimes you want to always mask a specific field (e.g., `parent`).
-You can post-process the export (or implement this directly in your plugin).
+You can post-process the export, or implement the same masking policy inside a
+model runner. The JSON shape is illustrative; it is not a separate adapter
+protocol.
 
 Example JSON snippet (explicit mask list):
 
@@ -95,7 +97,7 @@ This is the **explicit mask** strategy; the generic approach is just
 
 ## 4) Run a real world model with an explicit training sidecar (optional)
 
-By default, the demos use the **built-in** world model plugin
+By default, the demos use the **built-in** world model runner
 (`axiograph ingest world-model-plugin-llm`). It supports:
 
 - **OpenAI** (default when `WORLD_MODEL_BACKEND` is unset),
@@ -157,12 +159,12 @@ bin/axiograph ingest world-model \
 
 ---
 
-## 7) External Python adapters (optional/debug)
+## 7) Command adapters for offline/debug models
 
-The built-in LLM world-model plugin is the default demo path. Python scripts
-are adapter examples for research, offline model experiments, or integration
-debugging, not the core world-model protocol surface. If you need a
-Python-backed proposer, use `scripts/axiograph_world_model_plugin_real.py`.
+The built-in LLM world-model runner is the default demo path. Command adapters
+are examples for research, offline model experiments, or integration debugging,
+not the core world-model surface. If you specifically need a Python-backed
+proposer, use `scripts/axiograph_world_model_plugin_real.py`.
 
 ---
 
@@ -211,6 +213,9 @@ curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
   -d '{"goals":["predict missing parent links"],"max_new_proposals":50}' | jq .
 ```
 
+`jq` is only a JSON pretty-printer in these examples. Omit the pipe or use any
+JSON viewer.
+
 ---
 
 ## 10) MPC plan -> draft .axi -> promote
@@ -224,7 +229,9 @@ Plan (REPL example):
 axiograph> wm plan build/wm_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq "has_parent=select ?p where ?p is Person limit 1"
 ```
 
-Merge plan proposals into one `proposals.json`:
+Merge plan proposals into one `proposals.json`. This Python snippet is just a
+tutorial convenience for reshaping JSON; it is not an adapter dependency or
+world-model protocol:
 
 ```bash
 python - <<'PY'
@@ -352,6 +359,7 @@ bin/axiograph ingest world-model \
 ```
 
 - Add MPC rollouts: `axiograph tools perf world-model ...`
-- Use server MPC with auto-commit: `POST /world_model/plan` with `auto_commit=true`.
+- Use server MPC with auto-commit: `POST /world_model/plan` with
+  `auto_commit=true`.
 - Use guardrail weights + task costs to shape the objective.
 - Add domain-specific theory constraints and see how they influence costs.

@@ -39,8 +39,28 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Weight assigned to a fact (0.0 to 1.0)
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct Weight(f32);
+
+impl<'de> Deserialize<'de> for Weight {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = f32::deserialize(deserializer)?;
+        if !value.is_finite() {
+            return Err(serde::de::Error::custom(
+                "weight must be a finite value in [0.0, 1.0]",
+            ));
+        }
+        if !(0.0..=1.0).contains(&value) {
+            return Err(serde::de::Error::custom(
+                "weight must be in the closed interval [0.0, 1.0]",
+            ));
+        }
+        Ok(Self(value))
+    }
+}
 
 impl Weight {
     pub fn new(w: f32) -> Self {
@@ -912,6 +932,14 @@ mod tests {
 
         let under = Weight::new(-0.5);
         assert!((under.value() - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_weight_deserialization_rejects_invalid_values() {
+        assert!(serde_json::from_str::<Weight>("0.75").is_ok());
+        assert!(serde_json::from_str::<Weight>("1.25").is_err());
+        assert!(serde_json::from_str::<Weight>("-0.1").is_err());
+        assert!(serde_json::from_str::<Weight>("null").is_err());
     }
 
     #[test]

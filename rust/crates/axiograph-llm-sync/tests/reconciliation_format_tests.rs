@@ -8,6 +8,9 @@
 
 use axiograph_llm_sync::reconciliation::*;
 use axiograph_llm_sync::reconciliation_format::*;
+use axiograph_llm_sync::format::{
+    deserialize_verified, MAGIC as VERIFIED_MAGIC, VERSION as VERIFIED_FORMAT_VERSION,
+};
 use axiograph_llm_sync::*;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -18,26 +21,27 @@ use uuid::Uuid;
 // ============================================================================
 
 #[test]
-fn test_magic_bytes() {
+fn test_verified_envelope_magic() {
     let state = ReconciliationState::new();
     let bytes = state.to_bytes().unwrap();
 
-    // First 4 bytes should be "AXRC"
-    assert_eq!(&bytes[0..4], b"AXRC");
+    let (_state, header): (ReconciliationState, _) = deserialize_verified(&bytes).unwrap();
+    assert_eq!(header.magic, VERIFIED_MAGIC);
+    assert_ne!(&bytes[0..4], b"AXRC");
 }
 
 #[test]
-fn test_version_compatibility() {
+fn test_verified_envelope_versions() {
     let state = ReconciliationState::new();
     let bytes = state.to_bytes().unwrap();
 
-    // Version at bytes 4-7 (little endian)
-    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    assert_eq!(version, VERSION);
+    let (_state, header): (ReconciliationState, _) = deserialize_verified(&bytes).unwrap();
+    assert_eq!(header.version, VERIFIED_FORMAT_VERSION);
+    assert_eq!(header.schema_version, VERSION);
 }
 
 #[test]
-fn test_header_offsets() {
+fn test_verified_envelope_checks_content() {
     let mut state = ReconciliationState::new();
     state.sources.push(SourceCredibility::new("test", 0.5));
     state.facts.push(WeightedFact::new(
@@ -51,15 +55,12 @@ fn test_header_offsets() {
     ));
 
     let bytes = state.to_bytes().unwrap();
+    let mut corrupted = bytes.clone();
+    let last = corrupted.last_mut().unwrap();
+    *last ^= 0xFF;
 
-    // Read header
-    let mut cursor = std::io::Cursor::new(&bytes);
-    let header = ReconciliationHeader::read(&mut cursor).unwrap();
-
-    // Offsets should be valid
-    assert!(header.source_credibility_offset >= 48);
-    assert!(header.weighted_fact_offset > header.source_credibility_offset);
-    assert!(header.total_size as usize == bytes.len());
+    assert!(ReconciliationState::from_bytes(&bytes).is_ok());
+    assert!(ReconciliationState::from_bytes(&corrupted).is_err());
 }
 
 // ============================================================================
@@ -368,48 +369,55 @@ fn test_file_save_load() {
 }
 
 #[test]
-fn test_corrupted_magic_rejected() {
+fn test_corrupted_verified_header_rejected() {
     let mut bytes = ReconciliationState::new().to_bytes().unwrap();
-    bytes[0] = 0xFF; // Corrupt magic
+    bytes[0] ^= 0xFF;
 
     let result = ReconciliationState::from_bytes(&bytes);
     assert!(result.is_err());
 }
 
 #[test]
-fn test_corrupted_version_rejected() {
+fn test_truncated_verified_envelope_rejected() {
     let mut bytes = ReconciliationState::new().to_bytes().unwrap();
-    bytes[4] = 0xFF; // Set version to 255+
-    bytes[5] = 0xFF;
+    bytes.truncate(bytes.len() / 2);
 
     let result = ReconciliationState::from_bytes(&bytes);
     assert!(result.is_err());
+}
+
+#[test]
+fn test_unsupported_schema_version_rejected() {
+    let state = ReconciliationState::new();
+    let bytes = axiograph_llm_sync::format::serialize_verified(&state, VERSION + 1, 0)
+        .expect("future schema envelope should serialize");
+
+    let result = ReconciliationState::from_bytes(&bytes);
+    assert!(result
+        .expect_err("future reconciliation schema must fail closed")
+        .to_string()
+        .contains("unsupported reconciliation schema version"));
 }
 
 #[test]
 fn test_binary_format_specification() {
-    // This test documents the exact binary format layout.
+    // This test documents the state persistence contract: reconciliation state
+    // uses the shared verified CBOR envelope, not the historical AXRC fixed
+    // offset layout.
     let state = ReconciliationState::new();
     let bytes = state.to_bytes().unwrap();
 
-    // Header is exactly 48 bytes
-    assert!(bytes.len() >= 48);
+    let (_state, header): (ReconciliationState, _) = deserialize_verified(&bytes).unwrap();
+    assert_eq!(header.magic, VERIFIED_MAGIC);
+    assert_eq!(header.schema_version, VERSION);
+    assert_eq!(header.content_length as usize, bytes.len() - ciborium_header_len(&bytes));
+}
 
-    // Document format:
-    // Bytes 0-3: Magic "AXRC"
-    // Bytes 4-7: Version (u32 LE)
-    // Bytes 8-11: Fact count (u32 LE)
-    // Bytes 12-15: Source count (u32 LE)
-    // Bytes 16-19: Conflict count (u32 LE)
-    // Bytes 20-23: Reserved
-    // Bytes 24-31: Weighted fact offset (u64 LE)
-    // Bytes 32-39: Source credibility offset (u64 LE)
-    // Bytes 40-47: Resolved conflict offset (u64 LE)
-
-    assert_eq!(&bytes[0..4], b"AXRC");
-
-    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    assert_eq!(version, 1);
+fn ciborium_header_len(bytes: &[u8]) -> usize {
+    let mut cursor = std::io::Cursor::new(bytes);
+    let _header: axiograph_llm_sync::format::VerifiedHeader =
+        ciborium::from_reader(&mut cursor).unwrap();
+    cursor.position() as usize
 }
 
 // ============================================================================

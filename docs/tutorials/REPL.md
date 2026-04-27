@@ -394,12 +394,13 @@ When importing a canonical schema module, the REPL maps instance data into PathD
 - when a relation has clear endpoints (binary, or `from/to`, etc), the importer
   also adds a derived edge `source -RelationName-> target` for direct traversal
 
-For path/rewrite-style examples, the importer also adds lightweight witness
-hooks:
+For path/rewrite-style examples, the importer also adds lightweight derived
+inspection hooks. These names are convenience projections for tutorial and
+debugging views, not canonical relation-field aliases:
 
-- equivalence-bearing relation tuples get alias edges `lhs` / `rhs` for generic inspection
-- many endpoint-bearing relation tuples are indexed as `Morphism` and get alias
-  edges `from` / `to`
+- equivalence-bearing relation tuples get inspection edges `lhs` / `rhs`
+- many endpoint-bearing relation tuples are indexed as `Morphism` and get
+  inspection edges `from` / `to`
 
 ### Validate imported instance data (schema-directed)
 

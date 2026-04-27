@@ -1,17 +1,21 @@
-# World Model Plugin Protocol (`axiograph_world_model_v1`)
+# World Model Integration Payload (`axiograph_world_model_v1`)
 
 **Diataxis:** Reference  
 **Audience:** tool/plugin authors
 
-This protocol lets an **untrusted** world model propose evidence-plane facts
+This typed payload lets an **untrusted** world model propose evidence-plane facts
 (`proposals.json`) from grounded Axiograph context.
 
-The plugin reads a JSON request from stdin and writes a JSON response to stdout.
-You can implement this protocol in any language (or behind HTTP), and Axiograph
-also ships a built-in LLM-backed plugin to avoid Python in core flows. This
-should be understood as one typed agent/model integration surface among
-several possible ones: plugin process, API-backed runner, tool-loop service, or
-future MCP/skill-style adapter.
+Command plugins read one JSON request from stdin and write one JSON response to
+stdout. HTTP and host-managed tool surfaces can carry the same typed payload, but
+their framing and lifecycle are not Axiograph-specific JSON-RPC. Keep generic
+protocol infrastructure in maintained crates and services (`rmcp`,
+`lsp-server`/`lsp-types`, `hyper`/`http-body-util`, and `reqwest`-backed
+clients); keep this contract focused on the semantic request/response shape.
+
+Axiograph ships a built-in LLM-backed runner so normal demos do not need Python
+adapter scripts. Command plugins remain useful for offline models, research
+prototypes, and integration debugging.
 
 Note: the **LLM prompt** is only used by the built-in LLM plugin. Custom ONNX or
 hierarchical reasoning models receive the raw request and can interpret it
@@ -19,7 +23,7 @@ however they choose.
 
 ---
 
-## Protocol string
+## Payload version
 
 ```
 "protocol": "axiograph_world_model_v1"
@@ -131,7 +135,7 @@ Note: `ProposalV1.kind` must use the enum variants `Entity` or `Relation`
 
 ## Example plugins
 
-Built-in LLM plugin (no Python, uses OpenAI/Anthropic/Ollama):
+Built-in LLM runner (no Python adapter, uses OpenAI/Anthropic/Ollama):
 
 ```bash
 bin/axiograph ingest world-model-plugin-llm --backend openai --model gpt-4o-mini
@@ -167,7 +171,8 @@ API-backed model (LLM-based; optional, untrusted).
 If `WORLD_MODEL_BACKEND` is unset, it defaults to **OpenAI** when `OPENAI_API_KEY` is available.  
 `scripts/axiograph_world_model_plugin_real.py`
 
-HTTP backend (any language/runtime):
+HTTP backend (any language/runtime). The HTTP server owns transport details; the
+world-model backend owns only this typed payload:
 
 ```bash
 axiograph ingest world-model \
@@ -186,8 +191,9 @@ axiograph ingest world-model \
 - REPL: `wm` subcommand (`wm use llm` / `wm use http <url>` / `wm use command ...`)
 - Server: `POST /world_model/propose`, `POST /world_model/plan`
 
-Temporary migration aliases may exist in greenfield builds, but they are not
-the documented integration contract.
+Only the entrypoints above are documented. Any temporary migration aliases in
+development builds are unsupported and should not appear in examples or client
+configuration.
 
 When these entrypoints start from a live PathDB snapshot, they first export the
 selected canonical module and attach typed lineage anchors

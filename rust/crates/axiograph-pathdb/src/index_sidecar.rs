@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Weak};
 use std::time::Duration;
 
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use anyhow::{ensure, Result};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use ahash::AHashMap;
 
@@ -23,7 +23,7 @@ pub struct LruSnapshot {
     pub entries: std::collections::HashMap<PathSig, AHashMap<u32, roaring::RoaringBitmap>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PathDbIndexSidecarV1 {
     pub version: String,
     #[serde(default)]
@@ -36,6 +36,12 @@ pub struct PathDbIndexSidecarV1 {
     pub path_lru: Option<LruSnapshot>,
 }
 
+fn unsupported_sidecar_version_message(version: &str) -> String {
+    format!(
+        "unsupported PathDB index sidecar version `{version}`; expected `{PATHDB_INDEX_SIDECAR_VERSION_V1}`"
+    )
+}
+
 impl PathDbIndexSidecarV1 {
     pub fn new(snapshot_id: Option<PathdbSnapshotId>) -> Self {
         Self {
@@ -45,6 +51,49 @@ impl PathDbIndexSidecarV1 {
             text_indexes: std::collections::HashMap::new(),
             path_lru: None,
         }
+    }
+
+    pub fn validate_version(&self) -> Result<()> {
+        ensure!(
+            self.version == PATHDB_INDEX_SIDECAR_VERSION_V1,
+            unsupported_sidecar_version_message(&self.version)
+        );
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for PathDbIndexSidecarV1 {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PathDbIndexSidecarPayloadV1 {
+            version: String,
+            #[serde(default)]
+            snapshot_id: Option<PathdbSnapshotId>,
+            #[serde(default)]
+            fact_index: Option<FactIndex>,
+            #[serde(default)]
+            text_indexes: std::collections::HashMap<StrId, InvertedIndex>,
+            #[serde(default)]
+            path_lru: Option<LruSnapshot>,
+        }
+
+        let payload = PathDbIndexSidecarPayloadV1::deserialize(deserializer)?;
+        if payload.version != PATHDB_INDEX_SIDECAR_VERSION_V1 {
+            return Err(serde::de::Error::custom(
+                unsupported_sidecar_version_message(&payload.version),
+            ));
+        }
+
+        Ok(Self {
+            version: payload.version,
+            snapshot_id: payload.snapshot_id,
+            fact_index: payload.fact_index,
+            text_indexes: payload.text_indexes,
+            path_lru: payload.path_lru,
+        })
     }
 }
 
@@ -115,6 +164,7 @@ fn write_sidecar(
 }
 
 pub fn write_sidecar_file(path: &Path, sidecar: &PathDbIndexSidecarV1) -> Result<()> {
+    sidecar.validate_version()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -128,6 +178,7 @@ pub fn write_sidecar_file(path: &Path, sidecar: &PathDbIndexSidecarV1) -> Result
 pub fn read_sidecar_file(path: &Path) -> Result<PathDbIndexSidecarV1> {
     let f = fs::File::open(path)?;
     let sidecar: PathDbIndexSidecarV1 = ciborium::de::from_reader(f)?;
+    sidecar.validate_version()?;
     Ok(sidecar)
 }
 
@@ -136,17 +187,8 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[derive(Debug, Serialize)]
-    struct LegacyPathDbIndexSidecarV1 {
-        version: String,
-        snapshot_id: Option<String>,
-        fact_index: Option<FactIndex>,
-        text_indexes: std::collections::HashMap<StrId, InvertedIndex>,
-        path_lru: Option<LruSnapshot>,
-    }
-
     #[test]
-    fn sidecar_file_round_trips_typed_snapshot_id() {
+    fn sidecar_file_round_trips_current_typed_snapshot_id() {
         let dir = tempdir().expect("temp dir");
         let path = dir.path().join("sidecar.cbor");
         let sidecar = PathDbIndexSidecarV1::new(Some(PathdbSnapshotId::new("pathdb:snap-42")));
@@ -161,24 +203,50 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_reader_accepts_legacy_string_snapshot_id_payload() {
+    fn sidecar_reader_rejects_wrong_version_payload() {
         let dir = tempdir().expect("temp dir");
-        let path = dir.path().join("legacy-sidecar.cbor");
-        let legacy = LegacyPathDbIndexSidecarV1 {
-            version: PATHDB_INDEX_SIDECAR_VERSION_V1.to_string(),
-            snapshot_id: Some("pathdb:legacy".to_string()),
+        let path = dir.path().join("stale-sidecar.cbor");
+        let stale = PathDbIndexSidecarV1 {
+            version: "pathdb_index_sidecar_v0".to_string(),
+            snapshot_id: Some(PathdbSnapshotId::new("pathdb:stale")),
             fact_index: None,
             text_indexes: std::collections::HashMap::new(),
             path_lru: None,
         };
 
-        let mut file = fs::File::create(&path).expect("legacy sidecar file");
-        ciborium::ser::into_writer(&legacy, &mut file).expect("legacy sidecar should serialize");
+        let mut file = fs::File::create(&path).expect("stale sidecar file");
+        ciborium::ser::into_writer(&stale, &mut file).expect("stale sidecar should serialize");
 
-        let decoded = read_sidecar_file(&path).expect("typed reader should accept legacy payload");
-        assert_eq!(
-            decoded.snapshot_id,
-            Some(PathdbSnapshotId::new("pathdb:legacy"))
+        let err = read_sidecar_file(&path).expect_err("stale sidecar version should be rejected");
+        assert!(
+            err.to_string()
+                .contains("unsupported PathDB index sidecar version"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn sidecar_writer_rejects_wrong_version_payload() {
+        let dir = tempdir().expect("temp dir");
+        let path = dir.path().join("stale-sidecar.cbor");
+        let stale = PathDbIndexSidecarV1 {
+            version: "pathdb_index_sidecar_v0".to_string(),
+            snapshot_id: Some(PathdbSnapshotId::new("pathdb:stale")),
+            fact_index: None,
+            text_indexes: std::collections::HashMap::new(),
+            path_lru: None,
+        };
+
+        let err =
+            write_sidecar_file(&path, &stale).expect_err("stale sidecar version should not write");
+        assert!(
+            err.to_string()
+                .contains("unsupported PathDB index sidecar version"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !path.exists(),
+            "writer should not create stale sidecar file"
         );
     }
 }

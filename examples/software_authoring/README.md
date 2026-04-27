@@ -25,6 +25,7 @@ surfaces, code refs, coverage policy, and codegen live in JSON tooling overlays.
   tests.
 - `host_integrations/` contains generic stdio launch examples for MCP and LSP
   hosts such as Cursor, Codex, Claude Code, and editor language-client plugins.
+  They are pedagogical launcher shapes, not custom protocol specifications.
 
 ## Teaching Path
 
@@ -178,7 +179,12 @@ The files under `host_integrations/` are intentionally generic. Most MCP hosts
 expect a block shaped like `mcpServers.<name>.command` plus `args`; most editor
 language clients expect a command, args, language id, and document selector.
 Use `axiograph authoring integration-manifest` as the canonical generated
-contract when adapting these examples to a specific host.
+contract when adapting these examples to a specific host. MCP framing and tool
+lifecycle are owned by the `rmcp`-backed server; editor protocol framing and
+capability types are owned by `lsp-server`/`lsp-types`; DB HTTP serving is owned
+by the maintained HTTP stack; HTTP callers should use maintained clients against
+typed endpoints. Axiograph examples should stay focused on typed semantic
+reports and explicit CLI materialization.
 
 ## What This Teaches
 
@@ -197,7 +203,8 @@ contract when adapting these examples to a specific host.
   package; the core CLI and typed report schemas remain the reusable contract.
 - MCP and LSP integrations are host-managed background processes. MCP is for
   read-only agent tools; LSP is for editor feedback and code actions; file
-  materialization remains CLI-only.
+  materialization remains CLI-only. These examples launch maintained protocol
+  servers; they do not define a legacy JSON-RPC dialect.
 - Multiple codegen examples intentionally share one suite manifest and runner,
   so adding another domain should mean adding canonical `.axi`, overlay JSON,
   behavior-case JSON, definition prompts, and a manifest entry.

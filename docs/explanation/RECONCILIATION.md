@@ -15,8 +15,8 @@ certificate-first architecture, reconciliation decisions are intended to become
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                  │
-│  │   New Fact  │───►│    Rust     │───►│   Binary    │                  │
-│  │  (any src)  │    │ Reconciler  │    │  (.axrc)    │                  │
+│  │   New Fact  │───►│    Rust     │───►│ Verified    │                  │
+│  │  (any src)  │    │ Reconciler  │    │ CBOR State  │                  │
 │  └─────────────┘    └─────────────┘    └──────┬──────┘                  │
 │                            │                   │                         │
 │                            ▼                   ▼                         │
@@ -35,24 +35,31 @@ certificate-first architecture, reconciliation decisions are intended to become
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Binary Format (.axrc)
+## Persistence Format
 
-Rust uses a binary format for reconciliation state:
+Rust persists full reconciliation state through the shared verified CBOR
+envelope used by `axiograph-llm-sync::format`:
 
 ```
-Header (48 bytes):
-  Magic:      4 bytes  "AXRC"
-  Version:    4 bytes  u32 LE
-  FactCount:  4 bytes  u32 LE
-  SourceCount: 4 bytes u32 LE
-  ConflictCount: 4 bytes u32 LE
-  Reserved:   4 bytes
-  Offsets:    24 bytes (3 x u64 LE)
+VerifiedHeader (CBOR):
+  Magic:             "AXVF"
+  Format version:    checked for compatibility
+  Schema version:    reconciliation state schema version
+  Content length:    checked
+  Content checksum:  SHA-256 checked
+  Header checksum:   SHA-256 checked
 
-Sources:     Variable
-Facts:       Variable
-Conflicts:   Variable
+Content (CBOR):
+  ReconciliationState {
+    sources,
+    facts,
+    conflicts
+  }
 ```
+
+The historical fixed-offset `AXRC` helpers are retained only as narrow
+domain-object roundtrip tests while the repo is greenfield; new state
+persistence should use the verified envelope.
 
 ### Certificates (planned)
 

@@ -1,4 +1,4 @@
-# Axiograph LLM Plugin Protocol (`axiograph_llm_plugin_v2` / `axiograph_llm_plugin_v3`)
+# Axiograph LLM Integration Payloads (`axiograph_llm_plugin_v2` / `axiograph_llm_plugin_v3`)
 
 **Diataxis:** Reference  
 **Audience:** contributors
@@ -9,7 +9,7 @@ agent/model integration layer. In practice this should be read as:
 - typed plugin protocols,
 - API-backed model runners,
 - tool-loop agent interfaces,
-- and, in broader deployments, MCP/skill-style adapter surfaces,
+- and host-managed MCP/skill-style surfaces that carry typed payloads,
 
 not merely "free-form LLM rewriting".
 
@@ -27,17 +27,18 @@ There are two related protocols:
 2. Rust executes the proposed query against the loaded snapshot
 3. (optional) the LLM summarizes results into a natural-language answer
 
-This document specifies the **typed plugin protocol** used by the REPL so we can use:
+This document specifies the **typed payloads** used by the REPL so we can use:
 
 - a local lightweight model runner (Ollama, llama.cpp, llamafile, …), or
-- a remote LLM API (later), without changing the REPL itself.
+- remote LLM APIs through built-in provider clients, without changing the REPL
+  semantics.
 
 The model/agent layer is **untrusted**: it produces *candidate queries*, tool
 calls, or summaries. Axiograph is the source of truth for execution, typing,
 trust surfacing, and later certificate production for Lean.
 
-The same plugin protocol can be used by evidence-plane discovery augmentation
-when you need an external adapter. For normal local demos, prefer the built-in
+The same typed payload can be used by evidence-plane discovery augmentation
+when you need an external bridge. For normal local demos, prefer the built-in
 mock/OpenAI/Anthropic/Ollama paths; command plugins are debugging and adapter
 examples, not core protocol infrastructure:
 
@@ -84,15 +85,21 @@ llm agent [--steps N] [--rows N] <question...>
 
 See `docs/tutorials/REPL.md` for a walkthrough.
 
-## Transport
+## Command-Plugin Transport
 
-Plugins are external commands:
+Command plugins are external processes:
 
 - **stdin**: a single JSON request
 - **stdout**: a single JSON response
 - **stderr**: may be used for debug logs (shown only on plugin failure)
 
 The REPL runs plugins without a shell (no `sh -c`), so argv splitting is safe.
+
+This stdin/stdout transport is a local adapter boundary, not a custom JSON-RPC
+stack. MCP hosts should use the `rmcp`-backed server, editor integrations should
+use the `lsp-server`/`lsp-types` LSP server, and HTTP clients should use the
+typed DB-server endpoints and maintained HTTP clients rather than copying this
+command-plugin framing.
 
 ## Request schema (v2)
 
@@ -296,9 +303,9 @@ execute sequentially:
 }
 ```
 
-## Reference implementation
+## Debug Command Adapter
 
-This repo includes a deterministic “mock LLM” command adapter. Use it for
+This repo includes a deterministic "mock LLM" command adapter. Use it for
 debugging adapter behavior or offline protocol experiments; normal REPL flows
 should use the built-in mock/OpenAI/Anthropic/Ollama backends.
 

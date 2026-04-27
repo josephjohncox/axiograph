@@ -6,9 +6,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request};
 use lsp_types::{
-    CodeActionProviderCapability, ExecuteCommandOptions, InitializeResult,
+    CodeActionProviderCapability, Diagnostic, DiagnosticSeverity, ExecuteCommandOptions,
+    InitializeResult, Position, PublishDiagnosticsParams, Range,
     ServerCapabilities as LspServerCapabilities, ServerInfo as LspServerInfo,
-    TextDocumentSyncCapability, TextDocumentSyncKind, WorkDoneProgressOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
 };
 use rmcp::{
     handler::server::wrapper::{Json, Parameters},
@@ -1049,17 +1050,7 @@ pub fn software_authoring_mcp_tools_v1() -> Value {
             "name": "axiograph_authoring_software_coverage",
             "title": "Axiograph Software Coverage",
             "description": "Evaluate a behavior-case report against a tooling overlay and repository root.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["behavior_report", "overlay"],
-                "properties": {
-                    "behavior_report": { "type": "object" },
-                    "overlay": { "type": "object" },
-                    "overlay_text": { "type": "string" },
-                    "repo_root": { "type": "string", "default": "." }
-                },
-                "additionalProperties": false
-            }
+            "inputSchema": authoring_software_coverage_input_schema()
         }
     ])
 }
@@ -1163,6 +1154,7 @@ fn call_authoring_mcp_tool(params: Value) -> Result<Value> {
 }
 
 fn authoring_overlay_input_schema() -> Value {
+    let overlay_schema = axiograph_tooling_overlays::tooling_overlay_bundle_schema();
     json!({
         "type": "object",
         "oneOf": [
@@ -1170,7 +1162,7 @@ fn authoring_overlay_input_schema() -> Value {
             { "required": ["overlay_text"] }
         ],
         "properties": {
-            "overlay": { "type": "object" },
+            "overlay": overlay_schema,
             "overlay_text": { "type": "string" }
         },
         "additionalProperties": false
@@ -1178,12 +1170,13 @@ fn authoring_overlay_input_schema() -> Value {
 }
 
 fn authoring_axi_overlay_input_schema() -> Value {
+    let overlay_schema = axiograph_tooling_overlays::tooling_overlay_bundle_schema();
     json!({
         "type": "object",
         "required": ["axi_text"],
         "properties": {
             "axi_text": { "type": "string" },
-            "overlay": { "type": "object" },
+            "overlay": overlay_schema,
             "overlay_text": { "type": "string" }
         },
         "oneOf": [
@@ -1195,16 +1188,41 @@ fn authoring_axi_overlay_input_schema() -> Value {
 }
 
 fn authoring_axi_query_input_schema(query_key: &str) -> Value {
+    let overlay_schema = axiograph_tooling_overlays::tooling_overlay_bundle_schema();
+    let query_schema = match query_key {
+        "definition_query" => axiograph_tooling_overlays::definition_query_schema(),
+        "coverage_query" => axiograph_tooling_overlays::coverage_query_schema(),
+        _ => json!({ "type": "object" }),
+    };
     json!({
         "type": "object",
         "required": ["axi_text", query_key],
         "properties": {
             "axi_text": { "type": "string" },
-            "overlay": { "type": "object" },
+            "overlay": overlay_schema,
             "overlay_text": { "type": "string" },
-            "definition_query": { "type": "object" },
-            "coverage_query": { "type": "object" },
-            "query": { "type": "object" }
+            "definition_query": axiograph_tooling_overlays::definition_query_schema(),
+            "coverage_query": axiograph_tooling_overlays::coverage_query_schema(),
+            "query": query_schema
+        },
+        "additionalProperties": false
+    })
+}
+
+fn authoring_software_coverage_input_schema() -> Value {
+    let overlay_schema = axiograph_tooling_overlays::tooling_overlay_bundle_schema();
+    json!({
+        "type": "object",
+        "required": ["behavior_report"],
+        "oneOf": [
+            { "required": ["behavior_report", "overlay"] },
+            { "required": ["behavior_report", "overlay_text"] }
+        ],
+        "properties": {
+            "behavior_report": { "type": "object" },
+            "overlay": overlay_schema,
+            "overlay_text": { "type": "string" },
+            "repo_root": { "type": "string", "default": "." }
         },
         "additionalProperties": false
     })
@@ -1584,11 +1602,17 @@ fn optional_overlay_arg(
     Ok(None)
 }
 
-fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Value> {
+fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Diagnostic> {
     if uri.ends_with(".axi") || text.trim_start().starts_with("module ") {
         match axiograph_tooling_overlays::compile_kernel_from_axi_text(text) {
             Ok(_) => Vec::new(),
-            Err(err) => vec![diagnostic(1, "axiograph.axi", &err.to_string(), 0, 0)],
+            Err(err) => vec![diagnostic(
+                DiagnosticSeverity::ERROR,
+                "axiograph.axi",
+                &err.to_string(),
+                0,
+                0,
+            )],
         }
     } else if uri.ends_with(".json") || text.trim_start().starts_with('{') {
         diagnostics_for_json_document(text)
@@ -1597,12 +1621,12 @@ fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Value> {
     }
 }
 
-fn diagnostics_for_json_document(text: &str) -> Vec<Value> {
+fn diagnostics_for_json_document(text: &str) -> Vec<Diagnostic> {
     let value: Value = match serde_json::from_str(text) {
         Ok(value) => value,
         Err(err) => {
             return vec![diagnostic(
-                1,
+                DiagnosticSeverity::ERROR,
                 "axiograph.json",
                 &format!("invalid JSON: {err}"),
                 err.line().saturating_sub(1),
@@ -1614,7 +1638,7 @@ fn diagnostics_for_json_document(text: &str) -> Vec<Value> {
     if value.get("behavior_case").is_some() {
         if value.pointer("/behavior_case/context").is_some() {
             diagnostics.push(diagnostic(
-                1,
+                DiagnosticSeverity::ERROR,
                 "axiograph.behavior_case.stale_tooling",
                 "BehaviorCaseV1 is domain-only; move context/tooling fields into a tooling overlay",
                 0,
@@ -1626,7 +1650,7 @@ fn diagnostics_for_json_document(text: &str) -> Vec<Value> {
             .is_some()
         {
             diagnostics.push(diagnostic(
-                1,
+                DiagnosticSeverity::ERROR,
                 "axiograph.behavior_case.stale_tooling",
                 "BehaviorCaseV1 must not embed implementation_surfaces; use ToolingOverlayBundleV1",
                 0,
@@ -1635,7 +1659,7 @@ fn diagnostics_for_json_document(text: &str) -> Vec<Value> {
         }
         if value.pointer("/behavior_case/coverage_edges").is_some() {
             diagnostics.push(diagnostic(
-                1,
+                DiagnosticSeverity::ERROR,
                 "axiograph.behavior_case.stale_tooling",
                 "BehaviorCaseV1 must not embed coverage_edges; use ToolingOverlayBundleV1",
                 0,
@@ -1648,7 +1672,7 @@ fn diagnostics_for_json_document(text: &str) -> Vec<Value> {
             value.clone(),
         ) {
             diagnostics.push(diagnostic(
-                1,
+                DiagnosticSeverity::ERROR,
                 "axiograph.overlay.schema",
                 &format!("invalid ToolingOverlayBundleV1: {err}"),
                 0,
@@ -1659,27 +1683,45 @@ fn diagnostics_for_json_document(text: &str) -> Vec<Value> {
     diagnostics
 }
 
-fn publish_diagnostics(uri: &str, diagnostics: Vec<Value>) -> Value {
+fn publish_diagnostics(uri: &str, diagnostics: Vec<Diagnostic>) -> Value {
+    let params = publish_diagnostics_params(uri, diagnostics);
     json!({
         "jsonrpc": "2.0",
         "method": "textDocument/publishDiagnostics",
-        "params": {
-            "uri": uri,
-            "diagnostics": diagnostics
-        }
+        "params": params
     })
 }
 
-fn diagnostic(severity: u64, source: &str, message: &str, line: usize, character: usize) -> Value {
-    json!({
-        "range": {
-            "start": { "line": line, "character": character },
-            "end": { "line": line, "character": character.saturating_add(1) }
-        },
-        "severity": severity,
-        "source": source,
-        "message": message
-    })
+fn publish_diagnostics_params(uri: &str, diagnostics: Vec<Diagnostic>) -> Value {
+    let Ok(uri) = uri.parse::<Uri>() else {
+        return json!({
+            "uri": uri,
+            "diagnostics": diagnostics
+        });
+    };
+    serde_json::to_value(PublishDiagnosticsParams::new(uri, diagnostics, None))
+        .expect("serialize lsp_types PublishDiagnosticsParams")
+}
+
+fn diagnostic(
+    severity: DiagnosticSeverity,
+    source: &str,
+    message: &str,
+    line: usize,
+    character: usize,
+) -> Diagnostic {
+    let line = line.min(u32::MAX as usize) as u32;
+    let character = character.min(u32::MAX as usize) as u32;
+    Diagnostic {
+        range: Range::new(
+            Position::new(line, character),
+            Position::new(line, character.saturating_add(1)),
+        ),
+        severity: Some(severity),
+        source: Some(source.to_string()),
+        message: message.to_string(),
+        ..Diagnostic::default()
+    }
 }
 
 fn lsp_response(id: Value, result: Value) -> Value {
@@ -2237,12 +2279,13 @@ mod tests {
         );
 
         assert_eq!(responses.len(), 1);
-        let diagnostics = responses[0]["params"]["diagnostics"]
-            .as_array()
-            .expect("diagnostics");
-        assert_eq!(diagnostics.len(), 3);
-        assert!(diagnostics.iter().all(|diagnostic| {
-            diagnostic["source"] == json!("axiograph.behavior_case.stale_tooling")
+        let params: lsp_types::PublishDiagnosticsParams =
+            serde_json::from_value(responses[0]["params"].clone()).expect("typed params");
+        assert_eq!(params.uri.as_str(), "file:///tmp/behavior_case.json");
+        assert_eq!(params.diagnostics.len(), 3);
+        assert!(params.diagnostics.iter().all(|diagnostic| {
+            diagnostic.source.as_deref() == Some("axiograph.behavior_case.stale_tooling")
+                && diagnostic.severity == Some(lsp_types::DiagnosticSeverity::ERROR)
         }));
     }
 

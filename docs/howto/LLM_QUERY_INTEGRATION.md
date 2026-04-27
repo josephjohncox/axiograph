@@ -25,6 +25,12 @@ The REPL supports two structured integration modes:
   MCP/skill/API integrations where the model should consume typed semantic
   objects rather than scrape prose.
 
+Protocol framing is delegated to maintained surfaces: command plugins exchange
+typed payloads over stdin/stdout for debugging, MCP hosts use the `rmcp`-backed
+server, editor integrations use `lsp-server`/`lsp-types`, and HTTP clients use
+the typed DB-server endpoints plus maintained HTTP client libraries. Do not
+treat the examples below as a custom JSON-RPC contract.
+
 See:
 
 - `docs/reference/QUERY_LANG.md` (AxQL + SQL-ish)

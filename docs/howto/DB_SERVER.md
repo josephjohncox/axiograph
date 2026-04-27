@@ -662,6 +662,10 @@ bin/axiograph db serve \
   --world-model-model my_world_model
 ```
 
+Use command plugins only when you need a local/offline adapter boundary. Normal
+HTTP clients call the typed server endpoints directly; they should not copy a
+Python adapter or custom JSON-RPC layer.
+
 Call the endpoint:
 
 ```bash

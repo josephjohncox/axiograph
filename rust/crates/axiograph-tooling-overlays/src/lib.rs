@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use axiograph_pathdb::kernel_ir::{CompiledSchemaIr, KernelModuleIr, RelationSemanticsIr};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -14,7 +15,7 @@ pub const COVERAGE_QUERY_REPORT_VERSION_V1: &str = "coverage_query_report_v1";
 pub const DEFINITION_QUERY_REPORT_VERSION_V1: &str = "definition_query_report_v1";
 pub const CODEGEN_PLAN_REPORT_VERSION_V1: &str = "codegen_plan_report_v1";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageModeV1 {
     Enforced,
@@ -30,7 +31,7 @@ impl Default for CoverageModeV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayRefKindV1 {
     Schema,
@@ -45,7 +46,7 @@ pub enum OverlayRefKindV1 {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OverlayRefV1 {
     pub kind: OverlayRefKindV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,7 +59,7 @@ pub struct OverlayRefV1 {
     pub role: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct OverlayBindingV1 {
     pub binding_id: String,
     pub label: String,
@@ -70,7 +71,7 @@ pub struct OverlayBindingV1 {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct FdddContextMapV1 {
     pub context_id: String,
     pub label: String,
@@ -92,7 +93,7 @@ pub struct FdddContextMapV1 {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ImplementationSurfaceKindV1 {
     Endpoint,
@@ -109,7 +110,7 @@ pub enum ImplementationSurfaceKindV1 {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ImplementationSurfaceOverlayV1 {
     pub surface_id: String,
     pub kind: ImplementationSurfaceKindV1,
@@ -126,7 +127,7 @@ pub struct ImplementationSurfaceOverlayV1 {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageStatusV1 {
     Tested,
@@ -137,7 +138,7 @@ pub enum CoverageStatusV1 {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct CoverageEdgeOverlayV1 {
     pub surface_id: String,
     pub rule_id: String,
@@ -146,7 +147,7 @@ pub struct CoverageEdgeOverlayV1 {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 pub struct ImplementationSurfaceManifestV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub surfaces: Vec<ImplementationSurfaceOverlayV1>,
@@ -154,7 +155,7 @@ pub struct ImplementationSurfaceManifestV1 {
     pub coverage_edges: Vec<CoverageEdgeOverlayV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct CoveragePolicyV1 {
     #[serde(default)]
     pub coverage_mode: CoverageModeV1,
@@ -183,7 +184,7 @@ impl Default for CoveragePolicyV1 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct CodegenPlanV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub languages: Vec<String>,
@@ -203,7 +204,7 @@ impl Default for CodegenPlanV1 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ToolingOverlayBundleV1 {
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,7 +219,7 @@ pub struct ToolingOverlayBundleV1 {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct OverlayDiagnosticV1 {
     pub severity: String,
     pub code: String,
@@ -229,14 +230,14 @@ pub struct OverlayDiagnosticV1 {
     pub suggestions: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct NormalizedOverlayRefV1 {
     pub source: OverlayRefV1,
     pub normalized_id: String,
     pub label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct OverlayValidationReportV1 {
     pub version: String,
     pub coverage_mode: CoverageModeV1,
@@ -250,7 +251,7 @@ pub struct OverlayValidationReportV1 {
     pub next_actions: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CoverageQueryV1 {
     #[serde(default)]
     pub coverage_mode: CoverageModeV1,
@@ -270,7 +271,7 @@ pub struct CoverageQueryV1 {
     pub max_matches: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct WeakCoverageProbeV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terms: Vec<String>,
@@ -280,7 +281,7 @@ pub struct WeakCoverageProbeV1 {
     pub surface_hints: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct CoverageQueryReportV1 {
     pub version: String,
     pub coverage_mode: CoverageModeV1,
@@ -296,7 +297,7 @@ pub struct CoverageQueryReportV1 {
     pub next_actions: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DefinitionQueryKindV1 {
     Process,
@@ -310,7 +311,7 @@ pub enum DefinitionQueryKindV1 {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct DefinitionQueryV1 {
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -325,7 +326,7 @@ pub struct DefinitionQueryV1 {
     pub include_queries: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct DefinitionCandidateV1 {
     pub ref_id: String,
     pub kind: OverlayRefKindV1,
@@ -337,7 +338,7 @@ pub struct DefinitionCandidateV1 {
     pub suggested_axql: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct DefinitionQueryReportV1 {
     pub version: String,
     pub coverage_mode: CoverageModeV1,
@@ -355,7 +356,7 @@ pub struct DefinitionQueryReportV1 {
     pub recommended_followups: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct CodegenPlanReportV1 {
     pub version: String,
     pub coverage_mode: CoverageModeV1,
@@ -366,7 +367,7 @@ pub struct CodegenPlanReportV1 {
     pub caveats: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ContinuousSoftwareCoverageReportV1 {
     pub version: String,
     pub coverage_mode: CoverageModeV1,
@@ -398,6 +399,27 @@ pub fn parse_overlay_bundle(json_text: &str) -> Result<ToolingOverlayBundleV1> {
         ));
     }
     Ok(bundle)
+}
+
+pub fn tooling_overlay_bundle_schema() -> Value {
+    schema_value::<ToolingOverlayBundleV1>()
+}
+
+pub fn definition_query_schema() -> Value {
+    schema_value::<DefinitionQueryV1>()
+}
+
+pub fn coverage_query_schema() -> Value {
+    schema_value::<CoverageQueryV1>()
+}
+
+pub fn continuous_software_coverage_report_schema() -> Value {
+    schema_value::<ContinuousSoftwareCoverageReportV1>()
+}
+
+fn schema_value<T: JsonSchema>() -> Value {
+    serde_json::to_value(schemars::schema_for!(T))
+        .expect("schemars schema should serialize to JSON")
 }
 
 pub fn compile_kernel_from_axi_text(axi_text: &str) -> Result<KernelModuleIr> {
@@ -1293,6 +1315,20 @@ instance Seed of OrderFulfillment:
             .normalized_refs
             .iter()
             .any(|r| r.normalized_id.contains("OrderHasPayment")));
+    }
+
+    #[test]
+    fn public_tooling_schemas_are_generated_from_typed_dtos() {
+        let overlay_schema = tooling_overlay_bundle_schema();
+        let definition_schema = definition_query_schema();
+        let coverage_schema = coverage_query_schema();
+        let report_schema = continuous_software_coverage_report_schema();
+
+        let overlay_text = overlay_schema.to_string();
+        assert!(overlay_text.contains("implementation_surfaces"));
+        assert!(definition_schema.to_string().contains("prompt"));
+        assert!(coverage_schema.to_string().contains("coverage_mode"));
+        assert!(report_schema.to_string().contains("missing_code_refs"));
     }
 
     #[test]

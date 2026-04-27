@@ -14,6 +14,7 @@
     "Use the built axiograph binary on PATH, or replace command with an absolute path.",
     "The canonical generated contract is `axiograph authoring integration-manifest`.",
     "The MCP server is read-only; generated files are materialized only through explicit CLI commands.",
-    "The host launches Axiograph over MCP stdio; framing, lifecycle, tool listing, and tool calls are handled by the rmcp-backed server."
+    "The host launches Axiograph over MCP stdio; framing, lifecycle, tool listing, and tool calls are handled by the rmcp-backed server.",
+    "This launcher is not a custom JSON-RPC protocol specification."
   ]
 }

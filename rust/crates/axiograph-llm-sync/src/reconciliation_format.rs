@@ -1,21 +1,19 @@
-//! Reconciliation binary format (Rust runtime)
+//! Reconciliation persistence format (Rust runtime)
 //!
-//! This module defines the wire format for reconciliation data,
-//! enabling persistence, debugging, and (eventually) certificate anchoring
-//! for reconciliation decisions.
+//! Reconciliation state is persisted through the shared verified CBOR envelope
+//! from `format`, so runtime state gets the same header/checksum validation as
+//! the other LLM-sync verified artifacts. The low-level binary helpers remain
+//! for focused domain-object roundtrip tests only.
 //!
-//! ## Binary Format
+//! ## State Format
 //!
 //! ```text
-//! +---------------+
-//! | Header (56B)  |
-//! +---------------+
-//! | Sources       |
-//! +---------------+
-//! | Weighted Facts|
-//! +---------------+
-//! | Conflicts     |
-//! +---------------+
+//! +-------------------------+
+//! | VerifiedHeader (CBOR)   |
+//! +-------------------------+
+//! | ReconciliationState     |
+//! | content (CBOR)          |
+//! +-------------------------+
 //! ```
 
 #![allow(unused_imports)]
@@ -27,7 +25,11 @@ use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read, Write};
 use uuid::Uuid;
 
-/// Magic bytes: "AXRC" (Axiograph Reconciliation)
+/// Legacy object-helper magic bytes: "AXRC" (Axiograph Reconciliation).
+///
+/// Full `ReconciliationState` persistence uses the shared verified `AXVF`
+/// envelope. Keep this only for low-level helper tests while the helper methods
+/// still exist.
 pub const MAGIC: [u8; 4] = [0x41, 0x58, 0x52, 0x43];
 
 /// Current format version
@@ -419,7 +421,7 @@ impl ResolvedConflict {
 // ============================================================================
 
 /// Complete reconciliation state
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconciliationState {
     pub sources: Vec<SourceCredibility>,
     pub facts: Vec<WeightedFact>,
@@ -437,80 +439,24 @@ impl ReconciliationState {
 
     /// Serialize to bytes
     pub fn to_bytes(&self) -> std::io::Result<Vec<u8>> {
-        let mut buf = Vec::new();
-
-        // Write placeholder header
-        let mut header = ReconciliationHeader::new();
-        header.fact_count = self.facts.len() as u32;
-        header.source_count = self.sources.len() as u32;
-        header.conflict_count = self.conflicts.len() as u32;
-        header.write(&mut buf)?;
-
-        // Sources
-        header.source_credibility_offset = buf.len() as u64;
-        for source in &self.sources {
-            source.write_binary(&mut buf)?;
-        }
-
-        // Facts
-        header.weighted_fact_offset = buf.len() as u64;
-        for fact in &self.facts {
-            fact.write_binary(&mut buf)?;
-        }
-
-        // Conflicts
-        header.resolved_conflict_offset = buf.len() as u64;
-        for conflict in &self.conflicts {
-            conflict.write_binary(&mut buf)?;
-        }
-
-        header.total_size = buf.len() as u64;
-
-        // Rewrite header with correct offsets
-        let mut cursor = Cursor::new(&mut buf[..ReconciliationHeader::SIZE]);
-        header.write(&mut cursor)?;
-
-        Ok(buf)
+        crate::format::serialize_verified(self, VERSION, 0)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     /// Deserialize from bytes
     pub fn from_bytes(bytes: &[u8]) -> std::io::Result<Self> {
-        let mut cursor = Cursor::new(bytes);
-
-        let header = ReconciliationHeader::read(&mut cursor)?;
-        if !header.is_valid() {
+        let (state, header): (Self, _) = crate::format::deserialize_verified(bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if header.schema_version != VERSION {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Invalid reconciliation file header",
+                format!(
+                    "unsupported reconciliation schema version {}; expected {}",
+                    header.schema_version, VERSION
+                ),
             ));
         }
-
-        // Read sources
-        cursor.set_position(header.source_credibility_offset);
-        let mut sources = Vec::with_capacity(header.source_count as usize);
-        for _ in 0..header.source_count {
-            sources.push(SourceCredibility::read_binary(&mut cursor)?);
-        }
-
-        // Read facts
-        cursor.set_position(header.weighted_fact_offset);
-        let mut facts = Vec::with_capacity(header.fact_count as usize);
-        for _ in 0..header.fact_count {
-            facts.push(WeightedFact::read_binary(&mut cursor)?);
-        }
-
-        // Read conflicts
-        cursor.set_position(header.resolved_conflict_offset);
-        let mut conflicts = Vec::with_capacity(header.conflict_count as usize);
-        for _ in 0..header.conflict_count {
-            conflicts.push(ResolvedConflict::read_binary(&mut cursor)?);
-        }
-
-        Ok(Self {
-            sources,
-            facts,
-            conflicts,
-        })
+        Ok(state)
     }
 
     /// Save to file

@@ -196,7 +196,7 @@ impl ReachabilityProofV2 {
 }
 
 /// Versioned wrapper for v2 certificates (fixed-point probabilities).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CertificateV2 {
     pub version: u32,
     /// Optional binding to canonical `.axi` inputs (snapshot-scoped).
@@ -204,6 +204,35 @@ pub struct CertificateV2 {
     pub anchor: Option<AxiAnchorV1>,
     #[serde(flatten)]
     pub payload: CertificatePayloadV2,
+}
+
+#[derive(Deserialize)]
+struct CertificateV2Wire {
+    pub version: u32,
+    #[serde(default)]
+    pub anchor: Option<AxiAnchorV1>,
+    #[serde(flatten)]
+    pub payload: CertificatePayloadV2,
+}
+
+impl<'de> Deserialize<'de> for CertificateV2 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = CertificateV2Wire::deserialize(deserializer)?;
+        if wire.version != CERTIFICATE_VERSION_V2 {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported CertificateV2 version {}, expected {}",
+                wire.version, CERTIFICATE_VERSION_V2
+            )));
+        }
+        Ok(Self {
+            version: wire.version,
+            anchor: wire.anchor,
+            payload: wire.payload,
+        })
+    }
 }
 
 /// Certificate anchor for canonical `.axi` inputs (v1).
@@ -1167,6 +1196,21 @@ mod normalize_path_v2_tests {
             }
             other => panic!("expected reachability_v3 payload, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn certificate_v2_rejects_wrong_wrapper_version() {
+        let cert = CertificateV2::reachability_v3(ReachabilityProofV3::Reflexive {
+            entity: "axi:id:Node:alice".to_string(),
+        });
+        let mut json = serde_json::to_value(&cert).expect("certificate should serialize");
+        json["version"] = json!(1);
+
+        let err = serde_json::from_value::<CertificateV2>(json)
+            .expect_err("wrong certificate wrapper version must fail");
+        assert!(err
+            .to_string()
+            .contains("unsupported CertificateV2 version"));
     }
 
     #[test]

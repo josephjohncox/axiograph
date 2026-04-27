@@ -35,7 +35,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use url::form_urlencoded;
@@ -661,6 +661,14 @@ async fn handle_request(
             }
         };
     }
+    macro_rules! request_json {
+        ($req:expr, $ty:ty, $label:literal) => {
+            match read_json_request::<$ty>($req, $label).await {
+                Ok(parsed) => parsed,
+                Err(response) => return Ok(response),
+            }
+        };
+    }
 
     if method == Method::GET && path.starts_with("/viz/") {
         if path == "/viz/" || path == "/viz/index.html" {
@@ -758,17 +766,7 @@ async fn handle_request(
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let body = request_body!(req);
-
-            let parsed: LlmAgentRequestV1 = match serde_json::from_slice(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Ok(json_error(
-                        StatusCode::BAD_REQUEST,
-                        &format!("failed to parse llm/agent request JSON: {e}"),
-                    ));
-                }
-            };
+            let parsed = request_json!(req, LlmAgentRequestV1, "llm/agent");
             if parsed.auto_commit {
                 if let Err(resp) = require_admin_auth_header(auth_header.as_deref(), state.as_ref())
                 {
@@ -786,17 +784,7 @@ async fn handle_request(
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let body = request_body!(req);
-
-            let parsed: WorldModelProposeRequestV1 = match serde_json::from_slice(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Ok(json_error(
-                        StatusCode::BAD_REQUEST,
-                        &format!("failed to parse world_model/propose request JSON: {e}"),
-                    ));
-                }
-            };
+            let parsed = request_json!(req, WorldModelProposeRequestV1, "world_model/propose");
             if parsed.auto_commit {
                 if let Err(resp) = require_admin_auth_header(auth_header.as_deref(), state.as_ref())
                 {
@@ -814,17 +802,7 @@ async fn handle_request(
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let body = request_body!(req);
-
-            let parsed: WorldModelPlanRequestV1 = match serde_json::from_slice(&body) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Ok(json_error(
-                        StatusCode::BAD_REQUEST,
-                        &format!("failed to parse world_model/plan request JSON: {e}"),
-                    ));
-                }
-            };
+            let parsed = request_json!(req, WorldModelPlanRequestV1, "world_model/plan");
             if parsed.auto_commit {
                 if let Err(resp) = require_admin_auth_header(auth_header.as_deref(), state.as_ref())
                 {
@@ -995,11 +973,11 @@ const MAX_JSON_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 async fn read_request_body(
     req: Request<Incoming>,
-) -> std::result::Result<Vec<u8>, Response<Full<Bytes>>> {
+) -> std::result::Result<Bytes, Response<Full<Bytes>>> {
     Limited::new(req.into_body(), MAX_JSON_REQUEST_BODY_BYTES)
         .collect()
         .await
-        .map(|body| body.to_bytes().to_vec())
+        .map(|body| body.to_bytes())
         .map_err(|err| {
             json_error(
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -1009,6 +987,19 @@ async fn read_request_body(
                 ),
             )
         })
+}
+
+fn parse_json_request<T: DeserializeOwned>(body: &[u8], label: &str) -> Result<T> {
+    serde_json::from_slice(body).map_err(|e| anyhow!("failed to parse {label} request JSON: {e}"))
+}
+
+async fn read_json_request<T: DeserializeOwned>(
+    req: Request<Incoming>,
+    label: &str,
+) -> std::result::Result<T, Response<Full<Bytes>>> {
+    let body = read_request_body(req).await?;
+    parse_json_request(&body, label)
+        .map_err(|e| json_error(StatusCode::BAD_REQUEST, &e.to_string()))
 }
 
 fn json_response<T: Serialize>(status: StatusCode, value: &T) -> Response<Full<Bytes>> {
@@ -1854,8 +1845,7 @@ fn query_request_to_axql_query(req: &QueryRequestV1) -> Result<crate::axql::Axql
 }
 
 async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResponseV1> {
-    let req: QueryRequestV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse query request JSON: {e}"))?;
+    let req: QueryRequestV1 = parse_json_request(body, "query")?;
     let show_elaboration = req.show_elaboration;
     let want_cert = req.certify || req.verify;
     let want_verify = req.verify;
@@ -2107,8 +2097,7 @@ struct ReachabilityCertRequestV1 {
 type CertResponseV1 = crate::path_cert::PathCertReportV1;
 
 async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Result<CertResponseV1> {
-    let req: ReachabilityCertRequestV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse reachability cert request JSON: {e}"))?;
+    let req: ReachabilityCertRequestV1 = parse_json_request(body, "reachability cert")?;
     if req.request.relation_ids.is_empty() {
         return Err(anyhow!(
             "reachability cert requires non-empty `relation_ids`"
@@ -2146,8 +2135,7 @@ async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Resu
 }
 
 async fn handle_llm_to_query(state: &Arc<ServerState>, body: &[u8]) -> Result<serde_json::Value> {
-    let req: LlmToQueryRequestV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse llm/to_query request JSON: {e}"))?;
+    let req: LlmToQueryRequestV1 = parse_json_request(body, "llm/to_query")?;
 
     if matches!(state.config.llm.backend, LlmBackend::Disabled) {
         return Err(anyhow!(
@@ -3287,8 +3275,7 @@ async fn handle_discover_draft_axi(
         #[serde(default)]
         infer_constraints: Option<bool>,
     }
-    let req: Req = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse discover/draft-axi request JSON: {e}"))?;
+    let req: Req = parse_json_request(body, "discover/draft-axi")?;
 
     let opts = crate::schema_discovery::DraftAxiModuleOptions {
         module_name: req.module_name.unwrap_or_else(|| "DraftModule".to_string()),
@@ -3332,8 +3319,7 @@ async fn handle_discover_check_olog(body: &[u8]) -> Result<serde_json::Value> {
         apply_refinement_handle_id: Option<String>,
     }
 
-    let req: Req = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse discover/check-olog request JSON: {e}"))?;
+    let req: Req = parse_json_request(body, "discover/check-olog")?;
     let report = crate::typed_authoring::discover_check_olog_report_against_axi_text(
         &req.axi_text,
         req.schema_name.as_deref(),
@@ -3361,8 +3347,7 @@ async fn handle_semantic_coverage(
         runtime_theory_check_input: Option<crate::runtime_theory_check::RuntimeTheoryCheckInputV1>,
     }
 
-    let req: Req = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/coverage request JSON: {e}"))?;
+    let req: Req = parse_json_request(body, "semantic/coverage")?;
 
     let (db, accepted_snapshot_id, meta_from_state) = {
         let loaded = state.loaded.read().unwrap();
@@ -3414,8 +3399,7 @@ async fn handle_semantic_business_rule(
         lifecycle_state: Option<String>,
     }
 
-    let req: Req = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/business-rule request JSON: {e}"))?;
+    let req: Req = parse_json_request(body, "semantic/business-rule")?;
 
     let (db, accepted_snapshot_id, meta_from_state) = {
         let loaded = state.loaded.read().unwrap();
@@ -3494,8 +3478,7 @@ async fn handle_semantic_agent_report(
         runtime_theory_check_input: Option<crate::runtime_theory_check::RuntimeTheoryCheckInputV1>,
     }
 
-    let req: Req = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/agent-report request JSON: {e}"))?;
+    let req: Req = parse_json_request(body, "semantic/agent-report")?;
 
     let (db, accepted_snapshot_id, meta_from_state) = {
         let loaded = state.loaded.read().unwrap();
@@ -3541,8 +3524,8 @@ async fn handle_semantic_context_report(
     state: &Arc<ServerState>,
     body: &[u8],
 ) -> Result<serde_json::Value> {
-    let req: crate::context_report::ContextReportRequestV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/context-report request JSON: {e}"))?;
+    let req: crate::context_report::ContextReportRequestV1 =
+        parse_json_request(body, "semantic/context-report")?;
 
     let (db, accepted_snapshot_id, meta_from_state) = {
         let loaded = state.loaded.read().unwrap();
@@ -3570,8 +3553,8 @@ async fn handle_semantic_behavior_case(
     state: &Arc<ServerState>,
     body: &[u8],
 ) -> Result<serde_json::Value> {
-    let req: crate::behavior_case::BehaviorCaseCheckRequestV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/behavior-case request JSON: {e}"))?;
+    let req: crate::behavior_case::BehaviorCaseCheckRequestV1 =
+        parse_json_request(body, "semantic/behavior-case")?;
 
     let (db, accepted_snapshot_id, meta_from_state) = {
         let loaded = state.loaded.read().unwrap();
@@ -3596,15 +3579,13 @@ async fn handle_semantic_behavior_case(
 }
 
 async fn handle_semantic_overlay_check(body: &[u8]) -> Result<serde_json::Value> {
-    let args: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/overlay-check request JSON: {e}"))?;
+    let args: serde_json::Value = parse_json_request(body, "semantic/overlay-check")?;
     serde_json::to_value(crate::semantic_tools::call_semantic_overlay_check(args)?)
         .map_err(Into::into)
 }
 
 async fn handle_semantic_software_coverage(body: &[u8]) -> Result<serde_json::Value> {
-    let args: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/software-coverage request JSON: {e}"))?;
+    let args: serde_json::Value = parse_json_request(body, "semantic/software-coverage")?;
     serde_json::to_value(crate::semantic_tools::call_semantic_software_coverage(
         args,
     )?)
@@ -3612,29 +3593,26 @@ async fn handle_semantic_software_coverage(body: &[u8]) -> Result<serde_json::Va
 }
 
 async fn handle_semantic_codegen_plan(body: &[u8]) -> Result<serde_json::Value> {
-    let args: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/codegen-plan request JSON: {e}"))?;
+    let args: serde_json::Value = parse_json_request(body, "semantic/codegen-plan")?;
     serde_json::to_value(crate::semantic_tools::call_semantic_codegen_plan(args)?)
         .map_err(Into::into)
 }
 
 async fn handle_semantic_coverage_query(body: &[u8]) -> Result<serde_json::Value> {
-    let args: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/coverage-query request JSON: {e}"))?;
+    let args: serde_json::Value = parse_json_request(body, "semantic/coverage-query")?;
     serde_json::to_value(crate::semantic_tools::call_semantic_coverage_query(args)?)
         .map_err(Into::into)
 }
 
 async fn handle_semantic_definition_query(body: &[u8]) -> Result<serde_json::Value> {
-    let args: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/definition-query request JSON: {e}"))?;
+    let args: serde_json::Value = parse_json_request(body, "semantic/definition-query")?;
     serde_json::to_value(crate::semantic_tools::call_semantic_definition_query(args)?)
         .map_err(Into::into)
 }
 
 async fn handle_semantic_theory_check(body: &[u8]) -> Result<serde_json::Value> {
-    let req: crate::runtime_theory_check::RuntimeTheoryCheckInputV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse semantic/theory-check request JSON: {e}"))?;
+    let req: crate::runtime_theory_check::RuntimeTheoryCheckInputV1 =
+        parse_json_request(body, "semantic/theory-check")?;
     let report = crate::runtime_theory_check::runtime_theory_check_reports_from_input(&req)?;
 
     Ok(serde_json::json!({
@@ -3753,8 +3731,7 @@ fn viz_static_mime(path: &str) -> &'static str {
 }
 
 async fn handle_viz_post(state: &Arc<ServerState>, body: &[u8]) -> Result<Response<Full<Bytes>>> {
-    let req: VizRequestV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse viz request JSON: {e}"))?;
+    let req: VizRequestV1 = parse_json_request(body, "viz")?;
     handle_viz_request(state, req).await
 }
 
@@ -3898,8 +3875,7 @@ struct PromoteResponseV1 {
 }
 
 async fn handle_promote(state: &Arc<ServerState>, body: &[u8]) -> Result<PromoteResponseV1> {
-    let req: PromoteRequestV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse promote request JSON: {e}"))?;
+    let req: PromoteRequestV1 = parse_json_request(body, "promote")?;
 
     let SnapshotSource::Store { dir, .. } = &state.config.source else {
         return Err(anyhow!(
@@ -3994,8 +3970,7 @@ async fn handle_pathdb_commit(
     state: &Arc<ServerState>,
     body: &[u8],
 ) -> Result<PathdbCommitResponseV1> {
-    let req: PathdbCommitRequestV1 = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse pathdb-commit request JSON: {e}"))?;
+    let req: PathdbCommitRequestV1 = parse_json_request(body, "pathdb-commit")?;
     handle_pathdb_commit_req(state, req).await
 }
 
@@ -4190,8 +4165,7 @@ async fn handle_proposals_relation(
         quality_plane: Option<String>,
     }
 
-    let req: Request = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse /proposals/relation request JSON: {e}"))?;
+    let req: Request = parse_json_request(body, "/proposals/relation")?;
 
     let loaded = state
         .loaded
@@ -4241,8 +4215,7 @@ async fn handle_proposals_relations(
         quality_plane: Option<String>,
     }
 
-    let req: Request = serde_json::from_slice(body)
-        .map_err(|e| anyhow!("failed to parse /proposals/relations request JSON: {e}"))?;
+    let req: Request = parse_json_request(body, "/proposals/relations")?;
 
     let loaded = state
         .loaded
@@ -4957,6 +4930,17 @@ instance Tiny of S:
         assert_eq!(
             commit.accepted_snapshot.as_ref().map(|id| id.as_str()),
             Some("accepted:pathdb")
+        );
+    }
+
+    #[test]
+    fn parse_json_request_adds_endpoint_context_to_errors() {
+        let err = parse_json_request::<serde_json::Value>(b"{", "demo/endpoint")
+            .expect_err("malformed JSON should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("failed to parse demo/endpoint request JSON")
         );
     }
 

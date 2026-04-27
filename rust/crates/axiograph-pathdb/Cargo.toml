@@ -12,18 +12,15 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-bincode = "1"
+bincode.workspace = true
 
 # Bitmap indexing (like Roaring bitmaps)
 roaring.workspace = true
 
 # Hashing for string interning
 ahash.workspace = true
-dashmap = "6"
+dashmap.workspace = true
 ciborium.workspace = true
-
-# Parallel processing
-rayon = "1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus)'] }
