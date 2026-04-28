@@ -44,7 +44,9 @@ use axiograph_pathdb::PathDB;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -55,6 +57,90 @@ use uuid::Uuid;
 
 /// Unique identifier for a storage change
 pub type ChangeId = Uuid;
+
+const STORAGE_ENTITY_NAME_ATTR: &str = "name";
+
+/// Endpoint side for relation diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationEndpointRole {
+    Source,
+    Target,
+}
+
+impl fmt::Display for RelationEndpointRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source => write!(f, "source"),
+            Self::Target => write!(f, "target"),
+        }
+    }
+}
+
+/// Fail-closed semantic errors emitted before writing unresolved relations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageSemanticError {
+    UnresolvedRelationEndpoint {
+        relation_name: Option<String>,
+        rel_type: String,
+        endpoint: RelationEndpointRole,
+        entity_name: String,
+    },
+    AmbiguousRelationEndpoint {
+        relation_name: Option<String>,
+        rel_type: String,
+        endpoint: RelationEndpointRole,
+        entity_name: String,
+        candidate_ids: Vec<u32>,
+    },
+    UntypedRelationEndpoint {
+        relation_name: Option<String>,
+        rel_type: String,
+        endpoint: RelationEndpointRole,
+        entity_name: String,
+        entity_id: u32,
+    },
+}
+
+impl fmt::Display for StorageSemanticError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnresolvedRelationEndpoint {
+                relation_name,
+                rel_type,
+                endpoint,
+                entity_name,
+            } => write!(
+                f,
+                "unresolved {endpoint} endpoint `{entity_name}` for relation `{}` of type `{rel_type}`; relation endpoints must resolve to exactly one typed PathDB entity by `{STORAGE_ENTITY_NAME_ATTR}`",
+                relation_name.as_deref().unwrap_or(rel_type)
+            ),
+            Self::AmbiguousRelationEndpoint {
+                relation_name,
+                rel_type,
+                endpoint,
+                entity_name,
+                candidate_ids,
+            } => write!(
+                f,
+                "ambiguous {endpoint} endpoint `{entity_name}` for relation `{}` of type `{rel_type}`; candidates: {candidate_ids:?}",
+                relation_name.as_deref().unwrap_or(rel_type)
+            ),
+            Self::UntypedRelationEndpoint {
+                relation_name,
+                rel_type,
+                endpoint,
+                entity_name,
+                entity_id,
+            } => write!(
+                f,
+                "untyped {endpoint} endpoint `{entity_name}` for relation `{}` of type `{rel_type}` resolved to entity id {entity_id}",
+                relation_name.as_deref().unwrap_or(rel_type)
+            ),
+        }
+    }
+}
+
+impl Error for StorageSemanticError {}
 
 /// A storable fact (can come from LLM, user, or file)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,6 +504,156 @@ impl UnifiedStorage {
         })
     }
 
+    fn entity_attrs_with_storage_name<'a>(
+        name: &'a str,
+        attributes: &'a [(String, String)],
+    ) -> Vec<(&'a str, &'a str)> {
+        let mut attrs = Vec::with_capacity(attributes.len() + 1);
+        attrs.extend(
+            attributes
+                .iter()
+                .filter(|(k, _)| k.as_str() != STORAGE_ENTITY_NAME_ATTR)
+                .map(|(k, v)| (k.as_str(), v.as_str())),
+        );
+        attrs.push((STORAGE_ENTITY_NAME_ATTR, name));
+        attrs
+    }
+
+    fn fact_pathdb_entity_name(fact: &StorableFact) -> Option<&str> {
+        match fact {
+            StorableFact::Entity { name, .. }
+            | StorableFact::TacitKnowledge { name, .. }
+            | StorableFact::Concept { name, .. }
+            | StorableFact::SafetyGuideline { name, .. } => Some(name.as_str()),
+            StorableFact::Relation { .. } | StorableFact::Constraint { .. } => None,
+        }
+    }
+
+    fn validate_relation_endpoints_for_change(
+        pathdb: &PathDB,
+        facts: &[StorableFact],
+    ) -> Result<(), StorageSemanticError> {
+        let mut available_new_entity_names: BTreeMap<&str, usize> = BTreeMap::new();
+        for fact in facts {
+            match fact {
+                StorableFact::Relation {
+                    name,
+                    rel_type,
+                    source,
+                    target,
+                    ..
+                } => {
+                    Self::validate_relation_endpoint_candidate(
+                        pathdb,
+                        &available_new_entity_names,
+                        name.as_deref(),
+                        rel_type,
+                        RelationEndpointRole::Source,
+                        source,
+                    )?;
+                    Self::validate_relation_endpoint_candidate(
+                        pathdb,
+                        &available_new_entity_names,
+                        name.as_deref(),
+                        rel_type,
+                        RelationEndpointRole::Target,
+                        target,
+                    )?;
+                }
+                _ => {
+                    if let Some(name) = Self::fact_pathdb_entity_name(fact) {
+                        *available_new_entity_names.entry(name).or_default() += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_relation_endpoint_candidate(
+        pathdb: &PathDB,
+        new_entity_names: &BTreeMap<&str, usize>,
+        relation_name: Option<&str>,
+        rel_type: &str,
+        endpoint: RelationEndpointRole,
+        entity_name: &str,
+    ) -> Result<(), StorageSemanticError> {
+        let new_count = new_entity_names
+            .get(entity_name)
+            .copied()
+            .unwrap_or_default();
+        let existing = Self::entity_ids_by_storage_name(pathdb, entity_name);
+
+        if new_count > 1 || (new_count == 1 && !existing.is_empty()) {
+            return Err(StorageSemanticError::AmbiguousRelationEndpoint {
+                relation_name: relation_name.map(str::to_string),
+                rel_type: rel_type.to_string(),
+                endpoint,
+                entity_name: entity_name.to_string(),
+                candidate_ids: existing,
+            });
+        }
+
+        if new_count == 1 {
+            return Ok(());
+        }
+
+        Self::resolve_relation_endpoint(pathdb, relation_name, rel_type, endpoint, entity_name)
+            .map(|_| ())
+    }
+
+    fn resolve_relation_endpoint(
+        pathdb: &PathDB,
+        relation_name: Option<&str>,
+        rel_type: &str,
+        endpoint: RelationEndpointRole,
+        entity_name: &str,
+    ) -> Result<u32, StorageSemanticError> {
+        let candidate_ids = Self::entity_ids_by_storage_name(pathdb, entity_name);
+        match candidate_ids.as_slice() {
+            [] => Err(StorageSemanticError::UnresolvedRelationEndpoint {
+                relation_name: relation_name.map(str::to_string),
+                rel_type: rel_type.to_string(),
+                endpoint,
+                entity_name: entity_name.to_string(),
+            }),
+            [entity_id] => {
+                if pathdb.entities.get_type(*entity_id).is_none() {
+                    return Err(StorageSemanticError::UntypedRelationEndpoint {
+                        relation_name: relation_name.map(str::to_string),
+                        rel_type: rel_type.to_string(),
+                        endpoint,
+                        entity_name: entity_name.to_string(),
+                        entity_id: *entity_id,
+                    });
+                }
+                Ok(*entity_id)
+            }
+            _ => Err(StorageSemanticError::AmbiguousRelationEndpoint {
+                relation_name: relation_name.map(str::to_string),
+                rel_type: rel_type.to_string(),
+                endpoint,
+                entity_name: entity_name.to_string(),
+                candidate_ids,
+            }),
+        }
+    }
+
+    fn entity_ids_by_storage_name(pathdb: &PathDB, entity_name: &str) -> Vec<u32> {
+        let Some(name_key_id) = pathdb.interner.id_of(STORAGE_ENTITY_NAME_ATTR) else {
+            return Vec::new();
+        };
+        let Some(name_value_id) = pathdb.interner.id_of(entity_name) else {
+            return Vec::new();
+        };
+        pathdb
+            .entities
+            .entities_with_attr_value(name_key_id, name_value_id)
+            .iter()
+            .collect()
+    }
+
     // ========================================================================
     // Write Operations
     // ========================================================================
@@ -469,6 +705,8 @@ impl UnifiedStorage {
     /// Apply a single change
     fn apply_change(&self, change: &Change) -> anyhow::Result<ApplyResult> {
         let mut pathdb = self.pathdb.write();
+        Self::validate_relation_endpoints_for_change(&pathdb, &change.facts)?;
+
         let mut pathdb_ids = Vec::new();
         let mut axi_lines = Vec::new();
         let mut warnings = Vec::new();
@@ -481,10 +719,7 @@ impl UnifiedStorage {
                     attributes,
                 } => {
                     // Add to PathDB
-                    let attrs: Vec<(&str, &str)> = attributes
-                        .iter()
-                        .map(|(k, v)| (k.as_str(), v.as_str()))
-                        .collect();
+                    let attrs = Self::entity_attrs_with_storage_name(name, attributes);
                     let id = pathdb.add_entity(entity_type, attrs);
                     pathdb_ids.push(id);
 
@@ -501,10 +736,20 @@ impl UnifiedStorage {
                     confidence,
                     attributes,
                 } => {
-                    // Resolve source/target to IDs (simplified)
-                    // In production, would look up by name
-                    let source_id = 0; // placeholder
-                    let target_id = 1; // placeholder
+                    let source_id = Self::resolve_relation_endpoint(
+                        &pathdb,
+                        name.as_deref(),
+                        rel_type,
+                        RelationEndpointRole::Source,
+                        source,
+                    )?;
+                    let target_id = Self::resolve_relation_endpoint(
+                        &pathdb,
+                        name.as_deref(),
+                        rel_type,
+                        RelationEndpointRole::Target,
+                        target,
+                    )?;
 
                     let attrs: Vec<(&str, &str)> = attributes
                         .iter()
@@ -855,6 +1100,7 @@ impl UnifiedStorage {
         let changelog = self.changelog.read();
         for change in changelog.iter() {
             if matches!(change.status, ChangeStatus::Applied) {
+                Self::validate_relation_endpoints_for_change(&pathdb, &change.facts)?;
                 for fact in &change.facts {
                     match fact {
                         StorableFact::Entity {
@@ -862,13 +1108,11 @@ impl UnifiedStorage {
                             entity_type,
                             attributes,
                         } => {
-                            let attrs: Vec<(&str, &str)> = attributes
-                                .iter()
-                                .map(|(k, v)| (k.as_str(), v.as_str()))
-                                .collect();
+                            let attrs = Self::entity_attrs_with_storage_name(name, attributes);
                             pathdb.add_entity(entity_type, attrs);
                         }
                         StorableFact::Relation {
+                            name,
                             rel_type,
                             source,
                             target,
@@ -876,12 +1120,25 @@ impl UnifiedStorage {
                             attributes,
                             ..
                         } => {
-                            // Simplified - would need name resolution
+                            let source_id = Self::resolve_relation_endpoint(
+                                &pathdb,
+                                name.as_deref(),
+                                rel_type,
+                                RelationEndpointRole::Source,
+                                source,
+                            )?;
+                            let target_id = Self::resolve_relation_endpoint(
+                                &pathdb,
+                                name.as_deref(),
+                                rel_type,
+                                RelationEndpointRole::Target,
+                                target,
+                            )?;
                             let attrs: Vec<(&str, &str)> = attributes
                                 .iter()
                                 .map(|(k, v)| (k.as_str(), v.as_str()))
                                 .collect();
-                            pathdb.add_relation(rel_type, 0, 1, *confidence, attrs);
+                            pathdb.add_relation(rel_type, source_id, target_id, *confidence, attrs);
                         }
                         StorableFact::TacitKnowledge {
                             name,

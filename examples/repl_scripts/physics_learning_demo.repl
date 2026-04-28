@@ -37,5 +37,4 @@ q select ?c where name("Example_Ti_Roughing_TooFast") -demonstrates-> ?c limit 1
 # Concepts have description nodes (stable identifiers; attach chunks/docs for prose).
 q select ?t where name("ThermalConductivityConcept") -conceptDescription-> ?t limit 10
 
-export_axi build/physics_learning_export_v1.axi
 save build/physics_learning.axpd

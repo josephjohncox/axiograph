@@ -1785,8 +1785,7 @@ impl PathDB {
         let mut offset = 8;
 
         // Interner
-        let interner_len =
-            read_pathdb_len(bytes, &mut offset, "interner length")?;
+        let interner_len = read_pathdb_len(bytes, &mut offset, "interner length")?;
         let interner_bytes = read_pathdb_slice(bytes, &mut offset, interner_len, "interner")?;
         let interner = StringInterner::from_bytes(interner_bytes)?;
 

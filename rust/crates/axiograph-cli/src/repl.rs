@@ -242,11 +242,6 @@ fn dispatch_repl_line_result(state: &mut ReplState, tokens: &[String]) -> Result
             cmd_import_proto(state, args)?;
             Ok(ReplControl::Continue)
         }
-        "export_axi" => {
-            let p = one_path_arg("export_axi", args)?;
-            cmd_export_axi(state, &p)?;
-            Ok(ReplControl::Continue)
-        }
         "export_axi_module" => {
             cmd_export_axi_module(state, args)?;
             Ok(ReplControl::Continue)
@@ -536,7 +531,6 @@ fn refresh_completion_data(
         "save".to_string(),
         "import_axi".to_string(),
         "import_proto".to_string(),
-        "export_axi".to_string(),
         "export_axi_module".to_string(),
         "build_indexes".to_string(),
         "add_entity".to_string(),
@@ -675,7 +669,7 @@ impl rustyline::completion::Completer for ReplLineHelper {
         // File-path-ish commands.
         if matches!(
             cmd,
-            "load" | "save" | "import_axi" | "import_proto" | "export_axi" | "viz"
+            "load" | "save" | "import_axi" | "import_proto" | "export_axi_module" | "viz"
         ) {
             return self.files.complete(line, pos, ctx);
         }
@@ -771,11 +765,10 @@ fn print_help() {
   load <file.axpd>               Load a PathDB snapshot
   save <file.axpd>               Save the current PathDB snapshot
 
-  import_axi <file.axi>          Import either a `PathDBExportV1` snapshot or a canonical `axi_v1` module
-  import_proto <descriptor.json> [schema_hint]
-                                 Import a Buf descriptor set JSON into the current DB
+  import_axi <file.axi>          Import a canonical `axi_v1` module into the current DB
+  import_proto <descriptor.binpb> [schema_hint]
+                                 Import a binary Buf descriptor set into the current DB
                                  (adds Proto* entities + relations; use `match_proto_enterprise` to link to `enterprise*` scenarios)
-  export_axi <file.axi>          Export current PathDB as `PathDBExportV1` `.axi`
   export_axi_module <file.axi> [module_name]
                                  Export a canonical `axi_v1` module from the meta-plane (if imported)
   ctx [show|list|use|add|clear]   Manage optional context/world scoping for queries
@@ -1072,44 +1065,38 @@ fn cmd_import_axi(state: &mut ReplState, path: &PathBuf) -> Result<()> {
     let path = resolve_path_with_repo_fallback(path)?;
     let text = fs::read_to_string(&path)?;
     let module_digest = axiograph_dsl::digest::axi_digest_v1(&text);
-    match crate::axi_input::classify_axi_text(&text)? {
-        crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => {
-            let db = module.import_pathdb()?;
-            state.db = Some(db);
-            set_snapshot_key(state, module_digest);
-            refresh_meta_plane_index(state)?;
-            println!("imported PathDB snapshot {}", path.display());
-            Ok(())
-        }
-        crate::axi_input::ClassifiedAxiModule::Canonical(module) => {
-            let summary = {
-                let db = state.db.get_or_insert_with(axiograph_pathdb::PathDB::new);
-                let summary = module.import_into_pathdb(db)?;
-                db.build_indexes();
-                summary
-            };
-            let next_key = if state.snapshot_key.is_empty() {
-                module_digest
-            } else {
-                chain_snapshot_key(&state.snapshot_key, "import_axi", &module_digest)
-            };
-            set_snapshot_key(state, next_key);
-            refresh_meta_plane_index(state)?;
-            println!(
-                "imported axi_v1 module {} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
-                path.display(),
-                summary.meta_entities_added,
-                summary.meta_relations_added,
-                summary.instances_imported,
-                summary.entities_added,
-                summary.entity_type_upgrades,
-                summary.tuple_entities_added,
-                summary.relations_added,
-                summary.derived_edges_added
-            );
-            Ok(())
-        }
-    }
+    let module = crate::axi_input::require_canonical_axi_text(&text).map_err(|err| {
+        anyhow!(
+            "{err}; REPL `import_axi` is canonical-only. Use `axiograph db pathdb import-axi` \
+             for PathDBExportV1 debug/live-byte parity."
+        )
+    })?;
+    let summary = {
+        let db = state.db.get_or_insert_with(axiograph_pathdb::PathDB::new);
+        let summary = module.import_into_pathdb(db)?;
+        db.build_indexes();
+        summary
+    };
+    let next_key = if state.snapshot_key.is_empty() {
+        module_digest
+    } else {
+        chain_snapshot_key(&state.snapshot_key, "import_axi", &module_digest)
+    };
+    set_snapshot_key(state, next_key);
+    refresh_meta_plane_index(state)?;
+    println!(
+        "imported axi_v1 module {} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
+        path.display(),
+        summary.meta_entities_added,
+        summary.meta_relations_added,
+        summary.instances_imported,
+        summary.entities_added,
+        summary.entity_type_upgrades,
+        summary.tuple_entities_added,
+        summary.relations_added,
+        summary.derived_edges_added
+    );
+    Ok(())
 }
 
 fn repo_root() -> PathBuf {
@@ -1162,7 +1149,7 @@ fn resolve_program_with_repo_fallback(program: &PathBuf) -> PathBuf {
 fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
     if !(1..=2).contains(&args.len()) {
         return Err(anyhow!(
-            "usage: import_proto <descriptor.json> [schema_hint]"
+            "usage: import_proto <descriptor.binpb> [schema_hint]"
         ));
     }
 
@@ -1172,10 +1159,10 @@ fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| "proto_api".to_string());
 
-    let text = fs::read_to_string(&path)?;
-    let ingest_digest = axiograph_dsl::digest::axi_digest_v1(&text);
-    let ingest = axiograph_ingest_proto::ingest_descriptor_set_json(
-        &text,
+    let bytes = fs::read(&path)?;
+    let ingest_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes);
+    let ingest = axiograph_ingest_proto::ingest_descriptor_set_bytes(
+        &bytes,
         Some(path.display().to_string()),
         Some(schema_hint.clone()),
     )?;
@@ -1201,6 +1188,25 @@ fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
         proposals: ingest.proposals,
     };
 
+    let draft_axi = crate::schema_discovery::draft_axi_module_from_proposals(
+        &proposals_file,
+        &crate::schema_discovery::DraftAxiModuleOptions {
+            module_name: format!(
+                "{}_Proposals",
+                crate::schema_discovery::sanitize_axi_ident(
+                    proposals_file.schema_hint.as_deref().unwrap_or("ProtoApi")
+                )
+            ),
+            schema_name: crate::schema_discovery::sanitize_axi_ident(
+                proposals_file.schema_hint.as_deref().unwrap_or("ProtoApi"),
+            ),
+            instance_name: "Observed".to_string(),
+            infer_constraints: false,
+        },
+    )?;
+    let draft_module = crate::axi_input::require_canonical_axi_text(&draft_axi)?;
+    let draft_summary = draft_module.import_into_pathdb(db)?;
+
     let proposals_summary = crate::proposals_import::import_proposals_file_into_pathdb(
         db,
         &proposals_file,
@@ -1209,8 +1215,10 @@ fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
     db.build_indexes();
 
     println!(
-        "imported proto descriptor: chunks_added={} proposals_entities_added={} proposals_relation_facts_added={} derived_edges_added={} evidence_links_added={} (reindexed in {:?})",
+        "imported proto descriptor: chunks_added={} draft_meta_entities={} draft_instances={} proposals_entities_added={} proposals_relation_facts_added={} derived_edges_added={} evidence_links_added={} (reindexed in {:?})",
         chunks_summary.chunks_added,
+        draft_summary.meta_entities_added,
+        draft_summary.instances_imported,
         proposals_summary.entities_added,
         proposals_summary.relation_facts_added,
         proposals_summary.derived_edges_added,
@@ -1284,7 +1292,7 @@ fn cmd_match_proto_enterprise(state: &mut ReplState, args: &[String]) -> Result<
     };
     let Some(proto_services_bm) = db.find_by_type("ProtoService") else {
         return Err(anyhow!(
-            "no `ProtoService` entities found (try: `import_proto <descriptor.json>`)"
+            "no `ProtoService` entities found (try: `import_proto <descriptor.binpb>`)"
         ));
     };
 
@@ -1843,14 +1851,6 @@ fn cmd_quality(state: &ReplState, args: &[String]) -> Result<()> {
         ));
     }
 
-    Ok(())
-}
-
-fn cmd_export_axi(state: &ReplState, path: &PathBuf) -> Result<()> {
-    let db = require_db(state)?;
-    let axi = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(db)?;
-    fs::write(path, axi)?;
-    println!("wrote {}", path.display());
     Ok(())
 }
 

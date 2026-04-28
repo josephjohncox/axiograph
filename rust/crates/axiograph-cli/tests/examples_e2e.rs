@@ -36,98 +36,6 @@ fn unique_run_dir(repo_root: &Path, label: &str) -> PathBuf {
     dir
 }
 
-fn scenario_query_axql(scenario: &str) -> String {
-    match scenario {
-        "enterprise" => "select ?svc where name(\"team_0\") -owns-> ?svc limit 10".to_string(),
-        "enterprise_large_api_proto_import" => {
-            "select ?psvc where name(\"svc_users\") -mapsToProtoService-> ?psvc limit 10"
-                .to_string()
-        }
-        "continuous_ingest" => {
-            "select ?svc where name(\"doc_stream_0\") -mentionsService-> ?svc limit 10".to_string()
-        }
-        "economic_flows" => {
-            "select ?f where name(\"household_0\") -Consumption-> ?f limit 10".to_string()
-        }
-        "economic_flows_axi" => {
-            "select ?to where name(\"Household_A\") -Flow-> ?to limit 10".to_string()
-        }
-        "machinist_learning" => {
-            "select ?g where name(\"op_0\") -guardrailedBy-> ?g limit 10".to_string()
-        }
-        "schema_evolution" => {
-            "select ?s where name(\"ProductV1_0\") -outgoingMigration/toSchema-> ?s limit 10"
-                .to_string()
-        }
-        "schema_evolution_axi" => {
-            "select ?dst where name(\"AddCategories\") -MigrationTo-> ?dst limit 10".to_string()
-        }
-        "proto_api" => {
-            "select ?rpc where name(\"doc_proto_api_0\") -mentions_rpc-> ?rpc limit 10".to_string()
-        }
-        "proto_axioms_axi" => {
-            "select ?ep where name(\"GetUser\") -proto_rpc_http_endpoint-> ?ep limit 10"
-                .to_string()
-        }
-        "proto_schema_discovery" => {
-            "select ?rpc where name(\"UserService\") -proto_service_has_rpc-> ?rpc limit 10"
-                .to_string()
-        }
-        "proto_schema_discovery_axi" => {
-            "select ?rpc where name(\"UserService\") -proto_service_has_rpc-> ?rpc limit 10"
-                .to_string()
-        }
-        "fts_demo" => "select ?c where ?c is DocChunk limit 10".to_string(),
-        "modalities_axi" => "select ?p where name(\"Alice\") -Knows-> ?p limit 10".to_string(),
-        "physics_ontology_axi" => {
-            "select ?g where name(\"QFT_QED\") -QFTHasGaugeGroup-> ?g limit 10".to_string()
-        }
-        "physics_knowledge" => {
-            "select ?cat where name(\"NewtonsSecond\") -LawCategory-> ?cat limit 10".to_string()
-        }
-        "regulated_production_line_axi" => {
-            "select ?f where ?f = RegulatedLine.ShipmentFulfills(shipment=?shipment, order=?order, work_order=?work_order, ctx=?ctx, time=?time) limit 1".to_string()
-        }
-        "physics_learning" => {
-            "select ?g where name(\"RegenerativeChatter\") -explains-> ?g limit 10".to_string()
-        }
-        "ontology_rewrites_axi" => {
-            "select ?gc where name(\"Alice\") -Grandparent-> ?gc limit 10".to_string()
-        }
-        "social_network" => "select ?x where name(\"Alice_0\") -Friend-> ?x limit 10".to_string(),
-        "social_network_axi" => {
-            "select ?x where name(\"Alice\") -Relationship-> ?x limit 10".to_string()
-        }
-        "family_hott" => "select ?p where name(\"Alice\") -Parent-> ?p limit 10".to_string(),
-        "family_hott_axi" => {
-            "select ?p where name(\"Alice\") -Parent-> ?p limit 10".to_string()
-        }
-        "fibered_closure_constraints" => {
-            "select ?to where name(\"Alice\") -Accessible-> ?to limit 10".to_string()
-        }
-        "supply_chain" => {
-            "select ?f where name(\"supplier_0\") -supplies-> ?f limit 10".to_string()
-        }
-        "supply_chain_hott" => {
-            "select ?to where name(\"RawMetal_A\") -Flow-> ?to limit 10".to_string()
-        }
-        "supply_chain_modalities_hott" => {
-            "select ?ev ?p where ?f = SupplyChainModal.EvidenceSupports(ctx=Observed, ev=?ev, prop=?p) limit 10"
-                .to_string()
-        }
-        "world_model_mpc" => "select ?p where ?p is Person limit 1".to_string(),
-        "world_model_mpc_physics" => "select ?c where ?c is Concept limit 1".to_string(),
-        "sql_schema_discovery" => {
-            "select ?c where name(\"Users\") -SqlHasColumn-> ?c limit 10".to_string()
-        }
-        "context_scoping_family" => {
-            "select ?f where ?f = Fam.Parent(child=Eve, parent=?parent, ctx=?ctx, time=?time) limit 10"
-                .to_string()
-        }
-        other => panic!("missing scenario query mapping for `{other}`"),
-    }
-}
-
 #[test]
 fn example_catalog_paths_exist_and_stay_teaching_oriented() {
     let repo_root = repo_root();
@@ -1025,6 +933,25 @@ fn canonical_only_cert_commands_reject_pathdb_export_snapshots() {
         query_stderr.contains(expected),
         "expected query stderr to mention canonical-only rejection, got: {query_stderr}"
     );
+
+    let viz = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("tools")
+        .arg("viz")
+        .arg(&export_axi)
+        .arg("--out")
+        .arg(run_dir.join("build/snapshot.dot"))
+        .output()
+        .expect("run axiograph tools viz on snapshot export");
+    assert!(
+        !viz.status.success(),
+        "expected generic tools viz loading to reject PathDBExportV1 snapshot"
+    );
+    let viz_stderr = String::from_utf8_lossy(&viz.stderr);
+    assert!(
+        viz_stderr.contains("generic semantic/query/cert commands only accept canonical .axi modules"),
+        "expected viz stderr to mention generic canonical-only rejection, got: {viz_stderr}"
+    );
 }
 
 #[test]
@@ -1678,7 +1605,7 @@ fn accepted_plane_promote_with_quality_report_smoke() {
 }
 
 #[test]
-fn repl_scripts_export_and_querycert_smoke() {
+fn repl_scripts_canonical_smoke() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -1720,7 +1647,7 @@ fn repl_scripts_export_and_querycert_smoke() {
         );
 
         let build_dir = run_dir.join("build");
-        let mut exports: Vec<PathBuf> = fs::read_dir(&build_dir)
+        let mut stale_exports: Vec<PathBuf> = fs::read_dir(&build_dir)
             .expect("read build dir")
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -1732,60 +1659,32 @@ fn repl_scripts_export_and_querycert_smoke() {
                         .unwrap_or(false)
             })
             .collect();
-        exports.sort();
+        stale_exports.sort();
 
-        assert_eq!(
-            exports.len(),
-            1,
-            "expected exactly one `*_export_v1.axi` in {}, got: {:?}",
-            build_dir.display(),
-            exports
+        assert!(
+            stale_exports.is_empty(),
+            "REPL script `{}` should not emit PathDBExportV1 teaching snapshots: {:?}",
+            script.display(),
+            stale_exports
         );
-        let export_axi = exports[0].clone();
-
-        let stem = export_axi
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let scenario = stem.strip_suffix("_export_v1").unwrap_or(stem);
-        let query = scenario_query_axql(scenario);
 
         // If this REPL script imported a canonical `.axi` module (meta-plane),
         // we should be able to export it back as a canonical module from the `.axpd`.
-        //
-        // Scripts ending with `_axi_demo` (and `physics_knowledge_demo`) are the
-        // canonical-module demos; the others are purely synthetic scenarios.
-        let should_have_meta_plane = matches!(
-            label.as_str(),
-            "ontology_rewrites_axi_demo" | "regulated_production_line_axi_demo"
-        );
-        if should_have_meta_plane {
-            let axpd = build_dir.join(format!("{scenario}.axpd"));
-            assert!(
-                axpd.exists(),
-                "expected `{}` to write `{}`",
-                script.display(),
-                axpd.display()
-            );
+        let mut module_exports: Vec<PathBuf> = fs::read_dir(&build_dir)
+            .expect("read build dir for module exports")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().map(|s| s == "axi").unwrap_or(false)
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.contains("_module"))
+                        .unwrap_or(false)
+            })
+            .collect();
+        module_exports.sort();
 
-            let module_out = build_dir.join(format!("{scenario}_module_export_v1.axi"));
-            let status = Command::new(&bin)
-                .current_dir(&run_dir)
-                .arg("db")
-                .arg("pathdb")
-                .arg("export-module")
-                .arg(&axpd)
-                .arg("-o")
-                .arg(&module_out)
-                .status()
-                .expect("run axiograph db pathdb export-module");
-            assert!(
-                status.success(),
-                "pathdb export-module failed for `{}` (exit={})",
-                script.display(),
-                status.code().unwrap_or(-1)
-            );
-
+        for module_out in module_exports {
             let text = fs::read_to_string(&module_out).expect("read exported module .axi");
             let m = parse_axi_v1(&text).expect("parse exported module via axi_v1");
             assert_eq!(
@@ -1793,49 +1692,34 @@ fn repl_scripts_export_and_querycert_smoke() {
                 false,
                 "expected non-empty module name in exported module"
             );
-
-            let cert_path = build_dir.join(format!("{scenario}_query_cert.json"));
-            let status = Command::new(&bin)
-                .current_dir(&run_dir)
-                .arg("cert")
-                .arg("query")
-                .arg(&module_out)
-                .arg("--lang")
-                .arg("axql")
-                .arg(&query)
-                .arg("--out")
-                .arg(&cert_path)
-                .status()
-                .expect("run axiograph cert query on canonical module");
-            assert!(
-                status.success(),
-                "querycert failed for canonical scenario `{scenario}` (exit={})",
-                status.code().unwrap_or(-1)
-            );
-
-            let cert_text = fs::read_to_string(&cert_path).expect("read canonical query cert json");
-            let cert: CertificateV2 =
-                serde_json::from_str(&cert_text).expect("parse canonical query cert json");
-
-            assert_eq!(cert.version, 2);
-            let anchor = cert.anchor.expect("expected canonical anchor");
-            assert!(
-                anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
-                "unexpected digest format: {}",
-                anchor.axi_digest_v1
-            );
-
-            match cert.payload {
-                CertificatePayloadV2::QueryResultV3 { proof } => {
-                    assert!(
-                        !proof.rows.is_empty(),
-                        "expected non-empty query result rows for scenario `{scenario}` (query={query})"
-                    );
-                }
-                other => panic!("expected query_result_v3 certificate, got {other:?}"),
-            }
         }
     }
+}
+
+#[test]
+fn repl_rejects_stale_export_axi_command() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "repl_rejects_stale_export_axi");
+
+    let output = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("repl")
+        .arg("--quiet")
+        .arg("--cmd")
+        .arg("export_axi build/stale_export_v1.axi")
+        .output()
+        .expect("run axiograph repl stale export_axi");
+
+    assert!(
+        !output.status.success(),
+        "stale REPL export_axi command should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown command `export_axi`"),
+        "expected stale export_axi guidance, got: {stderr}"
+    );
 }
 
 #[test]

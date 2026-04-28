@@ -21,6 +21,5 @@ import_axi examples/Family.axi
 wm use stub
 wm plan build/world_model_mpc_demo_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq "has_parent=select ?p where ?p is Person limit 1"
 
-# Export the resulting snapshot (PathDBExportV1) so e2e tests can certify a query.
-export_axi build/world_model_mpc_export_v1.axi
+# Save the world-model planning snapshot for inspection.
 save build/world_model_mpc.axpd

@@ -97,14 +97,18 @@ axiograph discover promote-proposals build/manual_proposals.json --out-dir build
 axiograph check validate examples/learning/MachinistLearning.axi
 ```
 
-### 4) PathDB snapshots (`.axpd` ↔ `.axi`)
+### 4) PathDB debug snapshots (`.axpd` ↔ `.axi`)
 
-For auditability and diffability, PathDB can round-trip through a reversible `.axi` export format (`PathDBExportV1`):
+For debug/live-byte/parser-parity work, PathDB can round-trip through a
+reversible `.axi` export format (`PathDBExportV1`):
 
 ```bash
 axiograph db pathdb export-axi knowledge.axpd --out build/snapshot.axi
 axiograph db pathdb import-axi build/snapshot.axi --out build/knowledge.axpd
 ```
+
+Do not use `PathDBExportV1` as semantic, query, or certificate authority. Public
+semantic flows should load canonical `.axi` modules directly.
 
 `pathdb import-axi` also accepts canonical `.axi` modules (schema/theory/instance) and imports them into a fresh PathDB:
 

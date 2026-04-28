@@ -33,7 +33,6 @@ Endpoints:
 - `GET /snapshots` (store-backed only; list snapshots for time travel)
 - `GET /entity/describe?id=<id>` (on-demand full-snapshot entity details for UIs/LLM grounding)
 - `POST /query` (structured `query_ir_v1`)
-- `POST /cert/reachability` (emit a canonical `.axi`-anchored `reachability_v3` certificate for a directed relation-id chain)
 - `GET /viz` (HTML)
 - `GET /viz.json` (JSON)
 - `GET /viz.dot` (Graphviz DOT)
@@ -786,7 +785,7 @@ bin/axiograph db accept pathdb-embed \
   --dir build/my_plane \
   --snapshot head \
   --target docchunks \
-  --ollama-model nomic-embed-text \
+  --embed-model nomic-embed-text \
   --message "embed doc chunks"
 ```
 

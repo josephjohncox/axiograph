@@ -346,20 +346,6 @@ fn verify_certificate_with_lean(
     Ok((output.status.success(), combined.trim().to_string()))
 }
 
-pub(crate) fn verify_certificate_with_default_resolution(
-    module_axi: &str,
-    certificate_json: &str,
-) -> Result<(bool, String)> {
-    verify_certificate_with_lean(
-        &CertVerifyConfig {
-            verifier_bin: None,
-            timeout: Some(Duration::from_secs(30)),
-        },
-        module_axi,
-        certificate_json,
-    )
-}
-
 pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
     let role = ServerRole::parse(&args.role)?;
     let poll_interval = Duration::from_secs(args.poll_interval_secs.max(1));
@@ -742,13 +728,6 @@ async fn handle_request(
         (Method::POST, "/query") => {
             let body = request_body!(req);
             match handle_query(&state, &body).await {
-                Ok(v) => json_response(StatusCode::OK, &v),
-                Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
-            }
-        }
-        (Method::POST, "/cert/reachability") => {
-            let body = request_body!(req);
-            match handle_reachability_cert(&state, &body).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
@@ -2083,55 +2062,6 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
     })
     .await
     .map_err(|e| anyhow!("query task join failed: {e}"))?
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ReachabilityCertRequestV1 {
-    #[serde(flatten)]
-    request: crate::path_cert::PathCertRequestV1,
-    /// Optional snapshot id override when running in store-backed mode.
-    #[serde(default)]
-    snapshot: Option<String>,
-}
-
-type CertResponseV1 = crate::path_cert::PathCertReportV1;
-
-async fn handle_reachability_cert(state: &Arc<ServerState>, body: &[u8]) -> Result<CertResponseV1> {
-    let req: ReachabilityCertRequestV1 = parse_json_request(body, "reachability cert")?;
-    if req.request.relation_ids.is_empty() {
-        return Err(anyhow!(
-            "reachability cert requires non-empty `relation_ids`"
-        ));
-    }
-
-    let snapshot_override = req.snapshot.clone();
-    let request = req.request.clone();
-    let state = state.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let db = if let Some(snapshot) = snapshot_override.as_deref() {
-            let SnapshotSource::Store { dir, layer, .. } = &state.config.source else {
-                return Err(anyhow!(
-                    "reachability snapshot override requires a store-backed server (`--dir ...`)"
-                ));
-            };
-            let loaded = load_from_store(dir, layer, snapshot, &state.config)?;
-            loaded.db
-        } else {
-            let loaded = state
-                .loaded
-                .read()
-                .map_err(|_| anyhow!("loaded snapshot lock poisoned"))?;
-            loaded.db.clone()
-        };
-
-        let verifier = move |module_axi: &str, certificate_json: &str| {
-            verify_certificate_with_lean(&state.config.cert_verify, module_axi, certificate_json)
-        };
-        crate::path_cert::certify_path(&db, &request, Some(&verifier))
-    })
-    .await
-    .map_err(|e| anyhow!("reachability cert task join failed: {e}"))?
 }
 
 async fn handle_llm_to_query(state: &Arc<ServerState>, body: &[u8]) -> Result<serde_json::Value> {
@@ -4850,45 +4780,6 @@ instance Tiny of S:
             query_json["support_summary"]["supported_facts"][0]["witness_rows"][0]["row_index"],
             json!(0)
         );
-
-        let cert = CertResponseV1 {
-            anchor_digest: AxiDigest::new("fnv1a64:def"),
-            trust: crate::trust_contract::TrustContractV1 {
-                trust_class: "certificate".to_string(),
-                soundness: "lean_verified_certificate".to_string(),
-                coverage: "certificate_payload".to_string(),
-                scope: crate::trust_contract::TrustScopeV1 {
-                    anchor: "snapshot_scoped".to_string(),
-                    context: "not_applicable".to_string(),
-                },
-                reasons: Vec::new(),
-                certifiable_disjuncts: None,
-                execution_only_disjuncts: None,
-                semantic_coverage: None,
-                semantic_claims: Vec::new(),
-                gaps: Vec::new(),
-            },
-            certificate: json!({"kind": "reachability"}),
-            certificate_verified: Some(true),
-            certificate_verify_output: None,
-        };
-        assert_eq!(
-            serde_json::to_value(&cert).expect("serialize cert response"),
-            json!({
-                "anchor_digest": "fnv1a64:def",
-                "trust": {
-                    "trust_class": "certificate",
-                    "soundness": "lean_verified_certificate",
-                    "coverage": "certificate_payload",
-                    "scope": {
-                        "anchor": "snapshot_scoped",
-                        "context": "not_applicable"
-                    }
-                },
-                "certificate": {"kind": "reachability"},
-                "certificate_verified": true
-            })
-        );
     }
 
     #[test]
@@ -4938,57 +4829,9 @@ instance Tiny of S:
         let err = parse_json_request::<serde_json::Value>(b"{", "demo/endpoint")
             .expect_err("malformed JSON should be rejected");
 
-        assert!(
-            err.to_string()
-                .contains("failed to parse demo/endpoint request JSON")
-        );
-    }
-
-    #[test]
-    fn reachability_cert_request_keeps_existing_server_wire_shape() {
-        let req: ReachabilityCertRequestV1 = serde_json::from_value(json!({
-            "start": 7,
-            "relation_ids": [11, 13],
-            "verify": true,
-            "snapshot": "pathdb:test"
-        }))
-        .expect("deserialize reachability cert request");
-
-        assert_eq!(req.request.start, 7);
-        assert_eq!(req.request.relation_ids, vec![11, 13]);
-        assert!(req.request.verify);
-        assert_eq!(req.snapshot.as_deref(), Some("pathdb:test"));
-    }
-
-    #[tokio::test]
-    async fn reachability_cert_endpoint_still_rejects_empty_relation_ids() {
-        let state = test_server_state_with_axi(
-            r#"
-module Demo
-
-schema Demo:
-  object Node
-  relation road(src: Node, dst: Node)
-
-instance DemoData of Demo:
-  Node = {A, B}
-  road = {(src=A, dst=B)}
-"#,
-        );
-        let request_json = serde_json::to_string(&json!({
-            "start": 0,
-            "relation_ids": [],
-            "verify": false
-        }))
-        .expect("serialize request");
-
-        let err = handle_reachability_cert(&state, request_json.as_bytes())
-            .await
-            .expect_err("expected empty relation_ids error");
-
         assert!(err
             .to_string()
-            .contains("reachability cert requires non-empty `relation_ids`"));
+            .contains("failed to parse demo/endpoint request JSON"));
     }
 
     #[test]

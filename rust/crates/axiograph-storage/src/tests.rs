@@ -112,6 +112,87 @@ fn test_relation_lands_in_both_formats() {
     assert!(content.contains("usedWith"), "Should contain relation type");
     assert!(content.contains("EndMill"), "Should contain source");
     assert!(content.contains("Ti6Al4V"), "Should contain target");
+
+    // Verify PathDB relation endpoints use resolved entity IDs, not placeholder
+    // IDs from insertion order.
+    let pathdb = storage.pathdb();
+    let db = pathdb.read();
+    let source_ids = UnifiedStorage::entity_ids_by_storage_name(&db, "EndMill");
+    let target_ids = UnifiedStorage::entity_ids_by_storage_name(&db, "Ti6Al4V");
+    assert_eq!(source_ids.len(), 1);
+    assert_eq!(target_ids.len(), 1);
+    assert!(
+        db.follow_one(source_ids[0], "usedWith")
+            .contains(target_ids[0]),
+        "PathDB should store EndMill -> Ti6Al4V"
+    );
+    assert!(
+        !db.follow_one(target_ids[0], "usedWith")
+            .contains(source_ids[0]),
+        "PathDB should not store the old placeholder Ti6Al4V -> EndMill edge"
+    );
+}
+
+#[test]
+fn test_relation_with_unresolved_endpoint_fails_closed() {
+    let (storage, dir) = test_storage();
+
+    let facts = vec![
+        StorableFact::Entity {
+            name: "Ti6Al4V".to_string(),
+            entity_type: "Material".to_string(),
+            attributes: vec![],
+        },
+        StorableFact::Relation {
+            name: Some("bad_recommendation".to_string()),
+            rel_type: "usedWith".to_string(),
+            source: "MissingTool".to_string(),
+            target: "Ti6Al4V".to_string(),
+            confidence: 0.9,
+            attributes: vec![],
+        },
+    ];
+
+    storage
+        .add_facts(
+            facts,
+            ChangeSource::API {
+                client_id: "test".to_string(),
+            },
+        )
+        .unwrap();
+
+    let err = storage.flush().unwrap_err();
+    let semantic = err
+        .downcast_ref::<StorageSemanticError>()
+        .expect("expected typed storage semantic error");
+    assert!(matches!(
+        semantic,
+        StorageSemanticError::UnresolvedRelationEndpoint {
+            relation_name,
+            rel_type,
+            endpoint: RelationEndpointRole::Source,
+            entity_name,
+        } if relation_name.as_deref() == Some("bad_recommendation")
+            && rel_type == "usedWith"
+            && entity_name == "MissingTool"
+    ));
+    assert!(
+        storage.pathdb().read().relations.is_empty(),
+        "failed relation should not create a placeholder PathDB edge"
+    );
+    assert!(
+        storage.pathdb().read().entities.is_empty(),
+        "failed relation should reject the full change before partial entity writes"
+    );
+    assert!(
+        storage.changelog().is_empty(),
+        "failed relation should not be recorded as applied"
+    );
+    assert!(
+        !dir.path().join("api_additions.axi").exists(),
+        "failed relation should not append .axi output"
+    );
 }
 
 #[test]

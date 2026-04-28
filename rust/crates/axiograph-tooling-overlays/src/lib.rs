@@ -15,7 +15,9 @@ pub const COVERAGE_QUERY_REPORT_VERSION_V1: &str = "coverage_query_report_v1";
 pub const DEFINITION_QUERY_REPORT_VERSION_V1: &str = "definition_query_report_v1";
 pub const CODEGEN_PLAN_REPORT_VERSION_V1: &str = "codegen_plan_report_v1";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageModeV1 {
     Enforced,
@@ -31,7 +33,9 @@ impl Default for CoverageModeV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayRefKindV1 {
     Schema,

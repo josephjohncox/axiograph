@@ -42,6 +42,5 @@ q select ?p1 ?p2 where name("HistoryEquivalence_Alice_to_Carol_0") -path1-> ?p1,
 viz build/social_network_viz.dot format dot focus_name Alice_0 hops 2 max_nodes 120
 viz build/social_network_viz.html format html focus_name Alice_0 hops 2 max_nodes 120
 
-# Export reversible snapshots.
-export_axi build/social_network_export_v1.axi
+# Save the runnable `.axpd` snapshot.
 save build/social_network.axpd

@@ -70,6 +70,7 @@ sha2 = "0.10"
 # Logging
 tracing = "0.1"
 pprof = { version = "0.13", default-features = false, features = ["flamegraph", "prost-codec"] }
+prost-reflect = "0.16.3"
 signal-hook = "0.3"
 
 # PathDB: Efficient binary storage

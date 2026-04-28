@@ -2972,9 +2972,6 @@ instance I of S:
             .any(|name| name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME));
         assert!(names
             .iter()
-            .any(|name| name == crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME));
-        assert!(names
-            .iter()
             .any(|name| name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME));
     }
 
@@ -2992,24 +2989,6 @@ instance I of S:
                 .into_iter()
                 .find(|tool| tool.name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME)
                 .expect("route preview spec")
-                .input_schema
-        );
-    }
-
-    #[test]
-    fn tool_loop_tools_schema_advertises_path_cert_schema() {
-        let tools = super::tool_loop_tools_schema(None, false);
-        let path_cert = tools
-            .iter()
-            .find(|tool| tool.name == crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME)
-            .expect("path_certify should be advertised");
-
-        assert_eq!(
-            path_cert.args_schema,
-            crate::path_cert_tools::path_cert_tool_specs()
-                .into_iter()
-                .find(|tool| tool.name == crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME)
-                .expect("path cert spec")
                 .input_schema
         );
     }
@@ -3197,74 +3176,6 @@ instance I of S:
             out["route"]["normalized"]["hops"][0]["relation"].as_str(),
             Some("road")
         );
-        Ok(())
-    }
-
-    #[test]
-    fn execute_tool_call_supports_path_cert() -> Result<()> {
-        let axi = r#"
-module Demo
-
-schema S:
-  object Node
-  relation road(from: Node, to: Node)
-
-instance I of S:
-  Node = {A, B}
-  road = {(from=A, to=B)}
-"#;
-        let mut db = axiograph_pathdb::PathDB::new();
-        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
-        db.build_indexes();
-        let a = db
-            .find_by_type("Node")
-            .and_then(|ids| {
-                let key = db.interner.id_of("name")?;
-                ids.iter().find(|id| {
-                    db.entities
-                        .get_attr(*id, key)
-                        .and_then(|value| db.interner.lookup(value))
-                        .as_deref()
-                        == Some("A")
-                })
-            })
-            .expect("find A");
-        let ab = (0..db.relations.len() as u32)
-            .find(|rel_id| {
-                let Some(rel) = db.relations.get_relation(*rel_id) else {
-                    return false;
-                };
-                db.interner.lookup(rel.rel_type).as_deref() == Some("road") && rel.source == a
-            })
-            .expect("find road relation");
-
-        let mut query_cache = crate::axql::AxqlPreparedQueryCache::default();
-        let out = super::execute_tool_call(
-            &db,
-            None,
-            &[],
-            "path-cert-tool-snapshot",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &mut query_cache,
-            &super::ToolCallV1 {
-                name: crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME.to_string(),
-                args: json!({
-                    "start": a,
-                    "relation_ids": [ab],
-                    "verify": false
-                }),
-            },
-            super::ToolLoopOptions::default(),
-        )?;
-
-        assert_eq!(out["certificate"]["kind"].as_str(), Some("reachability_v3"));
-        assert_eq!(out["certificate"]["proof"]["type"].as_str(), Some("step"));
-        assert!(out["anchor_digest"].as_str().is_some());
         Ok(())
     }
 
@@ -4947,16 +4858,6 @@ pub(crate) fn tool_loop_tools_schema(
     );
 
     out.extend(
-        crate::path_cert_tools::path_cert_tool_specs()
-            .into_iter()
-            .map(|tool| ToolSpecV1 {
-                name: tool.name.to_string(),
-                description: tool.description.to_string(),
-                args_schema: tool.input_schema,
-            }),
-    );
-
-    out.extend(
         crate::transport_preview_tools::transport_preview_tool_specs()
             .into_iter()
             .map(|tool| ToolSpecV1 {
@@ -5273,13 +5174,6 @@ fn execute_tool_call(
             crate::route_preview_tools::invoke_route_preview_tool(
                 name,
                 crate::route_preview_tools::RoutePreviewToolContext { db },
-                call.args.clone(),
-            )
-        }
-        name if crate::path_cert_tools::is_path_cert_tool(name) => {
-            crate::path_cert_tools::invoke_path_cert_tool(
-                name,
-                crate::path_cert_tools::PathCertToolContext { db },
                 call.args.clone(),
             )
         }

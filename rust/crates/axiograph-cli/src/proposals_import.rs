@@ -207,105 +207,16 @@ pub(crate) fn import_proposals_file_into_pathdb(
         let resolved = match schema_rel {
             Some(v) => v,
             None => {
-                // Legacy fallback: preserve structure without meta-plane typing.
-                let src = resolve_or_stub_entity(db, &id_map, source_key)?;
-                let dst = resolve_or_stub_entity(db, &id_map, target_key)?;
-
-                // Context/world scoping (recommended): `attributes.context` creates an
-                // `axi_fact_in_context` edge so queries can scope facts efficiently.
-                let context_id = if let Some(ctx) = attributes.get("context") {
-                    Some(get_or_create_context(
-                        db,
-                        &meta_plane,
-                        None,
-                        ctx,
-                        &mut summary,
-                    )?)
-                } else {
-                    None
-                };
-
-                let fact_type = format!("{}Fact", rel_type.trim());
-                let fact_id =
-                    match find_entity_by_external_id_and_type(db, relation_id, &fact_type)? {
-                        Some(existing) => {
-                            // Enrich attrs if possible (best-effort).
-                            enrich_relation_fact_from_proposal(
-                                db,
-                                existing,
-                                proposal_meta,
-                                &rel_type,
-                                attributes,
-                            )?;
-                            attach_evidence_attrs(db, existing, &proposal_meta.evidence)?;
-                            summary.relation_facts_reused += 1;
-                            existing
-                        }
-                        None => {
-                            let attrs = build_relation_fact_attrs(
-                                proposal_meta,
-                                relation_id,
-                                &rel_type,
-                                None,
-                                attributes,
-                            );
-                            let attrs_ref = attrs
-                                .iter()
-                                .map(|(k, v)| (k.as_str(), v.as_str()))
-                                .collect();
-                            let id = db.add_entity(&fact_type, attrs_ref);
-                            db.mark_virtual_type(id, "FactNode")?;
-                            db.mark_virtual_type(id, "ProposalFact")?;
-                            summary.relation_facts_added += 1;
-                            id
-                        }
-                    };
-
-                link_run_to_proposal(db, run_id, fact_id)?;
-                summary.evidence_links_added +=
-                    link_evidence(db, fact_id, &proposal_meta.evidence)?;
-
-                add_edge_if_missing(db, "from", fact_id, src, 1.0)?;
-                add_edge_if_missing(db, "to", fact_id, dst, 1.0)?;
-                if let Some(ctx_id) = context_id {
-                    add_edge_if_missing(db, REL_AXI_FACT_IN_CONTEXT, fact_id, ctx_id, 1.0)?;
-                }
-
-                // Derived traversal edge: source -rel_type-> target.
-                // This keeps AxQL ergonomic even when relations are reified into fact nodes.
-                let confidence = proposal_meta.confidence.clamp(0.0, 1.0) as f32;
-                if !rel_type.is_empty() {
-                    let derived_label = if let Some(hint) = schema_hint {
-                        let hint = hint.trim();
-                        if !hint.is_empty()
-                            && meta_plane.schemas.contains_key(hint)
-                            && meta_plane
-                                .schemas
-                                .get(hint)
-                                .map(|s| s.relation_decls.contains_key(rel_type.as_str()))
-                                .unwrap_or(false)
-                            && relation_name_counts
-                                .get(rel_type.as_str())
-                                .copied()
-                                .unwrap_or(0)
-                                > 1
-                        {
-                            format!("{hint}.{rel_type}")
-                        } else {
-                            rel_type.clone()
-                        }
-                    } else {
-                        rel_type.clone()
-                    };
-
-                    let rel_id = db.interner.intern(&derived_label);
-                    if !db.relations.has_edge(src, rel_id, dst) {
-                        db.add_relation(&derived_label, src, dst, confidence, vec![]);
-                        summary.derived_edges_added += 1;
-                    }
-                }
-
-                continue;
+                return Err(anyhow!(
+                    "proposal relation `{relation_id}` uses relation `{}` but no typed relation \
+                     declaration was resolved{}; proposal relation import is fail-closed. \
+                     Draft or review a canonical .axi schema first, or attach `schema_hint`/`axi_schema` \
+                     plus a relation name that resolves to the compiled meta-plane.",
+                    rel_type.trim(),
+                    schema_hint
+                        .map(|hint| format!(" for schema hint `{hint}`"))
+                        .unwrap_or_default()
+                ));
             }
         };
 
@@ -1331,4 +1242,66 @@ fn add_edge_if_missing(
     }
     db.add_relation(rel, source, target, confidence, vec![]);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axiograph_ingest_docs::{ProposalMetaV1, ProposalSourceV1};
+
+    fn meta(id: &str) -> ProposalMetaV1 {
+        ProposalMetaV1 {
+            proposal_id: id.to_string(),
+            confidence: 0.9,
+            evidence: Vec::new(),
+            public_rationale: "test".to_string(),
+            metadata: HashMap::new(),
+            schema_hint: None,
+        }
+    }
+
+    #[test]
+    fn relation_import_without_typed_schema_fails_closed() {
+        let file = ProposalsFileV1 {
+            version: 1,
+            generated_at: "0".to_string(),
+            source: ProposalSourceV1 {
+                source_type: "test".to_string(),
+                locator: "proposals_import_test".to_string(),
+            },
+            schema_hint: None,
+            proposals: vec![
+                ProposalV1::Entity {
+                    meta: meta("entity:a"),
+                    entity_id: "a".to_string(),
+                    entity_type: "Account".to_string(),
+                    name: "AccountA".to_string(),
+                    attributes: HashMap::new(),
+                    description: None,
+                },
+                ProposalV1::Entity {
+                    meta: meta("entity:b"),
+                    entity_id: "b".to_string(),
+                    entity_type: "Account".to_string(),
+                    name: "AccountB".to_string(),
+                    attributes: HashMap::new(),
+                    description: None,
+                },
+                ProposalV1::Relation {
+                    meta: meta("relation:1"),
+                    relation_id: "relation:1".to_string(),
+                    rel_type: "depends_on".to_string(),
+                    source: "a".to_string(),
+                    target: "b".to_string(),
+                    attributes: HashMap::new(),
+                },
+            ],
+        };
+
+        let mut db = PathDB::new();
+        let err = import_proposals_file_into_pathdb(&mut db, &file, "digest")
+            .expect_err("untyped relation import must fail closed");
+        assert!(err.to_string().contains("proposal relation `relation:1`"));
+        assert!(err.to_string().contains("fail-closed"));
+    }
 }

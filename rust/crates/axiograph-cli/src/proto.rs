@@ -1,8 +1,8 @@
 //! Protobuf / gRPC ingestion commands.
 //!
 //! Pipeline:
-//! 1. Run `buf build --as-file-descriptor-set -o descriptor.json`
-//! 2. Convert descriptor JSON → `proposals.json` (+ optional chunks)
+//! 1. Run `buf build --as-file-descriptor-set -o descriptor.binpb`
+//! 2. Decode binary descriptor set → `proposals.json` (+ optional chunks)
 
 use anyhow::{anyhow, Context, Result};
 use clap::Subcommand;
@@ -14,11 +14,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Subcommand)]
 pub enum ProtoCommands {
-    /// Build a Buf descriptor set (`google.protobuf.FileDescriptorSet`) as JSON.
+    /// Build a binary Buf descriptor set (`google.protobuf.FileDescriptorSet`).
     BuildDescriptor {
         /// Buf module root (directory containing `buf.yaml`).
         root: PathBuf,
-        /// Output JSON file (descriptor set).
+        /// Output binary descriptor-set file (`*.binpb`).
         #[arg(short, long)]
         out: PathBuf,
         /// Exclude imports from the descriptor set.
@@ -29,7 +29,7 @@ pub enum ProtoCommands {
         exclude_source_info: bool,
     },
 
-    /// Ingest a Buf descriptor set JSON into `proposals.json` (+ optional chunks).
+    /// Ingest a binary Buf descriptor set into `proposals.json` (+ optional chunks).
     Ingest {
         /// Buf module root (directory containing `buf.yaml`).
         root: PathBuf,
@@ -39,7 +39,7 @@ pub enum ProtoCommands {
         /// Optional output chunks JSON (for RAG).
         #[arg(long)]
         chunks: Option<PathBuf>,
-        /// Optional path to an existing descriptor set JSON (skip `buf build`).
+        /// Optional path to an existing binary descriptor set (skip `buf build`).
         #[arg(long)]
         descriptor: Option<PathBuf>,
         /// If we build a descriptor set, also write it here.
@@ -65,7 +65,7 @@ pub fn cmd_proto(command: ProtoCommands) -> Result<()> {
             exclude_imports,
             exclude_source_info,
         } => {
-            build_descriptor_set_json(&root, &out, exclude_imports, exclude_source_info)?;
+            build_descriptor_set_binpb(&root, &out, exclude_imports, exclude_source_info)?;
             println!("  {} {}", "→".cyan(), out.display());
             Ok(())
         }
@@ -114,23 +114,23 @@ fn cmd_proto_ingest(
         let default_out = out
             .parent()
             .unwrap_or(Path::new("."))
-            .join("descriptor.json");
+            .join("descriptor.binpb");
         let out_path = descriptor_out.unwrap_or(&default_out);
         fs::create_dir_all(out_path.parent().unwrap_or(Path::new(".")))?;
-        build_descriptor_set_json(root, out_path, exclude_imports, exclude_source_info)?;
+        build_descriptor_set_binpb(root, out_path, exclude_imports, exclude_source_info)?;
         descriptor_path_owned = out_path.clone();
         &descriptor_path_owned
     };
 
-    let descriptor_text = fs::read_to_string(descriptor_path).with_context(|| {
+    let descriptor_bytes = fs::read(descriptor_path).with_context(|| {
         format!(
-            "failed to read descriptor json: {}",
+            "failed to read binary descriptor set: {}",
             descriptor_path.display()
         )
     })?;
 
-    let ingest = axiograph_ingest_proto::ingest_descriptor_set_json(
-        &descriptor_text,
+    let ingest = axiograph_ingest_proto::ingest_descriptor_set_bytes(
+        &descriptor_bytes,
         Some(descriptor_path.display().to_string()),
         Some(schema_hint.to_string()),
     )?;
@@ -180,7 +180,7 @@ fn cmd_proto_ingest(
     Ok(())
 }
 
-pub(crate) fn build_descriptor_set_json(
+pub(crate) fn build_descriptor_set_binpb(
     root: &PathBuf,
     out: &PathBuf,
     exclude_imports: bool,

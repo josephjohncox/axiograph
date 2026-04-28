@@ -8,7 +8,7 @@ set -euo pipefail
 #     (payments/users/catalog + custom annotations + doc-comment chunks).
 #   - We evolve the proto surface over several ticks (add orders, then fulfillment).
 #   - Each tick runs the same ontology-engineering loop:
-#       1) `ingest proto ingest` (Buf descriptor-set JSON → proposals.json + chunks.json)
+#       1) `ingest proto ingest` (binary Buf descriptor set → proposals.json + chunks.json)
 #       2) `discover augment-proposals` (LLM suggests schema hints and additional grounded relations)
 #       3) `discover draft-module` (LLM suggests extra subtyping + constraints)
 #       4) promotion gate: validate + typecheck certificate + Lean check
@@ -109,7 +109,7 @@ run_tick() {
 
   local proposals="$tick_dir/proposals.json"
   local chunks="$tick_dir/chunks.json"
-  local descriptor="$tick_dir/descriptor.json"
+  local descriptor="$tick_dir/descriptor.binpb"
   local aug="$tick_dir/proposals.aug.json"
   local aug_trace="$tick_dir/proposals.aug.trace.json"
   local candidate_axi="$tick_dir/ProtoApi.tick${tick}.llm_draft.axi"

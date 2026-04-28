@@ -37,8 +37,9 @@ certificate-first architecture, reconciliation decisions are intended to become
 
 ## Persistence Format
 
-Rust persists full reconciliation state through the shared verified CBOR
-envelope used by `axiograph-llm-sync::format`:
+Rust persists reconciliation data through `ReconciliationState` only:
+`to_bytes`, `from_bytes`, `save`, and `load`. Those methods use the shared
+verified CBOR envelope from `axiograph-llm-sync::format`:
 
 ```
 VerifiedHeader (CBOR):
@@ -57,9 +58,10 @@ Content (CBOR):
   }
 ```
 
-The historical fixed-offset `AXRC` helpers are retained only as narrow
-domain-object roundtrip tests while the repo is greenfield; new state
-persistence should use the verified envelope.
+There is no separate public fixed-offset helper format for individual
+reconciliation domain objects. `SourceCredibility`, `WeightedFact`, evidence,
+and resolved conflicts are persisted as fields inside the verified
+`ReconciliationState` content.
 
 ### Certificates (planned)
 

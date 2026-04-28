@@ -11,7 +11,7 @@ set -euo pipefail
 #
 # Notes:
 # - This script is deterministic and does not require any network/LLM access.
-# - Proto ingestion uses a checked-in descriptor-set JSON (no `buf` required).
+# - Proto ingestion uses a checked-in binary descriptor set (no `buf` required).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -161,9 +161,9 @@ echo "-- A2) ingest conversation"
   --format slack
 
 echo ""
-echo "-- A3) ingest proto (offline via checked-in descriptor-set JSON)"
+echo "-- A3) ingest proto (offline via checked-in binary descriptor set)"
 PROTO_ROOT="$ROOT_DIR/examples/proto/large_api"
-PROTO_DESCRIPTOR="$ROOT_DIR/examples/proto/large_api/descriptor.json"
+PROTO_DESCRIPTOR="$ROOT_DIR/examples/proto/large_api/descriptor.binpb"
 "$AXIOGRAPH" ingest proto ingest "$PROTO_ROOT" \
   --descriptor "$PROTO_DESCRIPTOR" \
   --out "$OUT_DIR/ingest_proto/proposals.json" \

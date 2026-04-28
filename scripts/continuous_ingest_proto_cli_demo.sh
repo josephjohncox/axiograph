@@ -66,7 +66,7 @@ PROTO
 
 "$AXIOGRAPH" ingest proto ingest "$PROTO_ROOT" \
   --out "$OUT_DIR/proto_tick0.proposals.json" \
-  --descriptor-out "$OUT_DIR/proto_tick0.descriptor.json" \
+  --descriptor-out "$OUT_DIR/proto_tick0.descriptor.binpb" \
   --schema-hint proto_api
 
 "$AXIOGRAPH" discover draft-module \
@@ -125,7 +125,7 @@ PROTO
 
 "$AXIOGRAPH" ingest proto ingest "$PROTO_ROOT" \
   --out "$OUT_DIR/proto_tick1.proposals.json" \
-  --descriptor-out "$OUT_DIR/proto_tick1.descriptor.json" \
+  --descriptor-out "$OUT_DIR/proto_tick1.descriptor.binpb" \
   --schema-hint proto_api
 
 "$AXIOGRAPH" discover draft-module \

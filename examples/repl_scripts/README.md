@@ -1,13 +1,10 @@
 # REPL Scripts
 
-These scripts are smoke demos for the interactive REPL. They are not the
-canonical teaching surface for new features.
-
-Many scripts still end with `export_axi build/*_export_v1.axi` to preserve
-parser/storage parity checks. Treat those exports as debug/interchange
-artifacts, not semantic anchors. New examples should prefer canonical `.axi`,
-typed reports, certificates, behavior cases, semantic slice manifests, and
-evolution previews.
+These scripts are smoke demos for the interactive REPL. They now use canonical
+`.axi` imports, typed queries/reports, canonical module exports, and `.axpd`
+saves. Reversible `PathDBExportV1` snapshots are intentionally absent from REPL
+teaching scripts; use `axiograph db pathdb export-axi` only for explicit
+debug/live-byte/parser-parity checks.
 
 Preferred scripts for current workflows:
 

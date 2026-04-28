@@ -19,7 +19,7 @@ In this repo:
 
 - Rust is the untrusted runtime engine (ingestion, indexing, search, reconciliation, certificate emission).
 - Lean is the trusted checker/spec (mathlib-backed).
-- Idris2 was used historically as a prototype proof layer; the initial Rust+Lean release removes Idris/FFI compatibility.
+- Idris2 was used historically as a prototype proof layer. It is not part of the current build, trust boundary, or compatibility surface.
 
 This book focuses on the mathematics and semantics, then maps those semantics onto the codebase and production concerns.
 
@@ -446,7 +446,8 @@ Axiograph needs both:
 
 In Lean, many proofs live in `Prop` and erase automatically; certificates and witnesses live in `Type` and are data.
 
-Historically, an Idris prototype used similar patterns; we aim to keep:
+Historically, an Idris prototype explored similar patterns. In the current
+system, Lean owns the trusted version of this story:
 
 - Proofs for invariants erased where possible,
 - And proof objects only where they are part of the auditable story.
@@ -503,7 +504,7 @@ Operators:
 - `□φ` (“box”): φ holds in all accessible worlds.
 - `◇φ` (“diamond”): φ holds in some accessible world.
 
-Prototype (historical): an Idris proof-layer explored modal modules alongside the math notes (`docs/explanation/MATHEMATICAL_FOUNDATIONS.md` section “Modal Logics”).
+Historical note: the removed Idris prototype explored modal modules alongside the math notes (`docs/explanation/MATHEMATICAL_FOUNDATIONS.md` section “Modal Logics”).
 
 Planned: port the modal/tacit/temporal semantics into Lean as part of the trusted checker.
 
@@ -515,7 +516,7 @@ Temporal reasoning is foundational for “as of X” claims and evolving corpora
 - Guidelines supersede older guidance,
 - Policies have effective dates.
 
-Prototype (historical): an Idris temporal logic module explored interval reasoning and temporal operators.
+Historical note: the removed Idris prototype explored interval reasoning and temporal operators.
 
 Planned: a Lean temporal kernel plus certificates for time-indexed inferences.
 
@@ -537,7 +538,7 @@ Representation strategy:
 2. Use a modality to mark tacitness, e.g. a type former like `Tacit φ` or a modal operator “in practice”.
 3. Let reconciliation compute how tacit evidence interacts with encoded rules (see §4.3).
 
-Prototype (historical): an Idris tacit-knowledge module explored typed provenance + heuristics.
+Historical note: the removed Idris prototype explored typed provenance and heuristics for tacit knowledge.
 
 Planned: Lean port and certificate-backed reconciliation for tacit-vs-encoded conflicts.
 
@@ -1022,7 +1023,7 @@ Actionable production TODOs (trust tiers, anchoring, certificate ubiquity, harde
 
 ### 14.2 Versioning and migrations
 
-- `.axi` dialects: keep parsers in Rust and Lean in lockstep; maintain `examples/canonical/corpus.json` as the compatibility contract.
+- `.axi` dialects: keep parsers in Rust and Lean in lockstep; maintain `examples/canonical/corpus.json` as the conformance contract.
 - Certificates: never change meaning without bumping `version` or `kind`.
 - PathDB: maintain a stable on-disk format version (`FORMAT_VERSION` etc in `rust/crates/axiograph-pathdb/src/verified.rs`).
 
@@ -1483,7 +1484,7 @@ This appendix points to where the math described above lives in the repo.
 ## A.3 Historical Idris2 prototype (removed)
 
 An early Idris2 proof-layer prototype informed several Lean ports (HoTT/path algebra, probability, etc.).
-The initial Rust+Lean release removes Idris/FFI compatibility; refer to git history if you need the original Idris sources.
+That prototype is historical only: it is not a supported compatibility target, runtime dependency, FFI surface, or trust boundary. Refer to git history if you need the original Idris sources.
 
 ---
 
@@ -1691,7 +1692,7 @@ Rust is the untrusted engine in Axiograph, so “Rust literature” matters in t
 
 Why this matters for Axiograph:
 
-- Any use of `unsafe` (FFI, packed I/O formats, custom indexing) must establish and re-establish invariants at module boundaries. This maps directly to our “untrusted engine” discipline: unsafe blocks must be locally auditable and covered by tests/analysis, while *semantic correctness* is ensured by certificates checked in Lean.
+- Any use of `unsafe` (packed I/O formats, custom indexing, or other low-level boundaries) must establish and re-establish invariants at module boundaries. This maps directly to our “untrusted engine” discipline: unsafe blocks must be locally auditable and covered by tests/analysis, while *semantic correctness* is ensured by certificates checked in Lean.
 
 ### C.12.2 Verification tools for Rust (beyond the compiler)
 
@@ -1753,7 +1754,7 @@ Fuzzing:
 
 Why this matters:
 
-- PathDB parsers, certificate serialization/deserialization, and FFI boundaries are classic “fuzz me” surfaces.
+- PathDB parsers, certificate serialization/deserialization, and external byte/string boundaries are classic “fuzz me” surfaces.
 - Concurrency tests matter if we introduce background indexing, async ingestion, or concurrent PathDB reads/writes.
 
 ### C.12.4 Rust semantics research (optional, but helpful for deep assurance)
@@ -1770,9 +1771,9 @@ These are not necessary for day-to-day Axiograph development, but they’re rele
 These are prioritized steps that fit the “untrusted engine, trusted checker” architecture:
 
 1. **Minimize and isolate `unsafe`**
-   - Keep `unsafe` code localized (FFI + binary parsing); document invariants per module boundary; prefer safe parsing patterns over transmutes/packed reads.
+   - Keep `unsafe` code localized (binary parsing and genuinely low-level boundaries); document invariants per module boundary; prefer safe parsing patterns over transmutes/packed reads.
 2. **Fuzz the untrusted surfaces**
-   - Add fuzz targets for: PathDB parsing/reading, certificate JSON parsing/serialization, `.axi` parsing, and any FFI entrypoints that accept bytes/strings.
+   - Add fuzz targets for: PathDB parsing/reading, certificate JSON parsing/serialization, `.axi` parsing, and any external byte/string entrypoints.
 3. **Run Miri on core crates**
    - Use Miri to detect UB in tests (especially around `unsafe`, pointer aliasing assumptions, and tricky lifetime patterns).
 4. **Use model checking for small but critical functions**

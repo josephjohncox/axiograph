@@ -63,12 +63,14 @@ Every answer certificate must say:
 
 In a distributed system, “what snapshot?” becomes the *hard part*.
 
-**Practical note (current repo)**: for auditability and offline review we can represent a snapshot as:
+**Practical note (current repo)**: for execution and debug parity we can represent
+a PathDB snapshot as:
 
 - `.axpd` (binary PathDB, fast to load), and/or
-- `.axi` using the reversible `PathDBExportV1` schema (`axiograph db pathdb export-axi`), which is diffable and can be hashed/committed.
+- `.axi` using the reversible `PathDBExportV1` schema (`axiograph db pathdb export-axi`), for live-byte/debug/parser-parity checks only.
 
-Either way, certificates should bind to a stable snapshot identifier (commit index, hash, or Merkle root).
+Semantic/query/certificate authority should bind to canonical accepted `.axi`
+anchors and typed query witnesses, not to `PathDBExportV1` snapshot tables.
 
 ### 1.3 Partitioning must not change semantics
 

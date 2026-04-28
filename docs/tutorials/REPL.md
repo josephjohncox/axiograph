@@ -6,10 +6,12 @@
 The Axiograph REPL is a lightweight interactive shell for working with:
 
 - PathDB snapshots (`.axpd`)
-- Reversible PathDB snapshot exports (`.axi`, schema `PathDBExportV1`)
 - Canonical `.axi` modules (`axi_v1`, schema/theory/instance), imported into PathDB for querying
 
 It’s intended for quick experiments and debugging (not a polished end-user UI).
+`PathDBExportV1` snapshot `.axi` files are no longer a REPL authoring surface;
+use `axiograph db pathdb export-axi/import-axi` only for explicit
+debug/live-byte/parser-parity workflows.
 
 If built with default features, the REPL supports **tab completion** and basic
 line editing via `rustyline`.
@@ -382,9 +384,10 @@ cargo run -p axiograph-cli -- tools viz path/to/snapshot.axpd --out build/graph.
 
 ## Importing canonical `axi_v1` modules
 
-`import_axi` accepts both `PathDBExportV1` snapshot exports and canonical schema
-modules (like `examples/machining/PhysicsKnowledge.axi` or
-`examples/manufacturing/SupplyChainHoTT.axi`).
+`import_axi` accepts canonical schema modules (like
+`examples/machining/PhysicsKnowledge.axi` or
+`examples/manufacturing/SupplyChainHoTT.axi`). It rejects `PathDBExportV1`
+snapshot exports; those belong under `axiograph db pathdb import-axi`.
 
 When importing a canonical schema module, the REPL maps instance data into PathDB:
 
@@ -650,23 +653,13 @@ one context but not the other:
 axiograph> diff ctx CensusData FamilyTree rel Parent limit 20
 ```
 
-### 5) Export snapshot as `.axi` (reversible)
-
-```text
-axiograph> export_axi build/snapshot_pathdb_export_v1.axi
-```
-
-Notes:
-- This `.axi` uses the **engineering snapshot schema** `PathDBExportV1`.
-- It is **not** the domain `.axi` DSL (like `EconomicFlows.axi`).
-
-### 6) Save snapshot as `.axpd`
+### 5) Save snapshot as `.axpd`
 
 ```text
 axiograph> save build/snapshot.axpd
 ```
 
-### 7) Quit and reload
+### 6) Quit and reload
 
 ```text
 axiograph> exit
@@ -685,14 +678,17 @@ Then:
 axiograph> stats
 ```
 
-## Walkthrough: Import a `PathDBExportV1` `.axi`
+## Debug/parity snapshot exports
 
-If you have a reversible snapshot export:
+If you need a reversible snapshot `.axi` for storage/parser parity, leave the
+REPL and use the explicit DB command:
 
-```text
-axiograph> import_axi build/snapshot_pathdb_export_v1.axi
-axiograph> stats
+```bash
+axiograph db pathdb export-axi build/snapshot.axpd --out build/snapshot_pathdb_export_v1.axi
+axiograph db pathdb import-axi build/snapshot_pathdb_export_v1.axi --out build/snapshot_roundtrip.axpd
 ```
+
+That snapshot is not semantic/query/certificate authority.
 
 ## Command Reference (quick)
 
@@ -703,8 +699,7 @@ exit | quit                    Exit
 load <file.axpd>               Load a PathDB snapshot
 save <file.axpd>               Save the current PathDB snapshot
 
-import_axi <file.axi>          Import either a `PathDBExportV1` snapshot or a canonical `axi_v1` module
-export_axi <file.axi>          Export current PathDB as `PathDBExportV1` `.axi`
+import_axi <file.axi>          Import a canonical `axi_v1` module
 export_axi_module <file.axi> [module_name]
                                Export a canonical `axi_v1` module from the meta-plane (if imported)
 schema [name]                  Inspect imported `.axi` schema/theory metadata (meta-plane)

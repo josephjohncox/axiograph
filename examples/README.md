@@ -135,7 +135,8 @@ Run only weak definition queries for authoring and agent planning:
 - Keep mutations through Axiograph semantic workflows. Example harnesses may
   write reports and cache artifacts, but they should not directly mutate
   accepted ontology state.
-- `PathDBExportV1` and `export_axi` are debug/parity surfaces, not teaching
-  anchors. New examples should not foreground them.
+- `PathDBExportV1` and `axiograph db pathdb export-axi/import-axi` are
+  debug/parity surfaces, not teaching anchors. New examples should not
+  foreground them.
 - Every nontrivial example should state which type, trust, CQ, coverage,
   merge/VCS, or backend-projection surface it exercises.

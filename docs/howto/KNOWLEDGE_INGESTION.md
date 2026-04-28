@@ -154,11 +154,11 @@ Offline/local repo:
 axiograph ingest github import /path/to/repo --out-dir build/github_import/demo
 ```
 
-Proto APIs without requiring `buf` (use an existing descriptor set JSON):
+Proto APIs without requiring `buf` (use an existing binary descriptor set):
 
 ```bash
 axiograph ingest github import /path/to/repo --out-dir build/github_import/demo \
-  --proto-descriptor examples/proto/large_api/descriptor.json
+  --proto-descriptor examples/proto/large_api/descriptor.binpb
 ```
 
 ### 7. Web pages (scrape/crawl) -> evidence artifacts
@@ -300,10 +300,14 @@ Use with your vector store (Pinecone, Qdrant, Chroma) to enable semantic search 
 
 ## Binary Knowledge Graph
 
-For large knowledge bases, use PathDB snapshots (`.axpd`). For auditability and offline review, round-trip through the
-reversible `.axi` snapshot format (`PathDBExportV1`):
+For large execution-oriented knowledge bases, use PathDB snapshots (`.axpd`).
+For debug/live-byte/parser-parity checks, round-trip through the reversible
+`.axi` snapshot format (`PathDBExportV1`):
 
 ```bash
 axiograph db pathdb export-axi knowledge.axpd --out snapshot.axi
 axiograph db pathdb import-axi snapshot.axi --out knowledge.axpd
 ```
+
+Do not feed `PathDBExportV1` snapshots into semantic/query/certificate commands.
+Those flows require canonical accepted `.axi` modules and typed anchors.

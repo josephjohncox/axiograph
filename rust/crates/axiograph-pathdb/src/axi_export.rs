@@ -1,14 +1,15 @@
 //! PathDB ↔ `.axi` (schema_v1) round-trip export/import.
 //!
-//! `.axpd` is the compact, binary on-disk format for PathDB. For version control
-//! and human review, we also want a *textual, deterministic* representation.
+//! `.axpd` is the compact, binary on-disk format for PathDB. For
+//! debug/live-byte/parser-parity work, we also want a *textual, deterministic*
+//! representation.
 //!
 //! This module defines a **reversible** `.axi` export schema (`PathDBExportV1`)
 //! that:
 //! - preserves **entity ids**, **relation ids**, and **string ids**,
 //! - avoids floats by storing confidences as **IEEE-754 bit patterns**,
 //! - stores interned strings as **UTF-8 hex** (so it can represent any text),
-//! - is intended as an *engineering interchange* format (not a user-facing DSL).
+//! - is intended as a debug/parity interchange format (not a user-facing DSL).
 //!
 //! The goal is faithful round-tripping:
 //!
@@ -19,6 +20,8 @@
 //! NOTE: This export format is distinct from the domain `.axi` examples (like
 //! `EconomicFlows.axi`). Those files are canonical *source*; this schema is a
 //! stable "snapshot rendering" of the derived PathDB state.
+//! It is not semantic, query, or certificate authority; public ontology flows
+//! should use canonical accepted `.axi` modules and typed anchors.
 
 use crate::{PathDB, StrId, StringInterner};
 use anyhow::{anyhow, Result};

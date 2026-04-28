@@ -84,10 +84,10 @@ Related roadmaps:
   deltas, and explicit preview failures.
 - [ ] Keep verification language pinned to accepted `.axi` anchors and the
   actual checked production `.axpd` path until verified-v2 storage converges.
-- [ ] Finish the greenfield example cleanup by rewriting export-era REPL
-  scripts and `repl_scripts_export_and_querycert_smoke` so examples foreground
-  canonical `.axi`, typed reports, certificates, behavior cases, and semantic
-  previews instead of requiring every script to emit `*_export_v1.axi`.
+- [x] Finish the greenfield example cleanup by rewriting export-era REPL
+  scripts and `repl_scripts_canonical_smoke` so examples foreground canonical
+  `.axi`, typed reports, certificates, behavior cases, and semantic previews
+  instead of requiring every script to emit `*_export_v1.axi`.
 
 ## Current Slices To Build On
 
@@ -170,7 +170,7 @@ Related roadmaps:
 - [ ] Introduce first-class workflow types such as `FactId<A>`,
   `TypedFact<S, R, A>`, `ProposalSet<Validated, A>`, `WorldState<A>`,
   `WorldModelRun<A>`, and `CertifiedAnswer<A>`.
-- [ ] Lift module kind into the type surface: distinguish canonical `.axi`
+- [x] Lift module kind into the type surface: distinguish canonical `.axi`
   modules from derived `PathDBExportV1` snapshots.
 - [ ] Expose first-class prepared/typechecked query handles so REPL, server,
   LLM, and tool-loop surfaces stop executing from raw query strings or raw ASTs.

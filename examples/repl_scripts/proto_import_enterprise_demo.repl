@@ -1,6 +1,6 @@
 # Axiograph REPL script: proto import + enterprise matching demo
 #
-# This demo shows a real proto import (Buf descriptor JSON) and then a simple
+# This demo shows a real proto import (binary Buf descriptor set) and then a simple
 # heuristic "matching" step that links imported `ProtoService` nodes to an
 # enterprise scenario `Service` graph.
 #
@@ -22,10 +22,10 @@
 gen enterprise_large_api 3 3 1
 stats
 
-# 2) Import the proto descriptor set JSON (checked into the repo).
+# 2) Import the binary proto descriptor set (checked into the repo).
 # If you run this script from a tmp directory (tests do), the REPL will fall
 # back to treating this as repo-root-relative.
-import_proto examples/proto/large_api/descriptor.json
+import_proto examples/proto/large_api/descriptor.binpb
 stats
 
 # 3) Add heuristic links: Service ↔ ProtoService.
@@ -52,6 +52,5 @@ q select ?ep where name("acme.users.v1.UserService.GetUser") -proto_rpc_http_end
 # End-to-end: Team → … → HttpEndpoint
 q select ?ep where name("team_0") -owns/mapsToProtoService/proto_service_has_rpc/proto_rpc_http_endpoint-> ?ep max_hops 10 limit 20
 
-# Export reversible snapshots.
-export_axi build/enterprise_large_api_proto_import_export_v1.axi
+# Save the runnable `.axpd` snapshot.
 save build/enterprise_large_api_proto_import.axpd

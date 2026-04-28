@@ -253,18 +253,6 @@ impl SemanticMcpServer {
                 }),
         );
         tools.extend(
-            crate::path_cert_tools::path_cert_tool_specs()
-                .into_iter()
-                .map(|tool| {
-                    json!({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "inputSchema": tool.input_schema,
-                        "annotations": { "readOnlyHint": true }
-                    })
-                }),
-        );
-        tools.extend(
             crate::transport_preview_tools::transport_preview_tool_specs()
                 .into_iter()
                 .map(|tool| {
@@ -299,15 +287,6 @@ impl SemanticMcpServer {
                 crate::route_preview_tools::invoke_route_preview_tool(
                     name,
                     crate::route_preview_tools::RoutePreviewToolContext {
-                        db: self.runtime.db.as_ref(),
-                    },
-                    arguments,
-                )
-            }
-            name if crate::path_cert_tools::is_path_cert_tool(name) => {
-                crate::path_cert_tools::invoke_path_cert_tool(
-                    name,
-                    crate::path_cert_tools::PathCertToolContext {
                         db: self.runtime.db.as_ref(),
                     },
                     arguments,
@@ -650,71 +629,6 @@ instance FamilyInst of Family:
         )
     }
 
-    fn test_server_with_path_cert_runtime() -> (SemanticMcpServer, u32, u32, u32) {
-        let axi = r#"
-module Demo
-
-schema S:
-  object Node
-  relation road(from: Node, to: Node)
-
-instance I of S:
-  Node = {A, B}
-  road = {(from=A, to=B)}
-"#;
-        let mut db = PathDB::new();
-        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
-            .expect("import canonical module");
-        db.build_indexes();
-        let meta =
-            axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db).expect("meta plane");
-        let find_named_entity = |type_name: &str, name: &str| {
-            let ids = db.find_by_type(type_name).expect("type ids");
-            let key = db.interner.id_of("name").expect("name attr key");
-            ids.iter()
-                .find(|id| {
-                    db.entities
-                        .get_attr(*id, key)
-                        .and_then(|value| db.interner.lookup(value))
-                        .as_deref()
-                        == Some(name)
-                })
-                .expect("named entity")
-        };
-        let a = find_named_entity("Node", "A");
-        let b = find_named_entity("Node", "B");
-        let ab = (0..db.relations.len() as u32)
-            .find(|rel_id| {
-                let Some(rel) = db.relations.get_relation(*rel_id) else {
-                    return false;
-                };
-                rel.source == a
-                    && rel.target == b
-                    && db.interner.lookup(rel.rel_type).as_deref() == Some("road")
-            })
-            .expect("find road relation");
-        let anchor = AcceptedAxiAnchor::new(
-            AcceptedSnapshotId::new("accepted:path-cert"),
-            AxiDigest::from_axi_text(axi),
-        );
-
-        (
-            SemanticMcpServer {
-                runtime: crate::db_server::ReadOnlySemanticRuntime {
-                    snapshot_key: "path-cert-snapshot".to_string(),
-                    accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:path-cert")),
-                    accepted_axi_anchor: Some(anchor),
-                    db: Arc::new(db),
-                    meta: Some(meta),
-                },
-                tool_max_rows: 25,
-            },
-            a,
-            b,
-            ab,
-        )
-    }
-
     #[test]
     fn tool_definitions_include_shared_semantic_report_tools() {
         let server = test_server(None);
@@ -739,9 +653,6 @@ instance I of S:
         assert!(names
             .iter()
             .any(|name| name == crate::route_preview_tools::ROUTE_PREVIEW_TOOL_NAME));
-        assert!(names
-            .iter()
-            .any(|name| name == crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME));
         assert!(names
             .iter()
             .any(|name| name == crate::transport_preview_tools::TRANSPORT_PREVIEW_TOOL_NAME));
@@ -943,81 +854,6 @@ theory PlantTransport on Plant:
                 .and_then(Value::as_u64),
             Some(1)
         );
-    }
-
-    #[test]
-    fn tools_list_advertises_path_cert_schema() {
-        let mut server = test_server(None);
-        let response = server
-            .handle_message(json!({
-                "jsonrpc": "2.0",
-                "id": 13,
-                "method": "tools/list"
-            }))
-            .expect("tools/list response");
-
-        let tool = response
-            .pointer("/result/tools")
-            .and_then(Value::as_array)
-            .expect("tool array")
-            .iter()
-            .find(|tool| {
-                tool.get("name").and_then(Value::as_str)
-                    == Some(crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME)
-            })
-            .cloned()
-            .expect("path cert tool should be advertised");
-
-        let expected = crate::path_cert_tools::path_cert_tool_specs()
-            .into_iter()
-            .find(|tool| tool.name == crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME)
-            .expect("path cert tool spec");
-
-        assert_eq!(
-            tool.get("description").and_then(Value::as_str),
-            Some(expected.description)
-        );
-        assert_eq!(tool.get("inputSchema"), Some(&expected.input_schema));
-        assert_eq!(
-            tool.pointer("/annotations/readOnlyHint")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn tools_call_dispatches_path_cert() {
-        let (mut server, a, _b, ab) = test_server_with_path_cert_runtime();
-        let response = server
-            .handle_message(json!({
-                "jsonrpc": "2.0",
-                "id": 14,
-                "method": "tools/call",
-                "params": {
-                    "name": crate::path_cert_tools::PATH_CERTIFY_TOOL_NAME,
-                    "arguments": {
-                        "start": a,
-                        "relation_ids": [ab],
-                        "verify": false
-                    }
-                }
-            }))
-            .expect("tools/call response");
-
-        assert_eq!(
-            response.pointer("/result/isError").and_then(Value::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            response
-                .pointer("/result/structuredContent/certificate/kind")
-                .and_then(Value::as_str),
-            Some("reachability_v3")
-        );
-        assert!(response
-            .pointer("/result/structuredContent/anchor_digest")
-            .and_then(Value::as_str)
-            .is_some());
     }
 
     #[test]

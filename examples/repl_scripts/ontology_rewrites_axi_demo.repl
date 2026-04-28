@@ -41,5 +41,5 @@ q select ?gc where name("Alice") -Grandparent-> ?gc limit 10
 q select ?m where name("Eve") -ReportsTo-> ?m limit 10
 q select ?e where name("Bob") -ManagerOf-> ?e limit 10
 
-export_axi build/ontology_rewrites_axi_export_v1.axi
+export_axi_module build/ontology_rewrites_axi_module.axi OntologyRewrites
 save build/ontology_rewrites_axi.axpd

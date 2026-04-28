@@ -7,7 +7,8 @@
 //! 4. Bayesian belief updates with new evidence
 //! 5. LLM grounding and guardrails
 //!
-//! This example uses the FFI-compatible types to ensure compatibility with Idris.
+//! This example is a standalone Rust demonstration. Lean, not this example,
+//! is the trusted checker for proof-carrying claims.
 
 use std::collections::HashMap;
 
@@ -338,7 +339,7 @@ fn main() {
 }
 
 // ============================================================================
-// Probability Type (FFI-Compatible, mirrors Idris VProb)
+// Probability Type (fixed-point, aligned with Lean certificate semantics)
 // ============================================================================
 
 const PRECISION: u32 = 1_000_000;

@@ -21,7 +21,6 @@ sha2.workspace = true
 regex.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
-byteorder = "1.5"
 ciborium.workspace = true
 reqwest = { workspace = true, optional = true }
 

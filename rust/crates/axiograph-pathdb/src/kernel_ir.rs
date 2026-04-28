@@ -392,11 +392,7 @@ impl TheoryObligationRefIr {
                 summary,
                 ..
             } => {
-                let legacy_prefix = strip_trailing_numeric_segment(artifact_id);
                 constraint_id.as_str() == artifact_id
-                    || legacy_prefix.is_some_and(|prefix| {
-                        constraint_id.as_str().starts_with(&format!("{prefix}:"))
-                    })
                     || relation_name
                         .as_ref()
                         .is_some_and(|relation| local_name(relation) == artifact_local)
@@ -408,27 +404,12 @@ impl TheoryObligationRefIr {
             | Self::OpaqueEquation {
                 equation_id, name, ..
             } => {
-                equation_id.as_str() == artifact_id
-                    || strip_trailing_numeric_segment(artifact_id)
-                        .is_some_and(|normalized| normalized == equation_id.as_str())
-                    || local_name(name) == artifact_local
+                equation_id.as_str() == artifact_id || local_name(name) == artifact_local
             }
             Self::RewriteRule { rule_id, name, .. } => {
-                rule_id.as_str() == artifact_id
-                    || strip_trailing_numeric_segment(artifact_id)
-                        .is_some_and(|normalized| normalized == rule_id.as_str())
-                    || local_name(name) == artifact_local
+                rule_id.as_str() == artifact_id || local_name(name) == artifact_local
             }
         }
-    }
-}
-
-fn strip_trailing_numeric_segment(raw: &str) -> Option<&str> {
-    let (prefix, suffix) = raw.rsplit_once(':')?;
-    if !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()) {
-        Some(prefix)
-    } else {
-        None
     }
 }
 
@@ -3652,12 +3633,18 @@ mod tests {
             .iter()
             .any(|obligation| obligation == &rewrite_obligation));
 
-        assert!(constraint_obligation.matches_artifact_id("constraint:theory:S:T:0"));
+        assert!(constraint_obligation.matches_artifact_id(&constraint_obligation.stable_id()));
+        assert!(!constraint_obligation.matches_artifact_id("constraint:theory:S:T:0"));
         assert!(obligation_refs.iter().any(|obligation| {
+            matches!(obligation, TheoryObligationRefIr::PathEquation { .. })
+                && obligation.matches_artifact_id("equation:theory:S:T:parent_path")
+        }));
+        assert!(!obligation_refs.iter().any(|obligation| {
             matches!(obligation, TheoryObligationRefIr::PathEquation { .. })
                 && obligation.matches_artifact_id("equation:theory:S:T:parent_path:0")
         }));
-        assert!(rewrite_obligation.matches_artifact_id("rewrite:theory:S:T:parent_refl:0"));
+        assert!(rewrite_obligation.matches_artifact_id("rewrite:theory:S:T:parent_refl"));
+        assert!(!rewrite_obligation.matches_artifact_id("rewrite:theory:S:T:parent_refl:0"));
 
         let graph = ir.obligation_graph();
         assert_eq!(graph.version, THEORY_OBLIGATION_GRAPH_VERSION_V1);

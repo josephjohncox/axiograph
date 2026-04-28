@@ -18,6 +18,5 @@ import_axi examples/physics/PhysicsMeasurements.axi
 wm use stub
 wm plan build/world_model_mpc_physics_plan.json --steps 2 --rollouts 2 --max 150 --guardrail strict --plane both --goal "expand physics ontology coverage" --axi examples/physics/PhysicsOntology.axi --cq-file examples/competency_questions/physics_cq.json
 
-# Export the resulting snapshot (PathDBExportV1) so e2e tests can certify a query.
-export_axi build/world_model_mpc_physics_export_v1.axi
+# Save the world-model planning snapshot for inspection.
 save build/world_model_mpc_physics.axpd

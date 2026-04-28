@@ -48,8 +48,7 @@ pub struct JepaExportFileV1 {
     pub module_name: String,
     pub module_text: String,
     pub module: axiograph_dsl::schema_v1::SchemaV1Module,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub axi_well_typed_proof_v1: Option<AxiWellTypedProofV1>,
+    pub axi_well_typed_proof_v1: AxiWellTypedProofV1,
     pub items: Vec<JepaExportItemV1>,
 }
 
@@ -178,7 +177,7 @@ fn build_jepa_export_from_well_typed_module<S: WellTypedModuleState>(
         module_name: typed_module.module_name.clone(),
         module_text: axi_text.to_string(),
         module: typed_module.clone(),
-        axi_well_typed_proof_v1: Some(module.proof().clone()),
+        axi_well_typed_proof_v1: module.proof().clone(),
         items,
     })
 }
@@ -198,12 +197,7 @@ pub fn write_jepa_export(
 #[allow(dead_code)]
 pub fn read_jepa_export(path: &Path) -> Result<JepaExportFileV1> {
     let text = std::fs::read_to_string(path)?;
-    let mut export: JepaExportFileV1 = serde_json::from_str(&text)?;
-    if export.axi_well_typed_proof_v1.is_none() {
-        let validated = axiograph_pathdb::validate_axi_v1_module(export.module.clone())?;
-        let (_, proof) = validated.into_parts();
-        export.axi_well_typed_proof_v1 = Some(proof);
-    }
+    let export: JepaExportFileV1 = serde_json::from_str(&text)?;
     Ok(export)
 }
 
@@ -1884,10 +1878,7 @@ instance I of S:
         for item in &export.items {
             assert_eq!(item.mask_fields.len(), 1);
         }
-        let proof = export
-            .axi_well_typed_proof_v1
-            .as_ref()
-            .expect("JEPA export should carry a well-typed proof");
+        let proof = &export.axi_well_typed_proof_v1;
         assert_eq!(proof.module_name, "M");
         assert_eq!(proof.schema_count, 1);
         assert_eq!(proof.instance_count, 1);
@@ -1921,9 +1912,9 @@ instance I of S:
     }
 
     #[test]
-    fn read_jepa_export_backfills_missing_well_typed_proof() {
+    fn read_jepa_export_requires_well_typed_proof() {
         let axi = r#"
-module Legacy
+module Current
 schema S:
   object A
   relation R(from: A, to: A)
@@ -1946,23 +1937,16 @@ instance I of S:
             .remove("axi_well_typed_proof_v1");
         assert!(removed.is_some(), "expected serialized proof field");
 
-        let path = unique_temp_file("legacy_jepa_export");
+        let path = unique_temp_file("jepa_export_missing_proof");
         fs::write(
             &path,
-            serde_json::to_string_pretty(&json).expect("serialize legacy export"),
+            serde_json::to_string_pretty(&json).expect("serialize stale export"),
         )
-        .expect("write legacy export");
+        .expect("write stale export");
 
-        let restored = read_jepa_export(&path).expect("read legacy export");
+        let err = read_jepa_export(&path).expect_err("missing proof should fail closed");
         let _ = fs::remove_file(&path);
-
-        let proof = restored
-            .axi_well_typed_proof_v1
-            .as_ref()
-            .expect("legacy export should be backfilled with a proof");
-        assert_eq!(proof.module_name, "Legacy");
-        assert_eq!(proof.schema_count, 1);
-        assert_eq!(proof.instance_count, 1);
+        assert!(err.to_string().contains("axi_well_typed_proof_v1"));
     }
 
     #[test]

@@ -23,9 +23,9 @@ Lean checker can validate against the formal semantics.
 - Validates certificates produced by Rust.
 - Rejects results whose certificates do not verify.
 
-This repo previously used Idris2 as a prototype proof layer. The initial
-Rust+Lean release removes Idris/FFI compatibility; Lean is the only trusted
-checker.
+This repo previously used Idris2 as a prototype proof layer. That material is
+historical only: Lean is the only trusted checker, and there is no current
+Idris runtime, FFI, or compatibility contract.
 
 ## Ways this can be broken (and how we avoid it)
 
@@ -232,9 +232,9 @@ Or directly:
 Beyond semantic certificate checking, the Rust literature suggests layering complementary tools:
 
 1. **Minimize and isolate `unsafe`**
-   - Keep invariants documented at module boundaries (FFI, binary parsing, custom indexes).
+   - Keep invariants documented at module boundaries (binary parsing, custom indexes, and other low-level boundaries).
 2. **Fuzz untrusted surfaces**
-   - PathDB bytes/decoding, certificate JSON decoding, `.axi` parsing, and FFI entrypoints.
+   - PathDB bytes/decoding, certificate JSON decoding, `.axi` parsing, and external byte/string entrypoints.
 3. **Run Miri**
    - Detect UB in tests (especially around `unsafe` and tricky aliasing/lifetimes).
 4. **Use model checking selectively (Kani)**

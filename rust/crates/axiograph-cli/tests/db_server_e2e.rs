@@ -50,9 +50,7 @@ fn http_post_json_auth(
     auth_token: Option<&str>,
 ) -> (u16, serde_json::Value) {
     let client = db_server_http_client();
-    let mut request = client
-        .post(format!("http://{addr}{path}"))
-        .json(body);
+    let mut request = client.post(format!("http://{addr}{path}")).json(body);
     if let Some(token) = auth_token {
         request = request.bearer_auth(token);
     }
@@ -667,72 +665,14 @@ fn db_serve_query_smoke() {
         "expected typed overlay attrs in /viz.json response: {viz_json}"
     );
 
-    let alice_id = viz_json["nodes"]
-        .as_array()
-        .and_then(|nodes| {
-            nodes.iter().find_map(|node| {
-                let name = node.get("name").and_then(|v| v.as_str());
-                if name == Some("Alice") {
-                    node.get("id").and_then(|v| v.as_u64()).map(|id| id as u32)
-                } else {
-                    None
-                }
-            })
-        })
-        .expect("expected Alice node id in viz graph");
-    let alice_parent_rel = viz_json["edges"]
-        .as_array()
-        .and_then(|edges| {
-            edges.iter().find_map(|edge| {
-                let source = edge
-                    .get("source")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
-                let label = edge.get("label").and_then(|v| v.as_str());
-                let rel_id = edge
-                    .get("relation_id")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
-                if source == Some(alice_id) && label == Some("Parent") {
-                    rel_id
-                } else {
-                    None
-                }
-            })
-        })
-        .expect("expected relation-backed Parent edge from Alice in viz graph");
-
-    let (reach_status, reach_json) = http_post_json(
-        addr,
-        "/cert/reachability",
-        &serde_json::json!({
-            "start": alice_id,
-            "relation_ids": [alice_parent_rel],
-            "verify": false
-        }),
-    );
-    assert_eq!(
-        reach_status, 200,
-        "expected 200 for /cert/reachability, got {reach_status}: {reach_json}"
-    );
     assert!(
-        reach_json.get("certificate").is_some(),
-        "expected certificate in /cert/reachability response: {reach_json}"
-    );
-    let reach_anchor_digest = reach_json["anchor_digest"].as_str().unwrap_or("");
-    assert!(
-        !reach_anchor_digest.is_empty(),
-        "expected anchor_digest in /cert/reachability response: {reach_json}"
-    );
-    assert_eq!(
-        reach_json["certificate"]["kind"].as_str(),
-        Some("reachability_v3"),
-        "expected canonical reachability_v3 certificate payload: {reach_json}"
-    );
-    assert_eq!(
-        reach_json["certificate"]["proof"]["type"].as_str(),
-        Some("step"),
-        "expected non-trivial reachability_v3 proof chain: {reach_json}"
+        viz_json["edges"]
+            .as_array()
+            .is_some_and(|edges| edges.iter().any(|edge| {
+                edge.get("label").and_then(|v| v.as_str()) == Some("Parent")
+                    && edge.get("relation_id").and_then(|v| v.as_u64()).is_some()
+            })),
+        "expected relation-backed Parent edge in viz graph: {viz_json}"
     );
 
     let (prop_status, prop_json) = http_post_json(

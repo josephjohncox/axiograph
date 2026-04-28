@@ -27,6 +27,5 @@ q select ?p where ?p is PathWitness, ?p -from-> name("supplier_0") limit 10
 # Material capability edges.
 q select ?m where name("supplier_0") -suppliesMaterial-> ?m limit 10
 
-# Export reversible snapshots.
-export_axi build/supply_chain_export_v1.axi
+# Save the runnable `.axpd` snapshot.
 save build/supply_chain.axpd

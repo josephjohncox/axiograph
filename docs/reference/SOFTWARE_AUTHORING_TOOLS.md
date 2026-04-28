@@ -34,6 +34,25 @@ axiograph authoring lsp
 axiograph authoring mcp
 ```
 
+Recommended user flow:
+
+```bash
+axiograph check validate examples/software_authoring/OrderFulfillmentDomain.axi
+axiograph check theory examples/software_authoring/OrderFulfillmentDomain.axi --closure-tier finite_fragment
+axiograph discover define examples/software_authoring/OrderFulfillmentDomain.axi --prompt "define the shipment eligibility business rule" --include-queries
+axiograph discover overlay-check examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json
+axiograph discover coverage-query examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --query examples/software_authoring/order_fulfillment_coverage_query.json
+axiograph discover behavior-case examples/software_authoring/OrderFulfillmentDomain.axi --request examples/software_authoring/order_fulfillment_behavior_case.json --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/behavior_case_report.json
+axiograph check software-coverage examples/software_authoring/OrderFulfillmentDomain.axi --behavior-case examples/software_authoring/order_fulfillment_behavior_case.json --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/software_coverage.json
+axiograph authoring codegen-plan --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/codegen_plan.json
+axiograph authoring continuous-check --behavior-report build/examples/software_authoring/behavior_case_report.json --repo-root . --out build/examples/software_authoring/continuous_coverage.json
+```
+
+The CLI reports should always leave users with an obvious next action: resolve
+typed holes, validate overlays, run weak coverage probes, promote accepted
+ontology changes, or materialize generated skeletons through an explicit CLI
+write step.
+
 The standalone crate exposes the same production-named tool:
 
 ```bash

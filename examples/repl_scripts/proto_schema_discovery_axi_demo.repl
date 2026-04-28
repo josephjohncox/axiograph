@@ -52,5 +52,4 @@ q select ?f where ?f = proto_rpc_http_endpoint(from=GetUser, to=GET_v1_users_use
 # Export the canonical module (schema/theory/instance) back out of PathDB.
 export_axi_module build/proto_schema_discovery_module.axi ProtoApi_Proposals
 
-export_axi build/proto_schema_discovery_export_v1.axi
 save build/proto_schema_discovery.axpd

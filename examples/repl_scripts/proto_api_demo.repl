@@ -39,6 +39,5 @@ q select ?next where name("acme.svc0.v1.Service0.CreateWidget") -workflow_sugges
 q select ?next where name("acme.svc0.v1.Service0.CreateWidget") -observed_next-> ?next limit 10
 q select ?p where ?p is PathWitness, ?p -from-> name("acme.svc0.v1.Service0.CreateWidget") limit 10
 
-# Export reversible snapshots.
-export_axi build/proto_api_export_v1.axi
+# Save the runnable `.axpd` snapshot.
 save build/proto_api.axpd

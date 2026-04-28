@@ -47,5 +47,4 @@ viz build/social_network_axi_alice_both.html format html plane both focus_name A
 # Typed overlay: annotate data-plane nodes using meta-plane schema/theory info.
 viz build/social_network_axi_alice_both_typed.html format html plane both focus_name Alice hops 2 max_nodes 240 typed_overlay
 
-export_axi build/social_network_axi_export_v1.axi
 save build/social_network_axi.axpd

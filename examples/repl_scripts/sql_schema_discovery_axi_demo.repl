@@ -52,5 +52,4 @@ q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10
 # Repeat to demonstrate the REPL's compiled query cache (same query IR + snapshot key).
 q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10
 
-export_axi build/sql_schema_discovery_export_v1.axi
 save build/sql_schema_discovery.axpd

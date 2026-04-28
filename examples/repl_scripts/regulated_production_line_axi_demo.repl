@@ -5,7 +5,7 @@
 # - typed queries over order/work order/recipe lineage
 # - implementation-surface linkage through PLC/HMI/SOP relations
 # - certification and delivery/pricing lineage
-# - export + save for the examples e2e path
+# - canonical module export + `.axpd` save for the examples e2e path
 
 import_axi examples/industrial/RegulatedProductionLine.axi
 
@@ -32,5 +32,5 @@ q select ?window ?price where ?f = DeliveryCommitment(order=SalesOrder_1001, win
 
 viz build/regulated_production_line_typed.html format html plane both focus_name WorkOrder_5001 hops 2 max_nodes 280 typed_overlay
 
-export_axi build/regulated_production_line_axi_export_v1.axi
+export_axi_module build/regulated_production_line_axi_module.axi RegulatedProductionLine
 save build/regulated_production_line_axi.axpd

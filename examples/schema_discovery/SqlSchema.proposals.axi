@@ -1,15 +1,20 @@
--- Candidate `.axi` module produced from `proposals.json` (schema discovery).
+-- Draft `.axi` module generated from `proposals.json`.
 --
--- This file is intentionally small and reviewable. It demonstrates:
--- - bootstrapping a schema from structured source proposals (SQL DDL-like),
--- - importing into PathDB to get a meta-plane for schema-directed AxQL planning,
--- - extensional constraints (keys/functionals) as an experiment.
+-- This output is *untrusted* (evidence-plane). Review before promotion.
+--
+-- Design notes:
+-- - Entities become object inhabitants.
+-- - Relations become binary tuples: `Rel(from, to)`.
+-- - If proposals include a `context` attribute on relations, we preserve it:
+--     - relation decls gain `@context Context`
+--     - tuples add `ctx=...`
+-- - Missing or heterogeneous endpoint types become explicit `TypeHole_*` review obligations.
+-- - Optional constraints are inferred *extensionally* from current tuples.
 --
 -- Re-generate (from repo root):
---   cd rust
---   cargo run -p axiograph-cli -- discover draft-module \
---     ../examples/schema_discovery/sql_schema_proposals.json \
---     --out ../build/SqlSchema.proposals.axi \
+--   PATH=/opt/homebrew/bin:$PATH cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover draft-module \
+--     examples/schema_discovery/sql_schema_proposals.json \
+--     --out build/SqlSchema.proposals.axi \
 --     --module SqlSchema_Proposals \
 --     --schema SqlSchema \
 --     --instance SqlSchemaInstance \
@@ -18,54 +23,53 @@
 module SqlSchema_Proposals
 
 schema SqlSchema:
-  -- Safe fallback supertype for heterogeneous endpoints.
-  object Entity
 
-  -- Types observed in proposals.
-  object SqlTable
+  -- Object types observed in proposals plus explicit typed holes.
   object SqlColumn
+  object SqlTable
 
-  subtype SqlTable < Entity
-  subtype SqlColumn < Entity
-
-  -- Relations observed in proposals.
-  relation SqlHasColumn(from: SqlTable, to: SqlColumn)
+  -- Binary relations observed in proposals.
   relation SqlForeignKey(from: SqlTable, to: SqlTable)
+  relation SqlHasColumn(from: SqlTable, to: SqlColumn)
 
 theory SqlSchemaExtensional on SqlSchema:
-  -- Extensional constraints inferred from the observed tuples (hypotheses).
+  -- Extensional constraints inferred from current tuples (best-effort).
+  -- Treat these as hypotheses: they may not generalize as new data arrives.
 
-  -- Basic key (supports key-based pruning of fact atoms).
+  -- Keys: make fact atoms like `SqlForeignKey(from=a, to=b)` eligible for key pruning.
+  constraint key SqlForeignKey(from, to)
+  constraint key SqlForeignKey(from)
+  constraint functional SqlForeignKey.from -> SqlForeignKey.to
+  constraint key SqlForeignKey(to)
+  constraint functional SqlForeignKey.to -> SqlForeignKey.from
+
+  -- Keys: make fact atoms like `SqlHasColumn(from=a, to=b)` eligible for key pruning.
   constraint key SqlHasColumn(from, to)
-  -- Extensional: each column belongs to a single table.
   constraint key SqlHasColumn(to)
   constraint functional SqlHasColumn.to -> SqlHasColumn.from
 
-  constraint key SqlForeignKey(from, to)
-  -- Extensional: one FK per table in this tiny example.
-  constraint key SqlForeignKey(from)
-  constraint functional SqlForeignKey.from -> SqlForeignKey.to
-
 instance SqlSchemaInstance of SqlSchema:
-  SqlTable = {Users, Orders}
-
   SqlColumn = {
-    Users_id,
-    Users_name,
+    Orders_amount_cents,
     Orders_id,
     Orders_user_id,
-    Orders_amount_cents
+    Users_id,
+    Users_name
   }
 
-  SqlHasColumn = {
-    (from=Users, to=Users_id),
-    (from=Users, to=Users_name),
-    (from=Orders, to=Orders_id),
-    (from=Orders, to=Orders_user_id),
-    (from=Orders, to=Orders_amount_cents)
+  SqlTable = {
+    Orders,
+    Users
   }
 
   SqlForeignKey = {
     (from=Orders, to=Users)
   }
 
+  SqlHasColumn = {
+    (from=Orders, to=Orders_amount_cents),
+    (from=Orders, to=Orders_id),
+    (from=Orders, to=Orders_user_id),
+    (from=Users, to=Users_id),
+    (from=Users, to=Users_name)
+  }

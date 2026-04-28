@@ -46,8 +46,13 @@ Last updated: 2025-12-20.
 - Implemented: `axi_digest_v1` (FNV-1a 64-bit) as a snapshot-scoping anchor for `.axi` text (stability identity, not a security primitive).
   - Rust: `rust/crates/axiograph-dsl/src/digest.rs`
   - Lean: `lean/Axiograph/Util/Fnv1a.lean`
-- Implemented: anchored reachability uses `relation_id` fact IDs against `PathDBExportV1` `.axi` snapshots.
-- Missing: stable fact ids for **canonical domain `.axi`** (not just PathDB export snapshots), and a “snapshot id” notion for distributed settings.
+- Implemented historically: anchored reachability used `relation_id` fact IDs
+  against `PathDBExportV1` `.axi` snapshots; that public raw path-cert surface
+  is retired.
+- Current direction: typed query witnesses and canonical `.axi` anchors are the
+  user/server/agent certificate path.
+- Missing: stable fact ids for **canonical domain `.axi`** and a “snapshot id”
+  notion for distributed settings.
 
 ### 0.4 Grounding / “safe to use” (not enforced)
 
@@ -81,8 +86,9 @@ Last updated: 2025-12-20.
 
 ### 1.3 Fix entity/relation identity (stop using placeholder IDs)
 
-- [ ] Remove placeholder relation endpoints in storage writes (`source_id = 0`, `target_id = 1`).
-  - Code: `rust/crates/axiograph-storage/src/lib.rs` (`StorableFact::Relation` branch).
+- [x] Remove placeholder relation endpoints in storage writes (`source_id = 0`, `target_id = 1`).
+  - Implemented: relation materialization is fail-closed when endpoints cannot
+    be resolved; storage no longer invents `0 -> 1` placeholders.
 - [ ] Add a stable name→entity_id index (or content-addressed entity ids) for PathDB writes.
 - [ ] Add tests that assert relation endpoints are correct after persistence reload.
 

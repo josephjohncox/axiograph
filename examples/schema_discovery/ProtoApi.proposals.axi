@@ -1,15 +1,20 @@
--- Candidate `.axi` module produced from `proposals.json` (schema discovery).
+-- Draft `.axi` module generated from `proposals.json`.
 --
--- This file is intentionally small and reviewable. It demonstrates:
--- - drafting a schema from proto/gRPC-ish proposals,
--- - capturing both structural knowledge (services/rpcs/messages/endpoints),
--- - and a tiny amount of tacit knowledge (workflow grouping + suggested ordering).
+-- This output is *untrusted* (evidence-plane). Review before promotion.
+--
+-- Design notes:
+-- - Entities become object inhabitants.
+-- - Relations become binary tuples: `Rel(from, to)`.
+-- - If proposals include a `context` attribute on relations, we preserve it:
+--     - relation decls gain `@context Context`
+--     - tuples add `ctx=...`
+-- - Missing or heterogeneous endpoint types become explicit `TypeHole_*` review obligations.
+-- - Optional constraints are inferred *extensionally* from current tuples.
 --
 -- Re-generate (from repo root):
---   cd rust
---   cargo run -p axiograph-cli -- discover draft-module \
---     ../examples/schema_discovery/proto_api_proposals.json \
---     --out ../build/ProtoApi.proposals.axi \
+--   PATH=/opt/homebrew/bin:$PATH cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover draft-module \
+--     examples/schema_discovery/proto_api_proposals.json \
+--     --out build/ProtoApi.proposals.axi \
 --     --module ProtoApi_Proposals \
 --     --schema ProtoApi \
 --     --instance ProtoApiInstance \
@@ -18,74 +23,75 @@
 module ProtoApi_Proposals
 
 schema ProtoApi:
-  -- Safe fallback supertype for heterogeneous endpoints.
-  object Entity
 
-  -- Types observed in proposals.
-  object ProtoService
-  object ProtoRpc
-  object ProtoMessage
-  object HttpEndpoint
+  -- Object types observed in proposals plus explicit typed holes.
   object ApiWorkflow
+  object HttpEndpoint
+  object ProtoMessage
+  object ProtoRpc
+  object ProtoService
 
-  subtype ProtoService < Entity
-  subtype ProtoRpc < Entity
-  subtype ProtoMessage < Entity
-  subtype HttpEndpoint < Entity
-  subtype ApiWorkflow < Entity
-
-  -- Relations observed in proposals.
-  relation proto_service_has_rpc(from: ProtoService, to: ProtoRpc)
+  -- Binary relations observed in proposals.
   relation proto_rpc_http_endpoint(from: ProtoRpc, to: HttpEndpoint)
   relation proto_rpc_request(from: ProtoRpc, to: ProtoMessage)
   relation proto_rpc_response(from: ProtoRpc, to: ProtoMessage)
-
-  -- Tacit / heuristic structures.
+  relation proto_service_has_rpc(from: ProtoService, to: ProtoRpc)
   relation proto_service_has_workflow(from: ProtoService, to: ApiWorkflow)
   relation workflow_includes_rpc(from: ApiWorkflow, to: ProtoRpc)
   relation workflow_suggests_order(from: ProtoRpc, to: ProtoRpc)
 
 theory ProtoApiExtensional on ProtoApi:
-  -- Extensional constraints inferred from the observed tuples (hypotheses).
-  --
-  -- These are not "true about the world"; they are a best-effort summary of
-  -- the current evidence and can be invalidated by new data later.
+  -- Extensional constraints inferred from current tuples (best-effort).
+  -- Treat these as hypotheses: they may not generalize as new data arrives.
 
-  constraint key proto_service_has_rpc(from, to)
-
+  -- Keys: make fact atoms like `proto_rpc_http_endpoint(from=a, to=b)` eligible for key pruning.
   constraint key proto_rpc_http_endpoint(from, to)
   constraint key proto_rpc_http_endpoint(from)
   constraint functional proto_rpc_http_endpoint.from -> proto_rpc_http_endpoint.to
+  constraint key proto_rpc_http_endpoint(to)
+  constraint functional proto_rpc_http_endpoint.to -> proto_rpc_http_endpoint.from
 
+  -- Keys: make fact atoms like `proto_rpc_request(from=a, to=b)` eligible for key pruning.
   constraint key proto_rpc_request(from, to)
   constraint key proto_rpc_request(from)
   constraint functional proto_rpc_request.from -> proto_rpc_request.to
+  constraint key proto_rpc_request(to)
+  constraint functional proto_rpc_request.to -> proto_rpc_request.from
 
+  -- Keys: make fact atoms like `proto_rpc_response(from=a, to=b)` eligible for key pruning.
   constraint key proto_rpc_response(from, to)
   constraint key proto_rpc_response(from)
   constraint functional proto_rpc_response.from -> proto_rpc_response.to
+  constraint key proto_rpc_response(to)
+  constraint functional proto_rpc_response.to -> proto_rpc_response.from
 
+  -- Keys: make fact atoms like `proto_service_has_rpc(from=a, to=b)` eligible for key pruning.
+  constraint key proto_service_has_rpc(from, to)
+  constraint key proto_service_has_rpc(to)
+  constraint functional proto_service_has_rpc.to -> proto_service_has_rpc.from
+
+  -- Keys: make fact atoms like `proto_service_has_workflow(from=a, to=b)` eligible for key pruning.
   constraint key proto_service_has_workflow(from, to)
   constraint key proto_service_has_workflow(from)
   constraint functional proto_service_has_workflow.from -> proto_service_has_workflow.to
+  constraint key proto_service_has_workflow(to)
+  constraint functional proto_service_has_workflow.to -> proto_service_has_workflow.from
 
+  -- Keys: make fact atoms like `workflow_includes_rpc(from=a, to=b)` eligible for key pruning.
   constraint key workflow_includes_rpc(from, to)
+  constraint key workflow_includes_rpc(to)
+  constraint functional workflow_includes_rpc.to -> workflow_includes_rpc.from
 
+  -- Keys: make fact atoms like `workflow_suggests_order(from=a, to=b)` eligible for key pruning.
   constraint key workflow_suggests_order(from, to)
   constraint key workflow_suggests_order(from)
   constraint functional workflow_suggests_order.from -> workflow_suggests_order.to
+  constraint key workflow_suggests_order(to)
+  constraint functional workflow_suggests_order.to -> workflow_suggests_order.from
 
 instance ProtoApiInstance of ProtoApi:
-  ProtoService = {UserService}
-
-  ProtoRpc = {GetUser, CreateUser}
-
-  ProtoMessage = {
-    User,
-    GetUserRequest,
-    GetUserResponse,
-    CreateUserRequest,
-    CreateUserResponse
+  ApiWorkflow = {
+    UserWorkflow
   }
 
   HttpEndpoint = {
@@ -93,26 +99,41 @@ instance ProtoApiInstance of ProtoApi:
     POST_v1_users
   }
 
-  ApiWorkflow = {UserWorkflow}
+  ProtoMessage = {
+    CreateUserRequest,
+    CreateUserResponse,
+    GetUserRequest,
+    GetUserResponse,
+    User
+  }
 
-  proto_service_has_rpc = {
-    (from=UserService, to=GetUser),
-    (from=UserService, to=CreateUser)
+  ProtoRpc = {
+    CreateUser,
+    GetUser
+  }
+
+  ProtoService = {
+    UserService
   }
 
   proto_rpc_http_endpoint = {
-    (from=GetUser, to=GET_v1_users_user_id),
-    (from=CreateUser, to=POST_v1_users)
+    (from=CreateUser, to=POST_v1_users),
+    (from=GetUser, to=GET_v1_users_user_id)
   }
 
   proto_rpc_request = {
-    (from=GetUser, to=GetUserRequest),
-    (from=CreateUser, to=CreateUserRequest)
+    (from=CreateUser, to=CreateUserRequest),
+    (from=GetUser, to=GetUserRequest)
   }
 
   proto_rpc_response = {
-    (from=GetUser, to=GetUserResponse),
-    (from=CreateUser, to=CreateUserResponse)
+    (from=CreateUser, to=CreateUserResponse),
+    (from=GetUser, to=GetUserResponse)
+  }
+
+  proto_service_has_rpc = {
+    (from=UserService, to=CreateUser),
+    (from=UserService, to=GetUser)
   }
 
   proto_service_has_workflow = {
@@ -120,11 +141,10 @@ instance ProtoApiInstance of ProtoApi:
   }
 
   workflow_includes_rpc = {
-    (from=UserWorkflow, to=GetUser),
-    (from=UserWorkflow, to=CreateUser)
+    (from=UserWorkflow, to=CreateUser),
+    (from=UserWorkflow, to=GetUser)
   }
 
   workflow_suggests_order = {
     (from=CreateUser, to=GetUser)
   }
-

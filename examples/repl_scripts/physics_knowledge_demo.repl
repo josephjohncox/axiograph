@@ -1,7 +1,6 @@
 # Axiograph REPL script: import canonical `.axi` schema module (PhysicsKnowledge)
 #
 # Demonstrates that `import_axi` accepts:
-# - PathDB snapshot exports (`PathDBExportV1`)
 # - Canonical `axi_v1` modules (schema/theory/instance)
 #
 # Run (from repo root):
@@ -34,5 +33,4 @@ q select ?rule where name("CuttingForceProportional") -HeuristicRule-> ?rule lim
 # Fact atom demo: query the relation tuples directly (uses FactIndex via `axi_relation="LawCategory"`).
 q select ?f ?cat where ?f = LawCategory(law=NewtonsSecond, category=?cat) limit 10
 
-export_axi build/physics_knowledge_export_v1.axi
 save build/physics_knowledge.axpd

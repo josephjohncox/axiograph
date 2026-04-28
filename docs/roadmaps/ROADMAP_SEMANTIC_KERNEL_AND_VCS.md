@@ -427,7 +427,9 @@ Align storage claims with actual runtime artifacts.
 - [ ] Split storage identity into two layers:
   - semantic anchor = accepted snapshot + canonical module digests + canonical fact ids,
   - runtime materialization id = accepted snapshot + overlay digests + build parameters + checkpoint/sidecar digests.
-- [ ] Treat `PathDBExportV1` as a debug/interchange anchor, not the primary semantic truth anchor.
+- [x] Treat `PathDBExportV1` as a debug/interchange anchor, not the primary semantic truth anchor.
+  - Implemented: generic semantic/query/cert loading is canonical-only; `PathDBExportV1`
+    remains under explicit `db pathdb` debug/live-byte/parser-parity commands.
 - [ ] Keep WAL overlays explicitly outside the semantic kernel:
   - queries may use chunks/proposals/embeddings for retrieval and explanation,
   - but they should not be “certified” unless the relevant facts were promoted into accepted `.axi`.

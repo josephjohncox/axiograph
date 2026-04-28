@@ -48,5 +48,4 @@ viz build/schema_evolution_axi_addcategories_both.html format html plane both fo
 viz build/schema_evolution_axi_productv3_both.dot format dot plane both focus_name ProductV3 hops 2 max_nodes 260
 viz build/schema_evolution_axi_productv3_both.html format html plane both focus_name ProductV3 hops 2 max_nodes 260
 
-export_axi build/schema_evolution_axi_export_v1.axi
 save build/schema_evolution_axi.axpd

@@ -8,9 +8,9 @@ description = "Ingestion for Protobuf/gRPC APIs via buf descriptor sets"
 
 [dependencies]
 anyhow.workspace = true
+prost-reflect.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
 axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
-

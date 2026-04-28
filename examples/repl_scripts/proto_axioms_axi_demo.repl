@@ -3,9 +3,7 @@
 # Demonstrates:
 # - importing a canonical `axi_v1` module (schema/theory/instance),
 # - listing theory constraints and first-class rewrite rules (axioms),
-# - exporting both:
-#     - the reversible PathDBExportV1 snapshot `.axi`, and
-#     - the canonical module `.axi` back out of PathDB.
+# - exporting the canonical module `.axi` back out of PathDB.
 #
 # Run (from repo root):
 #   make binaries
@@ -38,6 +36,5 @@ q select ?ep where name("UserService") -proto_service_has_endpoint-> ?ep limit 1
 # Export the canonical module back out of PathDB (nice `.axi`).
 export_axi_module build/proto_axioms_axi_module.axi ProtoApiSemantics
 
-# Export reversible snapshots.
-export_axi build/proto_axioms_axi_export_v1.axi
+# Save the runnable `.axpd` snapshot.
 save build/proto_axioms_axi.axpd

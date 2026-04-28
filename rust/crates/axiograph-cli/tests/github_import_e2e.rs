@@ -76,7 +76,7 @@ message GetWidgetResponse {
     .expect("write lib.rs");
 
     let out_dir = run_dir.join("out");
-    let descriptor = repo_root.join("examples/proto/large_api/descriptor.json");
+    let descriptor = repo_root.join("examples/proto/large_api/descriptor.binpb");
 
     let status = Command::new(&bin)
         .arg("ingest")

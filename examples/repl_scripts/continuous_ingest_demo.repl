@@ -69,4 +69,4 @@ viz build/continuous_ingest_round2.html format html plane data focus_name svc_1 
 q select ?svc where name("doc_stream_0") -mentionsService-> ?svc limit 10
 q select ?p where ?p is PathWitness, ?p -from-> name("doc_stream_0") limit 10
 
-export_axi build/continuous_ingest_export_v1.axi
+save build/continuous_ingest.axpd

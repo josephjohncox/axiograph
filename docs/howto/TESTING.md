@@ -241,7 +241,6 @@ cargo run -p axiograph-cli -- repl --axpd path/to/snapshot.axpd
 axiograph> gen 10000 8 8 3 1
 axiograph> stats
 axiograph> follow 0 rel_0 rel_1 rel_2
-axiograph> export_axi build/snapshot_pathdb_export_v1.axi
 axiograph> save build/snapshot.axpd
 axiograph> exit
 ```

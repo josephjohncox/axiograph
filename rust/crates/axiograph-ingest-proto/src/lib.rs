@@ -2,32 +2,23 @@
 //!
 //! This crate is intentionally **descriptor-driven**:
 //!
-//! - We call `buf build --as-file-descriptor-set -o <descriptor.json>`
-//! - We parse the descriptor set JSON
+//! - We call `buf build --as-file-descriptor-set -o <descriptor.binpb>`
+//! - We decode the binary `google.protobuf.FileDescriptorSet` with `prost-reflect`
 //! - We emit `proposals.json` (Evidence/Proposals schema) + optional RAG chunks
 //!
-//! Why JSON?
+//! Why `prost-reflect`?
 //!
-//! The binary `google.protobuf.FileDescriptorSet` format is easy to decode, but
-//! **custom options / annotations** (e.g. `(google.api.http)` or Buf/Acme
-//! extensions) are encoded as extensions. In Rust, decoding those extensions
-//! requires a reflective/extension-aware stack.
-//!
-//! Buf’s JSON output, however, renders extension fields explicitly, using keys
-//! like:
-//!
-//! ```json
-//! { "[acme.annotations.v1.http]": { "get": "/v1/payments/{payment_id}" } }
-//! ```
-//!
-//! That makes annotation-driven ingestion practical without introducing a heavy
-//! runtime dependency.
-
-#![allow(unused_variables, dead_code)]
+//! Custom options / annotations (e.g. `(google.api.http)` or Buf/Acme
+//! extensions) are encoded as protobuf extensions. `DescriptorPool::decode`
+//! keeps those extension options available through a maintained reflective API,
+//! so ingestion does not need a custom descriptor protocol.
 
 use anyhow::{anyhow, Result};
 use axiograph_ingest_docs::{Chunk, EvidencePointer, ProposalMetaV1, ProposalV1};
-use serde::Deserialize;
+use prost_reflect::{
+    Cardinality, DescriptorPool, DynamicMessage, FieldDescriptor, Kind, MapKey,
+    Value as ReflectValue,
+};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -124,14 +115,15 @@ impl SemanticEntityCache {
     }
 }
 
-/// Ingest a Buf-generated descriptor set JSON into generic proposals.
-pub fn ingest_descriptor_set_json(
-    text: &str,
+/// Ingest a binary Buf-generated `google.protobuf.FileDescriptorSet` into generic proposals.
+pub fn ingest_descriptor_set_bytes(
+    bytes: &[u8],
     evidence_locator: Option<String>,
     schema_hint: Option<String>,
 ) -> Result<ProtoIngestResultV1> {
-    let set: FileDescriptorSetJson = serde_json::from_str(text)
-        .map_err(|e| anyhow!("failed to parse descriptor set JSON: {e}"))?;
+    let pool = DescriptorPool::decode(bytes)
+        .map_err(|e| anyhow!("failed to decode binary FileDescriptorSet: {e}"))?;
+    let set = descriptor_pool_to_input(&pool);
 
     let mut proposals: Vec<ProposalV1> = Vec::new();
     let mut chunks: Vec<Chunk> = Vec::new();
@@ -326,129 +318,340 @@ pub fn ingest_descriptor_set_json(
 }
 
 // =============================================================================
-// Descriptor JSON (subset)
+// Descriptor input model (projection from prost-reflect descriptors)
 // =============================================================================
 
-#[derive(Debug, Clone, Deserialize)]
-struct FileDescriptorSetJson {
-    #[serde(default)]
-    file: Vec<FileDescriptorProtoJson>,
+#[derive(Debug, Clone)]
+struct FileDescriptorSetInput {
+    file: Vec<FileDescriptorProtoInput>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct FileDescriptorProtoJson {
+#[derive(Debug, Clone)]
+struct FileDescriptorProtoInput {
     name: Option<String>,
     package: Option<String>,
-    #[serde(default, rename = "messageType")]
-    message_type: Vec<DescriptorProtoJson>,
-    #[serde(default, rename = "enumType")]
-    enum_type: Vec<EnumDescriptorProtoJson>,
-    #[serde(default)]
-    service: Vec<ServiceDescriptorProtoJson>,
-    #[serde(default, rename = "sourceCodeInfo")]
-    source_code_info: Option<SourceCodeInfoJson>,
+    message_type: Vec<DescriptorProtoInput>,
+    enum_type: Vec<EnumDescriptorProtoInput>,
+    service: Vec<ServiceDescriptorProtoInput>,
+    source_code_info: Option<SourceCodeInfoInput>,
     syntax: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct DescriptorProtoJson {
+#[derive(Debug, Clone)]
+struct DescriptorProtoInput {
     name: Option<String>,
-    #[serde(default)]
-    field: Vec<FieldDescriptorProtoJson>,
-    #[serde(default, rename = "nestedType")]
-    nested_type: Vec<DescriptorProtoJson>,
-    #[serde(default, rename = "enumType")]
-    enum_type: Vec<EnumDescriptorProtoJson>,
-    #[serde(default, rename = "oneofDecl")]
-    oneof_decl: Vec<OneofDescriptorProtoJson>,
-    #[serde(default)]
-    options: Option<OptionsJson>,
+    field: Vec<FieldDescriptorProtoInput>,
+    nested_type: Vec<DescriptorProtoInput>,
+    enum_type: Vec<EnumDescriptorProtoInput>,
+    oneof_decl: Vec<OneofDescriptorProtoInput>,
+    options: Option<DescriptorOptions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct OneofDescriptorProtoJson {
+#[derive(Debug, Clone)]
+struct OneofDescriptorProtoInput {
     name: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct FieldDescriptorProtoJson {
+#[derive(Debug, Clone)]
+struct FieldDescriptorProtoInput {
     name: Option<String>,
     number: Option<i32>,
     label: Option<String>,
-    #[serde(rename = "type")]
     typ: Option<String>,
-    #[serde(rename = "typeName")]
     type_name: Option<String>,
-    #[serde(rename = "jsonName")]
     json_name: Option<String>,
-    #[serde(default)]
-    options: Option<OptionsJson>,
-    #[serde(rename = "oneofIndex")]
+    options: Option<DescriptorOptions>,
     oneof_index: Option<i32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct EnumDescriptorProtoJson {
+#[derive(Debug, Clone)]
+struct EnumDescriptorProtoInput {
     name: Option<String>,
-    #[serde(default)]
-    value: Vec<EnumValueDescriptorProtoJson>,
-    #[serde(default)]
-    options: Option<OptionsJson>,
+    value: Vec<EnumValueDescriptorProtoInput>,
+    options: Option<DescriptorOptions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct EnumValueDescriptorProtoJson {
+#[derive(Debug, Clone)]
+struct EnumValueDescriptorProtoInput {
     name: Option<String>,
     number: Option<i32>,
-    #[serde(default)]
-    options: Option<OptionsJson>,
+    options: Option<DescriptorOptions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct ServiceDescriptorProtoJson {
+#[derive(Debug, Clone)]
+struct ServiceDescriptorProtoInput {
     name: Option<String>,
-    #[serde(default)]
-    method: Vec<MethodDescriptorProtoJson>,
-    #[serde(default)]
-    options: Option<OptionsJson>,
+    method: Vec<MethodDescriptorProtoInput>,
+    options: Option<DescriptorOptions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct MethodDescriptorProtoJson {
+#[derive(Debug, Clone)]
+struct MethodDescriptorProtoInput {
     name: Option<String>,
-    #[serde(rename = "inputType")]
     input_type: Option<String>,
-    #[serde(rename = "outputType")]
     output_type: Option<String>,
-    #[serde(rename = "clientStreaming")]
     client_streaming: Option<bool>,
-    #[serde(rename = "serverStreaming")]
     server_streaming: Option<bool>,
-    #[serde(default)]
-    options: Option<OptionsJson>,
+    options: Option<DescriptorOptions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct SourceCodeInfoJson {
-    #[serde(default)]
-    location: Vec<LocationJson>,
+#[derive(Debug, Clone)]
+struct SourceCodeInfoInput {
+    location: Vec<LocationInput>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct LocationJson {
-    #[serde(default)]
+#[derive(Debug, Clone)]
+struct LocationInput {
     path: Vec<i32>,
-    #[serde(default)]
-    span: Vec<i32>,
-    #[serde(rename = "leadingComments")]
     leading_comments: Option<String>,
-    #[serde(rename = "trailingComments")]
     trailing_comments: Option<String>,
-    #[serde(default, rename = "leadingDetachedComments")]
     leading_detached_comments: Vec<String>,
 }
 
-type OptionsJson = BTreeMap<String, Value>;
+type DescriptorOptions = BTreeMap<String, Value>;
+
+fn descriptor_pool_to_input(pool: &DescriptorPool) -> FileDescriptorSetInput {
+    FileDescriptorSetInput {
+        file: pool.files().map(file_descriptor_to_input).collect(),
+    }
+}
+
+fn file_descriptor_to_input(file: prost_reflect::FileDescriptor) -> FileDescriptorProtoInput {
+    let proto = file.file_descriptor_proto();
+    let source_code_info = proto
+        .source_code_info
+        .as_ref()
+        .map(|sci| SourceCodeInfoInput {
+            location: sci
+                .location
+                .iter()
+                .map(|loc| LocationInput {
+                    path: loc.path.clone(),
+                    leading_comments: loc.leading_comments.clone(),
+                    trailing_comments: loc.trailing_comments.clone(),
+                    leading_detached_comments: loc.leading_detached_comments.clone(),
+                })
+                .collect(),
+        });
+
+    FileDescriptorProtoInput {
+        name: Some(file.name().to_string()),
+        package: Some(file.package_name().to_string()),
+        message_type: file.messages().map(message_descriptor_to_input).collect(),
+        enum_type: file.enums().map(enum_descriptor_to_input).collect(),
+        service: file.services().map(service_descriptor_to_input).collect(),
+        source_code_info,
+        syntax: proto.syntax.clone(),
+    }
+}
+
+fn message_descriptor_to_input(message: prost_reflect::MessageDescriptor) -> DescriptorProtoInput {
+    DescriptorProtoInput {
+        name: Some(message.name().to_string()),
+        field: message.fields().map(field_descriptor_to_input).collect(),
+        nested_type: message
+            .child_messages()
+            .map(message_descriptor_to_input)
+            .collect(),
+        enum_type: message
+            .child_enums()
+            .map(enum_descriptor_to_input)
+            .collect(),
+        oneof_decl: message
+            .oneofs()
+            .map(|oneof| OneofDescriptorProtoInput {
+                name: Some(oneof.name().to_string()),
+            })
+            .collect(),
+        options: dynamic_options_to_map(message.options()),
+    }
+}
+
+fn field_descriptor_to_input(field: FieldDescriptor) -> FieldDescriptorProtoInput {
+    let (typ, type_name) = field_type_parts(&field);
+    FieldDescriptorProtoInput {
+        name: Some(field.name().to_string()),
+        number: Some(field.number() as i32),
+        label: Some(cardinality_label(field.cardinality()).to_string()),
+        typ: Some(typ),
+        type_name,
+        json_name: Some(field.json_name().to_string()),
+        options: dynamic_options_to_map(field.options()),
+        oneof_index: field.field_descriptor_proto().oneof_index,
+    }
+}
+
+fn enum_descriptor_to_input(enum_desc: prost_reflect::EnumDescriptor) -> EnumDescriptorProtoInput {
+    EnumDescriptorProtoInput {
+        name: Some(enum_desc.name().to_string()),
+        value: enum_desc
+            .values()
+            .map(enum_value_descriptor_to_input)
+            .collect(),
+        options: dynamic_options_to_map(enum_desc.options()),
+    }
+}
+
+fn enum_value_descriptor_to_input(
+    value: prost_reflect::EnumValueDescriptor,
+) -> EnumValueDescriptorProtoInput {
+    EnumValueDescriptorProtoInput {
+        name: Some(value.name().to_string()),
+        number: Some(value.number()),
+        options: dynamic_options_to_map(value.options()),
+    }
+}
+
+fn service_descriptor_to_input(
+    service: prost_reflect::ServiceDescriptor,
+) -> ServiceDescriptorProtoInput {
+    ServiceDescriptorProtoInput {
+        name: Some(service.name().to_string()),
+        method: service.methods().map(method_descriptor_to_input).collect(),
+        options: dynamic_options_to_map(service.options()),
+    }
+}
+
+fn method_descriptor_to_input(
+    method: prost_reflect::MethodDescriptor,
+) -> MethodDescriptorProtoInput {
+    MethodDescriptorProtoInput {
+        name: Some(method.name().to_string()),
+        input_type: Some(format!(".{}", method.input().full_name())),
+        output_type: Some(format!(".{}", method.output().full_name())),
+        client_streaming: Some(method.is_client_streaming()),
+        server_streaming: Some(method.is_server_streaming()),
+        options: dynamic_options_to_map(method.options()),
+    }
+}
+
+fn dynamic_options_to_map(options: DynamicMessage) -> Option<DescriptorOptions> {
+    let object = dynamic_message_to_json_object(&options);
+    if object.is_empty() {
+        None
+    } else {
+        Some(object.into_iter().collect())
+    }
+}
+
+fn dynamic_message_to_json_object(message: &DynamicMessage) -> serde_json::Map<String, Value> {
+    let mut object = serde_json::Map::new();
+    for (field, value) in message.fields() {
+        object.insert(
+            field.json_name().to_string(),
+            reflect_value_to_json(&field.kind(), value),
+        );
+    }
+    for (extension, value) in message.extensions() {
+        object.insert(
+            extension.json_name().to_string(),
+            reflect_value_to_json(&extension.kind(), value),
+        );
+    }
+    object
+}
+
+fn reflect_value_to_json(kind: &Kind, value: &ReflectValue) -> Value {
+    match value {
+        ReflectValue::Bool(v) => Value::Bool(*v),
+        ReflectValue::I32(v) => Value::Number(serde_json::Number::from(*v)),
+        ReflectValue::I64(v) => Value::Number(serde_json::Number::from(*v)),
+        ReflectValue::U32(v) => Value::Number(serde_json::Number::from(*v)),
+        ReflectValue::U64(v) => Value::Number(serde_json::Number::from(*v)),
+        ReflectValue::F32(v) => serde_json::Number::from_f64(*v as f64)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        ReflectValue::F64(v) => serde_json::Number::from_f64(*v)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        ReflectValue::String(v) => Value::String(v.clone()),
+        ReflectValue::Bytes(v) => Value::String(hex_bytes(v.as_ref())),
+        ReflectValue::EnumNumber(v) => enum_number_to_json(kind, *v),
+        ReflectValue::Message(v) => Value::Object(dynamic_message_to_json_object(v)),
+        ReflectValue::List(v) => Value::Array(
+            v.iter()
+                .map(|item| reflect_value_to_json(kind, item))
+                .collect(),
+        ),
+        ReflectValue::Map(v) => {
+            let mut object = serde_json::Map::new();
+            for (key, item) in v {
+                object.insert(map_key_to_string(key), reflect_value_to_json(kind, item));
+            }
+            Value::Object(object)
+        }
+    }
+}
+
+fn enum_number_to_json(kind: &Kind, number: i32) -> Value {
+    if let Kind::Enum(enum_desc) = kind {
+        if let Some(value) = enum_desc.get_value(number) {
+            return Value::String(value.name().to_string());
+        }
+    }
+    Value::Number(serde_json::Number::from(number))
+}
+
+fn map_key_to_string(key: &MapKey) -> String {
+    match key {
+        MapKey::Bool(v) => v.to_string(),
+        MapKey::I32(v) => v.to_string(),
+        MapKey::I64(v) => v.to_string(),
+        MapKey::U32(v) => v.to_string(),
+        MapKey::U64(v) => v.to_string(),
+        MapKey::String(v) => v.clone(),
+    }
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
+}
+
+fn field_type_parts(field: &FieldDescriptor) -> (String, Option<String>) {
+    let kind = field.kind();
+    let typ = kind_to_descriptor_type(&kind).to_string();
+    let type_name = match &kind {
+        Kind::Message(message) => Some(format!(".{}", message.full_name())),
+        Kind::Enum(enum_desc) => Some(format!(".{}", enum_desc.full_name())),
+        _ => None,
+    };
+    (typ, type_name)
+}
+
+fn kind_to_descriptor_type(kind: &Kind) -> &'static str {
+    match kind {
+        Kind::Double => "TYPE_DOUBLE",
+        Kind::Float => "TYPE_FLOAT",
+        Kind::Int64 => "TYPE_INT64",
+        Kind::Uint64 => "TYPE_UINT64",
+        Kind::Int32 => "TYPE_INT32",
+        Kind::Fixed64 => "TYPE_FIXED64",
+        Kind::Fixed32 => "TYPE_FIXED32",
+        Kind::Bool => "TYPE_BOOL",
+        Kind::String => "TYPE_STRING",
+        Kind::Message(_) => "TYPE_MESSAGE",
+        Kind::Bytes => "TYPE_BYTES",
+        Kind::Uint32 => "TYPE_UINT32",
+        Kind::Enum(_) => "TYPE_ENUM",
+        Kind::Sfixed32 => "TYPE_SFIXED32",
+        Kind::Sfixed64 => "TYPE_SFIXED64",
+        Kind::Sint32 => "TYPE_SINT32",
+        Kind::Sint64 => "TYPE_SINT64",
+    }
+}
+
+fn cardinality_label(cardinality: Cardinality) -> &'static str {
+    match cardinality {
+        Cardinality::Optional => "LABEL_OPTIONAL",
+        Cardinality::Required => "LABEL_REQUIRED",
+        Cardinality::Repeated => "LABEL_REPEATED",
+    }
+}
 
 // =============================================================================
 // Indexing + emission helpers
@@ -456,7 +659,7 @@ type OptionsJson = BTreeMap<String, Value>;
 
 fn index_message(
     package: &str,
-    m: &DescriptorProtoJson,
+    m: &DescriptorProtoInput,
     message_fqns: &mut BTreeMap<String, ()>,
     enum_fqns: &mut BTreeMap<String, ()>,
     package_message_name_to_fqn: &mut HashMap<(String, String), String>,
@@ -484,7 +687,7 @@ fn index_message(
         }
     }
 
-    for (i, nested) in m.nested_type.iter().enumerate() {
+    for nested in &m.nested_type {
         index_message(
             package,
             nested,
@@ -510,7 +713,7 @@ fn emit_message(
     enum_fqns: &BTreeMap<String, ()>,
     file_name: &str,
     package: &str,
-    m: &DescriptorProtoJson,
+    m: &DescriptorProtoInput,
     mut prefix: Vec<String>,
     base_path: Vec<i32>,
 ) -> Result<()> {
@@ -658,10 +861,10 @@ fn emit_field(
     file_name: &str,
     package: &str,
     message_fqn: &str,
-    f: &FieldDescriptorProtoJson,
+    f: &FieldDescriptorProtoInput,
     path: Vec<i32>,
     message_prefix: &[String],
-    oneofs: &[OneofDescriptorProtoJson],
+    oneofs: &[OneofDescriptorProtoInput],
 ) -> Result<()> {
     let Some(field_name) = f.name.clone() else {
         return Ok(());
@@ -881,7 +1084,7 @@ fn emit_enum(
     comment_index: &HashMap<(String, Vec<i32>), String>,
     file_name: &str,
     package: &str,
-    e: &EnumDescriptorProtoJson,
+    e: &EnumDescriptorProtoInput,
     path: Vec<i32>,
 ) -> Result<()> {
     let Some(name) = e.name.clone() else {
@@ -1042,7 +1245,7 @@ fn emit_service(
     message_fqns: &BTreeMap<String, ()>,
     file_name: &str,
     package: &str,
-    svc: &ServiceDescriptorProtoJson,
+    svc: &ServiceDescriptorProtoInput,
     svc_path: Vec<i32>,
 ) -> Result<()> {
     let Some(name) = svc.name.clone() else {
@@ -1152,7 +1355,6 @@ fn emit_service(
 #[derive(Debug, Clone)]
 struct MethodForWorkflow {
     rpc_id: String,
-    rpc_fqn: String,
     resource_fqn: Option<String>,
     operation_kind: Option<String>,
 }
@@ -1179,7 +1381,7 @@ fn emit_method(
     package: &str,
     service_id: &str,
     service_fqn: &str,
-    m: &MethodDescriptorProtoJson,
+    m: &MethodDescriptorProtoInput,
     rpc_path: Vec<i32>,
 ) -> Result<Option<MethodForWorkflow>> {
     let Some(name) = m.name.clone() else {
@@ -1474,7 +1676,6 @@ fn emit_method(
 
     Ok(Some(MethodForWorkflow {
         rpc_id,
-        rpc_fqn,
         resource_fqn,
         operation_kind,
     }))
@@ -1608,7 +1809,7 @@ struct RpcSemantics {
     tags: Vec<String>,
 }
 
-fn extract_rpc_semantics(options: &OptionsJson) -> Option<RpcSemantics> {
+fn extract_rpc_semantics(options: &DescriptorOptions) -> Option<RpcSemantics> {
     for (k, v) in options {
         if !k.starts_with('[') || !k.ends_with(']') {
             continue;
@@ -1669,7 +1870,7 @@ struct FieldSemantics {
     example: Option<String>,
 }
 
-fn extract_field_semantics(options: &OptionsJson) -> Option<FieldSemantics> {
+fn extract_field_semantics(options: &DescriptorOptions) -> Option<FieldSemantics> {
     for (k, v) in options {
         if !k.starts_with('[') || !k.ends_with(']') {
             continue;
@@ -1709,7 +1910,7 @@ fn extract_field_semantics(options: &OptionsJson) -> Option<FieldSemantics> {
     None
 }
 
-fn extract_http_binding(options: &OptionsJson) -> Option<HttpBinding> {
+fn extract_http_binding(options: &DescriptorOptions) -> Option<HttpBinding> {
     for (k, v) in options {
         if !k.starts_with('[') || !k.ends_with(']') {
             continue;
@@ -1904,11 +2105,11 @@ mod tests {
     #[test]
     fn ingest_large_api_fixture_extracts_http_annotations_and_workflows() -> Result<()> {
         let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../examples/proto/large_api/descriptor.json");
-        let text = std::fs::read_to_string(&fixture_path)?;
+            .join("../../../examples/proto/large_api/descriptor.binpb");
+        let bytes = std::fs::read(&fixture_path)?;
 
-        let result = ingest_descriptor_set_json(
-            &text,
+        let result = ingest_descriptor_set_bytes(
+            &bytes,
             Some(fixture_path.to_string_lossy().to_string()),
             Some("proto_api".to_string()),
         )?;

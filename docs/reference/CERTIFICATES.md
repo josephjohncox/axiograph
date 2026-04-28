@@ -100,8 +100,10 @@ Any v2 certificate may additionally carry an optional anchor:
 ```
 
 The historical `PathDBExportV1`-anchored `reachability_v2` lane has been
-removed. The active runtime/server path emits canonical `.axi`-anchored
-`reachability_v3` proofs with stable `axi_fact_id` references instead.
+removed. Runtime query certification now goes through canonical `.axi`-anchored
+typed query witnesses. Low-level `reachability_v3` remains a certificate family
+for canonical path witnesses and fixtures, but raw relation-id HTTP/MCP/CLI
+certificate affordances are not a public semantic surface.
 
 ### v2: reachability_v3 (canonical `.axi`-anchored path witness)
 
@@ -110,7 +112,8 @@ removed. The active runtime/server path emits canonical `.axi`-anchored
 - Each step refers to a canonical `.axi` tuple fact via `axi_fact_id`.
 - Lean checks the path against the anchored canonical module rather than
   `PathDBExportV1` snapshot tables.
-- The DB server now emits `reachability_v3` from `POST /cert/reachability`.
+- Public server/tool-loop surfaces should prefer typed query witnesses instead
+  of raw relation-id path certification.
 
 Shape:
 

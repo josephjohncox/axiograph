@@ -41,5 +41,4 @@ q --elaborate select ?f where ?f = Parent(child=Eve) limit 10
 # Visualize a neighborhood with typed overlay enabled (shows supertypes + relation signatures + constraints).
 viz build/family_context_typed.html format html plane data focus_name Carol hops 2 max_nodes 220 typed_overlay
 
-# Export a reversible snapshot `.axi` (used by CI smoke tests and snapshot-export compatibility coverage).
-export_axi build/context_scoping_family_export_v1.axi
+save build/context_scoping_family.axpd

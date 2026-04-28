@@ -1414,7 +1414,7 @@ fn build_proto_api_scenario(
     }
 
     // A scenario aligned with `axiograph-ingest-proto` and the fixture in
-    // `examples/proto/large_api/descriptor.json`.
+    // `examples/proto/large_api/descriptor.binpb`.
     //
     // Goals:
     // - typed API surface: Proto* entities + HttpEndpoint + ApiWorkflow

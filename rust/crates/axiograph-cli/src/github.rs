@@ -54,7 +54,7 @@ pub enum GithubCommands {
         #[arg(long)]
         no_proto: bool,
 
-        /// Path to an existing Buf descriptor set JSON (skip `buf build`).
+        /// Path to an existing binary Buf descriptor set (skip `buf build`).
         ///
         /// If relative, it is resolved relative to the repo root.
         #[arg(long)]
@@ -377,20 +377,20 @@ fn ingest_proto_to_artifacts(
                 "proto ingest: missing descriptor and no buf.yaml found (pass --proto-descriptor or --buf-root)"
             ));
         }
-        let out = repo_root.join("build/axiograph_github_import_descriptor.json");
-        crate::proto::build_descriptor_set_json(&buf_root, &out, false, false)?;
+        let out = repo_root.join("build/axiograph_github_import_descriptor.binpb");
+        crate::proto::build_descriptor_set_binpb(&buf_root, &out, false, false)?;
         out
     };
 
-    let descriptor_text = fs::read_to_string(&descriptor_path).with_context(|| {
+    let descriptor_bytes = fs::read(&descriptor_path).with_context(|| {
         format!(
-            "proto ingest: failed to read descriptor json: {}",
+            "proto ingest: failed to read binary descriptor set: {}",
             descriptor_path.display()
         )
     })?;
 
-    let ingest = axiograph_ingest_proto::ingest_descriptor_set_json(
-        &descriptor_text,
+    let ingest = axiograph_ingest_proto::ingest_descriptor_set_bytes(
+        &descriptor_bytes,
         Some(descriptor_path.display().to_string()),
         Some("proto_api".to_string()),
     )?;

@@ -33,6 +33,5 @@ q select ?to where name("Alice") -Knows-> ?to limit 10
 # Render a small neighborhood showing both planes with the meta-plane as a type layer.
 viz build/fibered_closure_constraints.html format html plane both focus_name Alice hops 3 max_nodes 220 typed_overlay
 
-export_axi build/fibered_closure_constraints_export_v1.axi
 save build/fibered_closure_constraints.axpd
 

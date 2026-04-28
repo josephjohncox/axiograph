@@ -40,6 +40,5 @@ ask find Service named svc_0
 llm use mock
 llm ask find Service named svc_0
 
-# Export reversible snapshots.
-export_axi build/enterprise_export_v1.axi
+# Save the runnable `.axpd` snapshot.
 save build/enterprise.axpd

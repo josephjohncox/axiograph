@@ -248,6 +248,9 @@ fn run_codegen_plan(overlay_path: &Path, json_output: bool) -> Result<()> {
         for caveat in &report.caveats {
             println!("  caveat: {caveat}");
         }
+        println!(
+            "  next: run `axiograph authoring materialize-skeletons --behavior-report <behavior_report.json> --out-dir <review_dir>` when the behavior report is reviewed"
+        );
     }
     Ok(())
 }
@@ -616,6 +619,7 @@ fn print_lsp_capabilities(json_output: bool) -> Result<()> {
         println!(
             "  commands: axiograph.authoring.codegenPlan, axiograph.authoring.coverageQuery, axiograph.authoring.softwareCoverage"
         );
+        println!("  next: configure the host to launch `axiograph authoring lsp` over stdio");
     }
     Ok(())
 }
@@ -629,6 +633,9 @@ fn print_integration_manifest(json_output: bool) -> Result<()> {
         println!("  lsp: axiograph authoring lsp");
         println!("  mcp: axiograph authoring mcp");
         println!("  transport: stdio, host-managed background process");
+        println!(
+            "  next: use MCP for read-only agent tools, LSP for editor diagnostics/actions, and CLI for file materialization"
+        );
     }
     Ok(())
 }

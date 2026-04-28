@@ -61,7 +61,7 @@ pub enum PerfCommands {
         #[arg(long)]
         out_axpd: Option<PathBuf>,
 
-        /// Export the generated database to the reversible `.axi` snapshot schema (`PathDBExportV1`).
+        /// Export the generated database to the reversible debug/parity `.axi` snapshot schema (`PathDBExportV1`).
         #[arg(long)]
         out_axi: Option<PathBuf>,
     },

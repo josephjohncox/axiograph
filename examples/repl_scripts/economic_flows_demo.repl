@@ -24,5 +24,4 @@ q select ?inv where name("Loans") -inverseOf-> ?inv limit 10
 # Proof-relevant structure: compare the alternative path witnesses directly.
 q select ?p where ?p is PathWitness, ?p -from-> name("household_0") limit 10
 
-export_axi build/economic_flows_export_v1.axi
 save build/economic_flows.axpd

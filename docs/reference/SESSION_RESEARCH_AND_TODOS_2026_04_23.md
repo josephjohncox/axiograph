@@ -36,38 +36,33 @@ It is intended as a continuity artifact so future turns do not lose the reasonin
 
 ## 2. What was implemented
 
-### Path certification tranche
+### Retired path certification tranche
 
-The first thin core primitive selected by the architecture work was **path / route certification**.
+The first thin core primitive selected by the architecture work was **path /
+route certification**, but the public relation-id path certificate surfaces were
+later retired under the greenfield cleanup policy.
 
-Implemented files:
+Retired behavior:
 
-- `rust/crates/axiograph-cli/src/path_cert.rs`
-- `rust/crates/axiograph-cli/src/path_cert_tools.rs`
-- `rust/crates/axiograph-cli/src/main.rs`
-- `rust/crates/axiograph-cli/src/db_server.rs`
-- `rust/crates/axiograph-cli/src/mcp.rs`
-- `rust/crates/axiograph-cli/src/llm.rs`
+- `axiograph cert path ...`
+- `POST /cert/reachability`
+- MCP/tool-loop `path_certify`
+- the CLI-local `path_cert.rs` and `path_cert_tools.rs` helper surface
 
-Implemented behavior:
+Replacement direction:
 
-- Added a shared `PathCertRequestV1` / `PathCertReportV1` contract.
-- Added a shared helper that reuses:
-  - `axiograph_pathdb::witness::reachability_proof_v3_from_relation_ids`
-  - `CertificateV2::reachability_v3`
-  - existing Lean verification wiring.
-- Added a new CLI surface:
-  - `axiograph cert path <input.axpd|input.axi> --request <path.json> [--out cert.json]`
-- Added a new MCP / tool-loop read-only tool:
-  - `path_certify`
-- Kept `route_preview` preview-only.
-- Kept `/cert/reachability` stable on the server while refactoring it to reuse the shared helper.
+- use typed query witnesses over canonical `.axi` anchors for user/server/agent
+  certification surfaces;
+- keep low-level `reachability_v3` only as a canonical certificate family for
+  Lean/Rust fixtures and narrow path-witness work;
+- keep route/transport preview tools as planning surfaces, not raw relation-id
+  certificate APIs.
 
-### Verification completed for path certification
+### Verification completed before retirement
 
-- Focused path-cert test slice passed.
-- Full `cargo test -p axiograph-cli -- --nocapture` passed.
-- Manual CLI QA passed:
+- Focused path-cert test slices passed before the surface was removed.
+- The current verification burden moved to typed query witness, route preview,
+  transport preview, and canonical certificate tests.
   - a tiny canonical module was rendered to graph JSON,
   - concrete `start` / `relation_id` values were discovered from that output,
   - `axiograph cert path` emitted a `reachability_v3` certificate,
@@ -656,28 +651,14 @@ Pending / in progress:
 - industrial harness parity/relocation tranche,
 - docs/readings updates beyond this session artifact.
 
-## 12. Path-cert tranche follow-up review findings
+## 12. Retired path-cert tranche follow-up
 
-The final read-only Oracle review of the path-cert tranche concluded that the slice is broadly solid, but identified several follow-up items:
-
-1. **CLI contract drift**
-   - `cmd_path_cert` currently emits only the bare certificate JSON,
-   - while server/MCP/tool-loop return the full shared report shape.
-   - This is acceptable if intentional, but should be made explicit in docs/help.
-
-2. **Empty-path behavior split**
-   - `path_cert.rs` supports reflexive empty-path proofs,
-   - but `/cert/reachability` still rejects empty `relation_ids` for compatibility.
-   - This looks intentional, but it is now a real contract difference and should be documented.
-
-3. **Tool verifier config drift**
-   - `path_cert_tools.rs` currently uses default-resolution verifier behavior,
-   - which can diverge from an actual server/tool runtime’s configured verification setup.
-
-4. **Anchor/module selection fragility in tool surfaces**
-   - the new MCP/tool-loop path-cert path still depends on canonical export selection,
-   - instead of explicitly consuming a known accepted/module anchor from the surrounding runtime context.
-   - This is most likely to matter in multi-module snapshots or more complex anchored runtimes.
+The read-only review of the old path-cert tranche identified CLI contract drift,
+empty-path behavior splits, verifier configuration drift, and anchor/module
+selection fragility. The greenfield cleanup resolved those by deleting the
+public relation-id path-cert surfaces rather than documenting another parallel
+contract. The remaining work is to keep typed query witnesses, route previews,
+transport previews, and runtime-theory reports as the user-facing paths.
 
 These are not blockers for the tranche itself — the code passed focused tests, full crate tests, manual CLI QA, and `make verify-semantics` — but they are the concrete cleanup items the review surfaced.
 

@@ -37,8 +37,6 @@ mod github;
 mod llm;
 mod mcp;
 mod nlq;
-mod path_cert;
-mod path_cert_tools;
 mod pathdb_wal;
 mod perf;
 mod profiling;
@@ -86,9 +84,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Ingest sources (docs/SQL/JSON/RDF/Proto/Web/Repo) into `proposals.json` (+ optional `chunks.json`).
-    ///
-    /// This is the preferred, "clean" ingestion entrypoint. Older top-level
-    /// ingestion commands still exist for compatibility but are hidden from help.
     Ingest {
         #[command(subcommand)]
         command: IngestCommands,
@@ -138,192 +133,16 @@ enum Commands {
     /// Run a read-only stdio MCP transport over typed semantic services.
     Mcp(McpArgs),
 
-    /// Ingest SQL DDL → `proposals.json`
-    #[command(hide = true)]
-    Sql {
-        /// Input SQL file
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Ingest document (text, markdown)
-    #[command(hide = true)]
-    Doc {
-        /// Input document
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Output chunks JSON (for RAG)
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Output extracted facts JSON
-        #[arg(long)]
-        facts: Option<PathBuf>,
-        /// Treat as machining knowledge
-        #[arg(long)]
-        machining: bool,
-        /// Domain for fact extraction (default: general)
-        #[arg(long, default_value = "general")]
-        domain: String,
-    },
-
-    /// Ingest conversation transcript
-    #[command(hide = true)]
-    Conversation {
-        /// Input transcript file
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Output chunks JSON
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Output extracted facts JSON
-        #[arg(long)]
-        facts: Option<PathBuf>,
-        /// Format: slack, meeting
-        #[arg(long, default_value = "slack")]
-        format: String,
-    },
-
-    /// Ingest Confluence HTML export
-    #[command(hide = true)]
-    Confluence {
-        /// Input HTML file
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Confluence space name
-        #[arg(long, default_value = "DOCS")]
-        space: String,
-        /// Output chunks JSON
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Output extracted facts JSON
-        #[arg(long)]
-        facts: Option<PathBuf>,
-    },
-
-    /// Ingest JSON data → `proposals.json`
-    #[command(hide = true)]
-    Json {
-        /// Input JSON file
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Ingest recommended readings (BibTeX or markdown list)
-    #[command(hide = true)]
-    Readings {
-        /// Input file (BibTeX or markdown)
-        input: PathBuf,
-        /// Output proposals JSON (Evidence/Proposals schema)
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Output chunks JSON
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Format: bibtex, markdown
-        #[arg(long, default_value = "markdown")]
-        format: String,
-    },
-
-    /// Convert PathDB snapshots between `.axpd` and `.axi` (export schema `PathDBExportV1`)
-    #[command(hide = true)]
-    Pathdb {
-        #[command(subcommand)]
-        command: PathdbCommands,
-    },
-
-    /// Validate an .axi file
-    #[command(hide = true)]
-    Validate {
-        /// Input .axi file
-        input: PathBuf,
-    },
-
-    /// Index a repository / codebase into chunks + lightweight graph edges
-    #[command(hide = true)]
-    Repo {
-        #[command(subcommand)]
-        command: RepoCommands,
-    },
-
-    /// Import a GitHub repo (or local repo path) into merged `proposals.json` + `chunks.json`
-    #[command(hide = true)]
-    Github {
-        #[command(subcommand)]
-        command: github::GithubCommands,
-    },
-
-    /// Scrape/crawl web pages into `chunks.json` + `proposals.json` (discovery tooling)
-    #[command(hide = true)]
-    Web {
-        #[command(subcommand)]
-        command: web::WebCommands,
-    },
-
     /// Run discovery tasks over ingestion artifacts (chunks/facts/edges)
     Discover {
         #[command(subcommand)]
         command: DiscoverCommands,
     },
 
-    /// Manage the accepted/canonical `.axi` plane (append-only log + snapshot ids).
-    #[command(hide = true)]
-    Accept {
-        #[command(subcommand)]
-        command: AcceptedCommands,
-    },
-
     /// Semantic VCS commands over refs, semantic commits, and reconciliations.
     Sem {
         #[command(subcommand)]
         command: SemCommands,
-    },
-
-    /// Ingest a directory of heterogeneous sources (docs, SQL, RDF/OWL, JSON, Confluence)
-    #[command(hide = true)]
-    IngestDir {
-        /// Root directory to ingest
-        root: PathBuf,
-        /// Output directory for ingestion artifacts
-        #[arg(short, long, default_value = "build/ingest")]
-        out_dir: PathBuf,
-        /// Confluence space name (used for `.html` ingestion)
-        #[arg(long, default_value = "DOCS")]
-        confluence_space: String,
-        /// Domain for document fact extraction
-        #[arg(long, default_value = "general")]
-        domain: String,
-        /// Output aggregated chunks JSON (for RAG)
-        #[arg(long)]
-        chunks: Option<PathBuf>,
-        /// Output aggregated extracted-facts JSON
-        #[arg(long)]
-        facts: Option<PathBuf>,
-        /// Output generic proposals JSON (Evidence/Proposals schema)
-        #[arg(long)]
-        proposals: Option<PathBuf>,
-        /// Maximum file size to ingest (bytes)
-        #[arg(long, default_value_t = 524288)]
-        max_file_bytes: u64,
-        /// Maximum number of files to ingest
-        #[arg(long, default_value_t = 50000)]
-        max_files: usize,
-    },
-
-    /// Performance harnesses (synthetic ingestion/query timings).
-    #[command(hide = true)]
-    Perf {
-        #[command(subcommand)]
-        command: perf::PerfCommands,
     },
 
     /// Interactive REPL for PathDB snapshots and reversible `.axi` exports.
@@ -343,107 +162,6 @@ enum Commands {
         /// Do not echo commands while running a script / `--cmd`.
         #[arg(long)]
         quiet: bool,
-    },
-
-    /// Run an AxQL/SQL-ish query over a canonical `.axi` module and emit a typed query witness.
-    ///
-    /// This is a helper for “Rust computes, Lean verifies” end-to-end checks:
-    /// - the canonical `.axi` digest is the preferred anchor,
-    /// - the query runs over the imported PathDB,
-    /// - and Rust emits the canonical `.axi`-anchored typed query witness path.
-    #[command(hide = true)]
-    QueryCert {
-        /// Input `.axi` file (canonical `axi_v1` module only).
-        input: PathBuf,
-
-        /// Query language: `axql` or `sql`.
-        #[arg(long, default_value = "axql")]
-        lang: String,
-
-        /// Query text (quote it in your shell).
-        query: String,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
-
-    /// Typecheck a canonical `.axi` module and emit an `axi_well_typed_v1` certificate.
-    ///
-    /// This is the smallest "trusted gate" for the canonical input language:
-    /// Rust emits a certificate envelope anchored to the input module digest,
-    /// and Lean re-parses + re-checks the module.
-    #[command(hide = true)]
-    TypecheckCert {
-        /// Input `.axi` file (canonical `axi_v1` schema/theory/instance module).
-        input: PathBuf,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
-
-    /// Check a conservative subset of theory constraints and emit an `axi_constraints_ok_v1` certificate.
-    ///
-    /// This is intended as a future “promotion gate” for canonical `.axi` inputs:
-    /// Rust emits an envelope anchored to the input module digest, and Lean re-parses +
-    /// re-checks the same constraint subset.
-    #[command(hide = true)]
-    ConstraintsCert {
-        /// Input `.axi` file (canonical `axi_v1` schema/theory/instance module).
-        input: PathBuf,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
-
-    /// Protobuf / gRPC ingestion (`buf build` → descriptor set → proposals).
-    #[command(hide = true)]
-    Proto {
-        #[command(subcommand)]
-        command: proto::ProtoCommands,
-    },
-
-    /// Visualize a `.axpd` snapshot or imported `.axi` module as a neighborhood graph.
-    ///
-    /// Output formats:
-    /// - `dot`: Graphviz DOT (use `dot -Tsvg graph.dot -o graph.svg`)
-    /// - `html`: self-contained offline explorer
-    /// - `json`: raw graph JSON for custom frontends
-    #[command(hide = true)]
-    Viz(VizArgs),
-
-    /// Tooling-focused analysis commands (untrusted / evidence-plane friendly).
-    #[command(hide = true)]
-    Analyze {
-        #[command(subcommand)]
-        command: analyze::AnalyzeCommands,
-    },
-
-    /// Lint/quality checks for `.axi` modules and `.axpd` snapshots.
-    ///
-    /// This is a practical ontology-engineering helper. It produces a structured
-    /// report (JSON) and exits non-zero when errors are found.
-    #[command(hide = true)]
-    Quality {
-        /// Input `.axpd` or `.axi` file.
-        input: PathBuf,
-        /// Output report path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-        /// Output format: json|text
-        #[arg(long, default_value = "text")]
-        format: String,
-        /// Profile: fast|strict
-        #[arg(long, default_value = "fast")]
-        profile: String,
-        /// Plane selection: data|meta|both
-        #[arg(long, default_value = "both")]
-        plane: String,
-        /// Do not fail the process even if errors are found (always exit 0).
-        #[arg(long)]
-        no_fail: bool,
     },
 }
 
@@ -925,20 +643,6 @@ enum CertCommands {
         out: Option<PathBuf>,
     },
 
-    /// Certify one concrete relation-id path over a `.axpd` or `.axi` snapshot.
-    Path {
-        /// Input `.axpd` or `.axi` snapshot.
-        input: PathBuf,
-
-        /// Input JSON file containing `PathCertRequestV1`.
-        #[arg(long)]
-        request: PathBuf,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
-
     /// Typecheck a canonical `.axi` module and emit an `axi_well_typed_v1` certificate.
     Typecheck {
         /// Input `.axi` file (canonical `axi_v1` schema/theory/instance module).
@@ -1254,7 +958,7 @@ enum RepoCommands {
 
 #[derive(Subcommand)]
 enum PathdbCommands {
-    /// Export a `.axpd` PathDB file to a reversible `.axi` snapshot (`PathDBExportV1`)
+    /// Export a `.axpd` PathDB file to a reversible debug/parity `.axi` snapshot (`PathDBExportV1`)
     ExportAxi {
         /// Input `.axpd` file
         input: PathBuf,
@@ -1281,11 +985,11 @@ enum PathdbCommands {
         module: Option<String>,
     },
 
-    /// Import a `.axi` file into a `.axpd` PathDB file
+    /// Import a `.axi` file into a `.axpd` PathDB file.
     ///
-    /// Accepts either:
-    /// - a reversible PathDB snapshot export (schema `PathDBExportV1`), or
-    /// - a canonical `axi_v1` module (schema/theory/instance), which is imported into a fresh PathDB.
+    /// This is the only public `PathDBExportV1` import path. Snapshot exports are
+    /// debug/live-byte/parser-parity artifacts, not semantic/query/cert anchors.
+    /// Canonical `axi_v1` modules are imported into a fresh PathDB.
     ImportAxi {
         /// Input `.axi` file
         input: PathBuf,
@@ -2256,8 +1960,7 @@ enum AcceptedCommands {
         /// - Ollama: `nomic-embed-text`
         /// - OpenAI: `text-embedding-3-small` / `text-embedding-3-large`
         ///
-        /// Back-compat: `--ollama-model` is accepted as an alias for `--embed-model`.
-        #[arg(long, alias = "ollama-model")]
+        #[arg(long)]
         embed_model: Option<String>,
         /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
         #[arg(long)]
@@ -2690,13 +2393,6 @@ fn main() -> Result<()> {
                 } => {
                     cmd_query_cert(&input, &lang, &query, out.as_ref())?;
                 }
-                CertCommands::Path {
-                    input,
-                    request,
-                    out,
-                } => {
-                    cmd_path_cert(&input, &request, out.as_ref())?;
-                }
                 CertCommands::Typecheck { input, out } => {
                     cmd_typecheck_cert(&input, out.as_ref())?;
                 }
@@ -2731,107 +2427,6 @@ fn main() -> Result<()> {
             },
             Commands::Mcp(args) => {
                 mcp::cmd_mcp(args)?;
-            }
-            Commands::Sql { input, out } => {
-                cmd_sql(&input, &out, None)?;
-            }
-            Commands::Doc {
-                input,
-                out,
-                chunks,
-                facts,
-                machining,
-                domain,
-            } => {
-                cmd_doc(
-                    &input,
-                    &out,
-                    chunks.as_ref(),
-                    facts.as_ref(),
-                    machining,
-                    &domain,
-                )?;
-            }
-            Commands::Conversation {
-                input,
-                out,
-                chunks,
-                facts,
-                format,
-            } => {
-                cmd_conversation(&input, &out, chunks.as_ref(), facts.as_ref(), &format)?;
-            }
-            Commands::Confluence {
-                input,
-                out,
-                space,
-                chunks,
-                facts,
-            } => {
-                cmd_confluence(&input, &out, &space, chunks.as_ref(), facts.as_ref())?;
-            }
-            Commands::Json { input, out } => {
-                cmd_json(&input, &out, None)?;
-            }
-            Commands::Readings {
-                input,
-                out,
-                chunks,
-                format,
-            } => {
-                cmd_readings(&input, &out, chunks.as_ref(), &format)?;
-            }
-            Commands::Pathdb { command } => {
-                cmd_pathdb(command)?;
-            }
-            Commands::Validate { input } => {
-                cmd_validate(&input)?;
-            }
-            Commands::Repo { command } => match command {
-                RepoCommands::Index {
-                    root,
-                    out,
-                    chunks,
-                    edges,
-                    max_file_bytes,
-                    max_files,
-                    lines_per_chunk,
-                } => {
-                    cmd_repo_index(
-                        &root,
-                        &out,
-                        chunks.as_ref(),
-                        edges.as_ref(),
-                        max_file_bytes,
-                        max_files,
-                        lines_per_chunk,
-                    )?;
-                }
-                RepoCommands::Watch {
-                    root,
-                    out,
-                    chunks,
-                    edges,
-                    trace,
-                    interval_secs,
-                    max_suggestions,
-                } => {
-                    cmd_repo_watch(
-                        &root,
-                        &out,
-                        chunks.as_ref(),
-                        edges.as_ref(),
-                        trace.as_ref(),
-                        interval_secs,
-                        max_suggestions,
-                    )?;
-                }
-            },
-            Commands::Github { command } => {
-                github::cmd_github(command)?;
-            }
-            Commands::Web { command } => {
-                web::cmd_web(command)?;
             }
             Commands::Discover { command } => match command {
                 DiscoverCommands::SuggestLinks {
@@ -3089,53 +2684,8 @@ fn main() -> Result<()> {
                     cmd_world_model_propose(&args)?;
                 }
             },
-            Commands::Accept { command } => {
-                cmd_accept(command)?;
-            }
             Commands::Sem { command } => {
                 cmd_sem(command)?;
-            }
-            Commands::IngestDir {
-                root,
-                out_dir,
-                confluence_space,
-                domain,
-                chunks,
-                facts,
-                proposals,
-                max_file_bytes,
-                max_files,
-            } => {
-                cmd_ingest_dir(
-                    &root,
-                    &out_dir,
-                    &confluence_space,
-                    &domain,
-                    chunks.as_ref(),
-                    facts.as_ref(),
-                    proposals.as_ref(),
-                    max_file_bytes,
-                    max_files,
-                )?;
-            }
-            Commands::Perf { command } => {
-                perf::cmd_perf(command)?;
-            }
-            Commands::Viz(args) => {
-                cmd_viz_from_args(&args)?;
-            }
-            Commands::Analyze { command } => {
-                analyze::cmd_analyze(command)?;
-            }
-            Commands::Quality {
-                input,
-                out,
-                format,
-                profile,
-                plane,
-                no_fail,
-            } => {
-                quality::cmd_quality(&input, out.as_ref(), &format, &profile, &plane, no_fail)?;
             }
             Commands::Repl {
                 axpd,
@@ -3155,23 +2705,6 @@ fn main() -> Result<()> {
                 } else {
                     repl::cmd_repl(axpd.as_ref())?;
                 }
-            }
-            Commands::QueryCert {
-                input,
-                lang,
-                query,
-                out,
-            } => {
-                cmd_query_cert(&input, &lang, &query, out.as_ref())?;
-            }
-            Commands::TypecheckCert { input, out } => {
-                cmd_typecheck_cert(&input, out.as_ref())?;
-            }
-            Commands::ConstraintsCert { input, out } => {
-                cmd_constraints_cert(&input, out.as_ref())?;
-            }
-            Commands::Proto { command } => {
-                proto::cmd_proto(command)?;
             }
         }
         Ok(())
@@ -5001,27 +4534,6 @@ fn cmd_query_cert(
     Ok(())
 }
 
-fn cmd_path_cert(input: &PathBuf, request: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
-    let db = load_pathdb_for_cli(input)?;
-    let request_json = fs::read_to_string(request)?;
-    let verifier: &crate::path_cert::PathCertVerifier =
-        &crate::db_server::verify_certificate_with_default_resolution;
-    let report =
-        crate::path_cert::certify_path_from_request_json(&db, &request_json, Some(verifier))?;
-
-    if matches!(report.certificate_verified, Some(false)) {
-        return Err(anyhow!(
-            "path certificate failed Lean verification: {}",
-            report
-                .certificate_verify_output
-                .as_deref()
-                .unwrap_or("no verifier output")
-        ));
-    }
-
-    write_json_output(&report.certificate, out)
-}
-
 fn cmd_typecheck_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     let axi_text = fs::read_to_string(input)?;
     let typed = crate::axi_input::require_canonical_axi_text(&axi_text)?;
@@ -5077,17 +4589,16 @@ pub(crate) fn load_pathdb_for_cli(input: &PathBuf) -> Result<axiograph_pathdb::P
     }
     if ext.eq_ignore_ascii_case("axi") {
         let text = fs::read_to_string(input)?;
-        return match crate::axi_input::classify_axi_text(&text)? {
-            crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => {
-                Ok(module.import_pathdb()?)
-            }
-            crate::axi_input::ClassifiedAxiModule::Canonical(module) => {
-                let mut db = axiograph_pathdb::PathDB::new();
-                let _summary = module.import_into_pathdb(&mut db)?;
-                db.build_indexes();
-                Ok(db)
-            }
-        };
+        let module = crate::axi_input::require_canonical_axi_text(&text).map_err(|err| {
+            anyhow!(
+                "{err}; generic semantic/query/cert commands only accept canonical .axi modules. \
+                 Use `axiograph db pathdb import-axi` for PathDBExportV1 debug/live-byte parity."
+            )
+        })?;
+        let mut db = axiograph_pathdb::PathDB::new();
+        let _summary = module.import_into_pathdb(&mut db)?;
+        db.build_indexes();
+        return Ok(db);
     }
     Err(anyhow!(
         "unsupported input `{}` (expected .axpd or .axi)",
@@ -9858,37 +9369,6 @@ theory PlantTransport on Plant:
                     args.out,
                     Some(PathBuf::from("/tmp/behavior_case_report.json"))
                 );
-            }
-            _ => panic!("unexpected command parse result"),
-        }
-    }
-
-    #[test]
-    fn cert_path_command_parses_nested_subcommand() {
-        let cli = Cli::try_parse_from([
-            "axiograph",
-            "cert",
-            "path",
-            "/tmp/demo.axpd",
-            "--request",
-            "/tmp/path_cert.json",
-            "--out",
-            "/tmp/path_cert_out.json",
-        ])
-        .expect("parse cert path");
-
-        match cli.command {
-            Commands::Cert {
-                command:
-                    CertCommands::Path {
-                        input,
-                        request,
-                        out,
-                    },
-            } => {
-                assert_eq!(input, PathBuf::from("/tmp/demo.axpd"));
-                assert_eq!(request, PathBuf::from("/tmp/path_cert.json"));
-                assert_eq!(out, Some(PathBuf::from("/tmp/path_cert_out.json")));
             }
             _ => panic!("unexpected command parse result"),
         }
