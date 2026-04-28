@@ -202,3 +202,7 @@ the world model. Reversible `PathDBExportV1` snapshots are not part of the
 world-model request contract.
 
 All outputs remain **evidence-plane** until validated and promoted.
+If a world-model backend uses embeddings or vector retrieval internally, those
+retrieval results remain sidecar evidence. They may support proposals, but they
+do not become canonical relationships without typed validation, CQ/trust review,
+and semantic VCS promotion. See `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.

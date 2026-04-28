@@ -738,6 +738,18 @@ fn software_authoring_runtime_theory_check_reports_closure_trace() {
         "expected human summary to expose closure trace, got: {stdout}"
     );
     assert!(
+        stdout.contains("anchor: module_digest=fnv1a64:"),
+        "expected human summary to expose canonical module digest, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("worlds=review:order-fulfillment (finite)"),
+        "expected human summary to expose declared world, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("evidence_policies=thresholded_world_default:700000ppm"),
+        "expected human summary to expose evidence threshold, got: {stdout}"
+    );
+    assert!(
         stdout.contains("ontology_closed=true"),
         "expected ontology closure claim under declared assumptions, got: {stdout}"
     );

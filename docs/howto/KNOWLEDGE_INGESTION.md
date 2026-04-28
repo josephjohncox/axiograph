@@ -296,7 +296,12 @@ The chunks.json output is RAG-ready:
 }
 ```
 
-Use with your vector store (Pinecone, Qdrant, Chroma) to enable semantic search over the knowledge base. Treat retrieved chunks as **evidence** that produces new proposals; promotion into canonical `.axi` remains explicit.
+Use with a vector store or Axiograph's snapshot-scoped embedding sidecars to
+enable semantic search over the knowledge base. Treat retrieved chunks as
+**evidence** that can produce new proposals; promotion into canonical `.axi`
+remains explicit. See `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` for the
+sidecar model and how embedding-derived relationships are lifted into typed
+proposals.
 
 ## Binary Knowledge Graph
 

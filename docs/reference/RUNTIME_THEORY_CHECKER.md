@@ -224,6 +224,10 @@ Shared summary sidecar:
   coverage, agent-engineering reports, bounded-context reports, behavior-case
   reports, CQ coverage, migration/reconciliation previews, and semantic
   merge/rebase plans.
+- Human CLI output must expose the same trust boundary at a glance: canonical
+  module digest, closure tier, declared world, evidence policy, closure trace,
+  blocking counts, and the next action. Users should not need `--json` just to
+  know whether a result is scoped, weak, blocked, or promotion-ready.
 - `closure_trace` summarizes checked seeds, evidence-filtered obligations,
   review residuals, blocking errors, and final fixpoint status so downstream
   tools do not need the full trace to make gate decisions.

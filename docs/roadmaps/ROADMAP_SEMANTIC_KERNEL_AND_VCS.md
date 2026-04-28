@@ -430,9 +430,21 @@ Align storage claims with actual runtime artifacts.
 - [x] Treat `PathDBExportV1` as a debug/interchange anchor, not the primary semantic truth anchor.
   - Implemented: generic semantic/query/cert loading is canonical-only; `PathDBExportV1`
     remains under explicit `db pathdb` debug/live-byte/parser-parity commands.
+  - Continued cleanup: REPL scripts no longer emit `*_export_v1.axi`, schema
+    discovery examples no longer teach synthetic `Entity` fallback, and PathDB
+    docs now frame `PathDBExportV1` as debug/live-byte/parser parity rather
+    than semantic/query/certificate authority.
 - [ ] Keep WAL overlays explicitly outside the semantic kernel:
   - queries may use chunks/proposals/embeddings for retrieval and explanation,
   - but they should not be “certified” unless the relevant facts were promoted into accepted `.axi`.
+- [ ] Add typed embedding sidecar manifests and evidence overlays:
+  - `EmbeddingSidecarManifestV1` anchored to accepted ref / PathDB snapshot /
+    compiled IR digest / model version / text digests,
+  - `EmbeddingEvidenceOverlayV1` for similarity observations and candidate
+    semantic relationships,
+  - no vector payloads in canonical `.axi`,
+  - embedding-derived relationships enter semantic VCS only as typed proposals
+    or review deltas.
 - [ ] Change store-backed certification to prefer canonical accepted-plane anchors:
   - for accepted-plane serving, certify from accepted module text / canonical anchor material,
   - for pathdb-layer serving, fail closed when a requested certified answer depends on overlay-only facts,
@@ -734,6 +746,9 @@ merge, and promotion paths.
   - no completeness claim
   - no ontology-closure claim
   - no global semantic-equivalence claim unless explicitly checked
+  - Recent runtime-theory CLI output now surfaces module digest, closure tier,
+    declared world, evidence policy, closure trace, and next action in the
+    human summary; continue threading the same boundary into every report.
 - [ ] Make semantic coverage and semantic claims available to preview/reporting paths, not only to query execution.
 - [ ] Attach runtime theory-check reports to semantic merge/rebase and
   reconciliation previews so merge gates can distinguish checked, review-only,

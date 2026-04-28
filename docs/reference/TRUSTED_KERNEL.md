@@ -161,10 +161,13 @@ Keep these outside:
 - WAL replay mechanics
 - heuristic reconciliation
 - LLM/world-model scoring
-- embedding search
+- embedding search and embedding-derived relationship suggestions
 - general RDF/OWL entailment
 - explanation-level topos/sheaf/modal machinery
 - storage/index performance logic
+
+For the embedding/RAG sidecar boundary, use
+`docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.
 
 ## Runtime Engineering Outputs Outside The Kernel
 

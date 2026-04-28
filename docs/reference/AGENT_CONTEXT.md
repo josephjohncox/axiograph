@@ -154,6 +154,12 @@ They should carry typed run/proposal/snapshot anchors, proposal digests,
 grounded evidence links, candidate schema/theory/olog deltas, and explicit
 preview failures.
 
+Embeddings and vector indexes are evidence/index sidecars, not ontology meaning.
+Embedding-derived relationships should become typed evidence/proposal overlays
+or refinement handles first; only reviewed, well-typed deltas can enter
+canonical `.axi`. Use `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` as the
+source of truth for this boundary.
+
 LLM-assisted means typed plugin/API/tool-loop/MCP-skill-style integration
 surfaces. It does not mean free-form authority over accepted ontology state.
 

@@ -115,7 +115,7 @@ long-term audit trails, PathDB also supports a *reversible* textual snapshot for
 For the single-node “append-only accepted `.axi` snapshots + derived PathDB WAL snapshots” store
 used by the CLI, see `docs/howto/SNAPSHOT_STORE.md`.
 
-### A) Lossless snapshot export (engine interchange): `PathDBExportV1`
+### A) Lossless snapshot export (debug/live-byte parity): `PathDBExportV1`
 
 This is a *reversible*, deterministic `.axi` representation of the **entire** PathDB state
 (interned strings, entity ids, relation ids, confidences, etc).
@@ -130,8 +130,10 @@ The snapshot uses a fixed schema named `PathDBExportV1` and is designed to round
 - Entity ids (`Entity_N`) and relation ids (`Relation_N`) are preserved.
 - Relation confidences are stored as `F32Hex_<ieee754-bits>` so there is no float parsing/rounding.
 
-This snapshot schema is an *engineering interchange* format (for storage and verification pipelines),
-distinct from the canonical domain `.axi` examples in `examples/`.
+This snapshot schema is a debug/live-byte/parser-parity format for storage
+plumbing and reversible snapshot tests. It is distinct from the canonical domain
+`.axi` examples in `examples/` and must not be treated as semantic, query, or
+certificate authority.
 
 ### B) Canonical module export (human-readable): `axi_v1` schema/theory/instance
 
@@ -144,8 +146,8 @@ This is the format you usually want for:
 - review / version control diffs of accepted knowledge
 - treating `.axi` as the canonical “meaning plane”
 
-It is intentionally **not** lossless for arbitrary PathDB engine state; keep `.axpd` and/or
-`PathDBExportV1` for full engine interchange when needed.
+It is intentionally **not** lossless for arbitrary PathDB engine state; keep
+`.axpd` and/or `PathDBExportV1` only for explicit engine debug/parity work.
 
 ## Key Optimizations
 

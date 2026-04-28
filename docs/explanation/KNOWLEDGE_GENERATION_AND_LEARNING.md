@@ -207,7 +207,11 @@ trusted checker." JEPA outputs should be treated as **proposals** (evidence
 plane), then reconciled/promoted and eventually certificate-checked for
 high-value results.
 
-See the dedicated design note: `docs/explanation/JEPA_INTEGRATION.md`.
+Embedding vectors and predicted embedding neighborhoods are sidecar evidence,
+not accepted ontology meaning. They can suggest typed relationships only after
+lifting through proposal/refinement/evolution-preview surfaces. See
+`docs/reference/EMBEDDINGS_AND_EVIDENCE.md` and the dedicated JEPA design note:
+`docs/explanation/JEPA_INTEGRATION.md`.
 
 ### 6.3 Objective-driven planning (world model + costs + MPC)
 

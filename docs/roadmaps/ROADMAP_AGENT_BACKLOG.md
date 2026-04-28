@@ -82,12 +82,20 @@ Related roadmaps:
 - [ ] Keep AI/world-model outputs evidence-plane but richly typed: run anchors,
   proposal-set digests, grounded evidence links, candidate schema/theory/olog
   deltas, and explicit preview failures.
+- [ ] Treat embeddings as evidence/index sidecars: add anchored
+  `EmbeddingSidecarManifestV1`, typed relationship-evidence overlays, and
+  tool/CLI surfaces that lift vector matches into proposals or refinement
+  handles instead of accepted facts.
 - [ ] Keep verification language pinned to accepted `.axi` anchors and the
   actual checked production `.axpd` path until verified-v2 storage converges.
 - [x] Finish the greenfield example cleanup by rewriting export-era REPL
   scripts and `repl_scripts_canonical_smoke` so examples foreground canonical
   `.axi`, typed reports, certificates, behavior cases, and semantic previews
   instead of requiring every script to emit `*_export_v1.axi`.
+  - Continued cleanup: schema-discovery fixtures no longer teach synthetic
+    `Entity` fallback; generated drafts use concrete observed types or
+    `TypeHole_*` review obligations, and the proto-theory example uses a
+    meaningful `ApiArtifact` umbrella type.
 
 ## Current Slices To Build On
 

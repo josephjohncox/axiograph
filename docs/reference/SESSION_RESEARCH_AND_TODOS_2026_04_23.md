@@ -13,7 +13,9 @@ It is intended as a continuity artifact so future turns do not lose the reasonin
 
 ### Completed in this session
 
-- **Tranche 1 path certification** was implemented and verified.
+- **Tranche 1 path certification** was implemented and verified historically;
+  its public relation-id CLI/server/MCP surfaces are now retired in favor of
+  canonical `.axi`-anchored typed query witnesses.
 - **Tranche 2a read-only bounded-context reporting** was implemented and verified.
 - **Tranche 2c JSON `BehaviorCaseV1` reporting** was implemented and verified.
 - **Tranche 2b proof-native runtime support summaries** were implemented and verified.
@@ -628,7 +630,7 @@ Main conclusions:
 
 - curate and publish the external references/readings gathered in this session into longer-lived docs beyond this session artifact,
 - add a durable DDD/fDDD/context crosswalk into repo docs,
-- document the new path-cert primitive and where it sits in the larger category/type/ontology roadmap,
+- keep the retired path-cert primitive documented only as historical context,
 - document the new bounded-context report primitive and where it sits in the larger DDD/fDDD/context roadmap,
 - and produce a durable note about unified query + spec language constraints and non-goals.
 

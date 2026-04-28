@@ -158,6 +158,10 @@ The plugin/request seam should be read this way:
 - Keep the world-model plugin request centered on canonical `.axi`; training
   exports are derived metadata, and snapshot/store paths should stay out of the
   primary request contract.
+- Treat predicted embeddings and nearest-neighbor structure as evidence/index
+  sidecars, not semantic truth. Embedding-derived relationships must be lifted
+  into typed proposals and reviewed before promotion; see
+  `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.
 - Include negative samples (distractors) to reduce trivial shortcuts.
 
 **2) Model layer**

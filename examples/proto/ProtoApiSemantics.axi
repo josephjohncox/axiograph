@@ -14,18 +14,18 @@
 module ProtoApiSemantics
 
 schema ProtoApiSemantics:
-  -- A safe fallback supertype.
-  object Entity
+  -- A meaningful umbrella type for API-surface artifacts.
+  object ApiArtifact
 
   object ProtoService
   object ProtoRpc
   object HttpEndpoint
   object DocChunk
 
-  subtype ProtoService < Entity
-  subtype ProtoRpc < Entity
-  subtype HttpEndpoint < Entity
-  subtype DocChunk < Entity
+  subtype ProtoService < ApiArtifact
+  subtype ProtoRpc < ApiArtifact
+  subtype HttpEndpoint < ApiArtifact
+  subtype DocChunk < ApiArtifact
 
   -- Core structural relations.
   relation proto_service_has_rpc(service: ProtoService, rpc: ProtoRpc)

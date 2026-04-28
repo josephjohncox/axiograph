@@ -52,6 +52,7 @@ this file back into a backlog or session transcript.
 - Trust boundary: `docs/reference/TRUSTED_KERNEL.md`
 - Compiled semantic IR: `docs/reference/KERNEL_IR.md`
 - Runtime theory checker: `docs/reference/RUNTIME_THEORY_CHECKER.md`
+- Embeddings/evidence sidecars: `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`
 - Software authoring/codegen tools: `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`
 - Rust lifecycle and anchor types: `docs/reference/RUST_LIFECYCLE_TYPES.md`
 - Semantic VCS and reconciliation: `docs/reference/SEMANTIC_VCS.md`
@@ -71,6 +72,7 @@ this file back into a backlog or session transcript.
 | Understand current trust claims | `docs/reference/TRUSTED_KERNEL.md` |
 | Work on schema/category IR | `docs/reference/KERNEL_IR.md` |
 | Work on runtime theory checking | `docs/reference/RUNTIME_THEORY_CHECKER.md` |
+| Work on embeddings/RAG evidence | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
 | Work on software authoring/codegen | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` |
 | Work on Rust type/lifecycle surfaces | `docs/reference/RUST_LIFECYCLE_TYPES.md` |
 | Work on ontology usefulness and ologs | `docs/explanation/TYPED_ONTOLOGY_ENGINEERING.md` |

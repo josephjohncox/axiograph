@@ -327,11 +327,9 @@ bin/axiograph discover competency-questions \
   --out build/physics_cq.json \
   --max-questions 120
 
-# If you see `... is Physics.Entity` in CQs, skip it by default:
-#   (Entity is a synthetic fallback in some exports)
-# bin/axiograph discover competency-questions build/physics_base.axpd --out build/physics_cq.json
-# To include it explicitly:
-#   --include-entity
+# If broad top-level types dominate generated CQs, narrow the run with schema,
+# relation, or object filters instead of treating an execution fallback as
+# domain meaning.
 ```
 
 Translate natural-language CQs to AxQL (LLM backend required):

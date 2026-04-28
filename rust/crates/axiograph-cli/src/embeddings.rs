@@ -11,6 +11,10 @@
 //! Two modes (recommended to run together):
 //! - Deterministic token-hash embeddings (always-on; can be indexed with ANN).
 //! - Model embeddings (Ollama `/api/embed` or `/api/embeddings`) stored in the WAL.
+//!
+//! See `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` for the trust contract:
+//! embedding-derived relationships are weak evidence/proposal overlays until
+//! typed validation and review promote them into canonical `.axi`.
 
 use std::collections::HashMap;
 

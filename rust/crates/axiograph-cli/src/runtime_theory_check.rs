@@ -490,6 +490,49 @@ pub(crate) fn runtime_theory_check_human_summary(
         report.reports.len(),
         report.blocking_errors
     ));
+    lines.push(format!("anchor: module_digest={}", report.module_digest));
+    let mut worlds: Vec<String> = report
+        .reports
+        .iter()
+        .map(|report| {
+            format!(
+                "{}{}",
+                report.world.world_id,
+                if report.world.finite {
+                    " (finite)"
+                } else {
+                    " (open/advisory)"
+                }
+            )
+        })
+        .collect();
+    worlds.sort();
+    worlds.dedup();
+    let mut evidence_policies: Vec<String> = report
+        .reports
+        .iter()
+        .map(|report| {
+            format!(
+                "{}:{}ppm:{}{}",
+                report.evidence_policy.policy_id,
+                report.evidence_policy.threshold_ppm,
+                evidence_semantics_label(report.evidence_policy.semantics),
+                if report.evidence_policy.weighted_propagation_enabled {
+                    ":weighted"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect();
+    evidence_policies.sort();
+    evidence_policies.dedup();
+    lines.push(format!(
+        "scope: closure_tiers={}, worlds={}, evidence_policies={}",
+        list_or_none(&report.summary.closure_tiers),
+        list_or_none(&worlds),
+        list_or_none(&evidence_policies)
+    ));
     lines.push(format!(
         "closure trace: steps={}, checked_seed={}, evidence_filtered={}, review_residual={}, blocking={}, fixpoint_reached={}, fixpoint_blocked={}",
         report.summary.closure_trace.total_steps,
@@ -529,5 +572,37 @@ pub(crate) fn runtime_theory_check_human_summary(
             theory_report.closure.closed,
         ));
     }
+    if report.blocking_errors > 0 {
+        lines.push(
+            "next: resolve blocking RuntimeTheoryCheckReportV1 judgments before promotion; rerun with --json for typed handles"
+                .to_string(),
+        );
+    } else if report.summary.residual_obligations > 0 || report.summary.review_only_obligations > 0 {
+        lines.push(
+            "next: review residual/review-only obligations before making stronger completeness or closure claims"
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "next: runtime gate is closed under declared assumptions; Lean certification remains separate for certifiable fragments"
+                .to_string(),
+        );
+    }
     lines.join("\n")
+}
+
+fn evidence_semantics_label(semantics: EvidenceWeightSemanticsV1) -> &'static str {
+    match semantics {
+        EvidenceWeightSemanticsV1::ThresholdedWorld => "thresholded_world",
+        EvidenceWeightSemanticsV1::WeightedLattice => "weighted_lattice",
+        EvidenceWeightSemanticsV1::Deferred => "deferred",
+    }
+}
+
+fn list_or_none(values: &[String]) -> String {
+    if values.is_empty() {
+        "<none>".to_string()
+    } else {
+        values.join(", ")
+    }
 }

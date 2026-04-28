@@ -28,8 +28,12 @@ The literature in Appendix C of `docs/explanation/BOOK.md` points to a very conc
 - [x] Extend `verify-semantics` to include migration certificates.
 - [x] Add a `path_equiv_v2` certificate kind (groupoid equivalence via shared normalization + optional derivations).
 - [x] Add a `rewrite_derivation_v2` certificate kind (replayable rewrite traces: rule + position).
-- [x] Add anchored reachability v2 (optional `axi_digest_v1` + `relation_id` checked against `PathDBExportV1` snapshots).
-- [x] Add reversible PathDB snapshot export/import as `.axi` (`PathDBExportV1`) with Rust↔Lean parse parity checks.
+- [x] Add anchored reachability v2 historically; the public relation-id
+  path-cert surface is now retired, and canonical `.axi`-anchored typed query
+  witnesses are the user/server/agent direction.
+- [x] Keep reversible PathDB snapshot export/import as `.axi`
+  (`PathDBExportV1`) only for Rust↔Lean parser parity and live-byte/debug
+  roundtrip checks.
 - [ ] Add a `sigma_f_v1` scaffold certificate kind (explicit TODOs: ID generation, quotienting/colimits).
 - [ ] Anchor certificates to canonical `.axi` inputs (module digest + extracted fact IDs).
 - [ ] Add a provenance/explanation algebra for query certificates (query provenance / semiring-style composition), aligning certificate composition with query operators.

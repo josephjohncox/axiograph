@@ -264,8 +264,11 @@ Note: for large snapshots, Axiograph may compact `schema` and/or truncate large 
 to keep the request size bounded. Plugins should treat `schema` as hints and be robust to missing
 fields (they can always request more detail via additional tool calls).
 
-Note: Axiograph may also include **backend-prefetched** retrieval steps in the `transcript` (e.g.
-`db_summary` + `semantic_search`) so tool-loop mode behaves like a RAG pipeline by default.
+Note: Axiograph may also include **backend-prefetched** retrieval steps in the
+`transcript` (e.g. `db_summary` + `semantic_search`) so tool-loop mode behaves
+like a RAG pipeline by default. Retrieval output is evidence-plane only; see
+`docs/reference/EMBEDDINGS_AND_EVIDENCE.md` for the embedding/vector trust
+boundary and relationship-lifting rule.
 
 ### Response: tool call
 

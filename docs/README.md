@@ -65,6 +65,7 @@ If you only read one thing, read the “book”:
 - `docs/reference/TRUSTED_KERNEL.md` — exact boundary of the Lean trusted kernel and certificate trust classes
 - `docs/reference/KERNEL_IR.md` — canonical schema/category IR target spec
 - `docs/reference/RUNTIME_THEORY_CHECKER.md` — Rust runtime theory judgments, closure tiers, completeness claims, and non-claims
+- `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` — embedding sidecars, vector/RAG evidence, relationship lifting, and trust boundaries
 - `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — software-authoring/codegen crates, CLI, MCP, DB HTTP server, plugin, editor/LSP, and maintained protocol-crate choices
 - `docs/reference/AGENT_CONTEXT.md` — current agent-facing architecture, trust, type-system, and compatibility context
 - `docs/reference/AXI_STYLE.md` — canonical `.axi` authoring/style guide for examples and reviews

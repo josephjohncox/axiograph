@@ -13,6 +13,11 @@ compiled semantic form that:
 - PathDB will lower from,
 - and RDF / property-graph / migration layers will project from.
 
+Embeddings, vector indexes, ANN scores, retrieved chunks, and embedding-derived
+relationship suggestions are not kernel IR. They are evidence/index sidecars
+that may point at compiled IR ids and may emit typed proposals for review. See
+`docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.
+
 Current implemented slice (2026-04):
 
 - `axiograph_pathdb::kernel_ir` currently provides:

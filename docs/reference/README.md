@@ -6,6 +6,7 @@ Reference docs are for lookup and should stay stable.
 - `docs/reference/TRUSTED_KERNEL.md`
 - `docs/reference/KERNEL_IR.md`
 - `docs/reference/RUNTIME_THEORY_CHECKER.md`
+- `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`
 - `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`
 - `docs/reference/AGENT_CONTEXT.md`
 - `docs/reference/RUST_LIFECYCLE_TYPES.md`
