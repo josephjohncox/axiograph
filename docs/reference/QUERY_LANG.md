@@ -102,8 +102,6 @@ evaluated as a **graph homomorphism** (pattern match) over PathDB.
 AxQL also supports top-level **disjunction** (`or`): a query can be a union of
 conjunctive branches (UCQ). The preferred certificate path is the canonical
 `.axi`-anchored typed query-witness family (wire kind `query_result_v3`).
-Older snapshot-export query certificate families are historical verification
-seams for migrated fixtures only.
 
 Supported atoms:
 
@@ -357,7 +355,6 @@ prepared handle against a canonical accepted `.axi` anchor. In
 
 - Rust emits canonical `.axi`-anchored typed query witnesses (wire kind `query_result_v3`)
 - Lean verifies that each returned row satisfies the query under that anchor
-- older snapshot-export query certificate families are historical compatibility seams, not the preferred runtime contract
 
 This certificate is intentionally **soundness-only** (no completeness claim): it
 proves “these rows satisfy the query”, not “these are all the satisfying rows”.

@@ -142,64 +142,11 @@ impl FixedPointProbability {
     }
 }
 
-/// Reachability witness with fixed-point confidences.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ReachabilityProofV2 {
-    Reflexive {
-        entity: u32,
-    },
-    Step {
-        from: u32,
-        rel_type: u32,
-        to: u32,
-        /// Relation confidence as a fixed-point numerator (Lean checks this).
-        rel_confidence_fp: FixedPointProbability,
-        rest: Box<ReachabilityProofV2>,
-    },
-}
-
-impl ReachabilityProofV2 {
-    pub fn start(&self) -> u32 {
-        match self {
-            ReachabilityProofV2::Reflexive { entity } => *entity,
-            ReachabilityProofV2::Step { from, .. } => *from,
-        }
-    }
-
-    pub fn end(&self) -> u32 {
-        match self {
-            ReachabilityProofV2::Reflexive { entity } => *entity,
-            ReachabilityProofV2::Step { rest, .. } => rest.end(),
-        }
-    }
-
-    pub fn path_len(&self) -> usize {
-        match self {
-            ReachabilityProofV2::Reflexive { .. } => 0,
-            ReachabilityProofV2::Step { rest, .. } => 1 + rest.path_len(),
-        }
-    }
-
-    pub fn path_confidence(&self) -> FixedPointProbability {
-        match self {
-            ReachabilityProofV2::Reflexive { .. } => FixedPointProbability {
-                numerator: FIXED_POINT_DENOMINATOR,
-            },
-            ReachabilityProofV2::Step {
-                rel_confidence_fp,
-                rest,
-                ..
-            } => rel_confidence_fp.mul(rest.path_confidence()),
-        }
-    }
-}
-
 /// Versioned wrapper for v2 certificates (fixed-point probabilities).
 #[derive(Debug, Clone, Serialize)]
 pub struct CertificateV2 {
     pub version: u32,
-    /// Optional binding to canonical `.axi` inputs (snapshot-scoped).
+    /// Optional binding to canonical `.axi` inputs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<AxiAnchorV1>,
     #[serde(flatten)]
@@ -312,9 +259,6 @@ pub enum CertificatePayloadV2 {
     AxiConstraintsOkV1 {
         proof: AxiConstraintsOkProofV1,
     },
-    ReachabilityV2 {
-        proof: ReachabilityProofV2,
-    },
     #[serde(rename = "reachability_v3")]
     ReachabilityV3 {
         proof: ReachabilityProofV3,
@@ -358,14 +302,6 @@ impl CertificateV2 {
             version: CERTIFICATE_VERSION_V2,
             anchor: None,
             payload: CertificatePayloadV2::AxiConstraintsOkV1 { proof },
-        }
-    }
-
-    pub fn reachability_v2(proof: ReachabilityProofV2) -> Self {
-        Self {
-            version: CERTIFICATE_VERSION_V2,
-            anchor: None,
-            payload: CertificatePayloadV2::ReachabilityV2 { proof },
         }
     }
 
@@ -1160,8 +1096,10 @@ mod normalize_path_v2_tests {
 
     #[test]
     fn certificate_v2_round_trips_typed_anchor() {
-        let cert = CertificateV2::reachability_v2(ReachabilityProofV2::Reflexive { entity: 7 })
-            .with_anchor(AxiAnchorV1::new("fnv1a64:feedfacecafebeef"));
+        let cert = CertificateV2::reachability_v3(ReachabilityProofV3::Reflexive {
+            entity: "axi:id:Node:alice".to_string(),
+        })
+        .with_anchor(AxiAnchorV1::new("fnv1a64:feedfacecafebeef"));
 
         let json = serde_json::to_string(&cert).expect("certificate should serialize");
         let round_trip: CertificateV2 =

@@ -181,7 +181,7 @@ run_tick() {
 
   echo ""
   echo "-- tick $tick: build PathDB snapshot (.axpd) from accepted canonical .axi"
-  "$AXIOGRAPH" db pathdb import-axi "$accepted_axi" --out "$accepted_axpd"
+  "$AXIOGRAPH" db pathdb materialize-axi "$accepted_axi" --out "$accepted_axpd"
 
   echo ""
   echo "-- tick $tick: import doc chunks into the snapshot (extension layer)"

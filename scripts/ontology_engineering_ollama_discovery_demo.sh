@@ -203,7 +203,7 @@ echo "accepted: $ACCEPTED_AXI"
 echo ""
 echo "-- build a PathDB snapshot (.axpd) from accepted canonical .axi"
 ACCEPTED_AXPD="$ACCEPTED_DIR/ProtoApi.accepted.axpd"
-"$AXIOGRAPH" db pathdb import-axi "$ACCEPTED_AXI" --out "$ACCEPTED_AXPD"
+"$AXIOGRAPH" db pathdb materialize-axi "$ACCEPTED_AXI" --out "$ACCEPTED_AXPD"
 
 echo ""
 echo "-- visualize meta-plane and data-plane (accepted snapshot)"

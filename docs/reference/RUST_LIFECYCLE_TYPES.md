@@ -282,11 +282,11 @@ Core crate APIs should prefer:
 - typed report objects over one-off JSON/prose payloads for business-rule,
   coverage, preview, and agent-facing semantics
 
-Legacy/raw APIs may remain temporarily, but they should move under:
+Raw boundary APIs should move under:
 
 - adapter modules,
 - CLI/HTTP serialization layers,
-- or clearly named `raw` / `legacy` surfaces.
+- or clearly named `raw` surfaces.
 
 ## Module Layout
 

@@ -727,7 +727,7 @@ Instead:
 
 - accepted-plane promotion can emit semantic commits,
 - PathDB WAL commits can emit evidence-branch semantic commits,
-- `sem checkout --materialize` can later synchronize legacy `HEAD` views to the
+- `sem checkout --materialize` can later synchronize existing `HEAD` views to the
   selected semantic ref.
 
 ## Validation and Persistence Rules

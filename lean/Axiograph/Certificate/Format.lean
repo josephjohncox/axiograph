@@ -24,101 +24,6 @@ def parseVProb (j : Json) : Except String Prob.VProb := do
 
 end FixedPointProbability
 
-inductive ReachabilityProof where
-  | reflexive (entity : Nat)
-  | step (src : Nat) (relType : Nat) (dst : Nat) (relConfidence : Float) (rest : ReachabilityProof)
-  deriving Repr
-
-def ReachabilityProof.start : ReachabilityProof → Nat
-  | .reflexive entity => entity
-  | .step src .. => src
-
-def ReachabilityProof.end_ : ReachabilityProof → Nat
-  | .reflexive entity => entity
-  | .step _ _ _ _ rest => rest.end_
-
-def ReachabilityProof.pathLen : ReachabilityProof → Nat
-  | .reflexive _ => 0
-  | .step _ _ _ _ rest => rest.pathLen + 1
-
-def ReachabilityProof.confidence : ReachabilityProof → Float
-  | .reflexive _ => 1.0
-  | .step _ _ _ relConfidence rest => relConfidence * rest.confidence
-
-def ensureProb (value : Float) : Except String Float := do
-  if value.isNaN then
-    throw "probability must not be NaN"
-  if value.isInf then
-    throw "probability must be finite"
-  if value < 0.0 then
-    throw s!"probability must be in [0, 1] (got {value})"
-  if value > 1.0 then
-    throw s!"probability must be in [0, 1] (got {value})"
-  pure value
-
-partial def parseReachabilityProof (j : Json) : Except String ReachabilityProof := do
-  let ty ← (← j.getObjVal? "type").getStr?
-  match ty with
-  | "reflexive" =>
-      let entity ← (← j.getObjVal? "entity").getNat?
-      pure (.reflexive entity)
-  | "step" =>
-      let src ← (← j.getObjVal? "from").getNat?
-      let relType ← (← j.getObjVal? "rel_type").getNat?
-      let dst ← (← j.getObjVal? "to").getNat?
-      let relConfidence : Float ← fromJson? (← j.getObjVal? "rel_confidence")
-      let relConfidence ← ensureProb relConfidence
-      let rest ← parseReachabilityProof (← j.getObjVal? "rest")
-      pure (.step src relType dst relConfidence rest)
-  | other =>
-      throw s!"unknown reachability proof type: {other}"
-
-/-!
-`ReachabilityProofV2` is a versioned variant that replaces `Float` confidences
-with fixed-point verified probabilities (`Prob.VProb`).
--/
-inductive ReachabilityProofV2 where
-  | reflexive (entity : Nat)
-  | step
-      (src : Nat)
-      (relType : Nat)
-      (dst : Nat)
-      (relConfidence : Prob.VProb)
-      (rest : ReachabilityProofV2)
-  deriving Repr
-
-def ReachabilityProofV2.start : ReachabilityProofV2 → Nat
-  | .reflexive entity => entity
-  | .step src .. => src
-
-def ReachabilityProofV2.end_ : ReachabilityProofV2 → Nat
-  | .reflexive entity => entity
-  | .step _ _ _ _ rest => rest.end_
-
-def ReachabilityProofV2.pathLen : ReachabilityProofV2 → Nat
-  | .reflexive _ => 0
-  | .step _ _ _ _ rest => rest.pathLen + 1
-
-def ReachabilityProofV2.confidence : ReachabilityProofV2 → Prob.VProb
-  | .reflexive _ => Prob.vOne
-  | .step _ _ _ relConfidence rest => Prob.vMult relConfidence rest.confidence
-
-partial def parseReachabilityProofV2 (j : Json) : Except String ReachabilityProofV2 := do
-  let ty ← (← j.getObjVal? "type").getStr?
-  match ty with
-  | "reflexive" =>
-      let entity ← (← j.getObjVal? "entity").getNat?
-      pure (.reflexive entity)
-  | "step" =>
-      let src ← (← j.getObjVal? "from").getNat?
-      let relType ← (← j.getObjVal? "rel_type").getNat?
-      let dst ← (← j.getObjVal? "to").getNat?
-      let relConfidence ← FixedPointProbability.parseVProb (← j.getObjVal? "rel_confidence_fp")
-      let rest ← parseReachabilityProofV2 (← j.getObjVal? "rest")
-      pure (.step src relType dst relConfidence rest)
-  | other =>
-      throw s!"unknown reachability proof type: {other}"
-
 /-!
 ## v2: reconciliation / resolution decisions
 
@@ -166,8 +71,8 @@ This certificate kind supports §3 of `docs/explanation/BOOK.md` (“paths, grou
 Lean always re-computes normalization and checks the claimed result, and additionally
 replays the explicit derivation when present.
 
-The expression language is intentionally small and mirrors the Idris constructors
-(`KGRefl`, `KGRel`, `KGTrans`), with an added formal inverse constructor (`inv`).
+The expression language is intentionally small: identity, generator edge,
+composition, and formal inverse.
 -/
 
 inductive PathExprV2 where
@@ -960,8 +865,6 @@ partial def parseAxiConstraintsOkProofV1 (j : Json) : Except String AxiConstrain
   pure { moduleName, constraintCount, instanceCount, checkCount }
 
 inductive Certificate where
-  | reachabilityV1 (proof : ReachabilityProof)
-  | reachabilityV2 (proof : ReachabilityProofV2)
   | reachabilityV3 (proof : ReachabilityProofV3)
   | resolutionV2 (proof : ResolutionProofV2)
   | axiWellTypedV1 (proof : AxiWellTypedProofV1)
@@ -1007,16 +910,6 @@ def parseCertificate (j : Json) : Except String Certificate := do
   let version ← (← j.getObjVal? "version").getNat?
   let kind ← (← j.getObjVal? "kind").getStr?
   match kind with
-  | "reachability" =>
-      if version != 1 then
-        throw s!"unsupported reachability certificate version: {version}"
-      let proof ← parseReachabilityProof (← j.getObjVal? "proof")
-      pure (.reachabilityV1 proof)
-  | "reachability_v2" =>
-      if version != 2 then
-        throw s!"unsupported reachability_v2 certificate version: {version}"
-      let proof ← parseReachabilityProofV2 (← j.getObjVal? "proof")
-      pure (.reachabilityV2 proof)
   | "reachability_v3" =>
       if version != 2 then
         throw s!"unsupported reachability_v3 certificate version: {version}"

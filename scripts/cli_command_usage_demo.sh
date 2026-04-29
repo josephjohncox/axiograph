@@ -57,7 +57,7 @@ INPUT_AXI="$ROOT_DIR/examples/ontology/OntologyRewrites.axi"
 echo ""
 echo "-- C) Import to .axpd, query, and viz"
 AXPD="$OUT_DIR/ontology_rewrites.axpd"
-"$AXIOGRAPH" db pathdb import-axi "$INPUT_AXI" --out "$AXPD"
+"$AXIOGRAPH" db pathdb materialize-axi "$INPUT_AXI" --out "$AXPD"
 
 "$AXIOGRAPH" repl --axpd "$AXPD" --quiet \
   --cmd 'q select ?gc where name("Alice") -Grandparent-> ?gc limit 10' \

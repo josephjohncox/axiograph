@@ -167,7 +167,7 @@ echo "accepted: $ACCEPTED_AXI"
 echo ""
 echo "-- build a PathDB snapshot (.axpd) from accepted canonical .axi"
 ACCEPTED_AXPD="$ACCEPTED_DIR/PhysicsDiscovered.accepted.axpd"
-"$AXIOGRAPH" db pathdb import-axi "$ACCEPTED_AXI" --out "$ACCEPTED_AXPD"
+"$AXIOGRAPH" db pathdb materialize-axi "$ACCEPTED_AXI" --out "$ACCEPTED_AXPD"
 
 echo ""
 echo "-- viz (meta + data planes) for the accepted snapshot"

@@ -26,7 +26,7 @@ All commands below assume `bin/axiograph` exists (built by the Makefile).
 ## 1) Create a snapshot (`.axi` → `.axpd`)
 
 ```bash
-bin/axiograph db pathdb import-axi examples/ontology/OntologyRewrites.axi \
+bin/axiograph db pathdb materialize-axi examples/ontology/OntologyRewrites.axi \
   --out build/viz_tutorial.axpd
 ```
 

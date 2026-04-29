@@ -71,11 +71,9 @@ Today that means the code path centered on:
 - `lean/Axiograph/Axi/TypeCheck.lean`
 - `lean/Axiograph/Axi/ConstraintsCheck.lean`
 
-`lean/Axiograph/Axi/PathDBExportV1.lean` remains useful for reversible snapshot
-roundtrip/parity work, but it is not in the current `VerifyMain` import
-closure and should not be described as part of the active verifier kernel.
-Treat it as debug/live-byte/parser-parity support only, not as semantic input,
-query authority, certificate authority, or an accepted-plane promotion surface.
+Storage snapshot parity modules are deliberately outside this boundary. They
+are not semantic input, query authority, certificate authority, or
+accepted-plane promotion surfaces.
 
 Adjacent theorem-bearing modules are important, but they are not automatically
 part of the shipped runtime kernel unless imported by the verifier target.
@@ -95,16 +93,6 @@ These modules participate directly in shipped certificate/module verification.
 | `Axiograph.Axi.AxiV1` | canonical `.axi` parser for trusted gates | runtime kernel |
 | `Axiograph.Axi.TypeCheck` | conservative `.axi` typechecking gate | runtime kernel |
 | `Axiograph.Axi.ConstraintsCheck` | conservative certifiable constraint gate | runtime kernel |
-
-### Transitional parity support
-
-These modules matter for snapshot roundtrip/parity workflows, but they are not
-currently imported by `VerifyMain` and therefore sit outside the shipped
-verifier kernel boundary.
-
-| Module | Role | Trust class |
-| --- | --- | --- |
-| `Axiograph.Axi.PathDBExportV1` | reversible PathDB snapshot/export parser for debug/live-byte/parser parity tooling | transitional parity support / not semantic authority |
 
 ### Theorem support
 
@@ -252,15 +240,14 @@ Current target classification:
 
 | Certificate kind | Status | Notes |
 | --- | --- | --- |
-| `reachability_v1` | replay-only | transitional float-based form |
-| `reachability_v2` | replay-only | fixed-point arithmetic is stronger; historical `PathDBExportV1`-anchored form |
-| `reachability_v3` | replay-only | canonical `.axi`-anchored reachability with stable fact ids |
 | `axi_well_typed_v1` | decision-procedure | conservative `.axi` module gate |
 | `axi_constraints_ok_v1` | decision-procedure | conservative certifiable subset only |
+| `query_result_v3` | replay-only / partial | row soundness only, not completeness |
+| `reachability_v3` | replay-only | canonical `.axi`-anchored reachability with stable fact ids |
+| `rewrite_derivation_v3` | replay-only moving toward theorem-backed | should consume checked rewrite rules |
 | `normalize_path_v2` | replay-only | valid narrow kernel slice |
 | `path_equiv_v2` | replay-only | narrow typed path equality slice |
-| `rewrite_derivation_v3` | replay-only moving toward theorem-backed | should consume checked rewrite rules |
-| `query_result_v3` | replay-only / partial | row soundness only, not completeness |
+| `resolution_v2` | recompute-scaffold | finite fixed-point reconciliation decision |
 | `delta_f_v1` | recompute-scaffold | not yet a final semantic story |
 
 ## Accepted Rewrite Rules
@@ -310,7 +297,7 @@ The next concrete tightening steps are:
    queries and certificates stop depending on runtime-only heuristic naming.
 4. Add narrow typed query/migration witness checking over that IR for clearly
    stated certifiable fragments.
-5. Keep new certificate/query flows on canonical accepted-plane anchors rather
-   than `PathDBExportV1`.
-6. Move query/cert semantics off binary-projection heuristics and onto the
-   future kernel IR.
+5. Keep certificate/query flows on canonical accepted-plane anchors and compiled
+   IR refs.
+6. Move remaining query/cert semantics off binary-projection heuristics and onto
+   `KernelSurfaceV1`.

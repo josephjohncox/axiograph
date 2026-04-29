@@ -19,7 +19,6 @@ In this repo:
 
 - Rust is the untrusted runtime engine (ingestion, indexing, search, reconciliation, certificate emission).
 - Lean is the trusted checker/spec (mathlib-backed).
-- Idris2 was used historically as a prototype proof layer. It is not part of the current build, trust boundary, or compatibility surface.
 
 This book focuses on the mathematics and semantics, then maps those semantics onto the codebase and production concerns.
 
@@ -444,10 +443,9 @@ Axiograph needs both:
 - Proof-relevant data (certificates, derivation witnesses),
 - Proof-irrelevant propositions (bounds proofs that should erase at runtime).
 
-In Lean, many proofs live in `Prop` and erase automatically; certificates and witnesses live in `Type` and are data.
-
-Historically, an Idris prototype explored similar patterns. In the current
-system, Lean owns the trusted version of this story:
+In Lean, many proofs live in `Prop` and erase automatically; certificates and
+witnesses live in `Type` and are data. In the current system, Lean owns the
+trusted version of this story:
 
 - Proofs for invariants erased where possible,
 - And proof objects only where they are part of the auditable story.
@@ -504,9 +502,7 @@ Operators:
 - `□φ` (“box”): φ holds in all accessible worlds.
 - `◇φ` (“diamond”): φ holds in some accessible world.
 
-Historical note: the removed Idris prototype explored modal modules alongside the math notes (`docs/explanation/MATHEMATICAL_FOUNDATIONS.md` section “Modal Logics”).
-
-Planned: port the modal/tacit/temporal semantics into Lean as part of the trusted checker.
+Planned: encode modal/tacit/temporal semantics in Lean as part of the trusted checker.
 
 ### 6.2 Temporal modalities
 
@@ -515,8 +511,6 @@ Temporal reasoning is foundational for “as of X” claims and evolving corpora
 - Facts can expire,
 - Guidelines supersede older guidance,
 - Policies have effective dates.
-
-Historical note: the removed Idris prototype explored interval reasoning and temporal operators.
 
 Planned: a Lean temporal kernel plus certificates for time-indexed inferences.
 
@@ -537,8 +531,6 @@ Representation strategy:
    - Revision hooks (they can be overridden by stronger evidence).
 2. Use a modality to mark tacitness, e.g. a type former like `Tacit φ` or a modal operator “in practice”.
 3. Let reconciliation compute how tacit evidence interacts with encoded rules (see §4.3).
-
-Historical note: the removed Idris prototype explored typed provenance and heuristics for tacit knowledge.
 
 Planned: Lean port and certificate-backed reconciliation for tacit-vs-encoded conflicts.
 
@@ -832,10 +824,6 @@ The active public certificate surface is canonical `.axi` anchored:
   module typing.
 - rewrite/path/equivalence and Δ_F migration certificate families remain
   supported where their verifier fragments are explicitly documented.
-
-Older `reachability_v1` and `reachability_v2` fixtures are retained for
-verifier-continuity tests only. They are not the public server, REPL, MCP, or
-agent query contract.
 
 For running and schema details, see:
 
@@ -1363,22 +1351,22 @@ This is naturally a reachability/path problem with uncertainty.
 - Logs and alerts (noisy),
 - Analyst notes (tacit).
 
-### 18.3 Path certificates are immediately useful here
+### 18.3 Anchored path/query certificates are immediately useful here
 
 A reachability certificate can literally be an exploit chain:
 
 - `Internet → WebServer → RCE(vuln) → LateralMove → DB`
 
-The certificate includes:
-
-- Node ids and relation types,
-- Confidence per step (scanner confidence, exploit reliability, telemetry trust),
-- A computed confidence for the chain.
+The certificate includes canonical node labels, relation names, stable
+`axi_fact_id` references, fixed-point confidence where supported, and the
+canonical `.axi` digest anchor.
 
 Implemented pieces:
 
-- Rust: `ReachabilityProofV2` in `rust/crates/axiograph-pathdb/src/certificate.rs`
-- Lean: parsing and confidence recomputation in `lean/Axiograph/Certificate/Format.lean`
+- Rust: `ReachabilityProofV3` and `QueryResultProofV3` in
+  `rust/crates/axiograph-pathdb/src/certificate.rs`
+- Lean: canonical `.axi`-anchored replay in
+  `lean/Axiograph/Certificate/Check.lean`
 
 ### 18.4 Approximate search, verified answers
 
@@ -1491,7 +1479,7 @@ This appendix points to where the math described above lives in the repo.
 - Verified probabilities:
   - `lean/Axiograph/Prob/Verified.lean` (`VProb`, `Precision`, `vMult`, Bayes update)
 - Certificate parsing (the bridge):
-  - `lean/Axiograph/Certificate/Format.lean` (v1/v2 parsing, normalize_path scaffold)
+  - `lean/Axiograph/Certificate/Format.lean` (active JSON certificate families)
 - `.axi` parsing:
   - `lean/Axiograph/Axi/*`
 
@@ -1500,18 +1488,11 @@ This appendix points to where the math described above lives in the repo.
 - PathDB verified layer scaffolding + proof-shaped data:
   - `rust/crates/axiograph-pathdb/src/verified.rs` (`VerifiedProb`, `ReachabilityProof`, `ProvenQueryResult`)
 - Certificates emitted to Lean:
-  - `rust/crates/axiograph-pathdb/src/certificate.rs` (`CertificateV2`, `ReachabilityProofV2`, `ResolutionProofV2`, `NormalizePathProofV2`)
+  - `rust/crates/axiograph-pathdb/src/certificate.rs` (`CertificateV2`, `ReachabilityProofV3`, `QueryResultProofV3`, `ResolutionProofV2`, `NormalizePathProofV2`)
 - LLM sync and typed path validation patterns:
   - `rust/crates/axiograph-llm-sync/src/path_verification.rs`
 - DSL parsing and canonical `.axi` entrypoint:
   - `rust/crates/axiograph-dsl/src/axi_v1.rs`
-
-## A.3 Historical Idris2 prototype (removed)
-
-An early Idris2 proof-layer prototype informed several Lean ports (HoTT/path algebra, probability, etc.).
-That prototype is historical only: it is not a supported compatibility target, runtime dependency, FFI surface, or trust boundary. Refer to git history if you need the original Idris sources.
-
----
 
 # Appendix B: Glossary and notation
 
@@ -1548,7 +1529,6 @@ This appendix is a curated reading list plus “what it implies for Axiograph”
 
 - Nordström, Petersson, Smith — *Programming in Martin-Löf’s Type Theory*.
 - Harper — *Practical Foundations for Programming Languages*.
-- Brady — *Type-Driven Development with Idris* (and Idris2 / QTT materials).
 - Avigad, de Moura, Kong, et al. — *Theorem Proving in Lean* (Lean4 book).
 - Pientka and collaborators — *Beluga* and contextual type theory (useful background for “contexts/worlds as first-class”):
   - Boespflug & Pientka — “Multi-Level Contextual Type Theory”.

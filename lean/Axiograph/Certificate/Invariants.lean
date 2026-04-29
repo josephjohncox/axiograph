@@ -18,7 +18,6 @@ Scope (today)
 
 We focus on the core witness kinds that appear in end-to-end flows:
 
-* reachability witnesses (`reachability_v2`, unanchored internal structure)
 * normalization / rewrite witnesses (`normalize_path_v2`, `rewrite_derivation_v2`)
 * reconciliation decisions (`resolution_v2`)
 
@@ -30,61 +29,6 @@ mean what they claim”).
 namespace Axiograph.Certificate.Invariants
 
 open Axiograph
-
--- =============================================================================
--- Reachability witnesses
--- =============================================================================
-
-namespace ReachabilityInvariants
-
-open Axiograph.Reachability
-
-/-!
-## Internal structure invariants (unanchored)
-
-`verifyReachabilityProofV2` is the internal checker for reachability witnesses.
-It does *not* consult any concrete graph; it only checks that the witness is a
-well-formed chain and returns the derived summary.
-
-The following theorem records that whenever verification succeeds, the returned
-summary agrees with the witness’s own “derived” fields (`start`, `end_`, etc.).
--/
-
-theorem verifyReachabilityProofV2_ok_matches_computations
-    (proof : ReachabilityProofV2)
-    (result : ReachabilityResultV2) :
-    verifyReachabilityProofV2 proof = .ok result →
-      result.start = proof.start ∧
-      result.end_ = proof.end_ ∧
-      result.pathLen = proof.pathLen ∧
-      result.confidence = proof.confidence := by
-  induction proof generalizing result with
-  | reflexive entity =>
-      intro h
-      simp [verifyReachabilityProofV2] at h
-      cases h
-      simp [ReachabilityProofV2.start, ReachabilityProofV2.end_, ReachabilityProofV2.pathLen,
-        ReachabilityProofV2.confidence]
-  | step src relType dst relConfidence rest ih =>
-      intro h
-      cases hRest : verifyReachabilityProofV2 rest with
-      | error msg =>
-          simp [verifyReachabilityProofV2, hRest] at h
-      | ok restRes =>
-          have hRestInv := ih restRes hRest
-          cases hChain : (restRes.start != dst) with
-          | true =>
-              simp [verifyReachabilityProofV2, hRest, hChain] at h
-          | false =>
-              simp [verifyReachabilityProofV2, hRest, hChain] at h
-              cases h
-              rcases hRestInv with ⟨_hStart, hEnd, hLen, hConf⟩
-              refine ⟨rfl, ?_, ?_, ?_⟩
-              · simpa [ReachabilityProofV2.end_] using hEnd
-              · simpa [ReachabilityProofV2.pathLen] using hLen
-              · simpa [ReachabilityProofV2.confidence] using congrArg (fun p => Prob.vMult relConfidence p) hConf
-
-end ReachabilityInvariants
 
 -- =============================================================================
 -- Reconciliation (resolution) witnesses

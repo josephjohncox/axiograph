@@ -15,7 +15,7 @@
 #   make test         - Run all tests
 #   make clean        - Clean build artifacts
 
-.PHONY: all all-exe rust lean lean-cache lean-system-cc lean-exe verify-lean verify-lean-cert verify-lean-e2e verify-lean-v2 verify-lean-e2e-v2 \
+.PHONY: all all-exe rust lean lean-cache lean-system-cc lean-exe verify-lean-cert \
 	verify-lean-semantic-vcs \
 	verify-lean-axi-schema-v1 \
 	verify-lean-axi-v1 \
@@ -166,14 +166,6 @@ lean-exe: dirs lean-cache
 		echo "   Install via elan: https://leanprover-community.github.io/get_started.html"; \
 	fi
 
-verify-lean: lean
-	@echo "━━━ Running Lean checker (scaffold) ━━━"
-	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/certificates/reachability_v1.json && echo "✓ Lean checker ran"; \
-	else \
-		echo "⚠️  lake (Lean) not found - cannot run checker"; \
-	fi
-
 verify-lean-cert: lean-exe
 	@echo "━━━ Running Lean checker executable (custom cert) ━━━"
 	@if [ -z "$(CERT)" ]; then \
@@ -186,14 +178,6 @@ verify-lean-cert: lean-exe
 		else \
 			cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) exe axiograph_verify "$(abspath $(CERT))" && echo "✓ Lean verified cert: $(CERT)"; \
 		fi; \
-	else \
-		echo "⚠️  lake (Lean) not found - cannot run checker"; \
-	fi
-
-verify-lean-v2: lean
-	@echo "━━━ Running Lean checker (fixed-point cert v2) ━━━"
-	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/certificates/reachability_v2.json && echo "✓ Lean checker ran (v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
@@ -233,7 +217,7 @@ verify-lean-delta-f-v1: lean
 verify-lean-certificates: lean
 	@echo "━━━ Running Lean checker (certificate fixtures) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/*.axi ../examples/certificates/*.json && echo "✓ Lean verified certificate fixtures"; \
+		cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/anchors/rewrite_rules_anchor_v1.axi ../examples/certificates/*.json && echo "✓ Lean verified certificate fixtures"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
@@ -331,26 +315,6 @@ verify-pathdb-export-axi-v1: lean dirs
 		echo "✓ Rust and Lean parsers agree on PathDB export snapshot (PathDBExportV1)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run parse e2e"; \
-	fi
-
-verify-lean-e2e: dirs
-	@echo "━━━ Rust → Lean certificate check ━━━"
-	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_reachability_cert_v2 > ../$(BUILD_DIR)/reachability_from_rust.json ) && \
-			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_from_rust.json ) && \
-		echo "✓ Rust → Lean certificate verified"; \
-	else \
-		echo "⚠️  lake (Lean) not found - cannot run checker"; \
-	fi
-
-verify-lean-e2e-v2: dirs
-	@echo "━━━ Rust → Lean certificate check (v2 fixed-point) ━━━"
-	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_reachability_cert_v2 > ../$(BUILD_DIR)/reachability_from_rust_v2.json ) && \
-			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/reachability_from_rust_v2.json ) && \
-		echo "✓ Rust → Lean certificate verified (v2)"; \
-	else \
-		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
 
 verify-lean-e2e-query-result-module-v3: dirs
@@ -453,7 +417,7 @@ verify-lean-e2e-delta-f-v1: dirs
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
 
-verify-lean-e2e-suite: verify-lean-e2e verify-lean-e2e-v2 verify-lean-e2e-axi-well-typed-v1 verify-lean-e2e-axi-constraints-ok-v1 verify-lean-e2e-query-result-module-v3 verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-rewrite-derivation-v3 verify-lean-e2e-ontology-rewrites-v3 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1
+verify-lean-e2e-suite: verify-lean-e2e-axi-well-typed-v1 verify-lean-e2e-axi-constraints-ok-v1 verify-lean-e2e-query-result-module-v3 verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-rewrite-derivation-v3 verify-lean-e2e-ontology-rewrites-v3 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1
 
 # ============================================================================
 # Binaries
@@ -594,9 +558,8 @@ help:
 	@echo "  lean         Build Lean checker"
 	@echo "  lean-system-cc  Build Lean with SDKROOT (macOS)"
 	@echo "  lean-exe     Build axiograph_verify executable"
-	@echo "  verify-lean  Run Lean checker (optional)"
 	@echo "  verify-lean-cert  Verify CERT=... (optional AXI=...)"
-	@echo "  verify-lean-e2e  Rust → Lean certificate check"
+	@echo "  verify-lean-e2e-suite  Rust → Lean canonical certificate checks"
 	@echo "  verify-lean-semantic-vcs  Verify Rust merge/rebase plans against Lean theory"
 	@echo "  verify-canonical-spine  Focused V1 spine gate across Rust, examples, and Lean"
 	@echo "  verify-semantics  Focused Rust+Lean semantics suite"

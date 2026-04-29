@@ -76,12 +76,6 @@ def verifyCertificateJson
 
 def printResult (res : CertificateResult) : IO Unit := do
   match res with
-  | .reachabilityV1 r =>
-      IO.println s!"ok: start={r.start} end={r.end_} len={r.pathLen} conf={r.confidence}"
-  | .reachabilityV2 r =>
-      let conf := Prob.toFloat r.confidence
-      IO.println
-        s!"ok: start={r.start} end={r.end_} len={r.pathLen} conf={conf} conf_fp={Prob.toNat r.confidence}"
   | .reachabilityV3 r =>
       let conf := Prob.toFloat r.confidence
       IO.println

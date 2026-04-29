@@ -4967,7 +4967,7 @@ instance Tiny of S:
     }
 
     #[test]
-    fn query_request_rejects_legacy_certificate_boolean_aliases() {
+    fn query_request_rejects_certificate_boolean_aliases() {
         for field in [
             "certify",
             "verify",
@@ -4990,7 +4990,7 @@ instance Tiny of S:
                 .expect("request object")
                 .insert(field.to_string(), json!(true));
             let err = serde_json::from_value::<QueryRequestV1>(value)
-                .expect_err("legacy certificate booleans should not deserialize");
+                .expect_err("certificate boolean aliases should not deserialize");
 
             assert!(
                 err.to_string()
@@ -5001,7 +5001,7 @@ instance Tiny of S:
     }
 
     #[test]
-    fn llm_agent_request_rejects_legacy_query_certificate_aliases() {
+    fn llm_agent_request_rejects_query_certificate_boolean_aliases() {
         for field in [
             "certify_queries",
             "verify_queries",
@@ -5016,7 +5016,7 @@ instance Tiny of S:
                 .expect("request object")
                 .insert(field.to_string(), json!(true));
             let err = serde_json::from_value::<LlmAgentRequestV1>(value)
-                .expect_err("legacy LLM query-certificate booleans should not deserialize");
+                .expect_err("LLM query-certificate boolean aliases should not deserialize");
 
             assert!(
                 err.to_string()
@@ -5027,7 +5027,7 @@ instance Tiny of S:
     }
 
     #[test]
-    fn llm_to_query_request_rejects_legacy_query_certificate_aliases() {
+    fn llm_to_query_request_rejects_query_certificate_boolean_aliases() {
         for field in [
             "certify_queries",
             "verify_queries",
@@ -5042,7 +5042,7 @@ instance Tiny of S:
                 .expect("request object")
                 .insert(field.to_string(), json!(true));
             let err = serde_json::from_value::<LlmToQueryRequestV1>(value)
-                .expect_err("legacy LLM query-certificate booleans should not deserialize");
+                .expect_err("LLM query-certificate boolean aliases should not deserialize");
 
             assert!(
                 err.to_string()

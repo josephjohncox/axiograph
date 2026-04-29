@@ -57,7 +57,7 @@ echo "-- B) Draft a candidate axi_v1 module (schema discovery + context preserva
 
 echo ""
 echo "-- C) Import drafted module into PathDB (.axpd)"
-"$AXIOGRAPH" db pathdb import-axi "$DRAFT_AXI" --out "$AXPD"
+"$AXIOGRAPH" db pathdb materialize-axi "$DRAFT_AXI" --out "$AXPD"
 
 echo ""
 echo "-- D) Query per-context (REPL non-interactive)"
@@ -90,4 +90,3 @@ echo "  $DRAFT_AXI"
 echo "  $AXPD"
 echo "  $OUT_DIR/repl_output.txt"
 echo "  $OUT_DIR/viz_a.html"
-

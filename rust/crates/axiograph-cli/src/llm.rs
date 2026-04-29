@@ -2622,32 +2622,32 @@ instance FamilyInst of Family:
     }
 
     #[test]
-    fn tool_loop_parser_rejects_legacy_top_level_tool() {
+    fn tool_loop_parser_rejects_top_level_tool_wrapper() {
         let err = super::parse_tool_loop_response_json(
             r#"{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}}"#,
             super::ToolLoopOptions::default(),
         )
-        .expect_err("legacy top-level tool wrapper should fail");
+        .expect_err("top-level tool wrapper should fail");
         assert!(err.to_string().contains("exactly one"));
     }
 
     #[test]
-    fn tool_loop_parser_rejects_legacy_nested_tool_alias() {
+    fn tool_loop_parser_rejects_nested_tool_alias_wrapper() {
         let err = super::parse_tool_loop_response_json(
             r#"{"tool_call":{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}}}"#,
             super::ToolLoopOptions::default(),
         )
-        .expect_err("legacy nested tool alias should fail");
+        .expect_err("nested tool alias wrapper should fail");
         assert!(err.to_string().contains("invalid tool-loop tool call"));
     }
 
     #[test]
-    fn tool_loop_parser_rejects_legacy_top_level_answer() {
+    fn tool_loop_parser_rejects_top_level_answer_wrapper() {
         let err = super::parse_tool_loop_response_json(
             r#"{"answer":"Done."}"#,
             super::ToolLoopOptions::default(),
         )
-        .expect_err("legacy top-level answer wrapper should fail");
+        .expect_err("top-level answer wrapper should fail");
         assert!(err.to_string().contains("exactly one"));
     }
 

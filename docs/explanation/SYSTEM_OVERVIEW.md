@@ -122,24 +122,24 @@ PathDB is the indexed execution/query substrate. Build it from canonical `.axi`
 or accepted-plane snapshots; do not make it the ontology authority.
 
 ```bash
-axiograph db pathdb import-axi examples/machining/PhysicsKnowledge.axi --out build/physics.axpd
+axiograph db pathdb materialize-axi examples/machining/PhysicsKnowledge.axi --out build/physics.axpd
 ```
 
 Machine/report query flows should compile to `query_ir_v1`, prepare a
 `PreparedQueryV1`, and return typed metadata/trust reports. Certified query
 results use canonical `.axi`-anchored `query_result_v3` witnesses.
 
-### 6) Debug parity snapshots (`.axpd` ↔ `.axi`)
+### 6) Storage round-trip checks
 
-For debug/live-byte/parser-parity work only, PathDB can round-trip through a
-reversible `.axi` export format (`PathDBExportV1`):
+For low-level storage checks, PathDB can round-trip through explicit DB debug
+commands:
 
 ```bash
 axiograph db pathdb export-axi knowledge.axpd --out build/snapshot_pathdb_export_v1.axi
 axiograph db pathdb import-axi build/snapshot_pathdb_export_v1.axi --out build/knowledge.axpd
 ```
 
-Do not use `PathDBExportV1` as semantic, query, tutorial, or certificate
+Do not use derived snapshots as semantic, query, tutorial, or certificate
 authority. Public semantic flows should load canonical `.axi` modules directly.
 
 ### 7) Rust → Lean certificate verification (e2e)

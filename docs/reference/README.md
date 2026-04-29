@@ -15,22 +15,20 @@ Reference docs are for lookup and should stay stable.
 | Use embeddings/RAG/vector search safely | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` | `docs/howto/KNOWLEDGE_INGESTION.md` |
 | Query through AxQL/SQL-ish/certified querying | `docs/reference/QUERY_LANG.md` | `docs/reference/CERTIFICATES.md` |
 
-Retired/export-era surfaces should not be rediscovered as active contracts:
-`query_result_v1` and `query_result_v2` are removed from the active certificate
-stack, and `PathDBExportV1` is debug/live-byte/parser parity only. Semantic
-authority stays with accepted canonical `.axi`, compiled IR, typed runtime
-reports, and explicitly checked certificates.
+Semantic authority stays with accepted canonical `.axi`, compiled IR, typed
+runtime reports, and explicitly checked certificates. Storage/debug formats are
+documented only where they are needed for engine tests.
 
 ## Reference files
 
-- `docs/reference/CERTIFICATES.md` — certificate schema, active/retired families, and Lean checker validation.
+- `docs/reference/CERTIFICATES.md` — active certificate families and Lean checker validation.
 - `docs/reference/TRUSTED_KERNEL.md` — current trusted boundary and non-claims.
 - `docs/reference/KERNEL_IR.md` — canonical schema/category/theory IR, runtime surfaces, and backend projection lowering.
 - `docs/reference/RUNTIME_THEORY_CHECKER.md` — runtime theory judgments, closure tiers, typed holes, and non-claims.
 - `docs/reference/LEAN_THEORY_EVALUATION.md` — Lean-encoded theory status and gaps.
 - `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` — embedding/vector sidecars, RAG evidence, promotion boundaries.
 - `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — authoring/codegen crates, CLI, MCP, server, and LSP surfaces.
-- `docs/reference/AGENT_CONTEXT.md` — current agent-facing architecture and compatibility context.
+- `docs/reference/AGENT_CONTEXT.md` — current agent-facing architecture and greenfield policy.
 - `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle and anchor-aware artifact model.
 - `docs/reference/QUERY_LANG.md` — AxQL, SQL-ish elaboration, typed query metadata, and certified querying.
 - `docs/reference/SEMANTIC_VCS.md` — semantic refs, commits, merge/rebase, reconciliation, and projection manifests.

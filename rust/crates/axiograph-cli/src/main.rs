@@ -4,7 +4,7 @@
 //! - Validating canonical `.axi` modules (`axi_v1`)
 //! - Ingesting sources into `proposals.json` (Evidence/Proposals schema)
 //! - Promoting proposals into candidate domain `.axi` modules (explicit, reviewable)
-//! - Managing PathDB snapshots (`.axpd` ↔ `.axi`)
+//! - Managing derived PathDB snapshots (`canonical .axi → .axpd`)
 
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand};
@@ -995,7 +995,7 @@ enum PathdbCommands {
     /// Export a canonical `.axi` module from a `.axpd` file (schema/theory/instance).
     ///
     /// This requires that the PathDB contains the `.axi` meta-plane produced by
-    /// importing a canonical `.axi` module (e.g. via `axiograph db pathdb import-axi`
+    /// materializing a canonical `.axi` module (e.g. via `axiograph db pathdb materialize-axi`
     /// or `axiograph repl import_axi`).
     ///
     /// If multiple modules are present, pass `--module <name>`.
@@ -1010,11 +1010,19 @@ enum PathdbCommands {
         module: Option<String>,
     },
 
-    /// Import a `.axi` file into a `.axpd` PathDB file.
+    /// Materialize a canonical `.axi` module into a derived `.axpd` PathDB file.
+    MaterializeAxi {
+        /// Input canonical `.axi` file
+        input: PathBuf,
+        /// Output `.axpd` file
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+
+    /// Import a reversible debug/parity snapshot `.axi` file into `.axpd`.
     ///
-    /// This is the only public `PathDBExportV1` import path. Snapshot exports are
-    /// debug/live-byte/parser-parity artifacts, not semantic/query/cert anchors.
-    /// Canonical `axi_v1` modules are imported into a fresh PathDB.
+    /// This command is not for canonical semantic authoring. Use
+    /// `materialize-axi` for canonical `.axi -> .axpd`.
     ImportAxi {
         /// Input `.axi` file
         input: PathBuf,
@@ -2876,6 +2884,9 @@ fn cmd_pathdb(command: PathdbCommands) -> Result<()> {
         }
         PathdbCommands::ExportModule { input, out, module } => {
             cmd_pathdb_export_module(&input, &out, module.as_deref())?;
+        }
+        PathdbCommands::MaterializeAxi { input, out } => {
+            cmd_pathdb_materialize_axi(&input, &out)?;
         }
         PathdbCommands::ImportAxi { input, out } => {
             cmd_pathdb_import_axi(&input, &out)?;
@@ -5977,38 +5988,69 @@ fn cmd_pathdb_export_module(input: &PathBuf, out: &PathBuf, module: Option<&str>
 fn cmd_pathdb_import_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
     println!(
         "{} {}",
-        "Importing PathDB (.axi → .axpd)".green().bold(),
+        "Importing reversible PathDB snapshot (.axi → .axpd)"
+            .green()
+            .bold(),
         input.display()
     );
 
     let text = fs::read_to_string(input)?;
-    let (mut db, module_chunk_id) = match crate::axi_input::classify_axi_text(&text)? {
-        crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => {
-            (module.import_pathdb()?, module.module_name().to_string())
-        }
-        crate::axi_input::ClassifiedAxiModule::Canonical(module) => {
-            let mut db = axiograph_pathdb::PathDB::new();
-            let summary = module.import_into_pathdb(&mut db)?;
-            println!(
-                "  {} imported module={} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
-                "→".cyan(),
-                module.module().module().module_name,
-                summary.meta_entities_added,
-                summary.meta_relations_added,
-                summary.instances_imported,
-                summary.entities_added,
-                summary.entity_type_upgrades,
-                summary.tuple_entities_added,
-                summary.relations_added,
-                summary.derived_edges_added
-            );
-            (db, module.module().module().module_name.clone())
+    let mut db = match crate::axi_input::classify_axi_text(&text)? {
+        crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => module.import_pathdb()?,
+        crate::axi_input::ClassifiedAxiModule::Canonical(_) => {
+            return Err(anyhow!(
+                "expected a reversible PathDB snapshot .axi; use `axiograph db pathdb materialize-axi` for canonical .axi modules"
+            ));
         }
     };
 
-    // Grounding always has evidence: embed the `.axi` module text as an untrusted
+    db.build_indexes();
+    let bytes = db.to_bytes()?;
+    fs::write(out, bytes)?;
+
+    println!("  {} {}", "→".cyan(), out.display());
+    Ok(())
+}
+
+fn cmd_pathdb_materialize_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
+    println!(
+        "{} {}",
+        "Materializing canonical .axi into derived PathDB"
+            .green()
+            .bold(),
+        input.display()
+    );
+
+    let text = fs::read_to_string(input)?;
+    let module = match crate::axi_input::classify_axi_text(&text)? {
+        crate::axi_input::ClassifiedAxiModule::Canonical(module) => module,
+        crate::axi_input::ClassifiedAxiModule::PathdbExport(_) => {
+            return Err(anyhow!(
+                "expected a canonical .axi module; use `axiograph db pathdb import-axi` for reversible PathDB snapshot .axi files"
+            ));
+        }
+    };
+
+    let mut db = axiograph_pathdb::PathDB::new();
+    let summary = module.import_into_pathdb(&mut db)?;
+    println!(
+        "  {} imported module={} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
+        "→".cyan(),
+        module.module().module().module_name,
+        summary.meta_entities_added,
+        summary.meta_relations_added,
+        summary.instances_imported,
+        summary.entities_added,
+        summary.entity_type_upgrades,
+        summary.tuple_entities_added,
+        summary.relations_added,
+        summary.derived_edges_added
+    );
+
+    // Grounding always has evidence: embed the canonical module text as an untrusted
     // DocChunk so LLM/UIs can cite and open it even when no external docs exist.
     let digest = axiograph_dsl::digest::axi_digest_v1(&text);
+    let module_chunk_id = module.module().module().module_name.clone();
     let module_chunk =
         crate::doc_chunks::chunk_from_axi_module_text(&module_chunk_id, &digest, &text);
     let _ = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &[module_chunk]);

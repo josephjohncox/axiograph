@@ -12,8 +12,6 @@ technical reality changes.
 - Canonical accepted `.axi` modules are the meaning plane.
 - PathDB and `.axpd` snapshots are derived execution/query substrates.
 - Accepted-plane snapshots plus PathDB WAL are the live storage backbone.
-- Idris was a historical prototype. The current release direction is Rust plus
-  Lean, with no Idris/FFI compatibility requirement.
 - The TypeScript viz frontend lives in `frontend/viz/`; server/tooling expects
   built assets from `frontend/viz/dist`.
 
@@ -172,12 +170,11 @@ contract.
 Current cleanup pressure:
 
 - keep `query_result_v3` as the active query certificate family,
-- continue retiring old query certificate versions from active runtime surfaces,
-- demote `PathDBExportV1` to debug/live-byte/parser-parity only; not semantic
-  anchoring, query/certificate authority, promotion, teaching, or interchange,
+- keep derived snapshot exports out of semantic anchoring, query/certificate
+  authority, promotion, teaching, and interchange,
 - collapse workflow-specific review wrappers into shared preview/trust/report
   families,
-- remove stale examples and docs when stronger typed surfaces replace them,
+- remove outdated examples and docs when stronger typed surfaces replace them,
 - keep domain harnesses, such as the industrial engineering example, outside
   `axiograph-cli` unless they become reusable ontology-engineering
   infrastructure.

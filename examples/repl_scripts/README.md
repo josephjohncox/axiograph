@@ -4,9 +4,7 @@ These scripts are smoke demos for the interactive REPL. They now use canonical
 `.axi` imports plus typed query/report commands as the teaching surface.
 Some scripts end with `export_axi_module` and `save`; treat those final lines as
 optional round-trip/e2e checks, not the authoring path. Reversible
-`PathDBExportV1` snapshots are intentionally absent from REPL teaching scripts;
-use `axiograph db pathdb export-axi` only for explicit
-debug/live-byte/parser-parity checks.
+snapshot exports are intentionally absent from REPL teaching scripts.
 
 Preferred scripts for current workflows:
 

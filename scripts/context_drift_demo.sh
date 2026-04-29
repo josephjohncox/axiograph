@@ -33,7 +33,7 @@ if [ ! -x "$AXIOGRAPH" ]; then
 fi
 
 echo "== A) Import .axi → .axpd =="
-"$AXIOGRAPH" db pathdb import-axi "$AXI" --out "$AXPD"
+"$AXIOGRAPH" db pathdb materialize-axi "$AXI" --out "$AXPD"
 
 echo ""
 echo "== B) Analyze drift between contexts =="

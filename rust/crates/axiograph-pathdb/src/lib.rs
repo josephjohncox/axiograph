@@ -83,9 +83,8 @@ pub use branding::{DbBranded, DbToken, DbTokenMismatch};
 pub use certificate::{
     AxiAnchorV1, AxiConstraintsOkProofV1, AxiWellTypedProofV1, CertificateV2,
     FixedPointProbability, FixedProb, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
-    PathRewriteStepV3, ReachabilityProofV2, ResolutionDecisionV2, ResolutionProofV2,
-    RewriteDerivationProofV2, RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION_V2,
-    FIXED_POINT_DENOMINATOR,
+    PathRewriteStepV3, ResolutionDecisionV2, ResolutionProofV2, RewriteDerivationProofV2,
+    RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION_V2, FIXED_POINT_DENOMINATOR,
 };
 pub use checked_db::{
     stable_fact_id_v1_for_declared_fields, CheckedDb, CheckedDbMut, CheckedDbReport,

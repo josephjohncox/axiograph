@@ -209,7 +209,7 @@ longer owns hand-rolled LSP frame parsing; Axiograph-specific code is limited to
 domain diagnostics, command dispatch, and typed authoring reports. It supports
 `initialize`, `textDocument/didOpen`, `textDocument/didChange`,
 `textDocument/codeAction`, and `workspace/executeCommand`. It emits diagnostics
-for `.axi` parsing, stale behavior-case/tooling schemas, coverage policy shape,
+for `.axi` parsing, embedded behavior-case/tooling schemas, coverage policy shape,
 and runtime-theory sidecar presence where the host supplies enough context. It
 exposes read-only commands for overlay checking, weak definition queries,
 coverage queries, software coverage, codegen planning, and capability

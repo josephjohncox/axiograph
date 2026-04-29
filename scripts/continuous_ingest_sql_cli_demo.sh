@@ -59,7 +59,7 @@ SQL
   --infer-constraints
 "$AXIOGRAPH" check validate "$OUT_DIR/SqlTick0.proposals.axi"
 
-"$AXIOGRAPH" db pathdb import-axi "$OUT_DIR/SqlTick0.proposals.axi" \
+"$AXIOGRAPH" db pathdb materialize-axi "$OUT_DIR/SqlTick0.proposals.axi" \
   --out "$OUT_DIR/sql_tick0.axpd"
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/sql_tick0.axpd" \
@@ -105,7 +105,7 @@ SQL
   --infer-constraints
 "$AXIOGRAPH" check validate "$OUT_DIR/SqlTick1.proposals.axi"
 
-"$AXIOGRAPH" db pathdb import-axi "$OUT_DIR/SqlTick1.proposals.axi" \
+"$AXIOGRAPH" db pathdb materialize-axi "$OUT_DIR/SqlTick1.proposals.axi" \
   --out "$OUT_DIR/sql_tick1.axpd"
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/sql_tick1.axpd" \

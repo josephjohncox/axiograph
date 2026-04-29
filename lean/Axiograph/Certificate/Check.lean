@@ -7,73 +7,6 @@ import Mathlib.Computability.RegularExpressions
 
 namespace Axiograph
 
-namespace Reachability
-
-structure ReachabilityResult where
-  start : Nat
-  end_ : Nat
-  pathLen : Nat
-  confidence : Float
-  deriving Repr
-
-def verifyReachabilityProof : ReachabilityProof → Except String ReachabilityResult
-  | .reflexive entity =>
-      pure { start := entity, end_ := entity, pathLen := 0, confidence := 1.0 }
-  | .step src _relType dst relConfidence rest =>
-      match ensureProb relConfidence with
-      | .error msg => .error msg
-      | .ok relConfidence =>
-          match verifyReachabilityProof rest with
-          | .error msg => .error msg
-          | .ok restRes =>
-              if restRes.start != dst then
-                .error s!"invalid proof chain: expected rest.start = {dst}, got {restRes.start}"
-              else
-                .ok {
-                  start := src,
-                  end_ := restRes.end_,
-                  pathLen := restRes.pathLen + 1,
-                  confidence := relConfidence * restRes.confidence
-                }
-
-structure ReachabilityResultV2 where
-  start : Nat
-  end_ : Nat
-  pathLen : Nat
-  confidence : Prob.VProb
-  deriving Repr
-
-def verifyReachabilityProofV2 : ReachabilityProofV2 → Except String ReachabilityResultV2
-  | .reflexive entity =>
-      pure { start := entity, end_ := entity, pathLen := 0, confidence := Prob.vOne }
-  | .step src _relType dst relConfidence rest =>
-      match verifyReachabilityProofV2 rest with
-      | .error msg => .error msg
-      | .ok restRes =>
-          if restRes.start != dst then
-            .error s!"invalid proof chain: expected rest.start = {dst}, got {restRes.start}"
-          else
-            .ok {
-              start := src,
-              end_ := restRes.end_,
-              pathLen := restRes.pathLen + 1,
-              confidence := Prob.vMult relConfidence restRes.confidence
-            }
-
-/-!
-### Snapshot-scoped reachability checking (anchored to `.axi`)
-
-`verifyReachabilityProofV2` checks the *internal* structure of a proof but is
-intentionally independent of any particular graph/snapshot.
-
-For end-to-end verification we now keep `reachability_v2` purely as an
-unanchored internal-structure check. Canonical module anchoring lives on the
-newer certificate families (`reachability_v3`, `query_result_v3`,
-`rewrite_derivation_v3`, and typed module checks).
--/
-
-end Reachability
-
 namespace Resolution
 
 structure ResolutionResultV2 where
@@ -1333,8 +1266,6 @@ def verifyDeltaFMigrationProofV1 (proof : DeltaFMigrationProofV1) :
 end Migration
 
 inductive CertificateResult where
-  | reachabilityV1 (res : Reachability.ReachabilityResult)
-  | reachabilityV2 (res : Reachability.ReachabilityResultV2)
   | reachabilityV3 (res : Query.ReachabilityResultV3)
   | resolutionV2 (res : Resolution.ResolutionResultV2)
   | axiWellTypedV1 (res : AxiWellTypedProofV1)
@@ -1348,12 +1279,6 @@ inductive CertificateResult where
   deriving Repr
 
 def verifyCertificate : Certificate → Except String CertificateResult
-  | .reachabilityV1 proof => do
-      let res ← Reachability.verifyReachabilityProof proof
-      pure (.reachabilityV1 res)
-  | .reachabilityV2 proof => do
-      let res ← Reachability.verifyReachabilityProofV2 proof
-      pure (.reachabilityV2 res)
   | .reachabilityV3 _ =>
       throw "reachability_v3 requires a canonical `.axi` module context; run `axiograph_verify <module.axi> <certificate.json>`"
   | .resolutionV2 proof => do

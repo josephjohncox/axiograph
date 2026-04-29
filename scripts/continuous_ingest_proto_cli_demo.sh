@@ -78,7 +78,7 @@ PROTO
   --infer-constraints
 "$AXIOGRAPH" check validate "$OUT_DIR/ProtoTick0.proposals.axi"
 
-"$AXIOGRAPH" db pathdb import-axi "$OUT_DIR/ProtoTick0.proposals.axi" \
+"$AXIOGRAPH" db pathdb materialize-axi "$OUT_DIR/ProtoTick0.proposals.axi" \
   --out "$OUT_DIR/proto_tick0.axpd"
 
 # Focus: the service node (name is sanitized; it's a single identifier in `.axi`).
@@ -137,7 +137,7 @@ PROTO
   --infer-constraints
 "$AXIOGRAPH" check validate "$OUT_DIR/ProtoTick1.proposals.axi"
 
-"$AXIOGRAPH" db pathdb import-axi "$OUT_DIR/ProtoTick1.proposals.axi" \
+"$AXIOGRAPH" db pathdb materialize-axi "$OUT_DIR/ProtoTick1.proposals.axi" \
   --out "$OUT_DIR/proto_tick1.axpd"
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/proto_tick1.axpd" \

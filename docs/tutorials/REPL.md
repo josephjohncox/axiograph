@@ -16,9 +16,7 @@ The Axiograph REPL is a lightweight interactive shell for working with:
 It’s intended for quick experiments, typed teaching flows, and debugging (not a
 polished end-user UI). PathDB is the execution substrate here; accepted `.axi`
 and semantic VCS refs remain the meaning plane.
-`PathDBExportV1` snapshot `.axi` files are no longer a REPL authoring surface;
-use `axiograph db pathdb export-axi/import-axi` only for explicit
-debug/live-byte/parser-parity workflows.
+Derived snapshot exports are not a REPL authoring surface.
 
 If built with default features, the REPL supports **tab completion** and basic
 line editing via `rustyline`.
@@ -410,8 +408,8 @@ cargo run -p axiograph-cli -- tools viz path/to/snapshot.axpd --out build/graph.
 
 `import_axi` accepts canonical schema modules (like
 `examples/machining/PhysicsKnowledge.axi` or
-`examples/manufacturing/SupplyChainHoTT.axi`). It rejects `PathDBExportV1`
-snapshot exports; those belong under `axiograph db pathdb import-axi`.
+`examples/manufacturing/SupplyChainHoTT.axi`). It rejects derived snapshot
+exports.
 
 When importing a canonical schema module, the REPL maps instance data into PathDB:
 
@@ -712,18 +710,17 @@ Then:
 axiograph> stats
 ```
 
-## Debug/parity snapshot exports
+## Derived Snapshot Checks
 
-If you need a reversible snapshot `.axi` for storage/live-byte/parser parity,
-leave the REPL and use the explicit DB command:
+If you need storage byte round-trips, leave the REPL and use the explicit DB
+debug commands. Keep that flow out of ontology authoring tutorials.
 
 ```bash
 axiograph db pathdb export-axi build/snapshot.axpd --out build/snapshot_pathdb_export_v1.axi
 axiograph db pathdb import-axi build/snapshot_pathdb_export_v1.axi --out build/snapshot_roundtrip.axpd
 ```
 
-That snapshot is not semantic/query/certificate authority and should not appear
-in public tutorial paths except this debug parity case.
+The exported snapshot is not semantic/query/certificate authority.
 
 ## Command Reference (quick)
 

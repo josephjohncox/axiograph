@@ -74,20 +74,20 @@ fn example_catalog_paths_exist_and_stay_teaching_oriented() {
             let command = command.as_str().expect("command string");
             assert!(
                 !command.contains("export_axi build/"),
-                "catalog example `{id}` should not foreground PathDBExportV1 export-era scripts"
+                "catalog example `{id}` should not foreground debug snapshot export scripts"
             );
             assert!(
                 !command.contains("db pathdb export-axi")
                     && !command.contains("db pathdb import-axi")
                     && !command.contains("PathDBExportV1"),
-                "catalog example `{id}` should keep PathDBExportV1 debug/parity-only, got `{command}`"
+                "catalog example `{id}` should keep storage/debug roundtrips out of teaching commands, got `{command}`"
             );
         }
     }
 }
 
 #[test]
-fn examples_readme_keeps_pathdb_export_debug_only() {
+fn examples_readme_keeps_storage_debug_roundtrips_out_of_teaching_path() {
     let repo_root = repo_root();
     let readme_path = repo_root.join("examples/README.md");
     let text = fs::read_to_string(&readme_path).expect("read examples/README.md");
@@ -100,7 +100,7 @@ fn examples_readme_keeps_pathdb_export_debug_only() {
         !before_rules.contains("PathDBExportV1")
             && !before_rules.contains("export-axi")
             && !before_rules.contains("import-axi"),
-        "examples README should not foreground PathDBExportV1 before the greenfield rules"
+        "examples README should not foreground storage/debug roundtrips before the greenfield rules"
     );
 
     let rules = text
@@ -108,16 +108,15 @@ fn examples_readme_keeps_pathdb_export_debug_only() {
         .nth(1)
         .expect("examples README should have greenfield rules");
     assert!(
-        rules.contains("PathDBExportV1")
-            && rules.contains("debug/live-byte/parser-parity only")
+        rules.contains("Storage/debug roundtrips")
             && rules.contains("not public semantic inputs")
             && rules.contains("certificate/query"),
-        "examples README must explicitly demote PathDBExportV1 to debug/parity-only"
+        "examples README must keep storage/debug roundtrips out of the semantic teaching path"
     );
 }
 
 #[test]
-fn viz_explorer_uses_query_certificate_policy_not_legacy_booleans() {
+fn viz_explorer_uses_query_certificate_policy_not_boolean_aliases() {
     let repo_root = repo_root();
     let template_path = repo_root.join("rust/crates/axiograph-cli/templates/viz_explorer.html");
     let text = fs::read_to_string(&template_path).expect("read viz explorer template");
@@ -126,21 +125,21 @@ fn viz_explorer_uses_query_certificate_policy_not_legacy_booleans() {
         text.contains("query_certificate_policy"),
         "viz explorer should use the shared query certificate policy object"
     );
-    for stale in [
+    for removed_alias in [
         "certify_queries",
         "verify_queries",
         "require_query_certs",
         "require_verified_queries",
     ] {
         assert!(
-            !text.contains(stale),
-            "viz explorer should not emit stale query-certificate boolean `{stale}`"
+            !text.contains(removed_alias),
+            "viz explorer should not emit query-certificate boolean alias `{removed_alias}`"
         );
     }
 }
 
 #[test]
-fn query_certificate_docs_foreground_policy_not_legacy_booleans() {
+fn query_certificate_docs_foreground_policy_not_boolean_aliases() {
     let repo_root = repo_root();
     let docs = [
         repo_root.join("docs/howto/DB_SERVER.md"),
@@ -156,15 +155,15 @@ fn query_certificate_docs_foreground_policy_not_legacy_booleans() {
             "{} should document the shared certificate policy surface",
             path.display()
         );
-        for stale_literal in [
+        for removed_literal in [
             "\"certify\": true",
             "\"verify\": true",
             "\"require_query_certs\": true",
             "\"require_verified_queries\": true",
         ] {
             assert!(
-                !text.contains(stale_literal),
-                "{} should not show stale query-certificate request literal `{stale_literal}`",
+                !text.contains(removed_literal),
+                "{} should not show query-certificate boolean alias request literal `{removed_literal}`",
                 path.display()
             );
         }
@@ -938,26 +937,26 @@ fn software_authoring_cli_exposes_codegen_and_editor_contracts() {
 }
 
 #[test]
-fn stale_embedded_tooling_behavior_case_fields_fail_clearly() {
+fn embedded_tooling_behavior_case_fields_fail_clearly() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
-    let run_dir = unique_run_dir(&repo_root, "stale_behavior_case_schema");
-    let stale_request = run_dir.join("stale_behavior_case.json");
+    let run_dir = unique_run_dir(&repo_root, "embedded_tooling_behavior_case_schema");
+    let embedded_tooling_request = run_dir.join("embedded_tooling_behavior_case.json");
     fs::write(
-        &stale_request,
+        &embedded_tooling_request,
         r#"{
   "behavior_case": {
-    "case_id": "software_authoring.stale",
-    "title": "Stale embedded tooling field",
+    "case_id": "software_authoring.embedded_tooling",
+    "title": "Embedded tooling field",
     "context": {
-      "context_id": "bounded-context:stale",
-      "label": "Stale"
+      "context_id": "bounded-context:embedded-tooling",
+      "label": "Embedded Tooling"
     }
   }
 }
 "#,
     )
-    .expect("write stale request");
+    .expect("write embedded tooling request");
 
     let output = Command::new(&bin)
         .current_dir(&repo_root)
@@ -965,19 +964,19 @@ fn stale_embedded_tooling_behavior_case_fields_fail_clearly() {
         .arg("behavior-case")
         .arg("examples/software_authoring/OrderFulfillmentDomain.axi")
         .arg("--request")
-        .arg(&stale_request)
+        .arg(&embedded_tooling_request)
         .arg("--overlay")
         .arg("examples/software_authoring/order_fulfillment_tooling_overlay.json")
         .output()
-        .expect("run stale behavior-case");
+        .expect("run embedded tooling behavior-case");
     assert!(
         !output.status.success(),
-        "stale embedded behavior-case fields should fail"
+        "embedded tooling behavior-case fields should fail"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("unknown field `context`") || stderr.contains("context"),
-        "expected stale schema error mentioning context, got: {stderr}"
+        "expected embedded tooling schema error mentioning context, got: {stderr}"
     );
 }
 
@@ -1137,15 +1136,15 @@ fn canonical_only_cert_commands_reject_pathdb_export_snapshots() {
         .current_dir(&run_dir)
         .arg("db")
         .arg("pathdb")
-        .arg("import-axi")
+        .arg("materialize-axi")
         .arg(&input)
         .arg("--out")
         .arg(&axpd)
         .status()
-        .expect("run axiograph db pathdb import-axi");
+        .expect("run axiograph db pathdb materialize-axi");
     assert!(
         import_status.success(),
-        "db pathdb import-axi failed (exit={})",
+        "db pathdb materialize-axi failed (exit={})",
         import_status.code().unwrap_or(-1)
     );
 
@@ -1268,6 +1267,36 @@ fn canonical_only_cert_commands_reject_pathdb_export_snapshots() {
 }
 
 #[test]
+fn pathdb_import_axi_rejects_canonical_modules_with_materialize_guidance() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+    let run_dir = unique_run_dir(&repo_root, "pathdb_import_axi_rejects_canonical");
+    let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
+    let axpd = run_dir.join("build/snapshot.axpd");
+
+    let output = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("db")
+        .arg("pathdb")
+        .arg("import-axi")
+        .arg(&input)
+        .arg("--out")
+        .arg(&axpd)
+        .output()
+        .expect("run axiograph db pathdb import-axi on canonical .axi");
+
+    assert!(
+        !output.status.success(),
+        "db pathdb import-axi should reject canonical modules"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("materialize-axi"),
+        "expected materialize-axi guidance, got: {stderr}"
+    );
+}
+
+#[test]
 fn accept_promote_rejects_pathdb_export_snapshot_without_mutating_store() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
@@ -1320,15 +1349,15 @@ instance BaseInst of Base:
         .current_dir(&run_dir)
         .arg("db")
         .arg("pathdb")
-        .arg("import-axi")
+        .arg("materialize-axi")
         .arg(&input)
         .arg("--out")
         .arg(&axpd)
         .status()
-        .expect("run axiograph db pathdb import-axi");
+        .expect("run axiograph db pathdb materialize-axi");
     assert!(
         import_status.success(),
-        "db pathdb import-axi failed (exit={})",
+        "db pathdb materialize-axi failed (exit={})",
         import_status.code().unwrap_or(-1)
     );
 
@@ -1963,7 +1992,7 @@ fn repl_scripts_canonical_smoke() {
         );
 
         let build_dir = run_dir.join("build");
-        let mut stale_exports: Vec<PathBuf> = fs::read_dir(&build_dir)
+        let mut removed_debug_exports: Vec<PathBuf> = fs::read_dir(&build_dir)
             .expect("read build dir")
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -1975,13 +2004,13 @@ fn repl_scripts_canonical_smoke() {
                         .unwrap_or(false)
             })
             .collect();
-        stale_exports.sort();
+        removed_debug_exports.sort();
 
         assert!(
-            stale_exports.is_empty(),
-            "REPL script `{}` should not emit PathDBExportV1 teaching snapshots: {:?}",
+            removed_debug_exports.is_empty(),
+            "REPL script `{}` should not emit debug snapshot teaching exports: {:?}",
             script.display(),
-            stale_exports
+            removed_debug_exports
         );
 
         // If this REPL script imported a canonical `.axi` module (meta-plane),
@@ -2013,28 +2042,28 @@ fn repl_scripts_canonical_smoke() {
 }
 
 #[test]
-fn repl_rejects_stale_export_axi_command() {
+fn repl_rejects_removed_export_axi_command() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
-    let run_dir = unique_run_dir(&repo_root, "repl_rejects_stale_export_axi");
+    let run_dir = unique_run_dir(&repo_root, "repl_rejects_removed_export_axi");
 
     let output = Command::new(&bin)
         .current_dir(&run_dir)
         .arg("repl")
         .arg("--quiet")
         .arg("--cmd")
-        .arg("export_axi build/stale_export_v1.axi")
+        .arg("export_axi build/removed_export_v1.axi")
         .output()
-        .expect("run axiograph repl stale export_axi");
+        .expect("run axiograph repl removed export_axi");
 
     assert!(
         !output.status.success(),
-        "stale REPL export_axi command should fail"
+        "removed REPL export_axi command should fail"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("unknown command `export_axi`"),
-        "expected stale export_axi guidance, got: {stderr}"
+        "expected removed export_axi guidance, got: {stderr}"
     );
 }
 

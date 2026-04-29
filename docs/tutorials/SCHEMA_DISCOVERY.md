@@ -280,10 +280,10 @@ prepare `PreparedQueryV1`, inspect the typed metadata/report envelope, and use
 Raw AxQL in the REPL is the human-facing teaching/debug surface over the same
 typed planning boundary.
 
-## Debug parity only: `PathDBExportV1`
+## Storage Round-Trip Checks
 
-If you are testing live-byte storage or parser parity, export the derived
-snapshot through `PathDBExportV1` explicitly:
+If you are testing storage byte round-trips, export the derived snapshot through
+the explicit DB command:
 
 ```bash
 cargo run -p axiograph-cli -- db pathdb export-axi ../build/Discovered.accepted.axpd \
@@ -291,7 +291,7 @@ cargo run -p axiograph-cli -- db pathdb export-axi ../build/Discovered.accepted.
 ```
 
 Do not teach this as the promotion, query, certificate, or semantic interchange
-path. It is a reversible snapshot/debug format only.
+path. It is a reversible storage/debug format only.
 
 ## Included demo assets
 

@@ -148,8 +148,7 @@ axiograph ingest world-model \
 ```
 
 Note: use full canonical `.axi` modules (schema + theory + instance + contexts)
-as the training/export source. PathDB snapshots are derived execution artifacts,
-and `PathDBExportV1` is reserved for debug/live-byte/parser parity.
+as the training/export source. PathDB snapshots are derived execution artifacts.
 
 Offline/local repo:
 
@@ -361,13 +360,12 @@ canonical `.axi` and semantic VCS history.
 Use `PreparedQueryV1` metadata/trust reports for machine query flows and
 `query_result_v3` witnesses for supported certified answers.
 
-For debug/live-byte/parser-parity checks only, round-trip through the reversible
-`.axi` snapshot format (`PathDBExportV1`):
+For storage byte round-trip checks only, use the explicit DB snapshot commands:
 
 ```bash
 axiograph db pathdb export-axi knowledge.axpd --out snapshot_pathdb_export_v1.axi
 axiograph db pathdb import-axi snapshot_pathdb_export_v1.axi --out knowledge.axpd
 ```
 
-Do not feed `PathDBExportV1` snapshots into semantic/query/certificate commands.
-Those flows require canonical accepted `.axi` modules and typed anchors.
+Do not feed derived snapshots into semantic/query/certificate commands. Those
+flows require canonical accepted `.axi` modules and typed anchors.

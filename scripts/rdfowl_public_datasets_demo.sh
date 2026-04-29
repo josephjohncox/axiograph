@@ -55,7 +55,7 @@ FIXTURE_AXI="$FIXTURE_OUT/Discovered_w3c_shacl_minimal.axi"
 echo ""
 echo "-- C) Import drafted module into PathDB (.axpd) and run tooling"
 FIXTURE_AXPD="$FIXTURE_OUT/Discovered_w3c_shacl_minimal.axpd"
-"$AXIOGRAPH" db pathdb import-axi "$FIXTURE_AXI" --out "$FIXTURE_AXPD"
+"$AXIOGRAPH" db pathdb materialize-axi "$FIXTURE_AXI" --out "$FIXTURE_AXPD"
 
 "$AXIOGRAPH" tools analyze network "$FIXTURE_AXPD" --plane both --format json --out "$FIXTURE_OUT/network.json"
 "$AXIOGRAPH" check quality "$FIXTURE_AXPD" --plane both --profile fast --format json --no-fail --out "$FIXTURE_OUT/quality.json"

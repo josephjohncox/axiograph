@@ -287,11 +287,6 @@ Key directories:
 - HoTT/groupoid semantics: `lean/Axiograph/HoTT/*`
 - fixed-point probability: `lean/Axiograph/Prob/*`
 
-This repo previously used Idris2 as a prototype proof layer. That material is
-historical only: Lean is the trusted checker, and there is no current Idris
-runtime, FFI, or compatibility contract. Old Idris sources may be useful as a
-git-history reference, but they are not part of the build or trust boundary.
-
 ## Rust engine (untrusted core)
 
 Rust is where performance and operational complexity live:

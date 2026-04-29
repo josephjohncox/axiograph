@@ -147,8 +147,8 @@ When `show_elaboration:true`, the response includes:
 Certified queries (optional)
 
 Use `certificate_policy` for all query certificate behavior. The supported
-values are `none`, `emit`, `verify`, and `require_verified`; legacy booleans
-such as `certify`, `verify`, `require_query_certs`, and
+values are `none`, `emit`, `verify`, and `require_verified`; older boolean
+aliases such as `certify`, `verify`, `require_query_certs`, and
 `require_verified_queries` are intentionally rejected.
 
 If you request `"certificate_policy":"emit"`, the server emits a Lean-checkable
@@ -218,7 +218,7 @@ Live-ish HTML (auto-refresh):
 open 'http://127.0.0.1:7878/viz?focus_name=Alice&plane=both&typed_overlay=true&hops=2&max_nodes=320&refresh_secs=2'
 ```
 
-Time-travel HTML (render a historical snapshot):
+Time-travel HTML (render a prior snapshot):
 
 ```bash
 curl -sS http://127.0.0.1:7878/snapshots | jq .
@@ -684,8 +684,7 @@ curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
 The server derives the world-model request from the canonical `.axi` module
 stored in the current snapshot, then attaches typed lineage anchors
 (`axi_digest_v1`, `pathdb_snapshot_id`, `accepted_snapshot_id`) in the request
-metadata. It does not send `PathDBExportV1` snapshot text to world-model
-backends.
+metadata. It does not send derived snapshot text to world-model backends.
 
 Plan endpoint (multi-step MPC loop):
 

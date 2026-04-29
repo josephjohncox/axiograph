@@ -46,7 +46,7 @@ fi
 echo ""
 echo "-- A) Build a small .axpd from a canonical .axi"
 AXPD="$OUT_DIR/ontology_rewrites.axpd"
-"$AXIOGRAPH" db pathdb import-axi "$ROOT_DIR/examples/ontology/OntologyRewrites.axi" --out "$AXPD"
+"$AXIOGRAPH" db pathdb materialize-axi "$ROOT_DIR/examples/ontology/OntologyRewrites.axi" --out "$AXPD"
 
 echo ""
 echo "-- B) Start server (ephemeral port)"

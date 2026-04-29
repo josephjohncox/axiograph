@@ -1818,7 +1818,7 @@ fn diagnostics_for_json_document(text: &str) -> Vec<Diagnostic> {
         if value.pointer("/behavior_case/context").is_some() {
             diagnostics.push(diagnostic(
                 DiagnosticSeverity::ERROR,
-                "axiograph.behavior_case.stale_tooling",
+                "axiograph.behavior_case.embedded_tooling",
                 "BehaviorCaseV1 is domain-only; move context/tooling fields into a tooling overlay",
                 0,
                 0,
@@ -1830,7 +1830,7 @@ fn diagnostics_for_json_document(text: &str) -> Vec<Diagnostic> {
         {
             diagnostics.push(diagnostic(
                 DiagnosticSeverity::ERROR,
-                "axiograph.behavior_case.stale_tooling",
+                "axiograph.behavior_case.embedded_tooling",
                 "BehaviorCaseV1 must not embed implementation_surfaces; use ToolingOverlayBundleV1",
                 0,
                 0,
@@ -1839,7 +1839,7 @@ fn diagnostics_for_json_document(text: &str) -> Vec<Diagnostic> {
         if value.pointer("/behavior_case/coverage_edges").is_some() {
             diagnostics.push(diagnostic(
                 DiagnosticSeverity::ERROR,
-                "axiograph.behavior_case.stale_tooling",
+                "axiograph.behavior_case.embedded_tooling",
                 "BehaviorCaseV1 must not embed coverage_edges; use ToolingOverlayBundleV1",
                 0,
                 0,
@@ -2658,7 +2658,7 @@ mod tests {
                         "text": serde_json::to_string(&json!({
                             "version": "behavior_case_v1",
                             "behavior_case": {
-                                "case_id": "stale",
+                                "case_id": "embedded_tooling",
                                 "context": {},
                                 "implementation_surfaces": [],
                                 "coverage_edges": []
@@ -2709,7 +2709,7 @@ mod tests {
     }
 
     #[test]
-    fn lsp_stale_behavior_case_fields_emit_tooling_overlay_diagnostics() {
+    fn lsp_embedded_behavior_case_fields_emit_tooling_overlay_diagnostics() {
         let mut state = AuthoringLspStateV1::default();
         let responses = handle_lsp_message_v1(
             &mut state,
@@ -2722,7 +2722,7 @@ mod tests {
                         "text": serde_json::to_string(&json!({
                             "version": "behavior_case_v1",
                             "behavior_case": {
-                                "case_id": "stale",
+                                "case_id": "embedded_tooling",
                                 "context": {},
                                 "implementation_surfaces": [],
                                 "coverage_edges": []
@@ -2739,7 +2739,7 @@ mod tests {
         assert_eq!(params.uri.as_str(), "file:///tmp/behavior_case.json");
         assert_eq!(params.diagnostics.len(), 3);
         assert!(params.diagnostics.iter().all(|diagnostic| {
-            diagnostic.source.as_deref() == Some("axiograph.behavior_case.stale_tooling")
+            diagnostic.source.as_deref() == Some("axiograph.behavior_case.embedded_tooling")
                 && diagnostic.severity == Some(lsp_types::DiagnosticSeverity::ERROR)
         }));
     }
@@ -2902,7 +2902,7 @@ mod tests {
             })),
             overlay_text: None,
         })) {
-            Ok(_) => panic!("expected stale overlay version to be rejected"),
+            Ok(_) => panic!("expected unknown overlay version to be rejected"),
             Err(err) => err,
         };
 

@@ -1,137 +1,123 @@
-# Documentation (Diataxis)
+# Documentation
 
-This repository has a lot of documentation because Axiograph spans:
+Axiograph docs are organized around the current canonical semantic spine:
 
-- a **canonical language** (`.axi`),
-- a **runtime system** (Rust + PathDB),
-- a **trusted semantics/checker** (Lean + mathlib),
-- and **tooling** (REPL, discovery loops, ingestion adapters, visualization).
+```text
+canonical .axi
+  -> KernelModuleIr
+  -> SchemaCategoryIr + TheoryIr + InstanceFunctorIr
+  -> KernelSurfaceV1 refs
+  -> typed runtime reports
+  -> optional Lean verifier
+```
 
-Repo-wide terminology note:
+Use these docs as the source of truth for current behavior. Historical prototype
+notes should not be used as implementation guidance unless a page explicitly
+marks them as current.
 
-- "LLM-assisted" means typed plugin/API/tool-loop/MCP-skill-style integration
-  surfaces that emit `query_ir_v1`, typed exploration payloads, or
-  evidence-plane proposal artifacts. It does not mean free-form semantic
-  authority over accepted ontology state.
+## Start Here
 
-To keep this navigable, we organize docs using the **Diataxis** framework:
-**Tutorials** (learn), **How-to** (do), **Reference** (look up), **Explanation** (understand).
+1. `README.md` — project intent, trust boundary, and quick commands.
+2. `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — the current end-to-end workflow.
+3. `examples/README.md` — runnable teaching catalog.
+4. `docs/explanation/SYSTEM_OVERVIEW.md` — conceptual architecture.
+5. `docs/howto/TESTING.md` — verification and CI-style gates.
 
-If you only read one thing, read the “book”:
-- `docs/explanation/BOOK.md`
+## Current Navigation Spine
 
----
-
-## Start here
-
-1. `README.md` (build + quick start)
-2. `docs/howto/CANONICAL_SEMANTIC_SPINE.md` (current V1 user workflow)
-3. `docs/explanation/SYSTEM_OVERVIEW.md` (conceptual map of the system)
-4. `docs/explanation/BOOK.md` (end-to-end: semantics → certificates → production readiness → use cases)
-5. `examples/README.md` (pedagogical example catalog and runnable teaching path)
-
-## Current navigation spine
-
-Use this route when you need the shortest current map of the system:
-
-| Need | Start here |
+| Need | Start Here |
 | --- | --- |
-| Canonical semantic input and compiled spine | `docs/reference/KERNEL_IR.md`, then `make verify-canonical-spine` in `docs/howto/TESTING.md` |
-| Trusted verification boundary | `docs/reference/TRUSTED_KERNEL.md`, `docs/reference/CERTIFICATES.md`, `docs/howto/FORMAL_VERIFICATION.md` |
-| Runtime theory judgments and typed holes | `docs/reference/RUNTIME_THEORY_CHECKER.md` |
-| Software authoring/codegen and continuous coverage | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`, `examples/software_authoring/README.md` |
-| Semantic VCS, reconciliation, and backend projection manifests | `docs/reference/SEMANTIC_VCS.md` |
-| Embeddings, RAG, vector sidecars, and evidence promotion | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
-| Backend pushdown/projection gates | `docs/reference/KERNEL_IR.md`, `docs/reference/SEMANTIC_VCS.md`, `docs/howto/TESTING.md` |
+| Canonical semantic input and compiled IR | `docs/reference/KERNEL_IR.md` |
+| Trusted verification boundary | `docs/reference/TRUSTED_KERNEL.md` |
+| Certificate/report formats | `docs/reference/CERTIFICATES.md` |
+| Runtime theory judgments and closure tiers | `docs/reference/RUNTIME_THEORY_CHECKER.md` |
+| Software authoring, DDD/fDDD, codegen, coverage | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` |
+| Semantic VCS, reconciliation, merge/rebase | `docs/reference/SEMANTIC_VCS.md` |
+| Embeddings, RAG, and evidence overlays | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
+| Backend projection and pushdown contracts | `docs/reference/KERNEL_IR.md`, `docs/reference/SEMANTIC_VCS.md` |
+| Agent working context and backlog | `docs/reference/AGENT_CONTEXT.md`, `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md` |
 
-Current semantic authority flows through accepted canonical `.axi`, compiled
-kernel/category IR, typed runtime reports, and narrow Lean-checked certificates.
-`PathDBExportV1` is retained only for debug/live-byte/parser-parity checks.
-`query_result_v1` and `query_result_v2` are retired; use canonical
-`.axi`-anchored typed query witnesses (`query_result_v3`).
+Repo-wide language rule:
 
----
+- User labels are ergonomics.
+- Compiled IR ids and `KernelSurfaceV1` refs are authority.
+- LLM/MCP/tool-loop output is evidence or proposal material until accepted by
+  typed review.
+- External graph databases and PathDB are projection/execution substrates, not
+  ontology kernels.
 
-## Tutorials (learn by doing)
+## Tutorials
 
-- `docs/tutorials/REPL.md` — interactive querying, viz, scripts
-- `docs/tutorials/VIZ_EXPLORER.md` — browser-based exploration + LLM-assisted querying (server mode)
-- `docs/tutorials/CERTIFIED_QUERYING_101.md` — minimal Rust→cert→Lean verification walkthrough
-- `docs/tutorials/FIBERED_CLOSURE_CONSTRAINTS.md` — certifiable symmetry/transitivity (`param (...)`) in open world
-- `docs/tutorials/TYPE_THEORY_DEMOS.md` — paths, homotopies, dependent structures, certificates (examples-first)
-- `docs/tutorials/SCHEMA_DISCOVERY.md` — automated ontology engineering loop (structured + LLM-assisted)
-- `docs/tutorials/CONTINUOUS_INGEST_AND_DISCOVERY.md` — continuous ingest/discovery prototype loop
-- `docs/tutorials/WORLD_MODEL_LOOP.md` — JEPA/world-model loop with guardrails + promotion
-- `docs/tutorials/INDUSTRIAL_ENGINEERING_EXAMPLE.md` — industrial/business/process example harness outside the core CLI
-- `examples/software_authoring/README.md` — pure-domain software authoring with typed DDD/fDDD overlays, weak definition queries, continuous semantic coverage, an example crate, and codegen previews
+- `docs/tutorials/REPL.md` — interactive querying, viz, and scripts.
+- `docs/tutorials/VIZ_EXPLORER.md` — browser exploration and tool-assisted querying.
+- `docs/tutorials/CERTIFIED_QUERYING_101.md` — minimal Rust to certificate to Lean walkthrough.
+- `docs/tutorials/FIBERED_CLOSURE_CONSTRAINTS.md` — certifiable open-world constraints.
+- `docs/tutorials/TYPE_THEORY_DEMOS.md` — paths, homotopies, dependent structures, and certificates.
+- `docs/tutorials/SCHEMA_DISCOVERY.md` — automated ontology discovery loop.
+- `docs/tutorials/CONTINUOUS_INGEST_AND_DISCOVERY.md` — continuous ingest/discovery loop.
+- `docs/tutorials/WORLD_MODEL_LOOP.md` — world-model proposal loop with guardrails.
+- `docs/tutorials/INDUSTRIAL_ENGINEERING_EXAMPLE.md` — industrial/business/process example harness.
+- `examples/software_authoring/README.md` — pure-domain DDD/fDDD authoring flow.
 
----
+## How-To Guides
 
-## How-to guides (task oriented)
+- `docs/howto/TESTING.md` — running test suites and demos.
+- `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — one current workflow across validation, theory checks, typed queries, overlays, semantic VCS, embeddings, and backend projections.
+- `docs/howto/FORMAL_VERIFICATION.md` — Lean checks and certificate gates.
+- `docs/howto/DB_SERVER.md` — HTTP query/viz server.
+- `docs/howto/SNAPSHOT_STORE.md` — accepted-plane and WAL workflow.
+- `docs/howto/KNOWLEDGE_INGESTION.md` — ingest to proposals to review.
+- `docs/howto/INGEST_PROTO.md` — proto/gRPC ingestion.
+- `docs/howto/LLM_QUERY_INTEGRATION.md` — typed tool-loop query integration.
+- `docs/howto/PERFORMANCE_PROFILING.md` — profiling runtime hot paths.
 
-- `docs/howto/TESTING.md` — running the test suites and demos
-- `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — one current user workflow across canonical `.axi`, runtime theory, typed queries/certificates, software-authoring overlays, semantic VCS, embeddings, and backend projections
-- `docs/howto/FORMAL_VERIFICATION.md` — running Lean checks, Rust↔Lean parity, semantics e2e
-- `docs/howto/DB_SERVER.md` — serving snapshots over HTTP (query + viz; master/replica)
-- `docs/howto/SNAPSHOT_STORE.md` — accepted-plane + PathDB WAL workflow (promotion, commits, sync)
-- `docs/howto/KNOWLEDGE_INGESTION.md` — ingest pipelines (repo/docs/sql/json/proto/web) → proposals → candidates → accept
-- `docs/howto/INGEST_PROTO.md` — proto/gRPC ingestion (Buf) details + examples
-- `docs/howto/LLM_QUERY_INTEGRATION.md` — NL-ish query integration + REPL workflows
-- `docs/howto/PERFORMANCE_PROFILING.md` — phase timings + flamegraphs (PathDB/WAL hot paths)
+## Reference
 
----
+- `docs/reference/CERTIFICATES.md` — current certificate families and Lean validation.
+- `docs/reference/TRUSTED_KERNEL.md` — exact trusted boundary and non-claims.
+- `docs/reference/KERNEL_IR.md` — compiled schema/category/theory IR and backend lowering.
+- `docs/reference/RUNTIME_THEORY_CHECKER.md` — runtime theory judgments, closure tiers, completeness claims, and non-claims.
+- `docs/reference/LEAN_THEORY_EVALUATION.md` — Lean-encoded theory status, feasibility, and gaps.
+- `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` — embedding sidecars and promotion boundaries.
+- `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — codegen, overlays, CLI, MCP, server, and LSP surfaces.
+- `docs/reference/AGENT_CONTEXT.md` — current architecture and working policy for agents.
+- `docs/reference/AXI_STYLE.md` — canonical `.axi` authoring style.
+- `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle/anchor artifact model.
+- `docs/reference/QUERY_LANG.md` — AxQL, SQL-ish elaboration, and typed query metadata.
+- `docs/reference/SEMANTIC_VCS.md` — semantic refs, commits, merge/rebase, reconciliation, and projection manifests.
+- `docs/reference/LLM_REPL_PLUGIN.md` — LLM REPL plugin protocol.
+- `docs/reference/WORLD_MODEL_PLUGIN.md` — world-model plugin protocol.
 
-## Reference (formats, protocols, languages)
+## Research
 
-- `docs/reference/CERTIFICATES.md` — certificate schema, versions, and how the Lean checker validates them
-- `docs/reference/TRUSTED_KERNEL.md` — exact boundary of the Lean trusted kernel and certificate trust classes
-- `docs/reference/KERNEL_IR.md` — canonical schema/category IR target spec
-- `docs/reference/RUNTIME_THEORY_CHECKER.md` — Rust runtime theory judgments, closure tiers, completeness claims, and non-claims
-- `docs/reference/LEAN_THEORY_EVALUATION.md` — Lean-encoded theory status, feasibility, completeness, semantic merge/lattice preservation, and non-claims
-- `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` — embedding sidecars, vector/RAG evidence, relationship lifting, and trust boundaries
-- `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — software-authoring/codegen crates, CLI, MCP, DB HTTP server, plugin, editor/LSP, and maintained protocol-crate choices
-- `docs/reference/AGENT_CONTEXT.md` — current agent-facing architecture, trust, type-system, and compatibility context
-- `docs/reference/AXI_STYLE.md` — canonical `.axi` authoring/style guide for examples and reviews
-- `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle state + anchor-aware artifact model
-- `docs/reference/QUERY_LANG.md` — AxQL + SQL-ish dialect reference (and “certified querying” roadmap)
-- `docs/reference/SEMANTIC_VCS.md` — semantic refs/commits/reconciliation/world-model lineage spec
-- `docs/reference/LLM_REPL_PLUGIN.md` — plugin protocol (`axiograph_llm_plugin_v2`)
-- `docs/reference/WORLD_MODEL_PLUGIN.md` — world model plugin protocol (`axiograph_world_model_v1`)
+- `docs/research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md` — applied category theory, dependent contexts, HoTT/groupoid paths, institutions, RDF/SHACL, and DDD/fDDD grounding.
 
-## Research (design sources)
+## Explanation
 
-- `docs/research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md` — applied category theory, dependent contexts, HoTT/groupoid paths, institutions, RDF/SHACL, and DDD/fDDD grounding for runtime theory checking
+- `docs/explanation/SYSTEM_OVERVIEW.md` — conceptual system overview.
+- `docs/explanation/ARCHITECTURE.md` — runtime architecture and trust boundary.
+- `docs/explanation/CONSTRAINT_SEMANTICS.md` — open-world constraints and certifiable fragments.
+- `docs/explanation/PATHDB_DESIGN.md` — PathDB storage/index design.
+- `docs/explanation/DISTRIBUTED_PATHDB.md` — distributed storage and replication.
+- `docs/explanation/VERIFICATION_AND_GUARDRAILS.md` — verification and failure modes.
+- `docs/explanation/RECONCILIATION.md` — reconciliation workflow.
+- `docs/explanation/PATH_VERIFICATION.md` — path verification and witness design.
+- `docs/explanation/MATHEMATICAL_FOUNDATIONS.md` — category theory, HoTT/groupoids, and denotational framing.
+- `docs/explanation/TYPED_ONTOLOGY_ENGINEERING.md` — practical type theory, ologs, and AI-assisted ontology discovery.
+- `docs/explanation/DDD_CONTEXT_WRAPPERS.md` — bounded contexts and fDDD overlays.
+- `docs/explanation/HOTT_FOR_KNOWLEDGE_GRAPHS.md` — HoTT framing for knowledge graphs.
+- `docs/explanation/TYPE_THEORY_DESIGN.md` — type-theory surface for `.axi` and runtime checking.
+- `docs/explanation/QUERY_SPEC_CONVERGENCE.md` — query IR, AxQL, CQ, and refinement convergence.
+- `docs/explanation/TOPOS_THEORY.md` — topos/sheaf semantics roadmap.
+- `docs/explanation/RUST_DEPENDENT_TYPES.md` — Rust branding/typestate/dependent-index patterns.
+- `docs/explanation/SEMANTIC_WEB_INTEROP.md` — RDF/OWL/SHACL/PROV boundary design.
+- `docs/explanation/KNOWLEDGE_GENERATION_AND_LEARNING.md` — learning and epistemics direction.
+- `docs/explanation/JEPA_INTEGRATION.md` — JEPA-style world models.
+- `docs/explanation/OBJECTIVE_DRIVEN_AI.md` — objective-driven AI mapping.
+- `docs/explanation/SELF_SUPERVISED_LEARNING.md` — self-supervised loops.
+- `docs/explanation/LLM_KG_SYNC.md` — LLM to KG sync at an untrusted boundary.
 
----
-
-## Explanation (design + semantics)
-
-- `docs/explanation/ARCHITECTURE.md` — system architecture and trust boundary
-- `docs/explanation/CONSTRAINT_SEMANTICS.md` — open-world constraints and what can be certified
-- `docs/explanation/PATHDB_DESIGN.md` — PathDB storage/index design
-- `docs/explanation/DISTRIBUTED_PATHDB.md` — replication/sharding + snapshot-scoped certificates + reading list
-- `docs/explanation/UNIFIED_STORAGE.md` — retired dual-write design note and current canonical-spine redirect
-- `docs/explanation/VERIFICATION_AND_GUARDRAILS.md` — how guardrails/verification fit together (and how they can fail)
-- `docs/explanation/RECONCILIATION.md` — reconciliation workflow + semantics direction
-- `docs/explanation/PATH_VERIFICATION.md` — path verification and witness design
-- `docs/explanation/MATHEMATICAL_FOUNDATIONS.md` — core math notes (category theory, HoTT/groupoids, etc.)
-- `docs/explanation/TYPED_ONTOLOGY_ENGINEERING.md` — practical type theory + denotational semantics + ologs + AI-assisted ontology discovery/axiomitization
-- `docs/explanation/DDD_CONTEXT_WRAPPERS.md` — how bounded contexts / fDDD / wrapper vocabulary fit over the existing ontology/query/report seams
-- `docs/explanation/HOTT_FOR_KNOWLEDGE_GRAPHS.md` — HoTT framing (paths/groupoids for KGs)
-- `docs/explanation/TYPE_THEORY_DESIGN.md` — the type-theory surface for `.axi` and PathDB
-- `docs/explanation/QUERY_SPEC_CONVERGENCE.md` — how query IR, AxQL, CQ gating, refinement, and spec/scenario work may converge without a greenfield language rewrite
-- `docs/explanation/TOPOS_THEORY.md` — topos/sheaf semantics roadmap for contexts/modalities (explanation-level)
-- `docs/explanation/RUST_DEPENDENT_TYPES.md` — “dependent” encodings + branding/typestate patterns in Rust
-- `docs/explanation/SEMANTIC_WEB_INTEROP.md` — RDF/OWL/SHACL/PROV boundary design
-- `docs/explanation/KNOWLEDGE_GENERATION_AND_LEARNING.md` — learning/epistemics direction (extension semantics)
-- `docs/explanation/JEPA_INTEGRATION.md` — JEPA-style architectures and how they map to Axiograph
-- `docs/explanation/OBJECTIVE_DRIVEN_AI.md` — objective-driven AI (world model + costs + MPC) mapping
-- `docs/explanation/SELF_SUPERVISED_LEARNING.md` — self-supervised learning loops on anchored snapshots
-- `docs/explanation/LLM_KG_SYNC.md` — LLM ↔ KG sync direction (untrusted boundary; cert-checked core)
-
----
-
-## Roadmaps (tracked plans)
+## Roadmaps
 
 - `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md`
 - `docs/roadmaps/ROADMAP_TOOLING_OVERLAY_SEPARATION.md`

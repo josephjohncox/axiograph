@@ -88,7 +88,7 @@ Run the focused gates from `rust/` unless the command says `make`:
 cargo test -p axiograph-cli --test examples_e2e \
   example_catalog_paths_exist_and_stay_teaching_oriented
 cargo test -p axiograph-cli --test examples_e2e \
-  examples_readme_keeps_pathdb_export_debug_only
+  examples_readme_keeps_storage_debug_roundtrips_out_of_teaching_path
 
 # Canonical-only public semantic surfaces reject derived PathDBExportV1 snapshots.
 cargo test -p axiograph-cli --test examples_e2e \
@@ -98,11 +98,11 @@ cargo test -p axiograph-cli --test examples_e2e \
 cargo test -p axiograph-cli --test examples_e2e \
   querycert_rejects_pathdb_export_snapshot_smoke
 
-# REPL teaching scripts do not emit stale export-era snapshots or commands.
+# REPL teaching scripts do not emit removed debug snapshot exports or commands.
 cargo test -p axiograph-cli --test examples_e2e \
   repl_scripts_canonical_smoke
 cargo test -p axiograph-cli --test examples_e2e \
-  repl_rejects_stale_export_axi_command
+  repl_rejects_removed_export_axi_command
 
 # PathDBExportV1 remains deterministic/reversible for debug parity only.
 cargo test -p axiograph-pathdb --test axi_export_tests \

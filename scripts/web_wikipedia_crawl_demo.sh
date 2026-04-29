@@ -63,7 +63,7 @@ echo "-- B) Draft a candidate axi_v1 module (untrusted) from proposals"
 
 echo ""
 echo "-- C) Import drafted module into PathDB (.axpd) and run tooling"
-"$AXIOGRAPH" db pathdb import-axi "$OUT_DIR/wikipedia_discovered.axi" --out "$OUT_DIR/wikipedia_discovered.axpd"
+"$AXIOGRAPH" db pathdb materialize-axi "$OUT_DIR/wikipedia_discovered.axi" --out "$OUT_DIR/wikipedia_discovered.axpd"
 
 "$AXIOGRAPH" tools analyze network "$OUT_DIR/wikipedia_discovered.axpd" --plane both --format json --out "$OUT_DIR/network.json"
 "$AXIOGRAPH" check quality "$OUT_DIR/wikipedia_discovered.axpd" --plane both --profile fast --format json --no-fail --out "$OUT_DIR/quality.json"

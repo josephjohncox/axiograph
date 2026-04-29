@@ -23,7 +23,6 @@ embedding/evidence overlays, and backend projections.
 
 - Canonical `.axi` is the public semantic input.
 - PathDB and `.axpd` are execution/query substrates, not semantic authority.
-- `PathDBExportV1` is debug/live-byte/parser parity only.
 - Query certification uses `QueryCertificatePolicyV1`: `none`, `emit`,
   `verify`, or `require_verified`.
 - DDD/fDDD, BDD, implementation surfaces, codegen, and coverage policies live in
@@ -40,8 +39,8 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   check validate examples/software_authoring/OrderFulfillmentDomain.axi
 ```
 
-Use `check validate` as the first gate. It rejects derived
-`PathDBExportV1` snapshots in public semantic flows.
+Use `check validate` as the first gate. Public semantic flows accept canonical
+modules, not derived storage snapshots.
 
 ## 2. Check Runtime Theory Closure
 

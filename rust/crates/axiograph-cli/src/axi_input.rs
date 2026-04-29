@@ -48,10 +48,6 @@ impl PathdbExportAxiModule {
         Self { module }
     }
 
-    pub(crate) fn module_name(&self) -> &str {
-        &self.module.module_name
-    }
-
     pub(crate) fn import_pathdb(&self) -> Result<axiograph_pathdb::PathDB> {
         axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&self.module)
     }
@@ -161,7 +157,7 @@ instance I of S:
 
         match classify_axi_text(&export).expect("classify snapshot export") {
             ClassifiedAxiModule::PathdbExport(module) => {
-                assert_eq!(module.module_name(), "PathDBExport");
+                assert_eq!(module.module.module_name, "PathDBExport");
                 assert!(module.import_pathdb().is_ok());
             }
             ClassifiedAxiModule::Canonical(_) => {

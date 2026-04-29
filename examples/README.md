@@ -161,7 +161,7 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown
 | `examples/physics/` | scientific ontology and measurement examples |
 | `examples/proto/` | proto/API semantics example |
 | `examples/rdfowl/` | RDF/SHACL boundary-layer examples |
-| `examples/repl_scripts/` | smoke scripts and historical REPL demos |
+| `examples/repl_scripts/` | REPL smoke scripts for canonical imports, typed queries, and derived module exports |
 | `examples/schema_discovery/` | proposal-to-canonical `.axi` examples |
 | `examples/semantic_merge/` | plant-operations semantic VCS merge/rebase with Lean conformance fixtures |
 
@@ -175,9 +175,7 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown
 - Keep mutations through Axiograph semantic workflows. Example harnesses may
   write reports and cache artifacts, but they should not directly mutate
   accepted ontology state.
-- `PathDBExportV1` and `axiograph db pathdb export-axi/import-axi` are
-  debug/live-byte/parser-parity only. They are not public semantic inputs,
-  teaching anchors, accepted-plane promotion inputs, or certificate/query
-  authorities.
+- Storage/debug roundtrips are not public semantic inputs, teaching anchors,
+  accepted-plane promotion inputs, or certificate/query authorities.
 - Every nontrivial example should state which type, trust, CQ, coverage,
   merge/VCS, or backend-projection surface it exercises.
