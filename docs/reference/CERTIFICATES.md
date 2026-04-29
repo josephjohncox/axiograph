@@ -14,6 +14,24 @@ For the exact boundary of what the Lean side is trusted to mean, see
 Certificates are currently JSON for ease of inspection. The intent is to keep the
 shape **stable and versioned**, and later add CBOR once the schema settles.
 
+## Active certificate spine
+
+Current user-facing/query certification should follow this route:
+
+1. canonical accepted `.axi` text,
+2. stable `.axi` digest anchor (`axi_digest_v1`),
+3. compiled/query/runtime typed witness over that anchor,
+4. Lean checker result for the supported certificate family.
+
+For queries, the supported family is `query_result_v3`, the canonical
+`.axi`-anchored typed query-witness path. `query_result_v1` and
+`query_result_v2` are retired and are not active compatibility contracts.
+
+`PathDBExportV1` is also not a certificate authority. It remains only a
+debug/live-byte/parser-parity format for reversible PathDB snapshot export
+checks. Do not route query certification, accepted-plane promotion, teaching
+examples, or trusted semantic claims through it.
+
 ## Versions
 
 ### Historical v1: reachability (float confidences)
@@ -274,6 +292,16 @@ It proves **soundness of returned rows** under a canonical `.axi` anchor:
 
 - each returned row satisfies the query under the anchored canonical module
 - it does **not** claim completeness (“these are all rows”)
+
+Runtime/server policy is expressed with `QueryCertificatePolicyV1`:
+
+- `none`: no certificate is emitted.
+- `emit`: emit the typed query witness when the query is certifiable.
+- `verify`: emit the witness and run the Lean checker, returning verification
+  status/output.
+- `require_verified`: fail closed unless the query is fully certifiable, an
+  accepted `.axi` anchor is present, canonical text for that anchor is present,
+  and Lean verification succeeds.
 
 Anchoring:
 

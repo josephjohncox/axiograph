@@ -1,7 +1,8 @@
 # Axiograph Examples
 
-Examples are teaching artifacts first. They should demonstrate usable typed
-ontology workflows instead of acting as hidden compatibility fixtures.
+Examples are teaching artifacts first. Canonical `.axi` modules are the public
+semantic input, and examples should demonstrate usable typed ontology workflows
+instead of acting as hidden compatibility fixtures.
 
 The machine-readable catalog is `examples/catalog.json`. The canonical parser
 and Rust/Lean parity corpus is `examples/canonical/corpus.json`.
@@ -14,10 +15,26 @@ and Rust/Lean parity corpus is `examples/canonical/corpus.json`.
 | HoTT/path flavor | `examples/family/FamilyHoTT.axi` | typed paths, path witnesses, relation composition |
 | Rewrites and equations | `examples/ontology/OntologyRewrites.axi` | runtime theory graph, rewrite/constraint surfaces |
 | Schema evolution | `examples/ontology/SchemaEvolution.axi` | migration-preview and typed transport examples |
+| Semantic merge | `examples/semantic_merge/` | realistic plant-operations merge/rebase plans checked against Lean theory |
 | Business process | `examples/industrial/RegulatedProductionLine.axi` | BDD/DDD/fDDD, CQs, coverage, implementation surfaces |
 | Software authoring | `examples/software_authoring/OrderFulfillmentDomain.axi` | pure domain `.axi` plus DDD/fDDD tooling overlays, weak definition queries, typed theory checks, continuous semantic coverage, code skeleton previews |
 | Physics/domain modeling | `examples/physics/PhysicsOntology.axi` | scientific ontology and typed relation design |
 | Backend/interop | `examples/rdfowl/` | RDF/SHACL boundary-layer examples, not the kernel |
+
+## Recommended Flow
+
+Use examples in this order unless you are testing a specific subsystem:
+
+1. Validate the canonical `.axi` module.
+2. Run a runtime-theory check or emit a theory graph.
+3. Explore meaning through typed query, definition, overlay, or coverage
+   reports.
+4. For software-authoring examples, generate code plans and continuous
+   coverage reports before materializing skeletons.
+5. For semantic VCS examples, build accepted-plane review refs, dry-run
+   merge/rebase, then check the reduced Lean payloads.
+6. Treat backend-specific artifacts as read-only projections from compiled IR.
+   They are useful for native inspection, not semantic authority or mutation.
 
 ## Core Commands
 
@@ -34,6 +51,15 @@ Emit a typed theory-obligation graph:
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   discover theory-graph examples/ontology/OntologyRewrites.axi \
   --out build/examples/ontology_rewrites_theory_graph.json
+```
+
+Emit the compiled kernel surface used by query, coverage, merge, and backend
+projection tooling:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover kernel-surface examples/Family.axi \
+  --out build/examples/family_kernel_surface.json
 ```
 
 Emit a query certificate from a canonical module:
@@ -105,6 +131,19 @@ Run only weak definition queries for authoring and agent planning:
 ./examples/software_authoring/run_definition_queries.sh
 ```
 
+Run the semantic VCS merge/rebase example and Lean theory conformance checks:
+
+```bash
+./examples/semantic_merge/run_merge_flow.sh
+make verify-lean-semantic-vcs
+```
+
+Inspect backend-projection contracts as implementation/test surfaces:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown
+```
+
 ## Pedagogical Map
 
 | Directory | Role |
@@ -124,6 +163,7 @@ Run only weak definition queries for authoring and agent planning:
 | `examples/rdfowl/` | RDF/SHACL boundary-layer examples |
 | `examples/repl_scripts/` | smoke scripts and historical REPL demos |
 | `examples/schema_discovery/` | proposal-to-canonical `.axi` examples |
+| `examples/semantic_merge/` | plant-operations semantic VCS merge/rebase with Lean conformance fixtures |
 
 ## Greenfield Example Rules
 
@@ -136,7 +176,8 @@ Run only weak definition queries for authoring and agent planning:
   write reports and cache artifacts, but they should not directly mutate
   accepted ontology state.
 - `PathDBExportV1` and `axiograph db pathdb export-axi/import-axi` are
-  debug/parity surfaces, not teaching anchors. New examples should not
-  foreground them.
+  debug/live-byte/parser-parity only. They are not public semantic inputs,
+  teaching anchors, accepted-plane promotion inputs, or certificate/query
+  authorities.
 - Every nontrivial example should state which type, trust, CQ, coverage,
   merge/VCS, or backend-projection surface it exercises.

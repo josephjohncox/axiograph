@@ -437,7 +437,7 @@ Align storage claims with actual runtime artifacts.
 - [ ] Keep WAL overlays explicitly outside the semantic kernel:
   - queries may use chunks/proposals/embeddings for retrieval and explanation,
   - but they should not be “certified” unless the relevant facts were promoted into accepted `.axi`.
-- [ ] Add typed embedding sidecar manifests and evidence overlays:
+- [~] Add typed embedding sidecar manifests and evidence overlays:
   - `EmbeddingSidecarManifestV1` anchored to accepted ref / PathDB snapshot /
     compiled IR digest / model version / text digests,
   - `EmbeddingEvidenceOverlayV1` for similarity observations and candidate
@@ -445,6 +445,11 @@ Align storage claims with actual runtime artifacts.
   - no vector payloads in canonical `.axi`,
   - embedding-derived relationships enter semantic VCS only as typed proposals
     or review deltas.
+  - implemented so far: Rust data contracts and validation for manifest
+    anchors, source model identity, target ids, trust caveats, and advisory-only
+    relationship overlays.
+  - remaining: CLI/tool-loop generation, persisted overlay artifacts, and
+    proposal/evolution-preview plumbing.
 - [ ] Change store-backed certification to prefer canonical accepted-plane anchors:
   - for accepted-plane serving, certify from accepted module text / canonical anchor material,
   - for pathdb-layer serving, fail closed when a requested certified answer depends on overlay-only facts,
@@ -495,9 +500,13 @@ Semantic refs should define permitted workflow, not just naming convention.
 | `refs/tags/<release>` | immutable release pointer | semantic commit on `main` | tag move must not alter accepted state payload |
 
 - [ ] Treat `sem/HEAD` as a symbolic semantic-ref pointer, not a snapshot-id cache.
-- [ ] Reject direct `wm/* -> main` transitions; world-model output must reconcile through `review/*`.
-- [ ] Reserve tags for accepted/released states only; do not tag unreviewed evidence or wm branches.
-- [ ] Define ref-update validation centrally so branch invariants are enforced in one place rather than by CLI convention.
+- [x] Reject direct `wm/* -> main` transitions; world-model output must reconcile through `review/*`.
+- [x] Reserve tags for accepted/released states only; do not tag unreviewed evidence or wm branches.
+- [x] Define ref-update validation centrally so branch invariants are enforced in one place rather than by CLI convention.
+  - current runtime validation covers `heads/main`, `heads/review/*`,
+    `heads/evidence/*`, `heads/wm/*`, and immutable `tags/*`
+  - `heads/wm/*` requires `WorldModelRun` commits with run-id provenance,
+    delta refs, and persisted run records
 
 ### Semantic state objects vs semantic delta objects
 
@@ -528,37 +537,44 @@ Required delta payload:
 - [x] Land a first compact typed-layer sidecar on `SemDeltaV1`:
   - semantic commits can now carry `semantic_delta` copied from `EvolutionPreviewV1`
     without inlining the full preview report.
-- [ ] Continue expanding `SemDeltaV1` beyond the first sidecar:
+- [~] Continue expanding `SemDeltaV1` beyond the first sidecar:
   - keep layer summaries compact,
   - preserve refs for quality/validation/certs/world-model lineage,
   - and avoid copying full preview internals into commit history.
 - [ ] Keep `SemStateRefV1` pointer-only; it should not inline preview payloads or copy large reports.
 - [ ] Make semantic commits cite materialized state and persisted review artifacts, not duplicate them.
-- [ ] Add one compact semantic gate summary to commits and refs:
+- [x] Add one compact semantic gate summary to commits and refs:
   - trust summary
   - CQ gate summary
   - residual obligation count
   - preview kind/candidate label
+  - current runtime also copies the compact gate summary into `SemDeltaV1`
+    where the delta was derived from a preview/gated overlay
 
 ### Merge and reconciliation rules
 
 Merge should remain semantic reconciliation, not text concatenation.
 
 - [ ] Make `sem merge --dry-run` the default first shipping merge mode.
-- [ ] Require dry-run merge output to materialize:
+- [~] Require dry-run merge output to materialize:
   - semantic diff by `schema` / `theory` / `instance` / `context`
   - conflict set
   - candidate reconciliation object
   - CQ/trust preview result
   - residual obligations
+  - typed blocker set for quality, CQ, trust, coverage, runtime theory,
+    unresolved conflicts, and unapplied resolver handles
 - [~] Route merge/rebase planning through typed semantic slices and a finite
   runtime merge lattice:
   - see `docs/roadmaps/ROADMAP_SEMANTIC_MERGE_LATTICE.md`
   - current first slice adds `SemanticSliceManifestV1`,
-    `SemanticMergeLatticeV1`, `SemanticMergePlanV1`, and MCP-visible resolver
-    steps over existing semantic merge dry-runs
+    `SemanticMergeLatticeV1`, `SemanticMergePlanV1`, MCP-visible resolver
+    steps, and typed blocker summaries over existing semantic merge dry-runs
   - auto-merge stays conservative and materialization remains fail-closed
-- [ ] Only materialize a merge commit after a persisted reconciliation object exists when there are semantic conflicts.
+- [~] Only materialize a merge commit after a persisted reconciliation object exists when there are semantic conflicts.
+  - current runtime persists the reconciliation and preview before a merge
+    commit and rejects missing or non-materializing decisions such as
+    `manual_review`
 - [ ] Require `SemReconciliationV1` to reference:
   - base/left/right commit ids
   - preview report refs
@@ -706,7 +722,10 @@ merge, and promotion paths.
 
 ### Current implemented slice
 
-- `query_ir_v1` and `PreparedQueryV1` already expose trust and certifiability.
+- `query_ir_v1` and `PreparedQueryV1` already expose trust and certifiability;
+  `PreparedQueryMetadataV1` packages the prepared-query id, input/elaborated IR
+  ids, inferred types, trust, explicit non-claims, and refinement handles for
+  downstream reports.
 - `trust_contract.rs` already defines:
   - `TrustContractV1`
   - `QueryTrustContractV1`
@@ -761,11 +780,16 @@ merge, and promotion paths.
   - server `/query`
   - CQ evaluation
   - agent/tool surfaces
+  - Current bridge: CQ evaluation now cites `PreparedQueryMetadataV1` per
+    question, and refinement apply reports carry base/refined prepared-query
+    metadata instead of only raw query text.
 - [ ] Persist certifiability metadata for CQs and preview reports:
   - whole-query `trust_class`
   - `certifiable_disjuncts`
   - `execution_only_disjuncts`
   - query-level reasons for unsupported fragments
+  - Current bridge: CQ reports carry this via `PreparedQueryMetadataV1`; preview
+    report persistence still needs the same envelope.
 - [ ] Require CQ reports to say when a regression is:
   - semantic answer regression
   - trust downgrade

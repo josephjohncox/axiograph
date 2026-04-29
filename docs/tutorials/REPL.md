@@ -1,14 +1,21 @@
-# Axiograph REPL (PathDB)
+# Axiograph REPL (Canonical `.axi` over Derived PathDB)
 
 **Diataxis:** Tutorial  
 **Audience:** users (and contributors)
 
 The Axiograph REPL is a lightweight interactive shell for working with:
 
-- PathDB snapshots (`.axpd`)
-- Canonical `.axi` modules (`axi_v1`, schema/theory/instance), imported into PathDB for querying
+- Canonical `.axi` modules (`axi_v1`, schema/theory/instance), imported into a
+  derived PathDB snapshot for querying.
+- Typed query/report surfaces: AxQL lowers toward `query_ir_v1` /
+  `PreparedQueryV1` metadata, and certified query rows use `.axi`-anchored
+  `query_result_v3` witnesses outside the REPL.
+- Evidence, LLM, world-model, and chunk overlays that remain reviewable until
+  validated and promoted through the semantic VCS.
 
-It’s intended for quick experiments and debugging (not a polished end-user UI).
+It’s intended for quick experiments, typed teaching flows, and debugging (not a
+polished end-user UI). PathDB is the execution substrate here; accepted `.axi`
+and semantic VCS refs remain the meaning plane.
 `PathDBExportV1` snapshot `.axi` files are no longer a REPL authoring surface;
 use `axiograph db pathdb export-axi/import-axi` only for explicit
 debug/live-byte/parser-parity workflows.
@@ -72,14 +79,14 @@ cd rust
 cargo run -p axiograph-cli --no-default-features -- repl
 ```
 
-To preload an existing snapshot:
+To preload an existing derived snapshot:
 
 ```bash
 cd rust
 cargo run -p axiograph-cli -- repl --axpd path/to/snapshot.axpd
 ```
 
-## Walkthrough: Generate → Query → Export → Reload
+## Walkthrough: Import/Generate → Typed Query → Save Derived Snapshot
 
 Start the REPL:
 
@@ -87,6 +94,21 @@ Start the REPL:
 cd rust
 cargo run -p axiograph-cli -- repl
 ```
+
+For the canonical teaching path, import `.axi` first:
+
+```text
+axiograph> import_axi examples/ontology/OntologyRewrites.axi
+axiograph> schema
+axiograph> validate_axi
+axiograph> q --elaborate select ?x where ?x is Person limit 5
+```
+
+The elaboration report is the user-facing view of the same typed boundary used
+by server/tooling flows: `query_ir_v1` prepares a `PreparedQueryV1`, returns
+metadata/trust/refinement information, and can produce `.axi`-anchored
+`query_result_v3` witnesses when a certified result is requested on a supported
+fragment.
 
 ## Tooling: Quality + Network Analysis (in-REPL)
 
@@ -192,9 +214,10 @@ AxQL is a small datalog-ish pattern language with **conjunctive query / homomorp
 semantics.
 
 Performance note: the REPL keeps a small in-memory cache of **compiled AxQL queries**
-(lowered query + candidate bitmaps + join order + RPQ automata) keyed by the current
-snapshot and the query IR digest. The cache is cleared on `load`, `import_*`, and `gen`.
-The `q` command prints cache hit/miss + elapsed time.
+(lowered `query_ir_v1`, prepared handle metadata, candidate bitmaps, join order,
+and RPQ automata) keyed by the current snapshot and the query IR digest. The
+cache is cleared on `load`, `import_*`, and `gen`. The `q` command prints cache
+hit/miss + elapsed time.
 
 - type constraint: `?x : TypeName`
 - path constraint: `?x -<rpq>-> ?y` where `<rpq>` supports:
@@ -262,10 +285,11 @@ inferred:
 axiograph> q --elaborate select ?dst where ?f = Flow(from=a, to=?dst)
 ```
 
-This prints:
+This prints a typed report:
 - the elaborated AxQL query text (with implied `?x : Type` atoms inserted),
 - inferred types per variable (including supertypes),
 - ambiguity notes when a relation name exists in multiple schemas,
+- certifiability/trust-class and explicit non-claims where available,
 - and typed refinement handles for admissible next moves.
 
 To stop after checking/elaboration (no execution), use:
@@ -486,13 +510,17 @@ axiograph> ask from 0 follow rel_0 then rel_1 max hops 5
 
 For more “generic” questions, the REPL supports an **optional** LLM layer:
 
-1. LLM proposes an AxQL query
-2. Axiograph executes the proposed query against the loaded snapshot
-3. (optional) LLM summarizes the results
+1. LLM proposes structured `query_ir_v1` or a tool call.
+2. Rust prepares a `PreparedQueryV1` and executes it against the loaded
+   snapshot.
+3. When requested through `QueryCertificatePolicyV1`, Rust may emit a
+   `query_result_v3` witness for the supported fragment.
+4. (optional) LLM summarizes the typed result and caveats.
 
 For more robust workflows, prefer **tool-loop mode**:
 
-- `llm agent ...` (LLM calls tools like `fts_chunks` / `axql_run`; Rust executes; LLM answers)
+- `llm agent ...` (LLM calls tools like `fts_chunks` / `axql_run`; Rust
+  executes typed query handles; LLM answers)
 
 The tool-loop agent is given a **schema/meta-plane hint pack** (relation signatures + key/functional
 constraints + context/time samples) so it can propose correctly typed facts and choose the right
@@ -555,7 +583,10 @@ bin/axiograph discover competency-questions \
 axiograph> wm plan build/wm_plan.json --steps 3 --rollouts 2 --goal "fill missing parent links" --cq-file build/family_cq.json
 ```
 
-To commit proposals into the PathDB WAL (store-backed workflows), pass `--commit-dir`:
+To store proposals as a reviewable PathDB WAL/evidence overlay, pass
+`--commit-dir`. This does not promote canonical truth; accepted changes still
+need typed validation, review, reconciliation as needed, and semantic VCS
+promotion into canonical `.axi`.
 
 ```text
 axiograph> wm propose build/wm_proposals.json --commit-dir build/accepted_plane --message "wm: parent predictions"
@@ -653,7 +684,10 @@ one context but not the other:
 axiograph> diff ctx CensusData FamilyTree rel Parent limit 20
 ```
 
-### 5) Save snapshot as `.axpd`
+### 5) Save derived snapshot as `.axpd`
+
+Saving writes the current execution snapshot for reload/debugging. It is not a
+semantic promotion step.
 
 ```text
 axiograph> save build/snapshot.axpd
@@ -680,15 +714,16 @@ axiograph> stats
 
 ## Debug/parity snapshot exports
 
-If you need a reversible snapshot `.axi` for storage/parser parity, leave the
-REPL and use the explicit DB command:
+If you need a reversible snapshot `.axi` for storage/live-byte/parser parity,
+leave the REPL and use the explicit DB command:
 
 ```bash
 axiograph db pathdb export-axi build/snapshot.axpd --out build/snapshot_pathdb_export_v1.axi
 axiograph db pathdb import-axi build/snapshot_pathdb_export_v1.axi --out build/snapshot_roundtrip.axpd
 ```
 
-That snapshot is not semantic/query/certificate authority.
+That snapshot is not semantic/query/certificate authority and should not appear
+in public tutorial paths except this debug parity case.
 
 ## Command Reference (quick)
 

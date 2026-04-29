@@ -503,7 +503,8 @@ pub fn proposals_from_rdf_v1(
     let mut types_by_resource: HashMap<RdfNode, HashSet<String>> = HashMap::new();
     let mut attrs_by_resource: HashMap<RdfNode, HashMap<String, Vec<RdfLiteral>>> = HashMap::new();
 
-    // All edges (including rdf:type) that connect node → node.
+    // Node-to-node relationship statements. `rdf:type` is handled as entity
+    // typing below, not as a binary relation proposal.
     let mut node_edges: Vec<(RdfStatement, RdfNode)> = Vec::new();
 
     for stmt in &statements {
@@ -516,7 +517,6 @@ pub fn proposals_from_rdf_v1(
         match &stmt.object {
             RdfObject::Node(obj_node) => {
                 resources.insert(obj_node.clone());
-                node_edges.push((stmt.clone(), obj_node.clone()));
 
                 if stmt.predicate_iri == RDF_TYPE_IRI {
                     if let RdfNode::Iri(ty_iri) = obj_node {
@@ -525,6 +525,8 @@ pub fn proposals_from_rdf_v1(
                             .or_default()
                             .insert(ty_iri.clone());
                     }
+                } else {
+                    node_edges.push((stmt.clone(), obj_node.clone()));
                 }
             }
             RdfObject::Literal(lit) => {
@@ -745,6 +747,8 @@ pub fn proposals_from_rdf_v1(
 
         let mut attrs = HashMap::new();
         attrs.insert("context".to_string(), stmt_context_id.clone());
+        attrs.insert("axi_source_field".to_string(), "subject".to_string());
+        attrs.insert("axi_target_field".to_string(), "object".to_string());
 
         out.push(ProposalV1::Relation {
             meta: ProposalMetaV1 {

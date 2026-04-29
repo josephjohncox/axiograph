@@ -100,9 +100,7 @@ ACCEPTED_AXPD="$OUT_DIR/PhysicsDiscovered.accepted.axpd"
   --out "$ACCEPTED_AXPD"
 
 echo ""
-echo "-- F) export reversible snapshot .axi + viz"
-SNAPSHOT_EXPORT_AXI="$OUT_DIR/PhysicsDiscovered.snapshot_export_v1.axi"
-"$AXIOGRAPH" db pathdb export-axi "$ACCEPTED_AXPD" --out "$SNAPSHOT_EXPORT_AXI"
+echo "-- F) visualize accepted snapshot"
 
 "$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
   --out "$OUT_DIR/PhysicsDiscovered.both.html" \
@@ -119,5 +117,4 @@ echo "  $OUT_DIR/proposals.json"
 echo "  $DRAFT_AXI"
 echo "  $ACCEPTED_PLANE_DIR/HEAD"
 echo "  $ACCEPTED_AXPD"
-echo "  $SNAPSHOT_EXPORT_AXI"
 echo "  $OUT_DIR/PhysicsDiscovered.both.html"

@@ -12,7 +12,7 @@ set -euo pipefail
 #       2) `discover augment-proposals` (LLM suggests schema hints and additional grounded relations)
 #       3) `discover draft-module` (LLM suggests extra subtyping + constraints)
 #       4) promotion gate: validate + typecheck certificate + Lean check
-#       5) build `.axpd` snapshot + reversible snapshot export `.axi` + viz pages
+#       5) build `.axpd` snapshot + optional reversible debug export + viz pages
 #
 # Run:
 #   ./scripts/ontology_engineering_proto_evolution_ollama_demo.sh
@@ -22,7 +22,7 @@ set -euo pipefail
 # - If `LLM_BACKEND=ollama`: `ollama` installed + running (`ollama serve`), and the model available.
 # - If `LLM_BACKEND=openai`: `OPENAI_API_KEY` set.
 # - If `LLM_BACKEND=anthropic`: `ANTHROPIC_API_KEY` set.
-# - Lean/lake optional (promotion gate will run if available)
+# - Lean/lake optional (promotion gate runs if available; REQUIRE_LEAN=1 makes it mandatory)
 #
 # Optional:
 # - `AXIOGRAPH_LLM_TIMEOUT_SECS=600` to allow longer-running model calls (0 disables).
@@ -49,6 +49,19 @@ if ! command -v buf >/dev/null 2>&1; then
   echo "error: buf not found. Install it from https://buf.build and retry." >&2
   exit 1
 fi
+
+verify_lean_cert_if_available() {
+  local axi="$1"
+  local cert="$2"
+  if command -v lake >/dev/null 2>&1; then
+    (cd "$ROOT_DIR" && make verify-lean-cert AXI="$axi" CERT="$cert")
+  elif [ "${REQUIRE_LEAN:-0}" = "1" ]; then
+    echo "error: Lean/lake not found and REQUIRE_LEAN=1" >&2
+    exit 1
+  else
+    echo "skip: Lean/lake not found; set REQUIRE_LEAN=1 to make verification mandatory"
+  fi
+}
 
 DISCOVER_LLM_FLAGS=()
 if [ "$LLM_BACKEND" = "ollama" ]; then
@@ -117,7 +130,6 @@ run_tick() {
   local accepted_axi="$accepted_dir/ProtoApi.tick${tick}.accepted.axi"
   local accepted_axpd="$accepted_dir/ProtoApi.tick${tick}.accepted.axpd"
   local accepted_axpd_with_chunks="$accepted_dir/ProtoApi.tick${tick}.accepted.with_chunks.axpd"
-  local snapshot_export_axi="$accepted_dir/ProtoApi.tick${tick}.snapshot_export_v1.axi"
 
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -161,7 +173,7 @@ run_tick() {
 
   echo ""
   echo "-- tick $tick: promotion gate (Lean) verify typecheck certificate (optional)"
-  (cd "$ROOT_DIR" && make verify-lean-cert AXI="$candidate_axi" CERT="$typecheck_cert")
+  verify_lean_cert_if_available "$candidate_axi" "$typecheck_cert"
 
   echo ""
   echo "-- tick $tick: promote (copy candidate -> accepted plane)"
@@ -176,10 +188,6 @@ run_tick() {
   "$AXIOGRAPH" db pathdb import-chunks "$accepted_axpd" \
     --chunks "$chunks" \
     --out "$accepted_axpd_with_chunks"
-
-  echo ""
-  echo "-- tick $tick: export reversible PathDB snapshot (.axi) for certificate anchoring"
-  "$AXIOGRAPH" db pathdb export-axi "$accepted_axpd" --out "$snapshot_export_axi"
 
   echo ""
   echo "-- tick $tick: viz (meta-plane)"
@@ -234,19 +242,18 @@ run_tick() {
     --cmd "q select ?c where ?c is DocChunk, fts(?c, \"search_text\", \"$focus_service\") limit 10"
 
   echo ""
-  echo "-- tick $tick: optional certified query anchored to snapshot export"
+  echo "-- tick $tick: optional certified query anchored to accepted canonical .axi"
   local query_cert="$accepted_dir/proto_api_query_cert_v1.json"
-  "$AXIOGRAPH" cert query "$snapshot_export_axi" \
+  "$AXIOGRAPH" cert query "$accepted_axi" \
     'select ?rpc where name("acme_payments_v1_PaymentService") -proto_service_has_rpc-> ?rpc limit 10' \
     --out "$query_cert"
-  (cd "$ROOT_DIR" && make verify-lean-cert AXI="$snapshot_export_axi" CERT="$query_cert")
+  verify_lean_cert_if_available "$accepted_axi" "$query_cert"
 
   echo ""
   echo "-- tick $tick outputs:"
   echo "  accepted axi:         $accepted_axi"
   echo "  accepted axpd:        $accepted_axpd"
   echo "  accepted axpd+chunks: $accepted_axpd_with_chunks"
-  echo "  snapshot export axi:  $snapshot_export_axi"
   echo "  typecheck cert:       $typecheck_cert"
   echo "  meta viz:             $accepted_dir/proto_api_meta.html"
   echo "  service viz:          $accepted_dir/proto_api_${focus_service}.html"

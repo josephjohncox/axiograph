@@ -174,8 +174,8 @@ let stats = sync_manager.process_conversation(&conversation).await?;
 let status = sync_manager.propose_fact(extracted_fact).await?;
 
 match status {
-    FactStatus::Integrated { kg_ids } => {
-        println!("Fact added to KG as entities: {:?}", kg_ids);
+    FactStatus::Integrated { entity_ids } => {
+        println!("Fact added to graph as entities: {:?}", entity_ids);
     }
     FactStatus::Validated => {
         println!("Fact validated, pending integration");

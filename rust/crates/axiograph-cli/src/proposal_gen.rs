@@ -93,7 +93,7 @@ pub struct ProposeRelationSummaryV1 {
     #[serde(default)]
     pub target_name_input: Option<String>,
     pub target_name: String,
-    /// Whether the relation canonicalization swapped endpoints (e.g. `parent_of` → `Parent(child,parent)`).
+    /// Whether an explicit endpoint mapping swapped source/target fields.
     #[serde(default)]
     pub swapped_endpoints: bool,
     pub context: Option<String>,
@@ -155,7 +155,8 @@ pub struct ProposeFactInputV1 {
     /// multiple schemas share the same relation name).
     pub rel_type: String,
     /// Field-value map for the fact (typed record). Values are entity names
-    /// (or external ids) and will be resolved/stubbed during import.
+    /// or external ids that must resolve to imported proposal entities or
+    /// accepted canonical `.axi` objects during import.
     pub fields: HashMap<String, String>,
     #[serde(default)]
     pub schema_hint: Option<String>,
@@ -464,7 +465,6 @@ pub fn propose_relation_proposals_v1(
     let mut target_type_hint: Option<String> = input.target_type.clone();
     let mut schema_hint: Option<String> = input.schema_hint.clone();
     let mut swapped_endpoints = false;
-    let mut rel_alias_used: Option<String> = None;
 
     let extra_fields_input: HashMap<String, String> = input
         .extra_fields
@@ -521,10 +521,7 @@ pub fn propose_relation_proposals_v1(
                 rel_decl,
                 rel_name,
                 orientation,
-                alias_used,
             } = resolved;
-
-            rel_alias_used = alias_used;
 
             // If the caller explicitly pins source/target fields, do not apply
             // endpoint swapping: the mapping is already explicit.
@@ -667,6 +664,16 @@ pub fn propose_relation_proposals_v1(
         }
     }
 
+    if axi_schema.is_none() {
+        let hint = schema_hint
+            .as_deref()
+            .map(|s| format!(" with schema_hint `{s}`"))
+            .unwrap_or_default();
+        return Err(anyhow!(
+            "propose_relation_proposals: relation `{rel_type}`{hint} did not resolve to a compiled canonical .axi relation; proposals are fail-closed instead of emitting untyped relation overlays. Import/review a canonical .axi schema first, use a schema-qualified relation name, or switch to a weak definition/coverage query for exploratory discovery."
+        ));
+    }
+
     let public_rationale = input.public_rationale.unwrap_or_else(|| {
         format!("Proposed relation assertion: {source_name} -{rel_type}-> {target_name}.")
     });
@@ -764,8 +771,15 @@ pub fn propose_relation_proposals_v1(
     let mut src_entity_id: Option<String> = None;
     if src_existing.is_none() {
         let entity_type = source_type_hint
-            .clone()
-            .unwrap_or_else(|| "UnknownEntity".to_string());
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "propose_relation_proposals: source endpoint `{source_name}` has no resolved object type; proposals are fail-closed instead of emitting an untyped endpoint placeholder. Import/review a canonical .axi schema or provide source_type."
+                )
+            })?
+            .to_string();
         let entity_id = format!(
             "entity::{entity_type}::{}",
             sanitize_external_id(&source_name)
@@ -786,8 +800,15 @@ pub fn propose_relation_proposals_v1(
     let mut dst_entity_id: Option<String> = None;
     if dst_existing.is_none() {
         let entity_type = target_type_hint
-            .clone()
-            .unwrap_or_else(|| "UnknownEntity".to_string());
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "propose_relation_proposals: target endpoint `{target_name}` has no resolved object type; proposals are fail-closed instead of emitting an untyped endpoint placeholder. Import/review a canonical .axi schema or provide target_type."
+                )
+            })?
+            .to_string();
         let entity_id = format!(
             "entity::{entity_type}::{}",
             sanitize_external_id(&target_name)
@@ -821,9 +842,6 @@ pub fn propose_relation_proposals_v1(
     let mut attributes = std::collections::HashMap::<String, String>::new();
     // Preserve the original user/LLM surface relation label for UX/debugging.
     attributes.insert("axi_rel_type_input".to_string(), rel_type_input.clone());
-    if let Some(alias) = rel_alias_used.as_ref() {
-        attributes.insert("axi_rel_alias".to_string(), alias.clone());
-    }
     if swapped_endpoints {
         attributes.insert("axi_rel_swapped".to_string(), "true".to_string());
     }
@@ -1234,14 +1252,22 @@ pub fn propose_fact_proposals_v1(
         .iter()
         .find(|f| f.field_name == src_field)
         .map(|f| f.field_type.clone())
-        .unwrap_or_else(|| "UnknownEntity".to_string());
+        .ok_or_else(|| {
+            anyhow!(
+                "propose_fact_proposals: endpoint field `{src_field}` has no resolved object type"
+            )
+        })?;
     let dst_type_hint = resolved
         .rel_decl
         .fields
         .iter()
         .find(|f| f.field_name == dst_field)
         .map(|f| f.field_type.clone())
-        .unwrap_or_else(|| "UnknownEntity".to_string());
+        .ok_or_else(|| {
+            anyhow!(
+                "propose_fact_proposals: endpoint field `{dst_field}` has no resolved object type"
+            )
+        })?;
 
     let out = propose_relation_proposals_v1(
         db,
@@ -1280,4 +1306,40 @@ pub fn propose_fact_proposals_v1(
             evidence_chunk_id,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relation_proposals_fail_closed_without_compiled_relation() {
+        let db = PathDB::new();
+        let err = propose_relation_proposals_v1(
+            &db,
+            &[],
+            ProposeRelationInputV1 {
+                rel_type: "Knows".to_string(),
+                source_name: "Alice".to_string(),
+                target_name: "Bob".to_string(),
+                source_type: Some("Person".to_string()),
+                target_type: Some("Person".to_string()),
+                source_field: None,
+                target_field: None,
+                context: None,
+                time: None,
+                confidence: None,
+                schema_hint: None,
+                public_rationale: None,
+                evidence_text: None,
+                evidence_locator: None,
+                extra_fields: HashMap::new(),
+            },
+        )
+        .expect_err("untyped relation proposal should fail closed");
+
+        assert!(err
+            .to_string()
+            .contains("did not resolve to a compiled canonical .axi relation"));
+    }
 }

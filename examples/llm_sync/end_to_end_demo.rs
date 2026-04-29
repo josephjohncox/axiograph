@@ -212,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Total integrated: {}", stats.total_integrated);
     println!("Pending review: {}", stats.pending_review);
     println!("Unresolved conflicts: {}", stats.unresolved_conflicts);
-    println!("KG version: {}", stats.kg_version);
+    println!("Graph version: {}", stats.graph_version);
 
     println!("\n✅ Demo complete!");
     println!("   - .axi file: ./demo_knowledge/llm_extracted.axi");
@@ -221,4 +221,3 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-

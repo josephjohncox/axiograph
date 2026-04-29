@@ -4,7 +4,7 @@
 //! endpoint choice becomes a compiled schema fact instead of being repeated as
 //! local heuristics across import/check paths.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ use crate::{
     RoleId, SchemaId, StableFactId, TheoryId,
 };
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum RoleKind {
     Data,
@@ -111,6 +111,159 @@ pub struct KernelModuleIr {
     pub schemas: Vec<CompiledSchemaIr>,
     pub theories: Vec<TheoryIr>,
     pub instances: Vec<InstanceIr>,
+}
+
+pub const KERNEL_SURFACE_VERSION_V1: &str = "kernel_surface_v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KernelRefV1 {
+    Module {
+        module_digest: AxiDigest,
+    },
+    Schema {
+        schema_id: SchemaId,
+    },
+    SchemaObject {
+        schema_id: SchemaId,
+        object: SchemaCategoryObjectRefIr,
+    },
+    SchemaArrow {
+        schema_id: SchemaId,
+        arrow: SchemaCategoryArrowRefIr,
+    },
+    Theory {
+        theory_id: TheoryId,
+        schema_id: SchemaId,
+    },
+    TheoryObligation {
+        obligation: TheoryObligationRefIr,
+    },
+    TheorySubject {
+        theory_id: TheoryId,
+        subject: TheorySubjectRefIr,
+    },
+    Instance {
+        instance_id: InstanceId,
+        schema_id: SchemaId,
+    },
+    InstanceObjectImage {
+        instance_id: InstanceId,
+        object: SchemaCategoryObjectRefIr,
+    },
+    InstanceArrowImage {
+        instance_id: InstanceId,
+        arrow: SchemaCategoryArrowRefIr,
+    },
+    StableFact {
+        instance_id: InstanceId,
+        fact_id: StableFactId,
+        relation_id: RelationId,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KernelSurfaceV1 {
+    pub version: String,
+    pub module_digest: AxiDigest,
+    pub refs: Vec<KernelRefV1>,
+    pub schema_categories: Vec<SchemaCategoryIr>,
+    pub instance_functors: Vec<InstanceFunctorIr>,
+    pub total_refs: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+impl KernelSurfaceV1 {
+    pub fn contains_ref(&self, reference: &KernelRefV1) -> bool {
+        self.refs.iter().any(|candidate| candidate == reference)
+    }
+
+    pub fn unresolved_refs(&self, references: &[KernelRefV1]) -> Vec<KernelRefV1> {
+        let declared = self.refs.iter().collect::<BTreeSet<_>>();
+        references
+            .iter()
+            .filter(|reference| !declared.contains(reference))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub fn validate_refs(&self, references: &[KernelRefV1]) -> Result<(), String> {
+        let unresolved = self.unresolved_refs(references);
+        if unresolved.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "strict semantic report references {} undeclared KernelRefV1 handle(s): {}",
+            unresolved.len(),
+            unresolved
+                .iter()
+                .map(KernelRefV1::stable_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+}
+
+impl KernelRefV1 {
+    pub fn stable_label(&self) -> String {
+        match self {
+            Self::Module { module_digest } => format!("module:{module_digest}"),
+            Self::Schema { schema_id } => format!("schema:{schema_id}"),
+            Self::SchemaObject { schema_id, object } => {
+                format!("schema_object:{schema_id}:{}", object.name())
+            }
+            Self::SchemaArrow { schema_id, arrow } => match arrow {
+                SchemaCategoryArrowRefIr::RoleProjection {
+                    role_id,
+                    relation_id,
+                    role_name,
+                } => format!("schema_arrow:{schema_id}:role:{relation_id}:{role_id}:{role_name}"),
+                SchemaCategoryArrowRefIr::SubtypeInclusion {
+                    subtype, supertype, ..
+                } => format!("schema_arrow:{schema_id}:subtype:{subtype}:{supertype}"),
+            },
+            Self::Theory {
+                theory_id,
+                schema_id,
+            } => format!("theory:{schema_id}:{theory_id}"),
+            Self::TheoryObligation { obligation } => {
+                format!("theory_obligation:{}", obligation.stable_id())
+            }
+            Self::TheorySubject { theory_id, subject } => {
+                format!("theory_subject:{theory_id}:{}", subject.stable_id())
+            }
+            Self::Instance {
+                instance_id,
+                schema_id,
+            } => format!("instance:{schema_id}:{instance_id}"),
+            Self::InstanceObjectImage {
+                instance_id,
+                object,
+            } => format!("instance_object_image:{instance_id}:{}", object.name()),
+            Self::InstanceArrowImage { instance_id, arrow } => match arrow {
+                SchemaCategoryArrowRefIr::RoleProjection {
+                    role_id,
+                    relation_id,
+                    role_name,
+                } => format!(
+                    "instance_arrow_image:{instance_id}:role:{relation_id}:{role_id}:{role_name}"
+                ),
+                SchemaCategoryArrowRefIr::SubtypeInclusion {
+                    subtype, supertype, ..
+                } => {
+                    format!("instance_arrow_image:{instance_id}:subtype:{subtype}:{supertype}")
+                }
+            },
+            Self::StableFact {
+                instance_id,
+                fact_id,
+                relation_id,
+            } => format!("stable_fact:{instance_id}:{relation_id}:{fact_id}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -243,6 +396,16 @@ pub struct RoleValueIr {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TheoryTouchedRoleIr {
+    pub relation_id: RelationId,
+    pub relation_name: String,
+    pub role_id: RoleId,
+    pub role_name: String,
+    pub role_kind: RoleKind,
+    pub target_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConstraintIr {
     pub constraint_id: ConstraintId,
     pub kind: String,
@@ -263,6 +426,7 @@ pub struct PathEquationIr {
     pub rhs: PathExprV3,
     pub relation_refs: Vec<String>,
     pub relation_ids: Vec<RelationId>,
+    pub touched_roles: Vec<TheoryTouchedRoleIr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -290,6 +454,7 @@ pub struct RewriteRuleIr {
     pub endpoint: RewriteEndpointIr,
     pub relation_refs: Vec<String>,
     pub relation_ids: Vec<RelationId>,
+    pub touched_roles: Vec<TheoryTouchedRoleIr>,
     pub source: RewriteRuleSource,
 }
 
@@ -403,9 +568,7 @@ impl TheoryObligationRefIr {
             }
             | Self::OpaqueEquation {
                 equation_id, name, ..
-            } => {
-                equation_id.as_str() == artifact_id || local_name(name) == artifact_local
-            }
+            } => equation_id.as_str() == artifact_id || local_name(name) == artifact_local,
             Self::RewriteRule { rule_id, name, .. } => {
                 rule_id.as_str() == artifact_id || local_name(name) == artifact_local
             }
@@ -491,6 +654,166 @@ impl TheorySubjectRefIr {
             }
         }
     }
+}
+
+pub const THEORY_ADDRESS_INDEX_VERSION_V1: &str = "theory_address_index_v1";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TheoryPathSideIr {
+    Lhs,
+    Rhs,
+}
+
+impl TheoryPathSideIr {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lhs => "lhs",
+            Self::Rhs => "rhs",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TheoryPathExprKindIr {
+    Var,
+    Reflexive,
+    Step,
+    Trans,
+    Inv,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TheoryVariableKindIr {
+    Object,
+    Path,
+    Endpoint,
+}
+
+impl TheoryVariableKindIr {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Object => "object",
+            Self::Path => "path",
+            Self::Endpoint => "endpoint",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TheoryPathExpressionRefIr {
+    pub expression_id: String,
+    pub obligation_ref: TheoryObligationRefIr,
+    pub side: TheoryPathSideIr,
+    pub expression_index: u32,
+    pub expression_kind: TheoryPathExprKindIr,
+    pub expression: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TheoryPathStepRefIr {
+    pub step_id: String,
+    pub obligation_ref: TheoryObligationRefIr,
+    pub side: TheoryPathSideIr,
+    pub step_index: u32,
+    pub expression_index: u32,
+    pub relation_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation_id: Option<RelationId>,
+    pub from_var: String,
+    pub to_var: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TheoryVariableRefIr {
+    pub variable_id: String,
+    pub obligation_ref: TheoryObligationRefIr,
+    pub variable_name: String,
+    pub variable_kind: TheoryVariableKindIr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TheoryEndpointRefIr {
+    pub endpoint_id: String,
+    pub obligation_ref: TheoryObligationRefIr,
+    pub side: TheoryPathSideIr,
+    pub from_var: String,
+    pub to_var: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TheoryContextAxisRefIr {
+    pub context_axis_id: String,
+    pub obligation_ref: TheoryObligationRefIr,
+    pub relation_id: RelationId,
+    pub relation_name: String,
+    pub role_id: RoleId,
+    pub role_name: String,
+    pub role_kind: RoleKind,
+    pub target_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TheoryTransportItemRefIr {
+    pub transport_item_id: String,
+    pub obligation_ref: TheoryObligationRefIr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TheoryObligationDependencyIr {
+    pub obligation_ref: TheoryObligationRefIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_refs: Vec<TheorySubjectRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_expression_refs: Vec<TheoryPathExpressionRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_step_refs: Vec<TheoryPathStepRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variable_refs: Vec<TheoryVariableRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoint_refs: Vec<TheoryEndpointRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_refs: Vec<TheoryContextAxisRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transport_item_refs: Vec<TheoryTransportItemRefIr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TheoryAddressIndexV1 {
+    pub version: String,
+    pub theory_ref: TheorySubjectRefIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub obligation_refs: Vec<TheoryObligationRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_refs: Vec<TheorySubjectRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_expression_refs: Vec<TheoryPathExpressionRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_step_refs: Vec<TheoryPathStepRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variable_refs: Vec<TheoryVariableRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoint_refs: Vec<TheoryEndpointRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_refs: Vec<TheoryContextAxisRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transport_item_refs: Vec<TheoryTransportItemRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<TheoryObligationDependencyIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Rust-side operational classification for a compiled theory obligation.
@@ -952,6 +1275,14 @@ impl TheoryIr {
                             relation_name: relation_name.clone(),
                         });
                     }
+                    for role in &equation.touched_roles {
+                        subjects.insert(TheorySubjectRefIr::Role {
+                            relation_id: role.relation_id.clone(),
+                            relation_name: role.relation_name.clone(),
+                            role_id: role.role_id.clone(),
+                            role_name: role.role_name.clone(),
+                        });
+                    }
                 }
             }
             TheoryObligationRefIr::OpaqueEquation { .. } => {}
@@ -967,6 +1298,14 @@ impl TheoryIr {
                         subjects.insert(TheorySubjectRefIr::Relation {
                             relation_id: relation_id.clone(),
                             relation_name: relation_name.clone(),
+                        });
+                    }
+                    for role in &rule.touched_roles {
+                        subjects.insert(TheorySubjectRefIr::Role {
+                            relation_id: role.relation_id.clone(),
+                            relation_name: role.relation_name.clone(),
+                            role_id: role.role_id.clone(),
+                            role_name: role.role_name.clone(),
                         });
                     }
                 }
@@ -1023,6 +1362,349 @@ impl TheoryIr {
             }
         }
         relation_names.into_iter().collect()
+    }
+
+    pub fn address_index(&self) -> TheoryAddressIndexV1 {
+        let obligation_refs = self.obligation_refs();
+        let dependencies = obligation_refs
+            .iter()
+            .map(|obligation| self.obligation_dependencies(obligation))
+            .collect::<Vec<_>>();
+
+        let path_expression_refs = dependencies
+            .iter()
+            .flat_map(|dependency| dependency.path_expression_refs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let path_step_refs = dependencies
+            .iter()
+            .flat_map(|dependency| dependency.path_step_refs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let variable_refs = dependencies
+            .iter()
+            .flat_map(|dependency| dependency.variable_refs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let endpoint_refs = dependencies
+            .iter()
+            .flat_map(|dependency| dependency.endpoint_refs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let context_refs = dependencies
+            .iter()
+            .flat_map(|dependency| dependency.context_refs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let transport_item_refs = dependencies
+            .iter()
+            .flat_map(|dependency| dependency.transport_item_refs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        TheoryAddressIndexV1 {
+            version: THEORY_ADDRESS_INDEX_VERSION_V1.to_string(),
+            theory_ref: TheorySubjectRefIr::Theory {
+                theory_id: self.theory_id.clone(),
+            },
+            obligation_refs,
+            subject_refs: self.subject_refs(),
+            path_expression_refs,
+            path_step_refs,
+            variable_refs,
+            endpoint_refs,
+            context_refs,
+            transport_item_refs,
+            dependencies,
+            notes: vec![
+                "theory address index is a deterministic runtime navigation surface, not a proof object".to_string(),
+                "transport item refs are stable resolver handles; concrete transport status still comes from TheoryTransportPlanIr".to_string(),
+            ],
+        }
+    }
+
+    pub fn obligation_dependencies(
+        &self,
+        obligation: &TheoryObligationRefIr,
+    ) -> TheoryObligationDependencyIr {
+        TheoryObligationDependencyIr {
+            obligation_ref: obligation.clone(),
+            subject_refs: self.subject_refs_for_obligation(obligation),
+            path_expression_refs: self.path_expression_refs_for_obligation(obligation),
+            path_step_refs: self.path_step_refs_for_obligation(obligation),
+            variable_refs: self.variable_refs_for_obligation(obligation),
+            endpoint_refs: self.endpoint_refs_for_obligation(obligation),
+            context_refs: self.context_refs_for_obligation(obligation),
+            transport_item_refs: self.transport_item_refs_for_obligation(obligation),
+        }
+    }
+
+    pub fn path_expression_refs_for_obligation(
+        &self,
+        obligation: &TheoryObligationRefIr,
+    ) -> Vec<TheoryPathExpressionRefIr> {
+        let mut refs = Vec::new();
+        match obligation {
+            TheoryObligationRefIr::PathEquation { equation_id, .. } => {
+                if let Some(equation) = self
+                    .path_equations
+                    .iter()
+                    .find(|candidate| &candidate.equation_id == equation_id)
+                {
+                    let mut lhs_index = 0;
+                    collect_path_expression_refs_for_path(
+                        obligation,
+                        TheoryPathSideIr::Lhs,
+                        &equation.lhs,
+                        &mut lhs_index,
+                        &mut refs,
+                    );
+                    let mut rhs_index = 0;
+                    collect_path_expression_refs_for_path(
+                        obligation,
+                        TheoryPathSideIr::Rhs,
+                        &equation.rhs,
+                        &mut rhs_index,
+                        &mut refs,
+                    );
+                }
+            }
+            TheoryObligationRefIr::RewriteRule { rule_id, .. } => {
+                if let Some(rule) = self
+                    .rewrite_rules
+                    .iter()
+                    .find(|candidate| &candidate.rule_id == rule_id)
+                {
+                    let mut lhs_index = 0;
+                    collect_path_expression_refs_for_path(
+                        obligation,
+                        TheoryPathSideIr::Lhs,
+                        &rule.lhs,
+                        &mut lhs_index,
+                        &mut refs,
+                    );
+                    let mut rhs_index = 0;
+                    collect_path_expression_refs_for_path(
+                        obligation,
+                        TheoryPathSideIr::Rhs,
+                        &rule.rhs,
+                        &mut rhs_index,
+                        &mut refs,
+                    );
+                }
+            }
+            TheoryObligationRefIr::Constraint { .. }
+            | TheoryObligationRefIr::OpaqueEquation { .. } => {}
+        }
+        refs.sort();
+        refs
+    }
+
+    pub fn path_step_refs_for_obligation(
+        &self,
+        obligation: &TheoryObligationRefIr,
+    ) -> Vec<TheoryPathStepRefIr> {
+        let relation_ids = self.relation_id_lookup_for_obligation(obligation);
+        let mut refs = Vec::new();
+        match obligation {
+            TheoryObligationRefIr::PathEquation { equation_id, .. } => {
+                if let Some(equation) = self
+                    .path_equations
+                    .iter()
+                    .find(|candidate| &candidate.equation_id == equation_id)
+                {
+                    let mut lhs_expr_index = 0;
+                    let mut lhs_step_index = 0;
+                    collect_path_step_refs_for_path(
+                        obligation,
+                        TheoryPathSideIr::Lhs,
+                        &equation.lhs,
+                        &relation_ids,
+                        &mut lhs_expr_index,
+                        &mut lhs_step_index,
+                        &mut refs,
+                    );
+                    let mut rhs_expr_index = 0;
+                    let mut rhs_step_index = 0;
+                    collect_path_step_refs_for_path(
+                        obligation,
+                        TheoryPathSideIr::Rhs,
+                        &equation.rhs,
+                        &relation_ids,
+                        &mut rhs_expr_index,
+                        &mut rhs_step_index,
+                        &mut refs,
+                    );
+                }
+            }
+            TheoryObligationRefIr::RewriteRule { rule_id, .. } => {
+                if let Some(rule) = self
+                    .rewrite_rules
+                    .iter()
+                    .find(|candidate| &candidate.rule_id == rule_id)
+                {
+                    let mut lhs_expr_index = 0;
+                    let mut lhs_step_index = 0;
+                    collect_path_step_refs_for_path(
+                        obligation,
+                        TheoryPathSideIr::Lhs,
+                        &rule.lhs,
+                        &relation_ids,
+                        &mut lhs_expr_index,
+                        &mut lhs_step_index,
+                        &mut refs,
+                    );
+                    let mut rhs_expr_index = 0;
+                    let mut rhs_step_index = 0;
+                    collect_path_step_refs_for_path(
+                        obligation,
+                        TheoryPathSideIr::Rhs,
+                        &rule.rhs,
+                        &relation_ids,
+                        &mut rhs_expr_index,
+                        &mut rhs_step_index,
+                        &mut refs,
+                    );
+                }
+            }
+            TheoryObligationRefIr::Constraint { .. }
+            | TheoryObligationRefIr::OpaqueEquation { .. } => {}
+        }
+        refs.sort();
+        refs
+    }
+
+    pub fn variable_refs_for_obligation(
+        &self,
+        obligation: &TheoryObligationRefIr,
+    ) -> Vec<TheoryVariableRefIr> {
+        let mut refs = BTreeSet::new();
+        match obligation {
+            TheoryObligationRefIr::PathEquation { equation_id, .. } => {
+                if let Some(equation) = self
+                    .path_equations
+                    .iter()
+                    .find(|candidate| &candidate.equation_id == equation_id)
+                {
+                    collect_path_variable_refs(obligation, &equation.lhs, &mut refs);
+                    collect_path_variable_refs(obligation, &equation.rhs, &mut refs);
+                }
+            }
+            TheoryObligationRefIr::RewriteRule { rule_id, .. } => {
+                if let Some(rule) = self
+                    .rewrite_rules
+                    .iter()
+                    .find(|candidate| &candidate.rule_id == rule_id)
+                {
+                    for declaration in &rule.vars {
+                        if let Some(variable_ref) =
+                            variable_ref_for_rewrite_declaration(obligation, declaration)
+                        {
+                            refs.insert(variable_ref);
+                        }
+                    }
+                    if refs.is_empty() {
+                        collect_path_variable_refs(obligation, &rule.lhs, &mut refs);
+                        collect_path_variable_refs(obligation, &rule.rhs, &mut refs);
+                    }
+                }
+            }
+            TheoryObligationRefIr::Constraint { .. }
+            | TheoryObligationRefIr::OpaqueEquation { .. } => {}
+        }
+        refs.into_iter().collect()
+    }
+
+    pub fn endpoint_refs_for_obligation(
+        &self,
+        obligation: &TheoryObligationRefIr,
+    ) -> Vec<TheoryEndpointRefIr> {
+        let mut refs = Vec::new();
+        match obligation {
+            TheoryObligationRefIr::PathEquation { equation_id, .. } => {
+                if let Some(equation) = self
+                    .path_equations
+                    .iter()
+                    .find(|candidate| &candidate.equation_id == equation_id)
+                {
+                    if let Some((from_var, to_var)) = path_endpoint_vars(&equation.lhs) {
+                        refs.push(theory_endpoint_ref(
+                            obligation,
+                            TheoryPathSideIr::Lhs,
+                            from_var,
+                            to_var,
+                            None,
+                            None,
+                        ));
+                    }
+                    if let Some((from_var, to_var)) = path_endpoint_vars(&equation.rhs) {
+                        refs.push(theory_endpoint_ref(
+                            obligation,
+                            TheoryPathSideIr::Rhs,
+                            from_var,
+                            to_var,
+                            None,
+                            None,
+                        ));
+                    }
+                }
+            }
+            TheoryObligationRefIr::RewriteRule { rule_id, .. } => {
+                if let Some(rule) = self
+                    .rewrite_rules
+                    .iter()
+                    .find(|candidate| &candidate.rule_id == rule_id)
+                {
+                    for side in [TheoryPathSideIr::Lhs, TheoryPathSideIr::Rhs] {
+                        refs.push(theory_endpoint_ref(
+                            obligation,
+                            side,
+                            rule.endpoint.from_var.clone(),
+                            rule.endpoint.to_var.clone(),
+                            Some(rule.endpoint.from_type.clone()),
+                            Some(rule.endpoint.to_type.clone()),
+                        ));
+                    }
+                }
+            }
+            TheoryObligationRefIr::Constraint { .. }
+            | TheoryObligationRefIr::OpaqueEquation { .. } => {}
+        }
+        refs.sort();
+        refs
+    }
+
+    pub fn context_refs_for_obligation(
+        &self,
+        obligation: &TheoryObligationRefIr,
+    ) -> Vec<TheoryContextAxisRefIr> {
+        touched_roles_for_obligation(self, obligation)
+            .into_iter()
+            .filter(|role| matches!(role.role_kind, RoleKind::Context | RoleKind::Temporal))
+            .map(|role| theory_context_axis_ref(obligation, role))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub fn transport_item_refs_for_obligation(
+        &self,
+        obligation: &TheoryObligationRefIr,
+    ) -> Vec<TheoryTransportItemRefIr> {
+        if self.obligation_refs().contains(obligation) {
+            vec![TheoryTransportItemRefIr {
+                transport_item_id: format!("transport_item:{}", obligation.stable_id()),
+                obligation_ref: obligation.clone(),
+            }]
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn theory_transport_plan(
@@ -1232,6 +1914,364 @@ impl TheoryIr {
             trust_class,
             detail,
         }
+    }
+
+    fn relation_id_lookup_for_obligation(
+        &self,
+        obligation: &TheoryObligationRefIr,
+    ) -> BTreeMap<String, RelationId> {
+        match obligation {
+            TheoryObligationRefIr::PathEquation { equation_id, .. } => self
+                .path_equations
+                .iter()
+                .find(|candidate| &candidate.equation_id == equation_id)
+                .map(|equation| {
+                    equation
+                        .relation_refs
+                        .iter()
+                        .cloned()
+                        .zip(equation.relation_ids.iter().cloned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            TheoryObligationRefIr::RewriteRule { rule_id, .. } => self
+                .rewrite_rules
+                .iter()
+                .find(|candidate| &candidate.rule_id == rule_id)
+                .map(|rule| {
+                    rule.relation_refs
+                        .iter()
+                        .cloned()
+                        .zip(rule.relation_ids.iter().cloned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            TheoryObligationRefIr::Constraint { .. }
+            | TheoryObligationRefIr::OpaqueEquation { .. } => BTreeMap::new(),
+        }
+    }
+}
+
+fn collect_path_expression_refs_for_path(
+    obligation_ref: &TheoryObligationRefIr,
+    side: TheoryPathSideIr,
+    path: &PathExprV3,
+    expression_index: &mut u32,
+    out: &mut Vec<TheoryPathExpressionRefIr>,
+) {
+    let current_index = *expression_index;
+    *expression_index += 1;
+    out.push(TheoryPathExpressionRefIr {
+        expression_id: format!(
+            "path_expr:{}:{}:{}",
+            obligation_ref.stable_id(),
+            side.as_str(),
+            current_index
+        ),
+        obligation_ref: obligation_ref.clone(),
+        side,
+        expression_index: current_index,
+        expression_kind: path_expr_kind(path),
+        expression: path.to_string(),
+    });
+
+    match path {
+        PathExprV3::Trans { left, right } => {
+            collect_path_expression_refs_for_path(
+                obligation_ref,
+                side,
+                left,
+                expression_index,
+                out,
+            );
+            collect_path_expression_refs_for_path(
+                obligation_ref,
+                side,
+                right,
+                expression_index,
+                out,
+            );
+        }
+        PathExprV3::Inv { path } => {
+            collect_path_expression_refs_for_path(
+                obligation_ref,
+                side,
+                path,
+                expression_index,
+                out,
+            );
+        }
+        PathExprV3::Var { .. } | PathExprV3::Reflexive { .. } | PathExprV3::Step { .. } => {}
+    }
+}
+
+fn collect_path_step_refs_for_path(
+    obligation_ref: &TheoryObligationRefIr,
+    side: TheoryPathSideIr,
+    path: &PathExprV3,
+    relation_ids: &BTreeMap<String, RelationId>,
+    expression_index: &mut u32,
+    step_index: &mut u32,
+    out: &mut Vec<TheoryPathStepRefIr>,
+) {
+    let current_expression_index = *expression_index;
+    *expression_index += 1;
+    match path {
+        PathExprV3::Step { from, rel, to } => {
+            let current_step_index = *step_index;
+            *step_index += 1;
+            out.push(TheoryPathStepRefIr {
+                step_id: format!(
+                    "path_step:{}:{}:{}",
+                    obligation_ref.stable_id(),
+                    side.as_str(),
+                    current_step_index
+                ),
+                obligation_ref: obligation_ref.clone(),
+                side,
+                step_index: current_step_index,
+                expression_index: current_expression_index,
+                relation_name: rel.clone(),
+                relation_id: relation_ids.get(rel).cloned(),
+                from_var: from.clone(),
+                to_var: to.clone(),
+            });
+        }
+        PathExprV3::Trans { left, right } => {
+            collect_path_step_refs_for_path(
+                obligation_ref,
+                side,
+                left,
+                relation_ids,
+                expression_index,
+                step_index,
+                out,
+            );
+            collect_path_step_refs_for_path(
+                obligation_ref,
+                side,
+                right,
+                relation_ids,
+                expression_index,
+                step_index,
+                out,
+            );
+        }
+        PathExprV3::Inv { path } => {
+            collect_path_step_refs_for_path(
+                obligation_ref,
+                side,
+                path,
+                relation_ids,
+                expression_index,
+                step_index,
+                out,
+            );
+        }
+        PathExprV3::Var { .. } | PathExprV3::Reflexive { .. } => {}
+    }
+}
+
+fn path_expr_kind(path: &PathExprV3) -> TheoryPathExprKindIr {
+    match path {
+        PathExprV3::Var { .. } => TheoryPathExprKindIr::Var,
+        PathExprV3::Reflexive { .. } => TheoryPathExprKindIr::Reflexive,
+        PathExprV3::Step { .. } => TheoryPathExprKindIr::Step,
+        PathExprV3::Trans { .. } => TheoryPathExprKindIr::Trans,
+        PathExprV3::Inv { .. } => TheoryPathExprKindIr::Inv,
+    }
+}
+
+fn collect_path_variable_refs(
+    obligation_ref: &TheoryObligationRefIr,
+    path: &PathExprV3,
+    out: &mut BTreeSet<TheoryVariableRefIr>,
+) {
+    match path {
+        PathExprV3::Var { name } => {
+            out.insert(theory_variable_ref(
+                obligation_ref,
+                name,
+                TheoryVariableKindIr::Path,
+                None,
+                None,
+                None,
+            ));
+        }
+        PathExprV3::Reflexive { entity } => {
+            out.insert(theory_variable_ref(
+                obligation_ref,
+                entity,
+                TheoryVariableKindIr::Endpoint,
+                None,
+                None,
+                None,
+            ));
+        }
+        PathExprV3::Step { from, to, .. } => {
+            out.insert(theory_variable_ref(
+                obligation_ref,
+                from,
+                TheoryVariableKindIr::Endpoint,
+                None,
+                None,
+                None,
+            ));
+            out.insert(theory_variable_ref(
+                obligation_ref,
+                to,
+                TheoryVariableKindIr::Endpoint,
+                None,
+                None,
+                None,
+            ));
+        }
+        PathExprV3::Trans { left, right } => {
+            collect_path_variable_refs(obligation_ref, left, out);
+            collect_path_variable_refs(obligation_ref, right, out);
+        }
+        PathExprV3::Inv { path } => {
+            collect_path_variable_refs(obligation_ref, path, out);
+        }
+    }
+}
+
+fn variable_ref_for_rewrite_declaration(
+    obligation_ref: &TheoryObligationRefIr,
+    declaration: &str,
+) -> Option<TheoryVariableRefIr> {
+    let (name, raw_ty) = declaration.split_once(':')?;
+    let name = name.trim();
+    let ty = raw_ty.trim();
+    if let Some(inner) = ty
+        .strip_prefix("Path(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let (from, to) = inner.split_once(',')?;
+        return Some(theory_variable_ref(
+            obligation_ref,
+            name,
+            TheoryVariableKindIr::Path,
+            None,
+            Some(from.trim().to_string()),
+            Some(to.trim().to_string()),
+        ));
+    }
+
+    Some(theory_variable_ref(
+        obligation_ref,
+        name,
+        TheoryVariableKindIr::Object,
+        Some(ty.to_string()),
+        None,
+        None,
+    ))
+}
+
+fn theory_variable_ref(
+    obligation_ref: &TheoryObligationRefIr,
+    variable_name: &str,
+    variable_kind: TheoryVariableKindIr,
+    object_type: Option<String>,
+    path_from: Option<String>,
+    path_to: Option<String>,
+) -> TheoryVariableRefIr {
+    TheoryVariableRefIr {
+        variable_id: format!(
+            "theory_var:{}:{}:{}",
+            obligation_ref.stable_id(),
+            variable_kind.as_str(),
+            variable_name
+        ),
+        obligation_ref: obligation_ref.clone(),
+        variable_name: variable_name.to_string(),
+        variable_kind,
+        object_type,
+        path_from,
+        path_to,
+    }
+}
+
+fn path_endpoint_vars(path: &PathExprV3) -> Option<(String, String)> {
+    match path {
+        PathExprV3::Var { .. } => None,
+        PathExprV3::Reflexive { entity } => Some((entity.clone(), entity.clone())),
+        PathExprV3::Step { from, to, .. } => Some((from.clone(), to.clone())),
+        PathExprV3::Trans { left, right } => {
+            let (from, _) = path_endpoint_vars(left)?;
+            let (_, to) = path_endpoint_vars(right)?;
+            Some((from, to))
+        }
+        PathExprV3::Inv { path } => {
+            let (from, to) = path_endpoint_vars(path)?;
+            Some((to, from))
+        }
+    }
+}
+
+fn theory_endpoint_ref(
+    obligation_ref: &TheoryObligationRefIr,
+    side: TheoryPathSideIr,
+    from_var: String,
+    to_var: String,
+    from_type: Option<String>,
+    to_type: Option<String>,
+) -> TheoryEndpointRefIr {
+    TheoryEndpointRefIr {
+        endpoint_id: format!(
+            "theory_endpoint:{}:{}",
+            obligation_ref.stable_id(),
+            side.as_str()
+        ),
+        obligation_ref: obligation_ref.clone(),
+        side,
+        from_var,
+        to_var,
+        from_type,
+        to_type,
+    }
+}
+
+fn touched_roles_for_obligation<'a>(
+    theory: &'a TheoryIr,
+    obligation: &TheoryObligationRefIr,
+) -> Vec<&'a TheoryTouchedRoleIr> {
+    match obligation {
+        TheoryObligationRefIr::PathEquation { equation_id, .. } => theory
+            .path_equations
+            .iter()
+            .find(|candidate| &candidate.equation_id == equation_id)
+            .map(|equation| equation.touched_roles.iter().collect())
+            .unwrap_or_default(),
+        TheoryObligationRefIr::RewriteRule { rule_id, .. } => theory
+            .rewrite_rules
+            .iter()
+            .find(|candidate| &candidate.rule_id == rule_id)
+            .map(|rule| rule.touched_roles.iter().collect())
+            .unwrap_or_default(),
+        TheoryObligationRefIr::Constraint { .. } | TheoryObligationRefIr::OpaqueEquation { .. } => {
+            Vec::new()
+        }
+    }
+}
+
+fn theory_context_axis_ref(
+    obligation_ref: &TheoryObligationRefIr,
+    role: &TheoryTouchedRoleIr,
+) -> TheoryContextAxisRefIr {
+    TheoryContextAxisRefIr {
+        context_axis_id: format!(
+            "context_axis:{}:{}",
+            obligation_ref.stable_id(),
+            role.role_id.as_str()
+        ),
+        obligation_ref: obligation_ref.clone(),
+        relation_id: role.relation_id.clone(),
+        relation_name: role.relation_name.clone(),
+        role_id: role.role_id.clone(),
+        role_name: role.role_name.clone(),
+        role_kind: role.role_kind,
+        target_type: role.target_type.clone(),
     }
 }
 
@@ -1550,6 +2590,121 @@ pub fn compile_kernel_module_ir(
         theories,
         instances,
     })
+}
+
+impl KernelModuleIr {
+    pub fn kernel_surface_v1(&self) -> KernelSurfaceV1 {
+        build_kernel_surface_v1(self)
+    }
+}
+
+pub fn build_kernel_surface_v1(module: &KernelModuleIr) -> KernelSurfaceV1 {
+    let mut refs = BTreeSet::new();
+    let mut notes = vec![
+        "kernel surface is a deterministic runtime index over compiled IR; it is not a Lean proof object".to_string(),
+        "semantic authority remains accepted canonical .axi plus compiled IR under explicit anchors".to_string(),
+    ];
+    refs.insert(KernelRefV1::Module {
+        module_digest: module.module_digest.clone(),
+    });
+
+    let mut schema_categories = Vec::new();
+    for schema in &module.schemas {
+        refs.insert(KernelRefV1::Schema {
+            schema_id: schema.schema_id.clone(),
+        });
+        let category = compile_schema_category_ir(schema);
+        for object in &category.objects {
+            refs.insert(KernelRefV1::SchemaObject {
+                schema_id: category.schema_id.clone(),
+                object: object.object.clone(),
+            });
+        }
+        for arrow in &category.arrows {
+            refs.insert(KernelRefV1::SchemaArrow {
+                schema_id: category.schema_id.clone(),
+                arrow: arrow.arrow_ref.clone(),
+            });
+        }
+        schema_categories.push(category);
+    }
+    schema_categories.sort_by(|left, right| left.schema_id.cmp(&right.schema_id));
+
+    for theory in &module.theories {
+        refs.insert(KernelRefV1::Theory {
+            theory_id: theory.theory_id.clone(),
+            schema_id: theory.schema_id.clone(),
+        });
+        for obligation in theory.obligation_refs() {
+            refs.insert(KernelRefV1::TheoryObligation { obligation });
+        }
+        for subject in theory.subject_refs() {
+            refs.insert(KernelRefV1::TheorySubject {
+                theory_id: theory.theory_id.clone(),
+                subject,
+            });
+        }
+    }
+
+    let schemas_by_id = module
+        .schemas
+        .iter()
+        .map(|schema| (schema.schema_id.clone(), schema))
+        .collect::<BTreeMap<_, _>>();
+    let mut instance_functors = Vec::new();
+    for instance in &module.instances {
+        refs.insert(KernelRefV1::Instance {
+            instance_id: instance.instance_id.clone(),
+            schema_id: instance.schema_id.clone(),
+        });
+        for fact in &instance.relation_facts {
+            refs.insert(KernelRefV1::StableFact {
+                instance_id: instance.instance_id.clone(),
+                fact_id: fact.fact_id.clone(),
+                relation_id: fact.relation_id.clone(),
+            });
+        }
+        let Some(schema) = schemas_by_id.get(&instance.schema_id) else {
+            notes.push(format!(
+                "instance `{}` references missing schema `{}`; instance functor refs were not emitted",
+                instance.instance_id, instance.schema_id
+            ));
+            continue;
+        };
+        match compile_instance_functor_ir(schema, instance) {
+            Ok(functor) => {
+                for image in &functor.object_images {
+                    refs.insert(KernelRefV1::InstanceObjectImage {
+                        instance_id: functor.instance_id.clone(),
+                        object: image.object.clone(),
+                    });
+                }
+                for image in &functor.arrow_images {
+                    refs.insert(KernelRefV1::InstanceArrowImage {
+                        instance_id: functor.instance_id.clone(),
+                        arrow: image.arrow_ref.clone(),
+                    });
+                }
+                instance_functors.push(functor);
+            }
+            Err(err) => notes.push(format!(
+                "instance `{}` did not lower to InstanceFunctorIr: {err}",
+                instance.instance_id
+            )),
+        }
+    }
+    instance_functors.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+
+    let refs = refs.into_iter().collect::<Vec<_>>();
+    KernelSurfaceV1 {
+        version: KERNEL_SURFACE_VERSION_V1.to_string(),
+        module_digest: module.module_digest.clone(),
+        total_refs: refs.len(),
+        refs,
+        schema_categories,
+        instance_functors,
+        notes,
+    }
 }
 
 pub fn compile_schema_category_ir(compiled_schema: &CompiledSchemaIr) -> SchemaCategoryIr {
@@ -2112,6 +3267,8 @@ pub fn compile_theory_ir(
                             })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                let touched_roles =
+                    touched_roles_for_relation_refs(compiled_schema, &relation_refs);
                 path_equations.push(PathEquationIr {
                     equation_id,
                     name: equation.name.clone(),
@@ -2119,6 +3276,7 @@ pub fn compile_theory_ir(
                     rhs,
                     relation_refs,
                     relation_ids,
+                    touched_roles,
                 });
             }
             _ => opaque_equations.push(OpaqueEquationIr {
@@ -2276,6 +3434,7 @@ fn compile_rewrite_rule_ir(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let touched_roles = touched_roles_for_relation_refs(compiled_schema, &relation_refs);
 
     Ok(RewriteRuleIr {
         rule_id: RewriteRuleId::new(format!("rewrite:{}:{}", theory_id.as_str(), rule.name)),
@@ -2287,8 +3446,36 @@ fn compile_rewrite_rule_ir(
         endpoint: lhs,
         relation_refs,
         relation_ids,
+        touched_roles,
         source: RewriteRuleSource::AcceptedAxi,
     })
+}
+
+fn touched_roles_for_relation_refs(
+    compiled_schema: &CompiledSchemaIr,
+    relation_refs: &[String],
+) -> Vec<TheoryTouchedRoleIr> {
+    let mut roles = Vec::new();
+    for relation_name in relation_refs {
+        if let Some(relation) = compiled_schema.relation(relation_name) {
+            roles.extend(relation.roles.iter().map(|role| TheoryTouchedRoleIr {
+                relation_id: relation.relation_id.clone(),
+                relation_name: relation.name.clone(),
+                role_id: role.role_id.clone(),
+                role_name: role.name.clone(),
+                role_kind: role.kind,
+                target_type: role.target_type.clone(),
+            }));
+        }
+    }
+    roles.sort_by(|left, right| {
+        left.relation_id
+            .as_str()
+            .cmp(right.relation_id.as_str())
+            .then_with(|| left.role_id.as_str().cmp(right.role_id.as_str()))
+    });
+    roles.dedup_by(|left, right| left.role_id == right.role_id);
+    roles
 }
 
 fn constraint_relation_name(constraint: &ConstraintV1) -> Option<&str> {
@@ -3519,6 +4706,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["relation:S:Parent"]
         );
+        assert_eq!(
+            ir.path_equations[0]
+                .touched_roles
+                .iter()
+                .map(|role| role.role_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["from", "to"]
+        );
         assert_eq!(ir.opaque_equations.len(), 1);
         assert_eq!(ir.rewrite_rules.len(), 1);
         assert_eq!(
@@ -3536,6 +4731,14 @@ mod tests {
                 .map(|id| id.as_str())
                 .collect::<Vec<_>>(),
             vec!["relation:S:Parent"]
+        );
+        assert_eq!(
+            ir.rewrite_rules[0]
+                .touched_roles
+                .iter()
+                .map(|role| role.role_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["from", "to"]
         );
         let obligation_refs = ir.obligation_refs();
         assert_eq!(obligation_refs.len(), 4);
@@ -3625,6 +4828,14 @@ mod tests {
             relation_id: RelationId::new("relation:S:Parent"),
             relation_name: "Parent".to_string(),
         };
+        let rewrite_subjects = ir.subject_refs_for_obligation(&rewrite_obligation);
+        assert_eq!(
+            rewrite_subjects
+                .iter()
+                .filter(|subject| matches!(subject, TheorySubjectRefIr::Role { .. }))
+                .count(),
+            2
+        );
         let relation_obligations = ir.obligation_refs_for_subject(&relation_subject);
         assert!(relation_obligations
             .iter()
@@ -4086,6 +5297,102 @@ instance I of S:
                 .collect::<Vec<_>>(),
             vec![("child", "Alice"), ("parent", "Bob"), ("ctx", "FamilyTree")]
         );
+    }
+
+    #[test]
+    fn kernel_surface_v1_indexes_category_theory_instance_and_fact_refs() {
+        let axi_text = r#"
+module Demo
+
+schema S:
+  object Person
+  object Context
+  relation Parent(child: Person, parent: Person, ctx: Context)
+
+theory T on S:
+  constraint key Parent(child, parent, ctx)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Context = {FamilyTree}
+  Parent = {
+    (child=Alice, parent=Bob, ctx=FamilyTree)
+  }
+"#;
+        let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text).expect("parse module");
+        let ir = compile_kernel_module_ir(&module, axi_text).expect("compile kernel module ir");
+        let fact = &ir.instances[0].relation_facts[0];
+
+        let surface = ir.kernel_surface_v1();
+        assert_eq!(surface.version, KERNEL_SURFACE_VERSION_V1);
+        assert_eq!(surface.module_digest, ir.module_digest);
+        assert_eq!(surface.total_refs, surface.refs.len());
+        assert_eq!(surface.schema_categories.len(), 1);
+        assert_eq!(surface.instance_functors.len(), 1);
+        assert!(surface.refs.iter().any(|surface_ref| matches!(
+            surface_ref,
+            KernelRefV1::SchemaObject {
+                object: SchemaCategoryObjectRefIr::ObjectType { name, .. },
+                ..
+            } if name == "Person"
+        )));
+        assert!(surface.refs.iter().any(|surface_ref| matches!(
+            surface_ref,
+            KernelRefV1::SchemaObject {
+                object: SchemaCategoryObjectRefIr::RelationObject { name, .. },
+                ..
+            } if name == "Parent"
+        )));
+        assert!(surface.refs.iter().any(|surface_ref| matches!(
+            surface_ref,
+            KernelRefV1::SchemaArrow {
+                arrow: SchemaCategoryArrowRefIr::RoleProjection { role_name, .. },
+                ..
+            } if role_name == "ctx"
+        )));
+        assert!(surface.refs.iter().any(|surface_ref| matches!(
+            surface_ref,
+            KernelRefV1::TheoryObligation {
+                obligation: TheoryObligationRefIr::Constraint { summary, .. }
+            } if summary == "key Parent(child, parent, ctx)"
+        )));
+        assert!(surface.refs.iter().any(|surface_ref| matches!(
+            surface_ref,
+            KernelRefV1::TheorySubject {
+                subject: TheorySubjectRefIr::Role { role_name, .. },
+                ..
+            } if role_name == "ctx"
+        )));
+        assert!(surface.refs.iter().any(|surface_ref| matches!(
+            surface_ref,
+            KernelRefV1::Instance {
+                instance_id,
+                schema_id,
+            } if instance_id.as_str() == "instance:S:I" && schema_id.as_str() == "S"
+        )));
+        assert!(surface.refs.iter().any(|surface_ref| matches!(
+            surface_ref,
+            KernelRefV1::InstanceObjectImage {
+                object: SchemaCategoryObjectRefIr::RelationObject { name, .. },
+                ..
+            } if name == "Parent"
+        )));
+        assert!(surface.refs.iter().any(|surface_ref| matches!(
+            surface_ref,
+            KernelRefV1::StableFact { fact_id, relation_id, .. }
+                if fact_id == &fact.fact_id && relation_id == &fact.relation_id
+        )));
+        surface
+            .validate_refs(&surface.refs)
+            .expect("all emitted surface refs are declared");
+        let missing = KernelRefV1::Schema {
+            schema_id: SchemaId::new("MissingSchema"),
+        };
+        assert!(!surface.contains_ref(&missing));
+        let err = surface
+            .validate_refs(&[missing])
+            .expect_err("strict reports must reject undeclared kernel refs");
+        assert!(err.contains("undeclared KernelRefV1"));
     }
 
     #[test]

@@ -197,17 +197,17 @@ make sure you're using through-spindle coolant - mist will cause chip welding."
     "f-002": {
       "status": "validated",
       "action": "integrated",
-      "kg_ids": [2001, 2002]
+      "entity_ids": [2001, 2002]
     },
     "f-003": {
       "status": "validated",
       "action": "integrated",
-      "kg_ids": [2003]
+      "entity_ids": [2003]
     },
     "f-004": {
       "status": "validated",
       "action": "integrated",
-      "kg_ids": [2004]
+      "entity_ids": [2004]
     }
   }
 }
@@ -398,4 +398,3 @@ HeatTreatmentEffect (NEW)
 4. **Future users benefit** from accumulated knowledge
 5. **Guardrails evolve** based on new information
 6. **Citations remain traceable** to sources
-

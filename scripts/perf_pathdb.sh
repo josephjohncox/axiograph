@@ -62,7 +62,9 @@ if [ -n "$OUT_AXPD" ]; then
   ARGS+=(--out-axpd "$OUT_AXPD")
 fi
 if [ -n "$OUT_AXI" ]; then
-  ARGS+=(--out-axi "$OUT_AXI")
+  echo "error: OUT_AXI is no longer supported by tools perf pathdb" >&2
+  echo "hint: write OUT_AXPD, then run: axiograph db pathdb export-axi <file.axpd> --out <debug_export.axi>" >&2
+  exit 2
 fi
 
 echo ""

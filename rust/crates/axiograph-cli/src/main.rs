@@ -329,6 +329,31 @@ enum ToolsCommands {
 
 #[derive(Subcommand)]
 enum AuthoringCommands {
+    /// Run a cataloged software-authoring example flow and emit one combined report.
+    Run {
+        /// JSON suite catalog, for example examples/software_authoring/software_authoring_examples.json.
+        #[arg(long)]
+        suite: PathBuf,
+        /// Example id from the suite catalog.
+        #[arg(long)]
+        example: String,
+        /// Coverage profile: advisory, strict, or ci.
+        #[arg(long, default_value = "advisory")]
+        profile: String,
+        /// Repository root used to resolve code_refs.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+        /// Optional directory for per-step report JSON files.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Output combined JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Return a non-zero exit code when the selected profile fails.
+        #[arg(long)]
+        fail_on_blocking: bool,
+    },
+
     /// Return codegen skeleton file hints from a typed tooling overlay.
     CodegenPlan {
         /// Input JSON file containing `ToolingOverlayBundleV1`.
@@ -506,7 +531,7 @@ struct DbServeArgs {
     /// Certificate verification timeout (seconds). `0` disables the timeout.
     ///
     /// This is only used for server-side verification calls (e.g. `POST /query`
-    /// with `"verify": true`).
+    /// with `"certificate_policy":"verify"`).
     #[arg(long, default_value_t = 30)]
     verify_timeout_secs: u64,
 
@@ -1241,6 +1266,9 @@ enum DiscoverCommands {
     /// Define a process, function, business rule, relation, or surface from weak prompts.
     Define(DiscoverDefineArgs),
 
+    /// Discover advisory embedding-derived relationship evidence from an embeddings JSON file.
+    EmbeddingRelationships(DiscoverEmbeddingRelationshipsArgs),
+
     /// Check a JSON BehaviorCaseV1 and emit trust receipts plus Rust/TS test skeletons.
     BehaviorCase(DiscoverBehaviorCaseArgs),
 
@@ -1252,6 +1280,9 @@ enum DiscoverCommands {
 
     /// Emit runtime theory-obligation graphs from a canonical `.axi` module.
     TheoryGraph(DiscoverTheoryGraphArgs),
+
+    /// Emit the shared compiled KernelSurfaceV1 runtime index from canonical `.axi`.
+    KernelSurface(DiscoverKernelSurfaceArgs),
 
     /// Emit runtime theory checker closure/completeness reports from canonical `.axi`.
     TheoryCheck(DiscoverTheoryCheckArgs),
@@ -1290,6 +1321,16 @@ struct DiscoverTheoryGraphArgs {
     /// Optional theory id or local theory name filter.
     #[arg(long)]
     theory: Option<String>,
+
+    /// Output JSON path. Defaults to stdout.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverKernelSurfaceArgs {
+    /// Input canonical `.axi` module.
+    input: PathBuf,
 
     /// Output JSON path. Defaults to stdout.
     #[arg(short, long)]
@@ -1432,6 +1473,61 @@ struct DiscoverDefineArgs {
     /// Maximum candidate definitions to return.
     #[arg(long)]
     max_matches: Option<usize>,
+
+    /// Output JSON path (defaults to stdout).
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct DiscoverEmbeddingRelationshipsArgs {
+    /// Input JSON file containing EmbeddingsFileV1.
+    #[arg(long)]
+    embeddings: PathBuf,
+
+    /// Semantic ref or accepted-plane pointer used to scope the sidecar.
+    #[arg(long, default_value = "heads/main")]
+    accepted_ref: String,
+
+    /// Accepted snapshot id for the sidecar anchor.
+    #[arg(long)]
+    accepted_snapshot_id: String,
+
+    /// Canonical `.axi` digest for the sidecar anchor.
+    #[arg(long)]
+    axi_digest: String,
+
+    /// Optional compiled IR digest.
+    #[arg(long)]
+    compiled_ir_digest: Option<String>,
+
+    /// Optional module name.
+    #[arg(long)]
+    module_name: Option<String>,
+
+    /// Optional embedding model version for sidecar provenance.
+    #[arg(long)]
+    model_version: Option<String>,
+
+    /// Optional embedding model digest for sidecar provenance.
+    #[arg(long)]
+    model_digest: Option<String>,
+
+    /// Optional embedding deployment id for sidecar provenance.
+    #[arg(long)]
+    deployment_id: Option<String>,
+
+    /// Minimum cosine similarity in [-1, 1].
+    #[arg(long, default_value_t = 0.75)]
+    min_cosine_similarity: f32,
+
+    /// Maximum advisory relationships to emit.
+    #[arg(long, default_value_t = 32)]
+    max_relationships: usize,
+
+    /// Advisory relationship kind, for example similar_to or subtype_candidate.
+    #[arg(long, default_value = "similar_to")]
+    relationship: String,
 
     /// Output JSON path (defaults to stdout).
     #[arg(short, long)]
@@ -2052,6 +2148,48 @@ enum SemCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Create or move a semantic branch ref.
+    Branch {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Branch family: main, review, evidence, or wm.
+        #[arg(long, default_value = "review")]
+        family: String,
+        /// Branch name. Ignored for family=main.
+        name: Option<String>,
+        /// Commit id to point the branch at. Defaults to current semantic HEAD commit.
+        #[arg(long)]
+        commit: Option<String>,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Move symbolic sem/HEAD to an existing semantic branch ref.
+    Checkout {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Branch ref, for example heads/main or heads/review/demo.
+        r#ref: String,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create an immutable semantic tag ref.
+    Tag {
+        /// Accepted-plane directory.
+        #[arg(long, default_value = "build/accepted_plane")]
+        dir: PathBuf,
+        /// Tag name under refs/tags/.
+        name: String,
+        /// Commit id to tag. Defaults to current semantic HEAD commit.
+        #[arg(long)]
+        commit: Option<String>,
+        /// Print raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a semantic ref, commit, or world-model run from the semantic store.
     Show {
         /// Accepted-plane directory.
@@ -2104,6 +2242,9 @@ enum SemCommands {
         /// Print raw JSON.
         #[arg(long)]
         json: bool,
+        /// Print the reduced Lean-readable checker JSON instead of the runtime report.
+        #[arg(long)]
+        lean_json: bool,
     },
     /// Build a semantic rebase preview by transporting one ref onto another.
     Rebase {
@@ -2125,6 +2266,9 @@ enum SemCommands {
         /// Print raw JSON.
         #[arg(long)]
         json: bool,
+        /// Print the reduced Lean-readable checker JSON instead of the runtime report.
+        #[arg(long)]
+        lean_json: bool,
     },
     /// Build, show, or diff persisted semantic slice manifests.
     Slice {
@@ -2665,6 +2809,9 @@ fn main() -> Result<()> {
                 DiscoverCommands::Define(args) => {
                     cmd_discover_define(&args)?;
                 }
+                DiscoverCommands::EmbeddingRelationships(args) => {
+                    cmd_discover_embedding_relationships(&args)?;
+                }
                 DiscoverCommands::BehaviorCase(args) => {
                     cmd_discover_behavior_case(&args)?;
                 }
@@ -2676,6 +2823,9 @@ fn main() -> Result<()> {
                 }
                 DiscoverCommands::TheoryGraph(args) => {
                     cmd_discover_theory_graph(&args)?;
+                }
+                DiscoverCommands::KernelSurface(args) => {
+                    cmd_discover_kernel_surface(&args)?;
                 }
                 DiscoverCommands::TheoryCheck(args) => {
                     cmd_discover_theory_check(&args)?;
@@ -3001,8 +3151,11 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
             } else {
                 println!("sem status");
                 println!("  version: {}", status.version);
+                if let Some(head) = status.sem_head.as_ref() {
+                    println!("  sem HEAD: {}", semantic_head_label(head));
+                }
                 println!(
-                    "  sem head: {}",
+                    "  sem head commit: {}",
                     status
                         .sem_head_commit_id
                         .as_ref()
@@ -3033,6 +3186,52 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
                 for run_id in &status.world_model_run_ids {
                     println!("    - {}", run_id);
                 }
+            }
+        }
+        SemCommands::Branch {
+            dir,
+            family,
+            name,
+            commit,
+            json,
+        } => {
+            let commit_id = resolve_sem_command_commit_id(&dir, commit.as_deref())?;
+            let target = semantic_branch_target(&family, name.as_deref())?;
+            let pointer = accepted_plane::persist_semantic_branch_ref(&dir, &target, &commit_id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&pointer)?);
+            } else {
+                println!("sem branch");
+                println!("  ref: {}", pointer.ref_name);
+                println!("  commit: {}", pointer.commit_id);
+            }
+        }
+        SemCommands::Checkout { dir, r#ref, json } => {
+            let view = accepted_plane::checkout_semantic_ref(&dir, &r#ref)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else {
+                println!("sem checkout");
+                println!("  HEAD -> {}", view.pointer.ref_name);
+                println!("  commit: {}", view.pointer.commit_id);
+                println!("  kind: {:?}", view.commit.kind);
+            }
+        }
+        SemCommands::Tag {
+            dir,
+            name,
+            commit,
+            json,
+        } => {
+            let commit_id = resolve_sem_command_commit_id(&dir, commit.as_deref())?;
+            let target = accepted_plane::SemRefNameV1::tag(name)?;
+            let pointer = accepted_plane::persist_semantic_tag_ref(&dir, &target, &commit_id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&pointer)?);
+            } else {
+                println!("sem tag");
+                println!("  ref: {}", pointer.ref_name);
+                println!("  commit: {}", pointer.commit_id);
             }
         }
         SemCommands::Show {
@@ -3176,6 +3375,7 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
             target_slice,
             dry_run,
             json,
+            lean_json,
         } => {
             let result = accepted_plane::sem_merge_dry_run(&dir, &source, &target, &policy)?;
             let merge_plan = crate::semantic_merge_lattice::semantic_merge_plan_from_dry_run(
@@ -3184,6 +3384,22 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
                 read_semantic_slice_selector(source_slice.as_ref())?,
                 read_semantic_slice_selector(target_slice.as_ref())?,
             );
+            if lean_json {
+                if !dry_run {
+                    return Err(anyhow!(
+                        "axiograph sem merge --lean-json requires --dry-run because Lean receives a checker payload for the candidate plan, not a materialized commit"
+                    ));
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &crate::semantic_merge_lattice::semantic_merge_plan_lean_json_v1(
+                            &merge_plan
+                        )
+                    )?
+                );
+                return Ok(());
+            }
             if dry_run {
                 if json {
                     println!(
@@ -3298,27 +3514,40 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
             slice,
             policy,
             json,
+            lean_json,
         } => {
             let result = accepted_plane::sem_merge_dry_run(&dir, &source, &onto, &policy)?;
-            let rebase_plan = crate::semantic_merge_lattice::semantic_merge_plan_from_dry_run(
+            let rebase_plan = crate::semantic_merge_lattice::semantic_rebase_plan_from_dry_run(
                 &result,
-                crate::semantic_merge_lattice::SemanticMergeOperationKindV1::Rebase,
                 read_semantic_slice_selector(slice.as_ref())?,
                 crate::semantic_merge_lattice::SemanticSliceSelectorV1::default(),
             );
-            if json {
+            if lean_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &crate::semantic_merge_lattice::semantic_rebase_plan_lean_json_v1(
+                            &rebase_plan
+                        )
+                    )?
+                );
+            } else if json {
                 println!("{}", serde_json::to_string_pretty(&rebase_plan)?);
             } else {
                 println!("sem rebase --dry-run");
                 println!("  source: {source}");
                 println!("  onto: {onto}");
                 println!("  plan: {}", rebase_plan.plan_id);
+                println!("  auto decisions: {}", rebase_plan.transported_refs.len());
                 println!(
-                    "  auto decisions: {}",
-                    rebase_plan.auto_join_decisions.len()
+                    "  failed transports: {}",
+                    rebase_plan.failed_transports.len()
                 );
-                println!("  conflicts: {}", rebase_plan.conflicts.len());
                 println!("  resolver steps: {}", rebase_plan.resolver_steps.len());
+                println!(
+                    "  residual obligations: {}",
+                    rebase_plan.residual_obligations.len()
+                );
                 println!("  can materialize: {}", rebase_plan.can_materialize);
             }
         }
@@ -3416,6 +3645,54 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn semantic_head_label(head: &accepted_plane::SemHeadV1) -> String {
+    match head {
+        accepted_plane::SemHeadV1::Symbolic {
+            ref_name,
+            commit_id,
+        } => commit_id
+            .as_ref()
+            .map(|commit_id| format!("{ref_name} -> {commit_id}"))
+            .unwrap_or_else(|| format!("{ref_name} -> (missing ref)")),
+        accepted_plane::SemHeadV1::Detached { commit_id } => {
+            format!("detached -> {commit_id}")
+        }
+    }
+}
+
+fn resolve_sem_command_commit_id(
+    dir: &Path,
+    commit: Option<&str>,
+) -> Result<axiograph_pathdb::AxiDigest> {
+    if let Some(commit) = commit {
+        return Ok(axiograph_pathdb::AxiDigest::new(commit.to_string()));
+    }
+    accepted_plane::sem_status(dir)?
+        .sem_head_commit_id
+        .ok_or_else(|| anyhow!("semantic command needs --commit because sem/HEAD is not set"))
+}
+
+fn semantic_branch_target(
+    family: &str,
+    name: Option<&str>,
+) -> Result<accepted_plane::SemRefNameV1> {
+    match family.trim().to_ascii_lowercase().as_str() {
+        "main" => Ok(accepted_plane::SemRefNameV1::main()),
+        "review" => accepted_plane::SemRefNameV1::review(
+            name.ok_or_else(|| anyhow!("sem branch --family review requires <name>"))?,
+        ),
+        "evidence" => accepted_plane::SemRefNameV1::evidence(
+            name.ok_or_else(|| anyhow!("sem branch --family evidence requires <name>"))?,
+        ),
+        "wm" | "world-model" | "world_model" => accepted_plane::SemRefNameV1::world_model(
+            name.ok_or_else(|| anyhow!("sem branch --family wm requires <name>"))?,
+        ),
+        other => Err(anyhow!(
+            "unknown semantic branch family `{other}` (expected main|review|evidence|wm)"
+        )),
+    }
 }
 
 fn read_semantic_slice_selector(
@@ -5925,6 +6202,29 @@ fn cmd_check_software_coverage(args: &CheckSoftwareCoverageArgs) -> Result<()> {
 
 fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
     match command {
+        AuthoringCommands::Run {
+            suite,
+            example,
+            profile,
+            repo_root,
+            out_dir,
+            out,
+            fail_on_blocking,
+        } => {
+            let report =
+                cmd_authoring_run_suite(&suite, &example, &profile, &repo_root, out_dir.as_ref())?;
+            let pass = report
+                .get("pass")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            write_json_output(&report, out.as_ref())?;
+            if fail_on_blocking && !pass {
+                return Err(anyhow!(
+                    "authoring flow `{example}` failed under profile `{profile}`"
+                ));
+            }
+            Ok(())
+        }
         AuthoringCommands::CodegenPlan { overlay, out } => {
             let overlay = load_tooling_overlay(&overlay)?;
             let report = axiograph_tooling_overlays::codegen_plan_report(&overlay);
@@ -5992,6 +6292,220 @@ fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
         AuthoringCommands::Lsp => axiograph_software_authoring::run_lsp_stdio(),
         AuthoringCommands::Mcp => axiograph_software_authoring::run_mcp_stdio(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct SoftwareAuthoringExampleSuiteV1 {
+    examples: Vec<SoftwareAuthoringExampleCatalogEntryV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SoftwareAuthoringExampleCatalogEntryV1 {
+    id: String,
+    title: Option<String>,
+    axi: PathBuf,
+    overlay: PathBuf,
+    behavior_case: PathBuf,
+    coverage_query: Option<PathBuf>,
+    definition_queries: Option<PathBuf>,
+}
+
+fn cmd_authoring_run_suite(
+    suite_path: &Path,
+    example_id: &str,
+    profile: &str,
+    repo_root: &Path,
+    out_dir: Option<&PathBuf>,
+) -> Result<Value> {
+    let suite_text = fs::read_to_string(suite_path)?;
+    let suite: SoftwareAuthoringExampleSuiteV1 = serde_json::from_str(&suite_text)
+        .map_err(|err| anyhow!("failed to parse software authoring suite JSON: {err}"))?;
+    let entry = suite
+        .examples
+        .iter()
+        .find(|entry| entry.id == example_id)
+        .ok_or_else(|| anyhow!("software authoring suite has no example `{example_id}`"))?;
+
+    let profile = parse_authoring_run_profile(profile)?;
+    let axi_path = resolve_suite_relative_path(suite_path, &entry.axi)?;
+    let overlay_path = resolve_suite_relative_path(suite_path, &entry.overlay)?;
+    let behavior_case_path = resolve_suite_relative_path(suite_path, &entry.behavior_case)?;
+    let coverage_query_path = entry
+        .coverage_query
+        .as_ref()
+        .map(|path| resolve_suite_relative_path(suite_path, path))
+        .transpose()?;
+    let definition_queries_path = entry
+        .definition_queries
+        .as_ref()
+        .map(|path| resolve_suite_relative_path(suite_path, path))
+        .transpose()?;
+
+    if let Some(out_dir) = out_dir {
+        fs::create_dir_all(out_dir)?;
+    }
+
+    let kernel = compile_kernel_for_tooling_overlay(&axi_path)?;
+    let overlay = load_tooling_overlay(&overlay_path)?;
+    let overlay_report = axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &overlay);
+    write_optional_step_report(out_dir, "overlay_validation.json", &overlay_report)?;
+
+    let db = load_pathdb_for_cli(&axi_path)?;
+    let mut request = load_behavior_case_request(&behavior_case_path)?;
+    request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
+    request.overlay = Some(overlay.clone());
+    let behavior_report =
+        crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
+    let behavior_report_json = serde_json::to_value(&behavior_report)?;
+    write_optional_step_report(out_dir, "behavior_case_report.json", &behavior_report_json)?;
+
+    let overlay_coverage =
+        axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
+            &behavior_report_json,
+            &overlay,
+            repo_root,
+        );
+    write_optional_step_report(out_dir, "overlay_coverage.json", &overlay_coverage)?;
+
+    let continuous_options = axiograph_software_authoring::ContinuousCheckOptions {
+        repo_root: repo_root.to_path_buf(),
+        require_codegen: vec![
+            "rust".to_string(),
+            "typescript".to_string(),
+            "python".to_string(),
+            "go".to_string(),
+        ],
+        strict_coverage: matches!(
+            profile,
+            AuthoringRunProfile::Strict | AuthoringRunProfile::Ci
+        ),
+        require_code_refs: matches!(
+            profile,
+            AuthoringRunProfile::Strict | AuthoringRunProfile::Ci
+        ),
+        require_runtime_theory: matches!(profile, AuthoringRunProfile::Ci),
+    };
+    let continuous_report =
+        axiograph_software_authoring::build_continuous_software_coverage_report(
+            &behavior_report_json,
+            &continuous_options,
+        )?;
+    write_optional_step_report(out_dir, "continuous_coverage.json", &continuous_report)?;
+
+    let coverage_query_report = if let Some(path) = coverage_query_path.as_ref() {
+        let query_json = fs::read_to_string(path)?;
+        let query: axiograph_tooling_overlays::CoverageQueryV1 = serde_json::from_str(&query_json)
+            .map_err(|err| anyhow!("failed to parse CoverageQueryV1 JSON: {err}"))?;
+        let report =
+            axiograph_tooling_overlays::coverage_query_report(&kernel, Some(&overlay), &query);
+        write_optional_step_report(out_dir, "coverage_query.json", &report)?;
+        Some(serde_json::to_value(report)?)
+    } else {
+        None
+    };
+
+    let definition_query_report_count = if let Some(path) = definition_queries_path.as_ref() {
+        let value = read_json_file(path)?;
+        value
+            .get("queries")
+            .and_then(|queries| queries.as_array())
+            .map(|queries| queries.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let pass = overlay_report.valid && continuous_report.pass;
+    Ok(serde_json::json!({
+        "version": "authoring_suite_run_report_v1",
+        "example": {
+            "id": entry.id,
+            "title": entry.title.as_deref(),
+            "axi": axi_path.display().to_string(),
+            "overlay": overlay_path.display().to_string(),
+            "behavior_case": behavior_case_path.display().to_string(),
+            "coverage_query": coverage_query_path.as_ref().map(|path| path.display().to_string()),
+            "definition_queries": definition_queries_path.as_ref().map(|path| path.display().to_string()),
+        },
+        "profile": profile.as_str(),
+        "pass": pass,
+        "overlay_validation": overlay_report,
+        "behavior_case_report": behavior_report,
+        "overlay_coverage": overlay_coverage,
+        "continuous_coverage": continuous_report,
+        "coverage_query_report": coverage_query_report,
+        "definition_query_count": definition_query_report_count,
+        "next_commands": [
+            format!("axiograph check validate {}", axi_path.display()),
+            format!("axiograph check theory {} --closure-tier finite_fragment", axi_path.display()),
+            format!("axiograph discover overlay-check {} --overlay {}", axi_path.display(), overlay_path.display()),
+            format!("axiograph discover behavior-case {} --request {} --overlay {}", axi_path.display(), behavior_case_path.display(), overlay_path.display()),
+            format!("axiograph authoring continuous-check --behavior-report <behavior_case_report.json> --repo-root {}", repo_root.display())
+        ],
+    }))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthoringRunProfile {
+    Advisory,
+    Strict,
+    Ci,
+}
+
+impl AuthoringRunProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Advisory => "advisory",
+            Self::Strict => "strict",
+            Self::Ci => "ci",
+        }
+    }
+}
+
+fn parse_authoring_run_profile(raw: &str) -> Result<AuthoringRunProfile> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "advisory" => Ok(AuthoringRunProfile::Advisory),
+        "strict" => Ok(AuthoringRunProfile::Strict),
+        "ci" => Ok(AuthoringRunProfile::Ci),
+        other => Err(anyhow!(
+            "unknown authoring profile `{other}` (expected advisory|strict|ci)"
+        )),
+    }
+}
+
+fn resolve_suite_relative_path(suite_path: &Path, raw: &Path) -> Result<PathBuf> {
+    if raw.is_absolute() {
+        return Ok(raw.to_path_buf());
+    }
+    if raw.exists() {
+        return Ok(raw.to_path_buf());
+    }
+    let Some(mut base) = suite_path.parent() else {
+        return Ok(raw.to_path_buf());
+    };
+    loop {
+        let candidate = base.join(raw);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        match base.parent() {
+            Some(parent) => base = parent,
+            None => break,
+        }
+    }
+    Ok(raw.to_path_buf())
+}
+
+fn write_optional_step_report<T: Serialize>(
+    out_dir: Option<&PathBuf>,
+    filename: &str,
+    report: &T,
+) -> Result<()> {
+    if let Some(out_dir) = out_dir {
+        let path = out_dir.join(filename);
+        write_json_output(report, Some(&path))?;
+    }
+    Ok(())
 }
 
 fn read_json_file(path: &Path) -> Result<Value> {
@@ -7923,6 +8437,14 @@ fn cmd_discover_theory_graph(args: &DiscoverTheoryGraphArgs) -> Result<()> {
     write_json_output(&report, args.out.as_ref())
 }
 
+fn cmd_discover_kernel_surface(args: &DiscoverKernelSurfaceArgs) -> Result<()> {
+    let axi_text = fs::read_to_string(&args.input)?;
+    let canonical = crate::axi_input::require_canonical_axi_text(&axi_text)?;
+    let kernel = axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), &axi_text)
+        .map_err(|err| anyhow!("failed to compile KernelModuleIr: {err}"))?;
+    write_json_output(&kernel.kernel_surface_v1(), args.out.as_ref())
+}
+
 fn cmd_discover_theory_check(args: &DiscoverTheoryCheckArgs) -> Result<()> {
     let axi_text = fs::read_to_string(&args.input)?;
     let closure_tier =
@@ -8003,6 +8525,72 @@ fn cmd_discover_define(args: &DiscoverDefineArgs) -> Result<()> {
     let report =
         axiograph_tooling_overlays::definition_query_report(&kernel, overlay.as_ref(), &query);
     write_json_output(&report, args.out.as_ref())
+}
+
+fn cmd_discover_embedding_relationships(args: &DiscoverEmbeddingRelationshipsArgs) -> Result<()> {
+    let text = fs::read_to_string(&args.embeddings)?;
+    let file: crate::embeddings::EmbeddingsFileV1 = serde_json::from_str(&text)
+        .map_err(|err| anyhow!("failed to parse EmbeddingsFileV1 JSON: {err}"))?;
+    let accepted = crate::embeddings::EmbeddingAcceptedRefV1 {
+        accepted_ref: args.accepted_ref.clone(),
+        accepted_axi_anchor: axiograph_pathdb::AcceptedAxiAnchor::new(
+            axiograph_pathdb::AcceptedSnapshotId::new(args.accepted_snapshot_id.clone()),
+            axiograph_pathdb::AxiDigest::new(args.axi_digest.clone()),
+        ),
+        module_name: args.module_name.clone(),
+        compiled_ir_digest: args.compiled_ir_digest.clone(),
+    };
+    let mut manifest_input = crate::embeddings::EmbeddingSidecarManifestBuildInputV1::new(accepted);
+    manifest_input.model_version = args.model_version.clone();
+    manifest_input.model_digest = args.model_digest.clone();
+    manifest_input.deployment_id = args
+        .deployment_id
+        .clone()
+        .or_else(|| Some("embedding_relationships_cli_v1".to_string()));
+    let manifest = crate::embeddings::build_embedding_sidecar_manifest_v1(&file, manifest_input)?;
+    let config = crate::embeddings::EmbeddingRelationshipDiscoveryConfigV1 {
+        min_cosine_similarity: args.min_cosine_similarity,
+        max_relationships: args.max_relationships,
+        relationship: parse_embedding_relationship_kind(&args.relationship)?,
+        ..Default::default()
+    };
+    let overlay =
+        crate::embeddings::discover_embedding_evidence_overlay_v1(&file, &manifest, config)?;
+    write_json_output(
+        &serde_json::json!({
+            "version": "embedding_relationship_discovery_report_v1",
+            "manifest": manifest,
+            "overlay": overlay,
+            "trust": {
+                "authority": "evidence_plane_only",
+                "mutation_authority": "axiograph_review_promotion_only",
+                "non_claim": "embedding similarity is not semantic equivalence, subtype proof, or accepted .axi truth"
+            }
+        }),
+        args.out.as_ref(),
+    )
+}
+
+fn parse_embedding_relationship_kind(
+    raw: &str,
+) -> Result<crate::embeddings::EmbeddingRelationshipKindV1> {
+    use crate::embeddings::EmbeddingRelationshipKindV1;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "similar_to" | "similar" => Ok(EmbeddingRelationshipKindV1::SimilarTo),
+        "supports" | "support" => Ok(EmbeddingRelationshipKindV1::Supports),
+        "mentions" | "mention" => Ok(EmbeddingRelationshipKindV1::Mentions),
+        "implements" | "implement" => Ok(EmbeddingRelationshipKindV1::Implements),
+        "violates" | "violate" => Ok(EmbeddingRelationshipKindV1::Violates),
+        "subtype_candidate" | "subtype" => Ok(EmbeddingRelationshipKindV1::SubtypeCandidate),
+        "same_as_candidate" | "same_as" => Ok(EmbeddingRelationshipKindV1::SameAsCandidate),
+        "relation_candidate" | "relation" => Ok(EmbeddingRelationshipKindV1::RelationCandidate),
+        "axiom_candidate" | "axiom" => Ok(EmbeddingRelationshipKindV1::AxiomCandidate),
+        "contradicts" | "contradict" => Ok(EmbeddingRelationshipKindV1::Contradicts),
+        "unknown" => Ok(EmbeddingRelationshipKindV1::Unknown),
+        other => Err(anyhow!(
+            "unknown embedding relationship `{other}` (expected similar_to|supports|mentions|implements|violates|subtype_candidate|same_as_candidate|relation_candidate|axiom_candidate|contradicts|unknown)"
+        )),
+    }
 }
 
 fn cmd_discover_behavior_case(args: &DiscoverBehaviorCaseArgs) -> Result<()> {
@@ -9447,6 +10035,77 @@ theory PlantTransport on Plant:
                 assert_eq!(r#ref, "heads/main");
                 assert_eq!(selector, Some(PathBuf::from("/tmp/slice-selector.json")));
                 assert!(json);
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn sem_merge_lean_json_command_parses() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "sem",
+            "merge",
+            "--source",
+            "heads/review/demo",
+            "--target",
+            "heads/main",
+            "--dry-run",
+            "--lean-json",
+        ])
+        .expect("parse sem merge --lean-json");
+
+        match cli.command {
+            Commands::Sem {
+                command:
+                    SemCommands::Merge {
+                        source,
+                        target,
+                        dry_run,
+                        json,
+                        lean_json,
+                        ..
+                    },
+            } => {
+                assert_eq!(source, "heads/review/demo");
+                assert_eq!(target, "heads/main");
+                assert!(dry_run);
+                assert!(!json);
+                assert!(lean_json);
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn sem_rebase_lean_json_command_parses() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "sem",
+            "rebase",
+            "--source",
+            "heads/review/demo",
+            "--onto",
+            "heads/main",
+            "--lean-json",
+        ])
+        .expect("parse sem rebase --lean-json");
+
+        match cli.command {
+            Commands::Sem {
+                command:
+                    SemCommands::Rebase {
+                        source,
+                        onto,
+                        json,
+                        lean_json,
+                        ..
+                    },
+            } => {
+                assert_eq!(source, "heads/review/demo");
+                assert_eq!(onto, "heads/main");
+                assert!(!json);
+                assert!(lean_json);
             }
             _ => panic!("unexpected command parse result"),
         }

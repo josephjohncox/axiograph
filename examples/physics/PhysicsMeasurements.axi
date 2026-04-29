@@ -114,11 +114,20 @@ instance PhysicsMeasurementsSeed of PhysicsMeasurements:
 
   Run = {Run_Seed_0, Run_Seed_1}
 
-  Unit = {Unit_Meter, Unit_Second, Unit_Kelvin, Unit_Dimensionless}
-  Text = {Text_m, Text_s, Text_K, Text_1}
+  Unit = {
+    Unit_Meter,
+    Unit_MeterPerSecond,
+    Unit_MeterPerSecondSquared,
+    Unit_Second,
+    Unit_Kelvin,
+    Unit_Dimensionless
+  }
+  Text = {Text_m, Text_m_per_s, Text_m_per_s2, Text_s, Text_K, Text_1}
 
   UnitSymbol = {
     (unit=Unit_Meter, text=Text_m),
+    (unit=Unit_MeterPerSecond, text=Text_m_per_s),
+    (unit=Unit_MeterPerSecondSquared, text=Text_m_per_s2),
     (unit=Unit_Second, text=Text_s),
     (unit=Unit_Kelvin, text=Text_K),
     (unit=Unit_Dimensionless, text=Text_1)
@@ -134,8 +143,8 @@ instance PhysicsMeasurementsSeed of PhysicsMeasurements:
 
   QuantityHasCanonicalUnit = {
     (quantity=PositionX, unit=Unit_Meter),
-    (quantity=VelocityX, unit=Unit_Dimensionless),     -- demo placeholder (unit algebra is future work)
-    (quantity=AccelerationX, unit=Unit_Dimensionless), -- demo placeholder
+    (quantity=VelocityX, unit=Unit_MeterPerSecond),
+    (quantity=AccelerationX, unit=Unit_MeterPerSecondSquared),
     (quantity=Temperature, unit=Unit_Kelvin),
     (quantity=CurvatureScalar, unit=Unit_Dimensionless)
   }

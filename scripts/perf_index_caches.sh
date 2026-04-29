@@ -26,6 +26,13 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/build/perf_index_caches}"
+case "$OUT_DIR" in
+  "$ROOT_DIR"/build/*|/tmp/*|/private/tmp/*) ;;
+  *)
+    echo "error: refusing to delete OUT_DIR outside repo build/ or temp paths: $OUT_DIR" >&2
+    exit 2
+    ;;
+esac
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 

@@ -1,6 +1,6 @@
 # Axiograph Rust Build & Test Makefile
 
-.PHONY: all build test test-unit test-integration test-backend-containers test-e2e test-all clean doc check fmt lint
+.PHONY: all build test test-unit test-integration test-backend-pushdown test-backend-containers test-e2e test-all clean doc check fmt lint
 
 # Default target
 all: check test
@@ -25,6 +25,11 @@ test-unit:
 test-integration:
 	@echo "=== Integration Tests ==="
 	cargo test --test integration_tests
+
+# Backend pushdown plan-shape tests that do not require external containers
+test-backend-pushdown:
+	@echo "=== Backend Pushdown Plan + Native Artifact Tests ==="
+	cargo test -p axiograph-cli backend_pushdown
 
 # Container-backed backend smoke tests
 test-backend-containers:
@@ -120,6 +125,7 @@ summary:
 	@echo ""
 	@echo "Unit tests:            cargo test --workspace --lib"
 	@echo "Integration:           cargo test --test integration_tests"
+	@echo "Backend pushdown/artifacts: cargo test -p axiograph-cli backend_pushdown"
 	@echo "Backend containers:    AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1 cargo test --test backend_container_tests -- --ignored --nocapture"
 	@echo "LLM Sync E2E:          cargo test -p axiograph-llm-sync --test e2e_tests"
 	@echo "Reconciliation:        cargo test -p axiograph-llm-sync --test reconciliation_tests"

@@ -34,7 +34,7 @@ if [ ! -x "$AXIOGRAPH" ]; then
 fi
 
 AXPD="$OUT_DIR/supply_chain_modalities_hott.axpd"
-EXPORT_AXI="$OUT_DIR/supply_chain_modalities_hott_export_v1.axi"
+MODULE_AXI="$OUT_DIR/supply_chain_modalities_hott_module.axi"
 
 echo ""
 echo "-- A) Import canonical .axi, explore, and save a snapshot"
@@ -69,7 +69,7 @@ echo "-- A) Import canonical .axi, explore, and save a snapshot"
   --cmd 'q select ?obl where name("ERPEvent_0") -EvidenceSuggestsObligation-> ?obl min_confidence 0.80 limit 10' \
   --cmd 'q select ?c where ?c is DocChunk, fts(?c, "text", "backup") limit 10' \
   --cmd 'add_entity Homotopy demo_homotopy_0' \
-  --cmd 'export_axi '"$EXPORT_AXI" \
+  --cmd 'export_axi_module '"$MODULE_AXI"' SupplyChainModalitiesHoTT' \
   --cmd 'save '"$AXPD" \
   >"$OUT_DIR/repl_output.txt"
 
@@ -97,7 +97,7 @@ echo ""
 echo "Done."
 echo "Outputs:"
 echo "  $AXPD"
-echo "  $EXPORT_AXI"
+echo "  $MODULE_AXI"
 echo "  $OUT_DIR/repl_output.txt"
 echo "  $OUT_DIR/viz_rawmetal_a.html"
 echo "  $OUT_DIR/viz_erp_event_0.html"

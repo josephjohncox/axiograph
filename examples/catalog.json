@@ -1,6 +1,32 @@
 {
   "version": 1,
   "description": "Pedagogical example catalog for agents, docs, and smoke tests. Canonical examples teach typed Axiograph surfaces; debug export-era scripts are deliberately not the primary route.",
+  "recommended_flow": [
+    {
+      "step": "validate_canonical_axi",
+      "surface": "canonical .axi parse/typecheck"
+    },
+    {
+      "step": "runtime_theory",
+      "surface": "RuntimeTheoryCheckReportV1 or TheoryObligationGraphV1"
+    },
+    {
+      "step": "query_definition_overlay_coverage",
+      "surface": "typed query certificates, definition reports, overlay validation, CQ/coverage reports"
+    },
+    {
+      "step": "software_codegen",
+      "surface": "read-only codegen plans, continuous coverage profiles, explicit skeleton materialization"
+    },
+    {
+      "step": "semantic_merge_rebase",
+      "surface": "accepted-plane refs, dry-run merge/rebase plans, reduced Lean checker payloads"
+    },
+    {
+      "step": "backend_projection",
+      "surface": "read-only TypeDB/TerminusDB/RDF/SHACL projection contracts from compiled IR"
+    }
+  ],
   "examples": [
     {
       "id": "family-core",
@@ -43,6 +69,20 @@
       ]
     },
     {
+      "id": "semantic-merge-plant-operations",
+      "title": "Plant operations semantic merge and Lean theory check",
+      "path": "examples/semantic_merge",
+      "kind": "semantic_vcs_fixture",
+      "feature_tags": ["semantic-vcs", "merge", "rebase", "lean-theory", "runtime-theory", "ddd", "industrial", "chemical-plant"],
+      "flow": ["validate", "runtime_theory", "accepted_refs", "dry_run_merge", "dry_run_rebase", "lean_check", "conformance_coverage"],
+      "commands": [
+        "./examples/semantic_merge/run_merge_flow.sh",
+        "make verify-lean-semantic-vcs",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/semantic_merge/PlantOperationsCore.axi",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check theory examples/semantic_merge/PlantOperationsCore.axi --closure-tier finite_fragment"
+      ]
+    },
+    {
       "id": "supply-chain-hott",
       "title": "Supply-chain path semantics",
       "path": "examples/manufacturing/SupplyChainHoTT.axi",
@@ -70,6 +110,7 @@
       "path": "examples/software_authoring/OrderFulfillmentDomain.axi",
       "kind": "canonical_axi",
       "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "weak-definition-query", "behavior-case", "runtime-theory", "codegen", "continuous-coverage", "semantic-coverage"],
+      "flow": ["validate", "runtime_theory", "definition_query", "overlay_check", "coverage_query", "behavior_case", "software_coverage", "codegen_plan", "continuous_gates", "materialize_skeletons"],
       "commands": [
         "./examples/software_authoring/run_authoring_flow.sh",
         "./examples/software_authoring/run_codegen_examples.sh",
@@ -93,6 +134,7 @@
       "path": "examples/software_authoring/SubscriptionBillingDomain.axi",
       "kind": "canonical_axi",
       "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "subscription", "billing", "entitlements", "codegen", "continuous-coverage"],
+      "flow": ["validate", "runtime_theory", "definition_query", "overlay_check", "coverage_query", "behavior_case", "software_coverage", "codegen_plan", "continuous_gates", "materialize_skeletons"],
       "commands": [
         "EXAMPLE_ID=subscription_billing ./examples/software_authoring/run_codegen_examples.sh",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/software_authoring/SubscriptionBillingDomain.axi --request examples/software_authoring/subscription_billing_behavior_case.json --overlay examples/software_authoring/subscription_billing_tooling_overlay.json --out build/examples/subscription_billing_behavior_case_report.json"
@@ -104,6 +146,7 @@
       "path": "examples/software_authoring/ProcessControlDomain.axi",
       "kind": "canonical_axi",
       "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "industrial", "process-control", "hmi", "plc", "simulator", "codegen", "continuous-coverage"],
+      "flow": ["validate", "runtime_theory", "definition_query", "overlay_check", "coverage_query", "behavior_case", "software_coverage", "codegen_plan", "continuous_gates", "materialize_skeletons"],
       "commands": [
         "EXAMPLE_ID=process_control ./examples/software_authoring/run_codegen_examples.sh",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/software_authoring/ProcessControlDomain.axi --request examples/software_authoring/process_control_behavior_case.json --overlay examples/software_authoring/process_control_tooling_overlay.json --out build/examples/process_control_behavior_case_report.json"
@@ -135,7 +178,10 @@
       "path": "examples/rdfowl",
       "kind": "interop_fixture",
       "feature_tags": ["rdf", "shacl", "interop", "backend-projection"],
-      "commands": []
+      "flow": ["inspect_boundary_fixture", "review_projection_contract", "keep_axiograph_as_semantic_authority"],
+      "commands": [
+        "cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown"
+      ]
     }
   ]
 }

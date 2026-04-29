@@ -73,8 +73,7 @@ echo "-- non-interactive REPL session (LLM tool loop)"
   --cmd "llm agent what does doc_proto_api_0 mention?" \
   --cmd "llm agent what is the suggested next step after acme.svc0.v1.Service0.CreateWidget?" \
   --cmd "viz $OUT_DIR/proto_api_service0.html format html plane data focus_name acme.svc0.v1.Service0 hops 2 max_nodes 320" \
-  --cmd "viz $OUT_DIR/proto_api_doc0.html format html plane data focus_name doc_proto_api_0 hops 2 max_nodes 360" \
-  --cmd "export_axi $OUT_DIR/proto_api_llm_export_v1.axi"
+  --cmd "viz $OUT_DIR/proto_api_doc0.html format html plane data focus_name doc_proto_api_0 hops 2 max_nodes 360"
 
 echo ""
 echo "Done."

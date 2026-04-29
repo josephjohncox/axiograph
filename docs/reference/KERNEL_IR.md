@@ -50,6 +50,7 @@ Current implemented slice (2026-04):
   - `PathEquationIr`
   - `OpaqueEquationIr`
   - `RewriteRuleIr`
+  - `TheoryTouchedRoleIr`
   - `TheoryObligationRefIr`
   - `TheoryObligationKindIr`
   - `TheorySubjectRefIr`
@@ -61,6 +62,9 @@ Current implemented slice (2026-04):
   - explicit obligation→subject and subject→obligation cross-links via
     `TheoryIr::subject_refs_for_obligation(...)` and
     `TheoryIr::obligation_refs_for_subject(...)`
+  - path equations and rewrite rules retain touched relation roles, so carrier,
+    context, temporal, and data roles remain addressable as typed subjects
+    instead of disappearing behind relation-level references
   - `TheoryObligationGraphV1`, a deterministic runtime graph of theory nodes,
     obligation nodes, subject nodes, and support/touches edges for shared query
     refinement, CQ repair, migration authoring, and reconciliation tooling
@@ -73,6 +77,8 @@ Current implemented slice (2026-04):
   - `RuntimeTheoryClosureTierV1::{FiniteFragment, EvidenceWeighted, GlobalIndexed}`
   - `CompletenessClaimV1`
   - `OntologyClosureClaimV1`
+  - `RuntimeTheoryAdmissibilityDiagnosticV1`
+  - `RuntimeTheoryAssumptionDiagnosticV1`
   - `axiograph check theory <module.axi> --json`
   - `axiograph discover theory-check <module.axi>`
   - `semantic_theory_check`
@@ -80,6 +86,12 @@ Current implemented slice (2026-04):
   admissibility, closure, and completeness under declared world/evidence/ref
   assumptions. It is still outside the Lean trusted checker. See
   `docs/reference/RUNTIME_THEORY_CHECKER.md`.
+- Lean now has a narrow operational semantic VCS scaffold in
+  `lean/Axiograph/SemanticVCS.lean`, documented in
+  `docs/reference/LEAN_THEORY_EVALUATION.md`. It formalizes finite
+  `SemanticSlice` join/meet preservation, conservative merge materialization,
+  and rebase transport preservation predicates. It is theorem-support outside
+  the shipped verifier boundary, not a complete ontology-lattice proof.
 - theory transport is now runtime-addressable:
   - `TheoryTransportPlanIr`
   - `TheoryTransportItemIr`
@@ -88,7 +100,9 @@ Current implemented slice (2026-04):
   - `TheoryIr::theory_transport_plan(...)`
   These plans classify each compiled theory obligation under a
   `SchemaMorphismV1` before migration/rebase tooling turns it into resolver
-  handles. They are operational typed transport plans, not Lean certificates.
+  handles. Transport items carry the same typed subject links as the source
+  obligation, including touched roles from equations and rewrites. They are
+  operational typed transport plans, not Lean certificates.
 - semantic slice manifests built by `axiograph sem slice build` now enrich
   semantic-commit refs with compiled `KernelModuleIr` refs from accepted
   canonical modules:
@@ -106,9 +120,10 @@ Current implemented slice (2026-04):
   - constraints now retain compiled relation ids and compiled role ids for
     referenced fields/params,
   - parseable path equations validate against compiled carrier semantics,
-  - parseable path equations now retain compiled relation ids,
+  - parseable path equations now retain compiled relation ids and touched role
+    refs,
   - rewrite rules validate declared vars, referenced relations, and endpoint
-    typing against the same compiled schema slice.
+    typing against the same compiled schema slice and retain touched role refs.
 - `.axi` import and meta-plane schema semantics now consult this compiled slice
   for carrier inference and witness-view selection instead of repeating
   endpoint heuristics locally.
@@ -136,9 +151,14 @@ Current implemented slice (2026-04):
     rechecks or reindexing,
   - and the explicit reconciliation boundary where semantic refs, CQ gates, and
     persisted reconciliation previews remain authoritative.
-- `axiograph_cli::query_ir::PreparedQueryExplorationV1` is the current typed
-  compiled-query exploration surface for editors/agents:
+- `axiograph_cli::query_ir::PreparedQueryMetadataV1` and
+  `PreparedQueryExplorationV1` are the current typed compiled-query surfaces
+  for reports/editors/agents:
+  - stable prepared-query, input-IR, and elaborated-IR ids,
   - inferred types,
+  - certifiability/trust metadata and explicit non-claims,
+  - optional `KernelRefV1` citations when metadata is built from canonical
+    compiled `KernelModuleIr`,
   - typed holes,
   - refinement candidates,
   - semantic claims/coverage,
@@ -156,8 +176,9 @@ Current implemented slice (2026-04):
   - `build_compiled_ir_exploration_evolution_preview_v1(...)`
   - `build_migration_evolution_preview_v1(...)`
   - `build_reconciliation_evolution_preview_v1(...)`
-- CQ evaluation now surfaces shared runtime refinement candidates per
-  competency question, rather than only trust/coverage strings.
+- CQ evaluation now surfaces `PreparedQueryMetadataV1` plus shared runtime
+  refinement candidates per competency question, rather than only raw query
+  strings or trust/coverage strings.
 - The full `KernelModuleIr` / shared `InstanceIr` / richer canonical
   `ConstraintIr` enum / broader equation language / certifiable theory proof
   export remain future work.
@@ -215,8 +236,8 @@ the same ids too:
 The repo is no longer at the stage where compiled IR is only a design note. The
 current operational seam already has three concrete surfaces:
 
-- typed exploration:
-  `PreparedQueryExplorationV1` and
+- typed query/exploration:
+  `PreparedQueryMetadataV1`, `PreparedQueryExplorationV1`, and
   `build_compiled_ir_exploration_evolution_preview_v1(...)`
 - typed transport / projection review:
   `BackendPushdownPlanV1` plus `BackendPushdownOperationalSurfaceV1`
@@ -229,6 +250,8 @@ already the correct default direction for agents and tooling:
 
 - explore the ontology through compiled/query IR rather than raw token
   heuristics,
+- cite prepared query handles and elaborated query ids in CQ/refinement reports
+  rather than treating raw query text as the report identity,
 - inspect backend pushdown as typed transport plus residual obligations rather
   than as opaque adapter behavior,
 - and inspect merge/reconciliation through persisted preview objects rather than
@@ -244,6 +267,46 @@ runtime service that preserves:
   migration/reconciliation review, and CQ repair,
 - and trust/coverage deltas that can be carried forward into review, migration,
   and reconciliation workflows.
+
+### KernelSurfaceV1 and KernelRefV1
+
+`KernelSurfaceV1` is the intended shared runtime index/report surface over the
+compiled kernel slice. It should gather refs from:
+
+- `SchemaCategoryIr` objects, relation objects, projection arrows, subtype
+  inclusions, anchors, and carrier/witness-view metadata;
+- `TheoryIr` constraints, path equations, opaque equations, rewrite rules,
+  theory subjects, touched roles, and obligations;
+- `InstanceFunctorIr` object memberships, relation fact sets, projection images,
+  subtype transports, and stable fact refs; and
+- accepted module anchors plus trust, coverage, and non-claim summaries.
+
+`KernelRefV1` is the corresponding typed reference currency. Reports should use
+it when they need to point at a schema object, relation role, category arrow,
+theory obligation, theory subject, instance-functor image, stable fact, accepted
+anchor, or derived review handle.
+
+This surface is intentionally operational. It is not a Lean proof object, not a
+new semantic authority, and not a substitute for accepted `.axi` plus compiled
+IR. Its job is to make the same typed refs available to query preparation, CQ
+evaluation, migration and transport planning, semantic diff/reconciliation,
+backend projection plans, authoring previews, and agent-facing repair reports.
+When a report cites `KernelRefV1`, it is saying "this runtime result is indexed
+against this compiled semantic handle," not "this claim is certified by Lean."
+Strict semantic reports should validate their refs against `KernelSurfaceV1`
+before they can be used for promotion, certification, merge materialization, or
+strict coverage. User-facing names and labels are ergonomics; compiled
+`KernelRefV1` handles are the runtime authority.
+
+The inspection command is:
+
+```bash
+axiograph discover kernel-surface path/to/module.axi --out kernel_surface.json
+```
+
+The read-only MCP/tool-loop surface is `semantic_kernel_surface` with
+`{"axi_text": "..."}`. It returns the same `KernelSurfaceV1` report family and
+the same non-claims.
 
 ## Top-Level Shape
 
@@ -730,8 +793,8 @@ The first implementation cut for this spec should:
 3. Replace endpoint heuristics with `TraversalView`.
 4. Rebase migration/category scaffolding on `SchemaCoreIr`.
 5. Keep PathDB storage layout stable while changing the semantic lowering path.
-6. Add prepared-query and migration-preview forms that cite IR-level ids rather
-   than raw surface names alone.
+6. Keep extending prepared-query and migration-preview forms so reports cite
+   IR-level ids rather than raw surface names alone.
 7. Make certificate payloads and semantic diffs name the same stable IR objects
    used by authoring and query tooling.
 8. Make business-rule applicability, semantic-coverage, and agent-facing

@@ -96,7 +96,7 @@ async fn test_full_extraction_pipeline() {
 
 #[tokio::test]
 async fn test_facts_land_in_axi() {
-    let (storage, sync, dir) = test_env();
+    let (_storage, sync, dir) = test_env();
 
     sync.sync_from_conversation(&machinist_conversation(), None)
         .await
@@ -438,7 +438,7 @@ async fn test_conflict_detection() {
 
 #[tokio::test]
 async fn test_event_emission() {
-    let (storage, mut sync, _dir) = test_env();
+    let (_storage, mut sync, _dir) = test_env();
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
@@ -627,7 +627,7 @@ async fn test_full_roundtrip() {
         .unwrap();
 
     // 2. Build grounding context
-    let context = sync.build_grounding_context("titanium", 5).unwrap();
+    let _context = sync.build_grounding_context("titanium", 5).unwrap();
 
     // 3. Check .axi file
     let axi_files: Vec<_> = std::fs::read_dir(dir.path())
@@ -640,7 +640,7 @@ async fn test_full_roundtrip() {
 
     // 4. Check PathDB
     let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let _db = pathdb.read();
 
     // 5. Verify end state
     let stats = sync.stats();

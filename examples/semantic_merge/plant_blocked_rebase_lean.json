@@ -1,0 +1,88 @@
+{
+  "version": "semantic_vcs_lean_rebase_plan_v1",
+  "source": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "fnv1a64:plant-simulation",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-simulation",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.OptimizerEvaluatesScenario.key"
+      }
+    ]
+  },
+  "onto": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "fnv1a64:plant-procurement-renamed-lot",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-renamed-lot",
+      "context_id": "plant-procurement",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.CertifiedIncomingLot"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      }
+    ]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "fnv1a64:plant-rebase-blocked",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-rebase-blocked",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.OptimizerEvaluatesScenario.key"
+      },
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.CertifiedIncomingLot"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      }
+    ]
+  },
+  "transport_items": [
+    {
+      "source_ref": {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      "status": "blocked",
+      "required": true
+    }
+  ],
+  "blockers": [
+    "residual_obligation"
+  ],
+  "resolver_steps": [],
+  "residual_obligations": [
+    {
+      "kind": "theory_obligation",
+      "id": "transport.missing_target_image.PlantSimulation.OptimizerEvaluatesScenario"
+    }
+  ]
+}

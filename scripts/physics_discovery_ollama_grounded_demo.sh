@@ -7,8 +7,8 @@ set -euo pipefail
 # - evidence-plane ingestion from small physics notes
 # - LLM grounded expansion (`--llm-add-proposals`) that adds new untrusted entities/relations
 # - candidate `.axi` drafting (schema discovery)
-# - promotion gate: Rust validate + Lean `axi_well_typed_v1` (optional)
-# - derived artifacts: `.axpd`, reversible snapshot export `.axi`, HTML viz
+# - promotion gate: Rust validate + Lean `axi_well_typed_v1` when available
+# - derived artifacts: `.axpd`, optional reversible debug export `.axi`, HTML viz
 #
 # Run:
 #   ./scripts/physics_discovery_ollama_grounded_demo.sh
@@ -17,6 +17,8 @@ set -euo pipefail
 # - If `LLM_BACKEND=ollama`: `ollama` installed + running (`ollama serve`), and the model available.
 # - If `LLM_BACKEND=openai`: `OPENAI_API_KEY` set.
 # - If `LLM_BACKEND=anthropic`: `ANTHROPIC_API_KEY` set.
+# - Lean/lake is optional by default. Set REQUIRE_LEAN=1 to make certificate
+#   verification mandatory.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -74,6 +76,19 @@ if [ ! -x "$AXIOGRAPH" ]; then
   echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
   exit 2
 fi
+
+verify_lean_cert_if_available() {
+  local axi="$1"
+  local cert="$2"
+  if command -v lake >/dev/null 2>&1; then
+    (cd "$ROOT_DIR" && make verify-lean-cert AXI="$axi" CERT="$cert")
+  elif [ "${REQUIRE_LEAN:-0}" = "1" ]; then
+    echo "error: Lean/lake not found and REQUIRE_LEAN=1" >&2
+    exit 1
+  else
+    echo "skip: Lean/lake not found; set REQUIRE_LEAN=1 to make verification mandatory"
+  fi
+}
 
 echo ""
 echo "-- A) ingest physics notes → proposals.json (evidence plane)"
@@ -142,7 +157,7 @@ echo "-- gate 2/2 (certificate): emit typecheck certificate (axi_well_typed_v1)"
 
 echo ""
 echo "-- gate 2/2 (Lean): verify typecheck certificate (optional, requires Lean/lake)"
-(cd "$ROOT_DIR" && make verify-lean-cert AXI="$DRAFT_AXI" CERT="$TYPECHECK_CERT")
+verify_lean_cert_if_available "$DRAFT_AXI" "$TYPECHECK_CERT"
 
 echo ""
 echo "-- promote: accept the candidate module (copy into accepted plane)"
@@ -153,11 +168,6 @@ echo ""
 echo "-- build a PathDB snapshot (.axpd) from accepted canonical .axi"
 ACCEPTED_AXPD="$ACCEPTED_DIR/PhysicsDiscovered.accepted.axpd"
 "$AXIOGRAPH" db pathdb import-axi "$ACCEPTED_AXI" --out "$ACCEPTED_AXPD"
-
-echo ""
-echo "-- export a reversible PathDB snapshot (.axi) for certificate anchoring"
-SNAPSHOT_EXPORT_AXI="$ACCEPTED_DIR/PhysicsDiscovered.snapshot_export_v1.axi"
-"$AXIOGRAPH" db pathdb export-axi "$ACCEPTED_AXPD" --out "$SNAPSHOT_EXPORT_AXI"
 
 echo ""
 echo "-- viz (meta + data planes) for the accepted snapshot"
@@ -172,12 +182,12 @@ echo "-- viz (meta + data planes) for the accepted snapshot"
 echo ""
 echo "-- (optional) merge with the canonical PhysicsKnowledge module for side-by-side exploration"
 MERGED_AXPD="$ACCEPTED_DIR/PhysicsKnowledge_plus_discovered.axpd"
-MERGED_EXPORT_AXI="$ACCEPTED_DIR/PhysicsKnowledge_plus_discovered_export_v1.axi"
+MERGED_MODULE_AXI="$ACCEPTED_DIR/PhysicsKnowledge_plus_discovered.module.axi"
 "$AXIOGRAPH" repl --quiet \
   --cmd "import_axi examples/machining/PhysicsKnowledge.axi" \
   --cmd "import_axi $ACCEPTED_AXI" \
   --cmd "save $MERGED_AXPD" \
-  --cmd "export_axi $MERGED_EXPORT_AXI"
+  --cmd "export_axi_module $MERGED_MODULE_AXI"
 
 "$AXIOGRAPH" tools viz "$MERGED_AXPD" \
   --out "$ACCEPTED_DIR/physics_merged_both.html" \
@@ -195,8 +205,8 @@ echo "  $OUT_DIR/proposals.aug.json"
 echo "  $DRAFT_AXI"
 echo "  $ACCEPTED_AXI"
 echo "  $ACCEPTED_AXPD"
-echo "  $SNAPSHOT_EXPORT_AXI"
 echo "  $TYPECHECK_CERT"
 echo "  $ACCEPTED_DIR/physics_discovered_both.html"
 echo "  $MERGED_AXPD"
+echo "  $MERGED_MODULE_AXI"
 echo "  $ACCEPTED_DIR/physics_merged_both.html"

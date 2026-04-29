@@ -148,7 +148,11 @@ pub struct ContinuousSoftwareCoverageReportV1 {
     pub case_id: Option<String>,
     pub status: CoverageGateStatus,
     pub pass: bool,
+    pub authoring_flow: axiograph_tooling_overlays::AuthoringFlowReportV1,
+    pub policy: ContinuousCheckPolicySummary,
     pub repo_root: String,
+    pub typed_refs: BehaviorReportTypedRefs,
+    pub codegen: CodegenCoverageSummary,
     pub required_codegen_languages: Vec<String>,
     pub present_codegen_languages: Vec<String>,
     pub missing_codegen_languages: Vec<String>,
@@ -194,12 +198,54 @@ pub struct CompetencySummary {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ContinuousCheckPolicySummary {
+    pub strict_coverage: bool,
+    pub require_code_refs: bool,
+    pub require_runtime_theory: bool,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct BehaviorReportTypedRefs {
+    pub anchors: Vec<String>,
+    pub matched_scope_ids: Vec<String>,
+    pub matched_rule_ids: Vec<String>,
+    pub surface_ids: Vec<String>,
+    pub residual_obligations: Vec<String>,
+    pub uncovered_rule_ids: Vec<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct CodegenCoverageSummary {
+    pub preview_count: usize,
+    pub required_languages: Vec<String>,
+    pub present_languages: Vec<String>,
+    pub missing_languages: Vec<String>,
+    pub language_statuses: Vec<CodegenLanguageStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodegenLanguageStatus {
+    pub language: String,
+    pub present: bool,
+    pub file_hints: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RuntimeTheoryPresence {
     pub present: bool,
+    pub module_digest: Option<String>,
+    pub closure_tiers: Vec<String>,
+    pub checked_obligations: Option<u64>,
+    pub review_only_obligations: Option<u64>,
     pub ontology_closed: Option<bool>,
     pub complete: Option<bool>,
     pub blocking_judgments: Option<u64>,
     pub residual_obligations: Option<u64>,
+    pub blocked_obligations: Option<u64>,
+    pub blocking_errors: Option<u64>,
+    pub completeness_claim: Option<String>,
+    pub ontology_closure_claim: Option<String>,
+    pub residual_obligation_ids: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -385,9 +431,10 @@ pub fn build_continuous_software_coverage_report(
     let required_codegen_languages = normalize_languages(&options.require_codegen)
         .into_iter()
         .collect::<Vec<_>>();
-    let present_codegen_languages = collect_codegen_previews(report)
-        .into_iter()
-        .map(|preview| preview.language)
+    let codegen_previews = collect_codegen_previews(report);
+    let present_codegen_languages = codegen_previews
+        .iter()
+        .map(|preview| preview.language.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -420,6 +467,13 @@ pub fn build_continuous_software_coverage_report(
     let coverage = coverage_summary(report);
     let competency = competency_summary(report);
     let runtime_theory = runtime_theory_presence(report);
+    let typed_refs = behavior_report_typed_refs(report, &coverage);
+    let codegen = codegen_coverage_summary(
+        &codegen_previews,
+        &required_codegen_languages,
+        &present_codegen_languages,
+        &missing_codegen_languages,
+    );
 
     let mut failures = Vec::new();
     let mut warnings = Vec::new();
@@ -495,6 +549,36 @@ pub fn build_continuous_software_coverage_report(
             runtime_theory.blocking_judgments.unwrap_or(0)
         ));
     }
+    if options.strict_coverage && runtime_theory.residual_obligations.unwrap_or(0) > 0 {
+        failures.push(format!(
+            "{} runtime-theory obligation(s) remain residual",
+            runtime_theory.residual_obligations.unwrap_or(0)
+        ));
+    } else if runtime_theory.residual_obligations.unwrap_or(0) > 0 {
+        warnings.push(format!(
+            "{} runtime-theory obligation(s) remain residual",
+            runtime_theory.residual_obligations.unwrap_or(0)
+        ));
+    }
+    if runtime_theory
+        .completeness_claim
+        .as_deref()
+        .is_some_and(|claim| !claim.starts_with("claimed_under_"))
+    {
+        warnings.push(
+            "runtime theory sidecar does not claim completeness for all obligations".to_string(),
+        );
+    }
+    if runtime_theory
+        .ontology_closure_claim
+        .as_deref()
+        .is_some_and(|claim| !claim.starts_with("claimed_under_"))
+    {
+        warnings.push(
+            "runtime theory sidecar does not claim ontology closure for all obligations"
+                .to_string(),
+        );
+    }
 
     let mut next_actions = coverage.next_actions.clone();
     if !missing_codegen_languages.is_empty() {
@@ -514,6 +598,12 @@ pub fn build_continuous_software_coverage_report(
             "attach the RuntimeTheoryCheckReportV1 summary to this behavior-case gate".to_string(),
         );
     }
+    if runtime_theory.residual_obligations.unwrap_or(0) > 0 {
+        next_actions.push(
+            "resolve residual runtime-theory obligations or keep the continuous gate advisory"
+                .to_string(),
+        );
+    }
     dedup_strings(&mut next_actions);
 
     let status = if failures.is_empty() && warnings.is_empty() {
@@ -524,13 +614,60 @@ pub fn build_continuous_software_coverage_report(
         CoverageGateStatus::Failed
     };
     let pass = failures.is_empty();
+    let case_id = path_string(report, &["behavior_case", "case_id"]);
+    let coverage_mode = if options.strict_coverage {
+        axiograph_tooling_overlays::CoverageModeV1::Enforced
+    } else {
+        axiograph_tooling_overlays::CoverageModeV1::Advisory
+    };
+    let authoring_flow = axiograph_tooling_overlays::build_authoring_flow_report_v1(
+        axiograph_tooling_overlays::AuthoringFlowSourceV1::ContinuousCheck,
+        case_id.clone(),
+        axiograph_tooling_overlays::authoring_coverage_profile_summary_v1(
+            coverage_mode,
+            options.strict_coverage,
+            options.require_code_refs,
+            options.require_runtime_theory,
+            options.strict_coverage,
+            required_codegen_languages.clone(),
+        ),
+        axiograph_tooling_overlays::AuthoringCoverageSummaryV1 {
+            total_rules: coverage.total_rules,
+            covered_rules: coverage.covered_rules,
+            tested_rules: coverage.tested_rules,
+            implemented_rules: coverage.implemented_rules,
+            drifted_rules: coverage.drifted_rules,
+            missing_obligations: coverage.missing_obligations.clone(),
+            uncovered_rule_ids: coverage.uncovered_rule_ids.clone(),
+            code_refs_total: code_refs.len(),
+            missing_code_refs: missing_code_refs.clone(),
+            required_codegen_languages: required_codegen_languages.clone(),
+            present_codegen_languages: present_codegen_languages.clone(),
+            missing_codegen_languages: missing_codegen_languages.clone(),
+            runtime_theory_present: runtime_theory.present,
+            runtime_theory_residual_obligations: runtime_theory.residual_obligations,
+            runtime_theory_blocking_obligations: runtime_theory.blocking_judgments,
+        },
+        pass,
+        failures.clone(),
+        warnings.clone(),
+        next_actions.clone(),
+    );
 
     Ok(ContinuousSoftwareCoverageReportV1 {
         version: "continuous_software_coverage_report_v1",
-        case_id: path_string(report, &["behavior_case", "case_id"]),
+        case_id,
         status,
         pass,
+        authoring_flow,
+        policy: ContinuousCheckPolicySummary {
+            strict_coverage: options.strict_coverage,
+            require_code_refs: options.require_code_refs,
+            require_runtime_theory: options.require_runtime_theory,
+        },
         repo_root: repo_root.display().to_string(),
+        typed_refs,
+        codegen,
         required_codegen_languages,
         present_codegen_languages,
         missing_codegen_languages,
@@ -551,6 +688,10 @@ fn print_human_continuous_report(report: &ContinuousSoftwareCoverageReportV1) {
         "continuous software coverage: {:?} case={}",
         report.status,
         report.case_id.as_deref().unwrap_or("<unknown>")
+    );
+    println!(
+        "  authoring flow: profile={:?} source={:?}",
+        report.authoring_flow.profile.profile, report.authoring_flow.source
     );
     println!(
         "  codegen: present=[{}] missing=[{}]",
@@ -575,10 +716,12 @@ fn print_human_continuous_report(report: &ContinuousSoftwareCoverageReportV1) {
         report.missing_code_refs.len()
     );
     println!(
-        "  runtime_theory: present={} ontology_closed={:?} complete={:?}",
+        "  runtime_theory: present={} ontology_closed={:?} complete={:?} residual={:?} blocking={:?}",
         report.runtime_theory.present,
         report.runtime_theory.ontology_closed,
-        report.runtime_theory.complete
+        report.runtime_theory.complete,
+        report.runtime_theory.residual_obligations,
+        report.runtime_theory.blocking_judgments
     );
     for failure in &report.failures {
         println!("  failure: {failure}");
@@ -614,8 +757,10 @@ fn print_lsp_capabilities(json_output: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&capabilities)?);
     } else {
         println!("software authoring LSP capabilities:");
-        println!("  diagnostics: overlay refs, behavior-case schema, coverage policy");
-        println!("  code actions: definition query, coverage query, codegen plan");
+        println!("  diagnostics: overlay refs, runtime-theory sidecars, behavior-case schema, coverage policy");
+        println!(
+            "  code actions: definition query, coverage query, codegen plan, continuous coverage"
+        );
         println!(
             "  commands: axiograph.authoring.codegenPlan, axiograph.authoring.coverageQuery, axiograph.authoring.softwareCoverage"
         );
@@ -643,11 +788,22 @@ fn print_integration_manifest(json_output: bool) -> Result<()> {
 pub fn software_authoring_tool_specs_v1() -> Value {
     json!({
         "version": "axiograph_software_authoring_tool_specs_v1",
+        "report_contracts": {
+            "authoring_flow": "authoring_flow_report_v1",
+            "continuous_software_coverage": "continuous_software_coverage_report_v1",
+            "profiles": ["advisory", "strict", "ci"],
+            "profile_semantics": {
+                "advisory": "reports gaps and next actions without treating missing refs or residual obligations as a CI contract",
+                "strict": "fails closed on explicit strict/enforced coverage requirements",
+                "ci": "strict coverage plus required code refs, runtime-theory sidecars, and unresolved-obligation failure"
+            }
+        },
         "tools": [
             {
                 "name": "axiograph.authoring.continuous_check",
-                "description": "Check a behavior_case_report_v1 against semantic coverage, competency, codegen, code-ref, and runtime-theory expectations.",
-                "mutation": "read_only"
+                "description": "Check a behavior_case_report_v1 against typed refs, semantic coverage, competency, codegen language coverage, code-ref, and runtime-theory sidecar expectations.",
+                "mutation": "read_only",
+                "output_reports": ["continuous_software_coverage_report_v1", "authoring_flow_report_v1"]
             },
             {
                 "name": "axiograph.authoring.materialize_skeletons",
@@ -656,7 +812,7 @@ pub fn software_authoring_tool_specs_v1() -> Value {
             },
             {
                 "name": "axiograph.authoring.codegen_plan",
-                "description": "Return codegen file hints and caveats from a typed tooling overlay.",
+                "description": "Return codegen file hints, language coverage, mapped surface refs, and caveats from a typed tooling overlay.",
                 "mutation": "read_only"
             },
             {
@@ -681,7 +837,7 @@ pub fn software_authoring_tool_specs_v1() -> Value {
             },
             {
                 "name": "axiograph.authoring.lsp_capabilities",
-                "description": "Return editor/LSP capability metadata for integrating Axiograph authoring tools.",
+                "description": "Return editor/LSP capability metadata for read-only overlay, weak-query, runtime-theory, codegen, and coverage reports.",
                 "mutation": "read_only"
             },
             {
@@ -691,7 +847,7 @@ pub fn software_authoring_tool_specs_v1() -> Value {
             },
             {
                 "name": "axiograph.authoring.mcp",
-                "description": "Read-only stdio MCP server exposing Axiograph authoring, coverage, codegen planning, and definition-query tools.",
+                "description": "Read-only stdio MCP server exposing Axiograph authoring, typed coverage, authoring-flow profiles, codegen planning, runtime-theory sidecar, and definition-query tools.",
                 "mutation": "read_only"
             }
         ]
@@ -701,6 +857,15 @@ pub fn software_authoring_tool_specs_v1() -> Value {
 pub fn software_authoring_integration_manifest_v1() -> Value {
     json!({
         "version": "axiograph_software_authoring_integration_manifest_v1",
+        "report_contracts": {
+            "authoring_flow": {
+                "version": "authoring_flow_report_v1",
+                "embedded_in": [
+                    "continuous_software_coverage_report_v1.authoring_flow"
+                ],
+                "profiles": ["advisory", "strict", "ci"]
+            }
+        },
         "process_model": {
             "lsp": "host_managed_background_process",
             "mcp": "host_managed_background_process",
@@ -756,6 +921,11 @@ pub fn software_authoring_lsp_capabilities_v1() -> Value {
     json!({
         "version": "axiograph_software_authoring_lsp_capabilities_v1",
         "language_id": "axiograph",
+        "report_contracts": {
+            "authoring_flow": "authoring_flow_report_v1",
+            "profiles": ["advisory", "strict", "ci"],
+            "continuous_coverage_field": "authoring_flow"
+        },
         "document_selector": [
             { "language": "axiograph", "pattern": "**/*.axi" },
             { "language": "json", "pattern": "**/*tooling_overlay*.json" },
@@ -764,6 +934,7 @@ pub fn software_authoring_lsp_capabilities_v1() -> Value {
         "diagnostics": [
             "canonical_axi_parse",
             "runtime_theory_check",
+            "runtime_theory_sidecar_presence",
             "overlay_ref_resolution",
             "behavior_case_schema",
             "coverage_policy"
@@ -785,7 +956,8 @@ pub fn software_authoring_lsp_capabilities_v1() -> Value {
         ],
         "non_claims": [
             "LSP/editor diagnostics are runtime authoring feedback, not Lean certification.",
-            "Editor code actions are review artifacts and must not mutate accepted ontology state directly."
+            "Editor code actions are review artifacts and must not mutate accepted ontology state directly.",
+            "Continuous coverage commands report typed gaps and next actions; generated files still require explicit CLI materialization."
         ]
     })
 }
@@ -922,7 +1094,7 @@ impl AuthoringRmcpServer {
 
     #[tool(
         name = "axiograph_authoring_codegen_plan",
-        description = "Return generated skeleton file hints from a typed tooling overlay."
+        description = "Return generated skeleton file hints, language coverage, and mapped surface refs from a typed tooling overlay."
     )]
     fn codegen_plan(
         &self,
@@ -990,7 +1162,7 @@ impl AuthoringRmcpServer {
 
     #[tool(
         name = "axiograph_authoring_software_coverage",
-        description = "Evaluate a behavior-case report against a tooling overlay and repository root."
+        description = "Evaluate a behavior-case report against a tooling overlay, repository root, runtime-theory sidecar expectations, and embedded authoring-flow profile."
     )]
     fn software_coverage(
         &self,
@@ -1032,7 +1204,7 @@ pub fn software_authoring_mcp_tools_v1() -> Value {
         {
             "name": "axiograph_authoring_codegen_plan",
             "title": "Axiograph Codegen Plan",
-            "description": "Return generated skeleton file hints from a typed tooling overlay.",
+            "description": "Return generated skeleton file hints, language coverage, and mapped surface refs from a typed tooling overlay.",
             "inputSchema": authoring_overlay_input_schema()
         },
         {
@@ -1056,7 +1228,7 @@ pub fn software_authoring_mcp_tools_v1() -> Value {
         {
             "name": "axiograph_authoring_software_coverage",
             "title": "Axiograph Software Coverage",
-            "description": "Evaluate a behavior-case report against a tooling overlay and repository root.",
+            "description": "Evaluate a behavior-case report against a tooling overlay, repository root, runtime-theory sidecar expectations, and embedded authoring-flow profile.",
             "inputSchema": authoring_software_coverage_input_schema()
         }
     ])
@@ -1857,24 +2029,129 @@ fn competency_summary(report: &Value) -> CompetencySummary {
     }
 }
 
+fn behavior_report_typed_refs(
+    report: &Value,
+    coverage: &CoverageSummary,
+) -> BehaviorReportTypedRefs {
+    let mut residual_obligations = coverage
+        .missing_obligations
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    residual_obligations.extend(path_string_array(
+        report,
+        &["receipt", "residual_obligations"],
+    ));
+    residual_obligations.extend(path_string_array(report, &["residual_unknowns"]));
+
+    BehaviorReportTypedRefs {
+        anchors: collect_string_arrays(report, "anchors")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        matched_scope_ids: collect_string_arrays(report, "matched_scope_ids")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        matched_rule_ids: collect_string_arrays(report, "matched_rule_ids")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        surface_ids: collect_string_arrays(report, "surface_ids")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        residual_obligations: residual_obligations.into_iter().collect(),
+        uncovered_rule_ids: coverage.uncovered_rule_ids.clone(),
+    }
+}
+
+fn codegen_coverage_summary(
+    previews: &[CodegenPreview],
+    required_languages: &[String],
+    present_languages: &[String],
+    missing_languages: &[String],
+) -> CodegenCoverageSummary {
+    let languages = required_languages
+        .iter()
+        .chain(present_languages.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let present = present_languages.iter().cloned().collect::<BTreeSet<_>>();
+    let language_statuses = languages
+        .into_iter()
+        .map(|language| {
+            let file_hints = previews
+                .iter()
+                .filter(|preview| preview.language == language)
+                .filter_map(|preview| preview.file_hint.clone())
+                .collect::<Vec<_>>();
+            CodegenLanguageStatus {
+                present: present.contains(&language),
+                language,
+                file_hints,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    CodegenCoverageSummary {
+        preview_count: previews.len(),
+        required_languages: required_languages.to_vec(),
+        present_languages: present_languages.to_vec(),
+        missing_languages: missing_languages.to_vec(),
+        language_statuses,
+    }
+}
+
 fn runtime_theory_presence(report: &Value) -> RuntimeTheoryPresence {
     let Some(theory) = first_object_by_key(report, &["runtime_theory_check", "runtime_theory"])
     else {
         return RuntimeTheoryPresence {
             present: false,
+            module_digest: None,
+            closure_tiers: Vec::new(),
+            checked_obligations: None,
+            review_only_obligations: None,
             ontology_closed: None,
             complete: None,
             blocking_judgments: None,
             residual_obligations: None,
+            blocked_obligations: None,
+            blocking_errors: None,
+            completeness_claim: None,
+            ontology_closure_claim: None,
+            residual_obligation_ids: Vec::new(),
             notes: Vec::new(),
         };
     };
+    let completeness_claim = find_string(theory, &["completeness_claim"]);
+    let ontology_closure_claim = find_string(theory, &["ontology_closure_claim"]);
+    let blocked_obligations = find_u64(theory, &["blocked_obligations", "blocked_count"]);
+    let blocking_errors = find_u64(theory, &["blocking_errors", "blocking_count"]);
+    let blocking_judgments = find_u64(theory, &["blocking_judgments"])
+        .or_else(|| Some(blocked_obligations.unwrap_or(0) + blocking_errors.unwrap_or(0)));
     RuntimeTheoryPresence {
         present: true,
-        ontology_closed: find_bool(theory, &["ontology_closed", "closed"]),
-        complete: find_bool(theory, &["complete", "complete_under_assumptions"]),
-        blocking_judgments: find_u64(theory, &["blocking_judgments", "blocking_count"]),
+        module_digest: find_string(theory, &["module_digest"]),
+        closure_tiers: collect_string_arrays_for_keys(theory, &["closure_tiers", "closure_tier"]),
+        checked_obligations: find_u64(theory, &["checked_obligations"]),
+        review_only_obligations: find_u64(theory, &["review_only_obligations"]),
+        ontology_closed: find_bool(theory, &["ontology_closed", "closed"]).or_else(|| {
+            ontology_closure_claim
+                .as_deref()
+                .map(|claim| claim.starts_with("claimed_under_"))
+        }),
+        complete: find_bool(theory, &["complete", "complete_under_assumptions"]).or_else(|| {
+            completeness_claim
+                .as_deref()
+                .map(|claim| claim.starts_with("claimed_under_"))
+        }),
+        blocking_judgments,
         residual_obligations: find_u64(theory, &["residual_obligations", "residual_count"]),
+        blocked_obligations,
+        blocking_errors,
+        completeness_claim,
+        ontology_closure_claim,
+        residual_obligation_ids: collect_string_arrays_for_keys(
+            theory,
+            &["residual_obligation_ids"],
+        ),
         notes: collect_string_arrays(theory, "notes")
             .into_iter()
             .collect::<Vec<_>>(),
@@ -1956,6 +2233,49 @@ fn collect_string_arrays_inner(value: &Value, key: &str, found: &mut BTreeSet<St
     }
 }
 
+fn collect_string_arrays_for_keys(value: &Value, keys: &[&str]) -> Vec<String> {
+    let mut found = BTreeSet::new();
+    collect_string_arrays_for_keys_inner(value, keys, &mut found);
+    found.into_iter().collect()
+}
+
+fn collect_string_arrays_for_keys_inner(
+    value: &Value,
+    keys: &[&str],
+    found: &mut BTreeSet<String>,
+) {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(candidate) = map.get(*key) {
+                    match candidate {
+                        Value::Array(values) => {
+                            for value in values {
+                                if let Some(text) = value.as_str() {
+                                    found.insert(text.to_string());
+                                }
+                            }
+                        }
+                        Value::String(text) => {
+                            found.insert(text.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for nested in map.values() {
+                collect_string_arrays_for_keys_inner(nested, keys, found);
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                collect_string_arrays_for_keys_inner(nested, keys, found);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn first_object_by_key<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
     match value {
         Value::Object(map) => {
@@ -1974,6 +2294,21 @@ fn first_object_by_key<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value>
         Value::Array(values) => values
             .iter()
             .find_map(|nested| first_object_by_key(nested, keys)),
+        _ => None,
+    }
+}
+
+fn find_string(value: &Value, keys: &[&str]) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(text) = map.get(*key).and_then(Value::as_str) {
+                    return Some(text.to_string());
+                }
+            }
+            map.values().find_map(|nested| find_string(nested, keys))
+        }
+        Value::Array(values) => values.iter().find_map(|nested| find_string(nested, keys)),
         _ => None,
     }
 }
@@ -2095,7 +2430,26 @@ mod tests {
             build_continuous_software_coverage_report(&report, &args).expect("build report");
         assert!(coverage.pass);
         assert_eq!(coverage.status, CoverageGateStatus::PassedWithWarnings);
+        assert_eq!(
+            coverage.authoring_flow.version,
+            axiograph_tooling_overlays::AUTHORING_FLOW_REPORT_VERSION_V1
+        );
+        assert_eq!(
+            coverage.authoring_flow.profile.profile,
+            axiograph_tooling_overlays::AuthoringCoverageProfileV1::Advisory
+        );
+        assert_eq!(coverage.authoring_flow.coverage.code_refs_total, 1);
         assert_eq!(coverage.missing_codegen_languages, Vec::<String>::new());
+        assert_eq!(coverage.codegen.preview_count, 4);
+        assert!(coverage
+            .codegen
+            .language_statuses
+            .iter()
+            .any(|status| status.language == "go" && status.present));
+        assert_eq!(
+            coverage.typed_refs.residual_obligations,
+            vec!["map one ontology-only rule".to_string()]
+        );
         assert_eq!(coverage.missing_code_refs.len(), 1);
         assert!(coverage
             .warnings
@@ -2129,6 +2483,100 @@ mod tests {
         assert!(!coverage.pass);
         assert_eq!(coverage.status, CoverageGateStatus::Failed);
         assert_eq!(coverage.missing_codegen_languages, vec!["go"]);
+        assert_eq!(
+            coverage.authoring_flow.coverage.missing_codegen_languages,
+            vec!["go".to_string()]
+        );
+    }
+
+    #[test]
+    fn continuous_check_uses_runtime_theory_sidecar_for_strict_gates() {
+        let report = json!({
+            "version": "behavior_case_report_v1",
+            "behavior_case": {"case_id": "case"},
+            "context_report": {
+                "coverage": {"total_rules": 1, "covered_rules": 1, "drifted_rules": 0},
+                "competency_coverage": {"total": 0, "satisfied": 0, "coverage": 1.0}
+            },
+            "runtime_theory_check": {
+                "version": "runtime_theory_check_summary_v1",
+                "module_digest": "fnv1a64:test",
+                "checked_obligations": 1,
+                "review_only_obligations": 0,
+                "residual_obligations": 1,
+                "blocked_obligations": 0,
+                "blocking_errors": 0,
+                "closure_tiers": ["finite_fragment"],
+                "completeness_claim": "not_claimed_for_all_obligations",
+                "ontology_closure_claim": "not_claimed_for_all_obligations",
+                "residual_obligation_ids": ["runtime/theory/residual"]
+            },
+            "codegen_previews": [
+                {"language": "rust", "file_hint": "tests/case.rs", "content": "#[test] fn case() {}\n"}
+            ]
+        });
+        let args = ContinuousCheckOptions {
+            repo_root: PathBuf::from("."),
+            require_codegen: vec!["rust".into()],
+            strict_coverage: true,
+            require_code_refs: false,
+            require_runtime_theory: true,
+        };
+
+        let coverage =
+            build_continuous_software_coverage_report(&report, &args).expect("build report");
+        assert!(!coverage.pass);
+        assert_eq!(
+            coverage.authoring_flow.profile.profile,
+            axiograph_tooling_overlays::AuthoringCoverageProfileV1::Strict
+        );
+        assert_eq!(
+            coverage.runtime_theory.module_digest.as_deref(),
+            Some("fnv1a64:test")
+        );
+        assert_eq!(
+            coverage.runtime_theory.residual_obligation_ids,
+            vec!["runtime/theory/residual".to_string()]
+        );
+        assert!(coverage
+            .failures
+            .iter()
+            .any(|failure| failure.contains("runtime-theory obligation")));
+    }
+
+    #[test]
+    fn continuous_check_marks_ci_profile_when_all_fail_closed_switches_are_set() {
+        let report = json!({
+            "version": "behavior_case_report_v1",
+            "behavior_case": {"case_id": "case"},
+            "context_report": {
+                "coverage": {"total_rules": 1, "covered_rules": 1, "drifted_rules": 0},
+                "competency_coverage": {"total": 0, "satisfied": 0, "coverage": 1.0}
+            },
+            "codegen_previews": [
+                {"language": "rust", "file_hint": "tests/case.rs", "content": "#[test] fn case() {}\n"}
+            ]
+        });
+        let args = ContinuousCheckOptions {
+            repo_root: PathBuf::from("."),
+            require_codegen: vec!["rust".into()],
+            strict_coverage: true,
+            require_code_refs: true,
+            require_runtime_theory: true,
+        };
+
+        let coverage =
+            build_continuous_software_coverage_report(&report, &args).expect("build report");
+        assert_eq!(
+            coverage.authoring_flow.profile.profile,
+            axiograph_tooling_overlays::AuthoringCoverageProfileV1::Ci
+        );
+        assert!(coverage.authoring_flow.profile.ci_ready);
+        assert!(!coverage.pass);
+        assert!(coverage
+            .failures
+            .iter()
+            .any(|failure| failure.contains("runtime theory-check summary")));
     }
 
     #[test]
@@ -2348,6 +2796,35 @@ mod tests {
             json!("lsp-types")
         );
         assert_eq!(manifest["mcp"]["implementation"]["crate"], json!("rmcp"));
+        assert_eq!(
+            manifest["report_contracts"]["authoring_flow"]["version"],
+            json!("authoring_flow_report_v1")
+        );
+    }
+
+    #[test]
+    fn metadata_surfaces_publish_authoring_flow_profiles() {
+        let specs = software_authoring_tool_specs_v1();
+        assert_eq!(
+            specs["report_contracts"]["profiles"],
+            json!(["advisory", "strict", "ci"])
+        );
+        let continuous_tool = specs["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == json!("axiograph.authoring.continuous_check"))
+            .expect("continuous check tool");
+        assert!(continuous_tool["output_reports"]
+            .as_array()
+            .expect("output reports")
+            .contains(&json!("authoring_flow_report_v1")));
+
+        let lsp = software_authoring_lsp_capabilities_v1();
+        assert_eq!(
+            lsp["report_contracts"]["continuous_coverage_field"],
+            json!("authoring_flow")
+        );
     }
 
     #[test]

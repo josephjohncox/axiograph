@@ -215,7 +215,7 @@ Implemented behavior:
   - `support_kind`
   - `witness_rows`
 - Kept `contexts` and `evidence` as attachment-layer enrichments instead of the support basis itself.
-- Updated `/query` so accepted-anchor certifiable queries can return `support_summary` even when `certify=false`.
+- Historical note, now expressed through `QueryCertificatePolicyV1`: accepted-anchor certifiable queries can return `support_summary` even when `certificate_policy` is `none`.
 - Made internal support-only certificate construction best-effort when the client did not request a certificate, so support enrichment cannot regress normal query execution.
 
 ### Verification completed for support summaries

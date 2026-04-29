@@ -441,8 +441,7 @@ mod tests {
             &base,
             &[],
             crate::proposal_gen::ProposeRelationInputV1 {
-                // Alias mapping: `child` should resolve to the canonical `Parent(child,parent,...)` relation.
-                rel_type: "child".to_string(),
+                rel_type: "Parent".to_string(),
                 source_name: "Jamison".to_string(),
                 target_name: "Bob".to_string(),
                 source_type: None,
@@ -726,7 +725,7 @@ instance FamInst of Fam:
             &base,
             &[],
             crate::proposal_gen::ProposeRelationInputV1 {
-                rel_type: "child".to_string(),
+                rel_type: "Parent".to_string(),
                 source_name: "Jamison".to_string(),
                 target_name: "Bob".to_string(),
                 source_type: None,

@@ -164,6 +164,17 @@ curl -sS -X POST http://127.0.0.1:7878/llm/agent \
   -d '{"question":"who is Bob\'s parent"}' | jq .
 ```
 
+For tool-loop query witnesses, use the shared query certificate policy field:
+
+```bash
+curl -sS -X POST http://127.0.0.1:7878/llm/agent \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"who is Bob\'s parent","query_certificate_policy":"emit"}' | jq .
+```
+
+Supported values are `none`, `emit`, `verify`, and `require_verified`.
+Legacy query-certificate booleans are intentionally rejected.
+
 ---
 
 ## 8) Scripted demo (optional)

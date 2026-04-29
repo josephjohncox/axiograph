@@ -135,7 +135,11 @@ fn uniq_name(used: &mut HashSet<String>, base: &str) -> String {
 }
 
 fn role_type_hole(rel: &str, role: &str) -> String {
-    format!("TypeHole_{}_{}", sanitize_axi_ident(rel), sanitize_axi_ident(role))
+    format!(
+        "TypeHole_{}_{}",
+        sanitize_axi_ident(rel),
+        sanitize_axi_ident(role)
+    )
 }
 
 pub fn draft_axi_module_from_proposals(
@@ -338,10 +342,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
                     typed_hole_subtypes.insert((ty.clone(), hole.clone()));
                 }
             }
-            relation_role_holes
-                .entry(rel.clone())
-                .or_default()
-                .0 = Some(hole);
+            relation_role_holes.entry(rel.clone()).or_default().0 = Some(hole);
         }
         if rel_dst_types.get(rel).map(|s| s.len()).unwrap_or(0) > 1 {
             let hole = role_type_hole(rel, "to");
@@ -351,10 +352,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
                     typed_hole_subtypes.insert((ty.clone(), hole.clone()));
                 }
             }
-            relation_role_holes
-                .entry(rel.clone())
-                .or_default()
-                .1 = Some(hole);
+            relation_role_holes.entry(rel.clone()).or_default().1 = Some(hole);
         }
     }
 

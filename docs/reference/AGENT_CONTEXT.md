@@ -173,8 +173,8 @@ Current cleanup pressure:
 
 - keep `query_result_v3` as the active query certificate family,
 - continue retiring old query certificate versions from active runtime surfaces,
-- demote `PathDBExportV1` to debug/interchange parity instead of semantic
-  anchoring,
+- demote `PathDBExportV1` to debug/live-byte/parser-parity only; not semantic
+  anchoring, query/certificate authority, promotion, teaching, or interchange,
 - collapse workflow-specific review wrappers into shared preview/trust/report
   families,
 - remove stale examples and docs when stronger typed surfaces replace them,

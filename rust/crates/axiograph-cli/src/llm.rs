@@ -2587,6 +2587,81 @@ instance FamilyInst of Family:
     }
 
     #[test]
+    fn tool_loop_parser_accepts_strict_tool_call_contract() {
+        let parsed = super::parse_tool_loop_response_json(
+            r#"{"tool_call":{"name":"describe_entity","args":{"name":"Alice"}}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect("strict tool_call should parse");
+        let call = parsed.tool_call.expect("tool_call");
+        assert_eq!(call.name, "describe_entity");
+        assert_eq!(call.args["name"].as_str(), Some("Alice"));
+    }
+
+    #[test]
+    fn tool_loop_parser_accepts_strict_tool_calls_contract() {
+        let parsed = super::parse_tool_loop_response_json(
+            r#"{"tool_calls":[{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}}]}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect("strict tool_calls should parse");
+        let calls = parsed.tool_calls.expect("tool_calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "axql_run");
+        assert_eq!(calls[0].args["limit"].as_u64(), Some(25));
+    }
+
+    #[test]
+    fn tool_loop_parser_accepts_strict_final_answer_contract() {
+        let parsed = super::parse_tool_loop_response_json(
+            r#"{"final_answer":{"answer":"Done.","citations":[],"queries":[],"notes":[]}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect("strict final_answer should parse");
+        assert_eq!(parsed.final_answer.expect("final_answer").answer, "Done.");
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_legacy_top_level_tool() {
+        let err = super::parse_tool_loop_response_json(
+            r#"{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect_err("legacy top-level tool wrapper should fail");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_legacy_nested_tool_alias() {
+        let err = super::parse_tool_loop_response_json(
+            r#"{"tool_call":{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect_err("legacy nested tool alias should fail");
+        assert!(err.to_string().contains("invalid tool-loop tool call"));
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_legacy_top_level_answer() {
+        let err = super::parse_tool_loop_response_json(
+            r#"{"answer":"Done."}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect_err("legacy top-level answer wrapper should fail");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
+    fn tool_loop_parser_rejects_bare_query_ir_payload() {
+        let err = super::parse_tool_loop_response_json(
+            r#"{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}"#,
+            super::ToolLoopOptions::default(),
+        )
+        .expect_err("bare query_ir_v1 wrapper should fail");
+        assert!(err.to_string().contains("exactly one"));
+    }
+
+    #[test]
     fn semantic_search_token_hnsw_finds_basic_entities() {
         let mut db = axiograph_pathdb::PathDB::new();
         db.add_entity(
@@ -3250,13 +3325,13 @@ theory PlantTransport on Plant:
             &db,
             &[],
             crate::proposal_gen::ProposeRelationInputV1 {
-                rel_type: "child".to_string(),
+                rel_type: "Parent".to_string(),
                 source_name: "Jamison".to_string(),
                 target_name: "Bob".to_string(),
                 source_type: None,
                 target_type: None,
-                source_field: None,
-                target_field: None,
+                source_field: Some("child".to_string()),
+                target_field: Some("parent".to_string()),
                 context: Some("FamilyTree".to_string()),
                 time: Some("T2025".to_string()),
                 confidence: Some(0.9),
@@ -3323,9 +3398,11 @@ theory PlantTransport on Plant:
             &db,
             &[],
             &json!({
-                "rel_type": "child",
+                "rel_type": "Parent",
                 "source_name": "Jamison",
                 "target_name": "Bob",
+                "source_field": "child",
+                "target_field": "parent",
                 "context": "FamilyTree",
                 "time": "T2025",
                 "schema_hint": "Fam",
@@ -3486,6 +3563,7 @@ pub(crate) struct ToolLoopArtifactsV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolCallV1 {
     pub name: String,
     #[serde(default)]
@@ -3493,6 +3571,7 @@ pub(crate) struct ToolCallV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolLoopFinalV1 {
     pub answer: String,
     /// Public (non-private) rationale for why these tools/queries were used.
@@ -3517,6 +3596,7 @@ pub(crate) struct ToolLoopTranscriptItemV1 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ToolLoopModelResponseV1 {
     #[serde(default)]
     tool_call: Option<ToolCallV1>,
@@ -6778,7 +6858,6 @@ fn tool_lookup_relation(
             "match_kind": "resolved",
             "schema": resolved.schema_name,
             "relation": resolved.rel_name,
-            "alias_used": resolved.alias_used,
             "orientation": format!("{:?}", resolved.orientation),
             "fields": fields.iter().map(|f| serde_json::json!({
                 "name": f.field_name.clone(),
@@ -9218,7 +9297,7 @@ Rules:
 - If you are unsure how a relation is typed, or which fields are endpoints, use `lookup_relation` first.
 - When generating relation proposals, be careful about *direction*:
   - `propose_relation_proposals` maps `source_name` → the relation's source-ish field (`from`/`source`/`child`/`lhs`) and `target_name` → (`to`/`target`/`parent`/`rhs`).
-  - If the user’s phrasing is inverse (“Bob is a parent of Jamison”), set `source_field`/`target_field` explicitly (e.g. `source_field="parent"`, `target_field="child"` for `Parent(child,parent)`), or use an alias like `parent_of`.
+  - If the user’s phrasing is inverse (“Bob is a parent of Jamison”), still use the canonical relation name and set `source_field`/`target_field` explicitly (e.g. `source_field="parent"`, `target_field="child"` for `Parent(child,parent)`). Do not invent relation aliases.
 - When multiple schemas share the same type/relation name, prefer schema-qualified names (e.g. `Fam.Parent`, `Census.Person`) or set `schema_hint` in proposal tools.
 - When interpreting a “fact node” (an entity with attr `axi_relation`), treat it as a *typed record* with field edges (e.g. `Parent(child=..., parent=..., ctx=..., time=...)`). Use `lookup_relation` (meta-plane signature + constraints) when unsure about endpoints or required fields.
 - If the user wants canonical `.axi` output for a set of proposals, call `draft_axi_from_proposals` (deterministic draft; still untrusted until promoted and checked).
@@ -9669,16 +9748,39 @@ fn parse_tool_loop_response_json(
     content: &str,
     options: ToolLoopOptions,
 ) -> Result<ToolLoopModelResponseV1> {
-    // Be permissive: many local models are inconsistent about the exact wrapper
-    // shape. We accept:
+    // Strict tool_specs_v1 response contract. The model must return exactly one
+    // current wrapper:
     // - { "tool_call": { "name": "...", "args": {...} } }
+    // - { "tool_calls": [{ "name": "...", "args": {...} }, ...] }
     // - { "final_answer": { ... } }
     // - { "error": "..." }
-    // - { "tool": "...", "args": {...} }          (common variant)
-    // - { "name": "...", "args": {...} }          (common variant)
-    // - { "query_ir_v1": {...} }  (treated as `axql_run`)
-    // - { "answer": "..." } (treated as final answer)
+    //
+    // Legacy bare `answer`, top-level `tool`/`name`, and bare `query_ir_v1`
+    // payloads are intentionally rejected so every agent/MCP path uses the
+    // same typed tool surface.
     let v: serde_json::Value = parse_llm_json_object(content)?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| anyhow!("tool-loop response must be a JSON object"))?;
+    let wrapper_count = ["error", "final_answer", "tool_call", "tool_calls"]
+        .iter()
+        .filter(|key| obj.contains_key(**key))
+        .count();
+    if wrapper_count != 1 {
+        return Err(anyhow!(
+            "tool-loop response must contain exactly one of `tool_call`, `tool_calls`, `final_answer`, or `error`"
+        ));
+    }
+    for key in obj.keys() {
+        if !matches!(
+            key.as_str(),
+            "error" | "final_answer" | "tool_call" | "tool_calls"
+        ) {
+            return Err(anyhow!(
+                "tool-loop response contains unsupported top-level field `{key}`; expected `tool_call`, `tool_calls`, `final_answer`, or `error`"
+            ));
+        }
+    }
 
     if let Some(err) = v.get("error").and_then(|x| x.as_str()) {
         return Ok(ToolLoopModelResponseV1 {
@@ -9688,181 +9790,71 @@ fn parse_tool_loop_response_json(
             error: Some(err.to_string()),
         });
     }
-
-    if let Some(final_v) = v.get("final_answer") {
-        if let Ok(final_answer) = serde_json::from_value::<ToolLoopFinalV1>(final_v.clone()) {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: None,
-                tool_calls: None,
-                final_answer: Some(final_answer),
-                error: None,
-            });
-        }
+    if v.get("error").is_some() {
+        return Err(anyhow!("tool-loop `error` must be a string"));
     }
 
-    // Top-level `answer` (no wrapper).
-    if v.get("answer").is_some() && v.get("final_answer").is_none() {
-        if let Ok(final_answer) = serde_json::from_value::<ToolLoopFinalV1>(v.clone()) {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: None,
-                tool_calls: None,
-                final_answer: Some(final_answer),
-                error: None,
-            });
-        }
-        if let Some(answer) = v.get("answer").and_then(|x| x.as_str()) {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: None,
-                tool_calls: None,
-                final_answer: Some(ToolLoopFinalV1 {
-                    answer: answer.to_string(),
-                    public_rationale: None,
-                    citations: Vec::new(),
-                    queries: Vec::new(),
-                    notes: vec!["note: model returned top-level `answer`".to_string()],
-                }),
-                error: None,
-            });
-        }
+    if let Some(final_v) = v.get("final_answer") {
+        let final_answer = serde_json::from_value::<ToolLoopFinalV1>(final_v.clone())
+            .map_err(|e| anyhow!("invalid tool-loop `final_answer`: {e}"))?;
+        return Ok(ToolLoopModelResponseV1 {
+            tool_call: None,
+            tool_calls: None,
+            final_answer: Some(final_answer),
+            error: None,
+        });
     }
 
     fn parse_one_tool_call(
         call_v: &serde_json::Value,
         options: ToolLoopOptions,
-    ) -> Result<Option<ToolCallV1>> {
-        // Primary form: { "name": "...", "args": {...} }
-        if let Ok(call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
-            return Ok(Some(call));
-        }
-
-        // Common variant: { "tool": "...", "args": {...} }
-        let Some(name) = call_v
-            .get("name")
-            .or_else(|| call_v.get("tool"))
-            .and_then(|x| x.as_str())
-        else {
-            return Ok(None);
-        };
-        let mut args = call_v
-            .get("args")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        if name == "axql_run" {
+    ) -> Result<ToolCallV1> {
+        let mut call = serde_json::from_value::<ToolCallV1>(call_v.clone())
+            .map_err(|e| anyhow!("invalid tool-loop tool call: {e}"))?;
+        if call.name == "axql_run" {
             // Ensure we always apply the tool-loop row limit safety valve.
-            if let Some(obj) = args.as_object_mut() {
+            if let Some(obj) = call.args.as_object_mut() {
                 obj.entry("limit".to_string())
                     .or_insert_with(|| serde_json::json!(options.max_rows.clamp(1, 200)));
             }
         }
-        Ok(Some(ToolCallV1 {
-            name: name.to_string(),
-            args,
-        }))
+        Ok(call)
     }
 
     // Batched tool calls: {"tool_calls":[{...}, ...]}
     if let Some(calls_v) = v.get("tool_calls").and_then(|x| x.as_array()) {
+        if calls_v.is_empty() {
+            return Err(anyhow!("tool-loop `tool_calls` must not be empty"));
+        }
         let mut calls: Vec<ToolCallV1> = Vec::new();
         for c in calls_v {
-            if let Some(call) = parse_one_tool_call(c, options)? {
-                calls.push(call);
-            }
+            calls.push(parse_one_tool_call(c, options)?);
         }
-        if !calls.is_empty() {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: None,
-                tool_calls: Some(calls),
-                final_answer: None,
-                error: None,
-            });
-        }
+        return Ok(ToolLoopModelResponseV1 {
+            tool_call: None,
+            tool_calls: Some(calls),
+            final_answer: None,
+            error: None,
+        });
+    }
+    if v.get("tool_calls").is_some() {
+        return Err(anyhow!("tool-loop `tool_calls` must be an array"));
     }
 
     // Primary wrapper shape.
     if let Some(call_v) = v.get("tool_call") {
-        if let Ok(call) = serde_json::from_value::<ToolCallV1>(call_v.clone()) {
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: Some(call),
-                tool_calls: None,
-                final_answer: None,
-                error: None,
-            });
-        }
-        // Nested variant: {"tool_call":{"tool":"axql_run","args":{...}}}
-        if let Some(name) = call_v
-            .get("name")
-            .or_else(|| call_v.get("tool"))
-            .and_then(|x| x.as_str())
-        {
-            let mut args = call_v
-                .get("args")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            return Ok(ToolLoopModelResponseV1 {
-                tool_call: Some(ToolCallV1 {
-                    name: name.to_string(),
-                    args,
-                }),
-                tool_calls: None,
-                final_answer: None,
-                error: None,
-            });
-        }
-    }
-
-    // Common variant: {"tool":"axql_run","args":{...}} or {"name":"axql_run","args":{...}}
-    if let Some(name) = v
-        .get("name")
-        .or_else(|| v.get("tool"))
-        .and_then(|x| x.as_str())
-    {
-        let mut args = v
-            .get("args")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
+        let call = parse_one_tool_call(call_v, options)?;
         return Ok(ToolLoopModelResponseV1 {
-            tool_call: Some(ToolCallV1 {
-                name: name.to_string(),
-                args,
-            }),
+            tool_call: Some(call),
             tool_calls: None,
             final_answer: None,
             error: None,
         });
     }
 
-    // Fallback: treat a top-level `query_ir_v1` payload as an `axql_run` tool call.
-    if v.get("query_ir_v1").is_some() {
-        let mut args = serde_json::Map::new();
-        if let Some(ir) = v.get("query_ir_v1").cloned() {
-            args.insert("query_ir_v1".to_string(), ir);
-        }
-        let mut args_v = serde_json::Value::Object(args);
-        if let Some(obj) = args_v.as_object_mut() {
-            obj.insert(
-                "limit".to_string(),
-                serde_json::json!(options.max_rows.clamp(1, 200)),
-            );
-        }
-        return Ok(ToolLoopModelResponseV1 {
-            tool_call: Some(ToolCallV1 {
-                name: "axql_run".to_string(),
-                args: args_v,
-            }),
-            tool_calls: None,
-            final_answer: None,
-            error: None,
-        });
-    }
-
-    // Last resort: treat this as "no decision". We'll fall back to a
-    // deterministic summary based on the tool transcript so far.
-    Ok(ToolLoopModelResponseV1 {
-        tool_call: None,
-        tool_calls: None,
-        final_answer: None,
-        error: None,
-    })
+    Err(anyhow!(
+        "tool-loop response did not match the current tool_specs_v1 contract"
+    ))
 }
 
 const PLUGIN_PROTOCOL_V2: &str = "axiograph_llm_plugin_v2";

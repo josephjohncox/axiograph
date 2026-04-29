@@ -5,22 +5,27 @@
 
 This document describes Axiograph’s **schema discovery** loop: turning untrusted
 evidence-plane artifacts (`proposals.json`) into a **candidate**, readable
-canonical `.axi` module that you can iterate on interactively.
+canonical `.axi` module that you can iterate on interactively, validate with
+typed reports, and promote through semantic VCS review.
 
 The guiding architecture remains:
 
 - Rust computes candidates (fast, heuristic, untrusted).
 - Lean checks certificates for anything promoted into “certified” answers.
 - `.axi` is the human-reviewable canonical source plane.
+- PathDB is the derived execution/query substrate, not the semantic authority.
+- Promotion emits typed previews/reports and advances semantic VCS history.
 
 ## Why schema discovery exists
 
-AxQL and PathDB become much more useful when a PathDB contains the `.axi`
-**meta-plane** (schema + theory metadata):
+AxQL and PathDB become much more useful when a derived PathDB snapshot contains
+the `.axi` **meta-plane** (schema + theory metadata):
 
 - AxQL planning can auto-add **implied type constraints** from relation field types.
 - Keys/functionals can be used as **join planning hints** and (for fact atoms) candidate pruning.
 - Fact atoms benefit from PathDB’s **FactIndex** for fast `axi_relation` filtering.
+- Machine/report flows can prepare `query_ir_v1` as `PreparedQueryV1` and carry
+  typed metadata, trust contracts, and refinement handles.
 
 But many ingestion sources start in the evidence plane:
 
@@ -34,9 +39,10 @@ They produce `proposals.json` first, because that’s our generic, reviewable ev
 Schema discovery is the bridge that drafts a canonical `.axi` module so you can:
 
 1) import it into PathDB,
-2) query it with schema-directed AxQL,
-3) iterate/refine it (possibly with LLM assistance),
-4) promote reviewed changes into your accepted `.axi` modules.
+2) query it with schema-directed AxQL or `PreparedQueryV1`-backed tooling,
+3) inspect typed reports and apply refinement handles,
+4) iterate/refine it (possibly with LLM assistance),
+5) promote reviewed changes into your accepted `.axi` modules through semantic VCS.
 
 ## CLI: draft a module from proposals
 
@@ -214,7 +220,9 @@ make verify-lean-cert AXI=build/Discovered.proposals.axi CERT=build/Discovered.t
 ```
 
 If the gate succeeds, you can promote the module into your **accepted plane**.
-This creates an append-only audit log and a content-derived snapshot id.
+This creates an append-only audit log, a content-derived snapshot id, a typed
+promotion preview (`EvolutionPreviewV1`), and semantic VCS history for the
+accepted delta.
 
 ```bash
 cd rust
@@ -228,7 +236,9 @@ snapshot_id="$(cargo run -p axiograph-cli -- db accept promote ../build/Discover
 echo "accepted snapshot: $snapshot_id"
 ```
 
-Then build derived artifacts (PathDB snapshot + viz):
+Then build derived artifacts (PathDB snapshot + viz). These are execution and
+inspection surfaces; the accepted `.axi` plus semantic VCS ref remains the
+meaning plane.
 
 ```bash
 # Rebuild a `.axpd` snapshot from the accepted-plane snapshot id.
@@ -253,10 +263,6 @@ cargo run -p axiograph-cli -- db accept pathdb-build \
   --snapshot latest \
   --out ../build/Discovered.accepted_with_chunks.axpd
 
-# Export a reversible snapshot `.axi` (PathDBExportV1) for debug/interchange or parser-parity workflows.
-cargo run -p axiograph-cli -- db pathdb export-axi ../build/Discovered.accepted.axpd \
-  --out ../build/Discovered.snapshot_export_v1.axi
-
 # Meta-plane visualization (schema/theory)
 cargo run -p axiograph-cli -- tools viz ../build/Discovered.accepted.axpd \
   --out ../build/Discovered.meta.html \
@@ -267,6 +273,25 @@ cargo run -p axiograph-cli -- tools viz ../build/Discovered.accepted.axpd \
   --out ../build/Discovered.data.html \
   --format html --plane data --hops 2
 ```
+
+For query-facing tooling, the canonical contract is: compile to `query_ir_v1`,
+prepare `PreparedQueryV1`, inspect the typed metadata/report envelope, and use
+`.axi`-anchored `query_result_v3` witnesses when a certified result is required.
+Raw AxQL in the REPL is the human-facing teaching/debug surface over the same
+typed planning boundary.
+
+## Debug parity only: `PathDBExportV1`
+
+If you are testing live-byte storage or parser parity, export the derived
+snapshot through `PathDBExportV1` explicitly:
+
+```bash
+cargo run -p axiograph-cli -- db pathdb export-axi ../build/Discovered.accepted.axpd \
+  --out ../build/Discovered.snapshot_pathdb_export_v1.axi
+```
+
+Do not teach this as the promotion, query, certificate, or semantic interchange
+path. It is a reversible snapshot/debug format only.
 
 ## Included demo assets
 

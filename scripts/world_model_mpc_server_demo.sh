@@ -26,6 +26,15 @@ echo "== World model MPC server demo =="
 echo "root: $ROOT_DIR"
 echo "out:  $OUT_DIR"
 
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: required command not found: $1" >&2
+    exit 2
+  fi
+}
+
+need_cmd curl
+
 echo ""
 echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"

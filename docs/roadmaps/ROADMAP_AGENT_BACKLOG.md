@@ -96,6 +96,9 @@ Related roadmaps:
     `Entity` fallback; generated drafts use concrete observed types or
     `TypeHole_*` review obligations, and the proto-theory example uses a
     meaningful `ApiArtifact` umbrella type.
+  - Guardrail: `examples_e2e` checks that the catalog and README keep
+    `PathDBExportV1` debug-only, stale REPL `export_axi` commands fail, and
+    REPL scripts do not emit `*_export_v1.axi` teaching snapshots.
 
 ## Current Slices To Build On
 
@@ -150,6 +153,9 @@ Related roadmaps:
 
 ## Lean And Certificates
 
+- [x] Add `lean/Axiograph/SemanticVCS.lean` and
+  `docs/reference/LEAN_THEORY_EVALUATION.md` so semantic merge/lattice/rebase
+  preservation has an explicit Lean scaffold and a precise status matrix.
 - [ ] Port remaining knowledge-graph transport, quotient, equivalence, and
   migration scaffolding into Lean.
 - [ ] Finish inverse paths, equivalence congruence, normalization, and
@@ -263,17 +269,28 @@ Related roadmaps:
 
 ## Storage, Verification, And Hardening
 
-- [ ] Converge the live `.axpd` format and the sectioned verified `.axpd` story,
-  or explicitly scope `verified.rs` as non-production.
+- [ ] Converge the live `.axpd` format and the sectioned verified `.axpd` story
+  behind an executable gate: create an actual production checkpoint from
+  accepted canonical `.axi`, serve or reload the checkpoint bytes, and assert
+  the same accepted snapshot id plus canonical module digest. If the sectioned
+  verifier remains separate, scope it as non-production in docs and tests.
 - [ ] Add end-to-end tests over actual production `.axpd` checkpoint bytes, not
-  only exported anchors or synthetic examples.
+  only exported anchors, `PathDBExportV1` `.axi` roundtrips, or synthetic
+  examples.
 - [ ] Keep accepted-plane snapshots plus PathDB/WAL as the real storage
-  backbone until `axiograph-storage` placeholder behavior is removed.
+  backbone until `axiograph-storage` placeholder behavior is removed. The gate
+  is append-only fact-log and snapshot-manifest behavior: promotion writes a
+  durable manifest and JSONL event before advancing `HEAD`, and rejected derived
+  snapshot exports leave all three unchanged.
 - [ ] Prove runtime witness invariants with Verus where tractable.
-- [ ] Fuzz untrusted surfaces: PathDB bytes, certificate JSON, `.axi` parsing,
-  and adapter/plugin boundaries.
+- [ ] Fuzz untrusted surfaces with named executable targets: PathDB bytes,
+  certificate JSON, Rust `.axi` parsing, CLI/REPL command parsing, and
+  adapter/plugin boundaries. A fuzz item is done only after the target exists
+  and has a checked corpus or seed fixture.
 - [ ] Add Miri, Kani, Loom/Shuttle, or Aeneas selectively for small critical
-  kernels when they provide concrete value.
+  kernels when they provide concrete value. Each lane needs a target that either
+  runs the suite or explicitly reports that the optional tool is unavailable;
+  silent no-ops do not count.
 - [ ] Keep expanding `make verify-semantics` as the must-pass Rust+Lean
   semantics suite.
 

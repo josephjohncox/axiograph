@@ -27,7 +27,28 @@ surfaces, code refs, coverage policy, and codegen live in JSON tooling overlays.
   hosts such as Cursor, Codex, Claude Code, and editor language-client plugins.
   They are pedagogical launcher shapes, not custom protocol specifications.
 
+## Flow At A Glance
+
+The intended learning path is:
+
+1. Validate the canonical domain `.axi`.
+2. Check the supported runtime-theory fragment.
+3. Ask weak definition questions for authoring and planning context.
+4. Validate the tooling overlay against compiled IR ids.
+5. Run exploratory coverage and behavior-case reports.
+6. Run software coverage, codegen planning, and continuous advisory/strict/CI
+   gates.
+7. Materialize generated skeleton previews only into a review directory.
+
 ## Teaching Path
+
+Use this order when teaching or debugging the flow:
+
+| Entrypoint | Use When | Scope |
+| --- | --- | --- |
+| `authoring run` | You want one compact report for one example. | Preferred front door for agents and CI experiments. |
+| `run_codegen_examples.sh` | You want to exercise every bundled domain/codegen fixture. | Full suite over order fulfillment, subscription billing, and process control. |
+| `run_authoring_flow.sh` | You want the detailed order-fulfillment walkthrough with intermediate JSON artifacts. | Pedagogical script for the longest path. |
 
 Run every software-authoring/codegen example in the suite:
 
@@ -53,11 +74,34 @@ skeleton previews to `build/examples/software_authoring/generated-tests/`.
 It also runs the `axiograph-example-software-authoring` crate to show how a
 domain/application package can consume the authoring library for continuous
 semantic coverage checks.
+Coverage reports now embed an `AuthoringFlowReportV1` at `authoring_flow` with
+the active profile: `advisory`, `strict`, or `ci`.
+Strict and CI gates are expected to fail closed in some teaching runs; the
+scripts keep going only after confirming the fail-closed report was written.
 
 The shell runners do not require an external JSON parser or adapter script.
 They call the Rust CLI/library surfaces directly, including `authoring tool-specs`,
 `authoring lsp-capabilities`, `authoring integration-manifest`, and
-`authoring codegen-plan`.
+`authoring codegen-plan`. The full flow runs validation, runtime theory checks,
+weak definition queries, overlay validation, exploratory coverage queries,
+behavior-case reporting, software coverage, codegen planning, advisory
+continuous coverage, strict continuous coverage, and explicit skeleton
+materialization. The full flow also runs a CI-profile continuous check through
+the existing `authoring continuous-check` command with `--strict-coverage`,
+`--require-code-refs`, and `--require-runtime-theory`.
+
+Emit a single combined authoring-suite report for one example:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring run \
+  --suite examples/software_authoring/software_authoring_examples.json \
+  --example order_fulfillment \
+  --profile advisory \
+  --repo-root . \
+  --out-dir build/examples/software_authoring/order_fulfillment_authoring_run \
+  --out build/examples/software_authoring/order_fulfillment_authoring_run.json
+```
 
 Validate the domain ontology:
 
@@ -122,6 +166,53 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
   --out build/examples/order_fulfillment_software_coverage.json
 ```
+
+Plan generated test skeletons without writing files:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring codegen-plan \
+  --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
+  --out build/examples/software_authoring/codegen_plan.json
+```
+
+Run the generated behavior report through advisory and strict continuous gates:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring continuous-check \
+  --behavior-report build/examples/order_fulfillment_behavior_case_report.json \
+  --repo-root . \
+  --out build/examples/software_authoring/continuous_coverage.json
+
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring continuous-check \
+  --behavior-report build/examples/order_fulfillment_behavior_case_report.json \
+  --repo-root . \
+  --strict-coverage \
+  --out build/examples/software_authoring/enforced_continuous_coverage.json
+```
+
+The same command can emit the CI profile without changing command names.
+Use `--require-runtime-theory` only after the behavior-case report is generated
+with a `RuntimeTheoryCheckSummaryV1` sidecar. Without that sidecar, the command
+is expected to fail closed, which is useful as a teaching check but not as the
+first successful quickstart.
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring continuous-check \
+  --behavior-report build/examples/order_fulfillment_behavior_case_report.json \
+  --repo-root . \
+  --strict-coverage \
+  --require-code-refs \
+  --require-runtime-theory \
+  --out build/examples/software_authoring/ci_continuous_coverage.json
+```
+
+When the sidecar is present, the continuous gate reports the declared closure
+tier, residual obligations, blocking judgments, scoped completeness claims, and
+explicit ontology-closure non-claims. It does not claim global ontology closure.
 
 Run the same generated behavior report through the pedagogical example crate:
 
@@ -191,16 +282,25 @@ reports and explicit CLI materialization.
 - `.axi` represents domain meaning; methods and tooling use it but do not get
   embedded into it by default.
 - Strong/enforced checks need accepted anchors, typed overlay refs, explicit
-  coverage policy, and no unresolved required obligations.
+  coverage policy, required generated language previews, and no unresolved
+  required semantic or runtime-theory obligations.
 - Weak definition and coverage tools are useful for exploration, authoring, and
   agent planning, but they do not satisfy promotion gates.
 - fDDD context maps become typed overlays over canonical IR ids, so bounded
   contexts can drive behavior cases, semantic slices, and merge/rebase planning
   without becoming domain facts.
 - Codegen previews are implementation obligations and planning artifacts, not
-  accepted code or proof objects.
+  accepted code or proof objects. `codegen-plan` is read-only; materialization
+  is an explicit CLI write into a review directory.
 - The example crate demonstrates library consumption from an application/domain
   package; the core CLI and typed report schemas remain the reusable contract.
+- `AuthoringFlowReportV1` is the shared profile summary embedded by overlay
+  software coverage and standalone continuous-check reports, so agents can read
+  one `authoring_flow` field for advisory, strict, and CI posture.
+- Process-control and host-integration examples are backend-adjacent only in
+  the sense that they model implementation surfaces and launch contracts.
+  Backend-native stores remain read-only projections from compiled IR, with
+  mutation authority and promotion staying in Axiograph.
 - MCP and LSP integrations are host-managed background processes. MCP is for
   read-only agent tools; LSP is for editor feedback and code actions; file
   materialization remains CLI-only. These examples launch maintained protocol

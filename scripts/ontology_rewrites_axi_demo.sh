@@ -43,7 +43,7 @@ echo "-- A) import canonical .axi, inspect rules, run queries (REPL non-interact
   --cmd "q select ?gc where name(\"Alice\") -Grandparent-> ?gc limit 10" \
   --cmd "q select ?m where name(\"Eve\") -ReportsTo-> ?m limit 10" \
   --cmd "q select ?e where name(\"Bob\") -ManagerOf-> ?e limit 10" \
-  --cmd "export_axi $OUT_DIR/ontology_rewrites_axi_export_v1.axi" \
+  --cmd "export_axi_module $OUT_DIR/ontology_rewrites_axi_module.axi OntologyRewrites" \
   --cmd "save $OUT_DIR/ontology_rewrites_axi.axpd"
 
 echo ""
@@ -66,7 +66,7 @@ echo "-- B) viz (meta + data)"
 echo ""
 echo "Done."
 echo "Outputs:"
-echo "  $OUT_DIR/ontology_rewrites_axi_export_v1.axi"
+echo "  $OUT_DIR/ontology_rewrites_axi_module.axi"
 echo "  $OUT_DIR/ontology_rewrites_axi.axpd"
 echo "  $OUT_DIR/ontology_rewrites_meta.html"
 echo "  $OUT_DIR/ontology_rewrites_data.html"

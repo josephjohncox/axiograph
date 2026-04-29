@@ -2164,6 +2164,7 @@ pub fn apply_runtime_refinement_by_id_to_olog_fragment_against_axi_text(
     checked: &CheckedOlogFragmentV1,
     handle_id: &str,
 ) -> anyhow::Result<OlogRefinementApplyResultV1> {
+    crate::axi_input::require_canonical_axi_text(axi_text)?;
     let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text)
         .map_err(|err| anyhow::anyhow!("failed to parse canonical .axi draft: {err}"))?;
     let schema = select_schema(&module, schema_name).map_err(|err| anyhow::anyhow!(err))?;
@@ -2184,6 +2185,7 @@ pub fn discover_check_olog_report_against_axi_text(
     fragment: OlogFragmentV1,
     apply_refinement_handle_id: Option<&str>,
 ) -> anyhow::Result<DiscoverCheckOlogReportV1> {
+    crate::axi_input::require_canonical_axi_text(axi_text)?;
     let checked = check_olog_fragment_against_axi_text(axi_text, schema_name, fragment);
     let (checked_olog, applied_refinement) = if let Some(handle_id) = apply_refinement_handle_id {
         let applied = apply_runtime_refinement_by_id_to_olog_fragment_against_axi_text(

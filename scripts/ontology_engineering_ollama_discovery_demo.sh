@@ -24,6 +24,8 @@ set -euo pipefail
 # Notes:
 # - LLM outputs are untrusted. Everything stays reviewable and quarantined
 #   (`proposals.json` or candidate `.axi`) until you explicitly promote it.
+# - Lean/lake is optional by default. Set REQUIRE_LEAN=1 to make certificate
+#   verification mandatory.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -81,6 +83,19 @@ if [ ! -x "$AXIOGRAPH" ]; then
   echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
   exit 2
 fi
+
+verify_lean_cert_if_available() {
+  local axi="$1"
+  local cert="$2"
+  if command -v lake >/dev/null 2>&1; then
+    (cd "$ROOT_DIR" && make verify-lean-cert AXI="$axi" CERT="$cert")
+  elif [ "${REQUIRE_LEAN:-0}" = "1" ]; then
+    echo "error: Lean/lake not found and REQUIRE_LEAN=1" >&2
+    exit 1
+  else
+    echo "skip: Lean/lake not found; set REQUIRE_LEAN=1 to make verification mandatory"
+  fi
+}
 
 echo ""
 echo "-- A) semantic discovery (augment proposals with LLM schema_hint routing)"
@@ -178,7 +193,7 @@ echo "-- gate 2/2 (certificate): emit typecheck certificate (axi_well_typed_v1)"
 
 echo ""
 echo "-- gate 2/2 (Lean): verify typecheck certificate (optional, requires Lean/lake)"
-(cd "$ROOT_DIR" && make verify-lean-cert AXI="$CANDIDATE_AXI" CERT="$TYPECHECK_CERT")
+verify_lean_cert_if_available "$CANDIDATE_AXI" "$TYPECHECK_CERT"
 
 echo ""
 echo "-- promote: accept the candidate module (copy into accepted plane)"
@@ -189,11 +204,6 @@ echo ""
 echo "-- build a PathDB snapshot (.axpd) from accepted canonical .axi"
 ACCEPTED_AXPD="$ACCEPTED_DIR/ProtoApi.accepted.axpd"
 "$AXIOGRAPH" db pathdb import-axi "$ACCEPTED_AXI" --out "$ACCEPTED_AXPD"
-
-echo ""
-echo "-- export a reversible PathDB snapshot (.axi) for certificate anchoring"
-SNAPSHOT_EXPORT_AXI="$ACCEPTED_DIR/ProtoApi.snapshot_export_v1.axi"
-"$AXIOGRAPH" db pathdb export-axi "$ACCEPTED_AXPD" --out "$SNAPSHOT_EXPORT_AXI"
 
 echo ""
 echo "-- visualize meta-plane and data-plane (accepted snapshot)"
@@ -214,15 +224,15 @@ echo "-- visualize meta-plane and data-plane (accepted snapshot)"
   --max-nodes 220
 
 echo ""
-echo "-- (optional) emit a query certificate anchored to the snapshot export"
+echo "-- (optional) emit a query certificate anchored to accepted canonical .axi"
 QUERY_CERT="$ACCEPTED_DIR/proto_api_query_cert_v1.json"
-"$AXIOGRAPH" cert query "$SNAPSHOT_EXPORT_AXI" \
+"$AXIOGRAPH" cert query "$ACCEPTED_AXI" \
   'select ?rpc where UserService -proto_service_has_rpc-> ?rpc limit 10' \
   --out "$QUERY_CERT"
 
 echo ""
 echo "-- (optional) Lean: verify the query certificate"
-(cd "$ROOT_DIR" && make verify-lean-cert AXI="$SNAPSHOT_EXPORT_AXI" CERT="$QUERY_CERT")
+verify_lean_cert_if_available "$ACCEPTED_AXI" "$QUERY_CERT"
 
 echo ""
 echo "Done."
@@ -236,7 +246,6 @@ echo "  $OUT_DIR/proto_api_llm_draft_service.html"
 echo "Accepted (gated) outputs:"
 echo "  $ACCEPTED_AXI"
 echo "  $ACCEPTED_AXPD"
-echo "  $SNAPSHOT_EXPORT_AXI"
 echo "  $TYPECHECK_CERT"
 echo "  $QUERY_CERT"
 echo "  $ACCEPTED_DIR/proto_api_meta.html"

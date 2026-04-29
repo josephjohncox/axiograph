@@ -1607,7 +1607,10 @@ instance I of S:
                 rel_type: "Parent".to_string(),
                 source: "Alice".to_string(),
                 target: "Bob".to_string(),
-                attributes: HashMap::new(),
+                attributes: HashMap::from([
+                    ("axi_source_field".to_string(), "child".to_string()),
+                    ("axi_target_field".to_string(), "parent".to_string()),
+                ]),
             }],
         };
 
@@ -1707,7 +1710,10 @@ instance I of S:
                 rel_type: "Parent".to_string(),
                 source: "Alice".to_string(),
                 target: "Bob".to_string(),
-                attributes: HashMap::new(),
+                attributes: HashMap::from([
+                    ("axi_source_field".to_string(), "child".to_string()),
+                    ("axi_target_field".to_string(), "parent".to_string()),
+                ]),
             }],
         };
 

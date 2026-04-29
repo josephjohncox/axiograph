@@ -107,8 +107,14 @@ PathDB draws from several areas of research:
 
 ## Text snapshot export (`.axi`)
 
-`.axpd` is optimized for performance and compactness. For **reviewability**, **diffability**, and
-long-term audit trails, PathDB also supports a *reversible* textual snapshot format in `.axi`.
+`.axpd` is optimized for performance and compactness. For engine debugging,
+live-byte parity, and Rust/Lean parser-parity tests, PathDB also supports a
+*reversible* textual snapshot format in `.axi`.
+
+Do not use that snapshot export as ontology review material, semantic diff
+authority, query/certificate authority, or an audit trail for accepted meaning.
+Those roles belong to canonical `.axi`, semantic VCS commits, typed anchors, and
+stable fact/kernel ids.
 
 ## Snapshot management (accepted plane + WAL)
 

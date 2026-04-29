@@ -586,7 +586,7 @@ mod tests {
         let to = d;
 
         // With low threshold, should detect conflict between 0.81 and 0.49 paths
-        let conflicts = finder.find_path_conflicts(from, to, 0.1);
+        let _conflicts = finder.find_path_conflicts(from, to, 0.1);
         // May or may not find conflicts depending on graph structure
     }
 }

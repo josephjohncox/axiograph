@@ -137,7 +137,7 @@ When `show_elaboration:true`, the response includes:
   - `coverage`: whether the response trust applies to the whole query or only a mixed/runtime-only execution mode
   - `scope`: currently always snapshot-scoped, with explicit context mode (`unscoped`, `single_context`, `multi_context`)
 - `support_summary` may appear for accepted-anchor certifiable queries even when
-  `certify:false`:
+  `certificate_policy` is `none`:
   - the wire field stays `support_summary`,
   - `basis.certificate_emitted_to_client` tells you whether the support basis was
     returned as the top-level `certificate` or kept internal to the runtime,
@@ -146,7 +146,13 @@ When `show_elaboration:true`, the response includes:
 
 Certified queries (optional)
 
-If you request `certify:true`, the server emits a Lean-checkable typed query witness anchored to the current canonical `.axi` digest.
+Use `certificate_policy` for all query certificate behavior. The supported
+values are `none`, `emit`, `verify`, and `require_verified`; legacy booleans
+such as `certify`, `verify`, `require_query_certs`, and
+`require_verified_queries` are intentionally rejected.
+
+If you request `"certificate_policy":"emit"`, the server emits a Lean-checkable
+typed query witness anchored to the current canonical `.axi` digest.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/query \
@@ -161,11 +167,12 @@ curl -sS -X POST http://127.0.0.1:7878/query \
           ],
           "limit":10
         },
-        "certify":true
+        "certificate_policy":"emit"
       }' | jq .
 ```
 
-If you request `verify:true`, the server will also run the Lean checker (`axiograph_verify`) server-side and attach the result:
+If you request `"certificate_policy":"verify"`, the server will also run the
+Lean checker (`axiograph_verify`) server-side and attach the result:
 
 ```bash
 make lean-exe
@@ -182,8 +189,7 @@ curl -sS -X POST http://127.0.0.1:7878/query \
           ],
           "limit":10
         },
-        "certify":true,
-        "verify":true
+        "certificate_policy":"verify"
       }' | jq .
 ```
 
@@ -338,6 +344,8 @@ curl -sS -X POST http://127.0.0.1:7878/proposals/relation \
     "rel_type":"Parent",
     "source_name":"Jamison",
     "target_name":"Bob",
+    "source_field":"child",
+    "target_field":"parent",
     "schema_hint":"Fam",
     "context":"FamilyTree",
     "validate":true,

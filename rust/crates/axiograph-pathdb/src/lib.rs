@@ -87,21 +87,25 @@ pub use certificate::{
     RewriteDerivationProofV2, RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION_V2,
     FIXED_POINT_DENOMINATOR,
 };
-pub use checked_db::{CheckedDb, CheckedDbMut, CheckedDbReport, TypedFactBuilder};
+pub use checked_db::{
+    stable_fact_id_v1_for_declared_fields, CheckedDb, CheckedDbMut, CheckedDbReport,
+    TypedFactBuilder,
+};
 pub use guardrails::{GuardrailEngine, GuardrailRule, GuardrailViolation, Severity};
 pub use index_sidecar::{
     read_sidecar_file, write_sidecar_file, IndexSidecarWriter, LruSnapshot, PathDbIndexSidecarV1,
     PATHDB_INDEX_SIDECAR_VERSION_V1,
 };
 pub use kernel_ir::{
-    compile_instance_functor_ir, compile_instance_ir, compile_kernel_module_ir,
-    compile_schema_category_ir, InstanceArrowImageIr, InstanceArrowMappingIr, InstanceFunctorIr,
-    InstanceIr, InstanceObjectImageIr, KernelModuleIr, ObjectMembershipIr, RelationFactIr,
-    RoleValueIr, RuntimeTheoryFragmentSummaryV1, RuntimeTheoryObligationFragmentStatusV1,
+    build_kernel_surface_v1, compile_instance_functor_ir, compile_instance_ir,
+    compile_kernel_module_ir, compile_schema_category_ir, InstanceArrowImageIr,
+    InstanceArrowMappingIr, InstanceFunctorIr, InstanceIr, InstanceObjectImageIr, KernelModuleIr,
+    KernelRefV1, KernelSurfaceV1, ObjectMembershipIr, RelationFactIr, RoleValueIr,
+    RuntimeTheoryFragmentSummaryV1, RuntimeTheoryObligationFragmentStatusV1,
     RuntimeTheoryObligationStatusV1, RuntimeTheoryObligationTrustClassV1, SchemaCategoryArrowIr,
     SchemaCategoryArrowKindIr, SchemaCategoryArrowRefIr, SchemaCategoryIr, SchemaCategoryObjectIr,
     SchemaCategoryObjectRefIr, TheoryObligationKindIr, TheoryObligationRefIr, TheorySubjectKindIr,
-    TheorySubjectRefIr, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
+    TheorySubjectRefIr, KERNEL_SURFACE_VERSION_V1, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
 };
 pub use lifecycle::{Accepted, Certified, LifecycleState, Parsed, Reviewed, Validated};
 pub use migration::{
@@ -122,7 +126,10 @@ pub use runtime_theory_checker::{
     RuntimeTheoryTypedEndpointV1, WorldAssumptionV1, RUNTIME_THEORY_CHECK_REPORT_VERSION_V1,
 };
 pub use typestate::{NormalizedPathExprV2, UnnormalizedPathExprV2};
-pub use verified::{BinaryHeader, ReachabilityProof, VerifiedPathSig, VerifiedProb};
+pub use verified::{
+    axpd_convergence_status_v1, AxpdConvergenceStatusV1, BinaryHeader, ReachabilityProof,
+    VerifiedPathSig, VerifiedProb, AXPD_LIVE_FORMAT_VERSION_V1, AXPD_SECTIONED_FORMAT_VERSION_V2,
+};
 
 use fact_index::FactIndexCache;
 use text_index::TextIndexCache;
@@ -1182,6 +1189,138 @@ pub struct PathDB {
     index_sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
 }
 
+pub const CANONICAL_FACT_LOG_VERSION_V1: u32 = 1;
+pub const LIVE_PATHDB_DIGEST_VERSION_V1: u32 = 1;
+
+/// Deterministic, `.axi`-anchored fact log extracted from PathDB fact nodes.
+///
+/// This is scaffolding for accepted-plane append logs: it does not replace the
+/// live `.axpd` reader/writer, and it intentionally records canonical fact ids
+/// rather than PathDB row positions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalFactLogV1 {
+    pub version: u32,
+    pub digest: AxiDigest,
+    pub certified_only: bool,
+    pub entries: Vec<CanonicalFactLogEntryV1>,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CanonicalFactLogEntryV1 {
+    pub axi_fact_id: StableFactId,
+    pub module: String,
+    pub schema: String,
+    pub instance: String,
+    pub relation: String,
+    pub fields: Vec<CanonicalFactFieldV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CanonicalFactFieldV1 {
+    pub field: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CanonicalFactLogDigestPayloadV1 {
+    version: u32,
+    entries: Vec<CanonicalFactLogEntryV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LivePathDbDigestPayloadV1 {
+    version: u32,
+    strings: Vec<LiveStringRowV1>,
+    entities: Vec<LiveEntityRowV1>,
+    relations: Vec<LiveRelationRowV1>,
+    equivalences: Vec<LiveEquivalenceRowV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LiveStringRowV1 {
+    id: u32,
+    value: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LiveEntityRowV1 {
+    id: u32,
+    type_name: String,
+    attrs: Vec<LiveAttrRowV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+struct LiveAttrRowV1 {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LiveRelationRowV1 {
+    id: u32,
+    rel_type: String,
+    source: u32,
+    target: u32,
+    confidence_bits: u32,
+    attrs: Vec<LiveAttrRowV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+struct LiveEquivalenceRowV1 {
+    source: u32,
+    target: u32,
+    equiv_type: String,
+}
+
+impl CanonicalFactLogV1 {
+    pub fn from_db(db: &PathDB) -> Result<Self> {
+        let (mut entries, mut diagnostics) = canonical_fact_log_entries_v1(db)?;
+        entries.sort();
+        diagnostics.sort();
+
+        let digest = canonical_fact_log_digest_v1(&entries)?;
+        let certified_only = diagnostics.is_empty()
+            && entries
+                .iter()
+                .all(|entry| entry.axi_fact_id.has_v1_prefix());
+
+        Ok(Self {
+            version: CANONICAL_FACT_LOG_VERSION_V1,
+            digest,
+            certified_only,
+            entries,
+            diagnostics,
+        })
+    }
+
+    pub fn certified_from_db(db: &PathDB) -> Result<Self> {
+        let report = crate::checked_db::CheckedDb::check(db)?;
+        if !report.ok {
+            return Err(anyhow::anyhow!(
+                "cannot build certified CanonicalFactLogV1: PathDB failed Rust-side checks (axi_fact_errors={}, rewrite_rule_errors={}, context_errors={}, modal_errors={})",
+                report.axi_fact_typecheck.errors.len(),
+                report.rewrite_rule_typecheck.errors.len(),
+                report.context_invariants.errors.len(),
+                report.modal_invariants.errors.len()
+            ));
+        }
+
+        let log = Self::from_db(db)?;
+        if !log.certified_only {
+            let first = log
+                .diagnostics
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("canonical fact log has uncertified entries");
+            return Err(anyhow::anyhow!(
+                "cannot build certified CanonicalFactLogV1: {first}"
+            ));
+        }
+        Ok(log)
+    }
+}
+
 impl PathDB {
     pub fn new() -> Self {
         Self {
@@ -1364,6 +1503,30 @@ impl PathDB {
         if let Some(lru) = sidecar.path_lru {
             self.path_index.restore_lru(lru);
         }
+    }
+
+    /// Deterministic digest over live PathDB facts, excluding rebuildable indexes.
+    ///
+    /// This is a live-byte hardening helper, not a trusted semantic certificate:
+    /// it includes PathDB entity/relation ids and confidence bit patterns, and
+    /// it intentionally ignores path/text/fact indexes because those are
+    /// rebuildable derived state.
+    pub fn stable_live_snapshot_digest_v1(&self) -> Result<PathdbSnapshotId> {
+        let payload = live_pathdb_digest_payload_v1(self)?;
+        let bytes = serde_json::to_vec(&payload)?;
+        Ok(PathdbSnapshotId::new(
+            axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes),
+        ))
+    }
+
+    /// Extract a deterministic canonical fact log from `.axi` fact nodes.
+    pub fn canonical_fact_log_v1(&self) -> Result<CanonicalFactLogV1> {
+        CanonicalFactLogV1::from_db(self)
+    }
+
+    /// Extract a canonical fact log only when Rust-side checks and stable ids pass.
+    pub fn certified_canonical_fact_log_v1(&self) -> Result<CanonicalFactLogV1> {
+        CanonicalFactLogV1::certified_from_db(self)
     }
 
     /// Configure the LRU cache for deeper-than-indexed paths.
@@ -1845,6 +2008,273 @@ fn read_pathdb_slice<'a>(
     let slice = &bytes[*offset..end];
     *offset = end;
     Ok(slice)
+}
+
+fn pathdb_string(db: &PathDB, id: StrId, what: &str) -> Result<String> {
+    db.interner.lookup(id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "internal PathDB inconsistency: missing interned string for {what} id {}",
+            id.raw()
+        )
+    })
+}
+
+fn pathdb_entity_attr_string(db: &PathDB, entity: u32, key: &str) -> Option<String> {
+    let key_id = db.interner.id_of(key)?;
+    let value_id = db.entities.get_attr(entity, key_id)?;
+    db.interner.lookup(value_id)
+}
+
+fn canonical_entity_value_token_v1(db: &PathDB, entity: u32) -> Result<String> {
+    if let Some(name) = pathdb_entity_attr_string(db, entity, axi_meta::META_ATTR_NAME) {
+        return Ok(name);
+    }
+    if let Some(fact_id) = pathdb_entity_attr_string(db, entity, axi_meta::ATTR_AXI_FACT_ID) {
+        return Ok(fact_id);
+    }
+    Err(anyhow::anyhow!(
+        "entity {entity} is missing a stable `{}` or `{}` value",
+        axi_meta::META_ATTR_NAME,
+        axi_meta::ATTR_AXI_FACT_ID
+    ))
+}
+
+fn canonical_fact_log_digest_v1(entries: &[CanonicalFactLogEntryV1]) -> Result<AxiDigest> {
+    let payload = CanonicalFactLogDigestPayloadV1 {
+        version: CANONICAL_FACT_LOG_VERSION_V1,
+        entries: entries.to_vec(),
+    };
+    let bytes = serde_json::to_vec(&payload)?;
+    Ok(AxiDigest::new(axiograph_dsl::digest::fnv1a64_digest_bytes(
+        &bytes,
+    )))
+}
+
+fn canonical_fact_log_entries_v1(
+    db: &PathDB,
+) -> Result<(Vec<CanonicalFactLogEntryV1>, Vec<String>)> {
+    let meta = crate::axi_semantics::MetaPlaneIndex::from_db(db)?;
+    let mut entries = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    let Some(relation_key_id) = db.interner.id_of(axi_meta::ATTR_AXI_RELATION) else {
+        return Ok((entries, diagnostics));
+    };
+    let Some(relation_col) = db.entities.attrs.get(&relation_key_id) else {
+        return Ok((entries, diagnostics));
+    };
+
+    for (&fact_entity, &relation_value_id) in relation_col {
+        let relation = match db.interner.lookup(relation_value_id) {
+            Some(v) => v,
+            None => {
+                diagnostics.push(format!(
+                    "fact {fact_entity}: missing interned `{}` value",
+                    axi_meta::ATTR_AXI_RELATION
+                ));
+                continue;
+            }
+        };
+        let Some(schema) = pathdb_entity_attr_string(db, fact_entity, axi_meta::ATTR_AXI_SCHEMA)
+        else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({relation}): missing `{}`",
+                axi_meta::ATTR_AXI_SCHEMA
+            ));
+            continue;
+        };
+        let Some(schema_index) = meta.schemas.get(&schema) else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): schema is not present in the meta-plane"
+            ));
+            continue;
+        };
+        let Some(relation_decl) = schema_index.relation_decls.get(&relation) else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): relation is not present in the meta-plane"
+            ));
+            continue;
+        };
+
+        let module = pathdb_entity_attr_string(db, fact_entity, axi_meta::ATTR_AXI_MODULE)
+            .or_else(|| schema_index.module_name.clone());
+        let instance = pathdb_entity_attr_string(db, fact_entity, axi_meta::ATTR_AXI_INSTANCE);
+        let Some(module) = module else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): missing `{}`",
+                axi_meta::ATTR_AXI_MODULE
+            ));
+            continue;
+        };
+        let Some(instance) = instance else {
+            diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): missing `{}`",
+                axi_meta::ATTR_AXI_INSTANCE
+            ));
+            continue;
+        };
+
+        let mut fields = Vec::with_capacity(relation_decl.fields.len());
+        let mut ordered_fields: Vec<(&str, String)> =
+            Vec::with_capacity(relation_decl.fields.len());
+        let mut field_error = false;
+        for field in &relation_decl.fields {
+            let Some(field_rel_id) = db.interner.id_of(&field.field_name) else {
+                diagnostics.push(format!(
+                    "fact {fact_entity} ({schema}.{relation}): field `{}` has no interned relation id",
+                    field.field_name
+                ));
+                field_error = true;
+                continue;
+            };
+            let outgoing = db.relations.outgoing(fact_entity, field_rel_id);
+            match outgoing.as_slice() {
+                [edge] => {
+                    let value = match canonical_entity_value_token_v1(db, edge.target) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            diagnostics.push(format!(
+                                "fact {fact_entity} ({schema}.{relation}) field `{}`: {err}",
+                                field.field_name
+                            ));
+                            field_error = true;
+                            continue;
+                        }
+                    };
+                    fields.push(CanonicalFactFieldV1 {
+                        field: field.field_name.clone(),
+                        value: value.clone(),
+                    });
+                    ordered_fields.push((field.field_name.as_str(), value));
+                }
+                [] => {
+                    diagnostics.push(format!(
+                        "fact {fact_entity} ({schema}.{relation}): missing field edge `{}`",
+                        field.field_name
+                    ));
+                    field_error = true;
+                }
+                _ => {
+                    diagnostics.push(format!(
+                        "fact {fact_entity} ({schema}.{relation}): multiple field edges for `{}`",
+                        field.field_name
+                    ));
+                    field_error = true;
+                }
+            }
+        }
+        if field_error {
+            continue;
+        }
+
+        let ordered_field_refs: Vec<(&str, &str)> = ordered_fields
+            .iter()
+            .map(|(field, value)| (*field, value.as_str()))
+            .collect();
+        let computed_fact_id = StableFactId::new(axiograph_dsl::digest::axi_fact_id_v1(
+            &module,
+            &schema,
+            &instance,
+            &relation,
+            &ordered_field_refs,
+        ));
+
+        match pathdb_entity_attr_string(db, fact_entity, axi_meta::ATTR_AXI_FACT_ID) {
+            Some(declared) if declared == computed_fact_id.as_str() => {}
+            Some(declared) => diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): `{}` mismatch (declared={declared}, computed={})",
+                axi_meta::ATTR_AXI_FACT_ID,
+                computed_fact_id.as_str()
+            )),
+            None => diagnostics.push(format!(
+                "fact {fact_entity} ({schema}.{relation}): missing `{}` (computed={})",
+                axi_meta::ATTR_AXI_FACT_ID,
+                computed_fact_id.as_str()
+            )),
+        }
+
+        entries.push(CanonicalFactLogEntryV1 {
+            axi_fact_id: computed_fact_id,
+            module,
+            schema,
+            instance,
+            relation,
+            fields,
+        });
+    }
+
+    Ok((entries, diagnostics))
+}
+
+fn live_pathdb_digest_payload_v1(db: &PathDB) -> Result<LivePathDbDigestPayloadV1> {
+    let string_count = db.interner.next_id.load(Ordering::SeqCst);
+    let mut strings = Vec::with_capacity(string_count as usize);
+    for raw in 0..string_count {
+        let id = StrId::new(raw);
+        strings.push(LiveStringRowV1 {
+            id: raw,
+            value: pathdb_string(db, id, "string table")?,
+        });
+    }
+
+    let mut entities = Vec::with_capacity(db.entities.types.len());
+    for (entity_id, &type_id) in db.entities.types.iter().enumerate() {
+        let mut attrs = Vec::new();
+        for (&key_id, col) in &db.entities.attrs {
+            if let Some(&value_id) = col.get(&(entity_id as u32)) {
+                attrs.push(LiveAttrRowV1 {
+                    key: pathdb_string(db, key_id, "entity attr key")?,
+                    value: pathdb_string(db, value_id, "entity attr value")?,
+                });
+            }
+        }
+        attrs.sort();
+        entities.push(LiveEntityRowV1 {
+            id: entity_id as u32,
+            type_name: pathdb_string(db, type_id, "entity type")?,
+            attrs,
+        });
+    }
+
+    let mut relations = Vec::with_capacity(db.relations.relations.len());
+    for (relation_id, rel) in db.relations.relations.iter().enumerate() {
+        let mut attrs = Vec::with_capacity(rel.attrs.len());
+        for &(key_id, value_id) in &rel.attrs {
+            attrs.push(LiveAttrRowV1 {
+                key: pathdb_string(db, key_id, "relation attr key")?,
+                value: pathdb_string(db, value_id, "relation attr value")?,
+            });
+        }
+        attrs.sort();
+        relations.push(LiveRelationRowV1 {
+            id: relation_id as u32,
+            rel_type: pathdb_string(db, rel.rel_type, "relation type")?,
+            source: rel.source,
+            target: rel.target,
+            confidence_bits: rel.confidence.to_bits(),
+            attrs,
+        });
+    }
+
+    let mut equivalences = Vec::new();
+    for (&source, values) in &db.equivalences {
+        for &(target, equiv_type) in values {
+            equivalences.push(LiveEquivalenceRowV1 {
+                source,
+                target,
+                equiv_type: pathdb_string(db, equiv_type, "equivalence type")?,
+            });
+        }
+    }
+    equivalences.sort();
+
+    Ok(LivePathDbDigestPayloadV1 {
+        version: LIVE_PATHDB_DIGEST_VERSION_V1,
+        strings,
+        entities,
+        relations,
+        equivalences,
+    })
 }
 
 impl Default for PathDB {
@@ -2429,6 +2859,104 @@ mod tests {
         let round_trip = PathDB::from_bytes(&bytes).expect("deserialize PathDB");
 
         assert!(round_trip.follow_one(alice, "knows").contains(bob));
+    }
+
+    #[test]
+    fn stable_live_snapshot_digest_v1_survives_v1_envelope_roundtrip() -> Result<()> {
+        let mut db = PathDB::new();
+        let alice = db.add_entity("Person", vec![("z", "last"), ("name", "Alice")]);
+        let bob = db.add_entity("Person", vec![("name", "Bob"), ("a", "first")]);
+        db.add_relation("knows", alice, bob, 0.75, vec![("source", "test")]);
+        db.add_equivalence(alice, bob, "sameAs");
+        db.build_indexes();
+
+        let digest = db.stable_live_snapshot_digest_v1()?;
+        let bytes = db.to_bytes()?;
+        let round_trip = PathDB::from_bytes(&bytes)?;
+
+        assert_eq!(digest, round_trip.stable_live_snapshot_digest_v1()?);
+        assert!(round_trip.follow_one(alice, "knows").contains(bob));
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_fact_log_v1_is_deterministic_and_certified_for_imported_axi() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(parent=Alice, child=Bob)}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+
+        let log = db.certified_canonical_fact_log_v1()?;
+        assert!(log.certified_only);
+        assert!(log.diagnostics.is_empty());
+        assert_eq!(log.entries.len(), 1);
+        let entry = &log.entries[0];
+        assert!(entry.axi_fact_id.has_v1_prefix());
+        assert_eq!(entry.module, "Demo");
+        assert_eq!(entry.schema, "S");
+        assert_eq!(entry.instance, "I");
+        assert_eq!(entry.relation, "Parent");
+        assert_eq!(
+            entry.fields,
+            vec![
+                CanonicalFactFieldV1 {
+                    field: "parent".to_string(),
+                    value: "Alice".to_string()
+                },
+                CanonicalFactFieldV1 {
+                    field: "child".to_string(),
+                    value: "Bob".to_string()
+                }
+            ]
+        );
+
+        let round_trip = PathDB::from_bytes(&db.to_bytes()?)?;
+        let round_trip_log = round_trip.certified_canonical_fact_log_v1()?;
+        assert_eq!(log.digest, round_trip_log.digest);
+        assert_eq!(log.entries, round_trip_log.entries);
+        Ok(())
+    }
+
+    #[test]
+    fn certified_canonical_fact_log_v1_rejects_fact_id_mismatch() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {(parent=Alice, child=Bob)}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        let fact = db
+            .fact_nodes_by_axi_relation("Parent")
+            .iter()
+            .next()
+            .expect("expected imported Parent fact");
+        db.upsert_entity_attr(
+            fact,
+            axi_meta::ATTR_AXI_FACT_ID,
+            "factfnv1a64:0000000000000000",
+        )?;
+
+        let err = db
+            .certified_canonical_fact_log_v1()
+            .expect_err("mismatched canonical fact id must fail closed");
+        assert!(err.to_string().contains("mismatch"));
+        Ok(())
     }
 
     #[test]

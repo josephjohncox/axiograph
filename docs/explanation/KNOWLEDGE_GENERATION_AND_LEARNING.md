@@ -208,8 +208,16 @@ plane), then reconciled/promoted and eventually certificate-checked for
 high-value results.
 
 Embedding vectors and predicted embedding neighborhoods are sidecar evidence,
-not accepted ontology meaning. They can suggest typed relationships only after
-lifting through proposal/refinement/evolution-preview surfaces. See
+not accepted ontology meaning. In Rust, `EmbeddingsFileV1` carries vector
+payloads, `EmbeddingSidecarManifestV1` anchors the run to an accepted ref/module
+digest, model identity, target ids, source text digests, and trust caveats, and
+`EmbeddingEvidenceOverlayV1` carries vector-free advisory observations.
+
+Those overlays may suggest relationships such as `similar_to`, `supports`,
+`mentions`, `implements`, `violates`, `subtype_candidate`, `relation_candidate`,
+or `axiom_candidate`, but those are learning signals. They become accepted
+ontology changes only after typed validation, review, CQ gates, reconciliation,
+and promotion through the semantic VCS. See
 `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` and the dedicated JEPA design note:
 `docs/explanation/JEPA_INTEGRATION.md`.
 
@@ -399,4 +407,4 @@ The knowledge graph grows organically as:
 - [Axiograph Verification and Guardrails](VERIFICATION_AND_GUARDRAILS.md)
 - [PathDB Design](PATHDB_DESIGN.md)
 - [HoTT for Knowledge Graphs](HOTT_FOR_KNOWLEDGE_GRAPHS.md)
-- [LLM Query Integration](LLM_QUERY_INTEGRATION.md)
+- [LLM Query Integration](../howto/LLM_QUERY_INTEGRATION.md)

@@ -34,7 +34,7 @@ VIZ_OUT_DIR="$OUT_DIR/physics_wm_viz"
 VIZ_FULL_OUT_DIR="$OUT_DIR/physics_wm_viz_full"
 VIZ_FULL_JSON="$OUT_DIR/physics_wm_viz_full.json"
 MODEL_PATH="${WORLD_MODEL_MODEL_PATH:-models/world_model_small.onnx}"
-PYTHON="${PYTHON:-python}"
+PYTHON="${PYTHON:-python3}"
 if [ -x "$ROOT_DIR/.venv-onnx/bin/python" ]; then
   PYTHON="$ROOT_DIR/.venv-onnx/bin/python"
 fi
@@ -68,7 +68,13 @@ importlib.import_module("onnxruntime")
 importlib.import_module("onnx")
 PY
   then
-    "$ROOT_DIR/scripts/setup_onnx_runtime.sh"
+    if [ "${ALLOW_ONNX_PIP_INSTALL:-0}" = "1" ]; then
+      "$ROOT_DIR/scripts/setup_onnx_runtime.sh"
+    else
+      echo "error: WORLD_MODEL_BACKEND=onnx requires onnxruntime/onnx in $PYTHON" >&2
+      echo "hint: run ALLOW_ONNX_PIP_INSTALL=1 ./scripts/setup_onnx_runtime.sh, or set PYTHON to an environment that already has onnxruntime and onnx" >&2
+      exit 2
+    fi
     if [ -x "$ROOT_DIR/.venv-onnx/bin/python" ]; then
       PYTHON="$ROOT_DIR/.venv-onnx/bin/python"
     fi

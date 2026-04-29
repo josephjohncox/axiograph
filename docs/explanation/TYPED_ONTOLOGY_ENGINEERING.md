@@ -75,6 +75,27 @@ adapter code. They say which tuple/role/context structure is preserved natively,
 which native read-only query surface is exposed, and which semantics still
 require Axiograph-side trust contracts and anchor checks.
 
+The plan now also carries a compact evidence trail:
+
+- a `CompiledSchemaIr` summary of object types, relation objects, roles,
+  n-ary relations, context axes, and direct subtype families,
+- capability decisions from `BackendCapabilityProfileV1` and
+  `ProjectionCapabilityProfileV1`,
+- and native-readable projection notes that describe what TypeQL, WOQL, RDF
+  named graphs, schema constraints, and backend history can safely expose.
+
+For `TypeDB`, the high-fidelity target is intentionally typed: relation types,
+scoped roles, n-ary relation objects, subtype hierarchy, schema constraints, and
+typed query validation are the features that justify using it as the primary
+backend projection target. Even there, TypeQL is a read-only projected lens.
+Backend schema writes are not accepted ontology mutations.
+
+For `TerminusDB`, the useful shape is RDF/VCS-oriented: schema and instance
+graphs stay readable, context/world axes can lower into named graph bindings,
+and branch/history/diff surfaces can help inspect projected materialization
+state. Those history features do not become semantic VCS. Axiograph still owns
+promotion, supersession, retraction, review, reconciliation, and trust contracts.
+
 The important refinement is that projected backends should not be described as
 "mere exports". They should preserve readable lower-tier interfaces all the way
 through the projection:

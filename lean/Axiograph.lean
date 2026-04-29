@@ -11,3 +11,5 @@ import Axiograph.HoTT.FreeGroupoid
 import Axiograph.HoTT.PathAlgebraProofs
 import Axiograph.HoTT.PathCongruence
 import Axiograph.Topos.Overview
+import Axiograph.SemanticVCS
+import Axiograph.SemanticVCS.Json

@@ -117,7 +117,12 @@ Notes:
         "rel_type": "Parent",
         "source": "Alice",
         "target": "Bob",
-        "attributes": {"ctx": "FamilyTree", "time": "T2023"}
+        "attributes": {
+          "axi_source_field": "child",
+          "axi_target_field": "parent",
+          "ctx": "FamilyTree",
+          "time": "T2023"
+        }
       }
     ]
   },

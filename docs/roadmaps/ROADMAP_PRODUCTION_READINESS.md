@@ -17,7 +17,7 @@ This is intentionally **certificate-first**:
 For ontology-process roadmapping (CQs, linting, patterns, reuse), see `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`.
 For math/migration roadmapping (Δ/Σ/Π, rewrite theory), see `docs/roadmaps/ROADMAP_MATHEMATICAL.md`.
 
-Last updated: 2025-12-20.
+Last updated: 2026-04-28.
 
 ---
 
@@ -51,8 +51,26 @@ Last updated: 2025-12-20.
   is retired.
 - Current direction: typed query witnesses and canonical `.axi` anchors are the
   user/server/agent certificate path.
-- Missing: stable fact ids for **canonical domain `.axi`** and a “snapshot id”
-  notion for distributed settings.
+- Implemented scaffolding: `CanonicalFactLogV1`,
+  `PathDB::stable_live_snapshot_digest_v1`, and
+  `TypedFactBuilder::commit_certified_only` provide deterministic fact-log,
+  live-byte digest, and stable `axi_fact_id` hardening without changing the live
+  `.axpd` reader.
+- Guarded: generic semantic/query/certificate/viz loading and accepted-plane
+  promotion reject `PathDBExportV1` snapshots; examples foreground canonical
+  `.axi`, typed reports, certificates, and semantic previews.
+  - Tests: `axiograph-cli --test examples_e2e`
+    `canonical_only_cert_commands_reject_pathdb_export_snapshots`,
+    `accept_promote_rejects_pathdb_export_snapshot_without_mutating_store`,
+    `querycert_rejects_pathdb_export_snapshot_smoke`,
+    `repl_scripts_canonical_smoke`, and
+    `repl_rejects_stale_export_axi_command`.
+- Partial: imported canonical `.axi` tuple facts already carry `axi_fact_id`;
+  typed runtime construction can now fail closed through `commit_certified_only`.
+  Remaining work is to thread those ids through every public certificate,
+  accepted-plane manifest, and compiled-IR object/projection id.
+- Missing: a distributed accepted snapshot id contract that binds canonical
+  module digest, fact log digest, live `.axpd` checkpoint digest, and manifest.
 
 ### 0.4 Grounding / “safe to use” (not enforced)
 
@@ -106,17 +124,43 @@ Last updated: 2025-12-20.
 
 ### 2.1 Anchor certificates to real inputs everywhere
 
-- [ ] Standardize how snapshot `.axi` text is generated (canonical formatting) so `axi_digest_v1` is stable.
-- [ ] Require `anchor` in production certificates (not optional) for endpoints that claim “certified”.
-- [ ] Extend anchoring beyond `relation_id`:
-  - canonical domain `.axi` should emit stable fact ids (module digest + local id, or content addressing),
-  - certificates refer to those ids (not fragile numeric positions).
+- [~] Gate: deterministic module digest anchors.
+  - Pass when fixed canonical `.axi` fixtures produce the same `axi_digest_v1`
+    in Rust and Lean, and certificate writers surface that digest in their
+    anchor fields.
+  - Current checks: `make verify-semantics`, `make verify-axi-digest-e2e`,
+    `axiograph-cli --test examples_e2e querycert_canonical_axi_v3_smoke`.
+- [~] Gate: stable canonical fact ids.
+  - Pass when canonical domain `.axi` emits stable ids for facts, relation
+    objects, projection arrows, theory obligations, and snapshots from module
+    digest plus local/content identity.
+  - Current scaffolding: imported tuple facts carry `axi_fact_id`, typed builders
+    can preview/commit certified-only facts with stable ids, and
+    `CanonicalFactLogV1` rejects mismatched fact ids.
+  - Required regression: parse/import/export-module/promote the same canonical
+    module twice and assert identical ids, manifest entries, and certificate
+    references. Numeric PathDB row positions must not appear in public
+    certificates.
+- [ ] Gate: production certificates require anchors.
+  - Pass when every endpoint/command that claims "certified" fails closed if the
+    certificate lacks a canonical anchor or if verification cannot bind the
+    anchor to the requested accepted snapshot.
 
 ### 2.2 Determinism and reproducibility
 
-- [ ] Ban floats in anything that crosses the trusted boundary (certificates, anchors, canonical snapshots).
-- [ ] Add deterministic JSON emission checks (golden bytes) for certificate writers.
-- [ ] Add a “same inputs ⇒ same outputs” regression harness for cert emitters.
+- [ ] Gate: no floats across trusted boundaries.
+  - Pass when certificate JSON, anchors, canonical snapshots, accepted-plane
+    manifests, and trust contracts reject floating-point fields or encode them
+    through fixed-point/domain-specific types.
+- [ ] Gate: deterministic certificate JSON golden bytes.
+  - Pass when fixed typecheck, constraints, and query-certificate fixtures emit
+    byte-identical JSON across repeated runs. Tests must compare exact bytes,
+    not only parsed JSON.
+- [ ] Gate: same inputs imply same outputs.
+  - Pass when CLI and server certificate emitters, semantic previews, accepted
+    snapshot manifests, and PathDB export-module output run twice from the same
+    accepted snapshot and produce identical bytes except for explicitly scoped
+    run metadata.
 
 ### 2.3 Certificate ubiquity for real queries
 
@@ -132,14 +176,23 @@ Last updated: 2025-12-20.
 
 ## 3) Hardening track (parallel, practical)
 
-- [ ] Fuzz the untrusted surfaces:
-  - `.axi` parsing (Rust),
-  - certificate JSON parsing (Rust),
-  - PathDB bytes parsing (Rust),
-  - CLI/repl script surfaces (Rust).
-- [ ] Add optional tool targets (no-op if tool missing):
-  - `make verify-miri`, `make verify-kani`, `make verify-verus`.
-- [ ] Add concurrency testing only when concurrency exists (Loom/Shuttle).
+- [~] Gate: property tests for existing untrusted surfaces.
+  - Current checks include `axi_export_property_tests`,
+    `axi_constraints_ok_property_tests`, `typed_builder_property_tests`,
+    `fact_index_property_tests`, `path_expr_property_tests`,
+    `follow_path_property_tests`, `reachability_property_tests`, and
+    `fixed_prob_property_tests`.
+  - Remaining pass condition: add fuzz targets for Rust `.axi` parsing,
+    certificate JSON parsing, PathDB bytes parsing, and CLI/REPL command parsing.
+- [ ] Gate: optional deep-verification lanes are executable.
+  - Pass when `make verify-fuzz`, `make verify-miri`, `make verify-kani`, and
+    `make verify-loom` or `make verify-shuttle` exist. Each target must either
+    run a named minimal suite or skip with an explicit "tool unavailable"
+    message; silent no-ops do not count.
+- [ ] Gate: concurrency tests only cover real concurrency.
+  - Pass when Loom/Shuttle models are added only for code that actually shares
+    mutable state across threads; otherwise the roadmap entry stays intentionally
+    unimplemented.
 
 ---
 
@@ -147,8 +200,30 @@ Last updated: 2025-12-20.
 
 This section should be pursued only after “planes + anchors + certificates” are solid.
 
-- [ ] Implement canonical fact log + snapshots (append-only, strongly consistent first).
-- [ ] Treat indexes as derived rebuildable state per replica/shard.
-- [ ] Add snapshot commitments (Merkle root / transparency log) if you need offline/third-party verification.
+- [~] Gate: canonical fact log plus snapshots.
+  - Pass when accepted-plane promotion appends an immutable JSONL event, writes a
+    snapshot manifest, updates `HEAD` only after durable writes, and can rebuild
+    the accepted state from log plus canonical module bytes. Rejected
+    `PathDBExportV1` snapshots must not mutate `HEAD`, logs, or manifests.
+  - Current scaffolding: `CanonicalFactLogV1::certified_from_db` extracts a
+    deterministic fact log from canonical fact nodes after Rust-side checks, and
+    `PathDB::stable_live_snapshot_digest_v1` provides a deterministic digest for
+    live PathDB facts excluding rebuildable indexes.
+- [ ] Gate: live `.axpd` and verified `.axpd` convergence.
+  - Pass when an actual production `.axpd` checkpoint created from accepted
+    canonical state can be parsed, served, snapshotted, reloaded, and compared
+    against the accepted module digest and snapshot id. A `PathDBExportV1`
+    `.axi` roundtrip is only a debug/parity subcheck.
+  - Current status: production live reads still use the v1 `PathDB::to_bytes`
+    envelope. The sectioned v2 `BinaryHeader` in `verified.rs` is verified
+    scaffolding and is not the runtime format; `axpd_convergence_status_v1()`
+    intentionally reports this as not converged.
+- [ ] Gate: indexes are derived rebuildable state.
+  - Pass when a replica/shard can delete and rebuild indexes from canonical
+    facts plus PathDB/WAL bytes without changing accepted ids or query answers.
+- [ ] Gate: optional snapshot commitments.
+  - Pass only if offline/third-party verification is required; then add a Merkle
+    root or transparency-log commitment test that verifies a committed snapshot
+    from bytes alone.
 
 See `docs/explanation/DISTRIBUTED_PATHDB.md`.

@@ -41,7 +41,7 @@ echo "-- A) import canonical .axi and run a few queries (REPL non-interactive)"
   --cmd "validate_axi" \
   --cmd "q select ?p where name(\"Alice\") -Knows-> ?p limit 10" \
   --cmd "q select ?obl where name(\"W0\") -Obligatory-> ?obl limit 10" \
-  --cmd "export_axi $OUT_DIR/modalities_axi_export_v1.axi" \
+  --cmd "export_axi_module $OUT_DIR/modalities_axi_module.axi Modalities" \
   --cmd "save $OUT_DIR/modalities_axi.axpd"
 
 echo ""
@@ -64,7 +64,7 @@ echo "-- B) viz (meta + data)"
 echo ""
 echo "Done."
 echo "Outputs:"
-echo "  $OUT_DIR/modalities_axi_export_v1.axi"
+echo "  $OUT_DIR/modalities_axi_module.axi"
 echo "  $OUT_DIR/modalities_axi.axpd"
 echo "  $OUT_DIR/modalities_meta.html"
 echo "  $OUT_DIR/modalities_data.html"

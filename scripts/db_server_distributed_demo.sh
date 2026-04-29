@@ -21,6 +21,16 @@ echo "== PathDB distributed demo (master/replica + HTTP APIs) =="
 echo "root: $ROOT_DIR"
 echo "out:  $OUT_DIR"
 
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "error: required command not found: $1" >&2
+    exit 2
+  fi
+}
+
+need_cmd python3
+need_cmd curl
+
 echo ""
 echo "-- Build (via Makefile)"
 make binaries

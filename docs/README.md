@@ -25,9 +25,30 @@ If you only read one thing, read the “book”:
 ## Start here
 
 1. `README.md` (build + quick start)
-2. `docs/explanation/SYSTEM_OVERVIEW.md` (conceptual map of the system)
-3. `docs/explanation/BOOK.md` (end-to-end: semantics → certificates → production readiness → use cases)
-4. `examples/README.md` (pedagogical example catalog and runnable teaching path)
+2. `docs/howto/CANONICAL_SEMANTIC_SPINE.md` (current V1 user workflow)
+3. `docs/explanation/SYSTEM_OVERVIEW.md` (conceptual map of the system)
+4. `docs/explanation/BOOK.md` (end-to-end: semantics → certificates → production readiness → use cases)
+5. `examples/README.md` (pedagogical example catalog and runnable teaching path)
+
+## Current navigation spine
+
+Use this route when you need the shortest current map of the system:
+
+| Need | Start here |
+| --- | --- |
+| Canonical semantic input and compiled spine | `docs/reference/KERNEL_IR.md`, then `make verify-canonical-spine` in `docs/howto/TESTING.md` |
+| Trusted verification boundary | `docs/reference/TRUSTED_KERNEL.md`, `docs/reference/CERTIFICATES.md`, `docs/howto/FORMAL_VERIFICATION.md` |
+| Runtime theory judgments and typed holes | `docs/reference/RUNTIME_THEORY_CHECKER.md` |
+| Software authoring/codegen and continuous coverage | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`, `examples/software_authoring/README.md` |
+| Semantic VCS, reconciliation, and backend projection manifests | `docs/reference/SEMANTIC_VCS.md` |
+| Embeddings, RAG, vector sidecars, and evidence promotion | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
+| Backend pushdown/projection gates | `docs/reference/KERNEL_IR.md`, `docs/reference/SEMANTIC_VCS.md`, `docs/howto/TESTING.md` |
+
+Current semantic authority flows through accepted canonical `.axi`, compiled
+kernel/category IR, typed runtime reports, and narrow Lean-checked certificates.
+`PathDBExportV1` is retained only for debug/live-byte/parser-parity checks.
+`query_result_v1` and `query_result_v2` are retired; use canonical
+`.axi`-anchored typed query witnesses (`query_result_v3`).
 
 ---
 
@@ -49,6 +70,7 @@ If you only read one thing, read the “book”:
 ## How-to guides (task oriented)
 
 - `docs/howto/TESTING.md` — running the test suites and demos
+- `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — one current user workflow across canonical `.axi`, runtime theory, typed queries/certificates, software-authoring overlays, semantic VCS, embeddings, and backend projections
 - `docs/howto/FORMAL_VERIFICATION.md` — running Lean checks, Rust↔Lean parity, semantics e2e
 - `docs/howto/DB_SERVER.md` — serving snapshots over HTTP (query + viz; master/replica)
 - `docs/howto/SNAPSHOT_STORE.md` — accepted-plane + PathDB WAL workflow (promotion, commits, sync)
@@ -65,6 +87,7 @@ If you only read one thing, read the “book”:
 - `docs/reference/TRUSTED_KERNEL.md` — exact boundary of the Lean trusted kernel and certificate trust classes
 - `docs/reference/KERNEL_IR.md` — canonical schema/category IR target spec
 - `docs/reference/RUNTIME_THEORY_CHECKER.md` — Rust runtime theory judgments, closure tiers, completeness claims, and non-claims
+- `docs/reference/LEAN_THEORY_EVALUATION.md` — Lean-encoded theory status, feasibility, completeness, semantic merge/lattice preservation, and non-claims
 - `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` — embedding sidecars, vector/RAG evidence, relationship lifting, and trust boundaries
 - `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — software-authoring/codegen crates, CLI, MCP, DB HTTP server, plugin, editor/LSP, and maintained protocol-crate choices
 - `docs/reference/AGENT_CONTEXT.md` — current agent-facing architecture, trust, type-system, and compatibility context
@@ -87,7 +110,7 @@ If you only read one thing, read the “book”:
 - `docs/explanation/CONSTRAINT_SEMANTICS.md` — open-world constraints and what can be certified
 - `docs/explanation/PATHDB_DESIGN.md` — PathDB storage/index design
 - `docs/explanation/DISTRIBUTED_PATHDB.md` — replication/sharding + snapshot-scoped certificates + reading list
-- `docs/explanation/UNIFIED_STORAGE.md` — storage layers and artifact formats (`.axi`, `.axpd`, WAL, exports)
+- `docs/explanation/UNIFIED_STORAGE.md` — retired dual-write design note and current canonical-spine redirect
 - `docs/explanation/VERIFICATION_AND_GUARDRAILS.md` — how guardrails/verification fit together (and how they can fail)
 - `docs/explanation/RECONCILIATION.md` — reconciliation workflow + semantics direction
 - `docs/explanation/PATH_VERIFICATION.md` — path verification and witness design
@@ -117,3 +140,4 @@ If you only read one thing, read the “book”:
 - `docs/roadmaps/ROADMAP_MATHEMATICAL.md`
 - `docs/roadmaps/ROADMAP_SEMANTIC_KERNEL_AND_VCS.md`
 - `docs/roadmaps/ROADMAP_SEMANTIC_MERGE_LATTICE.md`
+- `docs/roadmaps/ROADMAP_RUNTIME_THEORY_AND_TYPED_WORKFLOWS.md`

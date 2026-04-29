@@ -19,19 +19,38 @@ Operational note:
 
 - `axiograph db serve` now accepts structured `query_ir_v1` at `POST /query`,
   and can echo the canonical compiled `query_ir_v1` alongside elaboration output.
+- `/query` accepts `certificate_policy`; server agent/tool-loop paths accept
+  `query_certificate_policy`. Both fields use the shared
+  `QueryCertificatePolicyV1` values `none`, `emit`, `verify`, and
+  `require_verified`. Legacy `certify`, `verify`, `require_query_certs`, and
+  `require_verified_queries` boolean aliases are not part of the greenfield
+  public wire contract.
 - raw AxQL remains a human-facing REPL/debug surface, not the machine-facing
   HTTP/tool boundary.
 - `query_ir_v1` is now the preferred execution seam for tooling: `QueryIrV1::prepare_with_meta`
   returns a typed prepared query handle (`PreparedQueryV1`) that exposes:
+  - stable handle ids (`prepared_query_id`, `query_ir_id`, `elaborated_query_ir_id`)
   - execution via prepared statement
   - elaborated plan output (`explain_plan_lines`)
   - prepared-query introspection (`disjunct_count`, `selected_vars`, `limit`, `context_count`)
   - trust-class classification (`certifiable`, `execution-only`, or `mixed`)
   - attached trust/semantic profile carried with the prepared handle itself
-  - direct certificate request (`certify`) against the same prepared state
+  - direct certificate request (`certify_typed_with_anchor` / anchor-bound
+    `certify_typed`) against the same prepared state
+- `PreparedQueryV1::metadata_with_meta` returns the common report envelope
+  (`PreparedQueryMetadataV1`) for query, refinement, CQ, and agent surfaces:
+  - IR/prepared-query ids,
+  - inferred variable types,
+  - certifiability and query trust,
+  - explicit non-claims (`completeness_claim`, `ontology_closure_claim`),
+  - machine-applicable runtime refinement handles,
+  - and, when the caller already has canonical compiled `KernelModuleIr`,
+    optional `KernelRefV1` handles via `metadata_with_meta_and_kernel`.
+    The default metadata path never invents kernel refs from PathDB/meta state.
 - query-facing trust surfaces now make the boundary explicit:
   - `QueryIrV1::trust_contract`
   - `PreparedQueryV1::trust_contract`
+  - `PreparedQueryV1::metadata_with_meta`
   - `PreparedQueryV1::semantic_coverage`
   - `PreparedQueryV1::semantic_claims`
   - `PreparedQueryV1::trust_gaps`
@@ -56,11 +75,17 @@ Operational note:
   - `supported_facts[*].witness_rows` point back to the supporting witness rows,
   - and `contexts` / `evidence` remain attachment-layer enrichments rather than
     the support basis itself.
+- `require_verified` is deliberately fail-closed: it requires a fully
+  certifiable query, an accepted `.axi` anchor, canonical text for that anchor,
+  certificate emission, and a successful Lean verification result. Standalone
+  runtime exports may still support `emit`/`verify`, but they do not satisfy
+  `require_verified` because they are not accepted-anchor-bound.
 
 `PreparedQueryV1` keeps the parsed AxQL body with the prepared low-level runtime handle
-and the trust/semantic profile computed at preparation time, so callers don’t
-have to re-parse queries, re-run trust classification, or carry raw strings
-plus optional meta-plane state around for repeated execution.
+and the trust/semantic profile computed at preparation time. Its metadata
+envelope is the citation surface for reports, so callers don’t have to re-parse
+queries, re-run trust classification, or carry raw strings plus optional
+meta-plane state around for repeated execution and refinement.
 
 For hands-on demos (scenario generation + proof-relevant certificates), see
 `docs/tutorials/TYPE_THEORY_DEMOS.md`.
@@ -254,6 +279,7 @@ Current implemented slice:
 - `PreparedQueryV1::apply_refinement_handle` /
   `PreparedQueryV1::apply_refinement_by_id` apply one of those handles and
   return:
+  - base and refined `PreparedQueryMetadataV1`,
   - refined `query_ir_v1`,
   - refined elaborated IR,
   - trust/introspection before+after,
@@ -324,7 +350,10 @@ This is intended for familiarity and tooling integration, not “full SQL”.
 
 ### 3) Certified querying (Rust emits, Lean verifies)
 
-AxQL/SQL-ish queries can be run in a **proof-producing mode**:
+Human AxQL and SQL-ish forms are frontends. Machine and report flows should
+compile to `query_ir_v1`, prepare a `PreparedQueryV1`, and certify from that
+prepared handle against a canonical accepted `.axi` anchor. In
+**proof-producing mode**:
 
 - Rust emits canonical `.axi`-anchored typed query witnesses (wire kind `query_result_v3`)
 - Lean verifies that each returned row satisfies the query under that anchor
@@ -345,6 +374,15 @@ and per-branch classification counts so callers can choose whether to:
 
 - run only certifiable branches through the certificate path, or
 - execute whole query in untrusted mode and report trust caveats explicitly.
+
+Certificate policy is also explicit:
+
+- `none`: execute and report trust metadata, but do not emit a certificate.
+- `emit`: emit a `query_result_v3` certificate when the query is certifiable.
+- `verify`: emit and attempt Lean verification, returning the verification
+  status/output without treating a failed check as an accepted result.
+- `require_verified`: fail closed unless the accepted-anchor/canonical-text
+  preconditions hold and Lean verification succeeds.
 
 The runtime currently marks `contains(...)`, `fts(...)`, and `fuzzy(...)` as
 execution-only even if other parts of the query are certifiable. Certified

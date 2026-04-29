@@ -8,6 +8,10 @@ and coding-agent planning.
 It is not the Lean trusted kernel. It is a runtime checker for well-typedness,
 admissibility, closure attempts, and explicitly scoped completeness claims.
 
+For the current Lean encoding and feasibility status of these theory,
+merge/lattice, closure, and preservation claims, see
+`docs/reference/LEAN_THEORY_EVALUATION.md`.
+
 ## Judgment Form
 
 The intended runtime judgment is:
@@ -41,6 +45,12 @@ Runtime judgments use four operational statuses:
 
 Severity is `info`, `warning`, or `error`.
 
+Every `RuntimeTheoryJudgmentV1` and closure step carries `KernelRefV1`
+citations for the checked theory, obligation, and subjects. Those refs are
+runtime citations against the compiled `KernelSurfaceV1`; they make reports
+usable by merge/rebase, CQ gates, behavior-case checks, and agents without
+turning the Rust report into a Lean certificate.
+
 ## Supported Fragment
 
 The first runtime fragment supports:
@@ -54,6 +64,36 @@ The first runtime fragment supports:
   missing/opaque classifications,
 - opaque equations as addressable review obligations.
 
+Path equations and rewrite rules now retain `touched_roles` from their
+referenced relations. This makes context and temporal axes runtime-addressable
+as `TheorySubjectRefIr::Role` links rather than only prose in diagnostics.
+
+`TheoryIr` also exposes a deterministic address layer for the first practical
+runtime-theory slice:
+
+- `address_index()` returns `TheoryAddressIndexV1`, a runtime navigation index
+  over obligations, subjects, path expressions, path steps, variables,
+  endpoints, context axes, and transport item handles.
+- `obligation_dependencies()` returns the same refs scoped to one obligation.
+- `path_step_refs_for_obligation()`, `context_refs_for_obligation()`, and
+  `transport_item_refs_for_obligation()` are focused accessors for repair,
+  migration, and reconciliation tools.
+
+These refs are stable operational handles for the compiled Rust IR. They are
+not proof terms and do not expand the trusted kernel.
+
+Every judgment can carry `admissibility_diagnostics[]`. For equations and
+rewrites these diagnostics identify endpoint preservation, relation-id
+resolution, axis-role preservation or dropping, and opaque-review-only status.
+They are operational Rust diagnostics, not proof objects.
+
+Reports additionally carry `admissibility_checks[]` records. A
+`RuntimeTheoryAdmissibilityCheckV1` attaches the typed dependency refs that
+caused or supported each result: path expression refs, path step refs, variable
+refs, endpoint refs, context-axis refs, transport item refs, and subject refs.
+Human-readable diagnostic arrays are derived presentation fields; promotion,
+merge, CQ repair, and agent tooling should consume the typed check records.
+
 Unsupported higher-order/dependent obligations are not discarded. They remain
 runtime-addressable with explicit non-claim status so exploration, CQ repair,
 and semantic merge can point at them.
@@ -61,7 +101,9 @@ and semantic merge can point at them.
 When a transport plan is supplied, every affected judgment and closure step
 carries structured `transport_status`, `transport_basis`, missing object images,
 and missing arrow images. Migration, rebase, and merge resolvers should consume
-those fields directly instead of interpreting diagnostic strings.
+those fields directly instead of interpreting diagnostic strings. Transport
+items also carry the obligation's typed subjects, including touched context and
+temporal roles when the source obligation names relations with those axes.
 
 ## Closure Tiers
 
@@ -78,6 +120,16 @@ report says so as a non-claim.
 `global_indexed` is closure over a finite declared semantic VCS/world/slice/
 import universe. It refuses undeclared imports. It is not unrestricted global
 ontology truth.
+
+`assumption_diagnostics[]` appears at both report and closure levels. Each
+entry names a fragment/world/context/evidence/ref/import assumption and marks
+whether it `supports_claim`, `narrows_claim`, leaves a `residual`, or
+`blocks_claim`. Residual or blocking assumptions are copied into closure
+residuals so completeness and ontology-closure claims do not silently overstate
+non-finite worlds, missing global universes, or undeclared imports. Narrowing
+diagnostics, such as absent named closed contexts or threshold-only evidence,
+document the scope without turning a well-typed finite-fragment check into a
+Lean or full ontology-closure proof.
 
 ## Completeness And Closure
 
@@ -136,6 +188,33 @@ Neither claim means:
       "admissible": true,
       "transport_status": "preserved",
       "transport_basis": ["object Person -> Person", "arrow Parent -> Parent"],
+      "admissibility_diagnostics": [
+        {
+          "code": "rewrite_endpoint_preserved",
+          "severity": "info",
+          "admissible": true,
+          "relation_names": ["Parent"]
+        }
+      ],
+      "admissibility_checks": [
+        {
+          "check_id": "admissibility_check:rewrite:theory:Family:FamilyTheory:keep_parent:rewrite_endpoint_preserved",
+          "code": "rewrite_endpoint_preserved",
+          "admissible": true,
+          "path_step_refs": [
+            {
+              "step_id": "path_step:rewrite:theory:Family:FamilyTheory:keep_parent:lhs:0",
+              "side": "lhs",
+              "relation_name": "Parent"
+            }
+          ],
+          "transport_item_refs": [
+            {
+              "transport_item_id": "transport_item:rewrite:theory:Family:FamilyTheory:keep_parent"
+            }
+          ]
+        }
+      ],
       "typed_endpoint": {
         "source": "rewrite_rule",
         "from_var": "a",
@@ -149,6 +228,20 @@ Neither claim means:
         "relation_ids": ["relation:Family:Parent"],
         "axis_roles": []
       }
+    }
+  ],
+  "assumption_diagnostics": [
+    {
+      "assumption_id": "world_is_finite",
+      "kind": "world",
+      "effect": "supports_claim",
+      "severity": "info"
+    },
+    {
+      "assumption_id": "context_scope_named",
+      "kind": "context",
+      "effect": "narrows_claim",
+      "severity": "info"
     }
   ],
   "closure": {
@@ -168,7 +261,8 @@ Neither claim means:
         "admissible": true,
         "complete_under_assumptions": true,
         "closed_under_assumptions": true,
-        "evidence_weight_ppm": 1000000
+        "evidence_weight_ppm": 1000000,
+        "admissibility_diagnostics": []
       },
       {
         "step_index": 1,

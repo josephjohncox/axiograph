@@ -29,12 +29,149 @@ use crate::trust_contract::{
 };
 
 use axiograph_pathdb::certificate::CertificateV2;
-use axiograph_pathdb::kernel_ir::{CompiledSchemaIr, TheoryIr};
+use axiograph_pathdb::kernel_ir::{
+    CompiledSchemaIr, KernelModuleIr, KernelRefV1, SchemaCategoryArrowRefIr,
+    SchemaCategoryObjectRefIr, TheoryIr, TheoryObligationRefIr, TheorySubjectRefIr,
+};
 use axiograph_pathdb::{AcceptedAxiAnchor, AxiDigest, Certified, LifecycleState, Validated};
 
 pub const QUERY_IR_V1_VERSION: u32 = 1;
+pub const PREPARED_QUERY_METADATA_V1_VERSION: u32 = 1;
 
 pub type QueryTrustContract = QueryTrustContractV1;
+
+/// Shared query certificate policy for HTTP, CQ, and agent/server surfaces.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryCertificatePolicyV1 {
+    #[default]
+    None,
+    Emit,
+    Verify,
+    RequireVerified,
+}
+
+impl QueryCertificatePolicyV1 {
+    pub const fn emits_certificate(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub const fn verifies_certificate(self) -> bool {
+        matches!(self, Self::Verify | Self::RequireVerified)
+    }
+
+    pub const fn requires_verified(self) -> bool {
+        matches!(self, Self::RequireVerified)
+    }
+
+    pub fn ensure_require_verified_preconditions(
+        self,
+        certifiability: &QueryCertifiability,
+        accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
+        canonical_axi_text: Option<&str>,
+    ) -> Result<()> {
+        if !self.requires_verified() {
+            return Ok(());
+        }
+
+        let mut failures = Vec::new();
+        if !certifiability.is_certifiable() {
+            let reasons = certifiability.reasons();
+            if reasons.is_empty() {
+                failures.push(format!(
+                    "query is not fully certifiable (trust_class={})",
+                    certifiability.trust_class()
+                ));
+            } else {
+                failures.push(format!(
+                    "query is not fully certifiable (trust_class={}; reasons={})",
+                    certifiability.trust_class(),
+                    reasons.join(", ")
+                ));
+            }
+        }
+        if accepted_axi_anchor.is_none() {
+            failures.push("missing accepted `.axi` anchor".to_string());
+        }
+        if canonical_axi_text
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .is_none()
+        {
+            failures.push("missing canonical `.axi` text for accepted anchor".to_string());
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "query certificate policy `require_verified` cannot be satisfied: {}",
+                failures.join("; ")
+            ))
+        }
+    }
+
+    pub fn ensure_verified_result(self, certificate_verified: Option<bool>) -> Result<()> {
+        if !self.requires_verified() {
+            return Ok(());
+        }
+        match certificate_verified {
+            Some(true) => Ok(()),
+            Some(false) => Err(anyhow!(
+                "query certificate policy `require_verified` cannot be satisfied: certificate verification failed"
+            )),
+            None => Err(anyhow!(
+                "query certificate policy `require_verified` cannot be satisfied: certificate verification status missing"
+            )),
+        }
+    }
+}
+
+/// Explicit query trust non-claims carried with prepared-query metadata.
+///
+/// This keeps answer-set completeness and ontology-closure boundaries visible
+/// anywhere a prepared query handle is cited, including CQ and refinement
+/// reports that should not have to reconstruct these fields from prose notes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueryNonClaimsV1 {
+    pub claim_scope: String,
+    pub completeness_claim: String,
+    pub ontology_closure_claim: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+impl QueryNonClaimsV1 {
+    fn from_trust(trust: &QueryTrustContract) -> Self {
+        Self {
+            claim_scope: trust.claim_scope.clone(),
+            completeness_claim: trust.completeness_claim.clone(),
+            ontology_closure_claim: trust.ontology_closure_claim.clone(),
+            notes: trust.notes.clone(),
+        }
+    }
+}
+
+/// Stable, serializable handle metadata for a prepared `query_ir_v1` query.
+///
+/// This is the small report envelope that CQ, refinement, agent, and review
+/// surfaces can cite instead of passing only raw AxQL strings around.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreparedQueryMetadataV1 {
+    pub version: u32,
+    pub prepared_query_id: String,
+    pub query_ir_id: String,
+    pub elaborated_query_ir_id: String,
+    pub introspection: PreparedQueryIntrospection,
+    pub inferred_types: BTreeMap<String, Vec<String>>,
+    pub certifiability: QueryCertifiability,
+    pub trust: QueryTrustContract,
+    pub non_claims: QueryNonClaimsV1,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refinement_handles: Vec<crate::typed_refinement::RuntimeRefinementHandleV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kernel_refs: Vec<KernelRefV1>,
+}
 
 /// Focused exploration payload for editor/agent workflows.
 ///
@@ -63,6 +200,8 @@ pub struct PreparedQueryExplorationV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRefinementApplyResultV1 {
     pub handle: AxqlRefinementHandleV1,
+    pub base_prepared_query: PreparedQueryMetadataV1,
+    pub refined_prepared_query: PreparedQueryMetadataV1,
     pub base_query_ir_v1: QueryIrV1,
     pub refined_query_ir_v1: QueryIrV1,
     pub refined_elaborated_query_ir_v1: QueryIrV1,
@@ -570,6 +709,301 @@ pub struct AcceptedAnchoredQueryAnswer<S> {
     answer: QueryAnswer<S>,
 }
 
+fn query_ir_id_for_axql_query(query: &AxqlQuery) -> String {
+    format!(
+        "query_ir_v1:{}",
+        crate::axql::axql_query_ir_digest_v1(query)
+    )
+}
+
+fn prepared_query_id_for_ir_ids(query_ir_id: &str, elaborated_query_ir_id: &str) -> String {
+    format!(
+        "prepared_query_v1:{}",
+        axiograph_dsl::digest::axi_digest_v1(&format!(
+            "query_ir_id={query_ir_id};elaborated_query_ir_id={elaborated_query_ir_id}"
+        ))
+    )
+}
+
+fn runtime_refinement_handles_from_report(
+    report: &AxqlElaborationReport,
+) -> Vec<crate::typed_refinement::RuntimeRefinementHandleV1> {
+    let mut seen = BTreeSet::new();
+    let mut handles = Vec::new();
+    for handle in report
+        .exploration_suggestions
+        .iter()
+        .flat_map(|suggestion| suggestion.refinement_candidates.iter())
+        .map(|candidate| {
+            crate::typed_refinement::RuntimeRefinementHandleV1::from_query(candidate.handle.clone())
+        })
+    {
+        if seen.insert(handle.id.clone()) {
+            handles.push(handle);
+        }
+    }
+    handles
+}
+
+fn kernel_refs_for_prepared_query(
+    query: &AxqlQuery,
+    elaboration: &AxqlElaborationReport,
+    kernel: &KernelModuleIr,
+) -> Vec<KernelRefV1> {
+    let selectors = QueryKernelRefSelectors::from_query(query, elaboration);
+    let mut object_type_ids = BTreeSet::new();
+    let mut relation_ids = BTreeSet::new();
+    let mut role_ids = BTreeSet::new();
+
+    for schema in &kernel.schemas {
+        for (name, object_type_id) in &schema.object_type_ids {
+            if selectors.matches_type(name) {
+                object_type_ids.insert(object_type_id.to_string());
+            }
+        }
+        for relation in schema.relations.values() {
+            let relation_matches = selectors.matches_relation(&relation.name)
+                || selectors.matches_relation(&relation.tuple_type_name);
+            if relation_matches {
+                relation_ids.insert(relation.relation_id.to_string());
+            }
+            for role in &relation.roles {
+                if relation_matches || selectors.matches_role(&role.name) {
+                    role_ids.insert(role.role_id.to_string());
+                }
+            }
+        }
+    }
+
+    let mut theory_ids = BTreeSet::new();
+    let mut refs = BTreeSet::new();
+    for surface_ref in kernel.kernel_surface_v1().refs {
+        match &surface_ref {
+            KernelRefV1::Module { .. } => {
+                refs.insert(surface_ref.clone());
+            }
+            KernelRefV1::SchemaObject {
+                object: SchemaCategoryObjectRefIr::ObjectType { object_type_id, .. },
+                ..
+            } if object_type_ids.contains(object_type_id.as_str()) => {
+                refs.insert(surface_ref.clone());
+            }
+            KernelRefV1::SchemaObject {
+                object: SchemaCategoryObjectRefIr::RelationObject { relation_id, .. },
+                ..
+            } if relation_ids.contains(relation_id.as_str()) => {
+                refs.insert(surface_ref.clone());
+            }
+            KernelRefV1::SchemaArrow {
+                arrow:
+                    SchemaCategoryArrowRefIr::RoleProjection {
+                        role_id,
+                        relation_id,
+                        ..
+                    },
+                ..
+            } if role_ids.contains(role_id.as_str())
+                || relation_ids.contains(relation_id.as_str()) =>
+            {
+                refs.insert(surface_ref.clone());
+            }
+            KernelRefV1::TheoryObligation { obligation } => {
+                if theory_obligation_touches_query_refs(
+                    kernel,
+                    obligation,
+                    &relation_ids,
+                    &role_ids,
+                ) {
+                    theory_ids.insert(theory_id_for_obligation(obligation));
+                    refs.insert(surface_ref.clone());
+                }
+            }
+            KernelRefV1::TheorySubject {
+                theory_id,
+                subject: TheorySubjectRefIr::Relation { relation_id, .. },
+            } if relation_ids.contains(relation_id.as_str()) => {
+                theory_ids.insert(theory_id.to_string());
+                refs.insert(surface_ref.clone());
+            }
+            KernelRefV1::TheorySubject {
+                theory_id,
+                subject: TheorySubjectRefIr::Role { role_id, .. },
+            } if role_ids.contains(role_id.as_str()) => {
+                theory_ids.insert(theory_id.to_string());
+                refs.insert(surface_ref.clone());
+            }
+            _ => {}
+        }
+    }
+
+    for surface_ref in kernel.kernel_surface_v1().refs {
+        if matches!(
+            &surface_ref,
+            KernelRefV1::Theory { theory_id, .. } if theory_ids.contains(theory_id.as_str())
+        ) {
+            refs.insert(surface_ref);
+        }
+    }
+
+    refs.into_iter().collect()
+}
+
+#[derive(Debug, Default)]
+struct QueryKernelRefSelectors {
+    type_names: BTreeSet<String>,
+    relation_names: BTreeSet<String>,
+    role_names: BTreeSet<String>,
+}
+
+impl QueryKernelRefSelectors {
+    fn from_query(query: &AxqlQuery, elaboration: &AxqlElaborationReport) -> Self {
+        let mut selectors = Self::default();
+        for types in elaboration.inferred_types.values() {
+            for ty in types {
+                selectors.insert_type(ty);
+            }
+        }
+        for disjunct in &query.disjuncts {
+            for atom in disjunct {
+                selectors.add_atom(atom);
+            }
+        }
+        selectors
+    }
+
+    fn add_atom(&mut self, atom: &AxqlAtom) {
+        match atom {
+            AxqlAtom::Type { type_name, .. } => self.insert_type(type_name),
+            AxqlAtom::Edge { path, .. } => self.add_regex(&path.regex),
+            AxqlAtom::Fact {
+                relation, fields, ..
+            } => {
+                self.insert_relation(relation);
+                for (role, _) in fields {
+                    self.insert_role(role);
+                }
+            }
+            AxqlAtom::HasOut { rels, .. } => {
+                for rel in rels {
+                    self.insert_role(rel);
+                    self.insert_relation(rel);
+                }
+            }
+            AxqlAtom::Shape {
+                type_name, rels, ..
+            } => {
+                if let Some(type_name) = type_name {
+                    self.insert_type(type_name);
+                }
+                for rel in rels {
+                    self.insert_role(rel);
+                    self.insert_relation(rel);
+                }
+            }
+            AxqlAtom::AttrEq { .. }
+            | AxqlAtom::AttrContains { .. }
+            | AxqlAtom::AttrFts { .. }
+            | AxqlAtom::AttrFuzzy { .. }
+            | AxqlAtom::Attrs { .. } => {}
+        }
+    }
+
+    fn add_regex(&mut self, regex: &crate::axql::AxqlRegex) {
+        use crate::axql::AxqlRegex;
+        match regex {
+            AxqlRegex::Rel(rel) => {
+                self.insert_relation(rel);
+                self.insert_role(rel);
+            }
+            AxqlRegex::Seq(parts) | AxqlRegex::Alt(parts) => {
+                for part in parts {
+                    self.add_regex(part);
+                }
+            }
+            AxqlRegex::Star(inner) | AxqlRegex::Plus(inner) | AxqlRegex::Opt(inner) => {
+                self.add_regex(inner);
+            }
+            AxqlRegex::Epsilon => {}
+        }
+    }
+
+    fn insert_type(&mut self, name: &str) {
+        insert_name_variants(&mut self.type_names, name);
+    }
+
+    fn insert_relation(&mut self, name: &str) {
+        insert_name_variants(&mut self.relation_names, name);
+    }
+
+    fn insert_role(&mut self, name: &str) {
+        insert_name_variants(&mut self.role_names, name);
+    }
+
+    fn matches_type(&self, name: &str) -> bool {
+        name_matches(&self.type_names, name)
+    }
+
+    fn matches_relation(&self, name: &str) -> bool {
+        name_matches(&self.relation_names, name)
+    }
+
+    fn matches_role(&self, name: &str) -> bool {
+        name_matches(&self.role_names, name)
+    }
+}
+
+fn theory_obligation_touches_query_refs(
+    kernel: &KernelModuleIr,
+    obligation: &TheoryObligationRefIr,
+    relation_ids: &BTreeSet<String>,
+    role_ids: &BTreeSet<String>,
+) -> bool {
+    kernel
+        .theories
+        .iter()
+        .find(|theory| theory.theory_id.as_str() == theory_id_for_obligation(obligation))
+        .is_some_and(|theory| {
+            theory
+                .subject_refs_for_obligation(obligation)
+                .into_iter()
+                .any(|subject| match subject {
+                    TheorySubjectRefIr::Relation { relation_id, .. } => {
+                        relation_ids.contains(relation_id.as_str())
+                    }
+                    TheorySubjectRefIr::Role { role_id, .. } => role_ids.contains(role_id.as_str()),
+                    TheorySubjectRefIr::Theory { .. } => false,
+                })
+        })
+}
+
+fn theory_id_for_obligation(obligation: &TheoryObligationRefIr) -> String {
+    match obligation {
+        TheoryObligationRefIr::Constraint { theory_id, .. }
+        | TheoryObligationRefIr::PathEquation { theory_id, .. }
+        | TheoryObligationRefIr::OpaqueEquation { theory_id, .. }
+        | TheoryObligationRefIr::RewriteRule { theory_id, .. } => theory_id.to_string(),
+    }
+}
+
+fn insert_name_variants(target: &mut BTreeSet<String>, name: &str) {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    target.insert(trimmed.to_string());
+    target.insert(local_query_ref_name(trimmed));
+}
+
+fn name_matches(selectors: &BTreeSet<String>, name: &str) -> bool {
+    selectors.contains(name) || selectors.contains(&local_query_ref_name(name))
+}
+
+fn local_query_ref_name(name: &str) -> String {
+    name.rsplit_once([':', '.'])
+        .map(|(_, local)| local.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
 #[allow(dead_code)]
 impl<S: LifecycleState> QueryAnswer<S> {
     pub fn result(&self) -> &AxqlResult {
@@ -669,6 +1103,8 @@ impl PreparedQueryV1 {
         };
         Ok(QueryRefinementApplyResultV1 {
             handle: handle.clone(),
+            base_prepared_query: self.metadata_with_meta(meta)?,
+            refined_prepared_query: refined_prepared.metadata_with_meta(meta)?,
             base_query_ir_v1: self.query_ir.clone(),
             refined_query_ir_v1,
             refined_elaborated_query_ir_v1: refined_prepared.elaborated_query_ir_v1()?,
@@ -683,6 +1119,79 @@ impl PreparedQueryV1 {
     /// Return the canonical typed IR for this prepared query.
     pub fn query_ir_v1(&self) -> &QueryIrV1 {
         &self.query_ir
+    }
+
+    /// Stable id for the normalized `query_ir_v1` body this handle prepared.
+    pub fn query_ir_id(&self) -> String {
+        query_ir_id_for_axql_query(&self.query)
+    }
+
+    /// Stable id for the elaborated `query_ir_v1` body the runtime actually prepared.
+    pub fn elaborated_query_ir_id(&self) -> Result<String> {
+        let elaborated = parse_axql_query(&self.handle.elaborated_query_text())?;
+        Ok(query_ir_id_for_axql_query(&elaborated))
+    }
+
+    /// Stable prepared-query handle id derived from input and elaborated IR ids.
+    pub fn prepared_query_id(&self) -> Result<String> {
+        let query_ir_id = self.query_ir_id();
+        let elaborated_query_ir_id = self.elaborated_query_ir_id()?;
+        Ok(prepared_query_id_for_ir_ids(
+            &query_ir_id,
+            &elaborated_query_ir_id,
+        ))
+    }
+
+    /// Return the prepared-query metadata envelope attached to this handle.
+    pub fn metadata(&self) -> Result<PreparedQueryMetadataV1> {
+        self.metadata_with_meta(None)
+    }
+
+    /// Return prepared-query metadata, enriching trust/coverage if meta-plane
+    /// data is available.
+    pub fn metadata_with_meta(
+        &self,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<PreparedQueryMetadataV1> {
+        let query_ir_id = self.query_ir_id();
+        let elaborated_query_ir_id = self.elaborated_query_ir_id()?;
+        let trust = self.trust_contract_with_meta(meta);
+        Ok(PreparedQueryMetadataV1 {
+            version: PREPARED_QUERY_METADATA_V1_VERSION,
+            prepared_query_id: prepared_query_id_for_ir_ids(&query_ir_id, &elaborated_query_ir_id),
+            query_ir_id,
+            elaborated_query_ir_id,
+            introspection: self.introspection(),
+            inferred_types: self.elaboration_report().inferred_types.clone(),
+            certifiability: self.certifiability(),
+            non_claims: QueryNonClaimsV1::from_trust(&trust),
+            trust,
+            refinement_handles: runtime_refinement_handles_from_report(self.elaboration_report()),
+            kernel_refs: Vec::new(),
+        })
+    }
+
+    /// Return prepared-query metadata enriched with compiled kernel refs.
+    ///
+    /// This is intentionally additive: query preparation still only needs the
+    /// PathDB/meta-plane boundary, while callers that already compiled the
+    /// canonical module can attach the shared `KernelRefV1` currency.
+    pub fn metadata_with_meta_and_kernel(
+        &self,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        kernel: &KernelModuleIr,
+    ) -> Result<PreparedQueryMetadataV1> {
+        let mut metadata = self.metadata_with_meta(meta)?;
+        metadata.kernel_refs = self.kernel_refs(kernel);
+        kernel
+            .kernel_surface_v1()
+            .validate_refs(&metadata.kernel_refs)
+            .map_err(|err| anyhow::anyhow!(err))?;
+        Ok(metadata)
+    }
+
+    pub fn kernel_refs(&self, kernel: &KernelModuleIr) -> Vec<KernelRefV1> {
+        kernel_refs_for_prepared_query(&self.query, self.elaboration_report(), kernel)
     }
 
     /// Return a borrowed AxQL view of the compiled query.
@@ -2021,6 +2530,40 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn query_certificate_policy_v1_require_verified_preconditions_fail_closed() -> Result<()> {
+        let policy: QueryCertificatePolicyV1 = serde_json::from_str("\"require_verified\"")?;
+        assert!(policy.emits_certificate());
+        assert!(policy.verifies_certificate());
+        assert!(policy.requires_verified());
+
+        let unsupported = QueryCertifiability::ExecutionOnly {
+            reasons: vec!["cannot certify approximate string atom".to_string()],
+        };
+        let err = policy
+            .ensure_require_verified_preconditions(&unsupported, None, None)
+            .expect_err("require_verified should reject unsupported, unanchored queries");
+        let err = err.to_string();
+        assert!(err.contains("query certificate policy `require_verified`"));
+        assert!(err.contains("query is not fully certifiable"));
+        assert!(err.contains("missing accepted `.axi` anchor"));
+        assert!(err.contains("missing canonical `.axi` text"));
+
+        let anchor = AcceptedAxiAnchor::new(
+            axiograph_pathdb::AcceptedSnapshotId::new("accepted:test"),
+            AxiDigest::new("fnv1a64:abc"),
+        );
+        policy.ensure_require_verified_preconditions(
+            &QueryCertifiability::Certifiable,
+            Some(&anchor),
+            Some("module Demo\n"),
+        )?;
+        assert!(policy.ensure_verified_result(Some(true)).is_ok());
+        assert!(policy.ensure_verified_result(Some(false)).is_err());
+        assert!(policy.ensure_verified_result(None).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn query_ir_v1_compiles_where_clause() -> Result<()> {
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
@@ -2282,6 +2825,153 @@ instance I of Demo:
             .exploration_suggestions
             .iter()
             .all(|suggestion| suggestion.variable == "?dst"));
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_query_v1_metadata_cites_ir_ids_trust_non_claims_and_handles() -> Result<()> {
+        let axi = r#"
+module Demo
+
+schema Demo:
+  object Node
+  object Supplier
+  subtype Supplier < Node
+  relation Flow(from: Supplier, to: Supplier)
+
+theory DemoRules on Demo:
+  constraint key Flow(from, to)
+
+instance I of Demo:
+  Supplier = {a, b}
+  Flow = {(from=a, to=b)}
+"#;
+        let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
+        let kernel =
+            axiograph_pathdb::compile_kernel_module_ir(&parsed, axi).map_err(anyhow::Error::msg)?;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+
+        let q: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select": ["dst"],
+              "where": [
+                {
+                  "kind": "fact",
+                  "fact": "?f",
+                  "relation": "Flow",
+                  "fields": {
+                    "from": "a",
+                    "to": "?dst"
+                  }
+                }
+              ],
+              "limit": 5
+            }"#,
+        )?;
+
+        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let metadata = prepared.metadata_with_meta(Some(&meta))?;
+        assert_eq!(metadata.version, PREPARED_QUERY_METADATA_V1_VERSION);
+        assert_eq!(metadata.query_ir_id, prepared.query_ir_id());
+        assert_eq!(
+            metadata.elaborated_query_ir_id,
+            prepared.elaborated_query_ir_id()?
+        );
+        assert_eq!(metadata.prepared_query_id, prepared.prepared_query_id()?);
+        assert!(metadata.query_ir_id.starts_with("query_ir_v1:"));
+        assert!(metadata.prepared_query_id.starts_with("prepared_query_v1:"));
+        assert_eq!(metadata.certifiability, QueryCertifiability::Certifiable);
+        assert_eq!(metadata.trust.trust_class, "certifiable");
+        assert_eq!(
+            metadata.non_claims.claim_scope,
+            "returned_rows_within_snapshot_and_context"
+        );
+        assert_eq!(metadata.non_claims.completeness_claim, "not_claimed");
+        assert_eq!(metadata.non_claims.ontology_closure_claim, "not_claimed");
+        assert!(metadata.kernel_refs.is_empty());
+        assert!(metadata
+            .inferred_types
+            .get("?dst")
+            .is_some_and(|tys| tys.iter().any(|ty| ty == "Supplier")));
+        assert!(!metadata.refinement_handles.is_empty());
+        assert!(metadata.refinement_handles.iter().all(|handle| {
+            handle.validate().is_ok()
+                && matches!(
+                    handle.domain(),
+                    crate::typed_refinement::RuntimeRefinementDomainV1::Query
+                )
+        }));
+
+        let metadata_with_kernel = prepared.metadata_with_meta_and_kernel(Some(&meta), &kernel)?;
+        kernel
+            .kernel_surface_v1()
+            .validate_refs(&metadata_with_kernel.kernel_refs)
+            .expect("prepared-query metadata only cites declared kernel refs");
+        assert!(metadata_with_kernel
+            .kernel_refs
+            .iter()
+            .any(|reference| { matches!(reference, KernelRefV1::Module { .. }) }));
+        assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
+            matches!(
+                reference,
+                KernelRefV1::SchemaObject {
+                    object: SchemaCategoryObjectRefIr::ObjectType { name, .. },
+                    ..
+                } if name == "Supplier"
+            )
+        }));
+        assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
+            matches!(
+                reference,
+                KernelRefV1::SchemaObject {
+                    object: SchemaCategoryObjectRefIr::RelationObject { name, .. },
+                    ..
+                } if name == "Flow"
+            )
+        }));
+        assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
+            matches!(
+                reference,
+                KernelRefV1::SchemaArrow {
+                    arrow: SchemaCategoryArrowRefIr::RoleProjection { role_name, .. },
+                    ..
+                } if role_name == "to"
+            )
+        }));
+        assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
+            matches!(
+                reference,
+                KernelRefV1::TheoryObligation {
+                    obligation: TheoryObligationRefIr::Constraint { summary, .. }
+                } if summary == "key Flow(from, to)"
+            )
+        }));
+
+        let applied = metadata
+            .refinement_handles
+            .iter()
+            .find_map(|handle| {
+                prepared
+                    .apply_runtime_refinement_by_id(&db, Some(&meta), &handle.id)
+                    .ok()
+            })
+            .ok_or_else(|| anyhow!("expected at least one metadata refinement handle to apply"))?;
+        assert_eq!(
+            applied.base_prepared_query.prepared_query_id,
+            metadata.prepared_query_id
+        );
+        assert_ne!(
+            applied.refined_prepared_query.prepared_query_id,
+            applied.base_prepared_query.prepared_query_id
+        );
+        assert_eq!(
+            applied.refined_prepared_query.non_claims.completeness_claim,
+            "not_claimed"
+        );
         Ok(())
     }
 

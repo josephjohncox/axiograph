@@ -267,7 +267,9 @@ bin/axiograph discover draft-module \
 ## 11) Promotion (accepted plane)
 
 Once proposals pass guardrails and review, promote into the accepted plane.
-See `docs/howto/ACCEPTED_PLANE.md` for the full workflow.
+See `docs/howto/CANONICAL_SEMANTIC_SPINE.md` and
+`docs/howto/SNAPSHOT_STORE.md` for accepted-plane promotion and derived query
+snapshots.
 
 ---
 

@@ -790,7 +790,6 @@ pub struct SyncStats {
     pub total_integrated: usize,
     pub pending_review: usize,
     pub unresolved_conflicts: usize,
-    #[serde(alias = "kg_version")]
     pub graph_version: u64,
 }
 

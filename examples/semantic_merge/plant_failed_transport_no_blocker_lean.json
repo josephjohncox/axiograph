@@ -1,0 +1,65 @@
+{
+  "version": "semantic_vcs_lean_rebase_plan_v1",
+  "source": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "fnv1a64:plant-simulation",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-simulation",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.RiskNodeForState.key"
+      }
+    ]
+  },
+  "onto": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "fnv1a64:plant-procurement",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-procurement",
+      "context_id": "plant-procurement",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      }
+    ]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "fnv1a64:plant-rebase-opaque",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-rebase-opaque",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.RiskNodeForState.key"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      }
+    ]
+  },
+  "transport_items": [
+    {
+      "source_ref": {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.RiskNodeForState.key"
+      },
+      "status": "opaque_or_out_of_fragment",
+      "required": true
+    }
+  ],
+  "blockers": [],
+  "resolver_steps": [],
+  "residual_obligations": []
+}

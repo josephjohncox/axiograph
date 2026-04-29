@@ -9,7 +9,7 @@
 # - validates the instance data against the meta-plane typing,
 # - runs a couple of small queries,
 # - renders a typed-overlay visualization,
-# - and exports a PathDB snapshot as canonical `.axi`.
+# - and saves a runnable `.axpd` query snapshot.
 #
 # Run (from repo root):
 #   make binaries
@@ -34,4 +34,3 @@ q select ?to where name("Alice") -Knows-> ?to limit 10
 viz build/fibered_closure_constraints.html format html plane both focus_name Alice hops 3 max_nodes 220 typed_overlay
 
 save build/fibered_closure_constraints.axpd
-

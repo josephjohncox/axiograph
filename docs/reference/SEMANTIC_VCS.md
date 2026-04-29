@@ -22,6 +22,15 @@ this doc defines how they must be persisted as semantic VCS objects.
 7. Review-critical runtime reports should be stored as machine-readable objects
    and referenced from history, not left as transient console prose.
 
+Lean status: finite semantic-slice inclusion, join/meet candidates,
+conservative merge materialization predicates, and rebase transport
+preservation predicates are now encoded in `lean/Axiograph/SemanticVCS.lean`.
+`lean/Axiograph/SemanticVCS/Json.lean` defines the first strict Lean-readable
+JSON shape for future merge/rebase plan exports. These are theorem-support
+scaffolds, not the shipped verifier boundary and not a claim that arbitrary
+ontology states form a complete lattice. See
+`docs/reference/LEAN_THEORY_EVALUATION.md`.
+
 ## Relationship To Existing Stores
 
 Current stores remain useful:
@@ -86,11 +95,49 @@ Required symbolic refs:
 - `refs/tags/<release>`
 
 `HEAD` points to the currently checked-out semantic ref, not directly to an
-accepted snapshot.
+accepted snapshot. The normalized on-disk representation is the git-style text
+form:
+
+```text
+ref: heads/main
+```
+
+Legacy `sem/HEAD` files that contain a raw semantic commit id are still
+accepted as detached heads. When a matching persisted semantic ref already
+exists, readers migrate the file to the symbolic `ref: ...` form while
+preserving the same resolved commit id. This keeps old stores readable without
+making direct commit ids the preferred representation.
 
 `refs/heads/wm/*` must be reserved for proposal-generation branches. Branches
 must move by semantic commits only (no ad-hoc branch files), and every run
 observed through these branches must have a persisted `WorldModelRun` object.
+
+Ref updates are validated centrally. The current normalized runtime names are
+`heads/main`, `heads/review/*`, `heads/evidence/*`, `heads/wm/*`, and `tags/*`
+under `sem/refs/`.
+
+The Rust helper surface is the current first-class branch/checkout/tag API:
+
+- `SemRefNameV1::main|review|evidence|world_model|tag|parse`
+- `persist_semantic_branch_ref(...)`
+- `persist_semantic_tag_ref(...)`
+- `checkout_semantic_ref(...)`
+- `read_semantic_head(...)`
+
+Required ref-family invariants:
+
+- `heads/main` may point only at accepted promotion, reviewed merge, or
+  validation commits, and gate summaries must not contain materialization
+  blockers.
+- `heads/review/*` is the reconciliation/review landing area; world-model
+  commits may enter only when their compact gates are not blocked.
+- `heads/evidence/*` may point at evidence, world-model, or validation commits;
+  accepted promotion commits do not move evidence refs.
+- `heads/wm/*` may point only at `WorldModelRun` commits whose
+  `world_model_run_id` appears in provenance and delta refs and whose
+  `sem/world_model_runs/<run-id>.json` record exists.
+- `tags/*` are immutable release pointers over accepted/reviewed commits; tags
+  do not point at unreviewed evidence or world-model commits.
 
 ## Semantic Commit
 
@@ -169,10 +216,12 @@ must provide before/after accepted anchors when changed state is expected.
 pub struct SemDeltaV1 {
     pub module_digests_added: Vec<AxiDigest>,
     pub module_digests_removed: Vec<AxiDigest>,
+    pub gate_summary: Option<SemGateSummaryV1>,
     pub semantic_delta: Option<EvolutionSemanticDeltaV1>,
     pub trust_summary: Option<SemTrustSummaryV1>,
     pub rule_summary: Option<SemRuleSummaryV1>,
     pub coverage_summary: Option<EvolutionCoverageSummaryV1>,
+    pub runtime_theory_check: Option<RuntimeTheoryCheckSummaryV1>,
     pub evidence_blobs_added: Vec<ProposalDigest>,
     pub certificate_refs_added: Vec<String>,
     pub quality_report_refs_added: Vec<String>,
@@ -233,7 +282,8 @@ what kind of ontology move actually happened.
 The intended rule is:
 
 - keep full previews in `sem/validations/`
-- keep compact gate/delta/trust/rule/coverage summaries in commits, refs, and reconciliations
+- keep compact gate/delta/trust/rule/coverage/runtime-theory summaries in
+  commits, deltas, refs, and reconciliations
 - do not copy full quality/CQ/runtime-semantic payloads into commit history
 
 `primitives` is the compact semantic summary that matters most for ontology
@@ -304,11 +354,23 @@ The current implementation now has a planner layer above this manifest model:
 Those pushdown plans are generated directly from `CompiledSchemaIr` plus the
 backend/projection capability profiles. They are intentionally explicit about:
 
+- the compiled-IR evidence the plan consumed: object/relation/role counts,
+  n-ary relation counts, context axes, relation-object names, and direct subtype
+  families, plus the `KernelRefV1` handles and stable labels for the compiled
+  schema/category refs used as the projection basis,
+- the backend and projection capability decisions used to accept or reduce a
+  projection,
 - tuple encoding (`relationship_entity` for `TypeDB`, `reified_fact` for
   `TerminusDB`),
 - role preservation and context-axis handling,
 - whether carrier edges are materialized only as lossless convenience views,
 - the native read-only query dialect,
+- native-readable projection notes for TypeQL, RDF named graphs, schema
+  constraints, and TerminusDB branch/history mirrors,
+- generated native-readable artifacts: TypeDB TypeQL schema/read-query text and
+  TerminusDB Turtle/WOQL projection text, each carrying read contracts,
+  generated-from metadata, `KernelRefV1` citations, caveats, and explicit
+  mutation authority,
 - preserved lower-tier interfaces such as native query, RDF dataset, and SHACL
   validation surfaces where the backend actually supports them,
 - the lifting contracts that carry those lower-tier surfaces back into
@@ -339,9 +401,12 @@ The capability profile is expected to distinguish at least:
 That split matters because the recommended pushdown is intentionally asymmetric:
 
 - `TypeDB` is where we should push the richest runtime type/constraint/query
-  surface.
+  surface: relation types, scoped roles, n-ary relation objects, subtype
+  hierarchy, schema constraints, and typed query validation.
 - `TerminusDB` is where we should exploit backend-native history/branch/diff
-  features for projected collaboration views.
+  features for projected collaboration views, with schema/instance graph
+  separation and named graph mappings for context/world axes when the projection
+  preserves them.
 - property-graph engines are where we may eventually push execution/indexing
   and hybrid SQL/openCypher workloads, but only after they clear the same
   typed projection bar.
@@ -361,6 +426,20 @@ useful, but its own transport docs say schema operations are not pushed/pulled
 with ordinary branch synchronization. That means backend-native history can
 mirror semantic workspaces, but it cannot replace Axiograph's schema/theory
 review history.
+
+The operational surface exposes those caveats directly. TypeDB native reads are
+TypeQL lenses over the compiled typed projection, not write authority. TerminusDB
+native reads are WOQL/RDF/VCS-shaped lenses over named graph materializations,
+not promotion, supersession, retraction, or merge authority.
+
+The generated artifacts are intentionally practical but not authoritative:
+TypeQL schema/read-query text, Turtle named-graph schema, and WOQL read snippets
+are reviewable handles for native tools. They must be regenerated from accepted
+`.axi` plus compiled IR and treated as lower-tier read surfaces; backend edits to
+those artifacts do not mutate accepted ontology state. Strict consumers should
+validate the artifact/report `KernelRefV1` citations against the compiled
+`KernelSurfaceV1` before using a projection report in promotion, reconciliation,
+or drift review.
 
 ## Lifecycle Events
 
@@ -416,9 +495,30 @@ under `sem/validations/`. That report stores the `EvolutionPreviewV1` used to
 fail closed on unresolved conflicts before a `SemCommitKindV1::Merge` commit is
 materialized.
 
+Merge materialization must fail closed when the preview reports quality, CQ,
+trust, coverage, runtime-theory, or residual-obligation blockers. Resolver
+decisions also have to be materializing decisions: placeholders such as
+`manual_review`, `review_required`, `unresolved`, `todo`, or `defer` keep the
+reconciliation in review state and must not move the resolved ref.
+
+Merge and rebase plans also expose a reusable materialization validator. A plan
+is not materializable if any typed blocker, residual obligation, conflict,
+resolver step, preview non-ok state, or runtime-theory blocker remains, even if a
+caller incorrectly sets `can_materialize = true`.
+
 Current operator surface:
 
 ```bash
+axiograph sem merge --dry-run \
+  --source heads/review/demo \
+  --target heads/main \
+  --json
+
+axiograph sem merge --dry-run \
+  --source heads/review/demo \
+  --target heads/main \
+  --lean-json
+
 axiograph db accept reconciliation-show \
   --dir build/accepted_plane \
   --reconciliation fnv1a64:...
@@ -432,6 +532,21 @@ axiograph db accept reconciliation-apply \
 `reconciliation-show` returns the stored typed preview, including any compiled-IR
 refinement handles. `reconciliation-apply` persists the selected decision back
 into the reconciliation object and returns the typed before/after apply result.
+`sem merge --lean-json` emits the reduced future-certificate payload accepted by
+`lean/Axiograph/SemanticVCS/Json.lean`; it is checked by
+`lean/Axiograph/SemanticVCS/CheckMain.lean` and is not the full runtime review
+report.
+
+Focused Rust+Lean conformance:
+
+```bash
+make verify-lean-semantic-vcs
+./examples/semantic_merge/run_merge_flow.sh
+```
+
+The plant-operations example validates canonical modules, builds review refs,
+emits a dry-run merge plan, checks the reduced Lean payload, and verifies that a
+blocked rebase fixture fails closed.
 
 ## World-Model Run Objects
 
@@ -559,6 +674,50 @@ It should not be limited to raw text diff.
 6. only then materialize a merge commit.
 
 This is the core semantic distinction from Git's file merge model.
+
+## Rebase Semantics
+
+`sem rebase` is typed transport, not a text replay. The explicit runtime object
+is `SemanticRebasePlanV1`.
+
+```rust
+pub struct SemanticRebasePlanV1 {
+    pub source_ref_name: String,
+    pub onto_ref_name: String,
+    pub base_commit_id: SemCommitId,
+    pub source_commit_id: SemCommitId,
+    pub onto_commit_id: SemCommitId,
+    pub policy: String,
+    pub source_slice: SemanticSliceManifestV1,
+    pub onto_slice: SemanticSliceManifestV1,
+    pub transport_basis: Vec<String>,
+    pub transported_refs: Vec<SemanticTransportRefV1>,
+    pub failed_transports: Vec<SemanticTransportRefV1>,
+    pub resolver_steps: Vec<RuntimeRefinementHandleV1>,
+    pub blockers: Vec<SemanticMergeBlockerV1>,
+    pub residual_obligations: Vec<String>,
+    pub can_materialize: bool,
+}
+```
+
+`transported_refs` records exact stable-ref preservation and conservative
+same-kind label transports. `failed_transports` records missing target images
+and carries residual obligations. Rebase materialization is fail-closed whenever
+failed transports, resolver handles, residual obligations, or runtime-theory
+transport blockers remain. The Lean conformance checker additionally rejects
+any required transport item whose reduced status is not `preserved` or
+`transported`.
+
+For Lean-facing checker work, emit the reduced JSON payload directly:
+
+```bash
+axiograph sem rebase \
+  --source heads/review/demo \
+  --onto heads/main \
+  --lean-json
+```
+
+Use `--json` instead when reviewing the complete runtime rebase plan.
 
 ## Materialization Rules
 

@@ -404,6 +404,8 @@ pub struct SemDeltaV1 {
     #[serde(default)]
     pub module_digests_removed: Vec<AxiDigest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_summary: Option<crate::evolution_preview::SemGateSummaryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_delta: Option<crate::evolution_preview::EvolutionSemanticDeltaV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_summary: Option<crate::evolution_preview::SemTrustSummaryV1>,
@@ -473,34 +475,60 @@ pub struct SemRefPointerV1 {
     pub gate_summary: Option<crate::evolution_preview::SemGateSummaryV1>,
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SemHeadV1 {
+    Symbolic {
+        ref_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit_id: Option<AxiDigest>,
+    },
+    Detached {
+        commit_id: AxiDigest,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemRefNameV1 {
     Main,
     WorldModel { name: String },
     Review { name: String },
+    Evidence { name: String },
+    Tag { name: String },
     Generic { ref_name: String },
 }
 
 impl SemRefNameV1 {
-    fn main() -> Self {
+    pub fn main() -> Self {
         Self::Main
     }
 
-    fn world_model(name: impl Into<String>) -> Result<Self> {
+    pub fn world_model(name: impl Into<String>) -> Result<Self> {
         Ok(Self::WorldModel {
             name: validate_sem_ref_suffix(name.into(), "world-model branch")?,
         })
     }
 
-    fn review(name: impl Into<String>) -> Result<Self> {
+    pub fn review(name: impl Into<String>) -> Result<Self> {
         Ok(Self::Review {
             name: validate_sem_ref_suffix(name.into(), "review branch")?,
         })
     }
 
-    fn parse(ref_name: &str) -> Result<Self> {
+    pub fn evidence(name: impl Into<String>) -> Result<Self> {
+        Ok(Self::Evidence {
+            name: validate_sem_ref_suffix(name.into(), "evidence branch")?,
+        })
+    }
+
+    pub fn tag(name: impl Into<String>) -> Result<Self> {
+        Ok(Self::Tag {
+            name: validate_sem_ref_suffix(name.into(), "semantic tag")?,
+        })
+    }
+
+    pub fn parse(ref_name: &str) -> Result<Self> {
         let trimmed = ref_name.trim();
         if trimmed.is_empty() {
             return Err(anyhow!("semantic ref name must not be empty"));
@@ -514,18 +542,39 @@ impl SemRefNameV1 {
         if let Some(name) = trimmed.strip_prefix("heads/review/") {
             return Self::review(name);
         }
+        if let Some(name) = trimmed.strip_prefix("heads/evidence/") {
+            return Self::evidence(name);
+        }
+        if let Some(name) = trimmed.strip_prefix("tags/") {
+            return Self::tag(name);
+        }
         Ok(Self::Generic {
             ref_name: validate_sem_ref_suffix(trimmed.to_string(), "semantic ref")?,
         })
     }
 
-    fn as_ref_name(&self) -> String {
+    pub fn as_ref_name(&self) -> String {
         match self {
             Self::Main => ACCEPTED_PLANE_SEM_HEADS_MAIN_REF.to_string(),
             Self::WorldModel { name } => format!("heads/wm/{name}"),
             Self::Review { name } => format!("heads/review/{name}"),
+            Self::Evidence { name } => format!("heads/evidence/{name}"),
+            Self::Tag { name } => format!("tags/{name}"),
             Self::Generic { ref_name } => ref_name.clone(),
         }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_branch(&self) -> bool {
+        matches!(
+            self,
+            Self::Main | Self::WorldModel { .. } | Self::Review { .. } | Self::Evidence { .. }
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_tag(&self) -> bool {
+        matches!(self, Self::Tag { .. })
     }
 }
 
@@ -1874,8 +1923,204 @@ fn validate_sem_ref_suffix(name: String, label: &str) -> Result<String> {
                 "{label} name `{trimmed}` has an invalid path segment"
             ));
         }
+        if !segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@' | '='))
+        {
+            return Err(anyhow!(
+                "{label} name `{trimmed}` contains unsupported ref characters"
+            ));
+        }
     }
     Ok(trimmed.to_string())
+}
+
+fn runtime_theory_summary_blockers(
+    summary: &crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1,
+    label: &str,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if summary.blocking_errors > 0 {
+        blockers.push(format!(
+            "{label} has {} blocking runtime theory judgment(s)",
+            summary.blocking_errors
+        ));
+    }
+    if summary.blocked_obligations > 0 {
+        blockers.push(format!(
+            "{label} has {} blocked runtime theory obligation(s)",
+            summary.blocked_obligations
+        ));
+    }
+    if !summary.residual_obligation_ids.is_empty() {
+        blockers.push(format!(
+            "{label} has unresolved runtime theory residual obligation(s): {}",
+            summary.residual_obligation_ids.join(", ")
+        ));
+    }
+    blockers
+}
+
+fn gate_summary_blockers(
+    summary: &crate::evolution_preview::SemGateSummaryV1,
+    label: &str,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if !summary.ok {
+        blockers.push(format!("{label} gate summary is not ok"));
+    }
+    if summary.residual_obligation_count > 0 {
+        blockers.push(format!(
+            "{label} gate summary carries {} residual obligation(s)",
+            summary.residual_obligation_count
+        ));
+    }
+    if let Some(competency) = summary.competency.as_ref() {
+        if !competency.gate_passed {
+            blockers.push(format!(
+                "{label} competency gate failed (regressions={}, satisfied_after={}/{})",
+                competency.regressions, competency.satisfied_after, competency.total
+            ));
+        }
+    }
+    if let Some(runtime_theory) = summary.runtime_theory_check.as_ref() {
+        blockers.extend(runtime_theory_summary_blockers(runtime_theory, label));
+    }
+    blockers
+}
+
+fn semantic_commit_gate_blockers(commit: &SemCommitV1) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if commit.validation_ok == Some(false) {
+        blockers.push(format!(
+            "commit `{}` has validation_ok=false",
+            commit.commit_id
+        ));
+    }
+    if let Some(summary) = commit.gate_summary.as_ref() {
+        blockers.extend(gate_summary_blockers(summary, "commit"));
+    }
+    if let Some(summary) = commit.delta.gate_summary.as_ref() {
+        blockers.extend(gate_summary_blockers(summary, "delta"));
+    }
+    if let Some(runtime_theory) = commit.delta.runtime_theory_check.as_ref() {
+        blockers.extend(runtime_theory_summary_blockers(runtime_theory, "delta"));
+    }
+    blockers.sort();
+    blockers.dedup();
+    blockers
+}
+
+fn validate_semantic_ref_update(
+    accepted_dir: &Path,
+    target: &SemRefNameV1,
+    commit: &SemCommitV1,
+) -> Result<()> {
+    let ref_name = target.as_ref_name();
+    let gate_blockers = semantic_commit_gate_blockers(commit);
+    match target {
+        SemRefNameV1::Main => {
+            if !matches!(
+                commit.kind,
+                SemCommitKindV1::Promote | SemCommitKindV1::Merge | SemCommitKindV1::Validation
+            ) {
+                return Err(anyhow!(
+                    "semantic ref `heads/main` may only point at accepted promotion, reviewed merge, or validation commits; got {:?}",
+                    commit.kind
+                ));
+            }
+            if !gate_blockers.is_empty() {
+                return Err(anyhow!(
+                    "semantic ref `heads/main` cannot move to commit `{}` because materialization gates are blocked: {}",
+                    commit.commit_id,
+                    gate_blockers.join("; ")
+                ));
+            }
+        }
+        SemRefNameV1::WorldModel { .. } => {
+            if commit.kind != SemCommitKindV1::WorldModelRun {
+                return Err(anyhow!(
+                    "world-model refs (`heads/wm/*`) require `WorldModelRun` commits; got {:?}",
+                    commit.kind
+                ));
+            }
+            let run_id = commit
+                .world_model_run_id
+                .as_ref()
+                .or(commit.provenance.world_model_run_id.as_ref())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "world-model ref `{ref_name}` requires a commit with world_model_run_id provenance"
+                    )
+                })?;
+            if !commit
+                .delta
+                .world_model_run_refs
+                .iter()
+                .any(|id| id == run_id)
+            {
+                return Err(anyhow!(
+                    "world-model ref `{ref_name}` requires delta.world_model_run_refs to include `{run_id}`"
+                ));
+            }
+            read_world_model_run_record(accepted_dir, run_id).map_err(|err| {
+                anyhow!(
+                    "world-model ref `{ref_name}` requires persisted WorldModelRunRecord `{run_id}`: {err}"
+                )
+            })?;
+        }
+        SemRefNameV1::Review { .. } => {
+            if commit.kind == SemCommitKindV1::WorldModelRun && !gate_blockers.is_empty() {
+                return Err(anyhow!(
+                    "review ref `{ref_name}` cannot accept world-model commit `{}` because gates are blocked: {}",
+                    commit.commit_id,
+                    gate_blockers.join("; ")
+                ));
+            }
+        }
+        SemRefNameV1::Evidence { .. } => {
+            if !matches!(
+                commit.kind,
+                SemCommitKindV1::EvidenceCommit
+                    | SemCommitKindV1::WorldModelRun
+                    | SemCommitKindV1::Validation
+            ) {
+                return Err(anyhow!(
+                    "evidence refs (`heads/evidence/*`) may only point at evidence, world-model, or validation commits; got {:?}",
+                    commit.kind
+                ));
+            }
+        }
+        SemRefNameV1::Tag { .. } => {
+            if !matches!(
+                commit.kind,
+                SemCommitKindV1::Promote | SemCommitKindV1::Merge | SemCommitKindV1::Validation
+            ) {
+                return Err(anyhow!(
+                    "semantic tags (`tags/*`) may only point at accepted promotion, reviewed merge, or validation commits; got {:?}",
+                    commit.kind
+                ));
+            }
+            if !gate_blockers.is_empty() {
+                return Err(anyhow!(
+                    "semantic tag `{ref_name}` cannot point at commit `{}` because materialization gates are blocked: {}",
+                    commit.commit_id,
+                    gate_blockers.join("; ")
+                ));
+            }
+            if let Ok(existing) = read_sem_ref_pointer(accepted_dir, &ref_name) {
+                if existing.commit_id != commit.commit_id {
+                    return Err(anyhow!(
+                        "semantic tag `{ref_name}` is immutable: existing commit={} attempted={}",
+                        existing.commit_id,
+                        commit.commit_id
+                    ));
+                }
+            }
+        }
+        SemRefNameV1::Generic { .. } => {}
+    }
+    Ok(())
 }
 
 fn digest_to_filename(digest: impl AsRef<str>) -> String {
@@ -2172,6 +2417,129 @@ fn sem_head_path(accepted_dir: &Path) -> PathBuf {
     accepted_dir.join(ACCEPTED_PLANE_SEM_HEAD_FILE)
 }
 
+fn write_sem_head_symbolic_ref_name(accepted_dir: &Path, ref_name: &str) -> Result<()> {
+    let target = SemRefNameV1::parse(ref_name)?;
+    let path = sem_head_path(accepted_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, format!("ref: {}\n", target.as_ref_name()))?;
+    Ok(())
+}
+
+fn parse_sem_head_text(text: &str) -> Result<Option<SemHeadV1>> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if let Some(ref_name) = trimmed.strip_prefix("ref:") {
+        let target = SemRefNameV1::parse(ref_name.trim())?;
+        return Ok(Some(SemHeadV1::Symbolic {
+            ref_name: target.as_ref_name(),
+            commit_id: None,
+        }));
+    }
+    Ok(Some(SemHeadV1::Detached {
+        commit_id: AxiDigest::new(trimmed.to_string()),
+    }))
+}
+
+fn read_semantic_head_raw(accepted_dir: &Path) -> Result<Option<SemHeadV1>> {
+    let path = sem_head_path(accepted_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    parse_sem_head_text(&fs::read_to_string(&path)?)
+}
+
+fn semantic_ref_name_for_commit_id(
+    accepted_dir: &Path,
+    commit_id: &AxiDigest,
+) -> Result<Option<String>> {
+    let mut matches = Vec::new();
+    if let Some(pointer) = read_sem_ref_pointer_main(accepted_dir)? {
+        if pointer.commit_id == *commit_id {
+            matches.push(pointer.ref_name);
+        }
+    }
+
+    let refs_root = accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR);
+    if refs_root.exists() {
+        for entry in walkdir::WalkDir::new(&refs_root)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+        {
+            let rel = entry
+                .path()
+                .strip_prefix(&refs_root)
+                .map_err(|err| anyhow!("failed to relativize semantic ref path: {err}"))?;
+            let ref_name = rel.to_string_lossy().replace('\\', "/");
+            if ref_name == ACCEPTED_PLANE_SEM_HEADS_MAIN_REF {
+                continue;
+            }
+            let Ok(pointer) = read_sem_ref_pointer(accepted_dir, &ref_name) else {
+                continue;
+            };
+            if pointer.commit_id == *commit_id {
+                matches.push(pointer.ref_name);
+            }
+        }
+    }
+
+    matches.sort_by(|left, right| {
+        sem_ref_head_migration_priority(left)
+            .cmp(&sem_ref_head_migration_priority(right))
+            .then_with(|| left.cmp(right))
+    });
+    matches.dedup();
+    Ok(matches.into_iter().next())
+}
+
+fn sem_ref_head_migration_priority(ref_name: &str) -> u8 {
+    if ref_name == ACCEPTED_PLANE_SEM_HEADS_MAIN_REF {
+        0
+    } else if ref_name.starts_with("heads/review/") {
+        1
+    } else if ref_name.starts_with("heads/wm/") {
+        2
+    } else if ref_name.starts_with("heads/evidence/") {
+        3
+    } else if ref_name.starts_with("heads/") {
+        4
+    } else if ref_name.starts_with("tags/") {
+        5
+    } else {
+        6
+    }
+}
+
+pub fn read_semantic_head(accepted_dir: &Path) -> Result<Option<SemHeadV1>> {
+    let Some(head) = read_semantic_head_raw(accepted_dir)? else {
+        return Ok(None);
+    };
+    match head {
+        SemHeadV1::Symbolic { ref_name, .. } => {
+            let pointer = read_sem_ref_pointer(accepted_dir, &ref_name)?;
+            Ok(Some(SemHeadV1::Symbolic {
+                ref_name: pointer.ref_name,
+                commit_id: Some(pointer.commit_id),
+            }))
+        }
+        SemHeadV1::Detached { commit_id } => {
+            if let Some(ref_name) = semantic_ref_name_for_commit_id(accepted_dir, &commit_id)? {
+                write_sem_head_symbolic_ref_name(accepted_dir, &ref_name)?;
+                Ok(Some(SemHeadV1::Symbolic {
+                    ref_name,
+                    commit_id: Some(commit_id),
+                }))
+            } else {
+                Ok(Some(SemHeadV1::Detached { commit_id }))
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn sem_main_ref_path(accepted_dir: &Path) -> PathBuf {
     accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_MAIN_FILE)
@@ -2294,6 +2662,95 @@ fn reconciliation_with_current_refs(
     updated.target_ref_name = Some(target_ref_name.to_string());
     updated.resolved_ref_name = Some(target_ref_name.to_string());
     updated
+}
+
+fn reconciliation_decision_materializes(resolution: &str) -> bool {
+    let normalized = resolution.trim().to_ascii_lowercase();
+    !matches!(
+        normalized.as_str(),
+        "" | "manual_review" | "review_required" | "unresolved" | "todo" | "defer"
+    )
+}
+
+fn unresolved_reconciliation_decision_blockers(
+    reconciliation: &SemReconciliationV1,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for conflict in &reconciliation.conflicts {
+        let decision = reconciliation.decisions.iter().find(|decision| {
+            decision.artifact.artifact_kind == conflict.artifact.artifact_kind
+                && decision.artifact.artifact_id == conflict.artifact.artifact_id
+        });
+        match decision {
+            None => blockers.push(format!(
+                "{} `{}` has no recorded resolver decision",
+                conflict.artifact.artifact_kind, conflict.artifact.artifact_id
+            )),
+            Some(decision) if !reconciliation_decision_materializes(&decision.resolution) => {
+                blockers.push(format!(
+                    "{} `{}` has non-materializing resolver decision `{}`",
+                    conflict.artifact.artifact_kind,
+                    conflict.artifact.artifact_id,
+                    decision.resolution
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    blockers
+}
+
+fn evolution_preview_materialization_blockers(
+    preview: &crate::evolution_preview::EvolutionPreviewV1,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if !preview.ok {
+        blockers.push(format!(
+            "{} preview is not ok for `{}`",
+            preview.kind, preview.candidate_label
+        ));
+    }
+    if preview.quality_delta.summary.error_count > 0 {
+        blockers.push(format!(
+            "quality gate has {} error(s)",
+            preview.quality_delta.summary.error_count
+        ));
+    }
+    if let Some(gate) = preview.competency_gate.as_ref() {
+        if !gate.gate_passed {
+            blockers.push(format!(
+                "competency gate failed (regressions={}, satisfied_after={}/{})",
+                gate.regressions, gate.satisfied_after, gate.total
+            ));
+        }
+    }
+    if preview.trust_delta.regressions > 0 {
+        blockers.push(format!(
+            "trust gate has {} regression(s)",
+            preview.trust_delta.regressions
+        ));
+    }
+    if preview.coverage_summary.regressions > 0 {
+        blockers.push(format!(
+            "coverage gate has {} regression(s)",
+            preview.coverage_summary.regressions
+        ));
+    }
+    if let Some(runtime_theory) = preview.runtime_theory_check.as_ref() {
+        blockers.extend(runtime_theory_summary_blockers(
+            runtime_theory,
+            "runtime theory check",
+        ));
+    }
+    blockers.extend(
+        preview
+            .residual_obligations
+            .iter()
+            .map(|obligation| format!("residual obligation: {obligation}")),
+    );
+    blockers.sort();
+    blockers.dedup();
+    blockers
 }
 
 fn reconciliation_runtime_refinement_handle_by_id(
@@ -2609,6 +3066,7 @@ fn semantic_commit_from_promotion(
     preview: Option<&crate::evolution_preview::EvolutionPreviewV1>,
 ) -> Result<SemCommitV1> {
     let commit_id = sem_commit_id_v1(parent_commit_id.as_ref(), event);
+    let gate_summary = promotion_gate_summary(event, preview);
     Ok(SemCommitV1 {
         version: ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1.to_string(),
         commit_id,
@@ -2635,6 +3093,7 @@ fn semantic_commit_from_promotion(
         delta: SemDeltaV1 {
             module_digests_added: vec![event.module_digest.clone()],
             module_digests_removed: Vec::new(),
+            gate_summary: gate_summary.clone(),
             semantic_delta: preview.map(|value| value.semantic_delta.clone()),
             trust_summary: preview.map(|value| value.trust_summary.clone()),
             rule_summary: preview.map(|value| value.rule_summary.clone()),
@@ -2663,7 +3122,7 @@ fn semantic_commit_from_promotion(
             }],
             world_model_run_refs: Vec::new(),
         },
-        gate_summary: promotion_gate_summary(event, preview),
+        gate_summary,
         reconciliation_id: None,
         accepted_snapshot_id: snapshot.snapshot_id.clone(),
         accepted_parent_snapshot_id: snapshot.previous_snapshot_id.clone(),
@@ -2705,6 +3164,7 @@ fn semantic_commit_from_reconciliation(
             reconciliation.policy
         ))
     });
+    let gate_summary = crate::evolution_preview::sem_gate_summary_from_evolution_preview(preview);
     Ok(SemCommitV1 {
         version: ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1.to_string(),
         commit_id,
@@ -2731,6 +3191,7 @@ fn semantic_commit_from_reconciliation(
         delta: SemDeltaV1 {
             module_digests_added: Vec::new(),
             module_digests_removed: Vec::new(),
+            gate_summary: Some(gate_summary.clone()),
             semantic_delta: Some(preview.semantic_delta.clone()),
             trust_summary: Some(preview.trust_summary.clone()),
             rule_summary: Some(preview.rule_summary.clone()),
@@ -2744,9 +3205,7 @@ fn semantic_commit_from_reconciliation(
             lifecycle_events: Vec::new(),
             world_model_run_refs: Vec::new(),
         },
-        gate_summary: Some(
-            crate::evolution_preview::sem_gate_summary_from_evolution_preview(preview),
-        ),
+        gate_summary: Some(gate_summary),
         reconciliation_id: Some(reconciliation.reconciliation_id.clone()),
         accepted_snapshot_id: after_snapshot_id.clone(),
         accepted_parent_snapshot_id: Some(before_snapshot_id),
@@ -2934,6 +3393,7 @@ fn semantic_commit_from_projection_manifest(
         delta: SemDeltaV1 {
             module_digests_added: Vec::new(),
             module_digests_removed: Vec::new(),
+            gate_summary: None,
             semantic_delta: None,
             trust_summary: None,
             rule_summary: None,
@@ -3011,6 +3471,7 @@ fn semantic_commit_from_pathdb_overlay(
         delta: SemDeltaV1 {
             module_digests_added: Vec::new(),
             module_digests_removed: Vec::new(),
+            gate_summary: options.gate_summary.clone(),
             semantic_delta: None,
             trust_summary: None,
             rule_summary: None,
@@ -3065,21 +3526,25 @@ fn semantic_commit_from_pathdb_overlay(
 }
 
 fn write_sem_head_commit_id(accepted_dir: &Path, commit_id: &AxiDigest) -> Result<()> {
-    fs::write(sem_head_path(accepted_dir), format!("{commit_id}\n"))?;
+    let path = sem_head_path(accepted_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, format!("{commit_id}\n"))?;
     Ok(())
 }
 
 fn read_sem_head_commit_id(accepted_dir: &Path) -> Result<Option<AxiDigest>> {
-    let path = sem_head_path(accepted_dir);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(&path)?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(AxiDigest::new(trimmed.to_string())))
+    match read_semantic_head(accepted_dir)? {
+        Some(SemHeadV1::Symbolic {
+            commit_id: Some(commit_id),
+            ..
+        })
+        | Some(SemHeadV1::Detached { commit_id }) => Ok(Some(commit_id)),
+        Some(SemHeadV1::Symbolic {
+            commit_id: None, ..
+        }) => Ok(None),
+        None => Ok(None),
     }
 }
 
@@ -3102,7 +3567,7 @@ fn write_sem_ref_pointer_for_target(
     commit_id: &AxiDigest,
 ) -> Result<PathBuf> {
     let ref_name = target.as_ref_name();
-    write_sem_ref_pointer(
+    let path = write_sem_ref_pointer(
         accepted_dir,
         &ref_name,
         SemRefPointerV1 {
@@ -3112,7 +3577,11 @@ fn write_sem_ref_pointer_for_target(
             updated_at_unix_secs: now_unix_secs(),
             gate_summary: sem_gate_summary_for_commit(accepted_dir, commit_id),
         },
-    )
+    )?;
+    if matches!(target, SemRefNameV1::Main) {
+        write_sem_head_symbolic_ref_name(accepted_dir, &ref_name)?;
+    }
+    Ok(path)
 }
 
 pub fn write_sem_ref_pointer(
@@ -3120,7 +3589,16 @@ pub fn write_sem_ref_pointer(
     ref_name: &str,
     pointer: SemRefPointerV1,
 ) -> Result<PathBuf> {
-    let path = sem_ref_pointer_path(accepted_dir, ref_name);
+    let target = SemRefNameV1::parse(ref_name)?;
+    let ref_name = target.as_ref_name();
+    if pointer.ref_name != ref_name {
+        return Err(anyhow!(
+            "semantic ref pointer mismatch: path ref={} pointer ref={}",
+            ref_name,
+            pointer.ref_name
+        ));
+    }
+    let path = sem_ref_pointer_path(accepted_dir, &ref_name);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -3131,7 +3609,9 @@ pub fn write_sem_ref_pointer(
 
 #[allow(dead_code)]
 pub fn read_sem_ref_pointer(accepted_dir: &Path, ref_name: &str) -> Result<SemRefPointerV1> {
-    let path = sem_ref_pointer_path(accepted_dir, ref_name);
+    let target = SemRefNameV1::parse(ref_name)?;
+    let ref_name = target.as_ref_name();
+    let path = sem_ref_pointer_path(accepted_dir, &ref_name);
     let text = fs::read_to_string(&path)
         .map_err(|e| anyhow!("failed to read semantic ref `{}`: {e}", path.display()))?;
     let pointer: SemRefPointerV1 = serde_json::from_str(&text)?;
@@ -3161,7 +3641,8 @@ pub fn persist_semantic_ref_target(
     commit_id: &AxiDigest,
 ) -> Result<SemRefPointerV1> {
     ensure_layout(accepted_dir)?;
-    let _ = read_semantic_commit(accepted_dir, commit_id)?;
+    let commit = read_semantic_commit(accepted_dir, commit_id)?;
+    validate_semantic_ref_update(accepted_dir, target, &commit)?;
     let ref_name = target.as_ref_name();
     let pointer = SemRefPointerV1 {
         version: ACCEPTED_PLANE_SEM_REF_POINTER_VERSION_V1.to_string(),
@@ -3170,15 +3651,14 @@ pub fn persist_semantic_ref_target(
         updated_at_unix_secs: now_unix_secs(),
         gate_summary: sem_gate_summary_for_commit(accepted_dir, commit_id),
     };
-    if matches!(target, SemRefNameV1::Main) {
-        write_sem_head_commit_id(accepted_dir, commit_id)?;
-    }
     write_sem_ref_pointer(accepted_dir, &ref_name, pointer.clone())?;
+    if matches!(target, SemRefNameV1::Main) {
+        write_sem_head_symbolic_ref_name(accepted_dir, &ref_name)?;
+    }
     Ok(pointer)
 }
 
-#[allow(dead_code)]
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn read_sem_ref_pointer_target(
     accepted_dir: &Path,
     target: &SemRefNameV1,
@@ -3186,9 +3666,59 @@ pub fn read_sem_ref_pointer_target(
     read_sem_ref_pointer(accepted_dir, &target.as_ref_name())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn persist_semantic_branch_ref(
+    accepted_dir: &Path,
+    branch: &SemRefNameV1,
+    commit_id: &AxiDigest,
+) -> Result<SemRefPointerV1> {
+    if !branch.is_branch() {
+        return Err(anyhow!(
+            "semantic branch helper requires a branch ref, got `{}`",
+            branch.as_ref_name()
+        ));
+    }
+    persist_semantic_ref_target(accepted_dir, branch, commit_id)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn persist_semantic_tag_ref(
+    accepted_dir: &Path,
+    tag: &SemRefNameV1,
+    commit_id: &AxiDigest,
+) -> Result<SemRefPointerV1> {
+    if !tag.is_tag() {
+        return Err(anyhow!(
+            "semantic tag helper requires a tag ref, got `{}`",
+            tag.as_ref_name()
+        ));
+    }
+    persist_semantic_ref_target(accepted_dir, tag, commit_id)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn checkout_semantic_ref(accepted_dir: &Path, ref_name: &str) -> Result<SemRefViewV1> {
+    ensure_layout(accepted_dir)?;
+    let target = SemRefNameV1::parse(ref_name)?;
+    let normalized_ref = target.as_ref_name();
+    let view = read_sem_ref_view(accepted_dir, &normalized_ref)?;
+    write_sem_head_symbolic_ref_name(accepted_dir, &normalized_ref)?;
+    Ok(view)
+}
+
+#[allow(dead_code)]
+pub fn detach_semantic_head(accepted_dir: &Path, commit_id: &AxiDigest) -> Result<SemCommitV1> {
+    ensure_layout(accepted_dir)?;
+    let commit = read_semantic_commit(accepted_dir, commit_id)?;
+    write_sem_head_commit_id(accepted_dir, commit_id)?;
+    Ok(commit)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SemStatusV1 {
     pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sem_head: Option<SemHeadV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sem_head_commit_id: Option<AxiDigest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3196,7 +3726,11 @@ pub struct SemStatusV1 {
     #[serde(default)]
     pub review_refs: Vec<SemRefPointerV1>,
     #[serde(default)]
+    pub evidence_refs: Vec<SemRefPointerV1>,
+    #[serde(default)]
     pub world_model_refs: Vec<SemRefPointerV1>,
+    #[serde(default)]
+    pub tag_refs: Vec<SemRefPointerV1>,
     #[serde(default)]
     pub reconciliation_ids: Vec<AxiDigest>,
     #[serde(default)]
@@ -3226,11 +3760,23 @@ pub struct SemMergeDryRunResultV1 {
 pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
     ensure_layout(accepted_dir)?;
 
-    let sem_head_commit_id = read_sem_head_commit_id(accepted_dir)?;
+    let sem_head = read_semantic_head(accepted_dir)?;
+    let sem_head_commit_id = match sem_head.as_ref() {
+        Some(SemHeadV1::Symbolic {
+            commit_id: Some(commit_id),
+            ..
+        })
+        | Some(SemHeadV1::Detached { commit_id }) => Some(commit_id.clone()),
+        Some(SemHeadV1::Symbolic {
+            commit_id: None, ..
+        })
+        | None => None,
+    };
     let main_ref = read_sem_ref_pointer_main(accepted_dir)?;
 
     let refs_root = accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR).join("heads");
     let mut review_refs = Vec::new();
+    let mut evidence_refs = Vec::new();
     let mut world_model_refs = Vec::new();
     if refs_root.exists() {
         let review_root = refs_root.join("review");
@@ -3246,6 +3792,21 @@ pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
                     .map_err(|e| anyhow!("failed to relativize semantic ref path: {e}"))?;
                 let ref_name = rel.to_string_lossy().replace('\\', "/");
                 review_refs.push(read_sem_ref_pointer(accepted_dir, &ref_name)?);
+            }
+        }
+        let evidence_root = refs_root.join("evidence");
+        if evidence_root.exists() {
+            for entry in walkdir::WalkDir::new(&evidence_root)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+            {
+                let rel = entry
+                    .path()
+                    .strip_prefix(accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR))
+                    .map_err(|e| anyhow!("failed to relativize semantic ref path: {e}"))?;
+                let ref_name = rel.to_string_lossy().replace('\\', "/");
+                evidence_refs.push(read_sem_ref_pointer(accepted_dir, &ref_name)?);
             }
         }
         let wm_root = refs_root.join("wm");
@@ -3265,7 +3826,26 @@ pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
         }
     }
     review_refs.sort_by(|a, b| a.ref_name.cmp(&b.ref_name));
+    evidence_refs.sort_by(|a, b| a.ref_name.cmp(&b.ref_name));
     world_model_refs.sort_by(|a, b| a.ref_name.cmp(&b.ref_name));
+
+    let tags_root = accepted_dir.join(ACCEPTED_PLANE_SEM_TAGS_DIR);
+    let mut tag_refs = Vec::new();
+    if tags_root.exists() {
+        for entry in walkdir::WalkDir::new(&tags_root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+        {
+            let rel = entry
+                .path()
+                .strip_prefix(accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR))
+                .map_err(|e| anyhow!("failed to relativize semantic tag path: {e}"))?;
+            let ref_name = rel.to_string_lossy().replace('\\', "/");
+            tag_refs.push(read_sem_ref_pointer(accepted_dir, &ref_name)?);
+        }
+    }
+    tag_refs.sort_by(|a, b| a.ref_name.cmp(&b.ref_name));
 
     let reconciliations_root = accepted_dir.join(ACCEPTED_PLANE_SEM_RECONCILIATIONS_DIR);
     let mut reconciliation_ids = Vec::new();
@@ -3301,10 +3881,13 @@ pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
 
     Ok(SemStatusV1 {
         version: "accepted_plane_sem_status_v1".to_string(),
+        sem_head,
         sem_head_commit_id,
         main_ref,
         review_refs,
+        evidence_refs,
         world_model_refs,
+        tag_refs,
         reconciliation_ids,
         world_model_run_ids,
     })
@@ -3454,6 +4037,7 @@ fn read_sem_ref_pointer_main(accepted_dir: &Path) -> Result<Option<SemRefPointer
 fn sem_delta_is_empty(delta: &SemDeltaV1) -> bool {
     delta.module_digests_added.is_empty()
         && delta.module_digests_removed.is_empty()
+        && delta.gate_summary.is_none()
         && delta.semantic_delta.is_none()
         && delta.trust_summary.is_none()
         && delta.rule_summary.is_none()
@@ -3522,6 +4106,7 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
             SemDeltaV1 {
                 module_digests_added: Vec::new(),
                 module_digests_removed: Vec::new(),
+                gate_summary: commit.gate_summary.clone(),
                 semantic_delta: None,
                 trust_summary: None,
                 rule_summary: None,
@@ -3557,6 +4142,7 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
             SemDeltaV1 {
                 module_digests_added: Vec::new(),
                 module_digests_removed: Vec::new(),
+                gate_summary: None,
                 semantic_delta: None,
                 trust_summary: None,
                 rule_summary: None,
@@ -3574,6 +4160,7 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
             SemDeltaV1 {
                 module_digests_added: vec![commit.module_digest.clone()],
                 module_digests_removed: Vec::new(),
+                gate_summary: commit.gate_summary.clone(),
                 semantic_delta: None,
                 trust_summary: None,
                 rule_summary: None,
@@ -3728,13 +4315,19 @@ pub fn persist_reconciliation_semantic_commit(
     } else {
         None
     };
-    if !preview_report.ok {
+    let mut materialization_blockers =
+        evolution_preview_materialization_blockers(&preview_report.evolution_preview);
+    materialization_blockers.extend(unresolved_reconciliation_decision_blockers(reconciliation));
+    materialization_blockers.sort();
+    materialization_blockers.dedup();
+    if !materialization_blockers.is_empty() {
         return Err(anyhow!(
-            "semantic reconciliation `{}` still has unresolved obligations; inspect `{}` before materializing a merge commit",
+            "semantic reconciliation `{}` still has unresolved obligations; inspect `{}` before materializing a merge commit: {}",
             reconciliation.reconciliation_id,
             validation_report_path
                 .as_deref()
-                .unwrap_or("the in-memory reconciliation preview")
+                .unwrap_or("the in-memory reconciliation preview"),
+            materialization_blockers.join("; ")
         ));
     }
 
@@ -3760,7 +4353,15 @@ pub fn persist_reconciliation_semantic_commit(
         }
     }
     if options.update_semantic_head {
-        write_sem_head_commit_id(accepted_dir, &commit.commit_id)?;
+        if options.update_resolved_ref {
+            if let Some(ref_name) = reconciliation.resolved_ref_name.as_ref() {
+                write_sem_head_symbolic_ref_name(accepted_dir, ref_name)?;
+            } else {
+                write_sem_head_commit_id(accepted_dir, &commit.commit_id)?;
+            }
+        } else {
+            write_sem_head_commit_id(accepted_dir, &commit.commit_id)?;
+        }
     }
 
     Ok(commit)
@@ -4143,6 +4744,61 @@ mod tests {
             .expect("seed promotion commit");
         write_semantic_commit(accepted_dir, &commit).expect("write seed commit");
         write_sem_head_commit_id(accepted_dir, &commit.commit_id).expect("write seed head");
+        commit
+    }
+
+    fn sample_world_model_run_record(
+        run_id: WorldModelRunId,
+        accepted_snapshot_id: AcceptedSnapshotId,
+    ) -> WorldModelRunRecordV1 {
+        WorldModelRunRecordV1 {
+            version: WORLD_MODEL_RUN_RECORD_VERSION_V1.to_string(),
+            trace_id: run_id.clone(),
+            run_id,
+            created_at_unix_secs: 1_700_000_111,
+            status: WorldModelRunStatusV1::CommittedToPathdb,
+            backend: "test".to_string(),
+            model: Some("test-world-model".to_string()),
+            axi_digest_v1: None,
+            input_pathdb_snapshot_id: None,
+            input_accepted_snapshot_id: Some(accepted_snapshot_id),
+            proposals_digest: ProposalDigest::new("fnv1a64:wm-proposals"),
+            proposal_count: 1,
+            committed_pathdb_snapshot_id: Some(PathdbSnapshotId::new("fnv1a64:wm-pathdb")),
+            committed_accepted_snapshot_id: None,
+            guardrail_total_cost: None,
+            guardrail_profile: None,
+            guardrail_plane: None,
+            notes: Vec::new(),
+        }
+    }
+
+    fn seed_pathdb_semantic_commit(
+        accepted_dir: &Path,
+        snapshot_id: &str,
+        parent_commit_id: Option<AxiDigest>,
+        run_id: Option<WorldModelRunId>,
+    ) -> SemCommitV1 {
+        let accepted_snapshot = AcceptedPlaneSnapshotV1 {
+            version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
+            snapshot_id: AcceptedSnapshotId::new(snapshot_id),
+            previous_snapshot_id: None,
+            created_at_unix_secs: 12,
+            modules: BTreeMap::new(),
+        };
+        let options = PathdbSemanticCommitOptionsV1 {
+            message: Some("pathdb semantic commit".to_string()),
+            proposal_digests: vec![ProposalDigest::new("fnv1a64:proposal-ref")],
+            world_model_run_id: run_id,
+            ..PathdbSemanticCommitOptionsV1::default()
+        };
+        let commit = semantic_commit_from_pathdb_overlay(
+            &accepted_snapshot,
+            &PathdbSnapshotId::new("fnv1a64:pathdb-ref"),
+            parent_commit_id,
+            &options,
+        );
+        write_semantic_commit(accepted_dir, &commit).expect("write pathdb semantic commit");
         commit
     }
 
@@ -5027,19 +5683,34 @@ instance I of Fam:
         let accepted_dir = temp_test_dir("sem-branch-refs");
         ensure_layout(&accepted_dir).expect("layout");
 
-        let wm_commit = seed_semantic_commit(
+        let base_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-base-ref-commit",
+            None,
+            "BaseRefModule",
+            "fnv1a64:module-base-ref-commit",
+            "base",
+        );
+        let run_id = WorldModelRunId::new("wmrun:demo-run");
+        persist_world_model_run_record(
+            &accepted_dir,
+            &sample_world_model_run_record(
+                run_id.clone(),
+                AcceptedSnapshotId::new("fnv1a64:snap-wm-commit"),
+            ),
+        )
+        .expect("persist wm run");
+        let wm_commit = seed_pathdb_semantic_commit(
             &accepted_dir,
             "fnv1a64:snap-wm-commit",
-            None,
-            "WmModule",
-            "fnv1a64:module-wm-commit",
-            "wm",
+            Some(base_commit.commit_id.clone()),
+            Some(run_id),
         )
         .commit_id;
         let review_commit = seed_semantic_commit(
             &accepted_dir,
             "fnv1a64:snap-review-commit",
-            Some("fnv1a64:snap-wm-commit"),
+            Some("fnv1a64:snap-base-ref-commit"),
             "ReviewModule",
             "fnv1a64:module-review-commit",
             "review",
@@ -5425,9 +6096,27 @@ theory RefundRules on Refund:
             "ref-targets",
         )
         .commit_id;
+        let run_id = WorldModelRunId::new("wmrun:ref-targets");
+        persist_world_model_run_record(
+            &accepted_dir,
+            &sample_world_model_run_record(
+                run_id.clone(),
+                AcceptedSnapshotId::new("fnv1a64:snap-ref-targets-wm"),
+            ),
+        )
+        .expect("persist wm run");
+        let wm_commit_id = seed_pathdb_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-ref-targets-wm",
+            Some(commit_id.clone()),
+            Some(run_id),
+        )
+        .commit_id;
         let main = SemRefNameV1::parse("heads/main").expect("parse main");
         let wm = SemRefNameV1::parse("heads/wm/demo-run").expect("parse wm");
         let review = SemRefNameV1::parse("heads/review/schema-a").expect("parse review");
+        let evidence = SemRefNameV1::parse("heads/evidence/source-a").expect("parse evidence");
+        let tag = SemRefNameV1::parse("tags/v1.0.0").expect("parse tag");
 
         assert_eq!(main, SemRefNameV1::main());
         assert_eq!(
@@ -5438,13 +6127,22 @@ theory RefundRules on Refund:
             review,
             SemRefNameV1::review("schema-a").expect("review target")
         );
+        assert_eq!(
+            evidence,
+            SemRefNameV1::evidence("source-a").expect("evidence target")
+        );
+        assert_eq!(tag, SemRefNameV1::tag("v1.0.0").expect("tag target"));
 
         let main_pointer =
             persist_semantic_ref_target(&accepted_dir, &main, &commit_id).expect("write main");
         let wm_pointer =
-            persist_semantic_ref_target(&accepted_dir, &wm, &commit_id).expect("write wm");
+            persist_semantic_ref_target(&accepted_dir, &wm, &wm_commit_id).expect("write wm");
         let review_pointer =
             persist_semantic_ref_target(&accepted_dir, &review, &commit_id).expect("write review");
+        let evidence_pointer = persist_semantic_ref_target(&accepted_dir, &evidence, &wm_commit_id)
+            .expect("write evidence");
+        let tag_pointer =
+            persist_semantic_ref_target(&accepted_dir, &tag, &commit_id).expect("write tag");
 
         assert_eq!(
             read_sem_ref_pointer_target(&accepted_dir, &main).expect("read main"),
@@ -5458,6 +6156,14 @@ theory RefundRules on Refund:
             read_sem_ref_pointer_target(&accepted_dir, &review).expect("read review"),
             review_pointer
         );
+        assert_eq!(
+            read_sem_ref_pointer_target(&accepted_dir, &evidence).expect("read evidence"),
+            evidence_pointer
+        );
+        assert_eq!(
+            read_sem_ref_pointer_target(&accepted_dir, &tag).expect("read tag"),
+            tag_pointer
+        );
         assert!(
             accepted_dir.join("sem/refs/heads/wm/demo-run").exists(),
             "wm branch ref should persist at sem/refs/heads/wm/<name>"
@@ -5466,6 +6172,102 @@ theory RefundRules on Refund:
             accepted_dir.join("sem/refs/heads/review/schema-a").exists(),
             "review branch ref should persist at sem/refs/heads/review/<name>"
         );
+        assert!(
+            accepted_dir
+                .join("sem/refs/heads/evidence/source-a")
+                .exists(),
+            "evidence branch ref should persist at sem/refs/heads/evidence/<name>"
+        );
+        assert!(
+            accepted_dir.join("sem/refs/tags/v1.0.0").exists(),
+            "semantic tag ref should persist at sem/refs/tags/<name>"
+        );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn semantic_head_migrates_legacy_direct_commit_to_symbolic_ref() {
+        let accepted_dir = temp_test_dir("sem-head-symbolic-migration");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-head-migration",
+            None,
+            "HeadMigrationModule",
+            "fnv1a64:module-head-migration",
+            "head-migration",
+        );
+        write_sem_ref_pointer_for_main(&accepted_dir, &commit.commit_id).expect("write main ref");
+        write_sem_head_commit_id(&accepted_dir, &commit.commit_id).expect("legacy detached head");
+
+        let resolved = read_sem_head_commit_id(&accepted_dir).expect("read migrated head");
+        assert_eq!(resolved, Some(commit.commit_id.clone()));
+        let head = read_semantic_head(&accepted_dir)
+            .expect("read symbolic head")
+            .expect("head exists");
+        assert_eq!(
+            head,
+            SemHeadV1::Symbolic {
+                ref_name: "heads/main".to_string(),
+                commit_id: Some(commit.commit_id.clone()),
+            }
+        );
+        let head_text =
+            fs::read_to_string(sem_head_path(&accepted_dir)).expect("read migrated sem head");
+        assert_eq!(head_text.trim(), "ref: heads/main");
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn semantic_branch_checkout_and_tag_helpers_round_trip() {
+        let accepted_dir = temp_test_dir("sem-branch-checkout-tag");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let main_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-helper-main",
+            None,
+            "HelperMainModule",
+            "fnv1a64:module-helper-main",
+            "helper-main",
+        );
+        let review_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-helper-review",
+            Some("fnv1a64:snap-helper-main"),
+            "HelperReviewModule",
+            "fnv1a64:module-helper-review",
+            "helper-review",
+        );
+
+        let review = SemRefNameV1::review("refund-policy").expect("review ref");
+        let review_pointer =
+            persist_semantic_branch_ref(&accepted_dir, &review, &review_commit.commit_id)
+                .expect("persist review branch");
+        assert_eq!(review_pointer.ref_name, "heads/review/refund-policy");
+
+        let checked_out =
+            checkout_semantic_ref(&accepted_dir, "heads/review/refund-policy").expect("checkout");
+        assert_eq!(checked_out.pointer.commit_id, review_commit.commit_id);
+        assert_eq!(
+            read_semantic_head(&accepted_dir).expect("read head"),
+            Some(SemHeadV1::Symbolic {
+                ref_name: "heads/review/refund-policy".to_string(),
+                commit_id: Some(review_commit.commit_id.clone()),
+            })
+        );
+
+        let tag = SemRefNameV1::tag("v1.0.0").expect("tag ref");
+        let tag_pointer =
+            persist_semantic_tag_ref(&accepted_dir, &tag, &main_commit.commit_id).expect("tag");
+        assert_eq!(tag_pointer.ref_name, "tags/v1.0.0");
+
+        let err = persist_semantic_branch_ref(&accepted_dir, &tag, &main_commit.commit_id)
+            .expect_err("tag is not a branch");
+        assert!(err.to_string().contains("branch helper"));
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }
@@ -5506,6 +6308,115 @@ theory RefundRules on Refund:
         )
         .expect_err("missing commit should be rejected");
         assert!(err.to_string().contains("failed to read semantic commit"));
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn semantic_ref_validation_rejects_invalid_branch_family_transitions() {
+        let accepted_dir = temp_test_dir("sem-ref-invalid-transitions");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let main_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-ref-validation-main",
+            None,
+            "MainRefModule",
+            "fnv1a64:module-ref-validation-main",
+            "main",
+        );
+        let evidence_commit = seed_pathdb_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-ref-validation-evidence",
+            Some(main_commit.commit_id.clone()),
+            None,
+        );
+
+        let err = persist_semantic_ref(&accepted_dir, "heads/main", &evidence_commit.commit_id)
+            .expect_err("evidence commit must not move main");
+        assert!(
+            err.to_string().contains("heads/main"),
+            "unexpected error: {err:#}"
+        );
+
+        let err = persist_semantic_ref(&accepted_dir, "heads/wm/no-run", &main_commit.commit_id)
+            .expect_err("promote commit must not move wm ref");
+        assert!(
+            err.to_string().contains("WorldModelRun"),
+            "unexpected error: {err:#}"
+        );
+
+        let run_id = WorldModelRunId::new("wmrun:validation-run");
+        let wm_commit_missing_record = seed_pathdb_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-ref-validation-wm",
+            Some(main_commit.commit_id.clone()),
+            Some(run_id.clone()),
+        );
+        let err = persist_semantic_ref(
+            &accepted_dir,
+            "heads/wm/missing-record",
+            &wm_commit_missing_record.commit_id,
+        )
+        .expect_err("wm ref requires persisted run record");
+        assert!(
+            err.to_string().contains("WorldModelRunRecord"),
+            "unexpected error: {err:#}"
+        );
+
+        persist_world_model_run_record(
+            &accepted_dir,
+            &sample_world_model_run_record(
+                run_id,
+                AcceptedSnapshotId::new("fnv1a64:snap-ref-validation-wm"),
+            ),
+        )
+        .expect("persist wm run");
+        persist_semantic_ref(
+            &accepted_dir,
+            "heads/wm/valid-record",
+            &wm_commit_missing_record.commit_id,
+        )
+        .expect("wm ref with run record");
+
+        let err = persist_semantic_ref(
+            &accepted_dir,
+            "heads/evidence/promote",
+            &main_commit.commit_id,
+        )
+        .expect_err("promote commit must not move evidence ref");
+        assert!(
+            err.to_string().contains("evidence refs"),
+            "unexpected error: {err:#}"
+        );
+
+        let err = persist_semantic_ref(
+            &accepted_dir,
+            "tags/unreviewed-evidence",
+            &evidence_commit.commit_id,
+        )
+        .expect_err("evidence commit must not be taggable");
+        assert!(
+            err.to_string().contains("semantic tags"),
+            "unexpected error: {err:#}"
+        );
+
+        persist_semantic_ref(&accepted_dir, "tags/v1", &main_commit.commit_id)
+            .expect("initial tag");
+        let other_main_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-ref-validation-main-2",
+            Some("fnv1a64:snap-ref-validation-main"),
+            "MainRefModule2",
+            "fnv1a64:module-ref-validation-main-2",
+            "main-2",
+        );
+        let err = persist_semantic_ref(&accepted_dir, "tags/v1", &other_main_commit.commit_id)
+            .expect_err("semantic tags are immutable");
+        assert!(
+            err.to_string().contains("immutable"),
+            "unexpected error: {err:#}"
+        );
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }
@@ -6192,6 +7103,89 @@ theory RefundRules on Refund:
     }
 
     #[test]
+    fn reconciliation_semantic_commit_fails_closed_on_non_materializing_decision() {
+        let accepted_dir = temp_test_dir("sem-reconciliation-manual-review");
+        ensure_layout(&accepted_dir).expect("layout");
+
+        let base_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-base-manual-review",
+            None,
+            "BaseModule",
+            "fnv1a64:module-base-manual-review",
+            "base",
+        );
+        let left_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-left-manual-review",
+            Some("fnv1a64:snap-base-manual-review"),
+            "LeftModule",
+            "fnv1a64:module-left-manual-review",
+            "left",
+        );
+        write_sem_head_commit_id(&accepted_dir, &base_commit.commit_id).expect("reset sem head");
+        let right_commit = seed_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-right-manual-review",
+            Some("fnv1a64:snap-base-manual-review"),
+            "RightModule",
+            "fnv1a64:module-right-manual-review",
+            "right",
+        );
+        persist_semantic_ref(&accepted_dir, "heads/main", &right_commit.commit_id)
+            .expect("seed main ref");
+
+        let artifact = ArtifactRefV1 {
+            artifact_kind: "schema_relation".to_string(),
+            artifact_id: "RefundApproval".to_string(),
+            theory_obligation_ref: None,
+            theory_subject_ref: None,
+            theory_subject_refs: Vec::new(),
+        };
+        let reconciliation = SemReconciliationV1 {
+            version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
+            reconciliation_id: AxiDigest::new("fnv1a64:reconcile-manual-review"),
+            created_at_unix_secs: 1_700_000_889,
+            base_commit_id: base_commit.commit_id.clone(),
+            left_commit_id: left_commit.commit_id.clone(),
+            right_commit_id: right_commit.commit_id.clone(),
+            policy: "cq_gate".to_string(),
+            source_ref_name: Some("heads/review/refund-policy".to_string()),
+            target_ref_name: Some("heads/main".to_string()),
+            resolved_ref_name: Some("heads/main".to_string()),
+            outcome_commit_id: None,
+            conflicts: vec![SemConflictRecordV1 {
+                artifact: artifact.clone(),
+                detail: "conflict remains unresolved".to_string(),
+            }],
+            decisions: vec![SemDecisionRecordV1 {
+                artifact,
+                resolution: "manual_review".to_string(),
+            }],
+            certificate_refs: Vec::new(),
+        };
+
+        let err = persist_reconciliation_semantic_commit(
+            &accepted_dir,
+            &reconciliation,
+            &ReconciliationSemanticCommitOptionsV1::default(),
+        )
+        .expect_err("manual_review decision should not materialize merge commit");
+        assert!(
+            err.to_string()
+                .contains("non-materializing resolver decision"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(
+            read_sem_head_commit_id(&accepted_dir).expect("read sem head"),
+            Some(right_commit.commit_id),
+            "semantic head should remain unchanged when resolver decision is non-materializing"
+        );
+
+        fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
     fn promotion_semantic_commit_populates_state_and_delta() {
         let event = AcceptedPlaneEventV1 {
             version: ACCEPTED_PLANE_EVENT_VERSION_V1.to_string(),
@@ -6788,10 +7782,27 @@ instance I of Demo:
         )
         .commit_id;
         write_sem_head_commit_id(&accepted_dir, &commit_id).expect("write sem head");
+        let run = sample_world_model_run_record(
+            WorldModelRunId::new("wmrun:demo"),
+            AcceptedSnapshotId::new("fnv1a64:snap-status-wm"),
+        );
+        persist_world_model_run_record(&accepted_dir, &run).expect("persist world model run");
+        let wm_commit_id = seed_pathdb_semantic_commit(
+            &accepted_dir,
+            "fnv1a64:snap-status-wm",
+            Some(commit_id.clone()),
+            Some(run.run_id.clone()),
+        )
+        .commit_id;
+
         persist_semantic_ref(&accepted_dir, "heads/main", &commit_id).expect("write main ref");
         persist_semantic_ref(&accepted_dir, "heads/review/demo", &commit_id)
             .expect("write review ref");
-        persist_semantic_ref(&accepted_dir, "heads/wm/demo-run", &commit_id).expect("write wm ref");
+        persist_semantic_ref(&accepted_dir, "heads/wm/demo-run", &wm_commit_id)
+            .expect("write wm ref");
+        persist_semantic_ref(&accepted_dir, "heads/evidence/demo-source", &wm_commit_id)
+            .expect("write evidence ref");
+        persist_semantic_ref(&accepted_dir, "tags/status-v1", &commit_id).expect("write tag");
 
         let reconciliation = SemReconciliationV1 {
             version: ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1.to_string(),
@@ -6811,28 +7822,6 @@ instance I of Demo:
         };
         persist_reconciliation(&accepted_dir, &reconciliation).expect("persist reconciliation");
 
-        let run = WorldModelRunRecordV1 {
-            version: WORLD_MODEL_RUN_RECORD_VERSION_V1.to_string(),
-            run_id: WorldModelRunId::new("wmrun:demo"),
-            trace_id: WorldModelRunId::new("wmrun:demo"),
-            created_at_unix_secs: 1,
-            status: WorldModelRunStatusV1::Previewed,
-            backend: "stub".to_string(),
-            model: None,
-            axi_digest_v1: None,
-            input_pathdb_snapshot_id: None,
-            input_accepted_snapshot_id: None,
-            proposals_digest: ProposalDigest::new("proposal:demo"),
-            proposal_count: 1,
-            committed_pathdb_snapshot_id: None,
-            committed_accepted_snapshot_id: None,
-            guardrail_total_cost: None,
-            guardrail_profile: None,
-            guardrail_plane: None,
-            notes: Vec::new(),
-        };
-        persist_world_model_run_record(&accepted_dir, &run).expect("persist world model run");
-
         let status = sem_status(&accepted_dir).expect("sem status");
         assert_eq!(status.sem_head_commit_id, Some(commit_id.clone()));
         assert_eq!(
@@ -6843,7 +7832,9 @@ instance I of Demo:
             Some(commit_id)
         );
         assert_eq!(status.review_refs.len(), 1);
+        assert_eq!(status.evidence_refs.len(), 1);
         assert_eq!(status.world_model_refs.len(), 1);
+        assert_eq!(status.tag_refs.len(), 1);
         assert_eq!(
             status.reconciliation_ids,
             vec![AxiDigest::new("fnv1a64:reconcile-status")]

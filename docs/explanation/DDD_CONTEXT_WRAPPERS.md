@@ -70,6 +70,12 @@ with transport reports; and a bounded-context report can say which obligations
 are checked, review-only, residual, or blocking under the declared world and
 evidence assumptions.
 
+The software-authoring tranche keeps that sidecar in tooling reports rather
+than in `.axi`: overlays name typed ontology refs and implementation surfaces,
+behavior-case reports may carry a runtime-theory summary, and continuous gates
+interpret the sidecar when deciding whether a check is advisory, strict, or
+blocked.
+
 ## Recommended public wrapper vocabulary
 
 These are the most useful public-facing wrapper concepts identified in the
@@ -132,8 +138,12 @@ Current operational seam:
 - The `axiograph-software-authoring` crate provides the current
   usability bar: a CI-style check should read the behavior-case report, verify
   required generated language surfaces, report code-ref materialization gaps,
-  detect CQ/rule drift, and surface unresolved semantic obligations before a
-  team treats a generated skeleton as accepted implementation.
+  detect CQ/rule drift, interpret runtime-theory sidecars, and surface
+  unresolved semantic obligations before a team treats a generated skeleton as
+  accepted implementation.
+- MCP and LSP surfaces should expose those reports and refinement handles as
+  read-only editor/agent feedback. Write operations, especially generated test
+  materialization, remain explicit CLI actions.
 
 ### 3. `ContextMapV1`
 

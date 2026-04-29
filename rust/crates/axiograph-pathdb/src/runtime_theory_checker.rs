@@ -11,8 +11,10 @@ use serde::{Deserialize, Serialize};
 use axiograph_dsl::schema_v1::PathExprV3;
 
 use crate::kernel_ir::{
-    CompiledSchemaIr, RelationSemanticsIr, RoleKind, TheoryIr, TheoryObligationRefIr,
-    TheorySubjectRefIr, TheoryTransportPlanIr, TheoryTransportStatusIr,
+    CompiledSchemaIr, KernelRefV1, RelationSemanticsIr, RoleKind, TheoryContextAxisRefIr,
+    TheoryEndpointRefIr, TheoryIr, TheoryObligationDependencyIr, TheoryObligationRefIr,
+    TheoryPathExpressionRefIr, TheoryPathStepRefIr, TheorySubjectRefIr, TheoryTransportItemRefIr,
+    TheoryTransportPlanIr, TheoryTransportStatusIr, TheoryVariableRefIr,
 };
 use crate::SchemaId;
 
@@ -107,6 +109,44 @@ pub struct RuntimeTheoryTypedEndpointV1 {
     pub axis_roles: Vec<RuntimeTheoryAxisRoleV1>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTheoryAdmissibilityDiagnosticV1 {
+    pub code: String,
+    pub severity: RuntimeTheoryCheckSeverityV1,
+    pub admissible: bool,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_refs: Vec<TheorySubjectRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relation_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTheoryAdmissibilityCheckV1 {
+    pub check_id: String,
+    pub obligation_ref: TheoryObligationRefIr,
+    pub code: String,
+    pub severity: RuntimeTheoryCheckSeverityV1,
+    pub admissible: bool,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_refs: Vec<TheorySubjectRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_expression_refs: Vec<TheoryPathExpressionRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_step_refs: Vec<TheoryPathStepRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variable_refs: Vec<TheoryVariableRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoint_refs: Vec<TheoryEndpointRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_refs: Vec<TheoryContextAxisRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transport_item_refs: Vec<TheoryTransportItemRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relation_names: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeTheoryClosureStepKindV1 {
@@ -124,6 +164,8 @@ pub struct RuntimeTheoryClosureStepV1 {
     pub kind: RuntimeTheoryClosureStepKindV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obligation_ref: Option<TheoryObligationRefIr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kernel_refs: Vec<KernelRefV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependency_subjects: Vec<TheorySubjectRefIr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -147,6 +189,10 @@ pub struct RuntimeTheoryClosureStepV1 {
     pub residual_obligations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub non_claims: Vec<RuntimeTheoryNonClaimV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admissibility_diagnostics: Vec<RuntimeTheoryAdmissibilityDiagnosticV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admissibility_checks: Vec<RuntimeTheoryAdmissibilityCheckV1>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,6 +213,40 @@ pub struct EvidencePolicyV1 {
     pub weighted_propagation_enabled: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub obligation_weights_ppm: BTreeMap<String, u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTheoryAssumptionKindV1 {
+    Fragment,
+    World,
+    Context,
+    Evidence,
+    RefUniverse,
+    Import,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTheoryAssumptionEffectV1 {
+    SupportsClaim,
+    NarrowsClaim,
+    Residual,
+    BlocksClaim,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTheoryAssumptionDiagnosticV1 {
+    pub assumption_id: String,
+    pub kind: RuntimeTheoryAssumptionKindV1,
+    pub effect: RuntimeTheoryAssumptionEffectV1,
+    pub severity: RuntimeTheoryCheckSeverityV1,
+    pub closure_tier: RuntimeTheoryClosureTierV1,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub non_claims: Vec<RuntimeTheoryNonClaimV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -215,6 +295,8 @@ pub struct RuntimeTheoryJudgmentV1 {
     pub obligation_ref: TheoryObligationRefIr,
     pub label: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kernel_refs: Vec<KernelRefV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subject_refs: Vec<TheorySubjectRefIr>,
     pub status: RuntimeTheoryCheckStatusV1,
     pub severity: RuntimeTheoryCheckSeverityV1,
@@ -238,6 +320,10 @@ pub struct RuntimeTheoryJudgmentV1 {
     pub residual_obligations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub non_claims: Vec<RuntimeTheoryNonClaimV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admissibility_diagnostics: Vec<RuntimeTheoryAdmissibilityDiagnosticV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admissibility_checks: Vec<RuntimeTheoryAdmissibilityCheckV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -256,6 +342,8 @@ pub struct RuntimeTheoryClosureReportV1 {
     pub world: WorldAssumptionV1,
     pub evidence_policy: EvidencePolicyV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumption_diagnostics: Vec<RuntimeTheoryAssumptionDiagnosticV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<RuntimeTheoryClosureStepV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -266,6 +354,8 @@ pub struct RuntimeTheoryCheckReportV1 {
     pub version: String,
     pub schema_id: SchemaId,
     pub theory_ref: TheorySubjectRefIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kernel_refs: Vec<KernelRefV1>,
     pub fragment: RuntimeTheoryFragmentV1,
     pub world: WorldAssumptionV1,
     pub evidence_policy: EvidencePolicyV1,
@@ -283,9 +373,13 @@ pub struct RuntimeTheoryCheckReportV1 {
     pub excluded_by_evidence: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub judgments: Vec<RuntimeTheoryJudgmentV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub admissibility_checks: Vec<RuntimeTheoryAdmissibilityCheckV1>,
     pub closure: RuntimeTheoryClosureReportV1,
     pub completeness_claim: CompletenessClaimV1,
     pub ontology_closure_claim: OntologyClosureClaimV1,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumption_diagnostics: Vec<RuntimeTheoryAssumptionDiagnosticV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub non_claims: Vec<RuntimeTheoryNonClaimV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -369,6 +463,10 @@ pub fn check_runtime_theory_with_options_v1(
             apply_evidence_threshold(&evidence_policy, judgment);
         }
     }
+
+    let assumption_diagnostics =
+        build_assumption_diagnostics(closure_tier, &world, &evidence_policy);
+    let assumption_residuals = assumption_residuals(&assumption_diagnostics);
 
     let mut non_claims = base_non_claims(closure_tier, &evidence_policy);
     let mut notes = vec![
@@ -457,6 +555,7 @@ pub fn check_runtime_theory_with_options_v1(
                 .any(|claim| claim.code == "excluded_by_evidence_threshold")
         })
         .map(|judgment| judgment.obligation_ref.stable_id())
+        .chain(assumption_residuals.iter().cloned())
         .collect::<Vec<_>>();
 
     if evidence_propagation_iterations > 0 {
@@ -476,6 +575,12 @@ pub fn check_runtime_theory_with_options_v1(
             residual_obligations + review_only_obligations
         ));
     }
+    if !assumption_residuals.is_empty() {
+        notes.push(format!(
+            "{} declared assumption(s) block or leave residual closure claims",
+            assumption_residuals.len()
+        ));
+    }
 
     let considered_obligations = total_obligations.saturating_sub(excluded_by_evidence);
     let complete = blocked_obligations == 0 && residual_obligations == 0 && residual_ids.is_empty();
@@ -486,7 +591,8 @@ pub fn check_runtime_theory_with_options_v1(
     } else {
         1 + evidence_propagation_iterations
     };
-    let closure_steps = build_closure_steps(&judgments, fixpoint_reached, closed);
+    let closure_steps =
+        build_closure_steps(&judgments, fixpoint_reached, closed, &assumption_residuals);
 
     let closure = RuntimeTheoryClosureReportV1 {
         closure_tier,
@@ -501,6 +607,7 @@ pub fn check_runtime_theory_with_options_v1(
         residual_obligations: residual_ids.clone(),
         world: world.clone(),
         evidence_policy: evidence_policy.clone(),
+        assumption_diagnostics: assumption_diagnostics.clone(),
         steps: closure_steps,
         notes: closure_notes(closure_tier, &world, &evidence_policy),
     };
@@ -521,12 +628,19 @@ pub fn check_runtime_theory_with_options_v1(
         residual_obligations: residual_ids,
     };
 
+    let admissibility_checks = judgments
+        .iter()
+        .flat_map(|judgment| judgment.admissibility_checks.iter().cloned())
+        .collect::<Vec<_>>();
+    let kernel_refs = report_kernel_refs(theory, &judgments);
+
     RuntimeTheoryCheckReportV1 {
         version: RUNTIME_THEORY_CHECK_REPORT_VERSION_V1.to_string(),
         schema_id: compiled_schema.schema_id.clone(),
         theory_ref: TheorySubjectRefIr::Theory {
             theory_id: theory.theory_id.clone(),
         },
+        kernel_refs,
         fragment: RuntimeTheoryFragmentV1 {
             closure_tier,
             supports_structured_constraints: true,
@@ -548,10 +662,12 @@ pub fn check_runtime_theory_with_options_v1(
         residual_obligations,
         blocked_obligations,
         excluded_by_evidence,
+        admissibility_checks,
         judgments,
         closure,
         completeness_claim,
         ontology_closure_claim,
+        assumption_diagnostics,
         non_claims,
         notes,
     }
@@ -571,6 +687,7 @@ fn judgment_for_obligation(
     let mut severity = RuntimeTheoryCheckSeverityV1::Info;
     let mut admissible = true;
     let mut typed_endpoint = None;
+    let mut admissibility_diagnostics = Vec::new();
     let message: String;
 
     match &obligation_ref {
@@ -640,8 +757,24 @@ fn judgment_for_obligation(
                             "path equation references missing relation ids: {}",
                             missing.join(", ")
                         ));
+                        admissibility_diagnostics.push(admissibility_diagnostic(
+                            "path_equation_relation_ids_missing",
+                            severity,
+                            false,
+                            "path equation references relation ids missing from the compiled schema",
+                            &subject_refs,
+                            equation.relation_refs.clone(),
+                        ));
                         message = "path equation is not endpoint-safe because a relation id is unresolved".to_string();
                     } else {
+                        admissibility_diagnostics.push(admissibility_diagnostic(
+                            "path_equation_endpoint_preserved",
+                            RuntimeTheoryCheckSeverityV1::Info,
+                            true,
+                            "path equation endpoints matched during compiled-IR elaboration",
+                            &subject_refs,
+                            equation.relation_refs.clone(),
+                        ));
                         message = "path equation relation refs resolve and endpoint safety was checked during compiled-IR elaboration".to_string();
                     }
                 }
@@ -669,6 +802,14 @@ fn judgment_for_obligation(
                 message: "opaque equation is not runtime-certifiable or closed in this fragment"
                     .to_string(),
             });
+            admissibility_diagnostics.push(admissibility_diagnostic(
+                "opaque_equation_addressable_review_only",
+                severity,
+                false,
+                "opaque equation keeps a stable obligation handle but has no runtime path endpoint proof",
+                &subject_refs,
+                Vec::new(),
+            ));
             message = "opaque equation preserved as a typed review obligation".to_string();
         }
         TheoryObligationRefIr::RewriteRule { rule_id, .. } => {
@@ -688,6 +829,14 @@ fn judgment_for_obligation(
                             "rewrite references missing relation ids: {}",
                             missing.join(", ")
                         ));
+                        admissibility_diagnostics.push(admissibility_diagnostic(
+                            "rewrite_relation_ids_missing",
+                            severity,
+                            false,
+                            "rewrite references relation ids missing from the compiled schema",
+                            &subject_refs,
+                            rule.relation_refs.clone(),
+                        ));
                         message =
                             "rewrite rule is not admissible because a relation id is unresolved"
                                 .to_string();
@@ -698,8 +847,32 @@ fn judgment_for_obligation(
                         residual_obligations.push(
                             "rewrite drops context or temporal axes from lhs to rhs".to_string(),
                         );
+                        admissibility_diagnostics.push(admissibility_diagnostic(
+                            "rewrite_axis_roles_dropped",
+                            severity,
+                            false,
+                            "rewrite drops context or temporal role keys; make the residual explicit or preserve the scoped relation",
+                            &subject_refs,
+                            rule.relation_refs.clone(),
+                        ));
                         message = "rewrite is blocked because context/time roles must be preserved or explicitly reviewed".to_string();
                     } else {
+                        admissibility_diagnostics.push(admissibility_diagnostic(
+                            "rewrite_endpoint_preserved",
+                            RuntimeTheoryCheckSeverityV1::Info,
+                            true,
+                            "rewrite endpoints and declared variables remain stable across lhs and rhs",
+                            &subject_refs,
+                            rule.relation_refs.clone(),
+                        ));
+                        admissibility_diagnostics.push(admissibility_diagnostic(
+                            "rewrite_axis_roles_preserved",
+                            RuntimeTheoryCheckSeverityV1::Info,
+                            true,
+                            "rewrite preserves all context and temporal role keys present on the lhs",
+                            &subject_refs,
+                            rule.relation_refs.clone(),
+                        ));
                         message = format!(
                             "rewrite preserves endpoint {} -> {} and keeps relation/context refs admissible",
                             rule.endpoint.from_type, rule.endpoint.to_type
@@ -722,10 +895,17 @@ fn judgment_for_obligation(
     let complete_under_assumptions = status == RuntimeTheoryCheckStatusV1::Checked;
     let closed_under_assumptions = status == RuntimeTheoryCheckStatusV1::Checked;
     let evidence_weight_ppm = obligation_weight_ppm(evidence_policy, &obligation_ref);
+    let dependency = theory.obligation_dependencies(&obligation_ref);
+    let admissibility_checks = admissibility_diagnostics
+        .iter()
+        .map(|diagnostic| admissibility_check(&obligation_ref, diagnostic, &dependency))
+        .collect();
+    let kernel_refs = theory_kernel_refs(theory, &obligation_ref, &subject_refs);
 
     RuntimeTheoryJudgmentV1 {
         label: obligation_ref.display_name(),
         obligation_ref,
+        kernel_refs,
         subject_refs,
         status,
         severity,
@@ -742,6 +922,8 @@ fn judgment_for_obligation(
         message,
         residual_obligations,
         non_claims,
+        admissibility_diagnostics,
+        admissibility_checks,
     }
 }
 
@@ -853,6 +1035,7 @@ fn build_closure_steps(
     judgments: &[RuntimeTheoryJudgmentV1],
     fixpoint_reached: bool,
     closed: bool,
+    assumption_residuals: &[String],
 ) -> Vec<RuntimeTheoryClosureStepV1> {
     let mut steps = judgments
         .iter()
@@ -879,6 +1062,7 @@ fn build_closure_steps(
                 step_index: index as u32,
                 kind,
                 obligation_ref: Some(judgment.obligation_ref.clone()),
+                kernel_refs: judgment.kernel_refs.clone(),
                 dependency_subjects: dependency_subjects(&judgment.subject_refs),
                 derived_obligations: if judgment.status == RuntimeTheoryCheckStatusV1::Checked {
                     vec![judgment.obligation_ref.stable_id()]
@@ -898,6 +1082,8 @@ fn build_closure_steps(
                 missing_arrow_images: judgment.missing_arrow_images.clone(),
                 residual_obligations: judgment.residual_obligations.clone(),
                 non_claims: judgment.non_claims.clone(),
+                admissibility_diagnostics: judgment.admissibility_diagnostics.clone(),
+                admissibility_checks: judgment.admissibility_checks.clone(),
             }
         })
         .collect::<Vec<_>>();
@@ -910,6 +1096,12 @@ fn build_closure_steps(
             RuntimeTheoryClosureStepKindV1::FixpointBlocked
         },
         obligation_ref: None,
+        kernel_refs: judgments
+            .iter()
+            .flat_map(|judgment| judgment.kernel_refs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
         dependency_subjects: Vec::new(),
         derived_obligations: if closed {
             judgments
@@ -964,8 +1156,11 @@ fn build_closure_steps(
                 ) && !is_excluded_by_evidence_threshold(judgment)
             })
             .map(|judgment| judgment.obligation_ref.stable_id())
+            .chain(assumption_residuals.iter().cloned())
             .collect(),
         non_claims: Vec::new(),
+        admissibility_diagnostics: Vec::new(),
+        admissibility_checks: Vec::new(),
     });
 
     steps
@@ -979,11 +1174,319 @@ fn dependency_subjects(subject_refs: &[TheorySubjectRefIr]) -> Vec<TheorySubject
         .collect()
 }
 
+fn theory_kernel_refs(
+    theory: &TheoryIr,
+    obligation_ref: &TheoryObligationRefIr,
+    subject_refs: &[TheorySubjectRefIr],
+) -> Vec<KernelRefV1> {
+    let mut refs = BTreeSet::new();
+    refs.insert(KernelRefV1::Theory {
+        theory_id: theory.theory_id.clone(),
+        schema_id: theory.schema_id.clone(),
+    });
+    refs.insert(KernelRefV1::TheoryObligation {
+        obligation: obligation_ref.clone(),
+    });
+    for subject in subject_refs {
+        refs.insert(KernelRefV1::TheorySubject {
+            theory_id: theory.theory_id.clone(),
+            subject: subject.clone(),
+        });
+    }
+    refs.into_iter().collect()
+}
+
+fn report_kernel_refs(
+    theory: &TheoryIr,
+    judgments: &[RuntimeTheoryJudgmentV1],
+) -> Vec<KernelRefV1> {
+    let mut refs = BTreeSet::new();
+    refs.insert(KernelRefV1::Theory {
+        theory_id: theory.theory_id.clone(),
+        schema_id: theory.schema_id.clone(),
+    });
+    for judgment in judgments {
+        refs.extend(judgment.kernel_refs.iter().cloned());
+    }
+    refs.into_iter().collect()
+}
+
 fn is_excluded_by_evidence_threshold(judgment: &RuntimeTheoryJudgmentV1) -> bool {
     judgment
         .non_claims
         .iter()
         .any(|claim| claim.code == "excluded_by_evidence_threshold")
+}
+
+fn admissibility_diagnostic(
+    code: &str,
+    severity: RuntimeTheoryCheckSeverityV1,
+    admissible: bool,
+    message: &str,
+    subject_refs: &[TheorySubjectRefIr],
+    relation_names: Vec<String>,
+) -> RuntimeTheoryAdmissibilityDiagnosticV1 {
+    RuntimeTheoryAdmissibilityDiagnosticV1 {
+        code: code.to_string(),
+        severity,
+        admissible,
+        message: message.to_string(),
+        subject_refs: dependency_subjects(subject_refs),
+        relation_names,
+    }
+}
+
+fn admissibility_check(
+    obligation_ref: &TheoryObligationRefIr,
+    diagnostic: &RuntimeTheoryAdmissibilityDiagnosticV1,
+    dependency: &TheoryObligationDependencyIr,
+) -> RuntimeTheoryAdmissibilityCheckV1 {
+    RuntimeTheoryAdmissibilityCheckV1 {
+        check_id: format!(
+            "admissibility_check:{}:{}",
+            obligation_ref.stable_id(),
+            diagnostic.code
+        ),
+        obligation_ref: obligation_ref.clone(),
+        code: diagnostic.code.clone(),
+        severity: diagnostic.severity,
+        admissible: diagnostic.admissible,
+        message: diagnostic.message.clone(),
+        subject_refs: dependency_subjects(&dependency.subject_refs),
+        path_expression_refs: dependency.path_expression_refs.clone(),
+        path_step_refs: dependency.path_step_refs.clone(),
+        variable_refs: dependency.variable_refs.clone(),
+        endpoint_refs: dependency.endpoint_refs.clone(),
+        context_refs: dependency.context_refs.clone(),
+        transport_item_refs: dependency.transport_item_refs.clone(),
+        relation_names: diagnostic.relation_names.clone(),
+    }
+}
+
+fn assumption_residuals(diagnostics: &[RuntimeTheoryAssumptionDiagnosticV1]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.effect,
+                RuntimeTheoryAssumptionEffectV1::Residual
+                    | RuntimeTheoryAssumptionEffectV1::BlocksClaim
+            )
+        })
+        .map(|diagnostic| format!("assumption:{}", diagnostic.assumption_id))
+        .collect()
+}
+
+fn build_assumption_diagnostics(
+    closure_tier: RuntimeTheoryClosureTierV1,
+    world: &WorldAssumptionV1,
+    evidence_policy: &EvidencePolicyV1,
+) -> Vec<RuntimeTheoryAssumptionDiagnosticV1> {
+    let mut diagnostics = vec![
+        assumption_diagnostic(
+            "runtime_fragment_terminating",
+            RuntimeTheoryAssumptionKindV1::Fragment,
+            RuntimeTheoryAssumptionEffectV1::SupportsClaim,
+            RuntimeTheoryCheckSeverityV1::Info,
+            closure_tier,
+            "runtime closure is over the declared terminating Rust fragment, not full HoTT/topos semantics",
+            Vec::new(),
+            vec![RuntimeTheoryNonClaimV1 {
+                code: "not_full_hott".to_string(),
+                message: "no univalence, higher inductive, or topos-complete proof is claimed"
+                    .to_string(),
+            }],
+        ),
+        if world.finite {
+            assumption_diagnostic(
+                "world_is_finite",
+                RuntimeTheoryAssumptionKindV1::World,
+                RuntimeTheoryAssumptionEffectV1::SupportsClaim,
+                RuntimeTheoryCheckSeverityV1::Info,
+                closure_tier,
+                "declared world is finite for runtime saturation",
+                vec![world.world_id.clone()],
+                Vec::new(),
+            )
+        } else {
+            assumption_diagnostic(
+                "world_is_finite",
+                RuntimeTheoryAssumptionKindV1::World,
+                RuntimeTheoryAssumptionEffectV1::Residual,
+                RuntimeTheoryCheckSeverityV1::Warning,
+                closure_tier,
+                "declared world is not finite, so runtime closure remains advisory",
+                vec![world.world_id.clone()],
+                vec![RuntimeTheoryNonClaimV1 {
+                    code: "nonfinite_world_not_closed".to_string(),
+                    message: "finite runtime saturation is not a closure proof for this world"
+                        .to_string(),
+                }],
+            )
+        },
+    ];
+
+    diagnostics.push(if world.closed_contexts.is_empty() {
+        assumption_diagnostic(
+            "context_scope_named",
+            RuntimeTheoryAssumptionKindV1::Context,
+            RuntimeTheoryAssumptionEffectV1::NarrowsClaim,
+            RuntimeTheoryCheckSeverityV1::Info,
+            closure_tier,
+            "no named closed context set is declared; context/time roles remain typed axes but are not exhaustively closed as worlds",
+            Vec::new(),
+            vec![RuntimeTheoryNonClaimV1 {
+                code: "context_axes_not_world_complete".to_string(),
+                message: "role preservation is checked, but exhaustive context/world closure is not claimed"
+                    .to_string(),
+            }],
+        )
+    } else {
+        assumption_diagnostic(
+            "context_scope_named",
+            RuntimeTheoryAssumptionKindV1::Context,
+            RuntimeTheoryAssumptionEffectV1::SupportsClaim,
+            RuntimeTheoryCheckSeverityV1::Info,
+            closure_tier,
+            "closed context set is explicitly declared",
+            world.closed_contexts.clone(),
+            Vec::new(),
+        )
+    });
+
+    match closure_tier {
+        RuntimeTheoryClosureTierV1::FiniteFragment => {
+            diagnostics.push(assumption_diagnostic(
+                "finite_ref_universe",
+                RuntimeTheoryAssumptionKindV1::RefUniverse,
+                RuntimeTheoryAssumptionEffectV1::SupportsClaim,
+                RuntimeTheoryCheckSeverityV1::Info,
+                closure_tier,
+                "finite_fragment uses the accepted module/ref slice supplied to the checker",
+                world.included_refs.clone(),
+                Vec::new(),
+            ));
+        }
+        RuntimeTheoryClosureTierV1::EvidenceWeighted => {
+            let (effect, severity, message, non_claims) = if evidence_policy
+                .weighted_propagation_enabled
+                && evidence_policy.semantics == EvidenceWeightSemanticsV1::WeightedLattice
+            {
+                (
+                    RuntimeTheoryAssumptionEffectV1::SupportsClaim,
+                    RuntimeTheoryCheckSeverityV1::Info,
+                    "weighted_lattice evidence propagation is enabled over shared typed subjects",
+                    Vec::new(),
+                )
+            } else if evidence_policy.weighted_propagation_enabled {
+                (
+                    RuntimeTheoryAssumptionEffectV1::NarrowsClaim,
+                    RuntimeTheoryCheckSeverityV1::Warning,
+                    "weighted propagation was requested, but only weighted_lattice semantics carry that runtime claim",
+                    vec![RuntimeTheoryNonClaimV1 {
+                        code: "weighted_propagation_not_claimed".to_string(),
+                        message: "evidence weights are retained, but lattice propagation is not claimed"
+                            .to_string(),
+                    }],
+                )
+            } else {
+                (
+                    RuntimeTheoryAssumptionEffectV1::NarrowsClaim,
+                    RuntimeTheoryCheckSeverityV1::Info,
+                    "evidence tier uses thresholded-world filtering without weighted propagation",
+                    vec![RuntimeTheoryNonClaimV1 {
+                        code: "threshold_only_evidence".to_string(),
+                        message: "no graded or semiring-style evidence closure is claimed"
+                            .to_string(),
+                    }],
+                )
+            };
+            diagnostics.push(assumption_diagnostic(
+                "evidence_policy",
+                RuntimeTheoryAssumptionKindV1::Evidence,
+                effect,
+                severity,
+                closure_tier,
+                message,
+                vec![
+                    format!("policy={}", evidence_policy.policy_id),
+                    format!("threshold_ppm={}", evidence_policy.threshold_ppm),
+                    format!("semantics={:?}", evidence_policy.semantics),
+                ],
+                non_claims,
+            ));
+        }
+        RuntimeTheoryClosureTierV1::GlobalIndexed => {
+            let declared = world
+                .included_refs
+                .iter()
+                .chain(world.included_worlds.iter())
+                .chain(world.included_slices.iter())
+                .chain(world.included_imports.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            diagnostics.push(if declared.is_empty() {
+                assumption_diagnostic(
+                    "global_indexed_universe_declared",
+                    RuntimeTheoryAssumptionKindV1::RefUniverse,
+                    RuntimeTheoryAssumptionEffectV1::Residual,
+                    RuntimeTheoryCheckSeverityV1::Warning,
+                    closure_tier,
+                    "global_indexed closure requires a finite declared ref/world/slice/import universe",
+                    Vec::new(),
+                    Vec::new(),
+                )
+            } else {
+                assumption_diagnostic(
+                    "global_indexed_universe_declared",
+                    RuntimeTheoryAssumptionKindV1::RefUniverse,
+                    RuntimeTheoryAssumptionEffectV1::SupportsClaim,
+                    RuntimeTheoryCheckSeverityV1::Info,
+                    closure_tier,
+                    "global_indexed closure is scoped to the declared finite universe",
+                    declared,
+                    Vec::new(),
+                )
+            });
+        }
+    }
+
+    if !world.undeclared_imports.is_empty() {
+        diagnostics.push(assumption_diagnostic(
+            "undeclared_imports_absent",
+            RuntimeTheoryAssumptionKindV1::Import,
+            RuntimeTheoryAssumptionEffectV1::BlocksClaim,
+            RuntimeTheoryCheckSeverityV1::Error,
+            closure_tier,
+            "undeclared imports are outside the finite closure universe",
+            world.undeclared_imports.clone(),
+            Vec::new(),
+        ));
+    }
+
+    diagnostics
+}
+
+fn assumption_diagnostic(
+    assumption_id: &str,
+    kind: RuntimeTheoryAssumptionKindV1,
+    effect: RuntimeTheoryAssumptionEffectV1,
+    severity: RuntimeTheoryCheckSeverityV1,
+    closure_tier: RuntimeTheoryClosureTierV1,
+    message: &str,
+    values: Vec<String>,
+    non_claims: Vec<RuntimeTheoryNonClaimV1>,
+) -> RuntimeTheoryAssumptionDiagnosticV1 {
+    RuntimeTheoryAssumptionDiagnosticV1 {
+        assumption_id: assumption_id.to_string(),
+        kind,
+        effect,
+        severity,
+        closure_tier,
+        message: message.to_string(),
+        values,
+        non_claims,
+    }
 }
 
 fn obligation_weight_ppm(

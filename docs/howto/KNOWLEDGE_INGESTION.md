@@ -3,8 +3,10 @@
 **Diataxis:** How-to  
 **Audience:** contributors
 
-This document describes how Axiograph ingests knowledge from various sources
-and builds a probabilistic knowledge graph with confidence-scored facts.
+This document describes how Axiograph ingests knowledge from various sources,
+produces evidence-plane artifacts, drafts candidate canonical `.axi`, and then
+uses typed reports, semantic VCS promotion, and derived PathDB snapshots for
+querying.
 
 ## Overview
 
@@ -47,7 +49,8 @@ The knowledge ingestion pipeline follows Axiograph's core principle:
 │                     Promotion + acceptance                                 │
 │   proposals.json → candidate domain `.axi` modules (explicit review)        │
 │   accepted `.axi` → runtime PathDB `.axpd` (derived, rebuildable)           │
-│   runtime results → certificate JSON → Lean checks                           │
+│   typed previews/reports → semantic VCS history                              │
+│   prepared queries → query_result_v3 witnesses → Lean checks                 │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -144,9 +147,9 @@ axiograph ingest world-model \
   --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py
 ```
 
-Note: use full `.axi` modules (schema + theory + instance + contexts) as the
-training/export source. PathDB exports are derived and should only be used for
-query performance.
+Note: use full canonical `.axi` modules (schema + theory + instance + contexts)
+as the training/export source. PathDB snapshots are derived execution artifacts,
+and `PathDBExportV1` is reserved for debug/live-byte/parser parity.
 
 Offline/local repo:
 
@@ -219,7 +222,12 @@ In the Rust+Lean architecture:
 
 - ingestion produces **untrusted evidence** (`proposals.json` + provenance)
 - promotion produces candidate **canonical** `.axi` modules (explicit + reviewable)
-- high-value inferences can be **certificate-backed** (Rust emits, Lean verifies)
+- preview/review flows produce typed reports such as `EvolutionPreviewV1`,
+  trust/coverage reports, and refinement handles
+- machine query flows prepare `query_ir_v1` as `PreparedQueryV1`; supported
+  certified answers emit canonical `.axi`-anchored `query_result_v3` witnesses
+  (Rust emits, Lean verifies)
+- accepted deltas move through semantic VCS history; PathDB remains derived
 
 ## Example: Building a Machining Knowledge Base
 
@@ -256,7 +264,19 @@ axiograph discover draft-module manual_proposals.json \
   --instance DiscoveredInstance \
   --infer-constraints
 
-# 6. Run the semantics verification suite (Rust + Lean certificates/parsers)
+# 6. Promote reviewed candidates through the accepted plane / semantic VCS
+axiograph db accept promote build/candidates/MachinistLearning.proposals.axi \
+  --dir build/accepted_plane \
+  --message "reviewed: machinist learning ingestion"
+
+# 7. Build a derived query snapshot from the accepted snapshot, not the
+#    candidate artifact path.
+axiograph db accept pathdb-build \
+  --dir build/accepted_plane \
+  --snapshot head \
+  --out build/machinist_learning.axpd
+
+# 8. Run the semantics verification suite (Rust + Lean certificates/parsers)
 make verify-semantics
 ```
 
@@ -303,15 +323,50 @@ remains explicit. See `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` for the
 sidecar model and how embedding-derived relationships are lifted into typed
 proposals.
 
-## Binary Knowledge Graph
+Embedding artifacts should be exported as three separate objects:
 
-For large execution-oriented knowledge bases, use PathDB snapshots (`.axpd`).
-For debug/live-byte/parser-parity checks, round-trip through the reversible
+- `EmbeddingsFileV1` stores the vector payload and target keys.
+- `EmbeddingSidecarManifestV1` stores the accepted ref/module digest, optional
+  PathDB snapshot id, model version/digest, target ids, source text digests,
+  normalization policy, and trust caveats.
+- `EmbeddingEvidenceOverlayV1` stores vector-free similarity observations and
+  advisory candidate relationships such as `similar_to`, `supports`, `mentions`,
+  `implements`, `violates`, and `subtype_candidate`.
+
+Do not import an embedding overlay as canonical `.axi`. If a relationship from
+an overlay looks useful, convert it into a typed proposal, run validation and CQ
+preview, review it, reconcile conflicts, and promote the accepted delta through
+the semantic VCS.
+
+Current Rust support lives in `rust/crates/axiograph-cli/src/embeddings.rs`:
+
+- build a manifest with `build_embedding_sidecar_manifest_v1`;
+- compute a stable vector-sidecar digest with `embedding_file_digest_v1`;
+- create a tiny deterministic evidence overlay with
+  `discover_embedding_evidence_overlay_v1`.
+
+That discovery helper is pairwise and intended for small sidecars or tests. It
+emits ranked cosine observations plus `advisory_only=true` candidate
+relationships. The CLI surface `axiograph discover embedding-relationships`
+uses the same manifest and overlay report family; do not add a separate
+embedding evidence format for ingestion or promotion flows.
+
+## Derived PathDB Snapshots
+
+For large execution-oriented knowledge bases, materialize canonical `.axi` into
+PathDB snapshots (`.axpd`). These snapshots are fast query/index artifacts and
+can carry reviewable evidence overlays, but accepted semantics still live in
+canonical `.axi` and semantic VCS history.
+
+Use `PreparedQueryV1` metadata/trust reports for machine query flows and
+`query_result_v3` witnesses for supported certified answers.
+
+For debug/live-byte/parser-parity checks only, round-trip through the reversible
 `.axi` snapshot format (`PathDBExportV1`):
 
 ```bash
-axiograph db pathdb export-axi knowledge.axpd --out snapshot.axi
-axiograph db pathdb import-axi snapshot.axi --out knowledge.axpd
+axiograph db pathdb export-axi knowledge.axpd --out snapshot_pathdb_export_v1.axi
+axiograph db pathdb import-axi snapshot_pathdb_export_v1.axi --out knowledge.axpd
 ```
 
 Do not feed `PathDBExportV1` snapshots into semantic/query/certificate commands.

@@ -1,4 +1,21 @@
 {
+  "report_contracts": {
+    "authoring_flow": "authoring_flow_report_v1",
+    "embedded_field": "authoring_flow",
+    "coverage_profiles": ["advisory", "strict", "ci"]
+  },
+  "recommended_flow": [
+    "validate_canonical_axi",
+    "check_runtime_theory",
+    "run_definition_queries",
+    "validate_tooling_overlay",
+    "run_coverage_query",
+    "build_behavior_case_report",
+    "check_software_coverage",
+    "plan_codegen",
+    "run_continuous_coverage_profiles",
+    "materialize_skeleton_previews"
+  ],
   "examples": [
     {
       "id": "order_fulfillment",
@@ -7,7 +24,8 @@
       "overlay": "examples/software_authoring/order_fulfillment_tooling_overlay.json",
       "behavior_case": "examples/software_authoring/order_fulfillment_behavior_case.json",
       "coverage_query": "examples/software_authoring/order_fulfillment_coverage_query.json",
-      "definition_queries": "examples/software_authoring/order_fulfillment_definition_queries.json"
+      "definition_queries": "examples/software_authoring/order_fulfillment_definition_queries.json",
+      "primary_flow": "validate -> theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
     },
     {
       "id": "subscription_billing",
@@ -16,7 +34,8 @@
       "overlay": "examples/software_authoring/subscription_billing_tooling_overlay.json",
       "behavior_case": "examples/software_authoring/subscription_billing_behavior_case.json",
       "coverage_query": "examples/software_authoring/subscription_billing_coverage_query.json",
-      "definition_queries": "examples/software_authoring/subscription_billing_definition_queries.json"
+      "definition_queries": "examples/software_authoring/subscription_billing_definition_queries.json",
+      "primary_flow": "validate -> theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
     },
     {
       "id": "process_control",
@@ -25,7 +44,8 @@
       "overlay": "examples/software_authoring/process_control_tooling_overlay.json",
       "behavior_case": "examples/software_authoring/process_control_behavior_case.json",
       "coverage_query": "examples/software_authoring/process_control_coverage_query.json",
-      "definition_queries": "examples/software_authoring/process_control_definition_queries.json"
+      "definition_queries": "examples/software_authoring/process_control_definition_queries.json",
+      "primary_flow": "validate -> theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
     }
   ]
 }

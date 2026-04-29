@@ -52,6 +52,7 @@ this file back into a backlog or session transcript.
 - Trust boundary: `docs/reference/TRUSTED_KERNEL.md`
 - Compiled semantic IR: `docs/reference/KERNEL_IR.md`
 - Runtime theory checker: `docs/reference/RUNTIME_THEORY_CHECKER.md`
+- Lean theory status: `docs/reference/LEAN_THEORY_EVALUATION.md`
 - Embeddings/evidence sidecars: `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`
 - Software authoring/codegen tools: `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`
 - Rust lifecycle and anchor types: `docs/reference/RUST_LIFECYCLE_TYPES.md`
@@ -62,6 +63,7 @@ this file back into a backlog or session transcript.
 - Rust dependent-type effects: `docs/explanation/RUST_DEPENDENT_TYPES.md`
 - Topos/sheaf roadmap: `docs/explanation/TOPOS_THEORY.md`
 - Formal verification how-to: `docs/howto/FORMAL_VERIFICATION.md`
+- Canonical V1 user workflow: `docs/howto/CANONICAL_SEMANTIC_SPINE.md`
 - Test commands and suites: `docs/howto/TESTING.md`
 - Documentation index: `docs/README.md`
 
@@ -72,6 +74,7 @@ this file back into a backlog or session transcript.
 | Understand current trust claims | `docs/reference/TRUSTED_KERNEL.md` |
 | Work on schema/category IR | `docs/reference/KERNEL_IR.md` |
 | Work on runtime theory checking | `docs/reference/RUNTIME_THEORY_CHECKER.md` |
+| Work on Lean theory status | `docs/reference/LEAN_THEORY_EVALUATION.md` |
 | Work on embeddings/RAG evidence | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
 | Work on software authoring/codegen | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` |
 | Work on Rust type/lifecycle surfaces | `docs/reference/RUST_LIFECYCLE_TYPES.md` |

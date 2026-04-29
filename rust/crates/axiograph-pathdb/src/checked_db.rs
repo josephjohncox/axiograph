@@ -15,10 +15,13 @@
 //! These checks are **not** the trusted gate (Lean is). They are runtime
 //! guardrails and ergonomics.
 
-use crate::axi_meta::{ATTR_AXI_SCHEMA, META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT};
+use crate::axi_meta::{
+    ATTR_AXI_FACT_ID, ATTR_AXI_INSTANCE, ATTR_AXI_MODULE, ATTR_AXI_SCHEMA, META_ATTR_NAME,
+    META_REL_FACT_OF, REL_AXI_FACT_IN_CONTEXT,
+};
 use crate::axi_semantics::{AxiTypeCheckReport, MetaPlaneIndex, RelationDecl, SchemaIndex};
 use crate::axi_type::TypingEnv;
-use crate::PathDB;
+use crate::{CanonicalFactLogV1, PathDB, StableFactId};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 
@@ -26,6 +29,53 @@ fn entity_attr_string(db: &PathDB, entity: u32, key: &str) -> Option<String> {
     let key_id = db.interner.id_of(key)?;
     let value_id = db.entities.get_attr(entity, key_id)?;
     db.interner.lookup(value_id)
+}
+
+fn entity_token_for_stable_fact_id(db: &PathDB, entity: u32) -> Result<String> {
+    if let Some(name) = entity_attr_string(db, entity, META_ATTR_NAME) {
+        return Ok(name);
+    }
+    if let Some(fact_id) = entity_attr_string(db, entity, ATTR_AXI_FACT_ID) {
+        return Ok(fact_id);
+    }
+    Err(anyhow!(
+        "entity {entity} is missing a stable `{META_ATTR_NAME}` or `{ATTR_AXI_FACT_ID}` value"
+    ))
+}
+
+pub fn stable_fact_id_v1_for_declared_fields(
+    db: &PathDB,
+    module_name: &str,
+    schema_name: &str,
+    instance_name: &str,
+    relation_name: &str,
+    decl: &RelationDecl,
+    field_values: &HashMap<String, u32>,
+) -> Result<StableFactId> {
+    let mut owned_fields: Vec<(String, String)> = Vec::with_capacity(decl.fields.len());
+    for f in &decl.fields {
+        let value = field_values.get(&f.field_name).copied().ok_or_else(|| {
+            anyhow!(
+                "missing field `{}` for relation `{relation_name}` while computing stable fact id",
+                f.field_name
+            )
+        })?;
+        owned_fields.push((
+            f.field_name.clone(),
+            entity_token_for_stable_fact_id(db, value)?,
+        ));
+    }
+    let field_refs: Vec<(&str, &str)> = owned_fields
+        .iter()
+        .map(|(field, value)| (field.as_str(), value.as_str()))
+        .collect();
+    Ok(StableFactId::new(axiograph_dsl::digest::axi_fact_id_v1(
+        module_name,
+        schema_name,
+        instance_name,
+        relation_name,
+        &field_refs,
+    )))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -138,6 +188,11 @@ impl<'db> CheckedDb<'db> {
 
     pub fn db(&self) -> &'db PathDB {
         self.db
+    }
+
+    /// Extract a canonical fact log only after this checked wrapper exists.
+    pub fn certified_canonical_fact_log_v1(&self) -> Result<CanonicalFactLogV1> {
+        CanonicalFactLogV1::certified_from_db(self.db)
     }
 }
 
@@ -862,6 +917,59 @@ impl<'db> TypedFactBuilder<'db> {
         self
     }
 
+    /// Preview the canonical `.axi` fact id if the builder has enough stable context.
+    ///
+    /// This requires module and instance identity plus all declared fields. It
+    /// returns `Ok(None)` for runtime-only facts that are typed but not
+    /// canonical/certified enough to carry an `axi_fact_id`.
+    pub fn preview_stable_fact_id_v1(&self) -> Result<Option<StableFactId>> {
+        if self
+            .decl
+            .fields
+            .iter()
+            .any(|f| !self.field_values.contains_key(&f.field_name))
+        {
+            return Ok(None);
+        }
+
+        let module_name = self
+            .fact_attr_value(ATTR_AXI_MODULE)
+            .map(str::to_string)
+            .or_else(|| self.schema.module_name.clone())
+            .or(self.common_field_entity_attr(ATTR_AXI_MODULE)?);
+        let instance_name = self
+            .fact_attr_value(ATTR_AXI_INSTANCE)
+            .map(str::to_string)
+            .or(self.common_field_entity_attr(ATTR_AXI_INSTANCE)?);
+
+        let (Some(module_name), Some(instance_name)) = (module_name, instance_name) else {
+            return Ok(None);
+        };
+
+        stable_fact_id_v1_for_declared_fields(
+            self.db,
+            &module_name,
+            &self.schema_name,
+            &instance_name,
+            &self.relation,
+            &self.decl,
+            &self.field_values,
+        )
+        .map(Some)
+    }
+
+    /// Commit only if the fact can carry a deterministic canonical `axi_fact_id`.
+    pub fn commit_certified_only(mut self) -> Result<u32> {
+        let fact_id = self.preview_stable_fact_id_v1()?.ok_or_else(|| {
+            anyhow!(
+                "cannot commit certified-only fact `{}`: missing module/instance identity or stable field value names",
+                self.relation
+            )
+        })?;
+        self.ensure_fact_attr(ATTR_AXI_FACT_ID, fact_id.as_str())?;
+        self.commit()
+    }
+
     /// Set a field value, checking:
     /// - the field exists in the relation signature, and
     /// - the value entity is schema-scoped and has an allowed type (with subtyping).
@@ -927,6 +1035,47 @@ impl<'db> TypedFactBuilder<'db> {
         Ok(())
     }
 
+    fn fact_attr_value(&self, key: &str) -> Option<&str> {
+        self.fact_attrs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    fn common_field_entity_attr(&self, key: &str) -> Result<Option<String>> {
+        let mut seen: Option<String> = None;
+        for entity_id in self.field_values.values().copied() {
+            let Some(value) = entity_attr_string(self.db, entity_id, key) else {
+                continue;
+            };
+            if let Some(existing) = seen.as_ref() {
+                if existing != &value {
+                    return Err(anyhow!(
+                        "cannot infer stable fact id for `{}`: field values disagree on `{key}` (`{existing}` vs `{value}`)",
+                        self.relation
+                    ));
+                }
+            } else {
+                seen = Some(value);
+            }
+        }
+        Ok(seen)
+    }
+
+    fn ensure_fact_attr(&mut self, key: &str, value: &str) -> Result<()> {
+        if let Some((_, existing)) = self.fact_attrs.iter().find(|(k, _)| k == key) {
+            if existing != value {
+                return Err(anyhow!(
+                    "fact `{}` has conflicting `{key}` (existing=`{existing}`, computed=`{value}`)",
+                    self.relation
+                ));
+            }
+            return Ok(());
+        }
+        self.fact_attrs.push((key.to_string(), value.to_string()));
+        Ok(())
+    }
+
     /// Commit the fact node into the DB, returning its entity id.
     pub fn commit(mut self) -> Result<u32> {
         // Ensure all declared fields are present.
@@ -941,28 +1090,44 @@ impl<'db> TypedFactBuilder<'db> {
             }
         }
 
+        let stable_fact_id = self.preview_stable_fact_id_v1()?;
+        if let Some(fact_id) = stable_fact_id.as_ref() {
+            self.ensure_fact_attr(ATTR_AXI_FACT_ID, fact_id.as_str())?;
+        }
+
         // Canonical fact-node entity type name.
         let tuple_type = self.schema.tuple_entity_type_name(&self.relation);
 
         // Default name: stable hash of (schema, relation, ordered field ids).
-        let mut bytes: Vec<u8> = Vec::new();
-        bytes.extend_from_slice(self.schema_name.as_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(self.relation.as_bytes());
-        bytes.push(0);
-        for f in &self.decl.fields {
-            bytes.extend_from_slice(f.field_name.as_bytes());
-            bytes.push(b'=');
-            let id = self
-                .field_values
-                .get(&f.field_name)
-                .copied()
-                .expect("checked above");
-            bytes.extend_from_slice(id.to_string().as_bytes());
+        let default_name = if let Some(fact_id) = stable_fact_id.as_ref() {
+            format!(
+                "{}_fact_{}",
+                self.relation,
+                fact_id
+                    .as_str()
+                    .strip_prefix(axiograph_dsl::digest::AXI_FACT_ID_V1_PREFIX)
+                    .unwrap_or(fact_id.as_str())
+            )
+        } else {
+            let mut bytes: Vec<u8> = Vec::new();
+            bytes.extend_from_slice(self.schema_name.as_bytes());
             bytes.push(0);
-        }
-        let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes);
-        let default_name = format!("{}_fact_{}", self.relation, digest);
+            bytes.extend_from_slice(self.relation.as_bytes());
+            bytes.push(0);
+            for f in &self.decl.fields {
+                bytes.extend_from_slice(f.field_name.as_bytes());
+                bytes.push(b'=');
+                let id = self
+                    .field_values
+                    .get(&f.field_name)
+                    .copied()
+                    .expect("checked above");
+                bytes.extend_from_slice(id.to_string().as_bytes());
+                bytes.push(0);
+            }
+            let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes);
+            format!("{}_fact_{}", self.relation, digest)
+        };
 
         // Build attrs.
         let mut attrs: Vec<(String, String)> = Vec::new();
@@ -1060,6 +1225,19 @@ impl<'db> TypedFactBuilder<'db> {
                 crate::axi_meta::ATTR_AXI_RELATION,
                 &self.relation,
             )?;
+        }
+
+        if let Some(stable_fact_id) = self.preview_stable_fact_id_v1()? {
+            if let Some(existing) = entity_attr_string(self.db, fact_id, ATTR_AXI_FACT_ID) {
+                if existing != stable_fact_id.as_str() {
+                    return Err(anyhow!(
+                        "fact {fact_id}: `{ATTR_AXI_FACT_ID}` mismatch (existing=`{existing}`, computed=`{}`)",
+                        stable_fact_id.as_str()
+                    ));
+                }
+            } else {
+                self.ensure_fact_attr(ATTR_AXI_FACT_ID, stable_fact_id.as_str())?;
+            }
         }
 
         // Attach extra attrs (best-effort: fill missing only).
@@ -1226,6 +1404,74 @@ instance I of S:
         let meta = MetaPlaneIndex::from_db(&db)?;
         assert!(meta.typecheck_axi_facts(&db).ok());
         assert!(db.get_entity(fact).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn typed_fact_builder_can_commit_certified_only_fact_id() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+
+        let alice = db
+            .find_by_axi_type("S", "Person")
+            .iter()
+            .find(|id| {
+                db.get_entity(*id)
+                    .map(|e| e.attrs.get("name").is_some_and(|n| n == "Alice"))
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| anyhow!("missing Alice"))?;
+        let bob = db
+            .find_by_axi_type("S", "Person")
+            .iter()
+            .find(|id| {
+                db.get_entity(*id)
+                    .map(|e| e.attrs.get("name").is_some_and(|n| n == "Bob"))
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| anyhow!("missing Bob"))?;
+
+        let mut checked = CheckedDbMut::new(&mut db)?;
+        let mut builder = checked.fact_builder("S", "Parent")?;
+        builder.set_field("parent", alice)?;
+        builder.set_field("child", bob)?;
+
+        let fact_id = builder
+            .preview_stable_fact_id_v1()?
+            .ok_or_else(|| anyhow!("expected stable fact id preview"))?;
+        assert!(fact_id.has_v1_prefix());
+        let fact_id_text = fact_id.to_string();
+
+        let fact = builder.commit_certified_only()?;
+        let view = checked
+            .db()
+            .get_entity(fact)
+            .ok_or_else(|| anyhow!("missing committed fact"))?;
+        assert_eq!(
+            view.attrs.get(ATTR_AXI_FACT_ID).map(|s| s.as_str()),
+            Some(fact_id_text.as_str())
+        );
+        let expected_name = format!(
+            "Parent_fact_{}",
+            fact_id_text
+                .strip_prefix(axiograph_dsl::digest::AXI_FACT_ID_V1_PREFIX)
+                .unwrap_or(&fact_id_text)
+        );
+        assert_eq!(
+            view.attrs.get("name").map(|s| s.as_str()),
+            Some(expected_name.as_str())
+        );
         Ok(())
     }
 

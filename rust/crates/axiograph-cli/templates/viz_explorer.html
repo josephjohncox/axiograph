@@ -192,13 +192,13 @@ a.link:hover { text-decoration: underline; }
   <div class="row" style="margin-top:8px;">
     <label class="muted" style="display:flex; align-items:center; gap:8px;">
       <input id="llm_certify" type="checkbox"/>
-      certify executed query steps (best-effort)
+      emit query certificates for executed steps
     </label>
   </div>
   <div class="row" style="margin-top:8px;">
     <label class="muted" style="display:flex; align-items:center; gap:8px;">
       <input id="llm_verify" type="checkbox"/>
-      verify query certificates (Lean) (best-effort)
+      verify emitted query certificates with Lean
     </label>
   </div>
   <div class="row" style="margin-top:8px;">
@@ -3600,16 +3600,13 @@ async function llmAgentAsk() {
 
     const body = { question: q, contexts, history: historyToSend };
     if (snapshot) body.snapshot = snapshot;
-    if (llmCertifyEl && llmCertifyEl.checked) body.certify_queries = true;
-    if (llmVerifyEl && llmVerifyEl.checked) {
-      body.verify_queries = true;
-      body.certify_queries = true;
-    }
+    let queryCertificatePolicy = "";
+    if (llmCertifyEl && llmCertifyEl.checked) queryCertificatePolicy = "emit";
+    if (llmVerifyEl && llmVerifyEl.checked) queryCertificatePolicy = "verify";
     if (llmRequireVerifiedEl && llmRequireVerifiedEl.checked) {
-      body.require_verified_queries = true;
-      body.verify_queries = true;
-      body.certify_queries = true;
+      queryCertificatePolicy = "require_verified";
     }
+    if (queryCertificatePolicy) body.query_certificate_policy = queryCertificatePolicy;
     if (wantsAutoCommit) {
       body.auto_commit = true;
       if (addMessageEl && String(addMessageEl.value || "").trim()) {

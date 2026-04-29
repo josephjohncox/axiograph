@@ -76,8 +76,283 @@ fn example_catalog_paths_exist_and_stay_teaching_oriented() {
                 !command.contains("export_axi build/"),
                 "catalog example `{id}` should not foreground PathDBExportV1 export-era scripts"
             );
+            assert!(
+                !command.contains("db pathdb export-axi")
+                    && !command.contains("db pathdb import-axi")
+                    && !command.contains("PathDBExportV1"),
+                "catalog example `{id}` should keep PathDBExportV1 debug/parity-only, got `{command}`"
+            );
         }
     }
+}
+
+#[test]
+fn examples_readme_keeps_pathdb_export_debug_only() {
+    let repo_root = repo_root();
+    let readme_path = repo_root.join("examples/README.md");
+    let text = fs::read_to_string(&readme_path).expect("read examples/README.md");
+
+    let before_rules = text
+        .split("## Greenfield Example Rules")
+        .next()
+        .expect("examples README should have pre-rules content");
+    assert!(
+        !before_rules.contains("PathDBExportV1")
+            && !before_rules.contains("export-axi")
+            && !before_rules.contains("import-axi"),
+        "examples README should not foreground PathDBExportV1 before the greenfield rules"
+    );
+
+    let rules = text
+        .split("## Greenfield Example Rules")
+        .nth(1)
+        .expect("examples README should have greenfield rules");
+    assert!(
+        rules.contains("PathDBExportV1")
+            && rules.contains("debug/live-byte/parser-parity only")
+            && rules.contains("not public semantic inputs")
+            && rules.contains("certificate/query"),
+        "examples README must explicitly demote PathDBExportV1 to debug/parity-only"
+    );
+}
+
+#[test]
+fn viz_explorer_uses_query_certificate_policy_not_legacy_booleans() {
+    let repo_root = repo_root();
+    let template_path = repo_root.join("rust/crates/axiograph-cli/templates/viz_explorer.html");
+    let text = fs::read_to_string(&template_path).expect("read viz explorer template");
+
+    assert!(
+        text.contains("query_certificate_policy"),
+        "viz explorer should use the shared query certificate policy object"
+    );
+    for stale in [
+        "certify_queries",
+        "verify_queries",
+        "require_query_certs",
+        "require_verified_queries",
+    ] {
+        assert!(
+            !text.contains(stale),
+            "viz explorer should not emit stale query-certificate boolean `{stale}`"
+        );
+    }
+}
+
+#[test]
+fn query_certificate_docs_foreground_policy_not_legacy_booleans() {
+    let repo_root = repo_root();
+    let docs = [
+        repo_root.join("docs/howto/DB_SERVER.md"),
+        repo_root.join("docs/reference/QUERY_LANG.md"),
+        repo_root.join("docs/howto/CANONICAL_SEMANTIC_SPINE.md"),
+        repo_root.join("docs/tutorials/VIZ_EXPLORER.md"),
+    ];
+
+    for path in docs {
+        let text = fs::read_to_string(&path).expect("read query certificate doc");
+        assert!(
+            text.contains("certificate_policy") || text.contains("query certificate policy"),
+            "{} should document the shared certificate policy surface",
+            path.display()
+        );
+        for stale_literal in [
+            "\"certify\": true",
+            "\"verify\": true",
+            "\"require_query_certs\": true",
+            "\"require_verified_queries\": true",
+        ] {
+            assert!(
+                !text.contains(stale_literal),
+                "{} should not show stale query-certificate request literal `{stale_literal}`",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn semantic_merge_example_keeps_ci_safe_contract() {
+    let repo_root = repo_root();
+    let bin = axiograph_bin();
+
+    let theory_output = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("check")
+        .arg("theory")
+        .arg("examples/semantic_merge/PlantOperationsCore.axi")
+        .arg("--closure-tier")
+        .arg("finite_fragment")
+        .arg("--json")
+        .output()
+        .expect("run semantic-merge base runtime theory check");
+    assert!(
+        theory_output.status.success(),
+        "semantic-merge base runtime theory check failed (exit={})\nstdout={}\nstderr={}",
+        theory_output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&theory_output.stdout),
+        String::from_utf8_lossy(&theory_output.stderr)
+    );
+
+    let theory: serde_json::Value =
+        serde_json::from_slice(&theory_output.stdout).expect("parse runtime theory json");
+    assert_eq!(
+        theory["version"],
+        serde_json::json!("runtime_theory_check_module_report_v1")
+    );
+    assert_eq!(
+        theory["summary"]["ontology_closure_claim"],
+        serde_json::json!("claimed_under_finite_fragment")
+    );
+    assert_eq!(theory["summary"]["blocking_errors"], serde_json::json!(0));
+    assert!(
+        theory["summary"]["closure_tiers"]
+            .as_array()
+            .expect("closure_tiers array")
+            .iter()
+            .any(|tier| tier == "finite_fragment"),
+        "semantic-merge base should keep the finite runtime-theory check contract"
+    );
+    assert!(
+        theory["reports"]
+            .as_array()
+            .expect("runtime theory reports array")
+            .iter()
+            .any(|report| report["schema_id"] == serde_json::json!("PlantOps")),
+        "semantic-merge base should report the PlantOps theory surface"
+    );
+
+    let catalog_path = repo_root.join("examples/catalog.json");
+    let catalog: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&catalog_path).expect("read examples/catalog.json"),
+    )
+    .expect("parse examples/catalog.json");
+    let semantic_merge = catalog["examples"]
+        .as_array()
+        .expect("catalog examples array")
+        .iter()
+        .find(|example| example["id"] == serde_json::json!("semantic-merge-plant-operations"))
+        .expect("semantic-merge example catalog entry");
+    assert_eq!(
+        semantic_merge["path"],
+        serde_json::json!("examples/semantic_merge")
+    );
+    assert_eq!(
+        semantic_merge["kind"],
+        serde_json::json!("semantic_vcs_fixture")
+    );
+    for tag in ["semantic-vcs", "merge", "rebase", "runtime-theory"] {
+        assert!(
+            semantic_merge["feature_tags"]
+                .as_array()
+                .expect("semantic-merge feature tags")
+                .iter()
+                .any(|value| value == tag),
+            "semantic-merge catalog entry should keep `{tag}` feature tag"
+        );
+    }
+    assert!(
+        semantic_merge["commands"]
+            .as_array()
+            .expect("semantic-merge commands")
+            .iter()
+            .any(|command| command == "./examples/semantic_merge/run_merge_flow.sh"),
+        "semantic-merge catalog entry should keep the runnable script"
+    );
+    assert!(
+        semantic_merge["commands"]
+            .as_array()
+            .expect("semantic-merge commands")
+            .iter()
+            .any(|command| command
+                .as_str()
+                .unwrap_or_default()
+                .contains("check theory examples/semantic_merge/PlantOperationsCore.axi")),
+        "semantic-merge catalog entry should expose the lightweight runtime-theory check"
+    );
+
+    let script_path = repo_root.join("examples/semantic_merge/run_merge_flow.sh");
+    let script = fs::read_to_string(&script_path).expect("read semantic-merge script");
+    assert!(
+        script.contains("AXIOGRAPH_BIN"),
+        "semantic-merge script should allow tests/CI to inject the built axiograph binary"
+    );
+    assert!(
+        script.contains("merge_plan_lean.json")
+            && script.contains("rebase_plan_lean.json")
+            && script.contains("plant_conflict_merge_lean.json")
+            && script.contains("semantic_vcs_conformance_coverage.json"),
+        "semantic-merge script should keep generated Lean payloads, negative fixtures, and coverage report wired"
+    );
+    assert!(
+        script.contains("semantic_vcs_conformance_coverage_v1")
+            && script.contains("complete_for_claimed_surface"),
+        "semantic-merge script should emit the machine-readable conformance coverage report"
+    );
+    for forbidden in ["curl ", "git clone", "lake update"] {
+        assert!(
+            !script.contains(forbidden),
+            "semantic-merge script should not require network setup in the example flow"
+        );
+    }
+
+    let read_fixture = |name: &str| -> serde_json::Value {
+        let path = repo_root.join("examples/semantic_merge").join(name);
+        serde_json::from_str(&fs::read_to_string(&path).expect("read semantic-merge fixture"))
+            .unwrap_or_else(|err| panic!("parse semantic-merge fixture {}: {err}", path.display()))
+    };
+
+    let clean_merge = read_fixture("plant_clean_merge_lean.json");
+    assert_eq!(
+        clean_merge["version"],
+        serde_json::json!("semantic_vcs_lean_merge_plan_v1")
+    );
+    assert_eq!(clean_merge["blockers"], serde_json::json!([]));
+    assert_eq!(clean_merge["resolver_steps"], serde_json::json!([]));
+    assert_eq!(clean_merge["residual_obligations"], serde_json::json!([]));
+    assert!(
+        !clean_merge["result"]["refs"]
+            .as_array()
+            .expect("clean merge result refs")
+            .is_empty(),
+        "clean merge fixture should cite result refs"
+    );
+
+    let clean_rebase = read_fixture("plant_clean_rebase_lean.json");
+    assert_eq!(
+        clean_rebase["version"],
+        serde_json::json!("semantic_vcs_lean_rebase_plan_v1")
+    );
+    assert_eq!(clean_rebase["blockers"], serde_json::json!([]));
+    assert!(
+        clean_rebase["transport_items"]
+            .as_array()
+            .expect("clean rebase transport items")
+            .iter()
+            .any(|item| item["required"] == serde_json::json!(true)),
+        "clean rebase fixture should keep a required transport item"
+    );
+
+    let conflict_merge = read_fixture("plant_conflict_merge_lean.json");
+    assert_eq!(
+        conflict_merge["version"],
+        serde_json::json!("semantic_vcs_lean_merge_plan_v1")
+    );
+    assert!(
+        !conflict_merge["blockers"]
+            .as_array()
+            .expect("conflict merge blockers")
+            .is_empty(),
+        "conflict fixture should remain a negative merge case"
+    );
+    assert!(
+        conflict_merge["resolver_steps"]
+            .as_array()
+            .expect("conflict resolver steps")
+            .iter()
+            .any(|step| step["required"] == serde_json::json!(true)),
+        "conflict fixture should require a typed resolver step"
+    );
 }
 
 #[test]
@@ -763,7 +1038,7 @@ fn typecheck_cert_smoke() {
     let run_dir = unique_run_dir(&repo_root, "typecheck_cert");
     let cert_path = run_dir.join("build/typecheck_cert.json");
 
-    let input = repo_root.join("examples/economics/EconomicFlows.axi");
+    let input = repo_root.join("examples/Family.axi");
     let status = Command::new(&bin)
         .current_dir(&run_dir)
         .arg("cert")
@@ -793,7 +1068,7 @@ fn typecheck_cert_smoke() {
 
     match cert.payload {
         CertificatePayloadV2::AxiWellTypedV1 { proof } => {
-            assert_eq!(proof.module_name, "EconomicFlows");
+            assert_eq!(proof.module_name, "Family");
             assert!(proof.schema_count >= 1);
         }
         other => panic!("expected axi_well_typed_v1 certificate, got {other:?}"),
@@ -961,8 +1236,34 @@ fn canonical_only_cert_commands_reject_pathdb_export_snapshots() {
     );
     let viz_stderr = String::from_utf8_lossy(&viz.stderr);
     assert!(
-        viz_stderr.contains("generic semantic/query/cert commands only accept canonical .axi modules"),
+        viz_stderr
+            .contains("generic semantic/query/cert commands only accept canonical .axi modules"),
         "expected viz stderr to mention generic canonical-only rejection, got: {viz_stderr}"
+    );
+
+    let fragment = run_dir.join("build/empty_olog_fragment.json");
+    fs::write(
+        &fragment,
+        serde_json::to_vec_pretty(&serde_json::json!({})).expect("serialize empty olog fragment"),
+    )
+    .expect("write empty olog fragment");
+    let check_olog = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("discover")
+        .arg("check-olog")
+        .arg(&export_axi)
+        .arg("--fragment")
+        .arg(&fragment)
+        .output()
+        .expect("run axiograph discover check-olog on snapshot export");
+    assert!(
+        !check_olog.status.success(),
+        "expected discover check-olog to reject PathDBExportV1 snapshot"
+    );
+    let check_olog_stderr = String::from_utf8_lossy(&check_olog.stderr);
+    assert!(
+        check_olog_stderr.contains(expected),
+        "expected check-olog stderr to mention canonical-only rejection, got: {check_olog_stderr}"
     );
 }
 
@@ -1103,11 +1404,14 @@ fn pathdb_wal_import_proposals_smoke() {
         &base_axi,
         r#"module WalBase
 
-schema WalBase:
-  object Dummy
+schema rdfowl:
+  object Person
+  object Context
+  relation knows(subject: Person, object: Person) @context Context
 
-instance WalBaseInst of WalBase:
-  Dummy = {dummy0}
+instance WalBaseInst of rdfowl:
+  Person = {SeedPerson}
+  Context = {SeedContext}
 "#,
     )
     .expect("write base module");
@@ -1276,8 +1580,8 @@ instance WalBaseInst of WalBase:
         .entities_with_attr_value(axi_relation_key, knows_val);
     assert!(!knows_facts.is_empty(), "expected knows fact nodes");
 
-    let from_rel = db.interner.id_of("from").expect("interned from");
-    let to_rel = db.interner.id_of("to").expect("interned to");
+    let subject_rel = db.interner.id_of("subject").expect("interned subject");
+    let object_rel = db.interner.id_of("object").expect("interned object");
     let in_ctx_rel = db
         .interner
         .id_of(axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT)
@@ -1286,17 +1590,17 @@ instance WalBaseInst of WalBase:
     let mut saw_plan = false;
     let mut saw_observed = false;
     for f in knows_facts.iter() {
-        let has_from_a = db.relations.has_edge(f, from_rel, a_id);
-        if !has_from_a {
+        let has_subject_a = db.relations.has_edge(f, subject_rel, a_id);
+        if !has_subject_a {
             continue;
         }
         let has_ctx_plan = db.relations.has_edge(f, in_ctx_rel, g_plan_id);
         let has_ctx_observed = db.relations.has_edge(f, in_ctx_rel, g_observed_id);
 
-        if has_ctx_plan && db.relations.has_edge(f, to_rel, b_id) {
+        if has_ctx_plan && db.relations.has_edge(f, object_rel, b_id) {
             saw_plan = true;
         }
-        if has_ctx_observed && db.relations.has_edge(f, to_rel, c_id) {
+        if has_ctx_observed && db.relations.has_edge(f, object_rel, c_id) {
             saw_observed = true;
         }
     }
@@ -1378,7 +1682,7 @@ fn accepted_plane_promote_and_build_pathdb_smoke() {
     let accepted_dir = run_dir.join("build/accepted_plane");
     let out_axpd = run_dir.join("build/accepted_plane.axpd");
 
-    let input = repo_root.join("examples/economics/EconomicFlows.axi");
+    let input = repo_root.join("examples/Family.axi");
     let status = Command::new(&bin)
         .current_dir(&run_dir)
         .arg("db")
@@ -1459,7 +1763,7 @@ fn accepted_plane_pathdb_wal_commit_and_build_smoke() {
     let out_axpd = run_dir.join("build/pathdb_wal.axpd");
 
     // 1) Create an accepted-plane snapshot (canonical `.axi` is the anchor).
-    let input = repo_root.join("examples/economics/EconomicFlows.axi");
+    let input = repo_root.join("examples/Family.axi");
     let status = Command::new(&bin)
         .current_dir(&run_dir)
         .arg("db")
@@ -1486,7 +1790,7 @@ fn accepted_plane_pathdb_wal_commit_and_build_smoke() {
         document_id: "doc0.txt".to_string(),
         page: None,
         span_id: "span0".to_string(),
-        text: "EconomicFlows mentions Household_A and Firm_A".to_string(),
+        text: "Family mentions Alice and Bob".to_string(),
         bbox: None,
         metadata: HashMap::new(),
     }];

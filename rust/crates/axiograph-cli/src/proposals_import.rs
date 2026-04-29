@@ -196,7 +196,9 @@ pub(crate) fn import_proposals_file_into_pathdb(
             rel_type.as_str(),
         );
         let schema_rel = schema_rel.map(|r| {
-            // Apply semantic alias orientation (e.g. `parent_of` swaps endpoints).
+            // Canonical relation resolution is exact. Orientation is kept in the
+            // report type for explicit future morphism/refinement flows, but the
+            // greenfield resolver does not infer aliases or swap endpoints.
             if r.orientation == EndpointOrientation::Swap {
                 std::mem::swap(&mut source_key, &mut target_key);
             }
@@ -224,16 +226,14 @@ pub(crate) fn import_proposals_file_into_pathdb(
         let schema = resolved.schema;
         let rel_decl = resolved.rel_decl;
 
-        // We’re about to build a canonical schema-typed fact, so keep a checked DB
-        // handle around for:
-        // - schema-aware stub entity creation (typed by construction), and
-        // - typed fact-node construction via `TypedFactBuilder`.
+        // We’re about to build a canonical schema-typed fact, so keep a checked
+        // DB handle around for endpoint resolution and typed fact-node
+        // construction via `TypedFactBuilder`.
         let mut checked = CheckedDbMut::new(db)?;
 
-        // Endpoints (schema-directed when possible). For "simple relation" overlays we
-        // allow either:
-        // - explicit field mapping in attributes, or
-        // - a deterministic fallback (e.g. from/to, lhs/rhs, or first two fields).
+        // Endpoints are schema-directed and explicit. Proposal relation overlays
+        // must name which compiled relation roles the legacy source/target
+        // fields mean; no name-convention or first-two-field inference is used.
         let (src_field, dst_field) = resolve_endpoint_fields(attributes, rel_decl)?;
         let src_type_hint = rel_decl
             .fields
@@ -246,14 +246,14 @@ pub(crate) fn import_proposals_file_into_pathdb(
             .find(|f| f.field_name == dst_field)
             .map(|f| f.field_type.as_str());
 
-        let src = resolve_or_stub_entity_with_type_in_schema(
+        let src = resolve_typed_evidence_entity_in_schema(
             &mut checked,
             &id_map,
             source_key,
             src_type_hint,
             &schema_name,
         )?;
-        let dst = resolve_or_stub_entity_with_type_in_schema(
+        let dst = resolve_typed_evidence_entity_in_schema(
             &mut checked,
             &id_map,
             target_key,
@@ -314,7 +314,7 @@ pub(crate) fn import_proposals_file_into_pathdb(
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| format!("T{now_secs}"));
-                resolve_or_stub_entity_with_type_in_schema(
+                resolve_typed_evidence_entity_in_schema(
                     &mut checked,
                     &id_map,
                     &time_name,
@@ -328,7 +328,7 @@ pub(crate) fn import_proposals_file_into_pathdb(
                         "proposal relation `{relation_id}`: field `{field}` is present but empty"
                     ));
                 }
-                resolve_or_stub_entity_with_type_in_schema(
+                resolve_typed_evidence_entity_in_schema(
                     &mut checked,
                     &id_map,
                     v,
@@ -429,43 +429,50 @@ fn resolve_endpoint_fields(
     attrs: &HashMap<String, String>,
     rel_decl: &RelationDecl,
 ) -> Result<(String, String)> {
-    if let (Some(a), Some(b)) = (
-        attrs.get("axi_source_field").map(|s| s.trim()),
-        attrs.get("axi_target_field").map(|s| s.trim()),
-    ) {
-        if !a.is_empty() && !b.is_empty() {
-            return Ok((a.to_string(), b.to_string()));
-        }
-    }
+    let source = attrs
+        .get("axi_source_field")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let target = attrs
+        .get("axi_target_field")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
 
-    let names: Vec<&str> = rel_decl
-        .fields
-        .iter()
-        .map(|f| f.field_name.as_str())
-        .collect();
-    if names.contains(&"from") && names.contains(&"to") {
-        return Ok(("from".to_string(), "to".to_string()));
-    }
-    if names.contains(&"source") && names.contains(&"target") {
-        return Ok(("source".to_string(), "target".to_string()));
-    }
-    if names.contains(&"lhs") && names.contains(&"rhs") {
-        return Ok(("lhs".to_string(), "rhs".to_string()));
-    }
-    if names.contains(&"child") && names.contains(&"parent") {
-        return Ok(("child".to_string(), "parent".to_string()));
-    }
-    if rel_decl.fields.len() >= 2 {
-        return Ok((
-            rel_decl.fields[0].field_name.clone(),
-            rel_decl.fields[1].field_name.clone(),
+    let Some(source) = source else {
+        return Err(anyhow!(
+            "proposal relation `{}` is missing explicit `axi_source_field`; endpoint role inference is disabled. Generate the proposal through the typed proposal builder or add `axi_source_field`/`axi_target_field` attributes that name roles in the compiled relation declaration.",
+            rel_decl.name
+        ));
+    };
+    let Some(target) = target else {
+        return Err(anyhow!(
+            "proposal relation `{}` is missing explicit `axi_target_field`; endpoint role inference is disabled. Generate the proposal through the typed proposal builder or add `axi_source_field`/`axi_target_field` attributes that name roles in the compiled relation declaration.",
+            rel_decl.name
+        ));
+    };
+
+    if source == target {
+        return Err(anyhow!(
+            "proposal relation `{}` maps source and target to the same role `{source}`; endpoint roles must be distinct",
+            rel_decl.name
         ));
     }
 
-    Err(anyhow!(
-        "relation `{}` has fewer than 2 fields (cannot map source/target)",
-        rel_decl.name
-    ))
+    let has_field = |name: &str| rel_decl.fields.iter().any(|f| f.field_name == name);
+    if !has_field(source) {
+        return Err(anyhow!(
+            "proposal relation `{}` uses unknown `axi_source_field` `{source}`; field must be declared in the compiled relation signature",
+            rel_decl.name
+        ));
+    }
+    if !has_field(target) {
+        return Err(anyhow!(
+            "proposal relation `{}` uses unknown `axi_target_field` `{target}`; field must be declared in the compiled relation signature",
+            rel_decl.name
+        ));
+    }
+
+    Ok((source.to_string(), target.to_string()))
 }
 
 // =============================================================================
@@ -813,40 +820,7 @@ fn enrich_relation_fact_from_proposal(
     Ok(())
 }
 
-fn resolve_or_stub_entity(
-    db: &mut PathDB,
-    id_map: &HashMap<String, u32>,
-    key: &str,
-) -> Result<u32> {
-    if let Some(&id) = id_map.get(key) {
-        return Ok(id);
-    }
-    if let Some(id) = find_entity_by_external_id(db, key)? {
-        return Ok(id);
-    }
-    // UX-first fallback: treat the key as a canonical entity name so simple
-    // "conversation" proposals can refer to existing accepted-plane entities
-    // without having to know a DB-internal id or carry external_id attrs.
-    if let Some(id) = find_entity_by_name_case_robust(db, key)? {
-        return Ok(id);
-    }
-
-    // Stub to preserve relation structure even if the endpoint is missing.
-    // If a later proposals import provides more info for this external_id, the
-    // importer can enrich it via `upsert_entity_attr` + `mark_virtual_type`.
-    let mut attrs: Vec<(String, String)> = Vec::new();
-    attrs.push((META_ATTR_NAME.to_string(), key.to_string()));
-    attrs.push(("external_id".to_string(), key.to_string()));
-    let attrs_ref = attrs
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    let id = db.add_entity("UnknownEntity", attrs_ref);
-    db.mark_virtual_type(id, "ProposalStub")?;
-    Ok(id)
-}
-
-fn resolve_or_stub_entity_with_type_in_schema(
+fn resolve_typed_evidence_entity_in_schema(
     checked: &mut CheckedDbMut<'_>,
     id_map: &HashMap<String, u32>,
     key: &str,
@@ -882,20 +856,8 @@ fn resolve_or_stub_entity_with_type_in_schema(
     }
 
     let Some(ty) = type_hint.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
-        // No type hint: fall back, but still prefer schema consistency when possible.
-        let id = resolve_or_stub_entity(checked.db_mut(), id_map, key)?;
-        if entity_has_schema(checked.db_mut(), id, schema_name)? {
-            return Ok(id);
-        }
-        // Adopt schema if missing; otherwise fail (mismatch).
-        if find_attr_string(checked.db(), id, ATTR_AXI_SCHEMA).is_none() {
-            checked
-                .db_mut()
-                .upsert_entity_attr(id, ATTR_AXI_SCHEMA, schema_name)?;
-            return Ok(id);
-        }
         return Err(anyhow!(
-            "entity `{key}` resolved to entity {id}, but it is not in schema `{schema_name}`"
+            "proposal relation endpoint `{key}` in schema `{schema_name}` has no resolved role type; relation evidence import is fail-closed"
         ));
     };
 
@@ -922,14 +884,9 @@ fn resolve_or_stub_entity_with_type_in_schema(
         return Ok(id);
     }
 
-    // Stub to preserve structure even if the endpoint is missing in this schema.
-    let mut builder = checked.entity_builder(schema_name, ty)?;
-    builder = builder.with_attr(META_ATTR_NAME, key);
-    builder = builder.with_attr("external_id", key);
-    builder = builder.with_attr(ATTR_AXI_SCHEMA, schema_name);
-    let id = builder.commit()?;
-    checked.db_mut().mark_virtual_type(id, "ProposalStub")?;
-    Ok(id)
+    Err(anyhow!(
+        "proposal relation endpoint `{key}` of type `{ty}` in schema `{schema_name}` did not resolve to an imported proposal entity or accepted canonical .axi object; relation evidence import is fail-closed. Add an entity proposal for this endpoint, bind it to an existing schema object, or use a typed refinement handle before importing the relation."
+    ))
 }
 
 fn find_entity_by_name_case_robust_with_type(
@@ -1055,41 +1012,6 @@ fn find_entity_by_name_case_robust_with_type_and_schema(
         }
     }
     Ok(None)
-}
-
-fn find_entity_by_name_case_robust(db: &mut PathDB, name: &str) -> Result<Option<u32>> {
-    let name = name.trim();
-    if name.is_empty() {
-        return Ok(None);
-    }
-
-    // Fast path: exact `name` match via interned attr value ids.
-    if let Some(id) = find_entity_by_type_and_attr(db, "", "name", name)? {
-        return Ok(Some(id));
-    }
-
-    // Robust fallback: token/fts/fuzzy so "alice" can still resolve to "Alice".
-    let mut candidates = db.entities_with_attr_fts("name", name);
-    if candidates.is_empty() {
-        candidates = db.entities_with_attr_fts_any("name", name);
-    }
-    if candidates.is_empty() {
-        candidates = db.entities_with_attr_fuzzy("name", name, 2);
-    }
-    if candidates.is_empty() {
-        return Ok(None);
-    }
-
-    let needle_lc = name.to_ascii_lowercase();
-    for id in candidates.iter() {
-        if let Some(entity_name) = find_attr_string(db, id, "name") {
-            if entity_name.to_ascii_lowercase() == needle_lc {
-                return Ok(Some(id));
-            }
-        }
-    }
-
-    Ok(candidates.iter().next())
 }
 
 fn find_attr_string(db: &PathDB, entity_id: u32, key: &str) -> Option<String> {
@@ -1303,5 +1225,112 @@ mod tests {
             .expect_err("untyped relation import must fail closed");
         assert!(err.to_string().contains("proposal relation `relation:1`"));
         assert!(err.to_string().contains("fail-closed"));
+    }
+
+    #[test]
+    fn relation_import_missing_typed_endpoint_fails_closed_without_placeholder() {
+        let axi = r#"
+module ProposalImportTypedEndpoint
+
+schema Demo:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance I of Demo:
+  Person = {Alice}
+"#;
+
+        let mut db = PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import typed fixture");
+
+        let mut rel_meta = meta("relation:missing-endpoint");
+        rel_meta.schema_hint = Some("Demo".to_string());
+        let mut attributes = HashMap::new();
+        attributes.insert("axi_source_field".to_string(), "child".to_string());
+        attributes.insert("axi_target_field".to_string(), "parent".to_string());
+        let file = ProposalsFileV1 {
+            version: 1,
+            generated_at: "0".to_string(),
+            source: ProposalSourceV1 {
+                source_type: "test".to_string(),
+                locator: "proposals_import_typed_endpoint_test".to_string(),
+            },
+            schema_hint: Some("Demo".to_string()),
+            proposals: vec![ProposalV1::Relation {
+                meta: rel_meta,
+                relation_id: "relation:missing-endpoint".to_string(),
+                rel_type: "Parent".to_string(),
+                source: "Alice".to_string(),
+                target: "MissingBob".to_string(),
+                attributes,
+            }],
+        };
+
+        let err = import_proposals_file_into_pathdb(&mut db, &file, "digest")
+            .expect_err("missing typed endpoint must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("proposal relation endpoint `MissingBob`"),
+            "expected endpoint diagnostic, got {msg}"
+        );
+        assert!(
+            msg.contains("did not resolve to an imported proposal entity or accepted canonical .axi object"),
+            "expected fail-closed resolution diagnostic, got {msg}"
+        );
+        assert!(
+            db.find_by_type("ProposalEvidencePlaceholder").is_none(),
+            "missing endpoints must not create evidence placeholders"
+        );
+    }
+
+    #[test]
+    fn relation_import_requires_explicit_endpoint_roles() {
+        let axi = r#"
+module ProposalImportExplicitRoles
+
+schema Demo:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+instance I of Demo:
+  Person = {Alice, Bob}
+"#;
+
+        let mut db = PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
+            .expect("import typed fixture");
+
+        let mut rel_meta = meta("relation:missing-roles");
+        rel_meta.schema_hint = Some("Demo".to_string());
+        let file = ProposalsFileV1 {
+            version: 1,
+            generated_at: "0".to_string(),
+            source: ProposalSourceV1 {
+                source_type: "test".to_string(),
+                locator: "proposals_import_explicit_roles_test".to_string(),
+            },
+            schema_hint: Some("Demo".to_string()),
+            proposals: vec![ProposalV1::Relation {
+                meta: rel_meta,
+                relation_id: "relation:missing-roles".to_string(),
+                rel_type: "Parent".to_string(),
+                source: "Alice".to_string(),
+                target: "Bob".to_string(),
+                attributes: HashMap::new(),
+            }],
+        };
+
+        let err = import_proposals_file_into_pathdb(&mut db, &file, "digest")
+            .expect_err("implicit endpoint role mapping must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing explicit `axi_source_field`"),
+            "expected explicit endpoint role diagnostic, got {msg}"
+        );
+        assert!(
+            msg.contains("endpoint role inference is disabled"),
+            "expected inference-disabled diagnostic, got {msg}"
+        );
     }
 }

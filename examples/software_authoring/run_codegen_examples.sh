@@ -38,6 +38,29 @@ run() {
   "$@"
 }
 
+run_expect_report() {
+  local out_file="$1"
+  shift
+  printf '\n+'
+  printf ' %q' "$@"
+  printf '\n'
+  set +e
+  "$@"
+  local status=$?
+  set -e
+  if [[ ! -s "${out_file}" ]]; then
+    printf 'expected report was not written: %s\n' "${out_file}" >&2
+    if [[ "${status}" -eq 0 ]]; then
+      return 1
+    fi
+    return "${status}"
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    printf 'command exited %s after writing fail-closed report %s\n' "${status}" "${out_file}" >&2
+  fi
+  return 0
+}
+
 abspath() {
   local path="$1"
   if [[ "${path}" = /* ]]; then
@@ -68,6 +91,7 @@ run_example() {
   mkdir -p "${out_dir}" "${generated_dir}"
 
   printf '\n=== %s: %s ===\n' "${id}" "${title}"
+  printf 'Flow: validate .axi -> runtime theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates\n'
 
   run "${AXIOGRAPH_CMD[@]}" check validate "${axi}"
   run "${AXIOGRAPH_CMD[@]}" check theory "${axi}" \
@@ -79,9 +103,6 @@ run_example() {
     "${id}" \
     "${axi}" \
     "${overlay}"
-  run "${AXIOGRAPH_CMD[@]}" authoring codegen-plan \
-    --overlay "${overlay}" \
-    --out "${out_dir}/codegen_plan.json"
   run "${AXIOGRAPH_CMD[@]}" discover overlay-check "${axi}" \
     --overlay "${overlay}" \
     --out "${out_dir}/overlay_validation.json"
@@ -98,6 +119,27 @@ run_example() {
     --overlay "${overlay}" \
     --repo-root "${REPO_ROOT}" \
     --out "${out_dir}/software_coverage.json"
+  run "${AXIOGRAPH_CMD[@]}" authoring codegen-plan \
+    --overlay "${overlay}" \
+    --out "${out_dir}/codegen_plan.json"
+  run "${AXIOGRAPH_CMD[@]}" authoring continuous-check \
+    --behavior-report "${out_dir}/behavior_case_report.json" \
+    --repo-root "${REPO_ROOT}" \
+    --out "${out_dir}/continuous_coverage.json"
+  run_expect_report "${out_dir}/enforced_continuous_coverage.json" \
+    "${AXIOGRAPH_CMD[@]}" authoring continuous-check \
+    --behavior-report "${out_dir}/behavior_case_report.json" \
+    --repo-root "${REPO_ROOT}" \
+    --strict-coverage \
+    --out "${out_dir}/enforced_continuous_coverage.json"
+  run_expect_report "${out_dir}/ci_continuous_coverage.json" \
+    "${AXIOGRAPH_CMD[@]}" authoring continuous-check \
+    --behavior-report "${out_dir}/behavior_case_report.json" \
+    --repo-root "${REPO_ROOT}" \
+    --strict-coverage \
+    --require-code-refs \
+    --require-runtime-theory \
+    --out "${out_dir}/ci_continuous_coverage.json"
   run "${AUTHORING_EXAMPLE_CMD[@]}" continuous-check \
     --behavior-report "${out_dir}/behavior_case_report.json" \
     --repo-root "${REPO_ROOT}" \

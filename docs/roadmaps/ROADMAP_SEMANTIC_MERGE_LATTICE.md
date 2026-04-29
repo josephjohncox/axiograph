@@ -68,6 +68,17 @@ The merge lattice is operational and finite: it is a runtime partial order over
 known persisted typed slices. It is not a claim that all ontologies form a
 complete lattice.
 
+Lean alignment note: `lean/Axiograph/SemanticVCS.lean` now formalizes this
+finite operational reading with `SemanticSlice`, finite join/meet candidates,
+conservative merge materialization predicates, rebase transport predicates, and
+small preservation lemmas. It also exposes executable fail-closed
+`checkMergePlanMaterialization` and `checkRebasePlanMaterialization` gates with
+soundness lemmas. `lean/Axiograph/SemanticVCS/Json.lean` defines the first
+strict JSON shape for future runtime exports. These modules are theorem support
+outside the shipped verifier boundary until runtime `SemanticMergePlanV1` /
+`SemanticRebasePlanV1` payloads are exported as Lean-checkable certificates. See
+`docs/reference/LEAN_THEORY_EVALUATION.md`.
+
 ## Greenfield Policy
 
 Do not preserve legacy merge, export, wrapper, or query compatibility harnesses
@@ -166,6 +177,27 @@ It must emit resolver steps for:
 - CQ regressions,
 - implementation-surface drift.
 
+It must also emit typed blockers, not only prose residuals. `blockers` classify
+the reason a plan cannot materialize:
+
+- unresolved semantic conflicts,
+- unapplied resolver steps,
+- quality gate failures,
+- CQ gate failures,
+- trust regressions,
+- semantic coverage regressions,
+- runtime theory blockers or residual obligations,
+- preview-level non-ok results.
+
+`can_materialize` is false whenever any blocker or resolver step remains. The
+blocker list is the compact machine-readable summary that CLI, MCP, and agents
+should inspect before attempting mutation.
+
+Plan validation must fail closed even when a caller mutates or miscomputes the
+boolean flag: residual obligations, conflicts, resolver handles, preview
+non-ok state, runtime-theory blockers, or typed blockers make the plan
+non-materializable.
+
 Resolver steps reuse `RuntimeRefinementHandleV1`; no second resolver protocol is
 allowed.
 
@@ -183,6 +215,11 @@ The rebase plan must report:
 - failed transports,
 - residual obligations,
 - resolver handles.
+
+The runtime object is `SemanticRebasePlanV1`. It separates successful
+`transported_refs` from `failed_transports`, carries transport-basis notes, and
+copies residual obligations into typed blockers so agents cannot accidentally
+materialize an incomplete transport.
 
 No accepted-plane mutation is allowed until resolver steps and CQ/trust gates
 pass.
@@ -234,6 +271,12 @@ actions come next.
 3. Enforce materialization gates.
    - Block merge/rebase materialization when plans contain required resolver
      steps, CQ regressions, trust regressions, or unresolved transport failures.
+   - Report quality, CQ, trust, coverage, runtime-theory, residual-obligation,
+     and conflict blockers explicitly in `SemanticMergePlanV1`.
+   - Validate plans fail-closed from typed blockers and residual fields rather
+     than trusting `can_materialize` alone.
+   - Return explicit `SemanticRebasePlanV1` transport results with
+     `transported_refs` and `failed_transports`.
    - Persist failed plans under `sem/validations/`.
 
 4. Add resolver application loops.
@@ -242,6 +285,9 @@ actions come next.
    - Make resolved plans produce typed semantic commits.
 
 5. Lean alignment.
+   - Use `lean/Axiograph/SemanticVCS.lean` as the starting model for finite
+     slice inclusion, join/meet preservation, materialization gates, and
+     rebase transport predicates.
    - Certify only narrow fragments:
      path/rewrite equivalence, transported path equations, selected schema
      morphism transports, and query-row soundness under merged refs.
@@ -260,7 +306,7 @@ actions come next.
   compatible transport succeeds; failed transport emits residual obligations.
 - VCS behavior:
   merge dry-run returns a `SemanticMergePlanV1`; materialization fails closed
-  when resolver steps remain.
+  when resolver steps or typed blockers remain.
 - MCP/tool-loop behavior:
   tools are listed and return anchors, IR refs, resolver handles, residual
   obligations, and next actions.

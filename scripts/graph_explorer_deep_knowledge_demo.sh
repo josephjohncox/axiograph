@@ -225,28 +225,28 @@ def write_module(i: int) -> None:
 module {mod}
 
 schema {schema}:
-  object Entity
+  object ObservedRecord
   object Text
   object Context
 
-  relation label(entity: Entity, text: Text)
-  relation mentions(from: Entity, to: Entity) @context Context
+  relation label(record: ObservedRecord, text: Text)
+  relation related_observation(from: ObservedRecord, to: ObservedRecord) @context Context
 
 theory {schema}Rules on {schema}:
-  constraint key label(entity, text)
-  constraint key mentions(from, to, ctx)
+  constraint key label(record, text)
+  constraint key related_observation(from, to, ctx)
 
 instance {inst} of {schema}:
   Context = {{DocContext_{i}}}
-  Entity = {{Node_{i}_0, Node_{i}_1, Node_{i}_2}}
+  ObservedRecord = {{Node_{i}_0, Node_{i}_1, Node_{i}_2}}
   Text = {{Text_{i}_0, Text_{i}_1}}
 
   label = {{
-    (entity=Node_{i}_0, text=Text_{i}_0),
-    (entity=Node_{i}_1, text=Text_{i}_1)
+    (record=Node_{i}_0, text=Text_{i}_0),
+    (record=Node_{i}_1, text=Text_{i}_1)
   }}
 
-  mentions = {{
+  related_observation = {{
     (from=Node_{i}_0, to=Node_{i}_1, ctx=DocContext_{i}),
     (from=Node_{i}_1, to=Node_{i}_2, ctx=DocContext_{i})
   }}

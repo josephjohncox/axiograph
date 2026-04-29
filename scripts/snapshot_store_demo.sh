@@ -73,13 +73,7 @@ WITH_CHUNKS_AXPD="$OUT_DIR/accepted_with_chunks.axpd"
 echo "wrote: $WITH_CHUNKS_AXPD"
 
 echo ""
-echo "== F) Export reversible .axi snapshot (for anchoring certificates) =="
-EXPORT_AXI="$OUT_DIR/accepted_with_chunks_export_v1.axi"
-"$AXIOGRAPH" db pathdb export-axi "$WITH_CHUNKS_AXPD" --out "$EXPORT_AXI"
-echo "wrote: $EXPORT_AXI"
-
-echo ""
-echo "== G) Inspect history (git-like logs) =="
+echo "== F) Inspect history (git-like logs) =="
 "$AXIOGRAPH" db accept log --dir "$ACCEPTED_DIR" --layer accepted --limit 10
 echo ""
 "$AXIOGRAPH" db accept log --dir "$ACCEPTED_DIR" --layer pathdb --limit 10
@@ -91,4 +85,3 @@ echo "  accepted plane dir: $ACCEPTED_DIR"
 echo "  base axpd:          $BASE_AXPD"
 echo "  chunks:             $CHUNKS_JSON"
 echo "  wal axpd:           $WITH_CHUNKS_AXPD"
-echo "  export axi:         $EXPORT_AXI"

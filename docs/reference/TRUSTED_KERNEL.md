@@ -74,6 +74,8 @@ Today that means the code path centered on:
 `lean/Axiograph/Axi/PathDBExportV1.lean` remains useful for reversible snapshot
 roundtrip/parity work, but it is not in the current `VerifyMain` import
 closure and should not be described as part of the active verifier kernel.
+Treat it as debug/live-byte/parser-parity support only, not as semantic input,
+query authority, certificate authority, or an accepted-plane promotion surface.
 
 Adjacent theorem-bearing modules are important, but they are not automatically
 part of the shipped runtime kernel unless imported by the verifier target.
@@ -102,7 +104,7 @@ verifier kernel boundary.
 
 | Module | Role | Trust class |
 | --- | --- | --- |
-| `Axiograph.Axi.PathDBExportV1` | reversible PathDB snapshot/export parser for parity tooling | transitional parity support |
+| `Axiograph.Axi.PathDBExportV1` | reversible PathDB snapshot/export parser for debug/live-byte/parser parity tooling | transitional parity support / not semantic authority |
 
 ### Theorem support
 
@@ -115,6 +117,9 @@ they are distinct from the runtime kernel boundary unless imported by
 | `Axiograph.HoTT.FreeGroupoid` | typed path denotation into free groupoid | theorem support |
 | `Axiograph.Certificate.PathRewriteSoundness` | rewrite preservation via typed retyping | theorem support |
 | `Axiograph.HoTT.PathCongruence` | congruence support for path equalities | theorem support |
+| `Axiograph.SemanticVCS` | finite semantic-slice join/meet, merge/rebase materialization, and preservation scaffold | theorem support / roadmap |
+| `Axiograph.SemanticVCS.Json` | strict JSON shape for future Lean-readable merge/rebase plan exports | theorem support / roadmap |
+| `Axiograph.SemanticVCS.CheckMain` | executable Rust+Lean conformance checker for reduced merge/rebase payloads | conformance harness / not `VerifyMain` trusted boundary |
 
 ### Explanation-level / roadmap theory
 
@@ -127,6 +132,33 @@ trusted semantics.
 | `Axiograph.HoTT.KnowledgeGraph` | higher-level path/knowledge graph scaffold | explanation / support |
 | `Axiograph.HoTT.PathAlgebraProofs` | additional proof scaffolding | explanation / support |
 | `Axiograph.Topos.Overview` | topos/sheaf explanation layer | explanation / roadmap |
+
+For the current status of what is encoded in Lean, what is in the shipped
+verifier boundary, and what remains runtime-only, see
+`docs/reference/LEAN_THEORY_EVALUATION.md`.
+
+## Neighbor Surfaces
+
+These surfaces are first-class runtime or review interfaces, but they are not
+the trusted kernel unless they reduce to an accepted anchor and a checked
+certificate/gate:
+
+- Canonical schema/category/theory IR: `docs/reference/KERNEL_IR.md`.
+- Runtime theory checker reports and closure tiers:
+  `docs/reference/RUNTIME_THEORY_CHECKER.md`.
+- Software-authoring/codegen and continuous coverage reports:
+  `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`.
+- Semantic VCS refs, merge/rebase plans, reconciliation, and backend projection
+  manifests: `docs/reference/SEMANTIC_VCS.md`.
+- Embedding/RAG/vector sidecars and evidence promotion:
+  `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.
+- Verification and test gates: `docs/howto/FORMAL_VERIFICATION.md` and
+  `docs/howto/TESTING.md`.
+
+The canonical cleanup spine is accepted `.axi` → compiled IR/runtime typed
+reports → checked certificate/gate when a trusted claim is needed. Runtime
+reports may be strong engineering evidence, but they are not Lean-certified
+claims unless the certificate/gate is present and checked.
 
 ## What The Kernel Must Check
 
@@ -278,7 +310,7 @@ The next concrete tightening steps are:
    queries and certificates stop depending on runtime-only heuristic naming.
 4. Add narrow typed query/migration witness checking over that IR for clearly
    stated certifiable fragments.
-5. Prefer canonical accepted-plane anchors over `PathDBExportV1` for more
-   certificate flows.
+5. Keep new certificate/query flows on canonical accepted-plane anchors rather
+   than `PathDBExportV1`.
 6. Move query/cert semantics off binary-projection heuristics and onto the
    future kernel IR.

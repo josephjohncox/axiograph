@@ -33,6 +33,32 @@ run() {
   "$@"
 }
 
+run_expected_report_gate() {
+  local out_file="$1"
+  shift
+  printf '\n+'
+  printf ' %q' "$@"
+  printf '\n'
+  set +e
+  "$@"
+  local status=$?
+  set -e
+  if [[ ! -s "${out_file}" ]]; then
+    printf 'expected fail-closed gate report was not written: %s\n' "${out_file}" >&2
+    if [[ "${status}" -eq 0 ]]; then
+      return 1
+    fi
+    return "${status}"
+  fi
+  if [[ "${status}" -eq 0 ]]; then
+    printf 'strict gate passed; no fail-closed coverage issue was detected\n'
+  else
+    printf 'strict gate failed as an expected teaching artifact (exit %s); report: %s\n' "${status}" "${out_file}"
+  fi
+}
+
+printf 'Flow: validate .axi -> runtime theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates\n'
+
 run "${AXIOGRAPH_CMD[@]}" check validate "${AXI}"
 
 run "${AXIOGRAPH_CMD[@]}" check theory "${AXI}" \
@@ -48,10 +74,6 @@ run "${AXIOGRAPH_CMD[@]}" authoring lsp-capabilities \
 
 run "${AXIOGRAPH_CMD[@]}" authoring integration-manifest \
   --out "${OUT_DIR}/integration_manifest.json"
-
-run "${AXIOGRAPH_CMD[@]}" authoring codegen-plan \
-  --overlay "${OVERLAY}" \
-  --out "${OUT_DIR}/codegen_plan.json"
 
 run "${SCRIPT_DIR}/run_definition_queries.sh" "${DEFINITION_OUT_DIR}"
 
@@ -75,6 +97,31 @@ run "${AXIOGRAPH_CMD[@]}" check software-coverage "${AXI}" \
   --repo-root "${REPO_ROOT}" \
   --out "${OUT_DIR}/software_coverage.json"
 
+run "${AXIOGRAPH_CMD[@]}" authoring codegen-plan \
+  --overlay "${OVERLAY}" \
+  --out "${OUT_DIR}/codegen_plan.json"
+
+run "${AXIOGRAPH_CMD[@]}" authoring continuous-check \
+  --behavior-report "${OUT_DIR}/behavior_case_report.json" \
+  --repo-root "${REPO_ROOT}" \
+  --out "${OUT_DIR}/continuous_coverage.json"
+
+run_expected_report_gate "${OUT_DIR}/enforced_continuous_coverage.json" \
+  "${AXIOGRAPH_CMD[@]}" authoring continuous-check \
+  --behavior-report "${OUT_DIR}/behavior_case_report.json" \
+  --repo-root "${REPO_ROOT}" \
+  --strict-coverage \
+  --out "${OUT_DIR}/enforced_continuous_coverage.json"
+
+run_expected_report_gate "${OUT_DIR}/ci_continuous_coverage.json" \
+  "${AXIOGRAPH_CMD[@]}" authoring continuous-check \
+  --behavior-report "${OUT_DIR}/behavior_case_report.json" \
+  --repo-root "${REPO_ROOT}" \
+  --strict-coverage \
+  --require-code-refs \
+  --require-runtime-theory \
+  --out "${OUT_DIR}/ci_continuous_coverage.json"
+
 run "${AUTHORING_EXAMPLE_CMD[@]}" continuous-check \
   --behavior-report "${OUT_DIR}/behavior_case_report.json" \
   --repo-root "${REPO_ROOT}" \
@@ -88,4 +135,5 @@ printf '\n+ materialize skeletons > %q\n' "${OUT_DIR}/materialize_skeletons.json
   --out "${OUT_DIR}/materialize_skeletons.json"
 
 printf '\nAuthoring-flow outputs written under %s\n' "${OUT_DIR}"
+printf 'Nested AuthoringFlowReportV1 payloads are embedded at *.json authoring_flow fields\n'
 printf 'Generated test skeleton previews written under %s\n' "${GENERATED_TESTS_DIR}"

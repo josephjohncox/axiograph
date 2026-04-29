@@ -1,7 +1,10 @@
 //! LLM Provider Interfaces
 //!
 //! Abstraction over different LLM providers (OpenAI, Anthropic, local models).
-//! Currently provides stubs - implement with actual API calls as needed.
+//! Non-mock providers are intentionally fail-closed until they are wired to a
+//! maintained API client. Tests and examples that need deterministic behavior
+//! should use `MockProvider` explicitly; production callers must not receive
+//! fabricated generations or validation scores.
 
 use crate::{GroundedFact, GroundingContext, LLMInterface, SchemaContext, StructuredFact};
 use async_trait::async_trait;
@@ -38,23 +41,21 @@ impl LLMInterface for OpenAIProvider {
         prompt: &str,
         context: &GroundingContext,
     ) -> anyhow::Result<String> {
-        // Would call OpenAI API
-        // For now, stub
-        Ok(format!(
-            "[OpenAI {}] Response to: {} (with {} facts)",
-            self.model,
-            prompt.chars().take(50).collect::<String>(),
-            context.facts.len()
+        let _ = (prompt, context);
+        Err(anyhow::anyhow!(
+            "OpenAIProvider is not wired to a maintained API client in axiograph-llm-sync; use axiograph-cli LLM tooling or MockProvider explicitly"
         ))
     }
 
     async fn extract_facts(
         &self,
         text: &str,
-        _schema: &SchemaContext,
+        schema: &SchemaContext,
     ) -> anyhow::Result<Vec<StructuredFact>> {
-        // Would call OpenAI with extraction prompt
-        Ok(vec![])
+        let _ = (text, schema);
+        Err(anyhow::anyhow!(
+            "OpenAIProvider fact extraction is not implemented in axiograph-llm-sync"
+        ))
     }
 
     async fn validate_claim(
@@ -62,11 +63,9 @@ impl LLMInterface for OpenAIProvider {
         claim: &str,
         evidence: &[GroundedFact],
     ) -> anyhow::Result<(bool, f32, String)> {
-        // Would call OpenAI for validation
-        Ok((
-            true,
-            0.8,
-            format!("Validated against {} evidence items", evidence.len()),
+        let _ = (claim, evidence);
+        Err(anyhow::anyhow!(
+            "OpenAIProvider claim validation is not implemented in axiograph-llm-sync"
         ))
     }
 }
@@ -96,31 +95,31 @@ impl LLMInterface for AnthropicProvider {
         prompt: &str,
         context: &GroundingContext,
     ) -> anyhow::Result<String> {
-        Ok(format!(
-            "[Anthropic {}] Response to: {} (with {} facts)",
-            self.model,
-            prompt.chars().take(50).collect::<String>(),
-            context.facts.len()
+        let _ = (prompt, context);
+        Err(anyhow::anyhow!(
+            "AnthropicProvider is not wired to a maintained API client in axiograph-llm-sync; use axiograph-cli LLM tooling or MockProvider explicitly"
         ))
     }
 
     async fn extract_facts(
         &self,
-        _text: &str,
-        _schema: &SchemaContext,
+        text: &str,
+        schema: &SchemaContext,
     ) -> anyhow::Result<Vec<StructuredFact>> {
-        Ok(vec![])
+        let _ = (text, schema);
+        Err(anyhow::anyhow!(
+            "AnthropicProvider fact extraction is not implemented in axiograph-llm-sync"
+        ))
     }
 
     async fn validate_claim(
         &self,
-        _claim: &str,
+        claim: &str,
         evidence: &[GroundedFact],
     ) -> anyhow::Result<(bool, f32, String)> {
-        Ok((
-            true,
-            0.85,
-            format!("Validated with {} items", evidence.len()),
+        let _ = (claim, evidence);
+        Err(anyhow::anyhow!(
+            "AnthropicProvider claim validation is not implemented in axiograph-llm-sync"
         ))
     }
 }
@@ -150,30 +149,31 @@ impl LLMInterface for LocalProvider {
         prompt: &str,
         context: &GroundingContext,
     ) -> anyhow::Result<String> {
-        Ok(format!(
-            "[Local] Response to: {} (with {} facts)",
-            prompt.chars().take(50).collect::<String>(),
-            context.facts.len()
+        let _ = (prompt, context);
+        Err(anyhow::anyhow!(
+            "LocalProvider is not wired to a maintained inference client in axiograph-llm-sync; use axiograph-cli LLM tooling or MockProvider explicitly"
         ))
     }
 
     async fn extract_facts(
         &self,
-        _text: &str,
-        _schema: &SchemaContext,
+        text: &str,
+        schema: &SchemaContext,
     ) -> anyhow::Result<Vec<StructuredFact>> {
-        Ok(vec![])
+        let _ = (text, schema);
+        Err(anyhow::anyhow!(
+            "LocalProvider fact extraction is not implemented in axiograph-llm-sync"
+        ))
     }
 
     async fn validate_claim(
         &self,
-        _claim: &str,
+        claim: &str,
         evidence: &[GroundedFact],
     ) -> anyhow::Result<(bool, f32, String)> {
-        Ok((
-            true,
-            0.7,
-            format!("Local validation with {} items", evidence.len()),
+        let _ = (claim, evidence);
+        Err(anyhow::anyhow!(
+            "LocalProvider claim validation is not implemented in axiograph-llm-sync"
         ))
     }
 }

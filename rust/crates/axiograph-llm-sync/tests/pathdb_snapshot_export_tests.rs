@@ -1,9 +1,11 @@
-//! End-to-end snapshot export/import tests (`.axpd` ↔ `.axi`).
+//! Debug/parity snapshot export/import tests (`.axpd` ↔ `.axi`).
 //!
-//! These tests exercise the “GraphRAG → PathDB → snapshot” loop:
+//! These tests exercise the reversible PathDB byte/parser parity loop:
 //! - facts land in PathDB via `UnifiedStorage`,
 //! - we export PathDB into the reversible `.axi` snapshot schema (`PathDBExportV1`),
 //! - import back, and ensure the snapshot representation is stable.
+//!
+//! This is not a semantic/query/certificate authority path.
 
 use axiograph_pathdb::axi_export::{export_pathdb_to_axi_v1, import_pathdb_from_axi_v1};
 use axiograph_storage::{ChangeSource, StorableFact, StorageConfig, UnifiedStorage};

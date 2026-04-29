@@ -251,6 +251,8 @@ pub struct CompetencyQuestionEvaluationV1 {
     pub satisfied: bool,
     pub weight: f64,
     pub cost: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_query: Option<crate::query_ir::PreparedQueryMetadataV1>,
     pub trust: CompetencyQuestionTrustV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
@@ -489,6 +491,7 @@ pub fn evaluate_competency_questions_with_trust(
         let (query, min_rows, weight) = normalized_competency_query(q)?;
         let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&query);
         let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
+        let prepared_query = Some(prepared.metadata_with_meta(meta.as_ref())?);
         let refinement_candidates = prepared
             .exploration_view(None)
             .refinement_candidates
@@ -521,6 +524,7 @@ pub fn evaluate_competency_questions_with_trust(
             satisfied: ok,
             weight,
             cost,
+            prepared_query,
             trust: CompetencyQuestionTrustV1 {
                 trust_class: trust.trust_class,
                 coverage: Some(trust.coverage),
@@ -570,6 +574,7 @@ pub fn evaluate_competency_questions_with_trust_and_theory_graph(
         let (query, min_rows, weight) = normalized_competency_query(q)?;
         let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&query);
         let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
+        let prepared_query = Some(prepared.metadata_with_meta(meta.as_ref())?);
         let refinement_candidates = prepared
             .exploration_view_with_theory_graph(None, compiled_schema, theories)
             .refinement_candidates
@@ -602,6 +607,7 @@ pub fn evaluate_competency_questions_with_trust_and_theory_graph(
             satisfied: ok,
             weight,
             cost,
+            prepared_query,
             trust: CompetencyQuestionTrustV1 {
                 trust_class: trust.trust_class,
                 coverage: Some(trust.coverage),
@@ -797,6 +803,17 @@ instance I of Demo:
         };
 
         let eval = evaluate_competency_questions_with_trust(&db, std::slice::from_ref(&question))?;
+        let prepared_query = eval.questions[0]
+            .prepared_query
+            .as_ref()
+            .expect("CQ report should cite prepared-query metadata");
+        assert!(prepared_query.query_ir_id.starts_with("query_ir_v1:"));
+        assert!(prepared_query
+            .prepared_query_id
+            .starts_with("prepared_query_v1:"));
+        assert_eq!(prepared_query.trust.trust_class, "certifiable");
+        assert_eq!(prepared_query.non_claims.completeness_claim, "not_claimed");
+        assert!(prepared_query.kernel_refs.is_empty());
         let candidate = eval.questions[0]
             .refinement_candidates
             .iter()

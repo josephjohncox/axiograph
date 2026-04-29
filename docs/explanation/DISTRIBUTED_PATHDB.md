@@ -22,12 +22,20 @@ For the base single-node design, see `docs/explanation/PATHDB_DESIGN.md`.
 
 PathDB today is a single-node, binary, indexed KG store. The most robust path to distribution is:
 
-1. Treat **facts** as the canonical replicated state (append-only log + snapshots).
-2. Treat **PathDB indexes** (bitmaps/path indexes) as **derived, rebuildable state** per shard/replica.
-3. Ensure every query result is bound to a **snapshot id** and accompanied by a **certificate**.
-4. If you need offline/third-party verification, bind certificates to a **cryptographic commitment** (Merkle root / transparency log) of the snapshot.
+1. Treat accepted canonical **`.axi` modules plus semantic VCS commits** as the
+   replicated meaning state.
+2. Treat evidence/WAL overlays as reviewable attachments until promoted.
+3. Treat **PathDB indexes** (bitmaps/path indexes) as **derived, rebuildable
+   state** per shard/replica.
+4. Ensure every machine query is prepared as a typed `PreparedQueryV1` and every
+   certified result is bound to a canonical `.axi` anchor through
+   `query_result_v3` witnesses.
+5. If you need offline/third-party verification, bind witnesses to a
+   cryptographic commitment (Merkle root / transparency log) of the accepted
+   snapshot/ref.
 
-In other words: distribute the *data plane*, keep the *meaning plane* stable.
+In other words: distribute the execution/data plane, keep the accepted `.axi`
+meaning plane and semantic VCS stable.
 
 ### 0.1 Read replicas (v1, implemented)
 
@@ -57,9 +65,10 @@ See `docs/howto/SNAPSHOT_STORE.md` for usage and gotchas.
 
 Every answer certificate must say:
 
-- which snapshot of the KG it is about (logical time / commit index),
-- which semantics version it assumes (certificate kind + version),
-- and how to validate any data dependencies.
+- which accepted `.axi`/semantic VCS anchor and derived PathDB snapshot it is about,
+- which prepared query handle/IR it answers (`PreparedQueryV1` metadata),
+- which semantics version it assumes (for active query witnesses, `query_result_v3`),
+- and how to validate any data dependencies, overlays, or evidence attachments.
 
 In a distributed system, “what snapshot?” becomes the *hard part*.
 
@@ -70,7 +79,8 @@ a PathDB snapshot as:
 - `.axi` using the reversible `PathDBExportV1` schema (`axiograph db pathdb export-axi`), for live-byte/debug/parser-parity checks only.
 
 Semantic/query/certificate authority should bind to canonical accepted `.axi`
-anchors and typed query witnesses, not to `PathDBExportV1` snapshot tables.
+anchors, semantic VCS refs, typed reports, and `query_result_v3` witnesses, not
+to `PathDBExportV1` snapshot tables.
 
 ### 1.3 Partitioning must not change semantics
 
@@ -85,24 +95,27 @@ Partitioning only changes *how we find proofs*, not *what counts as a proof*.
 
 ---
 
-## 2. Canonical distributed shape: log + snapshots + derived indexes
+## 2. Canonical distributed shape: semantic VCS + snapshots + derived indexes
 
-The cleanest approach is “event-sourced KG”:
+The cleanest approach is semantic history first, execution state second:
 
-1. **Canonical fact log**
-   - append-only records: “add fact”, “retract fact”, “supersede”, “reconcile decision”, etc.
-2. **Periodic snapshots**
-   - a snapshot defines a closed set of facts at a commit index/time.
-3. **Derived indexes per node**
-   - PathDB-like adjacency + bitmap/path indexes are built from a snapshot.
+1. **Canonical semantic VCS**: append-only typed commits for promotion, evidence
+   commits, merges, rebases, supersession, retraction, and reconciliation.
+2. **Accepted snapshots**: the accepted `.axi` closure and reviewed overlays at
+   a semantic ref/time.
+3. **Derived indexes per node**: PathDB-like adjacency + bitmap/path indexes
+   built from accepted snapshots.
 
-This matches production DB practice: derived indexes can be rebuilt; the canonical log cannot be reconstructed if corrupted.
+This matches production DB practice: derived indexes can be rebuilt; semantic
+history and accepted `.axi` cannot be reconstructed if corrupted.
 
 ### 2.1 Why this fits proof-carrying results
 
 Certificates become stable if they refer to:
 
-- a snapshot id,
+- a canonical accepted `.axi` anchor / semantic VCS ref,
+- a derived snapshot id,
+- the `PreparedQueryV1`/`query_ir_v1` identity,
 - and fact identifiers that are stable within that snapshot (or globally content-addressed).
 
 This avoids the “my answer is true, but only in whatever inconsistent replica state you happened to read” failure mode.
@@ -118,7 +131,7 @@ This avoids the “my answer is true, but only in whatever inconsistent replica 
 
 Pros:
 
-- simplest semantics and easiest certificate anchoring (“snapshot = commit index N”)
+- simplest semantics and deterministic audit anchoring (“snapshot = commit index N”)
 - easier reconciliation (one canonical decision stream)
 
 Cons:

@@ -823,47 +823,67 @@ Lean parses them here:
 
 - `lean/Axiograph/Certificate/Format.lean`
 
-Two generations exist:
+The active public certificate surface is canonical `.axi` anchored:
 
-- v1: reachability with float confidences (still bounded).
-- v2: fixed-point confidences (`Precision = 1_000_000`) and additional proof kinds:
-  - anchored reachability (optional `.axi` anchor + snapshot `relation_id` fact IDs),
-  - resolution decisions,
-  - path normalization (with optional replayable derivations),
-  - generic rewrite derivations (rule + position),
-  - path equivalence via normalization,
-  - and a Δ_F migration scaffold (`delta_f_v1`).
+- `query_result_v3`: typed query witnesses over canonical `.axi` modules.
+- `reachability_v3`: canonical path witnesses whose steps cite stable
+  `axi_fact_id` values derived from tuple facts.
+- `axi_well_typed_v1`: Lean-side re-checking for supported canonical `.axi`
+  module typing.
+- rewrite/path/equivalence and Δ_F migration certificate families remain
+  supported where their verifier fragments are explicitly documented.
+
+Older `reachability_v1` and `reachability_v2` fixtures are retained for
+verifier-continuity tests only. They are not the public server, REPL, MCP, or
+agent query contract.
 
 For running and schema details, see:
 
 - `docs/reference/CERTIFICATES.md`
 - `docs/howto/FORMAL_VERIFICATION.md`
 
-### 11.3 A representative v2 reachability certificate (shape)
+### 11.3 Representative anchored query/reachability certificates
 
 ```json
 {
   "version": 2,
-  "kind": "reachability_v2",
+  "anchor": { "axi_digest_v1": "fnv1a64:..." },
+  "kind": "reachability_v3",
   "proof": {
     "type": "step",
-    "from": 1,
-    "rel_type": 7,
-    "to": 9,
-    "rel_confidence_fp": 850000,
-    "rest": {
-      "type": "reflexive",
-      "entity": 9
-    }
+    "from": "Alice",
+    "rel": "Parent",
+    "to": "Bob",
+    "rel_confidence_fp": 1000000,
+    "axi_fact_id": "axi:fact:...",
+    "rest": { "type": "reflexive", "entity": "Bob" }
   }
 }
 ```
 
 Meaning:
 
-- This claims a path from entity 1 to entity 9 by a single step of relation type 7.
-- The step has confidence 0.85 (fixed-point numerator 850000).
-- The checker computes path confidence by multiplying step confidences along the chain.
+- This claims a path from `Alice` to `Bob` under a canonical `.axi` digest.
+- The step cites a stable `axi_fact_id`, not a PathDB snapshot relation id.
+- The checker replays the step against the anchored canonical module.
+
+For normal query answering, use the typed query witness family:
+
+```json
+{
+  "version": 2,
+  "anchor": { "axi_digest_v1": "fnv1a64:..." },
+  "kind": "query_result_v3",
+  "query": { "query_id": "prepared:..." },
+  "rows": [
+    { "bindings": { "to": "Bob" }, "witnesses": ["axi:fact:..."] }
+  ]
+}
+```
+
+`query_result_v3` proves soundness of returned rows for the supported fragment.
+It does not claim answer completeness unless a future certificate explicitly
+states and verifies that stronger property.
 
 ### 11.4 The “untrusted engine, trusted checker” loop
 
@@ -908,7 +928,9 @@ When adding a new certificate kind:
 - Canonical `.axi` parsing:
   - `lean/Axiograph/Axi/*` and Rust equivalents in `rust/crates/axiograph-dsl/src/*`
 - Certificates:
-  - Reachability v1 + v2 (including optional `.axi` anchoring via `axi_digest_v1` and snapshot `relation_id` fact IDs)
+  - `query_result_v3` typed query witnesses over canonical `.axi`
+  - `reachability_v3` path witnesses over stable `axi_fact_id`
+  - Reachability v1/v2 fixtures for verifier-continuity tests only
   - Resolution v2 (decision re-check)
   - Normalize-path v2 (recompute normalization, plus optional replayable derivation replay)
   - Rewrite-derivation v2 (replayable rewrite traces: rule + position)
@@ -926,10 +948,13 @@ To run:
    - Extend the rewrite-step machinery from local groupoid normalization to domain rewrite systems (unit conversions, schema migration rewrites, reconciliation explanations).
 2. Reconciliation proofs
    - Not only “decision was X”, but “decision is justified by a derivation under the policy”.
-3. Query certificates
-   - Every “certified” query answer from the PathDB executor carries a certificate, not just reachability demos.
-4. Anchoring certificates to canonical inputs
-   - Expand beyond the current `axi_digest_v1` + `relation_id` anchoring: introduce stable fact ids for canonical domain `.axi` (module digest + local id, or content addressing).
+3. Query certificate coverage
+   - Broaden `query_result_v3` fragment coverage and make `require_verified`
+     fail closed consistently across CLI, REPL, server, CQ, MCP, and agents.
+4. Anchoring coverage
+   - Keep pushing all proof-carrying surfaces to canonical `.axi` digest plus
+     stable `axi_fact_id` / `KernelRefV1`; avoid PathDBExport snapshot ids as
+     semantic or certificate authority.
 5. Trusted kernels for modalities/temporal logic
    - A small Lean core for modal/temporal semantics with certificates for inferences involving time and obligation.
 

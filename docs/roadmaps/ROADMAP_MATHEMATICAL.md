@@ -42,15 +42,35 @@ The literature in Appendix C of `docs/explanation/BOOK.md` points to a very conc
   transported, missing-image, and opaque obligations before certificate work.
 - [x] Add a deterministic Rust `TheoryObligationGraphV1` over compiled
   `TheoryIr` so runtime type-directed exploration, CQ repair, migration
-  authoring, and reconciliation can address the same theory obligations and
-  subjects before Lean proof work.
+  authoring, and reconciliation can address the same theory obligations,
+  relation subjects, and touched relation-role subjects before Lean proof work.
 - [x] Add a Rust `RuntimeTheoryCheckReportV1` over compiled `TheoryIr` and
   `TheoryObligationGraphV1` so runtime tooling can make scoped claims about
   well-typedness, admissibility, finite/evidence/global-indexed closure, and
   completeness under explicit assumptions without overclaiming Lean proof.
+  Current reports expose equation/rewrite admissibility diagnostics,
+  transport subject/status detail, and fragment/world/context/evidence/import
+  assumption diagnostics.
 - [x] Add research/reference docs for the runtime checker:
   `docs/research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md` and
   `docs/reference/RUNTIME_THEORY_CHECKER.md`.
+- [x] Add a Lean-side semantic VCS scaffold for finite typed slices,
+  operational join/meet preservation, conservative merge materialization, and
+  rebase transport preservation predicates in `lean/Axiograph/SemanticVCS.lean`.
+  This is theorem support outside the shipped verifier boundary; the feasibility
+  and completeness status is tracked in
+  `docs/reference/LEAN_THEORY_EVALUATION.md`.
+- [x] Add first Lean executable materialization gates for merge/rebase plans:
+  `checkMergePlanMaterialization` and `checkRebasePlanMaterialization` with
+  soundness lemmas proving that accepted checks imply blockers, resolver steps,
+  and residual obligations are empty.
+- [x] Add `lean/Axiograph/SemanticVCS/Json.lean`, the first strict
+  Lean-readable JSON parser/check surface for semantic refs, slice manifests,
+  merge plans, rebase plans, blockers, resolver steps, and transport items.
+- [x] Add Rust adapter exports
+  `semantic_merge_plan_lean_json_v1(...)` and
+  `semantic_rebase_plan_lean_json_v1(...)` so runtime merge/rebase reports have
+  a reduced future-certificate payload shape that matches the Lean parser.
 
 ### Next (1–2 months): functoriality + equivalences
 
@@ -65,6 +85,10 @@ The literature in Appendix C of `docs/explanation/BOOK.md` points to a very conc
 - [ ] Feed `RuntimeTheoryCheckReportV1` into behavior-case reports, bounded
   context reports, CQ gates, migration preview, reconciliation preview,
   semantic merge/rebase plans, and coding-agent semantic coverage reports.
+- [ ] Export `KernelSurfaceV1`, `SemanticSliceManifestV1`,
+  `SemanticMergePlanV1`, and `SemanticRebasePlanV1` into Lean-readable
+  certificates so the new finite-slice scaffold checks runtime merge/rebase
+  plans instead of remaining a standalone formalization.
 - [ ] Add proof-carrying rewrite derivations beyond normalization/equivalence (reconciliation explanations, domain/unit rewrites).
 
 ### Hardening track (parallel, optional)

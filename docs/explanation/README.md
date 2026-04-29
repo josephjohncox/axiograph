@@ -6,7 +6,7 @@ Explanation docs are “why/how it works” and are allowed to be longer.
 - `docs/explanation/ARCHITECTURE.md`
 - `docs/explanation/PATHDB_DESIGN.md`
 - `docs/explanation/DISTRIBUTED_PATHDB.md`
-- `docs/explanation/UNIFIED_STORAGE.md`
+- `docs/explanation/UNIFIED_STORAGE.md` (retired dual-write design note)
 - `docs/explanation/VERIFICATION_AND_GUARDRAILS.md`
 - `docs/explanation/MATHEMATICAL_FOUNDATIONS.md`
 - `docs/explanation/TOPOS_THEORY.md`

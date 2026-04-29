@@ -28,8 +28,8 @@ q select ?rpc where UserService -proto_service_has_rpc-> ?rpc limit 10
 q select ?ep where GetUser -proto_rpc_http_endpoint-> ?ep limit 10
 q select ?ep where UserService -proto_service_has_rpc/proto_rpc_http_endpoint-> ?ep max_hops 3 limit 10
 
-# Inspect the user-facing ontology edges directly instead of relying on a generic
-# witness fallback node.
+# Inspect the user-facing ontology edges directly instead of teaching users to
+# query low-level witness/fact nodes first.
 q select ?rpc where name("Doc_UserService_Overview") -mentions_rpc-> ?rpc limit 10
 q select ?ep where name("UserService") -proto_service_has_endpoint-> ?ep limit 10
 

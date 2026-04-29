@@ -1,0 +1,127 @@
+{
+  "version": "semantic_vcs_lean_merge_plan_v1",
+  "base": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "fnv1a64:plant-base",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-base",
+      "context_id": "plant-ops",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantOps.MaterialLot"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantOps.RunUsesLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "PlantOpsRules.RunUsesLot.key"
+      }
+    ]
+  },
+  "left": {
+    "anchor": {
+      "accepted_ref": "heads/review/procurement-certification",
+      "accepted_snapshot_id": "fnv1a64:plant-procurement",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-procurement",
+      "context_id": "plant-procurement",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.SupplierCertificate"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "ProcurementRules.ReleaseDocumentForLot.key"
+      },
+      {
+        "kind": "implementation_surface",
+        "id": "erp.receiving.release_document_service"
+      }
+    ]
+  },
+  "right": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "fnv1a64:plant-simulation",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-simulation",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantSimulation.SimulationScenario"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.OptimizerEvaluatesScenario.key"
+      },
+      {
+        "kind": "implementation_surface",
+        "id": "sim.optimizer.startup_schedule"
+      }
+    ]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "fnv1a64:plant-merged",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-merged",
+      "context_id": "plant-ops",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.SupplierCertificate"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "ProcurementRules.ReleaseDocumentForLot.key"
+      },
+      {
+        "kind": "implementation_surface",
+        "id": "erp.receiving.release_document_service"
+      },
+      {
+        "kind": "schema_object",
+        "id": "PlantSimulation.SimulationScenario"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.OptimizerEvaluatesScenario"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.OptimizerEvaluatesScenario.key"
+      },
+      {
+        "kind": "implementation_surface",
+        "id": "sim.optimizer.startup_schedule"
+      }
+    ]
+  },
+  "blockers": [],
+  "resolver_steps": [],
+  "residual_obligations": [],
+  "trust_class": "runtime_checked"
+}

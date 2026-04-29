@@ -191,7 +191,6 @@ pub enum FactStatus {
     /// Approved and integrated
     Integrated {
         /// Entity IDs assigned by the runtime store (PathDB).
-        #[serde(alias = "kg_ids")]
         entity_ids: Vec<u32>,
     },
     /// Rejected
@@ -266,7 +265,6 @@ pub struct SyncState {
     /// Conflicts requiring resolution
     pub conflicts: Vec<Conflict>,
     /// Version of the graph at last sync.
-    #[serde(alias = "kg_version")]
     pub graph_version: u64,
 }
 

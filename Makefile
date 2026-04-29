@@ -16,6 +16,7 @@
 #   make clean        - Clean build artifacts
 
 .PHONY: all all-exe rust lean lean-cache lean-system-cc lean-exe verify-lean verify-lean-cert verify-lean-e2e verify-lean-v2 verify-lean-e2e-v2 \
+	verify-lean-semantic-vcs \
 	verify-lean-axi-schema-v1 \
 	verify-lean-axi-v1 \
 	verify-axi-digest-e2e \
@@ -28,7 +29,7 @@
 	verify-lean-e2e-query-result-module-v3 \
 	verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1 \
 	verify-lean-certificates verify-lean-e2e-suite \
-	rust-test-semantics verify-semantics test-semantics test-backend-containers \
+	rust-test-semantics verify-semantics verify-canonical-spine test-semantics test-backend-containers \
 	viz-install viz-build viz-dev \
 	demo test clean install help
 
@@ -236,6 +237,34 @@ verify-lean-certificates: lean
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
+
+verify-lean-semantic-vcs: dirs
+	@echo "━━━ Verifying Rust semantic VCS plans against Lean theory ━━━"
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli semantic_merge_lattice -- --nocapture
+	@if command -v $(LAKE) >/dev/null 2>&1; then \
+		OUT_DIR=$(BUILD_DIR)/verify/semantic_merge ./examples/semantic_merge/run_merge_flow.sh && \
+		echo "✓ Rust-generated semantic VCS payload checks completed"; \
+	else \
+		echo "⚠️  lake (Lean) not found - cannot run semantic VCS theory checker"; \
+	fi
+
+verify-canonical-spine: dirs
+	@echo "━━━ Verifying canonical semantic spine V1 ━━━"
+	cd $(RUST_DIR) && $(CARGO) fmt --check
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-pathdb runtime_theory -- --nocapture
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli prepared_query -- --nocapture
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli semantic_merge_lattice -- --nocapture
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli --test examples_e2e software_authoring -- --nocapture
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli embeddings -- --nocapture
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli backend_pushdown -- --nocapture
+	@if command -v $(LAKE) >/dev/null 2>&1; then \
+		cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph.SemanticVCS; \
+	else \
+		echo "⚠️  lake (Lean) not found - skipping SemanticVCS build"; \
+	fi
+	$(MAKE) verify-lean-semantic-vcs
+	git diff --check
+	@echo "✓ Canonical semantic spine V1 gate complete"
 
 verify-lean-axi-schema-v1: lean
 	@echo "━━━ Parsing canonical schema .axi corpus (Lean) ━━━"
@@ -463,7 +492,7 @@ test: rust-test verify-semantics
 	@echo ""
 	@echo "━━━ All Tests Complete ━━━"
 
-verify-semantics: rust-test-semantics verify-lean-certificates verify-lean-e2e-suite verify-axi-parse-e2e verify-axi-digest-e2e verify-pathdb-export-axi-v1
+verify-semantics: rust-test-semantics verify-lean-certificates verify-lean-e2e-suite verify-lean-semantic-vcs verify-axi-parse-e2e verify-axi-digest-e2e verify-pathdb-export-axi-v1
 	@echo ""
 	@echo "━━━ Semantics Verification Complete ━━━"
 
@@ -568,6 +597,8 @@ help:
 	@echo "  verify-lean  Run Lean checker (optional)"
 	@echo "  verify-lean-cert  Verify CERT=... (optional AXI=...)"
 	@echo "  verify-lean-e2e  Rust → Lean certificate check"
+	@echo "  verify-lean-semantic-vcs  Verify Rust merge/rebase plans against Lean theory"
+	@echo "  verify-canonical-spine  Focused V1 spine gate across Rust, examples, and Lean"
 	@echo "  verify-semantics  Focused Rust+Lean semantics suite"
 	@echo "  viz-build    Build the viz frontend (frontend/viz/dist)"
 	@echo "  viz-build-debug  Build the viz frontend without minify + with sourcemaps"

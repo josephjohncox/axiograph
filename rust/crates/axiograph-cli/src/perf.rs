@@ -60,10 +60,6 @@ pub enum PerfCommands {
         /// Persist the generated database to `.axpd`.
         #[arg(long)]
         out_axpd: Option<PathBuf>,
-
-        /// Export the generated database to the reversible debug/parity `.axi` snapshot schema (`PathDBExportV1`).
-        #[arg(long)]
-        out_axi: Option<PathBuf>,
     },
 
     /// Synthetic AxQL querying over a generated PathDB.
@@ -321,7 +317,6 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             queries,
             seed,
             out_axpd,
-            out_axi,
         } => cmd_perf_pathdb(
             entities,
             edges_per_entity,
@@ -331,7 +326,6 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             queries,
             seed,
             out_axpd.as_ref(),
-            out_axi.as_ref(),
         ),
         PerfCommands::Axql {
             entities,
@@ -471,7 +465,6 @@ fn cmd_perf_pathdb(
     queries: usize,
     seed: u64,
     out_axpd: Option<&PathBuf>,
-    out_axi: Option<&PathBuf>,
 ) -> Result<()> {
     if path_len == 0 {
         return Err(anyhow!("--path-len must be > 0"));
@@ -531,13 +524,6 @@ fn cmd_perf_pathdb(
         let bytes = db.to_bytes()?;
         fs::write(out, bytes)?;
         println!("  wrote_axpd={} ({:?})", out.display(), start.elapsed());
-    }
-
-    if let Some(out) = out_axi {
-        let start = Instant::now();
-        let axi = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
-        fs::write(out, axi)?;
-        println!("  wrote_axi={} ({:?})", out.display(), start.elapsed());
     }
 
     // ---------------------------------------------------------------------

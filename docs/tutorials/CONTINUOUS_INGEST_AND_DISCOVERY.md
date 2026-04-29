@@ -371,11 +371,13 @@ cargo run -p axiograph-cli -- discover promote-proposals \
 
 Outputs:
 
-- `build/candidates/MachinistLearning.proposals.axi` (candidate blocks to merge)
+- `build/candidates/MachinistLearning.proposals.axi` (review candidate, not accepted truth)
 - `build/candidates/promotion_trace.json` (what mapped vs what was skipped)
 
-Promotion remains manual: review the candidate `.axi` output and merge accepted blocks into the
-canonical modules under `examples/` (or your project’s canonical `.axi` tree).
+Promotion is not a copy/paste merge into examples. Treat the generated `.axi` as
+a review candidate, run `check validate` / `check theory`, and promote through
+the accepted-plane / semantic VCS flow for your project. For the current
+canonical path, see `docs/howto/CANONICAL_SEMANTIC_SPINE.md`.
 
 ---
 

@@ -1,3 +1,10 @@
+-- Debug/live-byte/parser-parity fixture only.
+--
+-- This module uses the reversible `PathDBExportV1` snapshot schema so the Rust
+-- and Lean parsers can test old PathDB byte/snapshot round-trips. Do not use it
+-- as canonical ontology meaning, tutorial input, query authority, certificate
+-- authority, or accepted-plane promotion material.
+
 module PathDBExport
 
 schema PathDBExportV1:

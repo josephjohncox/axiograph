@@ -25,6 +25,7 @@ pub(crate) const SEMANTIC_SLICE_DIFF_TOOL_NAME: &str = "semantic_slice_diff";
 pub(crate) const SEMANTIC_MERGE_PLAN_TOOL_NAME: &str = "semantic_merge_plan";
 pub(crate) const SEMANTIC_REBASE_PLAN_TOOL_NAME: &str = "semantic_rebase_plan";
 pub(crate) const SEMANTIC_RESOLVER_STEPS_TOOL_NAME: &str = "semantic_resolver_steps";
+pub(crate) const SEMANTIC_KERNEL_SURFACE_TOOL_NAME: &str = "semantic_kernel_surface";
 pub(crate) const SEMANTIC_THEORY_GRAPH_TOOL_NAME: &str = "semantic_theory_graph";
 pub(crate) const SEMANTIC_THEORY_CHECK_TOOL_NAME: &str = "semantic_theory_check";
 
@@ -48,6 +49,7 @@ const SEMANTIC_SLICE_DIFF_TOOL_VERSION: &str = "axiograph_semantic_slice_diff_v1
 const SEMANTIC_MERGE_PLAN_TOOL_VERSION: &str = "axiograph_semantic_merge_plan_v1";
 const SEMANTIC_REBASE_PLAN_TOOL_VERSION: &str = "axiograph_semantic_rebase_plan_v1";
 const SEMANTIC_RESOLVER_STEPS_TOOL_VERSION: &str = "axiograph_semantic_resolver_steps_v1";
+const SEMANTIC_KERNEL_SURFACE_TOOL_VERSION: &str = "axiograph_semantic_kernel_surface_v1";
 const SEMANTIC_THEORY_GRAPH_TOOL_VERSION: &str = "axiograph_semantic_theory_graph_v1";
 const SEMANTIC_THEORY_CHECK_TOOL_VERSION: &str = "axiograph_semantic_theory_check_v1";
 
@@ -242,6 +244,11 @@ pub(crate) struct SemanticResolverStepsArgs {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticKernelSurfaceArgs {
+    pub axi_text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SemanticTheoryGraphArgs {
     pub axi_text: String,
     #[serde(default)]
@@ -355,6 +362,15 @@ pub(crate) struct SemanticMergePlanToolResultV1 {
 pub(crate) struct SemanticResolverStepsToolResultV1 {
     pub version: &'static str,
     pub report: crate::semantic_merge_lattice::SemanticResolverStepsReportV1,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SemanticKernelSurfaceToolResultV1 {
+    pub version: &'static str,
+    pub surface: axiograph_pathdb::kernel_ir::KernelSurfaceV1,
+    pub trust_boundary: String,
+    pub completeness_claim: String,
+    pub ontology_closure_claim: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -680,6 +696,17 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
             }),
         },
         SemanticToolSpecV1 {
+            name: SEMANTIC_KERNEL_SURFACE_TOOL_NAME,
+            description: "Compile canonical .axi text and return KernelSurfaceV1, the shared runtime index over schema/category, theory, instance-functor, and stable fact refs.",
+            input_schema: json!({
+                "type": "object",
+                "required": ["axi_text"],
+                "properties": {
+                    "axi_text": { "type": "string" }
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
             name: SEMANTIC_THEORY_GRAPH_TOOL_NAME,
             description: "Compile canonical .axi text and return runtime theory-obligation graphs for type-directed exploration, CQ repair, migration, and reconciliation planning.",
             input_schema: json!({
@@ -747,6 +774,7 @@ pub(crate) fn is_semantic_tool(name: &str) -> bool {
             | SEMANTIC_MERGE_PLAN_TOOL_NAME
             | SEMANTIC_REBASE_PLAN_TOOL_NAME
             | SEMANTIC_RESOLVER_STEPS_TOOL_NAME
+            | SEMANTIC_KERNEL_SURFACE_TOOL_NAME
             | SEMANTIC_THEORY_GRAPH_TOOL_NAME
             | SEMANTIC_THEORY_CHECK_TOOL_NAME
     )
@@ -822,6 +850,9 @@ pub(crate) fn invoke_semantic_tool(
         }
         SEMANTIC_RESOLVER_STEPS_TOOL_NAME => {
             serde_json::to_value(call_semantic_resolver_steps(arguments)?).map_err(Into::into)
+        }
+        SEMANTIC_KERNEL_SURFACE_TOOL_NAME => {
+            serde_json::to_value(call_semantic_kernel_surface(arguments)?).map_err(Into::into)
         }
         SEMANTIC_THEORY_GRAPH_TOOL_NAME => {
             serde_json::to_value(call_semantic_theory_graph(arguments)?).map_err(Into::into)
@@ -1235,6 +1266,27 @@ pub(crate) fn call_semantic_resolver_steps(
     Ok(SemanticResolverStepsToolResultV1 {
         version: SEMANTIC_RESOLVER_STEPS_TOOL_VERSION,
         report: crate::semantic_merge_lattice::resolver_steps_report(&args.merge_plan),
+    })
+}
+
+pub(crate) fn call_semantic_kernel_surface(
+    arguments: Value,
+) -> Result<SemanticKernelSurfaceToolResultV1> {
+    let args: SemanticKernelSurfaceArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_kernel_surface: invalid args: {err}"))?;
+    let canonical = crate::axi_input::require_canonical_axi_text(&args.axi_text)
+        .map_err(|err| anyhow!("semantic_kernel_surface: expected canonical .axi text: {err}"))?;
+    let kernel =
+        axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), &args.axi_text)
+            .map_err(|err| {
+                anyhow!("semantic_kernel_surface: failed to compile KernelModuleIr: {err}")
+            })?;
+    Ok(SemanticKernelSurfaceToolResultV1 {
+        version: SEMANTIC_KERNEL_SURFACE_TOOL_VERSION,
+        surface: kernel.kernel_surface_v1(),
+        trust_boundary: "rust_runtime_operational_not_lean_certificate".to_string(),
+        completeness_claim: "not_claimed".to_string(),
+        ontology_closure_claim: "not_claimed".to_string(),
     })
 }
 
@@ -1750,6 +1802,46 @@ instance FamilyInst of Family:
     }
 
     #[test]
+    fn semantic_kernel_surface_tool_returns_shared_runtime_refs() -> Result<()> {
+        let axi = r#"
+module Family
+
+schema Family:
+  object Person
+  relation parent(child: Person, parent: Person)
+
+theory FamilyTheory on Family:
+  constraint functional parent.child -> parent.parent
+
+instance FamilyInst of Family:
+  Person = {Alice, Bob}
+  parent = {(child=Bob, parent=Alice)}
+"#;
+        let out = call_semantic_kernel_surface(json!({
+            "axi_text": axi
+        }))?;
+
+        assert_eq!(out.version, SEMANTIC_KERNEL_SURFACE_TOOL_VERSION);
+        assert_eq!(
+            out.surface.version,
+            axiograph_pathdb::KERNEL_SURFACE_VERSION_V1
+        );
+        assert!(out.surface.total_refs > 0);
+        assert!(out.surface.refs.iter().any(|reference| {
+            matches!(
+                reference,
+                axiograph_pathdb::KernelRefV1::TheoryObligation { .. }
+            )
+        }));
+        assert!(out.surface.refs.iter().any(|reference| {
+            matches!(reference, axiograph_pathdb::KernelRefV1::StableFact { .. })
+        }));
+        assert_eq!(out.completeness_claim, "not_claimed");
+        assert!(is_semantic_tool(SEMANTIC_KERNEL_SURFACE_TOOL_NAME));
+        Ok(())
+    }
+
+    #[test]
     fn semantic_theory_check_tool_returns_runtime_closure_report() -> Result<()> {
         let axi = r#"
 module Family
@@ -1871,6 +1963,7 @@ theory FamilyTheory on Family:
                 SEMANTIC_MERGE_PLAN_TOOL_NAME,
                 SEMANTIC_REBASE_PLAN_TOOL_NAME,
                 SEMANTIC_RESOLVER_STEPS_TOOL_NAME,
+                SEMANTIC_KERNEL_SURFACE_TOOL_NAME,
                 SEMANTIC_THEORY_GRAPH_TOOL_NAME,
                 SEMANTIC_THEORY_CHECK_TOOL_NAME,
             ]

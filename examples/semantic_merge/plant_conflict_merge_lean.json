@@ -1,0 +1,116 @@
+{
+  "version": "semantic_vcs_lean_merge_plan_v1",
+  "base": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "fnv1a64:plant-base",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-base",
+      "context_id": "plant-ops",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantOps.MaterialLot"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantOps.RunUsesLot"
+      }
+    ]
+  },
+  "left": {
+    "anchor": {
+      "accepted_ref": "heads/review/procurement-lot-refactor",
+      "accepted_snapshot_id": "fnv1a64:plant-procurement-lot-refactor",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-procurement-refactor",
+      "context_id": "plant-procurement",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.CertifiedIncomingLot"
+      },
+      {
+        "kind": "subtype_inclusion",
+        "id": "PlantProcurement.CertifiedIncomingLot <: PlantOps.MaterialLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "ProcurementRules.certified_lot_transport"
+      }
+    ]
+  },
+  "right": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-lot-state",
+      "accepted_snapshot_id": "fnv1a64:plant-simulation-lot-state",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-simulation-lot-state",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantSimulation.SimulatedMaterialState"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.StateForLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.lot_state_transport"
+      }
+    ]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "fnv1a64:plant-conflict",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-conflict",
+      "context_id": "plant-ops",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "schema_object",
+        "id": "PlantProcurement.CertifiedIncomingLot"
+      },
+      {
+        "kind": "schema_object",
+        "id": "PlantSimulation.SimulatedMaterialState"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "merge.resolve_material_lot_type_family"
+      }
+    ]
+  },
+  "blockers": [
+    "resolver_step"
+  ],
+  "resolver_steps": [
+    {
+      "handle_id": "typed_refinement:resolve_material_lot_type_family",
+      "touched_refs": [
+        {
+          "kind": "schema_object",
+          "id": "PlantOps.MaterialLot"
+        },
+        {
+          "kind": "schema_object",
+          "id": "PlantProcurement.CertifiedIncomingLot"
+        },
+        {
+          "kind": "schema_object",
+          "id": "PlantSimulation.SimulatedMaterialState"
+        }
+      ],
+      "required": true
+    }
+  ],
+  "residual_obligations": [],
+  "trust_class": "review_only"
+}

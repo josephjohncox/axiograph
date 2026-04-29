@@ -179,6 +179,45 @@ pub const MAGIC_NUMBER: u32 = 0x41585044;
 /// Current format version
 pub const FORMAT_VERSION: u32 = 2;
 
+/// Production `PathDB::to_bytes/from_bytes` envelope version.
+pub const AXPD_LIVE_FORMAT_VERSION_V1: u32 = 1;
+
+/// Sectioned header version modeled in this module.
+pub const AXPD_SECTIONED_FORMAT_VERSION_V2: u32 = FORMAT_VERSION;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxpdConvergenceStatusV1 {
+    pub live_format_version: u32,
+    pub sectioned_format_version: u32,
+    pub live_reader_accepts_sectioned_v2: bool,
+    pub sectioned_v2_is_runtime_format: bool,
+    pub live_reader_enforces_header_checksum: bool,
+    pub summary: String,
+}
+
+impl AxpdConvergenceStatusV1 {
+    pub fn is_converged(&self) -> bool {
+        self.live_reader_accepts_sectioned_v2
+            && self.sectioned_v2_is_runtime_format
+            && self.live_reader_enforces_header_checksum
+    }
+}
+
+/// Current live/verified `.axpd` convergence status.
+///
+/// This intentionally stays explicit so docs, tests, and agents do not confuse
+/// the sectioned v2 header model with the production v1 live-byte reader.
+pub fn axpd_convergence_status_v1() -> AxpdConvergenceStatusV1 {
+    AxpdConvergenceStatusV1 {
+        live_format_version: AXPD_LIVE_FORMAT_VERSION_V1,
+        sectioned_format_version: AXPD_SECTIONED_FORMAT_VERSION_V2,
+        live_reader_accepts_sectioned_v2: false,
+        sectioned_v2_is_runtime_format: false,
+        live_reader_enforces_header_checksum: false,
+        summary: "live `.axpd` reads use the v1 PathDB envelope; sectioned v2 is verified scaffolding, not the runtime format".to_string(),
+    }
+}
+
 /// Feature flags
 pub mod feature_flags {
     pub const MODAL_LOGIC: u64 = 1 << 0;
@@ -793,6 +832,19 @@ mod tests {
         let parsed_flags = parsed.flags;
         let header_flags = header.flags;
         assert_eq!(parsed_flags, header_flags);
+    }
+
+    #[test]
+    fn test_axpd_convergence_status_stays_explicit() {
+        let status = axpd_convergence_status_v1();
+        assert_eq!(status.live_format_version, AXPD_LIVE_FORMAT_VERSION_V1);
+        assert_eq!(
+            status.sectioned_format_version,
+            AXPD_SECTIONED_FORMAT_VERSION_V2
+        );
+        assert!(!status.is_converged());
+        assert!(!status.live_reader_accepts_sectioned_v2);
+        assert!(status.summary.contains("v1 PathDB envelope"));
     }
 
     #[test]

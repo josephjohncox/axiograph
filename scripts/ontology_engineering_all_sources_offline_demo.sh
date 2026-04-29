@@ -253,11 +253,6 @@ echo "-- D6) build/check out WAL snapshot (.axpd)"
 ACCEPTED_WITH_CHUNKS_AXPD="$OUT_DIR/AllSources.accepted.with_chunks.axpd"
 "$AXIOGRAPH" db accept pathdb-build --dir "$ACCEPTED_DIR" --snapshot "$WAL_SNAPSHOT_ID" --out "$ACCEPTED_WITH_CHUNKS_AXPD"
 
-echo ""
-echo "-- D7) export reversible PathDB snapshot .axi (for anchoring certificates)"
-EXPORT_AXI="$OUT_DIR/AllSources.snapshot_export_v1.axi"
-"$AXIOGRAPH" db pathdb export-axi "$ACCEPTED_WITH_CHUNKS_AXPD" --out "$EXPORT_AXI"
-
 # ---------------------------------------------------------------------------
 # E) Viz + analysis over the final snapshot
 # ---------------------------------------------------------------------------
@@ -285,7 +280,6 @@ echo "  candidate axi:        $DRAFT_AXI"
 echo "  accepted plane dir:   $ACCEPTED_DIR"
 echo "  accepted axpd:        $ACCEPTED_AXPD"
 echo "  wal axpd:             $ACCEPTED_WITH_CHUNKS_AXPD"
-echo "  snapshot export axi:  $EXPORT_AXI"
 echo "  viz (typed overlay):  $OUT_DIR/all_sources_both_typed.html"
 echo "  network report:       $OUT_DIR/network_axpd.json"
 echo "  quality report:       $OUT_DIR/quality_axpd.json"

@@ -1,0 +1,97 @@
+{
+  "version": "semantic_vcs_lean_rebase_plan_v1",
+  "source": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "fnv1a64:plant-simulation",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-simulation",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.ScenarioUsesModel"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.ScenarioUsesModel.key"
+      }
+    ]
+  },
+  "onto": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "fnv1a64:plant-procurement",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-procurement",
+      "context_id": "plant-procurement",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "ProcurementRules.ReleaseDocumentForLot.key"
+      }
+    ]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/review/simulation-safety",
+      "accepted_snapshot_id": "fnv1a64:plant-rebase-clean",
+      "kernel_ir_digest": "fnv1a64:plant-kernel-rebase-clean",
+      "context_id": "plant-simulation",
+      "world_id": "review"
+    },
+    "refs": [
+      {
+        "kind": "relation_object",
+        "id": "PlantSimulation.ScenarioUsesModel"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.ScenarioUsesModel.key"
+      },
+      {
+        "kind": "relation_object",
+        "id": "PlantProcurement.ReleaseDocumentForLot"
+      },
+      {
+        "kind": "theory_obligation",
+        "id": "ProcurementRules.ReleaseDocumentForLot.key"
+      }
+    ]
+  },
+  "transport_items": [
+    {
+      "source_ref": {
+        "kind": "relation_object",
+        "id": "PlantSimulation.ScenarioUsesModel"
+      },
+      "target_ref": {
+        "kind": "relation_object",
+        "id": "PlantSimulation.ScenarioUsesModel"
+      },
+      "status": "preserved",
+      "required": true
+    },
+    {
+      "source_ref": {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.ScenarioUsesModel.key"
+      },
+      "target_ref": {
+        "kind": "theory_obligation",
+        "id": "SimulationRules.ScenarioUsesModel.key"
+      },
+      "status": "transported",
+      "required": true
+    }
+  ],
+  "blockers": [],
+  "resolver_steps": [],
+  "residual_obligations": []
+}

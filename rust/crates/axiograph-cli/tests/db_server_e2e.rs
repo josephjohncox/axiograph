@@ -609,8 +609,7 @@ fn db_serve_query_smoke() {
             ],
             "limit": 10
         },
-        "certify": true,
-        "verify": false
+        "certificate_policy": "emit"
     });
     let (cert_status, cert_resp) = http_post_json(addr, "/query", &query_cert);
     assert_eq!(
@@ -619,11 +618,11 @@ fn db_serve_query_smoke() {
     );
     assert!(
         cert_resp.get("certificate").is_some(),
-        "expected certificate in /query response when certify=true: {cert_resp}"
+        "expected certificate in /query response when certificate_policy=emit: {cert_resp}"
     );
     assert!(
         cert_resp.get("anchor_digest").is_some(),
-        "expected anchor_digest in /query response when certify=true: {cert_resp}"
+        "expected anchor_digest in /query response when certificate_policy=emit: {cert_resp}"
     );
     let anchor_digest_from_query = cert_resp["anchor_digest"].as_str().unwrap_or("");
     assert!(
@@ -773,17 +772,17 @@ fn db_serve_query_smoke() {
 }
 
 #[test]
-fn db_serve_store_backed_query_support_summary_without_certify() {
+fn db_serve_store_backed_query_support_summary_without_certificate_emit() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
     let run_dir = unique_run_dir(
         &repo_root,
-        "db_serve_store_backed_support_summary_no_certify",
+        "db_serve_store_backed_support_summary_policy_none",
     );
     let accepted_dir = init_store_backed_accepted_head_from_axi_text(
         &bin,
         &run_dir,
-        "support_summary_no_certify",
+        "support_summary_policy_none",
         r#"module Demo
 
 schema S:
@@ -816,7 +815,7 @@ instance I of S:
         .arg("--ready-file")
         .arg(&ready_file)
         .spawn()
-        .expect("spawn db serve (support summary no certify)");
+        .expect("spawn db serve (support summary policy none)");
     let _guard = ChildGuard { child };
 
     let addr = wait_for_ready_addr(&ready_file);
@@ -850,7 +849,7 @@ instance I of S:
     );
     assert!(
         response.get("certificate").is_none(),
-        "did not expect /query certificate when certify=false: {response}"
+        "did not expect /query certificate when certificate_policy is omitted: {response}"
     );
     assert_eq!(
         response["support_summary"]["basis"]["certificate_kind"].as_str(),
@@ -870,14 +869,17 @@ instance I of S:
 }
 
 #[test]
-fn db_serve_store_backed_query_support_summary_with_certify() {
+fn db_serve_store_backed_query_support_summary_with_certificate_policy_emit() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
-    let run_dir = unique_run_dir(&repo_root, "db_serve_store_backed_support_summary_certify");
+    let run_dir = unique_run_dir(
+        &repo_root,
+        "db_serve_store_backed_support_summary_policy_emit",
+    );
     let accepted_dir = init_store_backed_accepted_head_from_axi_text(
         &bin,
         &run_dir,
-        "support_summary_certify",
+        "support_summary_policy_emit",
         r#"module Demo
 
 schema S:
@@ -910,7 +912,7 @@ instance I of S:
         .arg("--ready-file")
         .arg(&ready_file)
         .spawn()
-        .expect("spawn db serve (support summary certify)");
+        .expect("spawn db serve (support summary policy emit)");
     let _guard = ChildGuard { child };
 
     let addr = wait_for_ready_addr(&ready_file);
@@ -936,7 +938,7 @@ instance I of S:
                 ],
                 "limit": 10
             },
-            "certify": true
+            "certificate_policy": "emit"
         }),
     );
     assert_eq!(
@@ -945,7 +947,7 @@ instance I of S:
     );
     assert!(
         response.get("certificate").is_some(),
-        "expected /query certificate when certify=true: {response}"
+        "expected /query certificate when certificate_policy=emit: {response}"
     );
     assert_eq!(
         response["support_summary"]["basis"]["certificate_kind"].as_str(),
@@ -1248,10 +1250,10 @@ fn db_serve_llm_agent_auto_commit_smoke() {
 }
 
 #[test]
-fn db_serve_llm_agent_require_verified_queries_refuses_without_verifier() {
+fn db_serve_llm_agent_require_verified_policy_refuses_without_accepted_anchor() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
-    let run_dir = unique_run_dir(&repo_root, "db_serve_llm_require_verified_queries");
+    let run_dir = unique_run_dir(&repo_root, "db_serve_llm_require_verified_policy");
 
     let axpd = run_dir.join("build/server.axpd");
     let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
@@ -1297,7 +1299,7 @@ fn db_serve_llm_agent_require_verified_queries_refuses_without_verifier() {
             "question": "find Person named Alice",
             "max_steps": 3,
             "max_rows": 5,
-            "require_verified_queries": true
+            "query_certificate_policy": "require_verified"
         }),
     );
     assert_eq!(
@@ -1307,7 +1309,14 @@ fn db_serve_llm_agent_require_verified_queries_refuses_without_verifier() {
     assert_eq!(
         agent_json.pointer("/gate/ok").and_then(|v| v.as_bool()),
         Some(false),
-        "expected gate failure when verifier is unavailable: {agent_json}"
+        "expected gate failure without accepted-anchor context: {agent_json}"
+    );
+    assert_eq!(
+        agent_json
+            .pointer("/gate/query_certificate_policy")
+            .and_then(|v| v.as_str()),
+        Some("require_verified"),
+        "expected policy-shaped gate report: {agent_json}"
     );
     let failures = agent_json
         .pointer("/gate/failures")
@@ -1317,9 +1326,9 @@ fn db_serve_llm_agent_require_verified_queries_refuses_without_verifier() {
     assert!(
         failures.iter().any(|v| {
             v.as_str()
-                .is_some_and(|s| s.contains("Lean verifier not configured"))
+                .is_some_and(|s| s.contains("missing accepted `.axi` anchor"))
         }),
-        "expected verifier configuration failure in gate report: {agent_json}"
+        "expected accepted-anchor failure in gate report: {agent_json}"
     );
     assert!(
         agent_json
@@ -1335,11 +1344,11 @@ fn db_serve_llm_agent_require_verified_queries_refuses_without_verifier() {
         .unwrap_or_default();
     assert!(
         query_certs.iter().any(|v| {
-            v.get("certificate_verify_error")
+            v.get("error")
                 .and_then(|x| x.as_str())
-                .is_some_and(|s| s.contains("Lean verifier not configured"))
+                .is_some_and(|s| s.contains("missing canonical `.axi` text"))
         }),
-        "expected query certificate verify error in transcript: {agent_json}"
+        "expected query certificate policy error in transcript: {agent_json}"
     );
 }
 
@@ -1431,7 +1440,7 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
                 ],
                 "limit": 20
             },
-            "certify": true
+            "certificate_policy": "emit"
         }),
     );
     assert_eq!(
@@ -1479,7 +1488,7 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
                 ],
                 "limit": 20
             },
-            "certify": true,
+            "certificate_policy": "emit",
             "snapshot": old_snapshot_id
         }),
     );
@@ -1548,7 +1557,11 @@ fn db_serve_world_model_propose_lineage_smoke() {
                     "relation_id": "wm::lineage::rel",
                     "rel_type": "Parent",
                     "source": "Alice",
-                    "target": "Bob"
+                    "target": "Bob",
+                    "attributes": {
+                        "axi_source_field": "child",
+                        "axi_target_field": "parent"
+                    }
                 }]
             },
             "notes": ["e2e deterministic plugin"]

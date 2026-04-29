@@ -19,36 +19,12 @@ use uuid::Uuid;
 
 /// Generate valid probability values
 fn prob_strategy() -> impl Strategy<Value = f32> {
-    (0.0f32..=1.0f32)
+    0.0f32..=1.0f32
 }
 
 /// Generate source IDs
 fn source_id_strategy() -> impl Strategy<Value = String> {
     "[a-z]{3,10}".prop_map(|s| s)
-}
-
-/// Generate fact types
-fn fact_type_strategy() -> impl Strategy<Value = String> {
-    prop_oneof![
-        Just("Entity".to_string()),
-        Just("Relation".to_string()),
-        Just("TacitKnowledge".to_string()),
-    ]
-}
-
-/// Generate entity names
-fn entity_name_strategy() -> impl Strategy<Value = String> {
-    "[A-Z][a-z]{2,15}".prop_map(|s| s)
-}
-
-/// Generate relation types
-fn relation_type_strategy() -> impl Strategy<Value = String> {
-    prop_oneof![
-        Just("is_a".to_string()),
-        Just("has_property".to_string()),
-        Just("causes".to_string()),
-        Just("supports".to_string()),
-    ]
 }
 
 // ============================================================================
@@ -338,7 +314,7 @@ proptest! {
 
     #[test]
     fn reconciliation_is_deterministic(
-        existing_weight in prob_strategy(),
+        _existing_weight in prob_strategy(),
         new_weight in prob_strategy(),
     ) {
         let config = ReconciliationConfig::default();
@@ -391,7 +367,7 @@ proptest! {
     fn conflict_resolution_consistent(
         conf1 in prob_strategy(),
         conf2 in prob_strategy(),
-        threshold in 0.1f32..0.5f32,
+        _threshold in 0.1f32..0.5f32,
     ) {
         let path1 = Path::from_edge(Edge::<IsA>::new(Uuid::new_v4(), Uuid::new_v4(), conf1));
         let path2 = Path::from_edge(Edge::<IsA>::new(Uuid::new_v4(), Uuid::new_v4(), conf2));

@@ -5,14 +5,17 @@ import Axiograph.Prob.Verified
 /-!
 # `Axiograph.Axi.PathDBExportV1`
 
-`PathDBExportV1` is the reversible `.axi` snapshot schema used to round-trip
-PathDB state for auditability and verification:
+`PathDBExportV1` is the reversible `.axi` snapshot schema used only to round-trip
+PathDB state for debug/live-byte/parser-parity checks:
 
 * export: `.axpd → .axi` (schema `PathDBExportV1`)
 * import: `.axi → .axpd`
 
-For certificate anchoring we need to *interpret* just enough of a snapshot to
-check that a certificate’s referenced fact IDs exist in the snapshot.
+It is not the ontology kernel, not accepted-plane meaning, and not the active
+query/certificate authority. Current proof-carrying query surfaces use canonical
+`.axi` anchors plus stable `axi_fact_id` values (`query_result_v3` /
+`reachability_v3`). This module remains to keep reversible snapshot parser
+parity testable.
 
 This module is intentionally minimal and focused:
 
@@ -228,9 +231,9 @@ def extractRelationInfo (m : SchemaV1Module) : Except String (Std.HashMap Nat Re
   pure relInfo
 
 /-!
-## Extracting entity facts (for query certificate anchoring)
+## Extracting entity facts (for parser/live-byte parity)
 
-For certified querying we need to interpret more of a snapshot than just
+For snapshot parity tests we interpret more of a snapshot than just
 `relation_info`:
 
 * `entity_type` witnesses type constraints (`?x : Type`)

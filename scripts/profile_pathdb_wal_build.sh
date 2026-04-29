@@ -36,6 +36,13 @@ DO_CHECKOUT="${DO_CHECKOUT:-1}"
 DO_REBUILD="${DO_REBUILD:-1}"
 FLAMEGRAPH="${FLAMEGRAPH:-0}"
 
+case "$OUT_DIR" in
+  "$ROOT_DIR"/build/*|/tmp/*|/private/tmp/*) ;;
+  *)
+    echo "error: refusing to delete OUT_DIR outside repo build/ or temp paths: $OUT_DIR" >&2
+    exit 2
+    ;;
+esac
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
@@ -134,4 +141,3 @@ if [ "$DO_REBUILD" = "1" ]; then
   echo "  $REBUILD_AXPD"
   echo "  $OUT_DIR/timings_rebuild.json"
 fi
-

@@ -201,12 +201,12 @@ Boolean combinations:
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    LLM Query Parser                              │
+│              LLM Structured Query Proposal                       │
 │                                                                  │
 │  Input: Question + Schema Context + Examples                     │
-│  Output: Parsed AxQL + Confidence + Alternatives                 │
+│  Output: typed query_ir_v1 + diagnostics + alternatives          │
 │                                                                  │
-│  select ?s2 where name("RawMetal_A") -SupplierEquiv-> ?s2 limit 20│
+│  Rust prepares PreparedQueryV1 and rejects unsupported structure │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼

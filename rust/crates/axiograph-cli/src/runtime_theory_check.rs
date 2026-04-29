@@ -577,7 +577,8 @@ pub(crate) fn runtime_theory_check_human_summary(
             "next: resolve blocking RuntimeTheoryCheckReportV1 judgments before promotion; rerun with --json for typed handles"
                 .to_string(),
         );
-    } else if report.summary.residual_obligations > 0 || report.summary.review_only_obligations > 0 {
+    } else if report.summary.residual_obligations > 0 || report.summary.review_only_obligations > 0
+    {
         lines.push(
             "next: review residual/review-only obligations before making stronger completeness or closure claims"
                 .to_string(),

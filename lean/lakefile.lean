@@ -14,6 +14,9 @@ lean_lib Axiograph where
 lean_exe axiograph_verify where
   root := `Axiograph.VerifyMain
 
+lean_exe axiograph_semantic_vcs_check where
+  root := `Axiograph.SemanticVCS.CheckMain
+
 /--
 Build the trusted checker executable `axiograph_verify`.
 

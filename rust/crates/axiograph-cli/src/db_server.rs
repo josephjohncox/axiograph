@@ -1374,6 +1374,7 @@ fn snapshots_payload(state: &ServerState, query: Option<&str>) -> Result<serde_j
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct QueryRequestV1 {
     #[serde(default)]
     query: Option<String>,
@@ -1390,18 +1391,12 @@ struct QueryRequestV1 {
     /// Values may be numeric entity ids ("123") or context `name` values.
     #[serde(default)]
     contexts: Vec<String>,
-    /// Emit a Lean-checkable certificate for this query result (if possible).
+    /// Shared query certificate policy: none|emit|verify|require_verified.
     ///
-    /// Notes:
-    /// - approximate atoms (`fts`, `contains`, `fuzzy`) are not certifiable,
-    /// - multi-context scoping is execution-only for now.
+    /// `require_verified` is fail-closed and requires a store-backed accepted
+    /// `.axi` anchor plus canonical text.
     #[serde(default)]
-    certify: bool,
-    /// Verify the emitted certificate using the Lean checker (`axiograph_verify`).
-    ///
-    /// This implies `certify=true`.
-    #[serde(default)]
-    verify: bool,
+    certificate_policy: Option<crate::query_ir::QueryCertificatePolicyV1>,
     /// Optional snapshot id override when running in store-backed mode.
     ///
     /// If set, the server will load and query that snapshot for this request
@@ -1411,6 +1406,7 @@ struct QueryRequestV1 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LlmToQueryRequestV1 {
     question: String,
     /// Optional snapshot id override when running in store-backed mode.
@@ -1419,6 +1415,7 @@ struct LlmToQueryRequestV1 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LlmAgentRequestV1 {
     question: String,
     /// Optional chat history (for conversational UI).
@@ -1450,26 +1447,10 @@ struct LlmAgentRequestV1 {
     /// Optional message to attach to the WAL commit (audit log).
     #[serde(default)]
     commit_message: Option<String>,
-    /// Emit Lean-checkable certificates for `axql_run` steps executed by the tool-loop (best-effort).
+    /// Shared query certificate policy for tool-loop `axql_run` steps:
+    /// none|emit|verify|require_verified.
     #[serde(default)]
-    certify_queries: bool,
-    /// Verify emitted query certificates using the Lean checker (`axiograph_verify`) (best-effort).
-    ///
-    /// This implies `certify_queries=true`.
-    #[serde(default)]
-    verify_queries: bool,
-    /// Require that every executed `axql_run` step is accompanied by a certificate.
-    ///
-    /// If this is true and any query certificate fails to emit, the server will
-    /// **refuse** to return an un-gated answer (it will attach a gate report and
-    /// overwrite the final answer with a refusal message).
-    #[serde(default)]
-    require_query_certs: bool,
-    /// Require that every emitted query certificate is verified by Lean.
-    ///
-    /// This implies `verify_queries=true` and `certify_queries=true`.
-    #[serde(default)]
-    require_verified_queries: bool,
+    query_certificate_policy: Option<crate::query_ir::QueryCertificatePolicyV1>,
     /// Optional snapshot id override when running in store-backed mode.
     #[serde(default)]
     snapshot: Option<String>,
@@ -1719,6 +1700,9 @@ struct QueryResponseV1 {
     truncated: bool,
     elapsed_ms: u128,
     trust: crate::trust_contract::TrustContractV1,
+    certificate_policy: crate::query_ir::QueryCertificatePolicyV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prepared_query: Option<crate::query_ir::PreparedQueryMetadataV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     compiled_query_ir_v1: Option<crate::query_ir::QueryIrV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1823,11 +1807,58 @@ fn query_request_to_axql_query(req: &QueryRequestV1) -> Result<crate::axql::Axql
     Ok(parsed)
 }
 
+fn kernel_module_ir_from_canonical_axi_text_for_query_metadata(
+    axi_text: &str,
+) -> Option<axiograph_pathdb::kernel_ir::KernelModuleIr> {
+    let canonical = crate::axi_input::require_canonical_axi_text(axi_text).ok()?;
+    axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), axi_text).ok()
+}
+
+fn query_request_certificate_policy(
+    req: &QueryRequestV1,
+) -> crate::query_ir::QueryCertificatePolicyV1 {
+    req.certificate_policy.unwrap_or_default()
+}
+
+fn llm_agent_query_certificate_policy(
+    req: &LlmAgentRequestV1,
+) -> crate::query_ir::QueryCertificatePolicyV1 {
+    req.query_certificate_policy.unwrap_or_default()
+}
+
+fn require_query_certificate_refusal(policy: crate::query_ir::QueryCertificatePolicyV1) -> String {
+    if policy.requires_verified() {
+        "Refusing to answer: required verified query certificate gate failed.".to_string()
+    } else {
+        "Refusing to answer: certificate gate failed.".to_string()
+    }
+}
+
+fn mark_query_certificate_gate_refusal(
+    outcome: &mut crate::llm::ToolLoopOutcome,
+    policy: crate::query_ir::QueryCertificatePolicyV1,
+) {
+    outcome.final_answer.answer = require_query_certificate_refusal(policy);
+    outcome.final_answer.citations.clear();
+    outcome.final_answer.queries.clear();
+    outcome
+        .final_answer
+        .notes
+        .push("gate: query_certificate_policy".to_string());
+    if policy.requires_verified() {
+        outcome
+            .final_answer
+            .notes
+            .push("gate: require_verified".to_string());
+    }
+}
+
 async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResponseV1> {
     let req: QueryRequestV1 = parse_json_request(body, "query")?;
     let show_elaboration = req.show_elaboration;
-    let want_cert = req.certify || req.verify;
-    let want_verify = req.verify;
+    let certificate_policy = query_request_certificate_policy(&req);
+    let want_cert = certificate_policy.emits_certificate();
+    let want_verify = certificate_policy.verifies_certificate();
     let snapshot_override = req.snapshot.clone();
     let state = state.clone();
 
@@ -1898,6 +1929,19 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
         let elaboration = show_elaboration.then(|| prepared.elaboration_report().clone());
         let plan = show_elaboration.then(|| prepared.explain_plan_lines());
         let certifiability = prepared.certifiability();
+        let query_kernel = accepted_axi_text
+            .as_deref()
+            .and_then(kernel_module_ir_from_canonical_axi_text_for_query_metadata);
+        let prepared_query = Some(if let Some(kernel) = query_kernel.as_ref() {
+            prepared.metadata_with_meta_and_kernel(meta.as_ref(), kernel)?
+        } else {
+            prepared.metadata_with_meta(meta.as_ref())?
+        });
+        certificate_policy.ensure_require_verified_preconditions(
+            &certifiability,
+            accepted_axi_anchor.as_ref(),
+            accepted_axi_text.as_deref(),
+        )?;
 
         let mut accepted_query_anchor: Option<AcceptedAxiAnchor> = None;
         let mut rows: Vec<BTreeMap<String, EntityViewV1>> = Vec::new();
@@ -1962,6 +2006,7 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
                     certificate_verified = Some(ok);
                     certificate_verify_output = Some(out);
                     support_certificate_verified = Some(ok);
+                    certificate_policy.ensure_verified_result(certificate_verified)?;
                 }
             } else if certifiability.is_certifiable() {
                 if let Ok(certified) = prepared
@@ -2006,6 +2051,7 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
                     )?;
                     certificate_verified = Some(ok);
                     certificate_verify_output = Some(out);
+                    certificate_policy.ensure_verified_result(certificate_verified)?;
                 }
             }
         }
@@ -2042,6 +2088,8 @@ async fn handle_query(state: &Arc<ServerState>, body: &[u8]) -> Result<QueryResp
             truncated,
             elapsed_ms,
             trust: query_trust,
+            certificate_policy,
+            prepared_query,
             compiled_query_ir_v1,
             elaborated_query_ir_v1,
             elaborated_query,
@@ -2143,9 +2191,10 @@ async fn handle_llm_agent(
     let auto_commit = req.auto_commit;
     let accepted_snapshot_override = req.accepted_snapshot.clone();
     let commit_message = req.commit_message.clone();
-    let require_query_certs = req.require_query_certs || req.require_verified_queries;
-    let verify_queries = req.verify_queries || req.require_verified_queries;
-    let certify_queries = req.certify_queries || verify_queries || require_query_certs;
+    let query_certificate_policy = llm_agent_query_certificate_policy(&req);
+    let require_verified_query_gate = query_certificate_policy.requires_verified();
+    let verify_query_certificates = query_certificate_policy.verifies_certificate();
+    let emit_query_certificates = query_certificate_policy.emits_certificate();
     let max_steps_cap = crate::llm::llm_max_steps_cap()?;
 
     let state2 = state.clone();
@@ -2290,20 +2339,14 @@ async fn handle_llm_agent(
 
         // Optional: certify (and optionally verify) queries executed by the tool loop.
         let mut query_certs: Option<Vec<serde_json::Value>> = None;
-        if certify_queries {
-            let want_verify = verify_queries;
-            let (digest, axi, accepted_query_anchor) = if let Some(anchor) = accepted_axi_anchor {
-                let axi = accepted_axi_text.ok_or_else(|| {
-                    anyhow!(
-                        "accepted anchor bound tool-loop query certification is missing canonical `.axi` text"
-                    )
-                })?;
-                (anchor.axi_digest.clone(), axi, Some(anchor))
-            } else {
-                let (digest, axi) = export_canonical_module_axi(&db)?;
-                (digest, axi, None)
-            };
-
+        if emit_query_certificates {
+            let want_verify = verify_query_certificates;
+            let accepted_query_anchor = accepted_axi_anchor.clone();
+            let accepted_axi_text = accepted_axi_text.clone();
+            let accepted_query_kernel = accepted_axi_text
+                .as_deref()
+                .and_then(kernel_module_ir_from_canonical_axi_text_for_query_metadata);
+            let mut exported_axi: Option<(AxiDigest, String)> = None;
             let mut out: Vec<serde_json::Value> = Vec::new();
             for (i, step) in outcome.steps.iter().enumerate() {
                 if step.tool != "axql_run" {
@@ -2319,14 +2362,67 @@ async fn handle_llm_agent(
                     continue;
                 }
 
-                match crate::axql::parse_axql_query(&q).and_then(|parsed| {
-                    crate::axql::certify_axql_query_typed_with_meta(
-                        &db,
-                        &parsed,
-                        meta.as_ref(),
-                        digest.as_str(),
-                    )
-                }) {
+                let parsed = match crate::axql::parse_axql_query(&q) {
+                    Ok(parsed) => parsed,
+                    Err(e) => {
+                        out.push(serde_json::json!({
+                            "step_index": i,
+                            "query": q,
+                            "certificate_policy": query_certificate_policy,
+                            "error": e.to_string(),
+                        }));
+                        continue;
+                    }
+                };
+                let query_ir_v1 = crate::query_ir::QueryIrV1::from_axql_query(&parsed);
+                let prepared = match query_ir_v1.prepare_with_meta(&db, meta.as_ref()) {
+                    Ok(prepared) => prepared,
+                    Err(e) => {
+                        out.push(serde_json::json!({
+                            "step_index": i,
+                            "query": q,
+                            "certificate_policy": query_certificate_policy,
+                            "error": e.to_string(),
+                        }));
+                        continue;
+                    }
+                };
+                let prepared_query = if let Some(kernel) = accepted_query_kernel.as_ref() {
+                    prepared.metadata_with_meta_and_kernel(meta.as_ref(), kernel)?
+                } else {
+                    prepared.metadata_with_meta(meta.as_ref())?
+                };
+                if let Err(e) = query_certificate_policy.ensure_require_verified_preconditions(
+                    &prepared_query.certifiability,
+                    accepted_query_anchor.as_ref(),
+                    accepted_axi_text.as_deref(),
+                ) {
+                    out.push(serde_json::json!({
+                        "step_index": i,
+                        "query": q,
+                        "certificate_policy": query_certificate_policy,
+                        "prepared_query": prepared_query,
+                        "error": e.to_string(),
+                    }));
+                    continue;
+                }
+
+                let (digest, axi_for_verify, accepted_anchor_for_entry) =
+                    if let Some(anchor) = accepted_query_anchor.as_ref() {
+                        (
+                            anchor.axi_digest.clone(),
+                            accepted_axi_text.as_deref(),
+                            Some(anchor.clone()),
+                        )
+                    } else {
+                        if exported_axi.is_none() {
+                            exported_axi = Some(export_canonical_module_axi(&db)?);
+                        }
+                        let (digest, axi) = exported_axi.as_ref().expect("exported axi is set");
+                        (digest.clone(), Some(axi.as_str()), None)
+                    };
+
+                match prepared.certify_typed_with_anchor(&db, meta.as_ref(), digest.as_str()) {
                     Ok(cert) => {
                         let cert = cert.with_anchor(
                             axiograph_pathdb::certificate::AxiAnchorV1::new(digest.clone()),
@@ -2335,33 +2431,57 @@ async fn handle_llm_agent(
                             serde_json::to_value(&cert).unwrap_or(serde_json::Value::Null);
 
                         let (verified, verify_out, verify_err) = if want_verify {
-                            let cert_text = serde_json::to_string_pretty(&cert)?;
-                    match verify_certificate_with_lean(
-                        &state2.config.cert_verify,
-                        &axi,
-                        &cert_text,
-                    ) {
-                                Ok((ok, out_text)) => (Some(ok), Some(out_text), None),
-                                Err(e) => (Some(false), None, Some(e.to_string())),
+                            match axi_for_verify {
+                                Some(axi) if !axi.trim().is_empty() => {
+                                    let cert_text = serde_json::to_string_pretty(&cert)?;
+                                    match verify_certificate_with_lean(
+                                        &state2.config.cert_verify,
+                                        axi,
+                                        &cert_text,
+                                    ) {
+                                        Ok((ok, out_text)) => (Some(ok), Some(out_text), None),
+                                        Err(e) => (Some(false), None, Some(e.to_string())),
+                                    }
+                                }
+                                _ => (
+                                    Some(false),
+                                    None,
+                                    Some(
+                                        "accepted anchor bound tool-loop query certification is missing canonical `.axi` text"
+                                            .to_string(),
+                                    ),
+                                ),
                             }
                         } else {
                             (None, None, None)
                         };
+                        let require_verified_error = query_certificate_policy
+                            .ensure_verified_result(verified)
+                            .err()
+                            .map(|e| e.to_string());
 
-                        out.push(serde_json::json!({
+                        let mut entry = serde_json::json!({
                             "step_index": i,
                             "query": q,
-                            "accepted_axi_anchor": accepted_query_anchor.clone(),
+                            "certificate_policy": query_certificate_policy,
+                            "prepared_query": prepared_query,
+                            "accepted_axi_anchor": accepted_anchor_for_entry,
                             "certificate": cert_json,
                             "certificate_verified": verified,
                             "certificate_verify_output": verify_out,
                             "certificate_verify_error": verify_err,
-                        }));
+                        });
+                        if let Some(error) = require_verified_error {
+                            entry["error"] = serde_json::Value::String(error);
+                        }
+                        out.push(entry);
                     }
                     Err(e) => {
                         out.push(serde_json::json!({
                             "step_index": i,
                             "query": q,
+                            "certificate_policy": query_certificate_policy,
+                            "prepared_query": prepared_query,
                             "error": e.to_string(),
                         }));
                     }
@@ -2376,7 +2496,7 @@ async fn handle_llm_agent(
     .map_err(|e| anyhow!("llm/agent task join failed: {e}"))??;
 
     let mut gate: Option<serde_json::Value> = None;
-    if require_query_certs {
+    if require_verified_query_gate {
         let ran_any_query = outcome.steps.iter().any(|s| s.tool == "axql_run");
         let mut failures: Vec<String> = Vec::new();
 
@@ -2385,25 +2505,13 @@ async fn handle_llm_agent(
                 failures.push("no query_certificates emitted".to_string());
                 gate = Some(serde_json::json!({
                     "ok": false,
-                    "require_query_certs": true,
-                    "require_verified_queries": req.require_verified_queries,
+                    "query_certificate_policy": query_certificate_policy,
+                    "gate_mode": "require_verified",
                     "ran_any_query": ran_any_query,
                     "failures": failures,
                 }));
                 // Refuse to return an un-gated answer.
-                outcome.final_answer.answer = "Refusing to answer: certificate gate failed (enable certify+verify and ensure `axiograph_verify` is available).".to_string();
-                outcome.final_answer.citations.clear();
-                outcome.final_answer.queries.clear();
-                outcome
-                    .final_answer
-                    .notes
-                    .push("gate: require_query_certs".to_string());
-                if req.require_verified_queries {
-                    outcome
-                        .final_answer
-                        .notes
-                        .push("gate: require_verified_queries".to_string());
-                }
+                mark_query_certificate_gate_refusal(&mut outcome, query_certificate_policy);
                 // Continue: still allow auto-commit of overlays, and return debug info.
                 // (The caller may still want the tool-loop transcript/artifacts.)
             }
@@ -2414,7 +2522,7 @@ async fn handle_llm_agent(
                         failures.push(format!("query cert error: {err}"));
                         continue;
                     }
-                    if req.require_verified_queries {
+                    if query_certificate_policy.requires_verified() {
                         match c.get("certificate_verified").and_then(|v| v.as_bool()) {
                             Some(true) => {}
                             Some(false) => {
@@ -2436,34 +2544,22 @@ async fn handle_llm_agent(
                 let ok = failures.is_empty();
                 gate = Some(serde_json::json!({
                     "ok": ok,
-                    "require_query_certs": true,
-                    "require_verified_queries": req.require_verified_queries,
+                    "query_certificate_policy": query_certificate_policy,
+                    "gate_mode": "require_verified",
                     "ran_any_query": ran_any_query,
                     "failures": failures,
                 }));
 
                 if !ok {
-                    outcome.final_answer.answer = "Refusing to answer: certificate gate failed (enable certify+verify and ensure `axiograph_verify` is available).".to_string();
-                    outcome.final_answer.citations.clear();
-                    outcome.final_answer.queries.clear();
-                    outcome
-                        .final_answer
-                        .notes
-                        .push("gate: require_query_certs".to_string());
-                    if req.require_verified_queries {
-                        outcome
-                            .final_answer
-                            .notes
-                            .push("gate: require_verified_queries".to_string());
-                    }
+                    mark_query_certificate_gate_refusal(&mut outcome, query_certificate_policy);
                 }
             }
         } else {
             // No certified queries were executed; treat the gate as vacuously satisfied.
             gate = Some(serde_json::json!({
                 "ok": true,
-                "require_query_certs": true,
-                "require_verified_queries": req.require_verified_queries,
+                "query_certificate_policy": query_certificate_policy,
+                "gate_mode": "require_verified",
                 "ran_any_query": ran_any_query,
                 "failures": [],
             }));
@@ -4581,7 +4677,7 @@ mod tests {
 
     #[test]
     fn capabilities_payload_exposes_typed_service_manifest() {
-        let state = test_server_state_with_axi(
+        let state = test_server_state_with_store_backed_axi(
             r#"
 module Demo
 
@@ -4676,6 +4772,8 @@ instance Tiny of S:
                 semantic_claims: Vec::new(),
                 gaps: Vec::new(),
             },
+            certificate_policy: crate::query_ir::QueryCertificatePolicyV1::None,
+            prepared_query: None,
             compiled_query_ir_v1: None,
             elaborated_query_ir_v1: None,
             elaborated_query: None,
@@ -4868,6 +4966,92 @@ instance Tiny of S:
             .contains("raw `query` text is no longer accepted"));
     }
 
+    #[test]
+    fn query_request_rejects_legacy_certificate_boolean_aliases() {
+        for field in [
+            "certify",
+            "verify",
+            "require_query_certs",
+            "require_verified_queries",
+        ] {
+            let mut value = json!({
+                "lang": "query_ir_v1",
+                "query_ir_v1": {
+                    "version": 1,
+                    "select": ["?x"],
+                    "where": [
+                        { "kind": "type", "term": "?x", "type": "A" }
+                    ],
+                    "limit": 5
+                }
+            });
+            value
+                .as_object_mut()
+                .expect("request object")
+                .insert(field.to_string(), json!(true));
+            let err = serde_json::from_value::<QueryRequestV1>(value)
+                .expect_err("legacy certificate booleans should not deserialize");
+
+            assert!(
+                err.to_string()
+                    .contains(&format!("unknown field `{field}`")),
+                "expected unknown-field error for `{field}`, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn llm_agent_request_rejects_legacy_query_certificate_aliases() {
+        for field in [
+            "certify_queries",
+            "verify_queries",
+            "require_query_certs",
+            "require_verified_queries",
+        ] {
+            let mut value = json!({
+                "question": "find Person named Alice"
+            });
+            value
+                .as_object_mut()
+                .expect("request object")
+                .insert(field.to_string(), json!(true));
+            let err = serde_json::from_value::<LlmAgentRequestV1>(value)
+                .expect_err("legacy LLM query-certificate booleans should not deserialize");
+
+            assert!(
+                err.to_string()
+                    .contains(&format!("unknown field `{field}`")),
+                "expected unknown-field error for `{field}`, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn llm_to_query_request_rejects_legacy_query_certificate_aliases() {
+        for field in [
+            "certify_queries",
+            "verify_queries",
+            "require_query_certs",
+            "require_verified_queries",
+        ] {
+            let mut value = json!({
+                "question": "find Person named Alice"
+            });
+            value
+                .as_object_mut()
+                .expect("request object")
+                .insert(field.to_string(), json!(true));
+            let err = serde_json::from_value::<LlmToQueryRequestV1>(value)
+                .expect_err("legacy LLM query-certificate booleans should not deserialize");
+
+            assert!(
+                err.to_string()
+                    .contains(&format!("unknown field `{field}`")),
+                "expected unknown-field error for `{field}`, got {err}"
+            );
+        }
+    }
+
     fn test_server_state_with_axi(axi_text: &str) -> Arc<ServerState> {
         let mut db = PathDB::new();
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi_text)
@@ -4978,9 +5162,8 @@ instance Tiny of S:
 
     #[tokio::test]
     async fn handle_query_accepts_query_ir_v1_and_returns_compiled_ir() {
-        let state = test_server_state_with_axi(
-            r#"
-module Demo
+        let state = test_server_state_with_store_backed_axi(
+            r#"module Demo
 
 schema S:
   object A
@@ -5015,6 +5198,35 @@ instance I of S:
         assert!(resp.elaborated_query.is_some());
         assert!(resp.typed_holes.is_some());
         assert!(resp.exploration_suggestions.is_some());
+        let prepared_query = resp
+            .prepared_query
+            .as_ref()
+            .expect("/query should return prepared-query metadata");
+        assert!(prepared_query.query_ir_id.starts_with("query_ir_v1:"));
+        assert!(prepared_query
+            .prepared_query_id
+            .starts_with("prepared_query_v1:"));
+        assert_eq!(prepared_query.trust.trust_class, "certifiable");
+        assert_eq!(prepared_query.non_claims.completeness_claim, "not_claimed");
+        assert!(prepared_query.kernel_refs.iter().any(|reference| {
+            matches!(reference, axiograph_pathdb::KernelRefV1::Module { .. })
+        }));
+        assert!(prepared_query.kernel_refs.iter().any(|reference| {
+            matches!(
+                reference,
+                axiograph_pathdb::KernelRefV1::SchemaObject {
+                    object: axiograph_pathdb::SchemaCategoryObjectRefIr::ObjectType {
+                        name,
+                        ..
+                    },
+                    ..
+                } if name == "A"
+            )
+        }));
+        assert_eq!(
+            resp.certificate_policy,
+            crate::query_ir::QueryCertificatePolicyV1::None
+        );
         assert_eq!(resp.trust.trust_class, "certifiable");
         assert_eq!(
             resp.trust.soundness,
@@ -5022,6 +5234,43 @@ instance I of S:
         );
         assert_eq!(resp.trust.scope.anchor, "snapshot_scoped");
         assert_eq!(resp.trust.scope.context, "unscoped");
+    }
+
+    #[tokio::test]
+    async fn handle_query_require_verified_fails_closed_without_accepted_anchor() {
+        let state = test_server_state_with_axi(
+            r#"
+module Demo
+
+schema S:
+  object A
+
+instance I of S:
+  A = {x}
+"#,
+        );
+
+        let body = serde_json::to_vec(&json!({
+            "lang": "query_ir_v1",
+            "query_ir_v1": {
+                "version": 1,
+                "select": ["?x"],
+                "where": [
+                    { "kind": "type", "term": "?x", "type": "A" }
+                ],
+                "limit": 10
+            },
+            "certificate_policy": "require_verified"
+        }))
+        .expect("serialize query request");
+
+        let err = handle_query(&state, &body)
+            .await
+            .expect_err("require_verified must fail closed without an accepted anchor");
+        assert!(err
+            .to_string()
+            .contains("query certificate policy `require_verified`"));
+        assert!(err.to_string().contains("missing accepted `.axi` anchor"));
     }
 
     #[tokio::test]
@@ -5063,7 +5312,7 @@ instance I of S:
                 ],
                 "limit": 10
             },
-            "certify": true
+            "certificate_policy": "emit"
         }))
         .expect("serialize query request");
 
@@ -5098,7 +5347,8 @@ instance I of S:
     }
 
     #[tokio::test]
-    async fn handle_query_store_backed_response_includes_support_summary_without_certify() {
+    async fn handle_query_store_backed_response_includes_support_summary_without_certificate_emit()
+    {
         let state = test_server_state_with_store_backed_axi(
             r#"
 module Demo
@@ -5279,13 +5529,13 @@ instance CensusInst of Census:
             &db,
             &[],
             crate::proposal_gen::ProposeRelationInputV1 {
-                rel_type: "child".to_string(),
+                rel_type: "Parent".to_string(),
                 source_name: "Jamison".to_string(),
                 target_name: "Bob".to_string(),
                 source_type: None,
                 target_type: None,
-                source_field: None,
-                target_field: None,
+                source_field: Some("child".to_string()),
+                target_field: Some("parent".to_string()),
                 context: Some("FamilyTree".to_string()),
                 time: Some("T2025".to_string()),
                 confidence: Some(0.9),
@@ -5497,6 +5747,23 @@ instance I of S:
             resp["evolution_preview"]["typed_change"]["kind"].as_str(),
             Some("olog_fragment_delta")
         );
+    }
+
+    #[tokio::test]
+    async fn handle_discover_check_olog_rejects_pathdb_export_axi_text() {
+        let body = serde_json::to_vec(&json!({
+            "axi_text": include_str!("../../../../examples/anchors/pathdb_export_anchor_v1.axi"),
+            "schema_name": "PathDBExportV1",
+            "fragment": {}
+        }))
+        .expect("serialize discover/check-olog request");
+
+        let err = handle_discover_check_olog(&body)
+            .await
+            .expect_err("check-olog endpoint should reject PathDBExportV1");
+        assert!(err
+            .to_string()
+            .contains("expected a canonical .axi module, but input is a PathDBExportV1 snapshot"));
     }
 
     #[tokio::test]

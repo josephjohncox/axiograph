@@ -488,10 +488,13 @@ The long-term strategy is:
    - already implemented: `axiograph_pathdb::axi_module_typecheck::TypedAxiV1Module`
    - already implemented: `axiograph_pathdb::typestate::{UnnormalizedPathExprV2, NormalizedPathExprV2}`
    - next: typestate for “typechecked query IR” at the REPL/CLI boundary.
-3. Keep expanding snapshot/graph branding:
+3. Keep expanding canonical-anchor graph branding:
    - already implemented: `PathDB::db_token()` + DB-branded `AxiTyped*` wrappers
-   - now implemented: `axiograph_pathdb::DbBranded<T>` + branded witnesses for:
-     - reachability: `axiograph_pathdb::witness::reachability_proof_v2_from_relation_ids`
+   - now implemented: `axiograph_pathdb::DbBranded<T>` + branded witnesses for
+     internal graph operations
+   - public proof-carrying query/reachability flows should use canonical
+     `.axi` anchors plus stable `axi_fact_id` / `query_result_v3`, not
+     relation-id snapshot witnesses
      - normalization/equivalence/reconciliation: `ProofProducingOptimizer::*_branded` variants
 4. Expand certificate v2 into full rewrite/groupoid derivations and make the Rust
    engine emit those certificates for real operations (normalization, reconciliation).
