@@ -1220,28 +1220,34 @@ fn capabilities_payload(state: &ServerState) -> Result<serde_json::Value> {
     }))
 }
 
-fn read_jsonl_map_latest_message(path: &Path) -> BTreeMap<String, String> {
-    let mut out: BTreeMap<String, String> = BTreeMap::new();
+#[derive(Debug, Clone, Default)]
+struct SnapshotLogMetadata {
+    message: Option<String>,
+    event_index: usize,
+}
+
+fn read_jsonl_snapshot_log_metadata(path: &Path) -> BTreeMap<String, SnapshotLogMetadata> {
+    let mut out: BTreeMap<String, SnapshotLogMetadata> = BTreeMap::new();
     let Ok(text) = std::fs::read_to_string(path) else {
         return out;
     };
-    for line in text.lines() {
+    for (event_index, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         // Try accepted-plane event first.
         if let Ok(ev) = serde_json::from_str::<AcceptedPlaneEventV1>(line) {
-            if let Some(msg) = ev.message {
-                out.insert(ev.snapshot_id.to_string(), msg);
-            }
+            let meta = out.entry(ev.snapshot_id.to_string()).or_default();
+            meta.event_index = event_index;
+            meta.message = ev.message.or_else(|| meta.message.clone());
             continue;
         }
         // Then PathDB WAL event.
         if let Ok(ev) = serde_json::from_str::<PathDbWalEventV1>(line) {
-            if let Some(msg) = ev.message {
-                out.insert(ev.snapshot_id.to_string(), msg);
-            }
+            let meta = out.entry(ev.snapshot_id.to_string()).or_default();
+            meta.event_index = event_index;
+            meta.message = ev.message.or_else(|| meta.message.clone());
             continue;
         }
     }
@@ -1288,12 +1294,14 @@ fn snapshots_payload(state: &ServerState, query: Option<&str>) -> Result<serde_j
         modules_count: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none")]
         ops_count: Option<usize>,
+        #[serde(skip_serializing)]
+        log_event_index: Option<usize>,
     }
 
     let mut entries: Vec<SnapshotEntryV1> = Vec::new();
     if want_layer == "accepted" {
         let snapshots_dir = dir.join("snapshots");
-        let messages = read_jsonl_map_latest_message(&dir.join("accepted_plane.log.jsonl"));
+        let log_metadata = read_jsonl_snapshot_log_metadata(&dir.join("accepted_plane.log.jsonl"));
 
         let rd = std::fs::read_dir(&snapshots_dir).map_err(|e| {
             anyhow!(
@@ -1313,21 +1321,22 @@ fn snapshots_payload(state: &ServerState, query: Option<&str>) -> Result<serde_j
             let Ok(snap) = serde_json::from_str::<AcceptedPlaneSnapshotV1>(&text) else {
                 continue;
             };
-            let msg = messages.get(snap.snapshot_id.as_str()).cloned();
+            let meta = log_metadata.get(snap.snapshot_id.as_str());
             entries.push(SnapshotEntryV1 {
                 snapshot_id: snap.snapshot_id.to_string(),
                 previous_snapshot_id: snap.previous_snapshot_id.map(|id| id.to_string()),
                 created_at_unix_secs: snap.created_at_unix_secs,
-                message: msg,
+                message: meta.and_then(|m| m.message.clone()),
                 accepted_snapshot_id: None,
                 modules_count: Some(snap.modules.len()),
                 ops_count: None,
+                log_event_index: meta.map(|m| m.event_index),
             });
         }
     } else {
         let wal_dir = dir.join("pathdb");
         let snapshots_dir = wal_dir.join("snapshots");
-        let messages = read_jsonl_map_latest_message(&wal_dir.join("pathdb_wal.log.jsonl"));
+        let log_metadata = read_jsonl_snapshot_log_metadata(&wal_dir.join("pathdb_wal.log.jsonl"));
 
         let rd = std::fs::read_dir(&snapshots_dir).map_err(|e| {
             anyhow!(
@@ -1347,20 +1356,26 @@ fn snapshots_payload(state: &ServerState, query: Option<&str>) -> Result<serde_j
             let Ok(snap) = serde_json::from_str::<PathDbSnapshotV1>(&text) else {
                 continue;
             };
-            let msg = messages.get(snap.snapshot_id.as_str()).cloned();
+            let meta = log_metadata.get(snap.snapshot_id.as_str());
             entries.push(SnapshotEntryV1 {
                 snapshot_id: snap.snapshot_id.to_string(),
                 previous_snapshot_id: snap.previous_snapshot_id.map(|id| id.to_string()),
                 created_at_unix_secs: snap.created_at_unix_secs,
-                message: msg,
+                message: meta.and_then(|m| m.message.clone()),
                 accepted_snapshot_id: Some(snap.accepted_snapshot_id.to_string()),
                 modules_count: None,
                 ops_count: Some(snap.ops.len()),
+                log_event_index: meta.map(|m| m.event_index),
             });
         }
     }
 
-    entries.sort_by(|a, b| b.created_at_unix_secs.cmp(&a.created_at_unix_secs));
+    entries.sort_by(|a, b| {
+        b.created_at_unix_secs
+            .cmp(&a.created_at_unix_secs)
+            .then_with(|| b.log_event_index.cmp(&a.log_event_index))
+            .then_with(|| b.snapshot_id.cmp(&a.snapshot_id))
+    });
     if entries.len() > limit {
         entries.truncate(limit);
     }
