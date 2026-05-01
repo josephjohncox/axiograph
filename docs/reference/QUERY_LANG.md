@@ -135,6 +135,8 @@ Supported atoms:
 
 `fts(...)` is most useful when you import evidence chunks into a snapshot (e.g.
 proto/doc ingestion): `axiograph db pathdb import-chunks <in.axpd> --chunks <chunks.json> --out <out.axpd>`.
+Current `chunks.json` files are typed `EvidenceChunkBundleV1` evidence-plane
+bundles, not bare arrays and not accepted ontology truth.
 This importer stores:
 
 - `DocChunk.text` (the chunk body / doc comment text)

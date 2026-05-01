@@ -1,9 +1,9 @@
 //! Integration tests for the complete Axiograph pipeline
 //!
 //! These tests verify end-to-end functionality across crates:
-//! - DSL parsing → Compiler → Idris output
+//! - canonical `.axi` parsing → compiled runtime surfaces
 //! - Storage → PathDB → Query
-//! - LLM Sync → Storage → Both formats
+//! - LLM/evidence sync → storage materialization → grounding context
 //!
 //! Run with: cargo test --test integration_tests
 

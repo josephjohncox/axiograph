@@ -9,7 +9,25 @@ use axiograph_ingest_docs::{
     Chunk, EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1,
 };
 use axiograph_pathdb::certificate::{CertificatePayloadV2, CertificateV2};
+use serde::Deserialize;
 use walkdir::WalkDir;
+
+#[derive(Debug, Deserialize)]
+struct ExampleCatalogV1 {
+    version: u32,
+    examples: Vec<ExampleCatalogEntryV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExampleCatalogEntryV1 {
+    id: String,
+    path: String,
+    kind: String,
+    #[serde(default)]
+    feature_tags: Vec<String>,
+    #[serde(default)]
+    commands: Vec<String>,
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -41,46 +59,41 @@ fn example_catalog_paths_exist_and_stay_teaching_oriented() {
     let repo_root = repo_root();
     let catalog_path = repo_root.join("examples/catalog.json");
     let text = fs::read_to_string(&catalog_path).expect("read examples/catalog.json");
-    let catalog: serde_json::Value =
-        serde_json::from_str(&text).expect("parse examples/catalog.json");
-    assert_eq!(catalog["version"], serde_json::json!(1));
+    let catalog: ExampleCatalogV1 = serde_json::from_str(&text).expect("parse examples/catalog.json");
+    assert_eq!(catalog.version, 1);
 
-    let examples = catalog["examples"]
-        .as_array()
-        .expect("catalog examples must be an array");
+    let examples = &catalog.examples;
     assert!(
         examples.len() >= 8,
         "expected a pedagogical catalog with multiple routes"
     );
 
     for example in examples {
-        let id = example["id"].as_str().expect("example id string");
-        let path = example["path"].as_str().expect("example path string");
         assert!(
-            repo_root.join(path).exists(),
-            "catalog example `{id}` points to missing path `{path}`"
+            repo_root.join(&example.path).exists(),
+            "catalog example `{}` points to missing path `{}`",
+            example.id,
+            example.path
         );
 
-        let tags = example["feature_tags"]
-            .as_array()
-            .expect("feature_tags must be an array");
         assert!(
-            !tags.is_empty(),
-            "catalog example `{id}` needs feature tags so agents can route it"
+            !example.feature_tags.is_empty(),
+            "catalog example `{}` needs feature tags so agents can route it",
+            example.id
         );
 
-        let commands = example["commands"].as_array().expect("commands array");
-        for command in commands {
-            let command = command.as_str().expect("command string");
+        for command in &example.commands {
             assert!(
                 !command.contains("export_axi build/"),
-                "catalog example `{id}` should not foreground debug snapshot export scripts"
+                "catalog example `{}` should not foreground debug snapshot export scripts",
+                example.id
             );
             assert!(
                 !command.contains("db pathdb export-axi")
                     && !command.contains("db pathdb import-axi")
                     && !command.contains("PathDBExportV1"),
-                "catalog example `{id}` should keep storage/debug roundtrips out of teaching commands, got `{command}`"
+                "catalog example `{}` should keep storage/debug roundtrips out of teaching commands, got `{command}`",
+                example.id
             );
         }
     }
@@ -222,51 +235,35 @@ fn semantic_merge_example_keeps_ci_safe_contract() {
     );
 
     let catalog_path = repo_root.join("examples/catalog.json");
-    let catalog: serde_json::Value = serde_json::from_str(
+    let catalog: ExampleCatalogV1 = serde_json::from_str(
         &fs::read_to_string(&catalog_path).expect("read examples/catalog.json"),
     )
     .expect("parse examples/catalog.json");
-    let semantic_merge = catalog["examples"]
-        .as_array()
-        .expect("catalog examples array")
+    let semantic_merge = catalog
+        .examples
         .iter()
-        .find(|example| example["id"] == serde_json::json!("semantic-merge-plant-operations"))
+        .find(|example| example.id == "semantic-merge-plant-operations")
         .expect("semantic-merge example catalog entry");
-    assert_eq!(
-        semantic_merge["path"],
-        serde_json::json!("examples/semantic_merge")
-    );
-    assert_eq!(
-        semantic_merge["kind"],
-        serde_json::json!("semantic_vcs_fixture")
-    );
+    assert_eq!(semantic_merge.path, "examples/semantic_merge");
+    assert_eq!(semantic_merge.kind, "semantic_vcs_fixture");
     for tag in ["semantic-vcs", "merge", "rebase", "runtime-theory"] {
         assert!(
-            semantic_merge["feature_tags"]
-                .as_array()
-                .expect("semantic-merge feature tags")
-                .iter()
-                .any(|value| value == tag),
+            semantic_merge.feature_tags.iter().any(|value| value == tag),
             "semantic-merge catalog entry should keep `{tag}` feature tag"
         );
     }
     assert!(
-        semantic_merge["commands"]
-            .as_array()
-            .expect("semantic-merge commands")
+        semantic_merge
+            .commands
             .iter()
             .any(|command| command == "./examples/semantic_merge/run_merge_flow.sh"),
         "semantic-merge catalog entry should keep the runnable script"
     );
     assert!(
-        semantic_merge["commands"]
-            .as_array()
-            .expect("semantic-merge commands")
+        semantic_merge
+            .commands
             .iter()
-            .any(|command| command
-                .as_str()
-                .unwrap_or_default()
-                .contains("check theory examples/semantic_merge/PlantOperationsCore.axi")),
+            .any(|command| command.contains("check theory examples/semantic_merge/PlantOperationsCore.axi")),
         "semantic-merge catalog entry should expose the lightweight runtime-theory check"
     );
 
@@ -686,7 +683,7 @@ fn software_authoring_overlay_tools_support_weak_and_enforced_modes() {
             .expect("parse coverage report");
     assert_eq!(
         coverage_json["version"],
-        serde_json::json!("continuous_software_coverage_report_v1")
+        serde_json::json!("overlay_software_coverage_report_v1")
     );
     assert_eq!(
         coverage_json["coverage_mode"],
@@ -741,7 +738,7 @@ fn software_authoring_script_runs_authoring_flow() {
     .expect("parse scripted software coverage");
     assert_eq!(
         coverage_json["version"],
-        serde_json::json!("continuous_software_coverage_report_v1")
+        serde_json::json!("overlay_software_coverage_report_v1")
     );
 
     let materialized_json: serde_json::Value = serde_json::from_str(
@@ -1825,7 +1822,8 @@ fn accepted_plane_pathdb_wal_commit_and_build_smoke() {
     }];
     fs::write(
         &chunks_path,
-        serde_json::to_string_pretty(&chunks).expect("serialize chunks"),
+        axiograph_ingest_docs::chunks_to_json_for_chunks("examples_e2e", "doc0.txt", chunks)
+            .expect("serialize chunks"),
     )
     .expect("write chunks.json");
 
@@ -2673,13 +2671,14 @@ fn doc_to_proposals_to_candidate_axi_smoke() {
     let run_dir = unique_run_dir(&repo_root, "doc_to_candidates");
     let build_dir = run_dir.join("build");
 
-    let input = repo_root.join("examples/docs/sample_conversation.txt");
+    let input = repo_root.join("examples/ingest_fixtures/machining_conversation.txt");
     let proposals_path = build_dir.join("proposals.json");
     let chunks_path = build_dir.join("chunks.json");
     let facts_path = build_dir.join("facts.json");
 
     let status = Command::new(&bin)
         .current_dir(&run_dir)
+        .arg("ingest")
         .arg("doc")
         .arg(&input)
         .arg("--out")
@@ -2690,7 +2689,7 @@ fn doc_to_proposals_to_candidate_axi_smoke() {
         .arg(&facts_path)
         .arg("--machining")
         .status()
-        .expect("run axiograph doc");
+        .expect("run axiograph ingest doc");
     assert!(
         status.success(),
         "doc ingestion failed (exit={})",

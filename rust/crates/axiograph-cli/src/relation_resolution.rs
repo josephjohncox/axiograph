@@ -12,8 +12,8 @@
 //! - no endpoint swapping.
 //!
 //! If a user or agent has inverse phrasing, the caller must supply the canonical
-//! relation plus explicit endpoint fields. This keeps hidden compatibility
-//! rewrites out of the typed semantic spine.
+//! relation plus explicit endpoint fields. This keeps implicit label rewrites
+//! out of the typed semantic spine.
 
 use axiograph_pathdb::axi_semantics::{MetaPlaneIndex, RelationDecl, SchemaIndex};
 

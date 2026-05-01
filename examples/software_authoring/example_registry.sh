@@ -20,15 +20,6 @@ software_authoring_resolve_example_id() {
   esac
 
   case "${basename}" in
-    order_fulfillment_definition_queries.json)
-      printf '%s\n' order_fulfillment
-      ;;
-    subscription_billing_definition_queries.json)
-      printf '%s\n' subscription_billing
-      ;;
-    process_control_definition_queries.json)
-      printf '%s\n' process_control
-      ;;
     *)
       printf 'unknown software-authoring example selector: %s\n' "${selector}" >&2
       return 1
@@ -53,8 +44,8 @@ software_authoring_example_field() {
     order_fulfillment:behavior_case)
       printf '%s\n' 'examples/software_authoring/order_fulfillment_behavior_case.json'
       ;;
-    order_fulfillment:coverage_query)
-      printf '%s\n' 'examples/software_authoring/order_fulfillment_coverage_query.json'
+    order_fulfillment:cq_file)
+      printf '%s\n' 'examples/software_authoring/order_fulfillment.cq'
       ;;
     subscription_billing:title)
       printf '%s\n' 'Subscription billing entitlement after paid invoice'
@@ -68,8 +59,8 @@ software_authoring_example_field() {
     subscription_billing:behavior_case)
       printf '%s\n' 'examples/software_authoring/subscription_billing_behavior_case.json'
       ;;
-    subscription_billing:coverage_query)
-      printf '%s\n' 'examples/software_authoring/subscription_billing_coverage_query.json'
+    subscription_billing:cq_file)
+      printf '%s\n' 'examples/software_authoring/subscription_billing.cq'
       ;;
     process_control:title)
       printf '%s\n' 'Process-control charge authorization with simulator/HMI/PLC surfaces'
@@ -83,11 +74,78 @@ software_authoring_example_field() {
     process_control:behavior_case)
       printf '%s\n' 'examples/software_authoring/process_control_behavior_case.json'
       ;;
-    process_control:coverage_query)
-      printf '%s\n' 'examples/software_authoring/process_control_coverage_query.json'
+    process_control:cq_file)
+      printf '%s\n' 'examples/software_authoring/process_control.cq'
       ;;
     *)
       printf 'unknown software-authoring example field: %s.%s\n' "${id}" "${field}" >&2
+      return 1
+      ;;
+  esac
+}
+
+software_authoring_coverage_query_args() {
+  case "$1" in
+    order_fulfillment)
+      printf '%s\n' \
+        --term 'reserve credit' \
+        --term 'shipment eligibility' \
+        --term 'accepted payment' \
+        --relation OrderHasReservation \
+        --relation ReservationApprovesPayment \
+        --relation OrderEligibleForShipment \
+        --cq-name reservation_normalizes_to_payment \
+        --cq-name accepted_order_is_shipment_eligible \
+        --code-ref services/orders/internal/credit/reserve_credit.go \
+        --code-ref apps/checkout/src/reserve-credit.ts \
+        --code-ref workers/shipping/src/eligibility.rs \
+        --surface-hint checkout \
+        --surface-hint shipping \
+        --max-matches 8
+      ;;
+    subscription_billing)
+      printf '%s\n' \
+        --term 'paid invoice' \
+        --term 'product access' \
+        --term 'account entitlement' \
+        --relation InvoicePaidBy \
+        --relation PaidInvoiceGrantsEntitlement \
+        --relation AccountGrantedEntitlement \
+        --cq-name paid_invoice_grants_subscription_entitlement \
+        --cq-name account_has_product_access \
+        --code-ref services/billing/internal/payments/apply_payment.go \
+        --code-ref workers/entitlements/src/grant_entitlement.rs \
+        --code-ref apps/billing/src/apply-payment.ts \
+        --surface-hint billing \
+        --surface-hint entitlement \
+        --surface-hint 'product access' \
+        --max-matches 8
+      ;;
+    process_control)
+      printf '%s\n' \
+        --term 'charge authorization' \
+        --term 'material certificate' \
+        --term 'safe charge window' \
+        --term 'PLC interlock' \
+        --term 'HMI release' \
+        --relation BatchHasCertifiedMaterial \
+        --relation SimulationSupportsAction \
+        --relation InterlockAllowsAction \
+        --relation BatchClearedForCharge \
+        --cq-name batch_has_certified_material \
+        --cq-name batch_cleared_for_charge \
+        --code-ref services/erp/internal/materials/certification.go \
+        --code-ref simulators/reactor_charge/model.py \
+        --code-ref plc/safety/interlocks/reactor_charge.st \
+        --code-ref apps/hmi/src/charge-release.tsx \
+        --surface-hint erp \
+        --surface-hint simulator \
+        --surface-hint plc \
+        --surface-hint hmi \
+        --max-matches 10
+      ;;
+    *)
+      printf 'unknown software-authoring example id: %s\n' "$1" >&2
       return 1
       ;;
   esac

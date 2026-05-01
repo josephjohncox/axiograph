@@ -122,18 +122,23 @@ fn init_store_backed_pathdb_head(bin: &Path, run_dir: &Path, input: &Path) -> Pa
     );
 
     let chunks_path = run_dir.join("build/init_chunks.json");
-    let init_chunks = serde_json::json!([{
-        "chunk_id": "init_chunk_0",
-        "document_id": "init",
-        "page": null,
-        "span_id": "span0",
-        "text": "init wal snapshot",
-        "bbox": null,
-        "metadata": {}
-    }]);
+    let init_chunks = vec![axiograph_ingest_docs::Chunk {
+        chunk_id: "init_chunk_0".to_string(),
+        document_id: "init".to_string(),
+        page: None,
+        span_id: "span0".to_string(),
+        text: "init wal snapshot".to_string(),
+        bbox: None,
+        metadata: Default::default(),
+    }];
     fs::write(
         &chunks_path,
-        serde_json::to_string_pretty(&init_chunks).expect("serialize init chunks"),
+        axiograph_ingest_docs::chunks_to_json_for_chunks(
+            "db_server_e2e",
+            "init",
+            init_chunks,
+        )
+        .expect("serialize init chunks"),
     )
     .expect("write init_chunks.json");
 
@@ -524,15 +529,15 @@ fn db_serve_query_smoke() {
         .current_dir(&run_dir)
         .arg("db")
         .arg("pathdb")
-        .arg("import-axi")
+        .arg("materialize-axi")
         .arg(&input)
         .arg("--out")
         .arg(&axpd)
         .status()
-        .expect("import .axi into .axpd");
+        .expect("materialize canonical .axi into .axpd");
     assert!(
         status.success(),
-        "db pathdb import-axi failed (exit={})",
+        "db pathdb materialize-axi failed (exit={})",
         status.code().unwrap_or(-1)
     );
 
@@ -972,15 +977,15 @@ fn db_serve_llm_agent_smoke() {
         .current_dir(&run_dir)
         .arg("db")
         .arg("pathdb")
-        .arg("import-axi")
+        .arg("materialize-axi")
         .arg(&input)
         .arg("--out")
         .arg(&axpd)
         .status()
-        .expect("import .axi into .axpd");
+        .expect("materialize canonical .axi into .axpd");
     assert!(
         status.success(),
-        "db pathdb import-axi failed (exit={})",
+        "db pathdb materialize-axi failed (exit={})",
         status.code().unwrap_or(-1)
     );
 
@@ -1105,18 +1110,23 @@ fn db_serve_llm_agent_auto_commit_smoke() {
 
     // 2) Create the initial PathDB WAL HEAD snapshot so `--layer pathdb --snapshot head` can load.
     let chunks_path = run_dir.join("build/init_chunks.json");
-    let init_chunks = serde_json::json!([{
-        "chunk_id": "init_chunk_0",
-        "document_id": "init",
-        "page": null,
-        "span_id": "span0",
-        "text": "init wal snapshot",
-        "bbox": null,
-        "metadata": {}
-    }]);
+    let init_chunks = vec![axiograph_ingest_docs::Chunk {
+        chunk_id: "init_chunk_0".to_string(),
+        document_id: "init".to_string(),
+        page: None,
+        span_id: "span0".to_string(),
+        text: "init wal snapshot".to_string(),
+        bbox: None,
+        metadata: Default::default(),
+    }];
     fs::write(
         &chunks_path,
-        serde_json::to_string_pretty(&init_chunks).expect("serialize init chunks"),
+        axiograph_ingest_docs::chunks_to_json_for_chunks(
+            "db_server_e2e",
+            "init",
+            init_chunks,
+        )
+        .expect("serialize init chunks"),
     )
     .expect("write init_chunks.json");
 
@@ -1262,15 +1272,15 @@ fn db_serve_llm_agent_require_verified_policy_refuses_without_accepted_anchor() 
         .current_dir(&run_dir)
         .arg("db")
         .arg("pathdb")
-        .arg("import-axi")
+        .arg("materialize-axi")
         .arg(&input)
         .arg("--out")
         .arg(&axpd)
         .status()
-        .expect("import .axi into .axpd");
+        .expect("materialize canonical .axi into .axpd");
     assert!(
         status.success(),
-        "db pathdb import-axi failed (exit={})",
+        "db pathdb materialize-axi failed (exit={})",
         status.code().unwrap_or(-1)
     );
 

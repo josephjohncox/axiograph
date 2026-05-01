@@ -11,6 +11,7 @@ axiograph-dsl = { path = "../axiograph-dsl" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+schemars.workspace = true
 
 bincode.workspace = true
 

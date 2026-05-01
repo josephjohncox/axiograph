@@ -1,9 +1,11 @@
-# Axiograph Book: Verifiable Knowledge Graphs with Proofs, Modalities, and Approximation
+# Axiograph Book: Typed Ontology Workbench With Proof-Carrying Claims
 
 **Diataxis:** Explanation (longform)  
 **Audience:** contributors
 
-This document is an end-to-end, math-first description of what `axiograph_v6/` is building: a **generalized verifiable knowledge graph** that supports:
+This document is an end-to-end, math-first description of what `axiograph_v6/`
+is building: a **typed ontology workbench** with selected proof-carrying
+claims. It supports:
 
 - Proof-carrying answers: queries return answers plus a machine-checkable explanation.
 - Approximation: heuristic/incomplete inference is allowed, but must be bounded and auditable.
@@ -17,8 +19,10 @@ The core system idea is:
 
 In this repo:
 
-- Rust is the untrusted runtime engine (ingestion, indexing, search, reconciliation, certificate emission).
-- Lean is the trusted checker/spec (mathlib-backed).
+- Rust is the runtime engine for ingestion, indexing, search, reconciliation,
+  typed reports, and certificate emission.
+- Lean is the trusted checker for the currently supported certificate and gate
+  fragments imported by `Axiograph.VerifyMain`.
 
 This book focuses on the mathematics and semantics, then maps those semantics onto the codebase and production concerns.
 
@@ -31,7 +35,8 @@ This book focuses on the mathematics and semantics, then maps those semantics on
 ## Status conventions used here
 
 - Implemented: exists today in code and/or `make verify-lean*` targets.
-- Prototype: partially implemented or only in one layer (Lean or Rust).
+- Research scaffold: partially implemented, outside the trusted verifier
+  boundary, or present only in one layer.
 - Planned: design direction; not in code yet.
 
 ---
@@ -86,7 +91,10 @@ This book focuses on the mathematics and semantics, then maps those semantics on
 1. Auditable inference
    - Every high-value inference can be accompanied by a certificate that a trusted checker validates.
 2. Stable semantics
-   - “What does this mean?” is defined in Lean (eventually fully), not by “whatever the runtime currently does”.
+   - “What does this mean?” is anchored in accepted canonical `.axi` plus the
+     compiled semantic IR. Lean checks the strongest supported fragments; Rust
+     runtime reports state their anchors, closure tier, assumptions, and
+     non-claims.
 3. Approximation with explicit bounds
    - We permit heuristic search, approximate ranking, and uncertainty, but we must not conflate them with truth.
 4. Explicit provenance
@@ -632,7 +640,8 @@ The key is: coercions must be semantics-preserving and, when they reflect a know
 
 ## 8. Linear/quantitative types (future)
 
-Linear and quantitative typing are not required to build a verifiable KG, but they become extremely valuable in production, especially around:
+Linear and quantitative typing are not required to build the typed ontology
+workbench, but they become extremely valuable in production, especially around:
 
 - Resource tracking,
 - Privacy and data-use governance,

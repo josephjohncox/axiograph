@@ -56,6 +56,7 @@ this file back into a backlog or session transcript.
 - Embeddings/evidence sidecars: `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`
 - Software authoring/codegen tools: `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`
 - Rust lifecycle and anchor types: `docs/reference/RUST_LIFECYCLE_TYPES.md`
+- Rust crate factoring cleanup: `docs/reference/RUST_ARCHITECTURE_CLEANUP.md`
 - Semantic VCS and reconciliation: `docs/reference/SEMANTIC_VCS.md`
 - Current agent context: `docs/reference/AGENT_CONTEXT.md`
 - Active agent backlog: `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md`
@@ -78,6 +79,7 @@ this file back into a backlog or session transcript.
 | Work on embeddings/RAG evidence | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
 | Work on software authoring/codegen | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` |
 | Work on Rust type/lifecycle surfaces | `docs/reference/RUST_LIFECYCLE_TYPES.md` |
+| Simplify Rust crate architecture | `docs/reference/RUST_ARCHITECTURE_CLEANUP.md` |
 | Work on ontology usefulness and ologs | `docs/explanation/TYPED_ONTOLOGY_ENGINEERING.md` |
 | Work on semantic history or merge | `docs/reference/SEMANTIC_VCS.md` |
 | Work on active priorities | `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md` |

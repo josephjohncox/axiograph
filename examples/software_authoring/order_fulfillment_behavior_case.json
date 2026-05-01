@@ -1,4 +1,5 @@
 {
+  "version": "behavior_case_check_request_v1",
   "behavior_case": {
     "case_id": "software_authoring.reserve_credit",
     "title": "Reserve credit establishes payment evidence before shipment eligibility",
@@ -24,22 +25,6 @@
         "The reservation supports an accepted payment fact for the order.",
         "The accepted payment authorizes the shipment.",
         "The order is eligible for shipment in the accepted world."
-      ],
-      "competency_questions": [
-        {
-          "name": "reservation_normalizes_to_payment",
-          "question": "Can the accepted reservation justify the payment fact used by checkout?",
-          "query": "select ?f where ?f = OrderFulfillment.OrderHasPayment(order=Order_1001, payment=Payment_9001, ctx=Accepted, time=T1) limit 1",
-          "min_rows": 1,
-          "weight": 1.0
-        },
-        {
-          "name": "accepted_order_is_shipment_eligible",
-          "question": "Can an accepted paid order become shipment-eligible?",
-          "query": "select ?f where ?f = OrderFulfillment.OrderEligibleForShipment(order=Order_1001, shipment=Shipment_7001, ctx=Accepted, time=T1) limit 1",
-          "min_rows": 1,
-          "weight": 1.0
-        }
       ],
       "rule_scopes": [
         {

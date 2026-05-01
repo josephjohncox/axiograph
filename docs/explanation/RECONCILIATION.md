@@ -15,21 +15,21 @@ certificate-first architecture, reconciliation decisions are intended to become
 ├──────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                  │
-│  │   New Fact  │───►│    Rust     │───►│ Verified    │                  │
-│  │  (any src)  │    │ Reconciler  │    │ CBOR State  │                  │
+│  │ Evidence /  │───►│    Rust     │───►│ Typed       │                  │
+│  │ Proposal    │    │ Reconciler  │    │ Report      │                  │
 │  └─────────────┘    └─────────────┘    └──────┬──────┘                  │
 │                            │                   │                         │
 │                            ▼                   ▼                         │
 │                     ┌─────────────┐    ┌─────────────┐                  │
-│                     │  Unified    │    │   Lean      │                  │
-│                     │  Storage    │    │  Checker    │                  │
-│                     │ (.axi+axpd) │    │ (certs)     │                  │
+│                     │ Accepted    │    │   Lean      │                  │
+│                     │ .axi + IR   │    │  Checker    │                  │
+│                     │ + PathDB    │    │ (certs)     │                  │
 │                     └─────────────┘    └─────────────┘                  │
 │                            │                   │                         │
 │                            └───────────────────┘                         │
 │                                    │                                     │
 │                            ┌───────▼───────┐                            │
-│                            │  Verified KG  │                            │
+│                            │ Accepted Ref  │                            │
 │                            └───────────────┘                            │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -82,7 +82,7 @@ When knowledge comes from multiple sources (LLMs, users, documents, sensors), co
 ## Architecture
 
 ```
-New Fact ──┬──► No Conflict ──► Direct Integration
+Evidence / Proposal ──┬──► No Conflict ──► Reviewable proposal
            │
            └──► Conflict Detected
                     │
@@ -422,10 +422,10 @@ After 30 days with default config:
 5. **Review Queue**: Prioritize human review by impact
 6. **Update Track Records**: Verify facts and update source credibility
 
-## Integration with Storage
+## Integration With Runtime Storage
 
 ```rust
-// After reconciliation, persist to unified storage
+// After reconciliation, persist to runtime evidence storage.
 match result.action {
     ReconciliationAction::Integrated | ReconciliationAction::Merged => {
         let storable = weighted_fact_to_storable(&engine.get_fact(result.fact_id));

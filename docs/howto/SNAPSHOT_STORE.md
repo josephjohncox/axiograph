@@ -32,7 +32,7 @@ build/accepted_plane/
   HEAD
 
   pathdb/
-    blobs/<digest>.chunks.json
+    blobs/<digest>.chunks.json        # EvidenceChunkBundleV1, not accepted truth
     blobs/<digest>.proposals.json
     snapshots/<pathdb_snapshot_id>.json
     checkpoints/<pathdb_snapshot_id>.axpd

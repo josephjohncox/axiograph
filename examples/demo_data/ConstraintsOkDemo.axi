@@ -21,7 +21,7 @@ schema Demo:
   -- A polymorphic-ish relationship relation (only some relTypes are symmetric).
   relation Relationship(from: Person, to: Person, relType: RelType)
 
-  -- A tiny differential-forms fragment to demonstrate typing constraints.
+  -- A compact differential-forms fragment to demonstrate typing constraints.
   object Nat
   object Manifold
   object Metric
@@ -37,7 +37,7 @@ schema Demo:
   -- A classic "manager" relation (functional from employee).
   relation ReportsTo(employee: Person, manager: Person)
 
-  -- A tiny transitive relation to demonstrate "closure compatibility" checks.
+  -- A focused transitive relation to demonstrate closure-admissibility checks.
   relation Accessible(from: Person, to: Person)
 
 theory DemoRules on Demo:

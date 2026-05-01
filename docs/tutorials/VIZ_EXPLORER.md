@@ -146,22 +146,22 @@ If the model answers via tool-loop queries, the UI will also highlight returned 
 ## 7) Optional: call LLM endpoints directly (curl)
 
 ```bash
-curl -sS http://127.0.0.1:7878/status | jq .llm
+curl -sS http://127.0.0.1:7878/status
 ```
 
-`jq` is only a JSON pretty-printer for curl examples. Omit the pipe or use any
-JSON viewer.
+Pipe curl output to `jq` or another JSON viewer only when you want pretty
+printing.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/llm/to_query \
   -H 'Content-Type: application/json' \
-  -d '{"question":"who is Bob\'s parent"}' | jq .
+  -d '{"question":"who is Bob\'s parent"}'
 ```
 
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/llm/agent \
   -H 'Content-Type: application/json' \
-  -d '{"question":"who is Bob\'s parent"}' | jq .
+  -d '{"question":"who is Bob\'s parent"}'
 ```
 
 For tool-loop query witnesses, use the shared query certificate policy field:
@@ -169,7 +169,7 @@ For tool-loop query witnesses, use the shared query certificate policy field:
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/llm/agent \
   -H 'Content-Type: application/json' \
-  -d '{"question":"who is Bob\'s parent","query_certificate_policy":"emit"}' | jq .
+  -d '{"question":"who is Bob\'s parent","query_certificate_policy":"emit"}'
 ```
 
 Supported values are `none`, `emit`, `verify`, and `require_verified`.

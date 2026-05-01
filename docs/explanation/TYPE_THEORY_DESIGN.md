@@ -3,9 +3,9 @@
 **Diataxis:** Explanation  
 **Audience:** contributors
 
-> NOTE (Rust+Lean release): Axiograph's trusted type-theoretic foundation is
-> Lean 4 + mathlib. Idris2 was an early prototype proof layer only. It is not a
-> current runtime, trusted checker, FFI target, or compatibility surface.
+> Current status: Axiograph's trusted type-theoretic foundation is Lean 4 +
+> mathlib. Rust is the operational runtime and must expose typed refs, checked
+> builders, residual obligations, and actionable diagnostics.
 
 ## Core Type System
 
@@ -22,8 +22,7 @@ Lean provides the type-theoretic substrate for:
 - Proof-relevant certificate witnesses in `Type`
 - Mathlib category theory, algebra, order, and finite-data libraries
 
-This document describes the current design target. Historical Idris examples
-belong in git history unless they are being actively ported into Lean.
+This document describes the current design target.
 
 ---
 
@@ -271,19 +270,6 @@ certificate checking.
 - Add modal, temporal, and contextual kernels in Lean.
 - Require explicit anchors for worlds, snapshots, contexts, and accepted modules.
 - Keep LLM/world-model output in evidence branches until validated and promoted.
-
----
-
-## Historical Idris Prototype
-
-The removed Idris2 prototype explored useful ideas: indexed paths, proof-erased
-probability bounds, resource-sensitive types, and proof-carrying reconciliation.
-Those ideas should be ported deliberately into Lean when they still fit the
-current kernel.
-
-Do not preserve Idris APIs, file paths, code snippets, runtime hooks, or FFI
-contracts as current-facing documentation. The supported proof authority is
-Lean.
 
 ---
 

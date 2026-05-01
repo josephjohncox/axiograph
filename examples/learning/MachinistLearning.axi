@@ -232,7 +232,7 @@ instance MachinistLearningExample of MachiningLearning:
     Scalar_Ti6Al4V_hardness_45_0,          -- 45.0 (Rockwell, approx)
     Scalar_Ti6Al4V_thermalK_7_1,           -- 7.1 W/m·K
     Scalar_Ti6Al4V_machinability_30,       -- 30/100
-    Scalar_Al6061_hardness_60_0,           -- example placeholder
+    Scalar_Al6061_hardness_60_0,           -- comparison datum
     Scalar_Al6061_thermalK_205_0,          -- 205 W/m·K
     Scalar_Al6061_machinability_80,        -- 80/100
 

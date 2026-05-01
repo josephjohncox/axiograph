@@ -4,6 +4,12 @@ This example demonstrates ontology-driven software authoring without polluting
 the domain representation. The `.axi` file models order-fulfillment domain
 facts and theory only. DDD/fDDD context maps, behavior planning, implementation
 surfaces, code refs, coverage policy, and codegen live in JSON tooling overlays.
+Those JSON files are versioned typed tool payloads such as
+`tooling_overlay_bundle_v1` and `behavior_case_check_request_v1`, not anonymous
+ad hoc snippets. The teaching flow starts from `.axi`, `.cq`, direct weak
+definition prompts, and direct weak coverage flags. Keep JSON here as tool
+input: user-authored ontology stays in `.axi`, and executable CQs should prefer
+`.cq` text files when they are not embedded in a behavior-case request.
 
 ## Files
 
@@ -11,18 +17,21 @@ surfaces, code refs, coverage policy, and codegen live in JSON tooling overlays.
 - `order_fulfillment_tooling_overlay.json` maps the ontology to fDDD context,
   implementation surfaces, code refs, coverage policy, and codegen hints.
 - `order_fulfillment_behavior_case.json` is a domain-only behavior case.
-- `order_fulfillment_coverage_query.json` is a weak/advisory coverage query.
-- `order_fulfillment_definition_queries.json` contains weak definition prompts
-  for authoring and agent planning.
+- `order_fulfillment.cq` is the executable CQ suite for that behavior case.
+- Coverage-query commands are weak/advisory probes over terms, refs, code
+  paths, and surfaces. They intentionally do not require users to author AxQL.
+- Weak definition-query commands contain authoring prompts for planning and
+  discovery. They intentionally do not require users to write saved JSON bundles.
 - `SubscriptionBillingDomain.axi` demonstrates API/worker codegen planning for
   paid invoices, product access, and entitlement grants.
 - `ProcessControlDomain.axi` demonstrates ERP, simulator, HMI, PLC, and
   process-control coverage without embedding tooling concepts in `.axi`.
 - `software_authoring_examples.json` is the typed suite catalog for all
   software-authoring/codegen examples.
-- `example_registry.sh` keeps the shell runners parser-free; the JSON fixtures
-  remain the typed machine-readable examples consumed by Axiograph commands and
-  tests.
+- `example_registry.sh` mirrors that suite for shell runners. It exists so the
+  examples do not require `jq`, Python, or another JSON-filter helper. When a
+  fixture changes, update both the typed JSON suite and this parser-free shell
+  registry.
 - `host_integrations/` contains generic stdio launch examples for MCP and LSP
   hosts such as Cursor, Codex, Claude Code, and editor language-client plugins.
   They are pedagogical launcher shapes, not custom protocol specifications.
@@ -33,12 +42,13 @@ The intended learning path is:
 
 1. Validate the canonical domain `.axi`.
 2. Check the supported runtime-theory fragment.
-3. Ask weak definition questions for authoring and planning context.
-4. Validate the tooling overlay against compiled IR ids.
-5. Run exploratory coverage and behavior-case reports.
-6. Run software coverage, codegen planning, and continuous advisory/strict/CI
+3. Check question-first `.cq` competency questions.
+4. Ask weak definition questions for authoring and planning context.
+5. Validate the tooling overlay against compiled IR ids.
+6. Run exploratory coverage and behavior-case reports.
+7. Run software coverage, codegen planning, and continuous advisory/strict/CI
    gates.
-7. Materialize generated skeleton previews only into a review directory.
+8. Materialize generated skeleton previews only into a review directory.
 
 ## Teaching Path
 
@@ -46,7 +56,8 @@ Use this order when teaching or debugging the flow:
 
 | Entrypoint | Use When | Scope |
 | --- | --- | --- |
-| `authoring run` | You want one compact report for one example. | Preferred front door for agents and CI experiments. |
+| Direct CLI commands below | You are learning, debugging, or building a new domain. | Public front door: `.axi`, `.cq`, weak prompts, overlays, coverage, behavior, codegen. |
+| `authoring run` | You want one compact report for one cataloged example. | Harness entrypoint for agents and CI experiments, not the authoring language. |
 | `run_codegen_examples.sh` | You want to exercise every bundled domain/codegen fixture. | Full suite over order fulfillment, subscription billing, and process control. |
 | `run_authoring_flow.sh` | You want the detailed order-fulfillment walkthrough with intermediate JSON artifacts. | Pedagogical script for the longest path. |
 
@@ -83,12 +94,12 @@ The shell runners do not require an external JSON parser or adapter script.
 They call the Rust CLI/library surfaces directly, including `authoring tool-specs`,
 `authoring lsp-capabilities`, `authoring integration-manifest`, and
 `authoring codegen-plan`. The full flow runs validation, runtime theory checks,
-weak definition queries, overlay validation, exploratory coverage queries,
-behavior-case reporting, software coverage, codegen planning, advisory
-continuous coverage, strict continuous coverage, and explicit skeleton
-materialization. The full flow also runs a CI-profile continuous check through
-the existing `authoring continuous-check` command with `--strict-coverage`,
-`--require-code-refs`, and `--require-runtime-theory`.
+question-first CQ authoring checks, weak definition queries, overlay validation,
+exploratory coverage queries, behavior-case reporting, software coverage,
+codegen planning, advisory continuous coverage, strict continuous coverage, and
+explicit skeleton materialization. The full flow also runs a CI-profile
+continuous check through the existing `authoring continuous-check` command with
+`--strict-coverage`, `--require-code-refs`, and `--require-runtime-theory`.
 
 Emit a single combined authoring-suite report for one example:
 
@@ -103,6 +114,13 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   --out build/examples/software_authoring/order_fulfillment_authoring_run.json
 ```
 
+When `--out-dir` is set, `authoring run` writes the same intermediate artifacts
+that an agent would inspect: `overlay_validation.json`, `behavior_case_report.json`,
+`overlay_coverage.json`, `continuous_coverage.json`, `coverage_query.json`, and
+`definition_queries.json`. The definition-query artifact is produced from
+inline catalog prompts and the same weak `DefinitionQueryV1` report builder used
+by `discover define`; it is not a saved prompt bundle.
+
 Validate the domain ontology:
 
 ```bash
@@ -116,6 +134,17 @@ Check theory closure for the supported runtime fragment:
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   check theory examples/software_authoring/OrderFulfillmentDomain.axi \
   --closure-tier finite_fragment
+```
+
+Check question-first competency questions against the canonical `.axi` without
+asking the user to write raw AxQL:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring competency-questions \
+  --axi examples/software_authoring/OrderFulfillmentDomain.axi \
+  --cq examples/software_authoring/order_fulfillment.cq \
+  --out build/examples/software_authoring/competency_questions_authoring.json
 ```
 
 Ask a weak definition question. This is useful for discovery and authoring, not
@@ -144,7 +173,11 @@ Run an exploratory coverage query:
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   discover coverage-query examples/software_authoring/OrderFulfillmentDomain.axi \
   --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
-  --query examples/software_authoring/order_fulfillment_coverage_query.json
+  --term "shipment eligibility" \
+  --relation OrderEligibleForShipment \
+  --cq-name accepted_order_is_shipment_eligible \
+  --surface-hint shipping \
+  --max-matches 8
 ```
 
 Generate a behavior-case report from domain behavior plus overlay tooling:
@@ -153,6 +186,7 @@ Generate a behavior-case report from domain behavior plus overlay tooling:
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   discover behavior-case examples/software_authoring/OrderFulfillmentDomain.axi \
   --request examples/software_authoring/order_fulfillment_behavior_case.json \
+  --cq-file examples/software_authoring/order_fulfillment.cq \
   --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
   --out build/examples/order_fulfillment_behavior_case_report.json
 ```
@@ -163,6 +197,7 @@ Run continuous software coverage through the core CLI:
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   check software-coverage examples/software_authoring/OrderFulfillmentDomain.axi \
   --behavior-case examples/software_authoring/order_fulfillment_behavior_case.json \
+  --cq-file examples/software_authoring/order_fulfillment.cq \
   --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
   --out build/examples/order_fulfillment_software_coverage.json
 ```
@@ -304,10 +339,12 @@ reports and explicit CLI materialization.
 - MCP and LSP integrations are host-managed background processes. MCP is for
   read-only agent tools; LSP is for editor feedback and code actions; file
   materialization remains CLI-only. These examples launch maintained protocol
-  servers; they do not define a legacy JSON-RPC dialect.
-- Multiple codegen examples intentionally share one suite manifest and runner,
-  so adding another domain should mean adding canonical `.axi`, overlay JSON,
-  behavior-case JSON, definition prompts, and a manifest entry.
+  servers; they do not define a custom JSON-RPC dialect.
+- Multiple codegen examples intentionally share one suite catalog and runner,
+  but the reusable authoring surface is still direct: add canonical `.axi`,
+  `.cq` competency questions, direct weak definition/coverage prompts, a typed
+  overlay payload, and behavior-case scenarios. Add a catalog entry only when
+  the new domain should join the bundled regression/teaching harness.
 
 ## Non-Claims
 

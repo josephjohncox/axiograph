@@ -49,8 +49,8 @@ Schema discovery is the bridge that drafts a canonical `.axi` module so you can:
 Command:
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- discover draft-module <proposals.json> --out <module.axi>
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover draft-module <proposals.json> --out <module.axi>
 ```
 
 Key flags:
@@ -63,9 +63,9 @@ Key flags:
 Example:
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- discover draft-module ../build/ingest_proposals.json \
-  --out ../build/Discovered.proposals.axi \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover draft-module build/ingest_proposals.json \
+  --out build/Discovered.proposals.axi \
   --module Discovered_Proposals \
   --schema Discovered \
   --instance DiscoveredInstance \
@@ -95,8 +95,7 @@ Non-goals:
 Once you have a drafted `.axi`:
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- repl
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- repl
 ```
 
 Then:
@@ -136,11 +135,11 @@ The discovery pipeline can ask an LLM to suggest `schema_hint` updates that rout
 proposals into one of the canonical example domains (still untrusted):
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- discover augment-proposals ../build/repo_proposals.json \
-  --out ../build/repo_proposals.aug.json \
-  --trace ../build/repo_proposals.aug.trace.json \
-  --chunks ../build/repo_chunks.json \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover augment-proposals build/repo_proposals.json \
+  --out build/repo_proposals.aug.json \
+  --trace build/repo_proposals.aug.trace.json \
+  --chunks build/repo_chunks.json \
   --llm-ollama \
   --llm-model nemotron-3-nano
 ```
@@ -178,9 +177,9 @@ When drafting a candidate module, you can ask an LLM to suggest:
 - candidate relation constraints (`symmetric`, `transitive`).
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- discover draft-module ../build/repo_proposals.aug.json \
-  --out ../build/Discovered.proposals.axi \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover draft-module build/repo_proposals.aug.json \
+  --out build/Discovered.proposals.axi \
   --module Discovered_Proposals \
   --schema Discovered \
   --instance DiscoveredInstance \
@@ -205,17 +204,16 @@ into your accepted `.axi` plane, run a small gate:
 Example:
 
 ```bash
-cd rust
-
 # 1) Rust gate: parse + typecheck
-cargo run -p axiograph-cli -- check validate build/Discovered.proposals.axi
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  check validate build/Discovered.proposals.axi
 
 # 2) Emit a typecheck certificate (anchored to the module digest)
-cargo run -p axiograph-cli -- cert typecheck build/Discovered.proposals.axi \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  cert typecheck build/Discovered.proposals.axi \
   --out build/Discovered.typecheck_cert.json
 
 # 3) Lean gate: verify the certificate against the anchored input
-cd ..
 make verify-lean-cert AXI=build/Discovered.proposals.axi CERT=build/Discovered.typecheck_cert.json
 ```
 
@@ -225,12 +223,11 @@ promotion preview (`EvolutionPreviewV1`), and semantic VCS history for the
 accepted delta.
 
 ```bash
-cd rust
-
 # Promote a reviewed module into the accepted plane (append-only).
 # Prints the new snapshot id to stdout.
-snapshot_id="$(cargo run -p axiograph-cli -- db accept promote ../build/Discovered.proposals.axi \
-  --dir ../build/accepted_plane \
+snapshot_id="$(cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  db accept promote build/Discovered.proposals.axi \
+  --dir build/accepted_plane \
   --message \"reviewed: initial discovered schema\")"
 
 echo "accepted snapshot: $snapshot_id"
@@ -242,35 +239,40 @@ meaning plane.
 
 ```bash
 # Rebuild a `.axpd` snapshot from the accepted-plane snapshot id.
-cargo run -p axiograph-cli -- db accept build-pathdb \
-  --dir ../build/accepted_plane \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  db accept build-pathdb \
+  --dir build/accepted_plane \
   --snapshot "$snapshot_id" \
-  --out ../build/Discovered.accepted.axpd
+  --out build/Discovered.accepted.axpd
 
 # Optional: commit doc/code chunks as an extension-layer overlay (append-only PathDB WAL).
 # This enables `fts(...)` / evidence navigation in the REPL without changing the canonical `.axi`.
 #
 # Note: this overlay is *not* part of the certified core unless you explicitly promote it
 # into canonical `.axi` and re-run the acceptance gate.
-cargo run -p axiograph-cli -- db accept pathdb-commit \
-  --dir ../build/accepted_plane \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  db accept pathdb-commit \
+  --dir build/accepted_plane \
   --accepted-snapshot "$snapshot_id" \
-  --chunks ../build/ingest_chunks.json \
+  --chunks build/ingest_chunks.json \
   --message "discovery overlay: import chunks"
 
-cargo run -p axiograph-cli -- db accept pathdb-build \
-  --dir ../build/accepted_plane \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  db accept pathdb-build \
+  --dir build/accepted_plane \
   --snapshot latest \
-  --out ../build/Discovered.accepted_with_chunks.axpd
+  --out build/Discovered.accepted_with_chunks.axpd
 
 # Meta-plane visualization (schema/theory)
-cargo run -p axiograph-cli -- tools viz ../build/Discovered.accepted.axpd \
-  --out ../build/Discovered.meta.html \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  tools viz build/Discovered.accepted.axpd \
+  --out build/Discovered.meta.html \
   --format html --plane meta --focus-name Discovered --hops 3
 
 # Data-plane visualization (instances)
-cargo run -p axiograph-cli -- tools viz ../build/Discovered.accepted.axpd \
-  --out ../build/Discovered.data.html \
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  tools viz build/Discovered.accepted.axpd \
+  --out build/Discovered.data.html \
   --format html --plane data --hops 2
 ```
 
@@ -286,8 +288,9 @@ If you are testing storage byte round-trips, export the derived snapshot through
 the explicit DB command:
 
 ```bash
-cargo run -p axiograph-cli -- db pathdb export-axi ../build/Discovered.accepted.axpd \
-  --out ../build/Discovered.snapshot_pathdb_export_v1.axi
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  db pathdb export-axi build/Discovered.accepted.axpd \
+  --out build/Discovered.snapshot_pathdb_export_v1.axi
 ```
 
 Do not teach this as the promotion, query, certificate, or semantic interchange

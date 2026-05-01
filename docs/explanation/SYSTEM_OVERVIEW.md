@@ -5,11 +5,11 @@
 
 For the end-to-end mathematical documentation (semantics → certificates → production readiness → use cases), see `docs/explanation/BOOK.md`.
 
-For the current V1 user workflow, start with
-`docs/howto/CANONICAL_SEMANTIC_SPINE.md`. The short rule is: accepted
-canonical `.axi` plus compiled semantic IR is the meaning plane; PathDB,
-backends, embeddings, and exports are derived execution/evidence/projection
-surfaces.
+Axiograph is a typed ontology workbench. For the current V1 user workflow,
+start with `docs/howto/CANONICAL_SEMANTIC_SPINE.md`. The short rule is:
+accepted canonical `.axi` plus compiled semantic IR is the meaning plane;
+PathDB, backends, embeddings, LLM outputs, and exports are derived
+execution/evidence/projection surfaces.
 
 ## End-to-End Data Flow
 
@@ -50,11 +50,19 @@ surfaces.
 │     └──────────────┬────────────────────────────────────────────────┘         │
 │                    │                                                          │
 │                    ▼                                                          │
-│     ┌───────────────────────────────────────────┐    ┌─────────────────────┐ │
-│     │ PathDB (.axpd) derived execution snapshot  │    │ Typed witnesses     │ │
-│     │  - PreparedQueryV1/query_result_v3 surface │───►│ Rust emits, Lean    │ │
-│     └───────────────────────────────────────────┘    │ verifies            │ │
-│                                                      └─────────────────────┘ │
+│     ┌───────────────────────────────────────────────────────────────┐         │
+│     │ Compiled semantic IR                                           │         │
+│     │  - KernelModuleIr                                              │         │
+│     │  - SchemaCategoryIr + TheoryIr + InstanceFunctorIr             │         │
+│     │  - KernelSurfaceV1 refs                                        │         │
+│     └──────────────┬────────────────────────────────────────────────┘         │
+│                    │                                                          │
+│                    ├────────► typed runtime reports                           │
+│                    │          - theory/query/CQ/coverage/merge/backend        │
+│                    │                                                          │
+│                    ├────────► PathDB (.axpd) derived execution snapshot       │
+│                    │                                                          │
+│                    └────────► optional Lean certificates for supported claims  │
 │                                                                               │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -65,14 +73,14 @@ surfaces.
 
 Workspace: `rust/`
 
-- `axiograph-cli`: CLI for validation, ingestion, typed reports, promotion, and PathDB snapshots
+- `axiograph-cli`: CLI/server/MCP/LSP orchestration for validation, ingestion, typed reports, promotion, and projections
 - `axiograph-dsl`: canonical `.axi` parsing (`axi_v1` entrypoint + dialects)
 - `axiograph-ingest-docs`: docs/conversations → `proposals.json` (+chunks/facts)
 - `axiograph-ingest-sql`: SQL DDL → `proposals.json`
 - `axiograph-ingest-json`: JSON schema → `proposals.json`
-- `axiograph-pathdb`: binary indexed store (`.axpd`) + certificate emission types
-- `axiograph-storage`: helpers for `.axi` + `.axpd` workflows
-- `axiograph-llm-sync`: untrusted extraction/sync scaffolding
+- `axiograph-pathdb`: runtime graph engine, compiled IR, theory checks, query, and certificate emission types
+- `axiograph-storage`: runtime evidence storage and PathDB cache materialization
+- `axiograph-llm-sync`: evidence-plane extraction, grounding, and reconciliation inputs
 
 ### Lean (trusted checker / semantics)
 
@@ -155,7 +163,7 @@ make verify-semantics
 | `.axi` | Canonical accepted knowledge (schema + content) |
 | `.axpd` | Binary PathDB (derived, indexed, rebuildable) |
 | `proposals.json` | Generic Evidence/Proposals output (untrusted) |
-| `chunks.json` | RAG-friendly chunk store |
+| `chunks.json` | `EvidenceChunkBundleV1` RAG/evidence overlay, not accepted truth |
 | `facts.json` | Optional raw extractor output |
 | `EmbeddingEvidenceOverlayV1` / tooling overlays | Evidence/review attachments, not accepted truth |
 | `EvolutionPreviewV1` and typed reports | Review, trust, coverage, and refinement-handle surfaces |

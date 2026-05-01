@@ -3,7 +3,7 @@
 //! This is **untrusted tooling** intended for discovery workflows:
 //! - fetch pages (respectful defaults: rate limits, size caps),
 //! - extract text/markdown from HTML,
-//! - emit `chunks.json` + extracted facts + `proposals.json` (Evidence/Proposals schema).
+//! - emit `EvidenceChunkBundleV1` chunks + extracted facts + `proposals.json` (Evidence/Proposals schema).
 //!
 //! This is NOT part of the trusted semantics kernel.
 
@@ -22,7 +22,7 @@ use url::Url;
 
 #[derive(Subcommand)]
 pub enum WebCommands {
-    /// Fetch (and optionally crawl) web pages, then emit `chunks.json` + `proposals.json`.
+    /// Fetch (and optionally crawl) web pages, then emit typed chunk evidence + `proposals.json`.
     ///
     /// Inputs:
     /// - list mode: `--url ...` and/or `--urls-file ...`
@@ -398,7 +398,14 @@ fn cmd_web_ingest(
     let facts_path = out_dir.join("facts.json");
     let proposals_path = out_dir.join("proposals.json");
 
-    fs::write(&chunks_path, serde_json::to_string_pretty(&all_chunks)?)?;
+    fs::write(
+        &chunks_path,
+        axiograph_ingest_docs::chunks_to_json_for_chunks(
+            "web_crawl",
+            out_dir.display().to_string(),
+            all_chunks.clone(),
+        )?,
+    )?;
     fs::write(&facts_path, serde_json::to_string_pretty(&facts)?)?;
 
     let generated_at = now.to_string();

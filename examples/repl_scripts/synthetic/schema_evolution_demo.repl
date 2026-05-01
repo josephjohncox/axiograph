@@ -1,0 +1,24 @@
+# Axiograph REPL script: schema evolution demo
+#
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/synthetic/schema_evolution_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/synthetic/schema_evolution_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/synthetic/schema_evolution_demo.repl
+
+gen schema_evolution 1 3 1
+stats
+
+q select ?s where name("ProductV1_0") -outgoingMigration/toSchema-> ?s limit 10
+q select ?s where name("ProductV1_0") -outgoingMigration/toSchema/outgoingMigration/toSchema-> ?s max_hops 6 limit 10
+q select ?eq where ?eq is SchemaEquiv, ?eq -left-> name("ProductV3_0") limit 10
+q select ?inv where name("Normalize") -inverseOf-> ?inv limit 10
+
+# Proof-relevant structure: inspect the explicit path witnesses for migration composition.
+q select ?p where ?p is PathWitness, ?p -from-> name("ProductV1_0") limit 10
+
+save build/schema_evolution.axpd

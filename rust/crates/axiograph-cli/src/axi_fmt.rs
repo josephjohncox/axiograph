@@ -25,7 +25,7 @@ fn count_leading_whitespace(s: &str) -> usize {
 }
 
 fn split_line_comment(line: &str) -> (&str, Option<&str>) {
-    // `.axi` uses `--` comments (Idris/Lean style).
+    // `.axi` uses `--` comments (Lean-style line comments).
     if let Some(idx) = line.find("--") {
         (&line[..idx], Some(&line[idx..]))
     } else {

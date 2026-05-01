@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Unified storage layer for Axiograph: .axi + PathDB + sync"
+description = "Runtime evidence storage and PathDB cache materialization for Axiograph"
 
 [dependencies]
 axiograph-dsl = { path = "../axiograph-dsl" }

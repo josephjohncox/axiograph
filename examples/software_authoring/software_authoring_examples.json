@@ -1,4 +1,5 @@
 {
+  "version": "software_authoring_example_suite_v1",
   "report_contracts": {
     "authoring_flow": "authoring_flow_report_v1",
     "embedded_field": "authoring_flow",
@@ -7,6 +8,7 @@
   "recommended_flow": [
     "validate_canonical_axi",
     "check_runtime_theory",
+    "check_competency_questions",
     "run_definition_queries",
     "validate_tooling_overlay",
     "run_coverage_query",
@@ -23,9 +25,19 @@
       "axi": "examples/software_authoring/OrderFulfillmentDomain.axi",
       "overlay": "examples/software_authoring/order_fulfillment_tooling_overlay.json",
       "behavior_case": "examples/software_authoring/order_fulfillment_behavior_case.json",
-      "coverage_query": "examples/software_authoring/order_fulfillment_coverage_query.json",
-      "definition_queries": "examples/software_authoring/order_fulfillment_definition_queries.json",
-      "primary_flow": "validate -> theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
+      "cq_file": "examples/software_authoring/order_fulfillment.cq",
+      "coverage_terms": ["reserve credit", "shipment eligibility", "accepted payment"],
+      "coverage_relations": ["OrderHasReservation", "ReservationApprovesPayment", "OrderEligibleForShipment"],
+      "coverage_cqs": ["reservation_normalizes_to_payment", "accepted_order_is_shipment_eligible"],
+      "coverage_code_refs": ["services/orders/internal/credit/reserve_credit.go", "apps/checkout/src/reserve-credit.ts", "workers/shipping/src/eligibility.rs"],
+      "coverage_surface_hints": ["checkout", "shipping"],
+      "coverage_max_matches": 8,
+      "definition_query_prompts": [
+        {"id": "define_reserve_credit_process", "prompt": "define the reserve-credit process", "kind_hint": "process", "context_hint": "order fulfillment", "include_queries": true, "max_matches": 6},
+        {"id": "define_shipment_eligibility_business_rule", "prompt": "define the shipment eligibility business rule", "kind_hint": "business_rule", "context_hint": "accepted checkout and shipping", "include_queries": true, "max_matches": 6},
+        {"id": "define_checkout_function", "prompt": "define the checkout function that must be covered", "kind_hint": "function", "context_hint": "reserve-credit endpoint", "include_queries": true, "max_matches": 6}
+      ],
+      "primary_flow": "validate -> theory -> CQ authoring -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
     },
     {
       "id": "subscription_billing",
@@ -33,9 +45,19 @@
       "axi": "examples/software_authoring/SubscriptionBillingDomain.axi",
       "overlay": "examples/software_authoring/subscription_billing_tooling_overlay.json",
       "behavior_case": "examples/software_authoring/subscription_billing_behavior_case.json",
-      "coverage_query": "examples/software_authoring/subscription_billing_coverage_query.json",
-      "definition_queries": "examples/software_authoring/subscription_billing_definition_queries.json",
-      "primary_flow": "validate -> theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
+      "cq_file": "examples/software_authoring/subscription_billing.cq",
+      "coverage_terms": ["paid invoice", "product access", "account entitlement"],
+      "coverage_relations": ["InvoicePaidBy", "PaidInvoiceGrantsEntitlement", "AccountGrantedEntitlement"],
+      "coverage_cqs": ["paid_invoice_grants_subscription_entitlement", "account_has_product_access"],
+      "coverage_code_refs": ["services/billing/internal/payments/apply_payment.go", "workers/entitlements/src/grant_entitlement.rs", "apps/billing/src/apply-payment.ts"],
+      "coverage_surface_hints": ["billing", "entitlement", "product access"],
+      "coverage_max_matches": 8,
+      "definition_query_prompts": [
+        {"id": "define_invoice_settlement_process", "prompt": "define the invoice settlement process", "kind_hint": "process", "context_hint": "subscription billing", "include_queries": true, "max_matches": 6},
+        {"id": "define_paid_invoice_business_rule", "prompt": "define the paid invoice before access business rule", "kind_hint": "business_rule", "context_hint": "entitlement grant", "include_queries": true, "max_matches": 6},
+        {"id": "define_product_access_function", "prompt": "define the product access function that must be covered", "kind_hint": "function", "context_hint": "account entitlement", "include_queries": true, "max_matches": 6}
+      ],
+      "primary_flow": "validate -> theory -> CQ authoring -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
     },
     {
       "id": "process_control",
@@ -43,9 +65,19 @@
       "axi": "examples/software_authoring/ProcessControlDomain.axi",
       "overlay": "examples/software_authoring/process_control_tooling_overlay.json",
       "behavior_case": "examples/software_authoring/process_control_behavior_case.json",
-      "coverage_query": "examples/software_authoring/process_control_coverage_query.json",
-      "definition_queries": "examples/software_authoring/process_control_definition_queries.json",
-      "primary_flow": "validate -> theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
+      "cq_file": "examples/software_authoring/process_control.cq",
+      "coverage_terms": ["charge authorization", "material certificate", "safe charge window", "PLC interlock", "HMI release"],
+      "coverage_relations": ["BatchHasCertifiedMaterial", "SimulationSupportsAction", "InterlockAllowsAction", "BatchClearedForCharge"],
+      "coverage_cqs": ["batch_has_certified_material", "batch_cleared_for_charge"],
+      "coverage_code_refs": ["services/erp/internal/materials/certification.go", "simulators/reactor_charge/model.py", "plc/safety/interlocks/reactor_charge.st", "apps/hmi/src/charge-release.tsx"],
+      "coverage_surface_hints": ["erp", "simulator", "plc", "hmi"],
+      "coverage_max_matches": 10,
+      "definition_query_prompts": [
+        {"id": "define_charge_authorization_process", "prompt": "define the reactor charge authorization process", "kind_hint": "process", "context_hint": "process control", "include_queries": true, "max_matches": 8},
+        {"id": "define_safe_charge_window_rule", "prompt": "define the safe charge window business rule", "kind_hint": "business_rule", "context_hint": "simulation and interlock evidence", "include_queries": true, "max_matches": 8},
+        {"id": "define_hmi_release_surface", "prompt": "define the HMI charge release surface that must be covered", "kind_hint": "implementation_surface", "context_hint": "HMI and PLC authorization", "include_queries": true, "max_matches": 8}
+      ],
+      "primary_flow": "validate -> theory -> CQ authoring -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates"
     }
   ]
 }

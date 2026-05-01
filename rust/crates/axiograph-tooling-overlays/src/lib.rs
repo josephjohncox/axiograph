@@ -12,10 +12,13 @@ use serde_json::Value;
 
 pub const TOOLING_OVERLAY_BUNDLE_VERSION_V1: &str = "tooling_overlay_bundle_v1";
 pub const OVERLAY_VALIDATION_REPORT_VERSION_V1: &str = "overlay_validation_report_v1";
-pub const CONTINUOUS_SOFTWARE_COVERAGE_REPORT_VERSION_V1: &str =
-    "continuous_software_coverage_report_v1";
+pub const OVERLAY_SOFTWARE_COVERAGE_REPORT_VERSION_V1: &str =
+    "overlay_software_coverage_report_v1";
 pub const COVERAGE_QUERY_REPORT_VERSION_V1: &str = "coverage_query_report_v1";
+pub const COVERAGE_QUERY_VERSION_V1: &str = "coverage_query_v1";
+pub const DEFINITION_QUERY_BUNDLE_VERSION_V1: &str = "definition_query_bundle_v1";
 pub const DEFINITION_QUERY_REPORT_VERSION_V1: &str = "definition_query_report_v1";
+pub const DEFINITION_QUERY_VERSION_V1: &str = "definition_query_v1";
 pub const CODEGEN_PLAN_REPORT_VERSION_V1: &str = "codegen_plan_report_v1";
 pub const AUTHORING_FLOW_REPORT_VERSION_V1: &str = "authoring_flow_report_v1";
 
@@ -351,7 +354,7 @@ pub struct NormalizedOverlayRefV1 {
     pub normalized_id: String,
     pub label: String,
     pub kernel_ref_label: String,
-    pub kernel_ref: Value,
+    pub kernel_ref: KernelRefV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -372,6 +375,8 @@ pub struct OverlayValidationReportV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CoverageQueryV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     #[serde(default)]
     pub coverage_mode: CoverageModeV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -392,6 +397,8 @@ pub struct CoverageQueryV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct WeakCoverageProbeV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terms: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -432,6 +439,8 @@ pub enum DefinitionQueryKindV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct DefinitionQueryV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind_hint: Option<DefinitionQueryKindV1>,
@@ -443,6 +452,15 @@ pub struct DefinitionQueryV1 {
     pub max_matches: Option<usize>,
     #[serde(default)]
     pub include_queries: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct DefinitionQueryBundleV1 {
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queries: Vec<DefinitionQueryV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -530,6 +548,41 @@ pub struct RuntimeTheorySidecarSummaryV1 {
     pub notes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+pub struct BehaviorCaseReceiptCoverageViewV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+pub struct BehaviorCaseContextCoverageViewV1 {
+    #[serde(default)]
+    pub coverage: AuthoringCoverageSummaryV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_check: Option<RuntimeTheorySidecarSummaryV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+pub struct BehaviorCaseCodegenPreviewCoverageViewV1 {
+    pub language: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+pub struct BehaviorCaseCoverageViewV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub behavior_case: BehaviorCaseReceiptCoverageViewV1,
+    #[serde(default)]
+    pub receipt: BehaviorCaseReceiptCoverageViewV1,
+    #[serde(default)]
+    pub context_report: BehaviorCaseContextCoverageViewV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_theory_check: Option<RuntimeTheorySidecarSummaryV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub codegen_previews: Vec<BehaviorCaseCodegenPreviewCoverageViewV1>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct CoveragePolicySummaryV1 {
     pub coverage_mode: CoverageModeV1,
@@ -554,7 +607,7 @@ pub struct ContinuousCoverageTypedRefsV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ContinuousSoftwareCoverageReportV1 {
+pub struct OverlaySoftwareCoverageReportV1 {
     pub version: String,
     pub coverage_mode: CoverageModeV1,
     pub coverage_policy: CoveragePolicySummaryV1,
@@ -605,8 +658,12 @@ pub fn coverage_query_schema() -> Value {
     schema_value::<CoverageQueryV1>()
 }
 
-pub fn continuous_software_coverage_report_schema() -> Value {
-    schema_value::<ContinuousSoftwareCoverageReportV1>()
+pub fn weak_coverage_probe_schema() -> Value {
+    schema_value::<WeakCoverageProbeV1>()
+}
+
+pub fn overlay_software_coverage_report_schema() -> Value {
+    schema_value::<OverlaySoftwareCoverageReportV1>()
 }
 
 fn schema_value<T: JsonSchema>() -> Value {
@@ -638,8 +695,7 @@ pub fn validate_overlay_bundle(
                     normalized_id,
                     label,
                     kernel_ref_label: kernel_ref.stable_label(),
-                    kernel_ref: serde_json::to_value(&kernel_ref)
-                        .unwrap_or_else(|_| Value::String(kernel_ref.stable_label())),
+                    kernel_ref,
                 })
             }
             None => diagnostics.push(OverlayDiagnosticV1 {
@@ -803,6 +859,7 @@ pub fn coverage_query_report(
     terms.extend(query.surface_hints.clone());
     terms.extend(query.code_refs.iter().map(|p| path_tokens(p).join(" ")));
     let def_query = DefinitionQueryV1 {
+        version: Some(DEFINITION_QUERY_VERSION_V1.to_string()),
         prompt: terms.join(" "),
         kind_hint: None,
         context_hint: None,
@@ -949,11 +1006,21 @@ pub fn codegen_plan_report(bundle: &ToolingOverlayBundleV1) -> CodegenPlanReport
     }
 }
 
-pub fn continuous_coverage_report_from_behavior_report(
+pub fn behavior_case_coverage_view_from_value(
     behavior_report: &Value,
+) -> Result<BehaviorCaseCoverageViewV1> {
+    serde_json::from_value(behavior_report.clone()).map_err(|err| {
+        anyhow!(
+            "behavior report is not a BehaviorCaseCoverageViewV1-compatible typed report: {err}"
+        )
+    })
+}
+
+pub fn continuous_coverage_report_from_behavior_report(
+    behavior_report: &BehaviorCaseCoverageViewV1,
     bundle: &ToolingOverlayBundleV1,
     repo_root: &Path,
-) -> ContinuousSoftwareCoverageReportV1 {
+) -> OverlaySoftwareCoverageReportV1 {
     let policy = &bundle.coverage_policy;
     let coverage_policy = coverage_policy_summary(policy);
     let required_codegen_languages = if policy.require_codegen_languages.is_empty() {
@@ -963,7 +1030,6 @@ pub fn continuous_coverage_report_from_behavior_report(
     };
     let present_codegen_languages = collect_codegen_languages(behavior_report)
         .into_iter()
-        .chain(normalized_languages(&bundle.codegen_plan.languages))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -990,7 +1056,15 @@ pub fn continuous_coverage_report_from_behavior_report(
         .filter(|code_ref| !repo_root.join(code_ref).exists())
         .cloned()
         .collect::<Vec<_>>();
-    let runtime_theory = runtime_theory_sidecar_summary(behavior_report);
+    let runtime_theory = behavior_report
+        .runtime_theory_check
+        .clone()
+        .or_else(|| behavior_report.context_report.runtime_theory_check.clone())
+        .map(|mut summary| {
+            summary.present = true;
+            summary
+        })
+        .unwrap_or_default();
     let typed_refs = continuous_typed_refs(bundle);
 
     let mut failures = Vec::new();
@@ -1013,10 +1087,10 @@ pub fn continuous_coverage_report_from_behavior_report(
         ));
     }
     let missing_obligations = behavior_report
-        .pointer("/context_report/coverage/missing_obligations")
-        .and_then(Value::as_array)
-        .map(|values| values.len())
-        .unwrap_or(0);
+        .context_report
+        .coverage
+        .missing_obligations
+        .len();
     if fail_on_unresolved_obligations && missing_obligations > 0 {
         failures.push(format!(
             "{missing_obligations} semantic coverage obligations remain unresolved"
@@ -1072,9 +1146,10 @@ pub fn continuous_coverage_report_from_behavior_report(
         );
     }
     let case_id = behavior_report
-        .pointer("/behavior_case/case_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+        .receipt
+        .case_id
+        .clone()
+        .or_else(|| behavior_report.behavior_case.case_id.clone());
     let pass = failures.is_empty();
     let mut next_actions = Vec::new();
     if !missing_code_refs.is_empty() {
@@ -1107,34 +1182,21 @@ pub fn continuous_coverage_report_from_behavior_report(
             required_codegen_languages.clone(),
         ),
         AuthoringCoverageSummaryV1 {
-            total_rules: behavior_report_u64(
-                behavior_report,
-                "/context_report/coverage/total_rules",
-            ),
-            covered_rules: behavior_report_u64(
-                behavior_report,
-                "/context_report/coverage/covered_rules",
-            ),
-            tested_rules: behavior_report_u64(
-                behavior_report,
-                "/context_report/coverage/tested_rules",
-            ),
-            implemented_rules: behavior_report_u64(
-                behavior_report,
-                "/context_report/coverage/implemented_rules",
-            ),
-            drifted_rules: behavior_report_u64(
-                behavior_report,
-                "/context_report/coverage/drifted_rules",
-            ),
-            missing_obligations: behavior_report_string_array(
-                behavior_report,
-                "/context_report/coverage/missing_obligations",
-            ),
-            uncovered_rule_ids: behavior_report_string_array(
-                behavior_report,
-                "/context_report/coverage/uncovered_rule_ids",
-            ),
+            total_rules: behavior_report.context_report.coverage.total_rules,
+            covered_rules: behavior_report.context_report.coverage.covered_rules,
+            tested_rules: behavior_report.context_report.coverage.tested_rules,
+            implemented_rules: behavior_report.context_report.coverage.implemented_rules,
+            drifted_rules: behavior_report.context_report.coverage.drifted_rules,
+            missing_obligations: behavior_report
+                .context_report
+                .coverage
+                .missing_obligations
+                .clone(),
+            uncovered_rule_ids: behavior_report
+                .context_report
+                .coverage
+                .uncovered_rule_ids
+                .clone(),
             code_refs_total: code_refs.len(),
             missing_code_refs: missing_code_refs.clone(),
             required_codegen_languages: required_codegen_languages.clone(),
@@ -1149,8 +1211,8 @@ pub fn continuous_coverage_report_from_behavior_report(
         warnings.clone(),
         next_actions.clone(),
     );
-    ContinuousSoftwareCoverageReportV1 {
-        version: CONTINUOUS_SOFTWARE_COVERAGE_REPORT_VERSION_V1.to_string(),
+    OverlaySoftwareCoverageReportV1 {
+        version: OVERLAY_SOFTWARE_COVERAGE_REPORT_VERSION_V1.to_string(),
         coverage_mode: policy.coverage_mode,
         coverage_policy,
         authoring_flow,
@@ -1349,139 +1411,6 @@ fn continuous_typed_refs(bundle: &ToolingOverlayBundleV1) -> ContinuousCoverageT
         ontology_refs,
         surface_ids,
         rule_ids,
-    }
-}
-
-fn runtime_theory_sidecar_summary(report: &Value) -> RuntimeTheorySidecarSummaryV1 {
-    let Some(theory) = first_object_by_key(report, &["runtime_theory_check", "runtime_theory"])
-    else {
-        return RuntimeTheorySidecarSummaryV1::default();
-    };
-    RuntimeTheorySidecarSummaryV1 {
-        present: true,
-        module_digest: find_string(theory, &["module_digest"]),
-        closure_tiers: find_string_array(theory, &["closure_tiers", "closure_tier"]),
-        checked_obligations: find_u64(theory, &["checked_obligations"]),
-        review_only_obligations: find_u64(theory, &["review_only_obligations"]),
-        residual_obligations: find_u64(theory, &["residual_obligations", "residual_count"]),
-        blocked_obligations: find_u64(theory, &["blocked_obligations", "blocked_count"]),
-        blocking_errors: find_u64(theory, &["blocking_errors", "blocking_judgments"]),
-        completeness_claim: find_string(theory, &["completeness_claim"]),
-        ontology_closure_claim: find_string(theory, &["ontology_closure_claim"]),
-        residual_obligation_ids: find_string_array(
-            theory,
-            &["residual_obligation_ids", "residual_obligations"],
-        ),
-        notes: find_string_array(theory, &["notes"]),
-    }
-}
-
-fn behavior_report_u64(report: &Value, pointer: &str) -> u64 {
-    report
-        .pointer(pointer)
-        .and_then(|value| {
-            value
-                .as_u64()
-                .or_else(|| value.as_array().map(|values| values.len() as u64))
-        })
-        .unwrap_or(0)
-}
-
-fn behavior_report_string_array(report: &Value, pointer: &str) -> Vec<String> {
-    report
-        .pointer(pointer)
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect()
-}
-
-fn first_object_by_key<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(candidate @ Value::Object(_)) = map.get(*key) {
-                    return Some(candidate);
-                }
-            }
-            map.values()
-                .find_map(|nested| first_object_by_key(nested, keys))
-        }
-        Value::Array(values) => values
-            .iter()
-            .find_map(|nested| first_object_by_key(nested, keys)),
-        _ => None,
-    }
-}
-
-fn find_string(value: &Value, keys: &[&str]) -> Option<String> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(text) = map.get(*key).and_then(Value::as_str) {
-                    return Some(text.to_string());
-                }
-            }
-            map.values().find_map(|nested| find_string(nested, keys))
-        }
-        Value::Array(values) => values.iter().find_map(|nested| find_string(nested, keys)),
-        _ => None,
-    }
-}
-
-fn find_u64(value: &Value, keys: &[&str]) -> Option<u64> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(number) = map.get(*key).and_then(Value::as_u64) {
-                    return Some(number);
-                }
-            }
-            map.values().find_map(|nested| find_u64(nested, keys))
-        }
-        Value::Array(values) => values.iter().find_map(|nested| find_u64(nested, keys)),
-        _ => None,
-    }
-}
-
-fn find_string_array(value: &Value, keys: &[&str]) -> Vec<String> {
-    let mut found = BTreeSet::new();
-    find_string_array_inner(value, keys, &mut found);
-    found.into_iter().collect()
-}
-
-fn find_string_array_inner(value: &Value, keys: &[&str], found: &mut BTreeSet<String>) {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(candidate) = map.get(*key) {
-                    match candidate {
-                        Value::Array(values) => {
-                            for value in values {
-                                if let Some(text) = value.as_str() {
-                                    found.insert(text.to_string());
-                                }
-                            }
-                        }
-                        Value::String(text) => {
-                            found.insert(text.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            for nested in map.values() {
-                find_string_array_inner(nested, keys, found);
-            }
-        }
-        Value::Array(values) => {
-            for nested in values {
-                find_string_array_inner(nested, keys, found);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -2011,13 +1940,11 @@ fn normalized_languages(languages: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn collect_codegen_languages(report: &Value) -> Vec<String> {
+fn collect_codegen_languages(report: &BehaviorCaseCoverageViewV1) -> Vec<String> {
     report
-        .get("codegen_previews")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|preview| preview.get("language").and_then(Value::as_str))
+        .codegen_previews
+        .iter()
+        .map(|preview| preview.language.as_str())
         .map(|language| language.trim().to_ascii_lowercase())
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -2050,6 +1977,29 @@ instance Seed of OrderFulfillment:
   ShipmentFulfillsOrder = {(shipment=Shipment_1, order=Order_1)}
 "#;
         compile_kernel_from_axi_text(axi).expect("compile kernel")
+    }
+
+    fn sample_behavior_coverage_view(
+        missing_obligations: Vec<String>,
+        runtime_theory_check: Option<RuntimeTheorySidecarSummaryV1>,
+    ) -> BehaviorCaseCoverageViewV1 {
+        BehaviorCaseCoverageViewV1 {
+            behavior_case: BehaviorCaseReceiptCoverageViewV1 {
+                case_id: Some("checkout.reserve".to_string()),
+            },
+            context_report: BehaviorCaseContextCoverageViewV1 {
+                coverage: AuthoringCoverageSummaryV1 {
+                    missing_obligations,
+                    ..AuthoringCoverageSummaryV1::default()
+                },
+                runtime_theory_check: None,
+            },
+            codegen_previews: vec![BehaviorCaseCodegenPreviewCoverageViewV1 {
+                language: "typescript".to_string(),
+            }],
+            runtime_theory_check,
+            ..BehaviorCaseCoverageViewV1::default()
+        }
     }
 
     #[test]
@@ -2091,7 +2041,7 @@ instance Seed of OrderFulfillment:
             .any(|r| r.normalized_id.contains("OrderHasPayment")));
         assert!(report.normalized_refs.iter().any(|r| {
             r.kernel_ref_label.contains("OrderHasPayment")
-                && r.kernel_ref["kind"].as_str() == Some("schema_object")
+                && matches!(r.kernel_ref, KernelRefV1::SchemaObject { .. })
         }));
     }
 
@@ -2100,7 +2050,7 @@ instance Seed of OrderFulfillment:
         let overlay_schema = tooling_overlay_bundle_schema();
         let definition_schema = definition_query_schema();
         let coverage_schema = coverage_query_schema();
-        let report_schema = continuous_software_coverage_report_schema();
+        let report_schema = overlay_software_coverage_report_schema();
 
         let overlay_text = overlay_schema.to_string();
         assert!(overlay_text.contains("implementation_surfaces"));
@@ -2163,6 +2113,7 @@ instance Seed of OrderFulfillment:
     fn definition_query_classifies_business_rule_and_returns_candidates() {
         let kernel = sample_kernel();
         let query = DefinitionQueryV1 {
+            version: Some(DEFINITION_QUERY_VERSION_V1.to_string()),
             prompt: "define the shipment fulfills order business rule".to_string(),
             kind_hint: None,
             context_hint: None,
@@ -2188,6 +2139,7 @@ instance Seed of OrderFulfillment:
     fn coverage_query_is_advisory_not_enforced() {
         let kernel = sample_kernel();
         let query = CoverageQueryV1 {
+            version: Some(COVERAGE_QUERY_VERSION_V1.to_string()),
             coverage_mode: CoverageModeV1::Enforced,
             terms: vec!["payment".to_string()],
             relation_names: Vec::new(),
@@ -2237,16 +2189,10 @@ instance Seed of OrderFulfillment:
             },
             notes: Vec::new(),
         };
-        let behavior_report = serde_json::json!({
-            "behavior_case": { "case_id": "checkout.reserve" },
-            "codegen_previews": [{ "language": "typescript" }],
-            "context_report": {
-                "coverage": {
-                    "missing_obligations": ["schema/order/relation/payment/rule/key/0"]
-                }
-            }
-        });
-
+        let behavior_report = sample_behavior_coverage_view(
+            vec!["schema/order/relation/payment/rule/key/0".to_string()],
+            None,
+        );
         let report = continuous_coverage_report_from_behavior_report(
             &behavior_report,
             &bundle,
@@ -2309,27 +2255,21 @@ instance Seed of OrderFulfillment:
             },
             notes: Vec::new(),
         };
-        let behavior_report = serde_json::json!({
-            "behavior_case": { "case_id": "checkout.reserve" },
-            "codegen_previews": [{ "language": "typescript" }],
-            "context_report": {
-                "coverage": {
-                    "missing_obligations": ["schema/order/relation/payment/rule/key/0"]
-                }
-            },
-            "runtime_theory_check": {
-                "version": "runtime_theory_check_summary_v1",
-                "module_digest": "fnv1a64:test",
-                "residual_obligations": 1,
-                "residual_obligation_ids": ["runtime/theory/residual"],
-                "blocking_errors": 0,
-                "blocked_obligations": 0,
-                "closure_tiers": ["finite_fragment"],
-                "completeness_claim": "not_claimed_for_all_obligations",
-                "ontology_closure_claim": "not_claimed_for_all_obligations"
-            }
-        });
-
+        let behavior_report = sample_behavior_coverage_view(
+            vec!["schema/order/relation/payment/rule/key/0".to_string()],
+            Some(RuntimeTheorySidecarSummaryV1 {
+                present: true,
+                module_digest: Some("fnv1a64:test".to_string()),
+                residual_obligations: Some(1),
+                residual_obligation_ids: vec!["runtime/theory/residual".to_string()],
+                blocking_errors: Some(0),
+                blocked_obligations: Some(0),
+                closure_tiers: vec!["finite_fragment".to_string()],
+                completeness_claim: Some("not_claimed_for_all_obligations".to_string()),
+                ontology_closure_claim: Some("not_claimed_for_all_obligations".to_string()),
+                ..RuntimeTheorySidecarSummaryV1::default()
+            }),
+        );
         let advisory = continuous_coverage_report_from_behavior_report(
             &behavior_report,
             &bundle,

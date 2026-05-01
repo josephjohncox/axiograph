@@ -1,9 +1,12 @@
-# PathDB: Efficient Binary Path-Indexed Knowledge Graph
+# PathDB: Derived Binary Path-Indexed Execution Substrate
 
 **Diataxis:** Explanation  
 **Audience:** contributors
 
-PathDB is Axiograph's high-performance storage and query engine for knowledge graphs. It combines techniques from database research, succinct data structures, and graph algorithms.
+PathDB is Axiograph's high-performance derived storage/query substrate for
+accepted `.axi` snapshots and compiled IR materializations. It combines
+techniques from database research, succinct data structures, and graph
+algorithms, but it is not the ontology kernel or semantic authority.
 
 For distributed-system evolution (replication, sharding, snapshot-scoped certificates, and literature), see `docs/explanation/DISTRIBUTED_PATHDB.md`.
 

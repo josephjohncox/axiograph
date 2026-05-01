@@ -36,7 +36,8 @@ Current protocol choices:
 
 ## Trust Boundary
 
-Axiograph is currently best described as a proof-carrying ontology workbench.
+Axiograph is currently best described as a typed ontology workbench with
+proof-carrying claims for selected high-value fragments.
 It is not yet a full categorical, topos-theoretic, or dependently typed ontology
 kernel.
 

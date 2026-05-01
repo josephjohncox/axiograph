@@ -1,10 +1,11 @@
-//! Verified Binary Format with CBOR, Schemas, and Checksums
+//! Integrity-Checked CBOR Format With Schemas And Checksums
 //!
 //! This module provides a robust serialization format that:
 //! 1. Uses CBOR for compact, schema-aware encoding
 //! 2. Includes checksums for integrity verification
 //! 3. Supports schema evolution with version negotiation
-//! 4. Validates data against the formal spec invariants (Lean-checked semantics)
+//! 4. Validates envelope integrity and schema-version invariants. Semantic
+//!    claims still require the Axiograph certificate/trust boundary.
 
 #![allow(unused_imports)]
 

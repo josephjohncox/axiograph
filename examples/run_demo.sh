@@ -1,12 +1,12 @@
 #!/bin/bash
 # ============================================================================
-# Axiograph End-to-End Demo (Rust + Lean)
+# Axiograph End-to-End Teaching Flow (Rust + Lean)
 # ============================================================================
 #
-# This script demonstrates the current v6 workflow:
+# This script demonstrates the current canonical workflow:
 # - Canonical `.axi` modules (schema/theory/instance) are the human-facing source plane.
-# - Rust imports modules into PathDB and runs queries (fast, untrusted).
-# - Rust can emit certificates; Lean checks them (trusted semantics/checker).
+# - Rust elaborates modules into typed runtime reports and query witnesses.
+# - Lean checks the strongest supported certificate fragment.
 #
 # Run from repo root:
 #   make demo
@@ -22,7 +22,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN_DIR="$PROJECT_ROOT/build/demo_run"
 mkdir -p "$RUN_DIR/build"
 
-echo "== Axiograph end-to-end demo (Rust + Lean) =="
+echo "== Axiograph end-to-end teaching flow (Rust + Lean) =="
 echo "root: $PROJECT_ROOT"
 echo "run:  $RUN_DIR"
 
@@ -52,12 +52,12 @@ echo '-- inspect compiled theory graph from canonical .axi'
 echo "wrote: build/ontology_rewrites_theory_graph.json"
 
 echo ""
-echo "-- REPL demo: canonical module import (meta-plane + FactIndex + keys)"
+echo "-- REPL flow: canonical module import (meta-plane + FactIndex + keys)"
 cd "$RUN_DIR"
 "$AXIOGRAPH" repl --script "$PROJECT_ROOT/examples/repl_scripts/supply_chain_hott_axi_demo.repl" --quiet
 
 echo ""
-echo "-- REPL demo: schema discovery module import (extensional constraints)"
+echo "-- REPL flow: schema discovery module import (extensional constraints)"
 "$AXIOGRAPH" repl --script "$PROJECT_ROOT/examples/repl_scripts/sql_schema_discovery_axi_demo.repl" --quiet
 
 echo ""
@@ -72,6 +72,7 @@ echo ""
 echo "-- behavior case: BDD/DDD wrapper over typed ontology surfaces"
 "$AXIOGRAPH" discover behavior-case "$PROJECT_ROOT/examples/industrial/RegulatedProductionLine.axi" \
   --request "$PROJECT_ROOT/examples/behavior_cases/regulated_ship_release.json" \
+  --cq-file "$PROJECT_ROOT/examples/behavior_cases/regulated_ship_release.cq" \
   --out "$RUN_DIR/build/regulated_ship_release_behavior_case_report.json" >/dev/null
 echo "wrote: build/regulated_ship_release_behavior_case_report.json"
 

@@ -4092,7 +4092,12 @@ async fn handle_pathdb_commit_req(
         if !chunks.is_empty() {
             let tmp = write_temp_file(
                 "chunks.json",
-                &serde_json::to_string_pretty(&chunks).unwrap_or_default(),
+                &axiograph_ingest_docs::chunks_to_json_for_chunks(
+                    "db_server_proposal_evidence",
+                    "server-request",
+                    chunks.clone(),
+                )
+                .unwrap_or_default(),
             )?;
             chunk_paths.push(tmp);
         }

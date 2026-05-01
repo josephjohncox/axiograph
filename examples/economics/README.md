@@ -1,8 +1,8 @@
 # Economics Examples
 
-`EconomicFlows.axi` teaches a small business/economic ontology with typed flows.
+`EconomicFlows.axi` teaches a compact business/economic ontology with typed flows.
 It is a good first example after `examples/Family.axi` because the domain is
-small but less toy-like.
+easy to inspect while still demonstrating business-facing typed relations.
 
 Useful command:
 

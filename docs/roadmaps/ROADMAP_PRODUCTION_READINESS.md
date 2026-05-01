@@ -1,4 +1,4 @@
-# Production Readiness Roadmap (verifiable KG as a product)
+# Production Readiness Roadmap (typed ontology workbench as a product)
 
 **Diataxis:** Roadmap  
 **Audience:** contributors
@@ -12,7 +12,8 @@ This roadmap turns the “book” (`docs/explanation/BOOK.md`) into concrete eng
 
 This is intentionally **certificate-first**:
 
-> Rust (untrusted) computes; Lean (trusted) checks.
+> Rust computes operational reports and witnesses; Lean checks the supported
+> certificate and gate fragments.
 
 For ontology-process roadmapping (CQs, linting, patterns, reuse), see `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`.
 For math/migration roadmapping (Δ/Σ/Π, rewrite theory), see `docs/roadmaps/ROADMAP_MATHEMATICAL.md`.
@@ -27,9 +28,9 @@ Last updated: 2026-04-28.
 
 - Implemented: ingestion artifacts are explicitly “proposal-shaped” (`proposals.json`), and promotion emits reviewable candidate `.axi` modules.
   - Code: `rust/crates/axiograph-ingest-docs/src/proposals.rs`, `rust/crates/axiograph-ingest-docs/src/promotion.rs`, CLI: `rust/crates/axiograph-cli/src/main.rs`.
-- Implemented (prototype): a deterministic “augmentation” pass for `proposals.json` (`discover augment-proposals`), producing an auditable trace and feeding the promotion stage.
+- Implemented: a deterministic “augmentation” pass for `proposals.json` (`discover augment-proposals`), producing an auditable trace and feeding the promotion stage.
   - Code: `rust/crates/axiograph-ingest-docs/src/augment.rs`, CLI: `rust/crates/axiograph-cli/src/main.rs`.
-- Implemented (prototype): LLM sync keeps “pending review” facts and conflicts.
+- Implemented: LLM sync keeps “pending review” facts and conflicts.
   - Code: `rust/crates/axiograph-llm-sync/src/sync.rs`.
 - Missing (critical): a hard enforcement boundary so untrusted/proposal facts do not silently become “accepted knowledge” or become default grounding inputs.
 
@@ -87,7 +88,7 @@ Last updated: 2026-04-28.
 - [ ] Establish a standard on-disk layout:
   - `knowledge/proposals/` (untrusted; LLM extractions; promotion candidates),
   - `knowledge/accepted/` (reviewed; canonical `.axi`),
-  - `knowledge/snapshots/` (PathDB export `.axi` + `.axpd`),
+  - `knowledge/snapshots/` (`.axpd` checkpoints and explicit PathDBExport debug/parity snapshots),
   - `knowledge/certificates/` (JSON cert fixtures or emitted proofs).
 - [ ] Update `axiograph-storage` to load schema/indexes from **accepted** modules only.
   - Code: `rust/crates/axiograph-storage/src/lib.rs` (`load_axi_files`, `append_to_axi`).

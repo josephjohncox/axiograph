@@ -91,7 +91,7 @@ These rules apply to every workstream in this document.
 - Semantic history must preserve explicit lifecycle transitions, not hide them behind mutable state.
 - CQ regression handling must become a default gate for ontology-changing operations, not a best-effort report.
 - Plan new ontology-engineering surfaces under a **greenfield default**:
-  - do not preserve legacy authoring/query/review payloads by default,
+  - do not preserve superseded authoring/query/review payloads by default,
   - do not carry parallel semantic vocabularies indefinitely,
   - and do not keep old workflow shapes alive unless they preserve trust-critical
     anchors or a defended migration path.
@@ -102,7 +102,7 @@ These rules apply to every workstream in this document.
 - Prefer explicit migration/drop-compat plans over silent adapter accretion:
   - new canonical contracts should replace old defaults,
   - old surfaces should become migration/import adapters or be removed,
-  - and roadmap language should say when a legacy path is temporary rather than
+  - and roadmap language should say when a superseded path is temporary rather than
     "supported" in the open-ended sense.
 
 ---
@@ -822,7 +822,7 @@ These flows should remain impossible or explicitly unsupported:
 - [ ] Make promotion/review tooling say when a change is:
   - additive,
   - replacing a prior semantic shape,
-  - or intentionally dropping a legacy path.
+  - or intentionally dropping a superseded path.
 - [ ] Do not default to preserving older review/import payloads once the new
   canonical preview/review contract exists:
   - keep importers/exporters only where needed for migration or trust-preserving
@@ -1143,7 +1143,7 @@ Agents and operators should receive a structured report, not only prose:
 - [ ] Persist all preview reports under `sem/validations/`.
 - [ ] Converge authoring, proposal preview, and promotion preview on one trust-language family.
 - [ ] Require CQ policy to be carried explicitly through ontology-changing surfaces.
-- [ ] Replace legacy review payloads as defaults once the shared contract lands;
+- [ ] Replace superseded review payloads as defaults once the shared contract lands;
   retain only explicit migration/audit adapters where justified.
 
 ### Phase 1: semantic review as the normal path

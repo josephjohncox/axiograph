@@ -27,7 +27,7 @@ pub enum MigrationFunctorKindV1 {
 
 /// A minimal schema IR for migration semantics.
 ///
-/// This is intentionally **not** the legacy `.axi` AST: migration needs a
+/// This is intentionally **not** the surface `.axi` AST: migration needs a
 /// category-shaped core (objects + arrows + functions), while the canonical
 /// `axi_schema_v1` surface syntax is relation-oriented.
 ///

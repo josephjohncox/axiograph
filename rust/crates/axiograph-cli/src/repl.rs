@@ -181,7 +181,7 @@ fn cmd_repl_rustyline(initial_axpd: Option<&PathBuf>) -> Result<()> {
         rl.add_history_entry(line)
             .map_err(|e| anyhow!("failed to record history: {e}"))?;
 
-        let tokens = split_command_line(line);
+        let tokens = tokenize_repl_line(line);
         match dispatch_repl_line_result(&mut state, &tokens) {
             Ok(ReplControl::Continue) => {}
             Ok(ReplControl::Exit) => break,
@@ -1207,22 +1207,13 @@ fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
     let draft_module = crate::axi_input::require_canonical_axi_text(&draft_axi)?;
     let draft_summary = draft_module.import_into_pathdb(db)?;
 
-    let proposals_summary = crate::proposals_import::import_proposals_file_into_pathdb(
-        db,
-        &proposals_file,
-        &ingest_digest,
-    )?;
     db.build_indexes();
 
     println!(
-        "imported proto descriptor: chunks_added={} draft_meta_entities={} draft_instances={} proposals_entities_added={} proposals_relation_facts_added={} derived_edges_added={} evidence_links_added={} (reindexed in {:?})",
+        "imported proto descriptor: chunks_added={} draft_meta_entities={} draft_instances={} (canonical draft imported and reindexed in {:?})",
         chunks_summary.chunks_added,
         draft_summary.meta_entities_added,
         draft_summary.instances_imported,
-        proposals_summary.entities_added,
-        proposals_summary.relation_facts_added,
-        proposals_summary.derived_edges_added,
-        proposals_summary.evidence_links_added,
         start.elapsed()
     );
     let next_key = if state.snapshot_key.is_empty() {
@@ -2158,7 +2149,7 @@ fn cmd_add_fact(state: &mut ReplState, args: &[String]) -> Result<()> {
         let mut checked = axiograph_pathdb::CheckedDbMut::new(db)?;
         let mut builder = checked
             .fact_builder(&schema_name, &relation_name)?
-            .with_edge_confidence(confidence);
+            .with_edge_confidence(confidence)?;
         for (field, id) in resolved {
             builder.set_field(&field, id)?;
         }
@@ -3323,14 +3314,16 @@ fn cmd_follow(state: &ReplState, args: &[String]) -> Result<()> {
         chain_tokens.push(t.to_string());
     }
 
-    let targets = match crate::axql::parse_axql_path_expr(&rpq_like.join(" ")) {
+    let rpq_text = rpq_like.join(" ");
+    let chain_text = chain_tokens.join("/");
+    let targets = match crate::axql::parse_axql_path_expr(&rpq_text) {
         Ok(expr) => crate::axql::follow_path_expr(db, start_id, &expr, max_hops)?,
-        Err(_) => match crate::axql::parse_axql_path_expr(&chain_tokens.join("/")) {
+        Err(rpq_error) => match crate::axql::parse_axql_path_expr(&chain_text) {
             Ok(expr) => crate::axql::follow_path_expr(db, start_id, &expr, max_hops)?,
-            Err(_) => {
-                // Back-compat: treat args as a raw list of relation names.
-                let path: Vec<&str> = tokens.iter().map(|s| s.as_str()).collect();
-                db.follow_path(start_id, &path)
+            Err(chain_error) => {
+                return Err(anyhow!(
+                    "invalid follow path expression. Use AxQL path syntax like `rel_a/rel_b` or `(rel_a|rel_b)*`; parsed `{rpq_text}` as {rpq_error} and `{chain_text}` as {chain_error}"
+                ));
             }
         },
     };
@@ -3384,7 +3377,7 @@ fn cmd_gen(state: &mut ReplState, args: &[String]) -> Result<()> {
         ));
     }
 
-    // Back-compat: the old numeric generator.
+    // Numeric generator mode for quick synthetic stress graphs.
     if let Ok(entities) = args[0].parse::<usize>() {
         if args.len() < 3 || args.len() > 5 {
             return Err(anyhow!(

@@ -64,6 +64,10 @@ The script writes reports under `build/examples/semantic_merge/`, including:
 - `semantic_vcs_conformance_coverage.json`: machine-readable coverage of the
   finite semantic VCS cases claimed by this example.
 
+The runner intentionally uses Axiograph, Lean, and portable shell checks. It
+does not require `jq`, Python, or a separate JSON reshaping helper in the
+teaching path.
+
 ## Coverage Claim
 
 For this example, complete coverage means complete for the finite conformance

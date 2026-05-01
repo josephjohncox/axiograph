@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axiograph_ingest_docs::{Chunk, ProposalsFileV1};
+use axiograph_ingest_docs::ProposalsFileV1;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -92,8 +92,11 @@ message GetWidgetResponse {
 
     assert!(status.success(), "github import should succeed");
 
-    let merged_chunks: Vec<Chunk> =
-        serde_json::from_str(&fs::read_to_string(out_dir.join("chunks.json")).unwrap()).unwrap();
+    let merged_chunks =
+        axiograph_ingest_docs::chunks_from_json_str(
+            &fs::read_to_string(out_dir.join("chunks.json")).unwrap(),
+        )
+        .unwrap();
     assert!(!merged_chunks.is_empty(), "expected some merged chunks");
     assert!(
         merged_chunks

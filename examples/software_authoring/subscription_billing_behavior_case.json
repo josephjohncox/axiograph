@@ -1,4 +1,5 @@
 {
+  "version": "behavior_case_check_request_v1",
   "behavior_case": {
     "case_id": "subscription_billing.entitlement_after_paid_invoice",
     "title": "Paid invoice grants account entitlement",
@@ -25,22 +26,6 @@
         "The subscription has the API entitlement after the invoice is paid.",
         "The account read model exposes the granted entitlement.",
         "Product-access code can be tested against an Axiograph receipt for the accepted ontology."
-      ],
-      "competency_questions": [
-        {
-          "name": "paid_invoice_grants_subscription_entitlement",
-          "question": "Does the paid invoice grant the subscription entitlement?",
-          "query": "select ?f where ?f = SubscriptionBilling.SubscriptionHasEntitlement(subscription=Sub_Pro, entitlement=Entitlement_API, ctx=Accepted, time=T1) limit 1",
-          "min_rows": 1,
-          "weight": 1.0
-        },
-        {
-          "name": "account_has_product_access",
-          "question": "Does the account have the product entitlement used by access checks?",
-          "query": "select ?f where ?f = SubscriptionBilling.AccountGrantedEntitlement(account=Account_Acme, entitlement=Entitlement_API, ctx=Accepted, time=T1) limit 1",
-          "min_rows": 1,
-          "weight": 1.0
-        }
       ],
       "rule_scopes": [
         {

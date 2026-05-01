@@ -10,7 +10,7 @@
 -- - `constraint transitive Rel ... param (...)`
 --
 -- In Axiograph’s open-world stance, these constraints are **not** “must materialize all
--- implied tuples”. Instead, they are *closure-compatibility* annotations:
+-- implied tuples”. Instead, they are *closure-admissibility* annotations:
 --
 -- - the checker does **not** require inverse/transitive tuples to be explicitly present,
 -- - it checks that keys/functionals remain consistent under the intended closure,
@@ -91,4 +91,3 @@ instance SmallFiberedWorld of Fibered:
     (a=Alice, b=Bob, ctx=Census2020),
     (a=Carol, b=Alice, ctx=FamilyTree2023)
   }
-

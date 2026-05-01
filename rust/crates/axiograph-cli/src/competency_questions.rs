@@ -85,6 +85,7 @@ pub fn generate_from_schema(
                 out.push(CompetencyQuestionV1 {
                     name,
                     question: Some(question),
+                    authoring: None,
                     query,
                     min_rows,
                     weight,
@@ -123,6 +124,7 @@ pub fn generate_from_schema(
                 out.push(CompetencyQuestionV1 {
                     name,
                     question: Some(question),
+                    authoring: None,
                     query,
                     min_rows,
                     weight,
@@ -197,6 +199,7 @@ pub fn prompts_to_competency_questions(
             out.push(CompetencyQuestionV1 {
                 name,
                 question: prompt.question.clone(),
+                authoring: None,
                 query,
                 min_rows,
                 weight,
@@ -218,6 +221,7 @@ pub fn prompts_to_competency_questions(
         out.push(CompetencyQuestionV1 {
             name,
             question: Some(question),
+            authoring: None,
             query,
             min_rows,
             weight,
@@ -449,6 +453,41 @@ fn normalized_competency_query(
     Ok((query, min_rows, weight))
 }
 
+fn unresolved_authored_competency_question_evaluation(
+    q: &CompetencyQuestionV1,
+) -> CompetencyQuestionEvaluationV1 {
+    let min_rows = if q.min_rows == 0 { 1 } else { q.min_rows };
+    let weight = if q.weight <= 0.0 { 1.0 } else { q.weight };
+    CompetencyQuestionEvaluationV1 {
+        name: q.name.clone(),
+        rows: 0,
+        min_rows,
+        satisfied: false,
+        weight,
+        cost: weight,
+        prepared_query: None,
+        trust: CompetencyQuestionTrustV1 {
+            trust_class: "unresolved_authoring".to_string(),
+            coverage: Some("not_executable_until_lowered_to_typed_query".to_string()),
+            reasons: vec![
+                "competency question has authored intent but no executable typed query lowering"
+                    .to_string(),
+            ],
+            notes: vec![
+                "Use `expect: exists Schema.Rel(role=value, ...)` or `about: Schema.Rel` plus `given: role=value` hints to let the `.cq` loader derive an executable query.".to_string(),
+                "Alternatively keep an explicit `axql:` field as a lowering/debug fixture, not as the primary authoring surface.".to_string(),
+            ],
+            semantic_coverage: None,
+            gaps: vec![crate::trust_contract::TrustGapV1 {
+                code: "cq_missing_executable_lowering".to_string(),
+                subject: Some(q.name.clone()),
+                detail: "authored competency question needs a typed lowering before it can satisfy strict CQ or promotion gates".to_string(),
+            }],
+        },
+        refinement_candidates: Vec::new(),
+    }
+}
+
 pub fn evaluate_competency_questions(
     db: &PathDB,
     questions: &[CompetencyQuestionV1],
@@ -488,6 +527,12 @@ pub fn evaluate_competency_questions_with_trust(
     let mut total_cost = 0.0;
 
     for q in questions {
+        if q.query.trim().is_empty() {
+            let eval = unresolved_authored_competency_question_evaluation(q);
+            total_cost += eval.cost;
+            results.push(eval);
+            continue;
+        }
         let (query, min_rows, weight) = normalized_competency_query(q)?;
         let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&query);
         let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
@@ -571,6 +616,12 @@ pub fn evaluate_competency_questions_with_trust_and_theory_graph(
     let mut total_cost = 0.0;
 
     for q in questions {
+        if q.query.trim().is_empty() {
+            let eval = unresolved_authored_competency_question_evaluation(q);
+            total_cost += eval.cost;
+            results.push(eval);
+            continue;
+        }
         let (query, min_rows, weight) = normalized_competency_query(q)?;
         let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&query);
         let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
@@ -747,6 +798,7 @@ mod tests {
             &[CompetencyQuestionV1 {
                 name: "jamison_parent".to_string(),
                 question: Some("Jamison should have Bob as a parent".to_string()),
+                authoring: None,
                 query:
                     "select ?f where ?f = Fam.Parent(child=Jamison, parent=Bob, ctx=FamilyTree, time=?t) limit 1"
                         .to_string(),
@@ -796,6 +848,7 @@ instance I of Demo:
         let question = CompetencyQuestionV1 {
             name: "flow_dst".to_string(),
             question: Some("Find a downstream supplier".to_string()),
+            authoring: None,
             query: r#"select ?dst where ?f = Demo.Flow(from=a, to=?dst) limit 1"#.to_string(),
             min_rows: 1,
             weight: 1.0,
@@ -840,6 +893,50 @@ instance I of Demo:
     }
 
     #[test]
+    fn authored_competency_question_without_lowering_reports_residual_gap() -> Result<()> {
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(
+            &mut db,
+            r#"
+module Demo
+schema Demo:
+  object Shipment
+instance I of Demo:
+  Shipment = {Shipment_1}
+"#,
+        )?;
+        db.build_indexes();
+
+        let question = CompetencyQuestionV1 {
+            name: "shipment_rule".to_string(),
+            question: Some("Which shipment rule applies?".to_string()),
+            authoring: Some(crate::world_model::CompetencyQuestionAuthoringHintsV1 {
+                ask: Some("Which shipment rule applies?".to_string()),
+                about: vec!["shipment release".to_string()],
+                given: vec!["ERP hold is active".to_string()],
+                expect: vec!["a typed release obligation exists".to_string()],
+                notes: Vec::new(),
+            }),
+            query: String::new(),
+            min_rows: 1,
+            weight: 2.0,
+            contexts: Vec::new(),
+        };
+
+        let eval = evaluate_competency_questions_with_trust(&db, &[question])?;
+        assert_eq!(eval.total, 1);
+        assert_eq!(eval.satisfied, 0);
+        assert_eq!(eval.cost, 2.0);
+        assert_eq!(eval.questions[0].trust.trust_class, "unresolved_authoring");
+        assert_eq!(
+            eval.questions[0].trust.gaps[0].code,
+            "cq_missing_executable_lowering"
+        );
+        assert!(eval.questions[0].prepared_query.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn competency_questions_can_attach_compiled_theory_handles_to_repairs() -> Result<()> {
         let axi = r#"
 module Demo
@@ -871,6 +968,7 @@ instance I of Demo:
         let question = CompetencyQuestionV1 {
             name: "parent_child".to_string(),
             question: Some("Find Alice's child".to_string()),
+            authoring: None,
             query: r#"select ?c where ?f = Demo.Parent(parent=Alice, child=?c) limit 1"#
                 .to_string(),
             min_rows: 1,
@@ -942,6 +1040,7 @@ instance I of Demo:
         let question = CompetencyQuestionV1 {
             name: "flow_dst".to_string(),
             question: Some("Find a downstream supplier".to_string()),
+            authoring: None,
             query: r#"select ?dst where ?f = Demo.Flow(from=a, to=?dst) limit 1"#.to_string(),
             min_rows: 1,
             weight: 1.0,

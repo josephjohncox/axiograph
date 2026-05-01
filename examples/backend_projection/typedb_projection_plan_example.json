@@ -1,0 +1,28 @@
+{
+  "version": "backend_projection_plan_v1",
+  "kind": "backend_projection_plan_v1",
+  "backend": "typedb",
+  "authority": "read_projection_only",
+  "source": {
+    "canonical_axi": "examples/software_authoring/OrderFulfillmentDomain.axi",
+    "compiled_ir": "SchemaCategoryIr+TheoryIr+InstanceFunctorIr",
+    "kernel_surface_required": true
+  },
+  "mapping": {
+    "object_types": "TypeDB entity types",
+    "relation_objects": "TypeDB relation types with explicit roles",
+    "projection_arrows": "relation roles",
+    "subtypes": "TypeDB subtype declarations",
+    "context_world_axes": "attributes or relation roles preserved explicitly"
+  },
+  "native_readability": {
+    "schema_language": "TypeQL",
+    "query_language": "TypeQL read queries",
+    "mutation_policy": "writes outside Axiograph are drift"
+  },
+  "trust_caveats": [
+    "Typed elaboration happens against compiled Axiograph IR before pushdown.",
+    "Native TypeDB reads are useful for inspection and execution.",
+    "Promotion-sensitive claims must cite Axiograph anchors and typed reports."
+  ]
+}

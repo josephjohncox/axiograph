@@ -36,17 +36,18 @@ not just *that* it does.
 
 ## 1) Proof-irrelevant exploration (REPL)
 
-The quickest way to see the “paths + witness” structure is to use scenario generators.
+The quickest way to see the “paths + witness” structure is to import a
+canonical `.axi` module that contains explicit relation/path witnesses.
 
 Run a scenario script:
 
 ```bash
 cd rust
-cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/enterprise_demo.repl
+cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/family_hott_axi_demo.repl
 ```
 
-Or import a canonical module that contains explicit schema morphisms / equivalences
-(and visualize the resulting witness nodes):
+Or import a canonical module that contains explicit schema morphisms and
+equivalences:
 
 ```bash
 cd rust
@@ -56,12 +57,13 @@ cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/schema_evol
 Try the proof-relevant-shaped queries inside the script (also runnable manually):
 
 ```text
-# Two ways to derive the same endpoint:
-q select ?svc where name("doc_0_0") -mentionsService-> ?svc limit 10
-q select ?svc where name("doc_0_0") -mentionsEndpoint/belongsTo-> ?svc max_hops 4 limit 10
+# Basic typed traversals:
+q select ?p where name("Alice") -Parent-> ?p limit 10
+q select ?s where name("Alice") -Spouse-> ?s limit 10
 
 # Inspect the alternative path witnesses directly:
-q select ?p where ?p is PathWitness, ?p -from-> name("doc_0_0") limit 10
+q select ?to where name("Kevin") -PathEquivalence-> ?to limit 10
+q select ?f ?lhs ?rhs where ?f is PathEquivalence, ?f -path1-> ?lhs, ?f -path2-> ?rhs limit 10
 ```
 
 In this mode you get answers fast; you *don’t* get a machine-checkable witness.
@@ -151,7 +153,7 @@ Run:
 
 ```bash
 cd rust
-cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/proto_api_demo.repl
+cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/synthetic/proto_api_demo.repl
 ```
 
 Then inspect:
@@ -268,7 +270,7 @@ This is the “GraphRAG → Axiograph” flow:
 ```bash
 cd rust
 mkdir -p build/demo
-cargo run -p axiograph-cli -- ingest doc ../examples/docs/sample_conversation.txt \
+cargo run -p axiograph-cli -- ingest doc ../examples/ingest_fixtures/machining_conversation.txt \
   --out build/demo/proposals.json \
   --machining \
   --chunks build/demo/chunks.json \

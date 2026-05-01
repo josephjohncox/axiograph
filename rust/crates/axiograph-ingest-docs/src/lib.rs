@@ -9,16 +9,18 @@
 //! - Recommended readings
 //!
 //! Output:
-//! - JSON chunks file for RAG/vector search
+//! - `EvidenceChunkBundleV1` JSON for RAG/vector search
 //! - Extracted facts with confidence scores
 //! - `proposals.json` (Evidence/Proposals schema) for explicit promotion into canonical `.axi`
 //!
-//! **Untrusted boundary**: this crate is heavy IO/parsing; semantic meaning is defined
-//! in Lean and enforced via certificates (Rust computes, Lean verifies).
+//! **Untrusted boundary**: this crate is heavy IO/parsing. Its output stays in
+//! the evidence plane until typed review, CQ/trust gates, and promotion lower
+//! accepted meaning through canonical `.axi`.
 
 use anyhow::{anyhow, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 pub mod augment;
@@ -49,8 +51,10 @@ pub use repo::*;
 // Chunk representation (for RAG)
 // ============================================================================
 
+pub const EVIDENCE_CHUNK_BUNDLE_VERSION_V1: &str = "evidence_chunk_bundle_v1";
+
 /// A document chunk with source pointer
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Chunk {
     pub chunk_id: String,
     pub document_id: String,
@@ -62,13 +66,34 @@ pub struct Chunk {
 }
 
 /// Document extraction result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DocumentExtraction {
     pub source_path: String,
     pub document_id: String,
     pub title: Option<String>,
     pub chunks: Vec<Chunk>,
     pub metadata: HashMap<String, String>,
+}
+
+/// Typed evidence-plane bundle for retrieved/indexed text.
+///
+/// This is intentionally not `.axi` truth. It is an evidence overlay input for
+/// retrieval, embeddings, proposals, and review workflows.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EvidenceChunkBundleV1 {
+    pub version: String,
+    pub evidence_plane: String,
+    pub source: ProposalSourceV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub chunks: Vec<Chunk>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caveats: Vec<String>,
 }
 
 // ============================================================================
@@ -196,9 +221,106 @@ pub fn extract_pdf(_path: &Path) -> Result<DocumentExtraction> {
     Err(anyhow!("PDF feature not enabled"))
 }
 
-/// Output chunks as JSON
+pub fn evidence_chunk_bundle_from_extraction(
+    extraction: &DocumentExtraction,
+) -> EvidenceChunkBundleV1 {
+    EvidenceChunkBundleV1 {
+        version: EVIDENCE_CHUNK_BUNDLE_VERSION_V1.to_string(),
+        evidence_plane: "evidence_overlay".to_string(),
+        source: ProposalSourceV1 {
+            source_type: "document_extraction".to_string(),
+            locator: if extraction.source_path.is_empty() {
+                extraction.document_id.clone()
+            } else {
+                extraction.source_path.clone()
+            },
+        },
+        document_id: Some(extraction.document_id.clone()),
+        title: extraction.title.clone(),
+        chunks: extraction.chunks.clone(),
+        metadata: extraction
+            .metadata
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        caveats: vec![
+            "EvidenceChunkBundleV1 is an evidence-plane artifact; it is not accepted ontology truth."
+                .to_string(),
+        ],
+    }
+}
+
+pub fn evidence_chunk_bundle_from_chunks(
+    source_type: impl Into<String>,
+    locator: impl Into<String>,
+    chunks: Vec<Chunk>,
+) -> EvidenceChunkBundleV1 {
+    EvidenceChunkBundleV1 {
+        version: EVIDENCE_CHUNK_BUNDLE_VERSION_V1.to_string(),
+        evidence_plane: "evidence_overlay".to_string(),
+        source: ProposalSourceV1 {
+            source_type: source_type.into(),
+            locator: locator.into(),
+        },
+        document_id: None,
+        title: None,
+        chunks,
+        metadata: BTreeMap::new(),
+        caveats: vec![
+            "EvidenceChunkBundleV1 is an evidence-plane artifact; it is not accepted ontology truth."
+                .to_string(),
+        ],
+    }
+}
+
+/// Output chunks as typed evidence-bundle JSON.
 pub fn chunks_to_json(extraction: &DocumentExtraction) -> Result<String> {
-    Ok(serde_json::to_string_pretty(&extraction.chunks)?)
+    Ok(serde_json::to_string_pretty(
+        &evidence_chunk_bundle_from_extraction(extraction),
+    )?)
+}
+
+pub fn chunks_to_json_for_chunks(
+    source_type: impl Into<String>,
+    locator: impl Into<String>,
+    chunks: Vec<Chunk>,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(
+        &evidence_chunk_bundle_from_chunks(source_type, locator, chunks),
+    )?)
+}
+
+pub fn chunk_bundle_from_json_str(text: &str) -> Result<EvidenceChunkBundleV1> {
+    let bundle: EvidenceChunkBundleV1 = serde_json::from_str(text)?;
+    validate_chunk_bundle(&bundle)?;
+    Ok(bundle)
+}
+
+pub fn chunks_from_json_str(text: &str) -> Result<Vec<Chunk>> {
+    Ok(chunk_bundle_from_json_str(text)?.chunks)
+}
+
+pub fn chunks_from_json_slice(bytes: &[u8]) -> Result<Vec<Chunk>> {
+    let bundle: EvidenceChunkBundleV1 = serde_json::from_slice(bytes)?;
+    validate_chunk_bundle(&bundle)?;
+    Ok(bundle.chunks)
+}
+
+fn validate_chunk_bundle(bundle: &EvidenceChunkBundleV1) -> Result<()> {
+    if bundle.version != EVIDENCE_CHUNK_BUNDLE_VERSION_V1 {
+        return Err(anyhow!(
+            "unsupported evidence chunk bundle version `{}` (expected `{}`)",
+            bundle.version,
+            EVIDENCE_CHUNK_BUNDLE_VERSION_V1
+        ));
+    }
+    if bundle.evidence_plane != "evidence_overlay" {
+        return Err(anyhow!(
+            "EvidenceChunkBundleV1 must stay in evidence_overlay plane, got `{}`",
+            bundle.evidence_plane
+        ));
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -356,4 +478,31 @@ pub fn extract_knowledge_from_confluence(
         facts: aggregate_facts(all_facts),
         domain: "confluence".to_string(),
     })
+}
+
+#[cfg(test)]
+mod typed_chunk_bundle_tests {
+    use super::*;
+
+    #[test]
+    fn chunks_json_is_typed_evidence_bundle() {
+        let extraction = extract_text("alpha\n\nbeta", "doc1");
+        let json = chunks_to_json(&extraction).expect("serialize chunk bundle");
+        let bundle = chunk_bundle_from_json_str(&json).expect("parse typed chunk bundle");
+        assert_eq!(bundle.version, EVIDENCE_CHUNK_BUNDLE_VERSION_V1);
+        assert_eq!(bundle.evidence_plane, "evidence_overlay");
+        assert_eq!(bundle.document_id.as_deref(), Some("doc1"));
+        assert_eq!(bundle.chunks.len(), 2);
+        assert!(bundle
+            .caveats
+            .iter()
+            .any(|caveat| caveat.contains("not accepted ontology truth")));
+    }
+
+    #[test]
+    fn bare_chunk_arrays_are_not_the_public_boundary() {
+        let err = chunks_from_json_str(r#"[{"chunk_id":"c0"}]"#)
+            .expect_err("bare arrays should not parse as EvidenceChunkBundleV1");
+        assert!(err.to_string().contains("invalid type"));
+    }
 }

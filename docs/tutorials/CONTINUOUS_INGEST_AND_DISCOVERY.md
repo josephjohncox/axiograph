@@ -29,7 +29,7 @@ To keep the system usable *and* sound, we maintain two explicit planes:
 
 Artifacts:
 
-- `chunks.json`: document/code chunks with metadata (`path`, `language`, `span`, etc.)
+- `chunks.json`: typed `EvidenceChunkBundleV1` document/code evidence with metadata (`path`, `language`, `span`, etc.)
 - `proposals.json`: extracted **structured KG proposals** (entities/relations/claims) with confidence + evidence pointers
 - `facts.json`: optional “raw extractor output” (pattern- or LLM-derived) retained for debugging and incremental development
 - optional: vector index / embeddings (not a truth source)
@@ -73,7 +73,7 @@ Common sources we support (or aim to support) as first-class ingesters:
 - **Confluence** (HTML export)
 - **SQL** (DDL/schema)
 - **RDF/OWL** (`.nt`/`.ttl`/`.nq`/`.trig`/`.rdf`/`.owl`/`.xml`; see `docs/explanation/SEMANTIC_WEB_INTEROP.md`)
-- **CAD** (STEP/IGES)
+- **CAD** (STEP/IGES; experimental importer work, not a supported current ingest path)
 - PDFs, transcripts, reading lists
 
 ### 2.2 Output contract: proposal facts with provenance
@@ -97,7 +97,7 @@ Discovery consumes both planes:
 
 Inputs:
 
-- `chunks.json` + (optionally) embeddings
+- `EvidenceChunkBundleV1` chunks + optional embedding evidence overlays
 - `proposals.json` structured proposals
 
 Outputs:
@@ -170,7 +170,7 @@ The goal of the prototype tooling is to make this loop tangible without requirin
 ### 5.1 Index a repo (evidence plane)
 
 - Scan a directory, chunk files, extract lightweight facts, emit:
-  - `chunks.json`,
+  - `chunks.json` (`EvidenceChunkBundleV1`),
   - `edges.json` (lightweight repo graph edges),
   - `proposals.json` (structured KG proposals with evidence pointers; generic Evidence/Proposals schema),
   - `traces.json` (optional).
@@ -229,7 +229,7 @@ REPL script:
 
 ```bash
 cd rust
-cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/continuous_ingest_demo.repl
+cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/synthetic/continuous_ingest_demo.repl
 ```
 
 It starts from a base `enterprise` scenario, then applies two ingest ticks:

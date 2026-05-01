@@ -44,7 +44,7 @@ instance I of S:
     );
     assert!(
         !db.relations.has_edge(alice, parent_rel, bob),
-        "endpoint choice should not be silently reordered by legacy child/parent heuristics"
+        "endpoint choice should not be silently reordered by name-based child/parent heuristics"
     );
 }
 

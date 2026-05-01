@@ -11,7 +11,7 @@ Each component addresses a specific failure mode in knowledge management:
 
 | Failure Mode | Component | Value |
 |--------------|-----------|-------|
-| LLM hallucinations | Grounding Engine | Catches false claims |
+| LLM hallucinations | Grounding Engine | Separates accepted facts from weak proposals |
 | Overconfident systems | Probability Calibration | Honest uncertainty |
 | Conflicting sources | Reconciliation | Weighted truth |
 | Unsafe operations | Guardrails | Prevents harm |
@@ -122,7 +122,8 @@ Graph: 10,000 entities, 50,000 relations
 ```
 
 ### Performance Improvement
-500x faster for typical knowledge graph queries.
+Performance claims must be measured per workload; PathDB is intended to make
+typical path-indexed queries fast without becoming semantic authority.
 
 ---
 

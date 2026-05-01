@@ -5,8 +5,8 @@
 **Runtime-typed ontology engineering for software, business rules, semantic VCS,
 and proof-carrying high-value claims.**
 
-Axiograph is a greenfield ontology workbench built around one public semantic
-spine:
+Axiograph is a greenfield typed ontology workbench built around one public
+semantic spine:
 
 ```text
 canonical .axi

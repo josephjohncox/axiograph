@@ -1828,9 +1828,9 @@ pub(crate) fn ollama_chat_with_timeout(
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
 
-        // Compatibility fallback:
-        // Some Ollama versions expect `format` to be a JSON schema object (not the
-        // string `"json"`). When they reject it, retry once with `format` omitted.
+        // Provider retry: some Ollama builds expect `format` to be a JSON
+        // schema object instead of the string `"json"`. When they reject it,
+        // retry once with `format` omitted.
         if has_format && text.contains("invalid JSON schema in format") {
             let mut body2 = body.clone();
             if let Some(obj) = body2.as_object_mut() {
@@ -1979,8 +1979,8 @@ fn openai_responses_with_timeout(
                 .map(|s| s.to_string())
         }
 
-        // Compatibility fallbacks: different OpenAI model families do not all
-        // accept the same optional parameters.
+        // Provider retries: different OpenAI model families do not all accept
+        // the same optional parameters.
         //
         // We retry once with a reduced request for a few common incompatibilities:
         // - `text.format` (structured output schema)
@@ -9279,6 +9279,7 @@ Rules:
 - For doc evidence, use `fts_chunks` or `semantic_search` and then `docchunk_get` to fetch a specific chunk body.
 - If the user asks to compare snapshots (“A vs B”, “what changed between snapshots”), use `snapshots_list` to resolve ids if needed, then use `snapshot_diff` (do not claim you lack a diff tool if it is available).
 - For ontology engineering questions about rule applicability, implementation coverage, bounded-context alignment, executable behavior cases, semantic slices, merge/rebase planning, resolver steps, or engineering next actions, use `semantic_business_rule`, `semantic_coverage`, `semantic_context_report`, `semantic_behavior_case`, `semantic_slice_build`, `semantic_slice_diff`, `semantic_merge_plan`, `semantic_rebase_plan`, `semantic_resolver_steps`, or `semantic_agent_report`.
+- For competency questions / CQ authoring, prefer `semantic_competency_questions` with question-first `.cq` text (`ask`, `about`, `given`, `expect`). Use `expect: exists Schema.Rel(role=value, ...)` or `expect: instance of Schema.Type` when you want an executable lowering. Do not ask users to author raw AxQL just to express ontology coverage intent.
 - For explicit *witness* artifacts (type-theory-ish structure):
   - `PathWitness` nodes encode a derivation/path (typically via edges `from`/`to` plus attrs like `repr`).
   - `Homotopy` nodes encode “two derivations / two paths with the same meaning” (often `from`/`to` plus `lhs`/`rhs` pointing at `PathWitness` nodes).

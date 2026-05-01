@@ -118,6 +118,7 @@ The flow demonstrates:
 
 - canonical module validation,
 - runtime theory checking,
+- question-first `.cq` authoring checks,
 - weak definition queries,
 - strict overlay validation,
 - weak coverage probes,
@@ -130,19 +131,39 @@ Start with:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring competency-questions \
+  --axi examples/software_authoring/OrderFulfillmentDomain.axi \
+  --cq examples/software_authoring/order_fulfillment.cq \
+  --out build/examples/software_authoring/competency_questions_authoring.json
+```
+
+Ask weak definition questions for authoring context:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   discover define examples/software_authoring/OrderFulfillmentDomain.axi \
   --prompt "define the shipment eligibility business rule" \
   --include-queries \
   --out build/examples/software_authoring/definition_query.json
 ```
 
-Then validate the overlay:
+Then validate the overlay and run an exploratory coverage probe:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   discover overlay-check examples/software_authoring/OrderFulfillmentDomain.axi \
   --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
   --out build/examples/software_authoring/overlay_check.json
+
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover coverage-query examples/software_authoring/OrderFulfillmentDomain.axi \
+  --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
+  --term "shipment eligibility" \
+  --relation OrderEligibleForShipment \
+  --cq-name accepted_order_is_shipment_eligible \
+  --surface-hint shipping \
+  --max-matches 8 \
+  --out build/examples/software_authoring/coverage_query.json
 ```
 
 Use strict coverage for CI:
@@ -151,6 +172,7 @@ Use strict coverage for CI:
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   check software-coverage examples/software_authoring/OrderFulfillmentDomain.axi \
   --behavior-case examples/software_authoring/order_fulfillment_behavior_case.json \
+  --cq-file examples/software_authoring/order_fulfillment.cq \
   --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
   --out build/examples/software_authoring/software_coverage.json
 ```

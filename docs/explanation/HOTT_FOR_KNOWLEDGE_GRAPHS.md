@@ -1,248 +1,105 @@
-# Homotopy Type Theory for Knowledge Graphs
+# HoTT And Groupoid Semantics For Knowledge Graphs
 
 **Diataxis:** Explanation  
 **Audience:** contributors
 
-> NOTE (Rust+Lean release): the trusted HoTT/groupoid semantics live in Lean (`lean/Axiograph/HoTT/*`).
-> Idris snippets in this document are historical notes from an earlier prototype and should be ported to Lean.
+Axiograph uses HoTT and groupoid ideas as a disciplined way to reason about
+paths, equivalence, transport, and semantic evolution. The current system does
+not claim full HoTT or univalence. It implements finite runtime checks in Rust
+and selected certificate fragments in Lean.
 
-This document explains how Axiograph uses HoTT concepts to enable flexible, mathematically rigorous knowledge representation.
+## Why This Matters
 
-## Why HoTT for Knowledge Graphs?
+Knowledge graphs become hard to evolve when relationships are treated as flat
+edges. Axiograph needs richer structure:
 
-Traditional knowledge graphs treat relationships as static edges. HoTT gives us:
+- typed paths for query and composition,
+- path equations for semantic equivalence,
+- rewrites for normalization,
+- transports for schema evolution and rebase,
+- higher-path intuition for reconciling competing derivations,
+- explicit residual obligations when the runtime fragment cannot decide.
 
-1. **Paths as relationships**: A relationship between A and B is a *path* from A to B
-2. **Higher paths**: Relationships between relationships (how friendships evolve)
-3. **Equivalence = Identity**: Equivalent structures are interchangeable
-4. **Transport**: Data moves along paths (migration)
+## Current Operational Model
 
-## Core Concepts
+The public spine is:
 
-### 1. Identity Types (Paths)
-
-In HoTT, "equality" is replaced by *paths*:
-
-```idris
-data Path : a -> a -> Type where
-  Refl : Path x x
+```text
+canonical .axi
+  -> SchemaCategoryIr + TheoryIr + InstanceFunctorIr
+  -> WellTypedPath / NormalizedPath / RuntimeTheoryCheckReportV1
+  -> optional Lean certificate
 ```
 
-For knowledge graphs:
-- `Path Person Person` represents kinship
-- `Path Schema Schema` represents schema evolution
-- Paths compose: if `p : Path A B` and `q : Path B C`, then `p @@ q : Path A C`
+Runtime path checking must prove enough to be operationally useful:
 
-### 2. Higher Paths (2-Paths, 3-Paths, ...)
+- every path step resolves to a compiled arrow or role projection,
+- adjacent endpoints compose,
+- context/world/time roles are preserved or explicitly transported,
+- path equations mention parallel endpoints,
+- rewrites preserve admissible variables and endpoints,
+- unsupported higher-order cases become typed residual obligations.
 
-A 2-path is a path between paths:
+## Groupoid Intuition
 
-```idris
-Path2 : Path x y -> Path x y -> Type
-Path2 p q = Path p q
-```
+Some semantic paths are reversible. Examples:
 
-**Example**: Two ways to derive "cousin":
-- Via mother's side: Parent⁻¹ → Mother → Sibling → Child
-- Via father's side: Parent⁻¹ → Father → Sibling → Child
+- a schema refactor with an explicit inverse transport,
+- a reversible material-flow accounting transformation,
+- a normalized path witness and its inverse,
+- a semantic VCS rebase that can be replayed against a declared source slice.
 
-Both paths have the same *degree* (4). The fact that they're "the same kinship" is a 2-path!
+The runtime does not assume all paths are invertible. Invertibility is a typed
+claim that must be represented by a checked witness or left as a residual.
 
-### 3. Groupoid Structure
+## Transport
 
-When all paths are invertible, we get a *groupoid*:
+Transport is the key bridge between HoTT intuition and ontology engineering.
+If a schema/category state changes, obligations must be transported:
 
-```idris
-record Groupoid where
-  Obj : Type
-  Hom : Obj -> Obj -> Type
-  inv : Hom a b -> Hom b a
-  -- inv (inv p) = p
-```
+- facts transport along object and relation images,
+- path equations transport along arrow images,
+- business rules transport along bounded-context morphisms,
+- behavior cases transport along CQ and implementation-surface refs,
+- failed transport becomes a resolver handle or residual obligation.
 
-**Applications**:
-- Social relationships that can be "undone" (friendship → acquaintance → friendship)
-- Economic transactions with reversals
-- Schema migrations that can rollback
+This is the semantic foundation of merge/rebase: rebase is not text movement;
+it is typed transport of obligations across an accepted target state.
 
-### 4. Univalence
+## Higher Paths And Reconciliation
 
-The key insight: **equivalent structures are identical**.
+When two branches produce different derivations for the same semantic target,
+the system should not hide that conflict. It should expose:
 
-```idris
-postulate
-ua : Equiv a b -> Path a b
-```
+- the competing path witnesses,
+- the equations or rewrites each branch used,
+- the affected theory obligations,
+- CQ/trust/coverage impact,
+- resolver steps that can accept, reject, weaken, or transport the claim.
 
-For schemas:
-```idris
-schemaUnivalence : SchemaEquiv s1 s2 -> Path s1 s2
-```
+This is higher-path intuition turned into operational review machinery.
 
-This means:
-- If two schemas have the same structure, they're interchangeable
-- Queries on equivalent schemas give equivalent results
-- Data can be freely transported between equivalent representations
+## Lean Boundary
 
-## Practical Examples
+Lean is used for selected finite fragments:
 
-### Social Networks: 2-Categorical Structure
+- path normalization/equivalence,
+- rewrite derivation replay,
+- reduced semantic VCS merge/rebase predicates,
+- query-answer soundness where the prepared-query fragment is supported.
 
-```
-People (0-cells) ─→ Relationships (1-morphisms) ─→ Evolution (2-morphisms)
-```
+The Lean checker verifies the encoded finite payload. It does not certify all
+Rust behavior, all graph backends, or global ontology closure.
 
-A social network forms a **2-category**:
-- Objects: People
-- 1-morphisms: Relationships (friend, colleague, family)
-- 2-morphisms: How relationships change
+## Non-Claims
 
-```axi
-relation RelationshipPath(
-  from: Person, to: Person,
-  startRel: Stranger,
-  endRel: Friend,
-  transform: BecameFriends
-)
-```
+Axiograph does not currently claim:
 
-The 2-morphisms let us track *how* relationships evolved, not just their current state.
+- univalence as an executable kernel principle,
+- full higher inductive types,
+- arbitrary higher-category reasoning,
+- complete merge lattices for all ontologies,
+- global closure under all imported worlds and evidence.
 
-### Economics: Path Independence
-
-Economic flows form a groupoid when transactions are reversible:
-
-```axi
-FlowInverse = {
-  (flow=Loans, inverse=LoanRepayment),
-  (flow=Savings, inverse=Withdrawal)
-}
-```
-
-**Path Independence**: Two transaction sequences are equivalent if they result in the same economic state.
-
-```axi
-PathEquivalence = {
-  -- Borrow → Invest → Earn → Repay ≡ Save → Invest → Earn
-  (path1=BorrowInvestRepay, path2=SaveInvestEarn, witness=SameNetWorth)
-}
-```
-
-This is a conservation law expressed as a 2-path!
-
-### Family: Multiple Derivations
-
-Kinship relations form a rich path structure:
-
-```axi
--- Cousin derived two ways
-PathEquivalence = {
-  (from=Alice, to=Bob,
-   path1=MothersCousinPath,
-   path2=FathersCousinPath,
-   relType=Cousin)
-}
-```
-
-Different cultures have different equivalences (different "homotopy theories"):
-
-```axi
--- In Hawaiian kinship, cousins ≡ siblings
-CulturalEquivalence = {
-  (culture=Hawaiian, rel1=Cousin, rel2=Sibling)
-}
-```
-
-### Schema Evolution: Transport
-
-Schema changes are paths in the space of schemas:
-
-```
-ProductV1 ─AddCategories→ ProductV2 ─NormalizeSKU→ ProductV3
-              ↓                         ↑
-         MergeCategories              JoinSKU (inverse)
-```
-
-**Equivalence**: Two normalizations that preserve information:
-
-```axi
-SchemaEquiv = {
-  (s1=ProductV3, s2=ProductV3_alt,
-   forward=V3toV3alt, backward=V3altToV3,
-   proof=IsoProof)
-}
-```
-
-**Transport**: Data migrates along schema paths:
-
-```axi
-MigrateData = {
-  (migration=V3toV3alt,
-   sourceData=Products_Jan2023,
-   targetData=Products_Jan2023_migrated)
-}
-```
-
-## Mathematical Foundations
-
-### The Homotopy Hypothesis
-
-Types behave like topological spaces:
-- Points = Values
-- Paths = Equalities
-- 2-Paths = Homotopies between paths
-- etc.
-
-### n-Truncation Levels
-
-| Level | Name | Meaning |
-|-------|------|---------|
-| -2 | Contractible | Exactly one element |
-| -1 | Proposition | At most one element (all equal) |
-| 0 | Set | Equality is propositional |
-| 1 | 1-Groupoid | Has non-trivial 2-paths |
-| n | n-Groupoid | Has structure up to (n+1)-paths |
-
-Knowledge graphs typically live at level 1-2 (interesting 2-paths, less so for 3-paths).
-
-### Kan Extensions
-
-For schema integration, we use *Kan extensions*:
-
-Given schemas A, B and a functor F : A → B, the **left Kan extension** Lan_F gives the "best approximation" of data from A in schema B.
-
-This is how we formally handle:
-- Schema merging
-- View definitions
-- Lossy migrations
-
-## Implementation Notes
-
-### Lean Modules
-
-| Module | Purpose |
-|--------|---------|
-| `lean/Axiograph/HoTT/Core.lean` | Paths, transport, equivalences (core vocabulary) |
-| `lean/Axiograph/HoTT/KnowledgeGraph.lean` | Knowledge-graph paths + equivalence constructors |
-| `lean/Axiograph/HoTT/PathAlgebraProofs.lean` | Groupoid laws + normalization/confidence proofs (scaffold) |
-| `lean/Axiograph/HoTT/FreeGroupoid.lean` | Bridge to mathlib free-groupoid denotation |
-
-### Postulates
-
-Lean is not cubical and does not provide univalence in the trusted kernel. We treat “univalence-like” behavior as an explicit, certificate-checked notion of equivalence (e.g. schema equivalences/migrations as data + proofs), not as a foundational axiom.
-
-This is safe for knowledge graph reasoning - we're using HoTT as a *design pattern*, not proving theorems about the foundations.
-
-### Practical Use
-
-1. **Model relationships as paths** → Get composition for free
-2. **Track relationship evolution** → Use 2-morphisms
-3. **Schema migration** → Use equivalences and transport
-4. **Multi-perspective reasoning** → Different groupoid structures for different "theories"
-
-## Further Reading
-
-- *Homotopy Type Theory: Univalent Foundations* (The HoTT Book)
-- *Category Theory for Scientists* (Spivak) - CQL background
-- *Higher Topos Theory* (Lurie) - ∞-categories
-- *Seven Sketches in Compositionality* (Fong & Spivak) - Applied category theory
+Those ideas remain design inspiration until a specific fragment is encoded,
+tested, and wired through the trusted boundary.

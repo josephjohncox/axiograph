@@ -35,7 +35,7 @@ Non-interactive (run a script or a list of commands and then exit):
 
 ```bash
 cd rust
-cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/enterprise_demo.repl
+cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/ontology_rewrites_axi_demo.repl
 ```
 
 Approximate + tacit knowledge demo (confidence thresholds + fuzzy/fts querying + viz HTML):
@@ -47,15 +47,19 @@ Approximate + tacit knowledge demo (confidence thresholds + fuzzy/fts querying +
 If you want a scripted run to keep going even after an error (useful for demos that
 depend on optional tools like Ollama), add `--continue-on-error`.
 
-More scripts live in `examples/repl_scripts/` (e.g. `economic_flows_demo.repl`,
-`machinist_learning_demo.repl`, `schema_evolution_demo.repl`, `schema_evolution_axi_demo.repl`, `continuous_ingest_demo.repl`, `proto_api_demo.repl`,
-`proto_import_enterprise_demo.repl`, `social_network_demo.repl`, `supply_chain_demo.repl`,
-`physics_knowledge_demo.repl`, `supply_chain_hott_axi_demo.repl`, `sql_schema_discovery_axi_demo.repl`,
-`proto_schema_discovery_axi_demo.repl`, `family_hott_axi_demo.repl`, `social_network_axi_demo.repl`,
-`economic_flows_axi_demo.repl`, `context_scoping_family_demo.repl`).
+Preferred scripts live in `examples/repl_scripts/` and import accepted-domain
+canonical `.axi` modules, for example `schema_evolution_axi_demo.repl`,
+`supply_chain_hott_axi_demo.repl`, `family_hott_axi_demo.repl`,
+`social_network_axi_demo.repl`, `economic_flows_axi_demo.repl`, and
+`context_scoping_family_demo.repl`.
 
-The `social_network_demo.repl` script also demonstrates `viz` and writes `build/social_network_viz.dot`
-and `build/social_network_viz.html`.
+Schema-discovery scripts such as `sql_schema_discovery_axi_demo.repl` import
+review-plane proposal modules. Use them when the lesson is proposal review and
+typed refinement, not as the default accepted-domain teaching path.
+
+Synthetic REPL generator scripts live under `examples/repl_scripts/synthetic/`.
+Use them only when the feature being taught is REPL generation or mutation
+itself.
 
 The `ontology_rewrites_axi_demo.repl` script also demonstrates **ontology-engineering tooling**
 available inside the REPL:
@@ -182,7 +186,7 @@ For a full worked example that combines mutation + visualization, run:
 
 ```bash
 cd rust
-cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/continuous_ingest_demo.repl
+cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/synthetic/continuous_ingest_demo.repl
 ```
 
 ### 2) Inspect basic stats
@@ -528,8 +532,8 @@ Tool-loop mode is also **RAG-like by default**:
 
 - before the first model step, Axiograph pre-runs `db_summary` + `semantic_search`, plus a small
   “expansion pack” (`lookup_relation`/`lookup_type` when the question mentions known schema terms,
-  `describe_entity` for top entity hits, and `docchunk_get` for top DocChunk hits; with a fallback
-  `fts_chunks` when DocChunks exist but semantic retrieval returns none) and includes the results in
+  `describe_entity` for top entity hits, and `docchunk_get` for top DocChunk hits; with a secondary
+  `fts_chunks` lookup when DocChunks exist but semantic retrieval returns none) and includes the results in
   the transcript
 - the model then uses tools (`describe_entity`, `axql_run`, `fts_chunks`, etc.) to drill down
 

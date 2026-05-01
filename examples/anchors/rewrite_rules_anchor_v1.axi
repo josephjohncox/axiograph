@@ -5,7 +5,7 @@ schema S:
   relation Edge(from: Obj, to: Obj)
 
 theory T on S:
-  -- A tiny `.axi`-defined rewrite rule (v1) used by the `rewrite_derivation_v3`
+  -- A compact `.axi`-defined rewrite rule (v1) used by the `rewrite_derivation_v3`
   -- e2e test.
   --
   -- This mirrors the builtin groupoid rewrite `id_left`, but is declared as an
@@ -16,4 +16,3 @@ theory T on S:
     vars: x: Obj, y: Obj, p: Path(x,y)
     lhs: trans(refl(x), p)
     rhs: p
-

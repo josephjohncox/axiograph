@@ -1,6 +1,6 @@
 # RDF Named Graphs (Contexts) — Minimal Fixture
 
-This folder is a tiny **TriG** dataset intended to exercise:
+This folder is a focused **TriG** dataset intended to exercise:
 
 - **named graphs** → Axiograph **contexts/worlds**
 - open-world modeling (“missing is unknown, not false”)
@@ -11,4 +11,3 @@ Run the deterministic demo:
 ```bash
 ./scripts/rdf_named_graph_context_demo.sh
 ```
-

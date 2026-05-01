@@ -1,20 +1,23 @@
-//! Axiograph Unified Storage Layer
+//! Axiograph Runtime Evidence Storage
 //!
-//! Provides a single interface for reading and writing knowledge:
+//! Provides a runtime store for evidence facts, materialized caches, and
+//! grounding data. Accepted ontology meaning is not stored here; it remains
+//! canonical `.axi` plus compiled IR, semantic VCS review, and optional Lean
+//! certificates.
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────────┐
-//! │                    UNIFIED STORAGE                                  │
+//! │                 RUNTIME EVIDENCE STORAGE                            │
 //! ├─────────────────────────────────────────────────────────────────────┤
 //! │                                                                     │
 //! │  ┌─────────┐     ┌───────────────┐     ┌─────────────┐             │
-//! │  │   LLM   │────►│               │────►│  .axi file  │             │
-//! │  │  Sync   │     │   Unified     │     │  (human)    │             │
+//! │  │   LLM   │────►│               │────►│ Evidence    │             │
+//! │  │  Sync   │     │   Runtime     │     │ records     │             │
 //! │  └─────────┘     │   Storage     │     └─────────────┘             │
 //! │                  │   Manager     │                                  │
 //! │  ┌─────────┐     │               │     ┌─────────────┐             │
-//! │  │  User   │────►│               │────►│   PathDB    │             │
-//! │  │  Edits  │     │               │     │  (binary)   │             │
+//! │  │ Tools   │────►│               │────►│   PathDB    │             │
+//! │  │/Review  │     │               │     │  cache      │             │
 //! │  └─────────┘     └───────────────┘     └─────────────┘             │
 //! │                         │                                           │
 //! │                         ▼                                           │
@@ -28,10 +31,10 @@
 //!
 //! ## Key Features
 //!
-//! - **Dual Format**: Writes to both .axi (human-readable) and PathDB (indexed)
-//! - **Transactional**: Changes are atomic across both formats
-//! - **Versioned**: Full change history with rollback
-//! - **Synced**: Hot reload when files change externally
+//! - **Evidence-first**: Records candidate facts and review material.
+//! - **Materialized**: Maintains a PathDB cache for local query/grounding.
+//! - **Versioned**: Keeps an audit log for evidence changes.
+//! - **Fail-closed**: Rejects unresolved or untyped relation endpoints.
 #![allow(unused_variables)]
 
 pub mod persistence;
@@ -255,7 +258,7 @@ pub struct AxiSchemaIndex {
 // Storage Configuration
 // ============================================================================
 
-/// Configuration for the unified storage
+/// Configuration for runtime evidence storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
     /// Directory for .axi files
@@ -300,7 +303,7 @@ impl Default for StorageConfig {
 }
 
 // ============================================================================
-// Unified Storage Manager
+// Runtime Evidence Storage Manager
 // ============================================================================
 
 /// The main storage manager

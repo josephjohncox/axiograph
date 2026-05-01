@@ -1,7 +1,7 @@
-# Focused Demo Data
+# Focused Checker Fixtures
 
-This directory contains small canonical modules for focused parser,
+This directory contains compact canonical modules for focused parser,
 constraint, and fibered-closure checks.
 
-Use these when a test or tutorial needs a tiny module rather than the larger
-family, manufacturing, or industrial examples.
+Use these when a test or tutorial needs one isolated checker feature rather
+than the larger family, manufacturing, or industrial scenarios.

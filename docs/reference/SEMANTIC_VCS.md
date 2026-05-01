@@ -81,8 +81,11 @@ sem/
   validations/
 ```
 
-`commits/`, `reconciliations/`, `projections/`, and `world_model_runs/` are canonical persistence
-locations for phase-1 objects.
+`commits/`, `reconciliations/`, `projections/`, and `world_model_runs/` are
+phase-1 persisted object locations. Only accepted refs and commits participate
+in semantic authority. `projections/` are derived read surfaces, and
+`world_model_runs/` are evidence-plane proposal records until typed review and
+promotion accept them.
 
 ## Refs
 
@@ -102,11 +105,10 @@ form:
 ref: heads/main
 ```
 
-Legacy `sem/HEAD` files that contain a raw semantic commit id are still
-accepted as detached heads. When a matching persisted semantic ref already
-exists, readers migrate the file to the symbolic `ref: ...` form while
-preserving the same resolved commit id. This keeps old stores readable without
-making direct commit ids the preferred representation.
+Direct commit-id `sem/HEAD` files are treated as detached runtime state. When a
+matching persisted semantic ref already exists, readers normalize the file to
+the symbolic `ref: ...` form while preserving the same resolved commit id. New
+writers must emit the symbolic form.
 
 `refs/heads/wm/*` must be reserved for proposal-generation branches. Branches
 must move by semantic commits only (no ad-hoc branch files), and every run

@@ -20,13 +20,14 @@ pub const INDUSTRIAL_HARNESS_CQ_RESULTS_VERSION_V1: &str = "industrial_harness_c
 pub const INDUSTRIAL_HARNESS_COVERAGE_VERSION_V1: &str = "industrial_harness_coverage_v1";
 pub const INDUSTRIAL_HARNESS_AGENT_REPORT_VERSION_V1: &str = "industrial_harness_agent_report_v1";
 pub const INDUSTRIAL_HARNESS_DISTILL_VERSION_V1: &str = "industrial_harness_distill_v1";
+pub const COMPETENCY_QUESTION_BUNDLE_VERSION_V1: &str = "competency_question_bundle_v1";
 
 pub const INDUSTRIAL_HARNESS_CACHE_DIR: &str = "_cache/industrial_harness";
 pub const REGULATED_PRODUCTION_LINE_CAMPAIGN_ID: &str = "regulated_production_line_seed";
 pub const REGULATED_PRODUCTION_LINE_MODULE_PATH: &str =
     "examples/industrial/RegulatedProductionLine.axi";
 pub const REGULATED_PRODUCTION_LINE_CQ_PATH: &str =
-    "examples/competency_questions/regulated_production_line_cq.json";
+    "examples/competency_questions/regulated_production_line.cq";
 pub const REGULATED_PRODUCTION_LINE_MODULE_NAME: &str = "RegulatedProductionLine";
 pub const REGULATED_PRODUCTION_LINE_SEED_NAME: &str = "RegulatedLineSeed";
 
@@ -60,6 +61,15 @@ pub struct CompetencyQuestionV1 {
     pub weight: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contexts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompetencyQuestionBundleV1 {
+    pub version: String,
+    #[serde(default)]
+    pub questions: Vec<CompetencyQuestionV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 fn default_min_rows() -> usize {
@@ -522,12 +532,20 @@ fn regulated_production_line_cq_questions() -> Result<Vec<CompetencyQuestionV1>>
             path.display()
         )
     })?;
-    serde_json::from_str(&text).with_context(|| {
+    let bundle: CompetencyQuestionBundleV1 = serde_json::from_str(&text).with_context(|| {
         format!(
             "parse regulated production line CQ file `{}`",
             path.display()
         )
-    })
+    })?;
+    if bundle.version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
+        return Err(anyhow!(
+            "unsupported competency question bundle version `{}` (expected `{}`)",
+            bundle.version,
+            COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+        ));
+    }
+    Ok(bundle.questions)
 }
 
 fn regulated_production_line_surfaces() -> Vec<IndustrialSurfaceV1> {
@@ -1231,7 +1249,6 @@ fn create_dir_all_without_symlinks(cache_root: &Path, path: &Path) -> Result<()>
 mod tests {
     use super::*;
     use axiograph_pathdb::{AcceptedSnapshotId, AxiDigest};
-    use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_test_dir(name: &str) -> PathBuf {
@@ -1309,31 +1326,29 @@ mod tests {
     fn run_bundle_json_shape_carries_anchor_and_trust() {
         let bundle = regulated_line_runtime_bundle("seed-run-001");
 
-        let run_json = serde_json::to_value(&bundle.run).expect("serialize run");
-        assert_eq!(run_json["version"], json!("industrial_harness_run_v1"));
+        assert_eq!(bundle.run.version, INDUSTRIAL_HARNESS_RUN_VERSION_V1);
         assert_eq!(
-            run_json["campaign_id"],
-            json!("regulated_production_line_seed")
+            bundle.run.campaign_id,
+            REGULATED_PRODUCTION_LINE_CAMPAIGN_ID
         );
-        assert_eq!(run_json["run_id"], json!("seed-run-001"));
+        assert_eq!(bundle.run.run_id, "seed-run-001");
         assert_eq!(
-            run_json["scenario"],
-            json!("regulated_production_line_seed")
+            bundle.run.scenario,
+            IndustrialHarnessScenarioV1::RegulatedProductionLineSeed
         );
-        assert_eq!(run_json["status"], json!("materialized"));
-        assert_eq!(run_json["trust"]["trust_class"], json!("runtime_guarded"));
+        assert_eq!(bundle.run.status, IndustrialHarnessRunStatusV1::Materialized);
+        assert_eq!(bundle.run.trust.trust_class, "runtime_guarded");
         assert_eq!(
-            run_json["trust"]["soundness"],
-            json!("accepted_anchor_scoped_shadow_harness_run")
+            bundle.run.trust.soundness,
+            "accepted_anchor_scoped_shadow_harness_run"
         );
         assert_eq!(
-            run_json["artifacts"]["run"],
-            json!("_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/run.json")
+            bundle.run.artifacts.run,
+            "_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/run.json"
         );
 
-        let cq_json = serde_json::to_value(&bundle.cq_results).expect("serialize cq results");
-        assert_eq!(cq_json["summary"]["total"], json!(6));
-        assert!(cq_json["summary"]["passed"].as_u64().unwrap_or(0) >= 1);
+        assert_eq!(bundle.cq_results.summary.total, 6);
+        assert!(bundle.cq_results.summary.passed >= 1);
     }
 
     #[test]

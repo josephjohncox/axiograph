@@ -10,14 +10,16 @@ Reference docs are for lookup and should stay stable.
 | Work on the canonical semantic spine | `docs/howto/CANONICAL_SEMANTIC_SPINE.md`, `docs/reference/KERNEL_IR.md` | `docs/howto/TESTING.md` (`make verify-canonical-spine`) |
 | Emit or verify certificates | `docs/reference/CERTIFICATES.md` | `docs/howto/FORMAL_VERIFICATION.md` |
 | Use runtime theory judgments or typed holes | `docs/reference/RUNTIME_THEORY_CHECKER.md` | `docs/reference/KERNEL_IR.md` |
+| Simplify Rust architecture or crate factoring | `docs/reference/RUST_ARCHITECTURE_CLEANUP.md` | `rust/Cargo.toml`, `docs/howto/TESTING.md` |
 | Build software authoring/codegen workflows | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` | `examples/software_authoring/README.md` |
 | Track semantic branches, reconciliation, or backend projections | `docs/reference/SEMANTIC_VCS.md` | `docs/reference/KERNEL_IR.md`, `docs/howto/TESTING.md` |
 | Use embeddings/RAG/vector search safely | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` | `docs/howto/KNOWLEDGE_INGESTION.md` |
 | Query through AxQL/SQL-ish/certified querying | `docs/reference/QUERY_LANG.md` | `docs/reference/CERTIFICATES.md` |
 
-Semantic authority stays with accepted canonical `.axi`, compiled IR, typed
-runtime reports, and explicitly checked certificates. Storage/debug formats are
-documented only where they are needed for engine tests.
+Semantic authority stays with accepted canonical `.axi`, compiled IR, and
+explicitly checked certificates. Typed runtime reports cite, scope, and explain
+that authority; storage/debug formats are documented only where they are needed
+for engine tests.
 
 ## Reference files
 
@@ -25,6 +27,8 @@ documented only where they are needed for engine tests.
 - `docs/reference/TRUSTED_KERNEL.md` — current trusted boundary and non-claims.
 - `docs/reference/KERNEL_IR.md` — canonical schema/category/theory IR, runtime surfaces, and backend projection lowering.
 - `docs/reference/RUNTIME_THEORY_CHECKER.md` — runtime theory judgments, closure tiers, typed holes, and non-claims.
+- `docs/reference/RUNTIME_TYPECHECKER_AUDIT_2026_04.md` — implementation audit for the runtime checker and typed Rust surface.
+- `docs/reference/RUST_ARCHITECTURE_CLEANUP.md` — crate roles, simplification rules, dependency guidance, and refactor checklist.
 - `docs/reference/LEAN_THEORY_EVALUATION.md` — Lean-encoded theory status and gaps.
 - `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` — embedding/vector sidecars, RAG evidence, promotion boundaries.
 - `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — authoring/codegen crates, CLI, MCP, server, and LSP surfaces.

@@ -2,10 +2,10 @@
 //!
 //! Parses OWL ontologies and RDF graphs for knowledge graph ingestion.
 //!
-//! Note: this is a prototype parser. The repo-level plan is to enable
-//! best-in-class RDF parsers (rio/oxrdf) behind a feature for Turtle/RDFXML,
-//! while keeping the emitted artifacts *boundary-layer* (untrusted) until
-//! promoted via the normal `.axi` + certificate gates.
+//! Note: this is a narrow boundary parser. The repo-level plan is to use
+//! best-in-class RDF parsers behind a feature for Turtle/RDFXML, while keeping
+//! emitted artifacts boundary-layer and untrusted until promoted via canonical
+//! `.axi` review and certificate gates.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

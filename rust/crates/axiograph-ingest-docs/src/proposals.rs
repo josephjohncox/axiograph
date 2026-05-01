@@ -12,6 +12,7 @@
 //! proposal shapes without knowing the domain schema.
 
 use crate::{EvidencePointer, ExtractedFact, FactType, RepoEdgeV1};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
@@ -30,7 +31,7 @@ pub struct ProposalsFileV1 {
     pub proposals: Vec<ProposalV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProposalSourceV1 {
     /// e.g. `doc`, `confluence`, `conversation`, `repo`, `ingest_dir`
     pub source_type: String,

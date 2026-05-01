@@ -339,7 +339,6 @@ fn build_enterprise_scenario(
             "q select ?ep where name(\"svc_0\") -exposes-> ?ep limit 10".to_string(),
             "q select ?dst where name(\"svc_0.rpc_0\") -calls/calls-> ?dst limit 10".to_string(),
             "q select ?h where ?h is Homotopy, ?h -from-> name(\"doc_0_0\") limit 10".to_string(),
-            "sq examples/semantic_queries/person_team_services.json".to_string(),
             "llm use mock".to_string(),
             "llm ask find Service named svc_0".to_string(),
         ],
@@ -674,7 +673,7 @@ fn build_enterprise_scenario_named(
 }
 
 fn enterprise_service_fqn_segment(service_name: &str) -> String {
-    // Preserve the old behavior for numeric service names:
+    // Keep compact numeric service names:
     // - `svc_0` → `svc0` (no underscore)
     // but keep named services readable:
     // - `svc_users` → `svc_users`

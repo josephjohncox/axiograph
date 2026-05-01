@@ -1,7 +1,7 @@
 //! Property tests for `PathDBExportV1` (reversible `.axi` snapshot export).
 //!
-//! This is an engineering interchange format, but it is critical infrastructure:
-//! it underpins snapshot portability, anchoring for certificates, and offline auditability.
+//! This is an engine debug/live-byte/parser-parity format. It does not provide
+//! semantic, query, or certificate authority.
 
 use axiograph_pathdb::axi_export::{export_pathdb_to_axi_v1, import_pathdb_from_axi_v1};
 use axiograph_pathdb::certificate::FIXED_POINT_DENOMINATOR;

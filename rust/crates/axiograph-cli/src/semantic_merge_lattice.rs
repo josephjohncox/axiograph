@@ -1983,9 +1983,9 @@ fn selector_matches_ref(
 }
 
 fn contains_ref(candidates: &[String], value: &str) -> bool {
-    candidates
-        .iter()
-        .any(|candidate| candidate == value || value.contains(candidate))
+    candidates.iter().any(|candidate| {
+        candidate == value || value.split([':', '/', '#']).any(|part| part == candidate)
+    })
 }
 
 fn trust_class_for_commit(
@@ -2209,6 +2209,30 @@ mod tests {
             label: Some(id.to_string()),
             source: "test".to_string(),
         }
+    }
+
+    #[test]
+    fn selector_matching_uses_exact_ref_or_exact_component_not_substring() {
+        let mut selector = SemanticSliceSelectorV1::default();
+        selector.relation_object_ids = vec!["relation:S:Parent".to_string()];
+        assert!(selector_matches_ref(
+            &selector,
+            &relation_ref("relation:S:Parent")
+        ));
+        assert!(!selector_matches_ref(
+            &selector,
+            &relation_ref("relation:S:ParentExtra")
+        ));
+
+        selector.relation_object_ids = vec!["Parent".to_string()];
+        assert!(selector_matches_ref(
+            &selector,
+            &relation_ref("relation:S:Parent")
+        ));
+        assert!(!selector_matches_ref(
+            &selector,
+            &relation_ref("relation:S:ParentExtra")
+        ));
     }
 
     fn commit_for_plan(id: &str) -> crate::accepted_plane::SemCommitV1 {

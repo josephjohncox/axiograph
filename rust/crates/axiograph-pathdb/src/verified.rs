@@ -57,7 +57,8 @@ impl Serialize for VerifiedProb {
     where
         S: Serializer,
     {
-        // v1 certificates use float-on-the-wire for backwards compatibility.
+        // Current v1 certificate payloads use float-on-the-wire; trusted checks
+        // lower this back into bounded fixed-point values.
         serializer.serialize_f32(self.value())
     }
 }

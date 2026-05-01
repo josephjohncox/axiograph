@@ -127,7 +127,7 @@ Semantic Web interop design notes: `docs/explanation/SEMANTIC_WEB_INTEROP.md`.
 
 For “codebase discovery” we can ingest a repo into:
 
-- `chunks.json` (for RAG / approximate discovery),
+- `chunks.json` as `EvidenceChunkBundleV1` (for RAG / approximate discovery),
 - lightweight repo edges (definitions/imports/TODOs),
 - and (optionally) protobuf/gRPC API structure from a Buf descriptor set.
 
@@ -297,10 +297,14 @@ certificates and invariants checked in Lean.
 
 ## RAG Integration
 
-The chunks.json output is RAG-ready:
+The `chunks.json` output is a typed evidence-plane bundle. It is RAG-ready, but
+it is not accepted ontology truth:
 
 ```json
 {
+  "version": "evidence_chunk_bundle_v1",
+  "evidence_plane": "evidence_overlay",
+  "source": { "source_type": "conversation", "locator": "shop-floor-notes.md" },
   "chunks": [
     {
       "chunk_id": "conv_0",

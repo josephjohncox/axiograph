@@ -210,11 +210,11 @@ Server:
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
   -H 'Content-Type: application/json' \
-  -d '{"goals":["predict missing parent links"],"max_new_proposals":50}' | jq .
+  -d '{"goals":["predict missing parent links"],"max_new_proposals":50}'
 ```
 
-`jq` is only a JSON pretty-printer in these examples. Omit the pipe or use any
-JSON viewer.
+Pipe curl output to `jq` or another JSON viewer only when you want pretty
+printing.
 
 ---
 
@@ -223,40 +223,17 @@ JSON viewer.
 Use the MPC plan endpoint to generate multi-step proposals, then draft and
 promote a canonical module.
 
-Plan (REPL example):
+Plan and commit the merged proposal overlay directly (REPL example):
 
 ```text
-axiograph> wm plan build/wm_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq "has_parent=select ?p where ?p is Person limit 1"
+axiograph> wm plan build/wm_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq "has_parent=select ?p where ?p is Person limit 1" --commit-dir build/wm_plan_commits --message "world-model parent-link plan"
 ```
 
-Merge plan proposals into one `proposals.json`. This Python snippet is just a
-tutorial convenience for reshaping JSON; it is not an adapter dependency or
-world-model protocol:
-
-```bash
-python - <<'PY'
-import json, time
-report = json.load(open("build/wm_plan.json"))
-proposals = []
-for step in report.get("steps", []):
-    proposals.extend(step["proposals"]["proposals"])
-out = {
-    "version": 1,
-    "generated_at": str(int(time.time())),
-    "source": {"source_type": "world_model_plan", "locator": report.get("trace_id", "wm_plan")},
-    "schema_hint": None,
-    "proposals": proposals,
-}
-json.dump(out, open("build/wm_plan_proposals.json", "w"), indent=2)
-print("wrote build/wm_plan_proposals.json")
-PY
-```
-
-Draft a canonical module:
+Or draft a canonical module from a single proposal report:
 
 ```bash
 bin/axiograph discover draft-module \
-  --proposals build/wm_plan_proposals.json \
+  --proposals build/wm_proposals_onnx.json \
   --out build/wm_plan_draft.axi \
   --module FamilyWM \
   --schema Fam \
@@ -330,11 +307,18 @@ bin/axiograph discover competency-questions \
   --max-questions 120
 
 # If broad top-level types dominate generated CQs, narrow the run with schema,
-# relation, or object filters instead of treating an execution fallback as
+# relation, or object filters instead of treating an execution artifact as
 # domain meaning.
 ```
 
-Translate natural-language CQs to AxQL (LLM backend required):
+For reviewed, human-authored CQs, prefer `.cq` files such as
+`examples/competency_questions/physics.cq`. They load through the same typed
+`CompetencyQuestionV1` path without asking users to write JSON or AxQL by hand.
+Simple `expect: ...` records lower to executable typed queries; less structured
+questions remain explicit unresolved authoring obligations until refined.
+
+Translate natural-language CQ prompts to executable CQs when you want an LLM to
+help with the lowering (LLM backend required):
 
 ```bash
 bin/axiograph discover competency-questions \

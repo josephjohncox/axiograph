@@ -126,6 +126,8 @@ impl Default for BehaviorCaseCodegenRequestV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BehaviorCaseCheckRequestV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub behavior_case: BehaviorCaseV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
@@ -946,6 +948,7 @@ instance I of Family:
                 competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
                     name: "family_lookup_returns_bob".to_string(),
                     question: Some("Does the case return Bob as Alice's parent?".to_string()),
+                    authoring: None,
                     query: "select ?f where ?f = Family.Parent(child=Alice, parent=Bob) limit 1"
                         .to_string(),
                     min_rows: 1,
@@ -1124,6 +1127,7 @@ instance I of Family:
     fn behavior_case_request_json_round_trips() -> Result<()> {
         let (db, meta) = sample_db_and_meta()?;
         let request = BehaviorCaseCheckRequestV1 {
+            version: Some("behavior_case_check_request_v1".to_string()),
             behavior_case: sample_behavior_case(),
             overlay: Some(sample_overlay()),
             lifecycle_state: Some("accepted".to_string()),

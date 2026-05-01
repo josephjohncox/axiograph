@@ -3,7 +3,7 @@
 //! Goal: provide a single entrypoint to ingest a repo’s:
 //! - code/document structure (repo chunks + repo edges),
 //! - protobuf/gRPC APIs (Buf descriptor sets → proto proposals),
-//! and merge them into one `proposals.json` + `chunks.json` bundle.
+//! and merge them into one `proposals.json` + typed `EvidenceChunkBundleV1` bundle.
 //!
 //! Network access is optional:
 //! - If the `repo` argument is a local path, this command is fully offline.
@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Subcommand)]
 pub enum GithubCommands {
-    /// Import a GitHub repo (or local repo path) into merged `proposals.json` + `chunks.json`.
+    /// Import a GitHub repo (or local repo path) into merged `proposals.json` + typed chunk evidence.
     ///
     /// The `repo` argument can be:
     /// - a local directory path, or
@@ -152,7 +152,14 @@ fn cmd_github_import(
         let (chunks, edges, proposals_file) =
             index_repo_to_artifacts(&repo_path, max_file_bytes, max_files, lines_per_chunk)?;
 
-        fs::write(&repo_chunks_path, serde_json::to_string_pretty(&chunks)?)?;
+        fs::write(
+            &repo_chunks_path,
+            axiograph_ingest_docs::chunks_to_json_for_chunks(
+                "github_repo_index",
+                repo_path.display().to_string(),
+                chunks.clone(),
+            )?,
+        )?;
         fs::write(&repo_edges_path, serde_json::to_string_pretty(&edges)?)?;
         fs::write(
             &repo_proposals_path,
@@ -174,7 +181,14 @@ fn cmd_github_import(
         let (chunks, proposals_file) =
             ingest_proto_to_artifacts(&repo_path, proto_descriptor, buf_root)?;
 
-        fs::write(&proto_chunks_path, serde_json::to_string_pretty(&chunks)?)?;
+        fs::write(
+            &proto_chunks_path,
+            axiograph_ingest_docs::chunks_to_json_for_chunks(
+                "github_proto_ingest",
+                repo_path.display().to_string(),
+                chunks.clone(),
+            )?,
+        )?;
         fs::write(
             &proto_proposals_path,
             serde_json::to_string_pretty(&proposals_file)?,
@@ -196,7 +210,11 @@ fn cmd_github_import(
 
     fs::write(
         &merged_chunks_path,
-        serde_json::to_string_pretty(&merged_chunks)?,
+        axiograph_ingest_docs::chunks_to_json_for_chunks(
+            "github_import",
+            repo.to_string(),
+            merged_chunks.clone(),
+        )?,
     )?;
 
     let generated_at = SystemTime::now()

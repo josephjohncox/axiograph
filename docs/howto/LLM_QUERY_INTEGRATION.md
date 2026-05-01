@@ -48,7 +48,7 @@ first-class IR atom yet; when in doubt, prefer the exact `query_ir_v1` schema in
 | Vector similarity on text chunks | Type-aware structured queries |
 | No understanding of relationships | Path-based reasoning |
 | Single-hop retrieval | Multi-hop traversal |
-| No reasoning about equivalences | HoTT-based equivalence queries |
+| No reasoning about equivalences | Typed path/equivalence queries where supported |
 | Flat confidence scores | Probabilistic provenance |
 | No query composition | Boolean algebra on queries |
 | No schema awareness | Meta-queries on schema |
@@ -379,10 +379,11 @@ When prompting an LLM to parse queries, provide:
 
 - **Query parsing** happens in the LLM (with schema context)
 - **Query execution** happens in Rust (`axiograph-cli` AxQL engine over PathDB)
-- **Semantic/spec checking** happens in Lean (certificates)
+- **Trusted checking** happens in Lean for supported certificate fragments
 - **Answer generation** returns to LLM (with grounded results)
 
-The LLM never hallucinates structure—it can only query what exists in the typed ontology.
+The LLM may propose structure, but execution only uses structure that the Rust
+tooling can resolve against typed ontology/query surfaces.
 
 ## REPL support (today)
 
@@ -393,4 +394,5 @@ The `axiograph` REPL can run:
 - **LLM-assisted tool loop (RAG-like, multi-step)**: `llm ask …` / `llm answer …` (calls tools, elaborates/runs queries, proposes overlays)
 
 The LLM layer is intentionally “untrusted”: it produces candidate queries; the
-engine executes them (and later: can produce certificates for Lean checking).
+engine executes them, and certifiable fragments can emit `query_result_v3`
+witnesses for Lean checking.

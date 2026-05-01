@@ -307,7 +307,7 @@ The target model should absorb and generalize existing good patterns:
 - `DbToken` / `DbBranded<T>` remain the live identity discipline.
 - `AxiTypedEntity` / `AxiTypedFact` become anchor-aware typed handles.
 - `CheckedDb` and typed builders should return typed handles instead of raw ids.
-- `TypedAxiV1Module` has been superseded at the canonical `.axi` boundary by
+- The canonical `.axi` boundary uses
   `axiograph_pathdb::axi_module_typecheck::Module<Validated>`; reviewed modules
   use `Module<Reviewed>`.
 
@@ -356,6 +356,6 @@ Current status of the first implementation cut:
    snapshot state, and world-model lineage now use stable anchor newtypes
    internally, while HTTP/CLI JSON remains string-compatible at the boundary.
 3. Done: the canonical `.axi` import boundary now uses
-   `Module<Validated>` plus `Module<Reviewed>` instead of `TypedAxiV1Module`.
+   `Module<Validated>` plus `Module<Reviewed>`.
 4. Pending: broaden typed builders so more public handles carry anchors/states.
 5. Pending: wrap public query execution in `Query<S, A>` / `Answer<S, A>`.

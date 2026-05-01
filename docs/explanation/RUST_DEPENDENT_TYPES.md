@@ -485,7 +485,10 @@ The long-term strategy is:
    used by Lean certificates (single source of truth for probability semantics).
    - Runtime step done: `axiograph_pathdb::VerifiedProb` is now backed by fixed-point `VProb`.
 2. Keep extending typestate wrappers:
-   - already implemented: `axiograph_pathdb::axi_module_typecheck::TypedAxiV1Module`
+   - already implemented: `axiograph_pathdb::axi_module_typecheck::Module<Validated>`
+     at the canonical `.axi` import boundary
+   - already implemented: `axiograph_pathdb::axi_module_typecheck::Module<Reviewed>`
+     for reviewed modules that can enter accepted-plane workflows
    - already implemented: `axiograph_pathdb::typestate::{UnnormalizedPathExprV2, NormalizedPathExprV2}`
    - next: typestate for “typechecked query IR” at the REPL/CLI boundary.
 3. Keep expanding canonical-anchor graph branding:

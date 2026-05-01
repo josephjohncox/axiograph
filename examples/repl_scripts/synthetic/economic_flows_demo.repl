@@ -1,0 +1,27 @@
+# Axiograph REPL script: economic flows demo
+#
+# Run (from repo root):
+#   make binaries
+#   ./bin/axiograph repl --script examples/repl_scripts/synthetic/economic_flows_demo.repl
+#
+# Or (if installed to PATH):
+#   axiograph repl --script examples/repl_scripts/synthetic/economic_flows_demo.repl
+#
+# Debug via cargo:
+#   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/synthetic/economic_flows_demo.repl
+
+gen economic_flows 3 3 1
+stats
+
+# Visualize a small neighborhood around the focal household (data-plane only).
+viz build/economic_flows_viz.dot format dot focus_name household_0 hops 2 max_nodes 180
+viz build/economic_flows_viz.html format html focus_name household_0 hops 2 max_nodes 180
+
+q select ?firm where name("household_0") -Consumption-> ?firm limit 10
+q select ?firm where name("household_0") -CardCharge/CardSettlement-> ?firm max_hops 4 limit 10
+q select ?inv where name("Loans") -inverseOf-> ?inv limit 10
+
+# Proof-relevant structure: compare the alternative path witnesses directly.
+q select ?p where ?p is PathWitness, ?p -from-> name("household_0") limit 10
+
+save build/economic_flows.axpd

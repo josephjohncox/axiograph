@@ -6,8 +6,7 @@ import Axiograph.HoTT.FreeGroupoid
 This module records “obvious but essential” congruence principles for Axiograph’s
 path semantics.
 
-In the Idris2 prototype, these appeared as explicit constructors/lemmas for the
-path-equivalence (2-cell) layer: equivalence must be stable under:
+Equivalence must be stable under:
 
 * composition (whiskering left/right), and
 * inversion.

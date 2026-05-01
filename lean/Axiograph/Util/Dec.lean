@@ -1,10 +1,9 @@
 -- =============================================================================
--- Axiograph.Util.Dec - Idris-style `Dec` (Lean helper)
+-- Axiograph.Util.Dec - explicit decidability witness
 -- =============================================================================
 --
--- Idris uses `Dec : Type -> Type` to represent decidability of any type, not just
--- propositions. Lean's built-in `Decidable` targets `Prop`, so we provide a tiny
--- `Dec` mirror to keep Idris→Lean ports auditable.
+-- Lean's built-in `Decidable` targets `Prop`; this helper is useful where the
+-- certificate layer wants an explicit positive/negative witness as data.
 
 namespace Axiograph
 
@@ -15,4 +14,3 @@ inductive Dec (α : Sort u) : Type u where
   | no : (α → False) → Dec α
 
 end Axiograph
-

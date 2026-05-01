@@ -15,8 +15,8 @@ Instead, a probability is represented in **fixed-point** form:
 * `Precision = 1_000_000`
 * a probability is `numerator / Precision` where `numerator ∈ [0, Precision]`
 
-This mirrors `idris/Axiograph/Prob/Verified.idr`, but uses Lean/mathlib lemmas to
-avoid unsafe casts (`believe_me`) and to keep proofs readable.
+The trusted checker uses Lean/mathlib lemmas to avoid unsafe casts and keep
+proofs readable.
 -/
 
 namespace Axiograph.Prob
@@ -404,7 +404,7 @@ def computeCredibility (tr : TrackRecord) : VProb :=
         simpa [Nat.mul_assoc] using hmul)
     ofNat ratio hratio
 
--- TODO: prove monotonicity with rounding; Idris currently axiomatizes this.
+-- TODO: prove monotonicity with rounding.
 axiom moreCorrectBetter (tr : TrackRecord) :
     toNat (computeCredibility tr) ≤ toNat (computeCredibility { correct := tr.correct + 1, incorrect := tr.incorrect })
 

@@ -282,8 +282,8 @@ This is a lightweight but important pattern:
 * Lean keeps a small kernel by checking the certificate and producing (when it
   accepts) a value that is *typed by construction*.
 
-Later, as we port more of the Idris semantics, `WellTypedModule` can be refined
-to a richer logical specification without changing its consumers.
+Later, as the Lean kernel grows, `WellTypedModule` can be refined to a richer
+logical specification without changing its consumers.
 -/
 
 structure WellTypedModuleWitness (m : Axiograph.Axi.AxiV1.AxiV1Module) where

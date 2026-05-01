@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Canonical Axiograph .axi corpus used to drive Lean/Rust parser and semantics parity. Derived PathDBExportV1 snapshots are intentionally excluded.",
+  "description": "Canonical-syntax Axiograph .axi corpus used to drive Lean/Rust parser and semantics parity. Accepted-domain modules and review-plane proposal modules are marked explicitly; derived PathDBExportV1 snapshots are intentionally excluded.",
   "modules": [
     { "path": "examples/Family.axi", "dialect": "axi_v1" },
     { "path": "examples/demo_data/ConstraintsOkDemo.axi", "dialect": "axi_v1" },
@@ -22,8 +22,8 @@
     { "path": "examples/physics/PhysicsMeasurements.axi", "dialect": "axi_v1" },
     { "path": "examples/physics/PhysicsOntology.axi", "dialect": "axi_v1" },
     { "path": "examples/proto/ProtoApiSemantics.axi", "dialect": "axi_v1" },
-    { "path": "examples/schema_discovery/ProtoApi.proposals.axi", "dialect": "axi_v1" },
-    { "path": "examples/schema_discovery/SqlSchema.proposals.axi", "dialect": "axi_v1" },
+    { "path": "examples/schema_discovery/ProtoApi.proposals.axi", "dialect": "axi_v1", "trust_plane": "review_candidate" },
+    { "path": "examples/schema_discovery/SqlSchema.proposals.axi", "dialect": "axi_v1", "trust_plane": "review_candidate" },
     { "path": "examples/social/SocialNetwork.axi", "dialect": "axi_v1" }
   ]
 }

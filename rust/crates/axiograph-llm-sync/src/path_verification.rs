@@ -1,8 +1,8 @@
 //! Path Verification: Type-safe path validation for reconciliation
 //!
-//! This module provides runtime verification of paths that mirrors
-//! the Lean-checked semantics and certificate discipline. While we can't have full dependent
-//! types in Rust, we use:
+//! This module provides runtime path guardrails that align with the
+//! certificate discipline. While we can't have full dependent types in Rust, we
+//! use:
 //!
 //! 1. **Phantom types** for relationship types
 //! 2. **Builder patterns** for constructing valid paths

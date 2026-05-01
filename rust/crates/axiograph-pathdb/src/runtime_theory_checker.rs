@@ -5,6 +5,8 @@
 //! the Lean trusted checker.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +36,27 @@ impl RuntimeTheoryClosureTierV1 {
             Self::FiniteFragment => "finite_fragment",
             Self::EvidenceWeighted => "evidence_weighted",
             Self::GlobalIndexed => "global_indexed",
+        }
+    }
+}
+
+impl fmt::Display for RuntimeTheoryClosureTierV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for RuntimeTheoryClosureTierV1 {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "finite_fragment" | "finite" => Ok(Self::FiniteFragment),
+            "evidence_weighted" | "evidence" => Ok(Self::EvidenceWeighted),
+            "global_indexed" | "global" => Ok(Self::GlobalIndexed),
+            other => Err(format!(
+                "unknown closure tier `{other}` (expected finite_fragment, evidence_weighted, or global_indexed)"
+            )),
         }
     }
 }
@@ -201,6 +224,37 @@ pub enum EvidenceWeightSemanticsV1 {
     ThresholdedWorld,
     WeightedLattice,
     Deferred,
+}
+
+impl EvidenceWeightSemanticsV1 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ThresholdedWorld => "thresholded_world",
+            Self::WeightedLattice => "weighted_lattice",
+            Self::Deferred => "deferred",
+        }
+    }
+}
+
+impl fmt::Display for EvidenceWeightSemanticsV1 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for EvidenceWeightSemanticsV1 {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "thresholded_world" | "thresholded" | "threshold" => Ok(Self::ThresholdedWorld),
+            "weighted_lattice" | "weighted" | "lattice" => Ok(Self::WeightedLattice),
+            "deferred" => Ok(Self::Deferred),
+            other => Err(format!(
+                "unknown evidence semantics `{other}` (expected thresholded_world, weighted_lattice, or deferred)"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -979,10 +1033,12 @@ fn apply_evidence_threshold(
     judgment: &mut RuntimeTheoryJudgmentV1,
 ) {
     if judgment.evidence_weight_ppm < evidence_policy.threshold_ppm {
-        judgment.status = RuntimeTheoryCheckStatusV1::ReviewOnly;
-        judgment.severity = RuntimeTheoryCheckSeverityV1::Warning;
-        judgment.complete_under_assumptions = true;
-        judgment.closed_under_assumptions = true;
+        if judgment.status == RuntimeTheoryCheckStatusV1::Checked {
+            judgment.status = RuntimeTheoryCheckStatusV1::ReviewOnly;
+            judgment.severity = RuntimeTheoryCheckSeverityV1::Warning;
+            judgment.complete_under_assumptions = true;
+            judgment.closed_under_assumptions = true;
+        }
         judgment.non_claims.push(RuntimeTheoryNonClaimV1 {
             code: "excluded_by_evidence_threshold".to_string(),
             message: format!(
@@ -1831,6 +1887,32 @@ mod tests {
     }
 
     #[test]
+    fn runtime_theory_wire_enums_parse_and_display_aliases() {
+        assert_eq!(
+            "finite"
+                .parse::<RuntimeTheoryClosureTierV1>()
+                .expect("finite alias parses"),
+            RuntimeTheoryClosureTierV1::FiniteFragment
+        );
+        assert_eq!(
+            RuntimeTheoryClosureTierV1::EvidenceWeighted.to_string(),
+            "evidence_weighted"
+        );
+        assert_eq!(
+            "lattice"
+                .parse::<EvidenceWeightSemanticsV1>()
+                .expect("lattice alias parses"),
+            EvidenceWeightSemanticsV1::WeightedLattice
+        );
+        assert_eq!(
+            EvidenceWeightSemanticsV1::ThresholdedWorld.to_string(),
+            "thresholded_world"
+        );
+        assert!("bogus".parse::<RuntimeTheoryClosureTierV1>().is_err());
+        assert!("bogus".parse::<EvidenceWeightSemanticsV1>().is_err());
+    }
+
+    #[test]
     fn valid_path_equation_closes_under_finite_fragment() {
         let (schema, theory) = compiled_fixture(
             r#"
@@ -2096,6 +2178,67 @@ theory FamilyTheory on Family:
             Some(TheoryTransportStatusIr::Transported)
         );
         assert!(!report.ontology_closure_claim.claimed);
+    }
+
+    #[test]
+    fn evidence_threshold_does_not_clear_transport_residual() {
+        let (schema, theory) = compiled_fixture(
+            r#"
+module Family
+
+schema Family:
+  object Person
+  relation parent(child: Person, parent: Person)
+
+theory FamilyTheory on Family:
+  constraint functional parent.child -> parent.parent
+"#,
+        );
+        let morphism = crate::migration::SchemaMorphismV1 {
+            source_schema: schema.schema_id.to_string(),
+            target_schema: "FamilyV2".to_string(),
+            objects: vec![crate::migration::ObjectMappingV1 {
+                source_object: "Person".to_string(),
+                target_object: "Human".to_string(),
+            }],
+            arrows: vec![crate::migration::ArrowMappingV1 {
+                source_arrow: "parent".to_string(),
+                target_path: vec!["parent".to_string()],
+            }],
+        };
+        let transport_plan = theory.theory_transport_plan(
+            &schema,
+            &morphism,
+            crate::migration::MigrationFunctorKindV1::DeltaF,
+        );
+        let mut policy = default_evidence_policy_v1();
+        policy.threshold_ppm = 750_000;
+        policy
+            .obligation_weights_ppm
+            .insert(theory.obligation_refs()[0].stable_id(), 250_000);
+
+        let report = check_runtime_theory_with_options_v1(
+            &schema,
+            &theory,
+            RuntimeTheoryClosureTierV1::EvidenceWeighted,
+            default_world_assumption_v1(),
+            policy,
+            Some(&transport_plan),
+        );
+
+        assert_eq!(report.excluded_by_evidence, 1);
+        assert_eq!(report.residual_obligations, 1);
+        assert_eq!(report.review_only_obligations, 0);
+        assert_eq!(
+            report.judgments[0].status,
+            RuntimeTheoryCheckStatusV1::ResidualObligation
+        );
+        assert!(!report.judgments[0].complete_under_assumptions);
+        assert!(!report.ontology_closure_claim.claimed);
+        assert!(report.judgments[0]
+            .non_claims
+            .iter()
+            .any(|claim| claim.code == "excluded_by_evidence_threshold"));
     }
 
     #[test]

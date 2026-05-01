@@ -1,10 +1,10 @@
-//! End-to-End tests for LLM ↔ KG synchronization
+//! End-to-end tests for LLM evidence extraction and grounding.
 //!
 //! These tests verify the complete pipeline:
 //! 1. Conversation → Fact extraction
 //! 2. Fact validation
 //! 3. Conflict detection
-//! 4. Storage to both .axi and PathDB
+//! 4. Evidence/cache materialization
 //! 5. Grounding context retrieval
 //! 6. Review workflow
 //! 7. Rollback

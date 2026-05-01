@@ -29,6 +29,14 @@ plugins, and editor integrations are tooling overlays that use the ontology.
 Primary authoring commands:
 
 ```bash
+axiograph check validate domain.axi
+axiograph check theory domain.axi --closure-tier finite_fragment
+axiograph authoring competency-questions --axi domain.axi --cq questions.cq --out competency_questions_authoring.json
+axiograph discover define domain.axi --prompt "define this business rule" --include-queries
+axiograph discover coverage-query domain.axi --term "shipment eligibility" --relation OrderEligibleForShipment --max-matches 8
+axiograph discover overlay-check domain.axi --overlay overlay.json
+axiograph discover behavior-case domain.axi --request behavior_case.json --cq-file questions.cq --overlay overlay.json --out behavior_report.json
+axiograph check software-coverage domain.axi --behavior-case behavior_case.json --cq-file questions.cq --overlay overlay.json --out software_coverage.json
 axiograph authoring codegen-plan --overlay overlay.json --out codegen_plan.json
 axiograph authoring materialize-skeletons --behavior-report behavior_report.json --out-dir generated --out materialization.json
 axiograph authoring continuous-check --behavior-report behavior_report.json --repo-root . --out coverage_gate.json
@@ -44,16 +52,28 @@ Recommended user flow:
 ```bash
 axiograph check validate examples/software_authoring/OrderFulfillmentDomain.axi
 axiograph check theory examples/software_authoring/OrderFulfillmentDomain.axi --closure-tier finite_fragment
+axiograph authoring competency-questions --axi examples/software_authoring/OrderFulfillmentDomain.axi --cq examples/software_authoring/order_fulfillment.cq --out build/examples/software_authoring/competency_questions_authoring.json
+axiograph discover competency-questions --from-cq examples/software_authoring/order_fulfillment.cq --out build/examples/software_authoring/competency_questions.json
 axiograph discover define examples/software_authoring/OrderFulfillmentDomain.axi --prompt "define the shipment eligibility business rule" --include-queries
 axiograph discover overlay-check examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json
-axiograph discover coverage-query examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --query examples/software_authoring/order_fulfillment_coverage_query.json
-axiograph discover behavior-case examples/software_authoring/OrderFulfillmentDomain.axi --request examples/software_authoring/order_fulfillment_behavior_case.json --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/behavior_case_report.json
-axiograph check software-coverage examples/software_authoring/OrderFulfillmentDomain.axi --behavior-case examples/software_authoring/order_fulfillment_behavior_case.json --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/software_coverage.json
+axiograph discover coverage-query examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --term "shipment eligibility" --relation OrderEligibleForShipment --cq-name accepted_order_is_shipment_eligible --surface-hint shipping --max-matches 8
+axiograph discover behavior-case examples/software_authoring/OrderFulfillmentDomain.axi --request examples/software_authoring/order_fulfillment_behavior_case.json --cq-file examples/software_authoring/order_fulfillment.cq --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/behavior_case_report.json
+axiograph check software-coverage examples/software_authoring/OrderFulfillmentDomain.axi --behavior-case examples/software_authoring/order_fulfillment_behavior_case.json --cq-file examples/software_authoring/order_fulfillment.cq --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/software_coverage.json
 axiograph authoring codegen-plan --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/codegen_plan.json
 axiograph authoring continuous-check --behavior-report build/examples/software_authoring/behavior_case_report.json --repo-root . --out build/examples/software_authoring/continuous_coverage.json
 axiograph authoring continuous-check --behavior-report build/examples/software_authoring/behavior_case_report.json --repo-root . --strict-coverage --out build/examples/software_authoring/enforced_continuous_coverage.json
 axiograph authoring continuous-check --behavior-report build/examples/software_authoring/behavior_case_report.json --repo-root . --strict-coverage --require-code-refs --require-runtime-theory --out build/examples/software_authoring/ci_continuous_coverage.json
 ```
+
+Competency questions in this flow are authored as `.cq` files with
+`ask`/`about`/`given`/`expect` records. The loader derives executable typed
+queries for simple `expect: exists Schema.Rel(...)` and
+`expect: instance of Schema.Type` forms; unresolved prose-like questions remain
+addressable authoring obligations and cannot satisfy strict gates until lowered.
+For agent/editor workflows, use `axiograph_authoring_competency_questions` to
+draft and validate `.cq` intent against canonical `.axi`, then use
+`semantic_competency_questions` or the CLI behavior-case/CQ runner to evaluate
+the lowered questions against a loaded runtime snapshot.
 
 The CLI reports should always leave users with an obvious next action: resolve
 typed holes, validate overlays, run weak coverage probes, promote accepted
@@ -72,10 +92,15 @@ Report contracts:
 - Continuous coverage consumes a generated `BehaviorCaseReportV1`, reports
   typed refs from receipts/slices/coverage, checks required generated languages,
   and interprets `RuntimeTheoryCheckSummaryV1` sidecars when present.
+- Overlay software coverage consumes `BehaviorCaseCoverageViewV1`, a typed
+  boundary view over behavior-case reports. CLI/MCP/LSP surfaces may still move
+  JSON over the wire, but coverage builders should not walk arbitrary JSON
+  pointers internally.
 - `AuthoringFlowReportV1` is embedded at `authoring_flow` inside both
-  `continuous_software_coverage_report_v1` variants. It is the shared summary
-  agents should read for source (`continuous_check` or
-  `overlay_software_coverage`), pass/status, coverage gaps, and profile.
+  `overlay_software_coverage_report_v1` and
+  `continuous_software_coverage_report_v1`. It is the shared summary agents
+  should read for source (`continuous_check` or `overlay_software_coverage`),
+  pass/status, coverage gaps, and profile.
 - Coverage profiles are `advisory`, `strict`, and `ci`. `advisory` reports gaps
   and next actions; `strict` fails closed on explicit strict/enforced policy;
   `ci` means strict coverage plus required code refs, runtime-theory sidecars,
@@ -88,6 +113,7 @@ The standalone crate exposes the same production-named tool:
 
 ```bash
 axiograph-software-authoring codegen-plan --overlay overlay.json --json
+axiograph-software-authoring competency-questions --axi domain.axi --cq questions.cq --json
 axiograph-software-authoring materialize-skeletons --behavior-report behavior_report.json --out-dir generated --json
 axiograph-software-authoring continuous-check --behavior-report behavior_report.json --json
 axiograph-software-authoring continuous-check --behavior-report behavior_report.json --strict-coverage --require-code-refs --require-runtime-theory --json
@@ -149,6 +175,7 @@ for semantic tool-shape and dispatch behavior.
 - `axiograph_authoring_overlay_check`
 - `axiograph_authoring_definition_query`
 - `axiograph_authoring_coverage_query`
+- `axiograph_authoring_competency_questions`
 - `axiograph_authoring_software_coverage`
 
 The in-process semantic tool-loop names remain:
@@ -161,6 +188,7 @@ The in-process semantic tool-loop names remain:
 - `semantic_coverage_query`
 - `semantic_weak_coverage_probe`
 - `semantic_definition_query`
+- `semantic_competency_questions`
 
 DB-server read-only endpoints mirror the useful authoring tools:
 
@@ -180,14 +208,6 @@ File materialization stays CLI-only because generated files are reviewable
 workspace mutations, not MCP/server side effects.
 
 ## Plugin And Editor/LSP Surfaces
-
-The reference stdio adapter is:
-
-```bash
-scripts/axiograph_software_authoring_plugin.py
-```
-
-Protocol: `axiograph_software_authoring_plugin_v1`.
 
 The Rust tool emits editor capability metadata, a host integration manifest, an
 SDK-backed stdio LSP server, and a read-only stdio MCP server:
@@ -209,12 +229,12 @@ longer owns hand-rolled LSP frame parsing; Axiograph-specific code is limited to
 domain diagnostics, command dispatch, and typed authoring reports. It supports
 `initialize`, `textDocument/didOpen`, `textDocument/didChange`,
 `textDocument/codeAction`, and `workspace/executeCommand`. It emits diagnostics
-for `.axi` parsing, embedded behavior-case/tooling schemas, coverage policy shape,
-and runtime-theory sidecar presence where the host supplies enough context. It
-exposes read-only commands for overlay checking, weak definition queries,
-coverage queries, software coverage, codegen planning, and capability
-discovery. It does not write files; skeleton materialization remains an
-explicit CLI action.
+for `.axi` parsing, `.cq` authoring/lowering, embedded behavior-case/tooling
+schemas, coverage policy shape, and runtime-theory sidecar presence where the
+host supplies enough context. It exposes read-only commands for overlay
+checking, weak definition queries, competency-question checks, coverage queries,
+software coverage, codegen planning, and capability discovery. It does not write
+files; skeleton materialization remains an explicit CLI action.
 
 MCP and LSP remain read-only planning/checking surfaces. Do not add
 write-capable MCP tools for generated files. Planned read-only additions are

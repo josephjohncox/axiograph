@@ -300,6 +300,11 @@ struct CheckSoftwareCoverageArgs {
     #[arg(long)]
     overlay: PathBuf,
 
+    /// Optional `.cq` or `competency_question_bundle_v1` JSON file to attach
+    /// before building the coverage report. Prefer `.cq` for authored CQs.
+    #[arg(long = "cq-file")]
+    cq_files: Vec<PathBuf>,
+
     /// Repository root used to resolve code_refs.
     #[arg(long, default_value = ".")]
     repo_root: PathBuf,
@@ -359,6 +364,19 @@ enum AuthoringCommands {
         /// Input JSON file containing `ToolingOverlayBundleV1`.
         #[arg(long)]
         overlay: PathBuf,
+        /// Output JSON path. Defaults to stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Load/lower question-first `.cq` text and optionally validate refs against canonical `.axi`.
+    CompetencyQuestions {
+        /// Optional canonical .axi module used to validate referenced types/relations.
+        #[arg(long)]
+        axi: Option<PathBuf>,
+        /// Question-first `.cq` file.
+        #[arg(long)]
+        cq: PathBuf,
         /// Output JSON path. Defaults to stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -1039,7 +1057,7 @@ enum PathdbCommands {
     ImportChunks {
         /// Input `.axpd` file
         input: PathBuf,
-        /// Input chunks JSON (array of `Chunk` objects)
+        /// Input `EvidenceChunkBundleV1` chunks JSON.
         #[arg(long)]
         chunks: PathBuf,
         /// Output `.axpd` file
@@ -1254,7 +1272,7 @@ enum DiscoverCommands {
         seed: u64,
     },
 
-    /// Generate or translate competency questions (AxQL) for coverage checks.
+    /// Generate, load, or lower competency questions for coverage checks.
     CompetencyQuestions(CompetencyQuestionsArgs),
 
     /// Check a typed olog fragment against canonical `.axi` and optionally
@@ -1440,9 +1458,37 @@ struct DiscoverCoverageQueryArgs {
     /// Input canonical `.axi` module.
     input: PathBuf,
 
-    /// Input JSON file containing `CoverageQueryV1`.
+    /// Optional input JSON file containing `CoverageQueryV1`.
     #[arg(long)]
-    query: PathBuf,
+    query: Option<PathBuf>,
+
+    /// Search term. Repeat for multiple terms.
+    #[arg(long = "term")]
+    terms: Vec<String>,
+
+    /// Relation name to probe. Repeat for multiple relations.
+    #[arg(long = "relation")]
+    relation_names: Vec<String>,
+
+    /// Competency-question name to probe. Repeat for multiple CQs.
+    #[arg(long = "cq-name")]
+    cq_names: Vec<String>,
+
+    /// Code reference to probe. Repeat for multiple refs.
+    #[arg(long = "code-ref")]
+    code_refs: Vec<String>,
+
+    /// Implementation surface hint to probe. Repeat for multiple hints.
+    #[arg(long = "surface-hint")]
+    surface_hints: Vec<String>,
+
+    /// Optional AxQL fragment for advanced/debug coverage probes.
+    #[arg(long)]
+    axql: Option<String>,
+
+    /// Maximum candidate matches to return.
+    #[arg(long)]
+    max_matches: Option<usize>,
 
     /// Optional input JSON file containing `ToolingOverlayBundleV1`.
     #[arg(long)]
@@ -1555,6 +1601,11 @@ struct DiscoverBehaviorCaseArgs {
     /// implementation surfaces, coverage edges, and codegen are loaded from it.
     #[arg(long)]
     overlay: Option<PathBuf>,
+
+    /// Optional `.cq` or `competency_question_bundle_v1` JSON file to attach to
+    /// the behavior case before checking. Prefer `.cq` for user-authored CQs.
+    #[arg(long = "cq-file")]
+    cq_files: Vec<PathBuf>,
 
     /// Output JSON path (defaults to stdout).
     #[arg(short, long)]
@@ -1754,6 +1805,11 @@ struct CompetencyQuestionsArgs {
     #[arg(long)]
     from_nl: Option<PathBuf>,
 
+    /// Optional authored `.cq` file to load/lower without requiring users to
+    /// write JSON or AxQL directly.
+    #[arg(long)]
+    from_cq: Option<PathBuf>,
+
     /// Disable schema-based generation (use only `--from-nl`).
     #[arg(long)]
     no_schema: bool,
@@ -1906,7 +1962,7 @@ enum AcceptedCommands {
         /// Snapshot id (or `latest` / `head`, or a unique prefix).
         #[arg(long, default_value = "head")]
         snapshot: String,
-        /// Print the raw JSON manifest.
+        /// Print the typed snapshot manifest as JSON.
         #[arg(long)]
         json: bool,
         /// Print full snapshot ids (default prints shortened ids).
@@ -1998,7 +2054,7 @@ enum AcceptedCommands {
 
     /// Commit a PathDB WAL snapshot (append-only) under the accepted-plane directory.
     ///
-    /// This adds *extension-layer* overlays (currently: `chunks.json` + `proposals.json` imports) on
+    /// This adds *extension-layer* overlays (currently: `EvidenceChunkBundleV1` + `proposals.json` imports) on
     /// top of an accepted-plane snapshot. The resulting PathDB snapshot id is
     /// content-derived and can be checked out later via `pathdb-build`.
     PathdbCommit {
@@ -2008,7 +2064,7 @@ enum AcceptedCommands {
         /// Accepted-plane snapshot id (or `latest` / `head`).
         #[arg(long, default_value = "latest")]
         accepted_snapshot: String,
-        /// One or more chunks JSON files (array of `Chunk`) to import.
+        /// One or more `EvidenceChunkBundleV1` chunks JSON files to import.
         #[arg(long)]
         chunks: Vec<PathBuf>,
         /// One or more proposals JSON files (`ProposalsFileV1`) to import.
@@ -2152,7 +2208,7 @@ enum SemCommands {
         /// Accepted-plane directory.
         #[arg(long, default_value = "build/accepted_plane")]
         dir: PathBuf,
-        /// Print raw JSON.
+        /// Print the typed semantic status report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2169,7 +2225,7 @@ enum SemCommands {
         /// Commit id to point the branch at. Defaults to current semantic HEAD commit.
         #[arg(long)]
         commit: Option<String>,
-        /// Print raw JSON.
+        /// Print the typed branch update report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2180,7 +2236,7 @@ enum SemCommands {
         dir: PathBuf,
         /// Branch ref, for example heads/main or heads/review/demo.
         r#ref: String,
-        /// Print raw JSON.
+        /// Print the typed checkout report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2194,7 +2250,7 @@ enum SemCommands {
         /// Commit id to tag. Defaults to current semantic HEAD commit.
         #[arg(long)]
         commit: Option<String>,
-        /// Print raw JSON.
+        /// Print the typed tag report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2215,7 +2271,7 @@ enum SemCommands {
         /// Optional world-model run id.
         #[arg(long)]
         world_model_run: Option<String>,
-        /// Print raw JSON.
+        /// Print the typed semantic object report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2247,7 +2303,7 @@ enum SemCommands {
         /// Do not materialize a merge commit; emit the candidate reconciliation and preview only.
         #[arg(long)]
         dry_run: bool,
-        /// Print raw JSON.
+        /// Print the typed merge/rebase preview report as JSON.
         #[arg(long)]
         json: bool,
         /// Print the reduced Lean-readable checker JSON instead of the runtime report.
@@ -2271,7 +2327,7 @@ enum SemCommands {
         /// Rebase/transport policy label.
         #[arg(long, default_value = "semantic_rebase_dry_run")]
         policy: String,
-        /// Print raw JSON.
+        /// Print the typed rebase transport report as JSON.
         #[arg(long)]
         json: bool,
         /// Print the reduced Lean-readable checker JSON instead of the runtime report.
@@ -2291,7 +2347,7 @@ enum SemCommands {
         /// Maximum number of commits to print.
         #[arg(long, default_value_t = 20)]
         limit: usize,
-        /// Print raw JSON.
+        /// Print the typed semantic log report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2310,7 +2366,7 @@ enum SemRefCommands {
         /// Semantic commit id to write into the ref pointer.
         #[arg(long)]
         commit: String,
-        /// Print raw JSON.
+        /// Print the typed ref update report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2329,7 +2385,7 @@ enum SemSliceCommands {
         /// Optional JSON SemanticSliceSelectorV1.
         #[arg(long)]
         selector: Option<PathBuf>,
-        /// Print raw JSON.
+        /// Print the typed slice build report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2341,7 +2397,7 @@ enum SemSliceCommands {
         /// Slice id, relative sem/slices path, or manifest path.
         #[arg(long)]
         slice: String,
-        /// Print raw JSON.
+        /// Print the typed slice manifest as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -2356,7 +2412,7 @@ enum SemSliceCommands {
         /// Right slice id, relative sem/slices path, or manifest path.
         #[arg(long)]
         right: String,
-        /// Print raw JSON.
+        /// Print the typed slice diff report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -4289,7 +4345,7 @@ fn cmd_accept_log(dir: &PathBuf, layer: &str, limit: usize) -> Result<()> {
                         }
                     }
                     Err(_) => {
-                        // Preserve raw JSON on parse failures so users can still inspect it.
+                        // Preserve the original log line on parse failures so users can still inspect it.
                         println!("  {line}");
                     }
                 }
@@ -5512,7 +5568,14 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
             metadata,
         });
     }
-    fs::write(&chunks_out, serde_json::to_string_pretty(&chunks)?)?;
+    fs::write(
+        &chunks_out,
+        axiograph_ingest_docs::chunks_to_json_for_chunks(
+            "sql_ingest",
+            locator.clone(),
+            chunks.clone(),
+        )?,
+    )?;
     println!(
         "  {} {} (chunks={})",
         "→".cyan(),
@@ -5802,7 +5865,14 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
             metadata,
         });
     }
-    fs::write(&chunks_out, serde_json::to_string_pretty(&chunks)?)?;
+    fs::write(
+        &chunks_out,
+        axiograph_ingest_docs::chunks_to_json_for_chunks(
+            "json_ingest",
+            locator.clone(),
+            chunks.clone(),
+        )?,
+    )?;
     println!(
         "  {} {} (chunks={})",
         "→".cyan(),
@@ -6076,7 +6146,7 @@ fn cmd_pathdb_import_chunks(input: &PathBuf, chunks: &PathBuf, out: &PathBuf) ->
     let mut db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
 
     let chunks_text = fs::read_to_string(chunks)?;
-    let chunks: Vec<axiograph_ingest_docs::Chunk> = serde_json::from_str(&chunks_text)?;
+    let chunks = axiograph_ingest_docs::chunks_from_json_str(&chunks_text)?;
 
     let summary = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &chunks)?;
     db.build_indexes();
@@ -6225,13 +6295,16 @@ fn cmd_check_software_coverage(args: &CheckSoftwareCoverageArgs) -> Result<()> {
     let db = load_pathdb_for_cli(&args.input)?;
     let overlay = load_tooling_overlay(&args.overlay)?;
     let mut request = load_behavior_case_request(&args.behavior_case)?;
+    attach_behavior_case_cq_files(&mut request, &args.cq_files)?;
     request.overlay = Some(overlay.clone());
     request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
     let behavior_report =
         crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
     let behavior_report_json = serde_json::to_value(&behavior_report)?;
+    let behavior_report_view =
+        axiograph_tooling_overlays::behavior_case_coverage_view_from_value(&behavior_report_json)?;
     let report = axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
-        &behavior_report_json,
+        &behavior_report_view,
         &overlay,
         &args.repo_root,
     );
@@ -6270,6 +6343,23 @@ fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
         AuthoringCommands::CodegenPlan { overlay, out } => {
             let overlay = load_tooling_overlay(&overlay)?;
             let report = axiograph_tooling_overlays::codegen_plan_report(&overlay);
+            write_json_output(&report, out.as_ref())
+        }
+        AuthoringCommands::CompetencyQuestions { axi, cq, out } => {
+            let cq_text = fs::read_to_string(&cq)
+                .map_err(|err| anyhow!("failed to read `{}`: {err}", cq.display()))?;
+            let axi_text = axi
+                .as_ref()
+                .map(|path| {
+                    fs::read_to_string(path)
+                        .map_err(|err| anyhow!("failed to read `{}`: {err}", path.display()))
+                })
+                .transpose()?;
+            let report =
+                axiograph_software_authoring::build_authoring_competency_questions_report_from_text(
+                    axi_text.as_deref(),
+                    &cq_text,
+                )?;
             write_json_output(&report, out.as_ref())
         }
         AuthoringCommands::MaterializeSkeletons {
@@ -6338,6 +6428,8 @@ fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
 
 #[derive(Debug, Deserialize)]
 struct SoftwareAuthoringExampleSuiteV1 {
+    #[serde(default)]
+    version: Option<String>,
     examples: Vec<SoftwareAuthoringExampleCatalogEntryV1>,
 }
 
@@ -6348,8 +6440,32 @@ struct SoftwareAuthoringExampleCatalogEntryV1 {
     axi: PathBuf,
     overlay: PathBuf,
     behavior_case: PathBuf,
-    coverage_query: Option<PathBuf>,
-    definition_queries: Option<PathBuf>,
+    cq_file: Option<PathBuf>,
+    #[serde(default)]
+    coverage_terms: Vec<String>,
+    #[serde(default)]
+    coverage_relations: Vec<String>,
+    #[serde(default)]
+    coverage_cqs: Vec<String>,
+    #[serde(default)]
+    coverage_code_refs: Vec<String>,
+    #[serde(default)]
+    coverage_surface_hints: Vec<String>,
+    #[serde(default)]
+    coverage_max_matches: Option<usize>,
+    #[serde(default)]
+    definition_query_prompts: Vec<SoftwareAuthoringDefinitionQueryPromptV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SoftwareAuthoringDefinitionQueryPromptV1 {
+    id: Option<String>,
+    prompt: String,
+    kind_hint: Option<String>,
+    context_hint: Option<String>,
+    #[serde(default)]
+    include_queries: bool,
+    max_matches: Option<usize>,
 }
 
 fn cmd_authoring_run_suite(
@@ -6372,17 +6488,11 @@ fn cmd_authoring_run_suite(
     let axi_path = resolve_suite_relative_path(suite_path, &entry.axi)?;
     let overlay_path = resolve_suite_relative_path(suite_path, &entry.overlay)?;
     let behavior_case_path = resolve_suite_relative_path(suite_path, &entry.behavior_case)?;
-    let coverage_query_path = entry
-        .coverage_query
+    let cq_file_path = entry
+        .cq_file
         .as_ref()
         .map(|path| resolve_suite_relative_path(suite_path, path))
         .transpose()?;
-    let definition_queries_path = entry
-        .definition_queries
-        .as_ref()
-        .map(|path| resolve_suite_relative_path(suite_path, path))
-        .transpose()?;
-
     if let Some(out_dir) = out_dir {
         fs::create_dir_all(out_dir)?;
     }
@@ -6394,16 +6504,21 @@ fn cmd_authoring_run_suite(
 
     let db = load_pathdb_for_cli(&axi_path)?;
     let mut request = load_behavior_case_request(&behavior_case_path)?;
+    if let Some(cq_file_path) = cq_file_path.as_ref() {
+        attach_behavior_case_cq_files(&mut request, std::slice::from_ref(cq_file_path))?;
+    }
     request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
     request.overlay = Some(overlay.clone());
     let behavior_report =
         crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
     let behavior_report_json = serde_json::to_value(&behavior_report)?;
     write_optional_step_report(out_dir, "behavior_case_report.json", &behavior_report_json)?;
+    let behavior_report_view =
+        axiograph_tooling_overlays::behavior_case_coverage_view_from_value(&behavior_report_json)?;
 
     let overlay_coverage =
         axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
-            &behavior_report_json,
+            &behavior_report_view,
             &overlay,
             repo_root,
         );
@@ -6417,15 +6532,9 @@ fn cmd_authoring_run_suite(
             "python".to_string(),
             "go".to_string(),
         ],
-        strict_coverage: matches!(
-            profile,
-            AuthoringRunProfile::Strict | AuthoringRunProfile::Ci
-        ),
-        require_code_refs: matches!(
-            profile,
-            AuthoringRunProfile::Strict | AuthoringRunProfile::Ci
-        ),
-        require_runtime_theory: matches!(profile, AuthoringRunProfile::Ci),
+        strict_coverage: profile.strict_coverage(),
+        require_code_refs: profile.require_code_refs(),
+        require_runtime_theory: profile.require_runtime_theory(),
     };
     let continuous_report =
         axiograph_software_authoring::build_continuous_software_coverage_report(
@@ -6434,10 +6543,7 @@ fn cmd_authoring_run_suite(
         )?;
     write_optional_step_report(out_dir, "continuous_coverage.json", &continuous_report)?;
 
-    let coverage_query_report = if let Some(path) = coverage_query_path.as_ref() {
-        let query_json = fs::read_to_string(path)?;
-        let query: axiograph_tooling_overlays::CoverageQueryV1 = serde_json::from_str(&query_json)
-            .map_err(|err| anyhow!("failed to parse CoverageQueryV1 JSON: {err}"))?;
+    let coverage_query_report = if let Some(query) = coverage_query_from_catalog_entry(entry) {
         let report =
             axiograph_tooling_overlays::coverage_query_report(&kernel, Some(&overlay), &query);
         write_optional_step_report(out_dir, "coverage_query.json", &report)?;
@@ -6446,28 +6552,33 @@ fn cmd_authoring_run_suite(
         None
     };
 
-    let definition_query_report_count = if let Some(path) = definition_queries_path.as_ref() {
-        let value = read_json_file(path)?;
-        value
-            .get("queries")
-            .and_then(|queries| queries.as_array())
-            .map(|queries| queries.len())
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let definition_query_reports =
+        definition_query_reports_from_catalog_entry(entry, &kernel, Some(&overlay))?;
+    if !definition_query_reports.is_empty() {
+        write_optional_step_report(out_dir, "definition_queries.json", &definition_query_reports)?;
+    }
+    let definition_query_report_count = definition_query_reports.len();
 
-    let pass = overlay_report.valid && continuous_report.pass;
+    let pass = overlay_report.valid && overlay_coverage.pass && continuous_report.pass;
     Ok(serde_json::json!({
         "version": "authoring_suite_run_report_v1",
+        "suite_version": suite.version,
         "example": {
             "id": entry.id,
             "title": entry.title.as_deref(),
             "axi": axi_path.display().to_string(),
             "overlay": overlay_path.display().to_string(),
             "behavior_case": behavior_case_path.display().to_string(),
-            "coverage_query": coverage_query_path.as_ref().map(|path| path.display().to_string()),
-            "definition_queries": definition_queries_path.as_ref().map(|path| path.display().to_string()),
+            "definition_query_prompts": entry.definition_query_prompts.iter().map(|query| {
+                serde_json::json!({
+                    "id": query.id,
+                    "prompt": query.prompt,
+                    "kind_hint": query.kind_hint,
+                    "context_hint": query.context_hint,
+                    "include_queries": query.include_queries,
+                    "max_matches": query.max_matches,
+                })
+            }).collect::<Vec<_>>(),
         },
         "profile": profile.as_str(),
         "pass": pass,
@@ -6476,6 +6587,7 @@ fn cmd_authoring_run_suite(
         "overlay_coverage": overlay_coverage,
         "continuous_coverage": continuous_report,
         "coverage_query_report": coverage_query_report,
+        "definition_query_reports": definition_query_reports,
         "definition_query_count": definition_query_report_count,
         "next_commands": [
             format!("axiograph check validate {}", axi_path.display()),
@@ -6485,6 +6597,55 @@ fn cmd_authoring_run_suite(
             format!("axiograph authoring continuous-check --behavior-report <behavior_case_report.json> --repo-root {}", repo_root.display())
         ],
     }))
+}
+
+fn definition_query_reports_from_catalog_entry(
+    entry: &SoftwareAuthoringExampleCatalogEntryV1,
+    kernel: &axiograph_pathdb::kernel_ir::KernelModuleIr,
+    overlay: Option<&axiograph_tooling_overlays::ToolingOverlayBundleV1>,
+) -> Result<Vec<Value>> {
+    let mut reports = Vec::new();
+    for prompt in &entry.definition_query_prompts {
+        let query = axiograph_tooling_overlays::DefinitionQueryV1 {
+            version: Some(axiograph_tooling_overlays::DEFINITION_QUERY_VERSION_V1.to_string()),
+            prompt: prompt.prompt.clone(),
+            kind_hint: parse_definition_kind_hint(prompt.kind_hint.as_deref())?,
+            context_hint: prompt.context_hint.clone(),
+            candidate_refs: Vec::new(),
+            max_matches: prompt.max_matches,
+            include_queries: prompt.include_queries,
+        };
+        let report = axiograph_tooling_overlays::definition_query_report(kernel, overlay, &query);
+        reports.push(serde_json::json!({
+            "id": prompt.id,
+            "report": report,
+        }));
+    }
+    Ok(reports)
+}
+
+fn coverage_query_from_catalog_entry(
+    entry: &SoftwareAuthoringExampleCatalogEntryV1,
+) -> Option<axiograph_tooling_overlays::CoverageQueryV1> {
+    if entry.coverage_terms.is_empty()
+        && entry.coverage_relations.is_empty()
+        && entry.coverage_cqs.is_empty()
+        && entry.coverage_code_refs.is_empty()
+        && entry.coverage_surface_hints.is_empty()
+    {
+        return None;
+    }
+    Some(axiograph_tooling_overlays::CoverageQueryV1 {
+        version: Some(axiograph_tooling_overlays::COVERAGE_QUERY_VERSION_V1.to_string()),
+        coverage_mode: axiograph_tooling_overlays::CoverageModeV1::Exploratory,
+        terms: entry.coverage_terms.clone(),
+        relation_names: entry.coverage_relations.clone(),
+        cq_names: entry.coverage_cqs.clone(),
+        code_refs: entry.coverage_code_refs.clone(),
+        surface_hints: entry.coverage_surface_hints.clone(),
+        axql: None,
+        max_matches: entry.coverage_max_matches,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6501,6 +6662,18 @@ impl AuthoringRunProfile {
             Self::Strict => "strict",
             Self::Ci => "ci",
         }
+    }
+
+    fn strict_coverage(self) -> bool {
+        matches!(self, Self::Strict | Self::Ci)
+    }
+
+    fn require_code_refs(self) -> bool {
+        matches!(self, Self::Ci)
+    }
+
+    fn require_runtime_theory(self) -> bool {
+        matches!(self, Self::Ci)
     }
 }
 
@@ -6645,7 +6818,7 @@ fn cmd_repo_index(
             .join("chunks.json")
     });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
-    let chunks_json = serde_json::to_string_pretty(&result.extraction.chunks)?;
+    let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
     fs::write(&chunks_out, &chunks_json)?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
@@ -6731,7 +6904,7 @@ fn cmd_discover_suggest_links(
     let chunks_text = fs::read_to_string(chunks_path)?;
     let edges_text = fs::read_to_string(edges_path)?;
 
-    let chunks: Vec<axiograph_ingest_docs::Chunk> = serde_json::from_str(&chunks_text)?;
+    let chunks = axiograph_ingest_docs::chunks_from_json_str(&chunks_text)?;
     let edges: Vec<axiograph_ingest_docs::RepoEdgeV1> = serde_json::from_str(&edges_text)?;
 
     let trace_id = format!(
@@ -7984,7 +8157,7 @@ fn cmd_discover_augment_proposals(
     let evidence_chunks = if llm_enabled {
         if let Some(chunks_path) = chunks_path {
             let chunks_text = fs::read_to_string(chunks_path)?;
-            let chunks: Vec<axiograph_ingest_docs::Chunk> = serde_json::from_str(&chunks_text)?;
+            let chunks = axiograph_ingest_docs::chunks_from_json_str(&chunks_text)?;
 
             let mut needed: BTreeSet<String> = BTreeSet::new();
             for p in &augmented.proposals {
@@ -8536,9 +8709,7 @@ fn cmd_discover_overlay_check(args: &DiscoverOverlayCheckArgs) -> Result<()> {
 
 fn cmd_discover_coverage_query(args: &DiscoverCoverageQueryArgs) -> Result<()> {
     let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
-    let query_json = fs::read_to_string(&args.query)?;
-    let query: axiograph_tooling_overlays::CoverageQueryV1 = serde_json::from_str(&query_json)
-        .map_err(|err| anyhow!("failed to parse CoverageQueryV1 JSON: {err}"))?;
+    let query = coverage_query_from_discover_args(args)?;
     let overlay = args
         .overlay
         .as_ref()
@@ -8549,6 +8720,55 @@ fn cmd_discover_coverage_query(args: &DiscoverCoverageQueryArgs) -> Result<()> {
     write_json_output(&report, args.out.as_ref())
 }
 
+fn coverage_query_from_discover_args(
+    args: &DiscoverCoverageQueryArgs,
+) -> Result<axiograph_tooling_overlays::CoverageQueryV1> {
+    let mut query = if let Some(path) = args.query.as_ref() {
+        let query_json = fs::read_to_string(path)?;
+        serde_json::from_str::<axiograph_tooling_overlays::CoverageQueryV1>(&query_json)
+            .map_err(|err| anyhow!("failed to parse CoverageQueryV1 JSON: {err}"))?
+    } else {
+        axiograph_tooling_overlays::CoverageQueryV1 {
+            version: Some(axiograph_tooling_overlays::COVERAGE_QUERY_VERSION_V1.to_string()),
+            coverage_mode: axiograph_tooling_overlays::CoverageModeV1::Exploratory,
+            terms: Vec::new(),
+            relation_names: Vec::new(),
+            cq_names: Vec::new(),
+            code_refs: Vec::new(),
+            surface_hints: Vec::new(),
+            axql: None,
+            max_matches: None,
+        }
+    };
+    query.terms.extend(args.terms.iter().cloned());
+    query
+        .relation_names
+        .extend(args.relation_names.iter().cloned());
+    query.cq_names.extend(args.cq_names.iter().cloned());
+    query.code_refs.extend(args.code_refs.iter().cloned());
+    query
+        .surface_hints
+        .extend(args.surface_hints.iter().cloned());
+    if let Some(axql) = args.axql.as_ref() {
+        query.axql = Some(axql.clone());
+    }
+    if args.max_matches.is_some() {
+        query.max_matches = args.max_matches;
+    }
+    if query.terms.is_empty()
+        && query.relation_names.is_empty()
+        && query.cq_names.is_empty()
+        && query.code_refs.is_empty()
+        && query.surface_hints.is_empty()
+        && query.axql.as_deref().unwrap_or("").trim().is_empty()
+    {
+        return Err(anyhow!(
+            "coverage-query requires --query or at least one --term, --relation, --cq-name, --code-ref, --surface-hint, or --axql"
+        ));
+    }
+    Ok(query)
+}
+
 fn cmd_discover_define(args: &DiscoverDefineArgs) -> Result<()> {
     let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
     let overlay = args
@@ -8557,6 +8777,7 @@ fn cmd_discover_define(args: &DiscoverDefineArgs) -> Result<()> {
         .map(load_tooling_overlay)
         .transpose()?;
     let query = axiograph_tooling_overlays::DefinitionQueryV1 {
+        version: Some(axiograph_tooling_overlays::DEFINITION_QUERY_VERSION_V1.to_string()),
         prompt: args.prompt.clone(),
         kind_hint: parse_definition_kind_hint(args.kind_hint.as_deref())?,
         context_hint: args.context_hint.clone(),
@@ -8638,6 +8859,7 @@ fn parse_embedding_relationship_kind(
 fn cmd_discover_behavior_case(args: &DiscoverBehaviorCaseArgs) -> Result<()> {
     let db = load_pathdb_for_cli(&args.input)?;
     let mut request = load_behavior_case_request(&args.request)?;
+    attach_behavior_case_cq_files(&mut request, &args.cq_files)?;
     if let Some(overlay_path) = args.overlay.as_ref() {
         let overlay = load_tooling_overlay(overlay_path)?;
         request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
@@ -8648,6 +8870,31 @@ fn cmd_discover_behavior_case(args: &DiscoverBehaviorCaseArgs) -> Result<()> {
     let report =
         crate::behavior_case::build_behavior_case_report_from_request(&db, None, None, request)?;
     write_json_output(&report, args.out.as_ref())
+}
+
+fn attach_behavior_case_cq_files(
+    request: &mut crate::behavior_case::BehaviorCaseCheckRequestV1,
+    cq_files: &[PathBuf],
+) -> Result<()> {
+    if cq_files.is_empty() {
+        return Ok(());
+    }
+    let mut loaded = Vec::new();
+    for path in cq_files {
+        loaded.extend(crate::world_model::load_competency_questions(path)?);
+    }
+    let then = request
+        .behavior_case
+        .then
+        .get_or_insert_with(|| crate::behavior_case::BehaviorThenV1 {
+            expected_outcomes: Vec::new(),
+            competency_questions: Vec::new(),
+            rule_scopes: Vec::new(),
+            trust_target: None,
+            notes: Vec::new(),
+        });
+    then.competency_questions.extend(loaded);
+    Ok(())
 }
 
 fn compile_kernel_for_tooling_overlay(
@@ -8765,6 +9012,11 @@ fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<(
     if !args.no_schema {
         let mut generated = crate::competency_questions::generate_from_schema(&db, &options)?;
         out.append(&mut generated);
+    }
+
+    if let Some(path) = args.from_cq.as_ref() {
+        let mut loaded = crate::world_model::load_competency_questions(path)?;
+        out.append(&mut loaded);
     }
 
     if let Some(path) = args.from_nl.as_ref() {
@@ -9626,7 +9878,8 @@ fn cmd_ingest_dir(
         .cloned()
         .unwrap_or_else(|| out_dir.join("proposals.json"));
 
-    let chunks_json = serde_json::to_string_pretty(&all_chunks)?;
+    let chunks_json =
+        axiograph_ingest_docs::chunks_to_json_for_chunks("ingest_dir", root.display().to_string(), all_chunks.clone())?;
     fs::write(&chunks_out, &chunks_json)?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
@@ -9729,7 +9982,7 @@ fn cmd_ingest_merge(
         let mut merged_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
         for p in chunks_paths {
             let text = fs::read_to_string(p)?;
-            let chunks: Vec<axiograph_ingest_docs::Chunk> = serde_json::from_str(&text)?;
+            let chunks = axiograph_ingest_docs::chunks_from_json_str(&text)?;
             merged_chunks.extend(chunks);
         }
 
@@ -9749,7 +10002,14 @@ fn cmd_ingest_merge(
                 .join("chunks.json")
         });
         fs::create_dir_all(out_path.parent().unwrap_or(std::path::Path::new(".")))?;
-        fs::write(&out_path, serde_json::to_string_pretty(&deduped)?)?;
+        fs::write(
+            &out_path,
+            axiograph_ingest_docs::chunks_to_json_for_chunks(
+                "merged_chunks",
+                "merge-proposals",
+                deduped,
+            )?,
+        )?;
         println!("wrote {}", out_path.display());
     }
 
@@ -9999,6 +10259,78 @@ theory PlantTransport on Plant:
                     args.out,
                     Some(PathBuf::from("/tmp/behavior_case_report.json"))
                 );
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn authoring_competency_questions_command_parses_nested_subcommand() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "authoring",
+            "competency-questions",
+            "--axi",
+            "/tmp/domain.axi",
+            "--cq",
+            "/tmp/domain.cq",
+            "--out",
+            "/tmp/cq_report.json",
+        ])
+        .expect("parse authoring competency-questions");
+
+        match cli.command {
+            Commands::Authoring {
+                command: AuthoringCommands::CompetencyQuestions { axi, cq, out },
+            } => {
+                assert_eq!(axi, Some(PathBuf::from("/tmp/domain.axi")));
+                assert_eq!(cq, PathBuf::from("/tmp/domain.cq"));
+                assert_eq!(out, Some(PathBuf::from("/tmp/cq_report.json")));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn discover_coverage_query_command_accepts_direct_terms() {
+        let cli = Cli::try_parse_from([
+            "axiograph",
+            "discover",
+            "coverage-query",
+            "/tmp/domain.axi",
+            "--term",
+            "shipment eligibility",
+            "--relation",
+            "OrderEligibleForShipment",
+            "--cq-name",
+            "accepted_order_is_shipment_eligible",
+            "--code-ref",
+            "workers/shipping/src/eligibility.rs",
+            "--surface-hint",
+            "shipping",
+            "--max-matches",
+            "8",
+            "--out",
+            "/tmp/coverage_query.json",
+        ])
+        .expect("parse discover coverage-query direct flags");
+
+        match cli.command {
+            Commands::Discover {
+                command: DiscoverCommands::CoverageQuery(args),
+            } => {
+                assert_eq!(args.input, PathBuf::from("/tmp/domain.axi"));
+                assert_eq!(args.query, None);
+                assert_eq!(args.terms, vec!["shipment eligibility"]);
+                assert_eq!(args.relation_names, vec!["OrderEligibleForShipment"]);
+                assert_eq!(
+                    args.cq_names,
+                    vec!["accepted_order_is_shipment_eligible"]
+                );
+                assert_eq!(args.code_refs, vec!["workers/shipping/src/eligibility.rs"]);
+                assert_eq!(args.surface_hints, vec!["shipping"]);
+                assert_eq!(args.max_matches, Some(8));
+                assert_eq!(args.out, Some(PathBuf::from("/tmp/coverage_query.json")));
             }
             _ => panic!("unexpected command parse result"),
         }

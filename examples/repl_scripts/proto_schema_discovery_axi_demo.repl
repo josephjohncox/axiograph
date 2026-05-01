@@ -1,4 +1,4 @@
-# Axiograph REPL script: schema discovery demo (proto toy)
+# Axiograph REPL script: schema discovery demo (proto/API candidate)
 #
 # This demo imports a *candidate* canonical `.axi` module that was generated from
 # evidence-plane `proposals.json` (proto/gRPC-ish ingestion).

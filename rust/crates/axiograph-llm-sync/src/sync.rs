@@ -1,10 +1,10 @@
-//! Sync Manager: Orchestrates bidirectional LLM ↔ KG synchronization
+//! Sync Manager: orchestrates LLM evidence extraction and grounding
 //!
 //! The sync manager coordinates:
 //! 1. Fact extraction from LLM conversations
 //! 2. Validation against schema
 //! 3. Conflict detection and resolution
-//! 4. Storage to both .axi files and PathDB
+//! 4. Evidence/cache materialization
 //! 5. Provenance and version tracking
 
 #![allow(unused_imports, unused_mut, unused_variables)]
@@ -69,9 +69,9 @@ pub type SyncEventHandler = Box<dyn Fn(SyncEvent) + Send + Sync>;
 // Sync Manager
 // ============================================================================
 
-/// The main sync manager integrating LLM with unified storage
+/// The main sync manager integrating LLM output with runtime evidence storage.
 pub struct SyncManager {
-    /// Unified storage (handles both .axi and PathDB)
+    /// Runtime evidence store and PathDB cache materialization.
     storage: Arc<UnifiedStorage>,
     /// Current sync state
     state: Arc<RwLock<SyncState>>,
@@ -84,7 +84,7 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
-    /// Create a new sync manager with unified storage
+    /// Create a new sync manager with runtime evidence storage.
     pub fn new(
         storage: Arc<UnifiedStorage>,
         config: SyncConfig,
@@ -444,7 +444,7 @@ impl SyncManager {
         Ok(conflicts)
     }
 
-    /// Integrate validated facts into unified storage
+    /// Integrate validated facts into runtime evidence storage.
     fn integrate_facts(
         &self,
         facts: Vec<ExtractedFact>,
@@ -463,7 +463,7 @@ impl SyncManager {
             return Ok(integrated);
         }
 
-        // Add to unified storage
+        // Add to runtime evidence storage.
         let source = ChangeSource::LLMExtraction {
             session_id,
             model: format!("{:?}", provider),

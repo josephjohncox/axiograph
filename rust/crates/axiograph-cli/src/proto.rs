@@ -140,7 +140,11 @@ fn cmd_proto_ingest(
         .cloned()
         .unwrap_or_else(|| out.parent().unwrap_or(Path::new(".")).join("chunks.json"));
     fs::create_dir_all(chunks_path.parent().unwrap_or(Path::new(".")))?;
-    let json = serde_json::to_string_pretty(&ingest.chunks)?;
+    let json = axiograph_ingest_docs::chunks_to_json_for_chunks(
+        "proto_descriptor",
+        descriptor_path.display().to_string(),
+        ingest.chunks.clone(),
+    )?;
     fs::write(&chunks_path, &json)?;
     println!("  {} {}", "→".cyan(), chunks_path.display());
 

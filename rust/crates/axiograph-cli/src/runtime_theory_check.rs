@@ -11,29 +11,11 @@ use axiograph_pathdb::{
 use axiograph_pathdb::kernel_ir::TheoryTransportStatusIr;
 
 pub(crate) fn parse_runtime_theory_closure_tier(raw: &str) -> Result<RuntimeTheoryClosureTierV1> {
-    match raw {
-        "finite_fragment" | "finite" => Ok(RuntimeTheoryClosureTierV1::FiniteFragment),
-        "evidence_weighted" | "evidence" => Ok(RuntimeTheoryClosureTierV1::EvidenceWeighted),
-        "global_indexed" | "global" => Ok(RuntimeTheoryClosureTierV1::GlobalIndexed),
-        other => Err(anyhow!(
-            "unknown closure tier `{other}` (expected finite_fragment, evidence_weighted, or global_indexed)"
-        )),
-    }
+    raw.parse().map_err(anyhow::Error::msg)
 }
 
 pub(crate) fn parse_evidence_weight_semantics(raw: &str) -> Result<EvidenceWeightSemanticsV1> {
-    match raw {
-        "thresholded_world" | "thresholded" | "threshold" => {
-            Ok(EvidenceWeightSemanticsV1::ThresholdedWorld)
-        }
-        "weighted_lattice" | "weighted" | "lattice" => {
-            Ok(EvidenceWeightSemanticsV1::WeightedLattice)
-        }
-        "deferred" => Ok(EvidenceWeightSemanticsV1::Deferred),
-        other => Err(anyhow!(
-            "unknown evidence semantics `{other}` (expected thresholded_world, weighted_lattice, or deferred)"
-        )),
-    }
+    raw.parse().map_err(anyhow::Error::msg)
 }
 
 pub(crate) fn parse_evidence_weight_assignment(raw: &str) -> Result<(String, u32)> {
@@ -516,7 +498,7 @@ pub(crate) fn runtime_theory_check_human_summary(
                 "{}:{}ppm:{}{}",
                 report.evidence_policy.policy_id,
                 report.evidence_policy.threshold_ppm,
-                evidence_semantics_label(report.evidence_policy.semantics),
+                report.evidence_policy.semantics.as_str(),
                 if report.evidence_policy.weighted_propagation_enabled {
                     ":weighted"
                 } else {
@@ -590,14 +572,6 @@ pub(crate) fn runtime_theory_check_human_summary(
         );
     }
     lines.join("\n")
-}
-
-fn evidence_semantics_label(semantics: EvidenceWeightSemanticsV1) -> &'static str {
-    match semantics {
-        EvidenceWeightSemanticsV1::ThresholdedWorld => "thresholded_world",
-        EvidenceWeightSemanticsV1::WeightedLattice => "weighted_lattice",
-        EvidenceWeightSemanticsV1::Deferred => "deferred",
-    }
 }
 
 fn list_or_none(values: &[String]) -> String {

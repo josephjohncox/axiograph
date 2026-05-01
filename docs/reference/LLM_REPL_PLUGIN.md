@@ -22,6 +22,10 @@ There are two related protocols:
     once execution is actually needed.
 - `axiograph_llm_plugin_v3`: a **tool-loop step** protocol for agentic workflows (LLM calls tools; Rust executes; LLM answers).
   - Used by REPL `llm ask ...` / `llm answer ...` (and `llm agent ...` for verbose debugging).
+  - CQ authoring loops should prefer `semantic_competency_questions` with
+    question-first `.cq` text (`ask`, `about`, `given`, `expect`) before
+    falling back to typed query execution. Raw AxQL is a lowering/debug artifact,
+    not the primary way to express ontology coverage intent.
 
 1. an LLM proposes a **structured** query (`query_ir_v1`)
 2. Rust executes the proposed query against the loaded snapshot

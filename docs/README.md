@@ -11,9 +11,9 @@ canonical .axi
   -> optional Lean verifier
 ```
 
-Use these docs as the source of truth for current behavior. Historical prototype
-notes should not be used as implementation guidance unless a page explicitly
-marks them as current.
+Use these docs as the source of truth for current behavior. Pages should describe
+the current architecture directly; old protocol or prototype notes belong in git
+history, not in the active docs path.
 
 ## Start Here
 
@@ -80,6 +80,7 @@ Repo-wide language rule:
 - `docs/reference/LEAN_THEORY_EVALUATION.md` — Lean-encoded theory status, feasibility, and gaps.
 - `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` — embedding sidecars and promotion boundaries.
 - `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — codegen, overlays, CLI, MCP, server, and LSP surfaces.
+- `docs/reference/RUST_ARCHITECTURE_CLEANUP.md` — Rust crate boundaries, simplification targets, and standard-library/crate guidance.
 - `docs/reference/AGENT_CONTEXT.md` — current architecture and working policy for agents.
 - `docs/reference/AXI_STYLE.md` — canonical `.axi` authoring style.
 - `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle/anchor artifact model.
@@ -91,6 +92,7 @@ Repo-wide language rule:
 ## Research
 
 - `docs/research/APPLIED_CATEGORY_TYPE_THEORY_FOR_AXIograph.md` — applied category theory, dependent contexts, HoTT/groupoid paths, institutions, RDF/SHACL, and DDD/fDDD grounding.
+- `docs/research/MANUFACTURING_RECOMMENDED_READINGS.md` — domain references used by manufacturing/learning examples.
 
 ## Explanation
 

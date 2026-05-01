@@ -782,9 +782,9 @@ The authoring surface should lower:
 - commutative diagrams to `PathEquationIr`,
 - n-ary relationships to relation objects with roles.
 
-## First Implementation Slice
+## Remaining Convergence Work
 
-The first implementation cut for this spec should:
+The remaining convergence work for this spec is:
 
 1. Add a shared kernel IR crate or module pair:
    - `schema_category_ir.rs`

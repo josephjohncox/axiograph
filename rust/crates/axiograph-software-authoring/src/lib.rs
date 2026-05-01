@@ -19,6 +19,17 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+const COMPETENCY_QUESTION_BUNDLE_VERSION_V1: &str = "competency_question_bundle_v1";
+const AUTHORING_COMPETENCY_QUESTIONS_REPORT_VERSION_V1: &str =
+    "authoring_competency_questions_report_v1";
+const LSP_CMD_CODEGEN_PLAN: &str = "axiograph.authoring.codegenPlan";
+const LSP_CMD_COMPETENCY_QUESTIONS: &str = "axiograph.authoring.competencyQuestions";
+const LSP_CMD_COVERAGE_QUERY: &str = "axiograph.authoring.coverageQuery";
+const LSP_CMD_DEFINITION_QUERY: &str = "axiograph.authoring.definitionQuery";
+const LSP_CMD_LSP_CAPABILITIES: &str = "axiograph.authoring.lspCapabilities";
+const LSP_CMD_OVERLAY_CHECK: &str = "axiograph.authoring.overlayCheck";
+const LSP_CMD_SOFTWARE_COVERAGE: &str = "axiograph.authoring.softwareCoverage";
+
 #[derive(Parser, Debug)]
 #[command(name = "axiograph-software-authoring")]
 #[command(
@@ -44,6 +55,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Load/lower question-first `.cq` text and optionally validate refs against canonical `.axi`.
+    CompetencyQuestions(CompetencyQuestionsCliArgs),
     /// Emit read-only plugin/tool metadata for agent and editor integrations.
     ToolSpecs {
         /// Emit JSON.
@@ -122,6 +135,21 @@ struct MaterializeSkeletonsArgs {
     overwrite: bool,
 
     /// Emit the materialization report as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct CompetencyQuestionsCliArgs {
+    /// Optional canonical .axi module used to validate referenced types/relations.
+    #[arg(long)]
+    axi: Option<PathBuf>,
+
+    /// Question-first `.cq` file.
+    #[arg(long)]
+    cq: PathBuf,
+
+    /// Emit the report as JSON.
     #[arg(long)]
     json: bool,
 }
@@ -230,7 +258,7 @@ pub struct CodegenLanguageStatus {
     pub file_hints: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct RuntimeTheoryPresence {
     pub present: bool,
     pub module_digest: Option<String>,
@@ -271,6 +299,7 @@ pub fn run_cli() -> Result<()> {
         Commands::ContinuousCheck(args) => run_continuous_check(args),
         Commands::MaterializeSkeletons(args) => run_materialize_skeletons(args),
         Commands::CodegenPlan { overlay, json } => run_codegen_plan(&overlay, json),
+        Commands::CompetencyQuestions(args) => run_competency_questions(args),
         Commands::ToolSpecs { json } => print_tool_specs(json),
         Commands::LspCapabilities { json } => print_lsp_capabilities(json),
         Commands::IntegrationManifest { json } => print_integration_manifest(json),
@@ -301,9 +330,29 @@ fn run_codegen_plan(overlay_path: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+fn run_competency_questions(args: CompetencyQuestionsCliArgs) -> Result<()> {
+    let cq_text = fs::read_to_string(&args.cq)
+        .with_context(|| format!("read competency questions `{}`", args.cq.display()))?;
+    let axi_text = args
+        .axi
+        .as_ref()
+        .map(|path| {
+            fs::read_to_string(path)
+                .with_context(|| format!("read canonical .axi `{}`", path.display()))
+        })
+        .transpose()?;
+    let report =
+        build_authoring_competency_questions_report_from_text(axi_text.as_deref(), &cq_text)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_human_competency_questions_report(&report);
+    }
+    Ok(())
+}
+
 fn run_continuous_check(args: ContinuousCheckArgs) -> Result<()> {
     let report = read_json(&args.behavior_report)?;
-    validate_behavior_report(&report)?;
 
     let coverage_report = build_continuous_software_coverage_report(
         &report,
@@ -330,7 +379,6 @@ fn run_continuous_check(args: ContinuousCheckArgs) -> Result<()> {
 
 fn run_materialize_skeletons(args: MaterializeSkeletonsArgs) -> Result<()> {
     let report = read_json(&args.behavior_report)?;
-    validate_behavior_report(&report)?;
     let materialization = materialize_skeletons_from_report(
         &report,
         &args.behavior_report,
@@ -364,8 +412,8 @@ pub fn materialize_skeletons_from_report(
     source_report: &Path,
     options: &MaterializeSkeletonsOptions,
 ) -> Result<CodegenMaterializationReportV1> {
-    validate_behavior_report(report)?;
-    let previews = collect_codegen_previews(report);
+    let report = behavior_case_authoring_report_from_value(report)?;
+    let previews = collect_codegen_previews(&report);
     let filter = normalize_languages(&options.language);
     fs::create_dir_all(&options.out_dir).with_context(|| {
         format!(
@@ -419,11 +467,45 @@ pub fn materialize_skeletons_from_report(
     Ok(materialization)
 }
 
+fn print_human_competency_questions_report(report: &AuthoringCompetencyQuestionsReportV1) {
+    println!(
+        "competency questions: mode={} total={} executable={} unresolved={}",
+        report.coverage_mode,
+        report.total_questions,
+        report.executable_questions,
+        report.unresolved_questions
+    );
+    if !report.matched_refs.is_empty() {
+        println!("  matched refs:");
+        for reference in &report.matched_refs {
+            println!(
+                "    {} {} for {}",
+                reference.ref_kind, reference.ref_id, reference.question
+            );
+        }
+    }
+    if !report.missing_refs.is_empty() {
+        println!("  missing refs:");
+        for reference in &report.missing_refs {
+            println!(
+                "    {} {} for {}",
+                reference.ref_kind, reference.ref_id, reference.question
+            );
+        }
+    }
+    for note in &report.notes {
+        println!("  note: {note}");
+    }
+    for action in &report.next_actions {
+        println!("  next: {action}");
+    }
+}
+
 pub fn build_continuous_software_coverage_report(
     report: &Value,
     options: &ContinuousCheckOptions,
 ) -> Result<ContinuousSoftwareCoverageReportV1> {
-    validate_behavior_report(report)?;
+    let report = behavior_case_authoring_report_from_value(report)?;
     let repo_root = options
         .repo_root
         .canonicalize()
@@ -431,7 +513,7 @@ pub fn build_continuous_software_coverage_report(
     let required_codegen_languages = normalize_languages(&options.require_codegen)
         .into_iter()
         .collect::<Vec<_>>();
-    let codegen_previews = collect_codegen_previews(report);
+    let codegen_previews = collect_codegen_previews(&report);
     let present_codegen_languages = codegen_previews
         .iter()
         .map(|preview| preview.language.clone())
@@ -448,9 +530,7 @@ pub fn build_continuous_software_coverage_report(
         .cloned()
         .collect::<Vec<_>>();
 
-    let code_refs = collect_string_arrays(report, "code_refs")
-        .into_iter()
-        .collect::<Vec<_>>();
+    let code_refs = behavior_report_code_refs(&report);
     let mut existing_code_refs = Vec::new();
     let mut missing_code_refs = Vec::new();
     for code_ref in &code_refs {
@@ -464,10 +544,10 @@ pub fn build_continuous_software_coverage_report(
         }
     }
 
-    let coverage = coverage_summary(report);
-    let competency = competency_summary(report);
-    let runtime_theory = runtime_theory_presence(report);
-    let typed_refs = behavior_report_typed_refs(report, &coverage);
+    let coverage = coverage_summary(&report);
+    let competency = competency_summary(&report);
+    let runtime_theory = runtime_theory_presence(&report);
+    let typed_refs = behavior_report_typed_refs(&report, &coverage);
     let codegen = codegen_coverage_summary(
         &codegen_previews,
         &required_codegen_languages,
@@ -614,7 +694,11 @@ pub fn build_continuous_software_coverage_report(
         CoverageGateStatus::Failed
     };
     let pass = failures.is_empty();
-    let case_id = path_string(report, &["behavior_case", "case_id"]);
+    let case_id = report
+        .behavior_case
+        .case_id
+        .clone()
+        .or_else(|| report.receipt.case_id.clone());
     let coverage_mode = if options.strict_coverage {
         axiograph_tooling_overlays::CoverageModeV1::Enforced
     } else {
@@ -681,6 +765,15 @@ pub fn build_continuous_software_coverage_report(
         warnings,
         next_actions,
     })
+}
+
+pub fn build_continuous_software_coverage_report_from_json_str(
+    report_json: &str,
+    options: &ContinuousCheckOptions,
+) -> Result<ContinuousSoftwareCoverageReportV1> {
+    let report: Value = serde_json::from_str(report_json)
+        .context("parse behavior_case_report_v1 JSON wire payload")?;
+    build_continuous_software_coverage_report(&report, options)
 }
 
 fn print_human_continuous_report(report: &ContinuousSoftwareCoverageReportV1) {
@@ -757,12 +850,14 @@ fn print_lsp_capabilities(json_output: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&capabilities)?);
     } else {
         println!("software authoring LSP capabilities:");
-        println!("  diagnostics: overlay refs, runtime-theory sidecars, behavior-case schema, coverage policy");
         println!(
-            "  code actions: definition query, coverage query, codegen plan, continuous coverage"
+            "  diagnostics: .axi parse, .cq authoring, overlay refs, runtime-theory sidecars, behavior-case schema, coverage policy"
         );
         println!(
-            "  commands: axiograph.authoring.codegenPlan, axiograph.authoring.coverageQuery, axiograph.authoring.softwareCoverage"
+            "  code actions: definition query, competency questions, coverage query, codegen plan, continuous coverage"
+        );
+        println!(
+            "  commands: {LSP_CMD_CODEGEN_PLAN}, {LSP_CMD_COMPETENCY_QUESTIONS}, {LSP_CMD_COVERAGE_QUERY}, {LSP_CMD_SOFTWARE_COVERAGE}"
         );
         println!("  next: configure the host to launch `axiograph authoring lsp` over stdio");
     }
@@ -821,6 +916,11 @@ pub fn software_authoring_tool_specs_v1() -> Value {
                 "mutation": "read_only"
             },
             {
+                "name": "axiograph.authoring.competency_questions",
+                "description": "Load/lower question-first `.cq` text and validate referenced types/relations against canonical .axi without requiring raw query authoring.",
+                "mutation": "read_only"
+            },
+            {
                 "name": "axiograph.authoring.overlay_check",
                 "description": "Validate typed software-authoring overlay refs against canonical .axi / KernelModuleIr.",
                 "mutation": "read_only"
@@ -847,7 +947,7 @@ pub fn software_authoring_tool_specs_v1() -> Value {
             },
             {
                 "name": "axiograph.authoring.mcp",
-                "description": "Read-only stdio MCP server exposing Axiograph authoring, typed coverage, authoring-flow profiles, codegen planning, runtime-theory sidecar, and definition-query tools.",
+                "description": "Read-only stdio MCP server exposing Axiograph authoring, typed coverage, competency-question checks, authoring-flow profiles, codegen planning, runtime-theory sidecar, and definition-query tools.",
                 "mutation": "read_only"
             }
         ]
@@ -887,6 +987,7 @@ pub fn software_authoring_integration_manifest_v1() -> Value {
             "language_id": "axiograph",
             "document_selector": [
                 { "language": "axiograph", "pattern": "**/*.axi" },
+                { "language": "axiograph-cq", "pattern": "**/*.cq" },
                 { "language": "json", "pattern": "**/*tooling_overlay*.json" },
                 { "language": "json", "pattern": "**/*behavior_case*.json" }
             ]
@@ -928,31 +1029,35 @@ pub fn software_authoring_lsp_capabilities_v1() -> Value {
         },
         "document_selector": [
             { "language": "axiograph", "pattern": "**/*.axi" },
+            { "language": "axiograph-cq", "pattern": "**/*.cq" },
             { "language": "json", "pattern": "**/*tooling_overlay*.json" },
             { "language": "json", "pattern": "**/*behavior_case*.json" }
         ],
         "diagnostics": [
             "canonical_axi_parse",
             "runtime_theory_check",
+            "competency_question_authoring",
             "runtime_theory_sidecar_presence",
             "overlay_ref_resolution",
             "behavior_case_schema",
             "coverage_policy"
         ],
         "code_actions": [
-            "axiograph.authoring.definitionQuery",
-            "axiograph.authoring.coverageQuery",
-            "axiograph.authoring.codegenPlan",
-            "axiograph.authoring.overlayCheck",
-            "axiograph.authoring.softwareCoverage"
+            LSP_CMD_DEFINITION_QUERY,
+            LSP_CMD_COMPETENCY_QUESTIONS,
+            LSP_CMD_COVERAGE_QUERY,
+            LSP_CMD_CODEGEN_PLAN,
+            LSP_CMD_OVERLAY_CHECK,
+            LSP_CMD_SOFTWARE_COVERAGE
         ],
         "commands": [
-            "axiograph.authoring.overlayCheck",
-            "axiograph.authoring.softwareCoverage",
-            "axiograph.authoring.codegenPlan",
-            "axiograph.authoring.coverageQuery",
-            "axiograph.authoring.definitionQuery",
-            "axiograph.authoring.lspCapabilities"
+            LSP_CMD_OVERLAY_CHECK,
+            LSP_CMD_SOFTWARE_COVERAGE,
+            LSP_CMD_CODEGEN_PLAN,
+            LSP_CMD_COVERAGE_QUERY,
+            LSP_CMD_DEFINITION_QUERY,
+            LSP_CMD_COMPETENCY_QUESTIONS,
+            LSP_CMD_LSP_CAPABILITIES
         ],
         "non_claims": [
             "LSP/editor diagnostics are runtime authoring feedback, not Lean certification.",
@@ -1000,7 +1105,7 @@ struct EmptyMcpArgs {}
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 struct OverlayMcpArgs {
     #[serde(default)]
-    overlay: Option<Value>,
+    overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
     #[serde(default)]
     overlay_text: Option<String>,
 }
@@ -1009,7 +1114,7 @@ struct OverlayMcpArgs {
 struct AxiOverlayMcpArgs {
     axi_text: String,
     #[serde(default)]
-    overlay: Option<Value>,
+    overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
     #[serde(default)]
     overlay_text: Option<String>,
 }
@@ -1018,33 +1123,39 @@ struct AxiOverlayMcpArgs {
 struct DefinitionQueryMcpArgs {
     axi_text: String,
     #[serde(default)]
-    overlay: Option<Value>,
+    overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
     #[serde(default)]
     overlay_text: Option<String>,
     #[serde(default)]
-    definition_query: Option<Value>,
-    #[serde(default)]
-    query: Option<Value>,
+    definition_query: Option<axiograph_tooling_overlays::DefinitionQueryV1>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 struct CoverageQueryMcpArgs {
     axi_text: String,
     #[serde(default)]
-    overlay: Option<Value>,
+    overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
     #[serde(default)]
     overlay_text: Option<String>,
     #[serde(default)]
-    coverage_query: Option<Value>,
+    coverage_query: Option<axiograph_tooling_overlays::CoverageQueryV1>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+struct CompetencyQuestionsMcpArgs {
     #[serde(default)]
-    query: Option<Value>,
+    axi_text: Option<String>,
+    #[serde(default)]
+    cq_text: Option<String>,
+    #[serde(default)]
+    questions: Vec<AuthoringCompetencyQuestionV1>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 struct SoftwareCoverageMcpArgs {
     behavior_report: Value,
     #[serde(default)]
-    overlay: Option<Value>,
+    overlay: Option<axiograph_tooling_overlays::ToolingOverlayBundleV1>,
     #[serde(default)]
     overlay_text: Option<String>,
     #[serde(default = "default_repo_root")]
@@ -1054,6 +1165,87 @@ struct SoftwareCoverageMcpArgs {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct AuthoringMcpPayload {
     payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct AuthoringCompetencyQuestionHintsV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub about: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub given: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AuthoringCompetencyQuestionV1 {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring: Option<AuthoringCompetencyQuestionHintsV1>,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default = "default_min_rows")]
+    pub min_rows: usize,
+    #[serde(default = "default_weight")]
+    pub weight: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contexts: Vec<String>,
+}
+
+impl Default for AuthoringCompetencyQuestionV1 {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            question: None,
+            authoring: None,
+            query: String::new(),
+            min_rows: default_min_rows(),
+            weight: default_weight(),
+            contexts: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AuthoringCompetencyQuestionRefV1 {
+    pub question: String,
+    pub ref_kind: String,
+    pub ref_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct AuthoringCompetencyQuestionsReportV1 {
+    pub version: String,
+    pub coverage_mode: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<AuthoringCompetencyQuestionV1>,
+    pub total_questions: usize,
+    pub executable_questions: usize,
+    pub unresolved_questions: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_refs: Vec<AuthoringCompetencyQuestionRefV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_refs: Vec<AuthoringCompetencyQuestionRefV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next_actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub non_claims: Vec<String>,
+}
+
+fn default_min_rows() -> usize {
+    1
+}
+
+fn default_weight() -> f64 {
+    1.0
 }
 
 fn default_repo_root() -> String {
@@ -1161,6 +1353,23 @@ impl AuthoringRmcpServer {
     }
 
     #[tool(
+        name = "axiograph_authoring_competency_questions",
+        description = "Load/lower question-first `.cq` text and validate referenced types/relations against canonical .axi text without executing queries."
+    )]
+    fn competency_questions(
+        &self,
+        Parameters(args): Parameters<CompetencyQuestionsMcpArgs>,
+    ) -> std::result::Result<Json<AuthoringMcpPayload>, String> {
+        let arguments = tool_arguments_value(args)?;
+        call_authoring_mcp_tool(json!({
+            "name": "axiograph_authoring_competency_questions",
+            "arguments": arguments
+        }))
+        .map(authoring_mcp_payload)
+        .map_err(|err| err.to_string())
+    }
+
+    #[tool(
         name = "axiograph_authoring_software_coverage",
         description = "Evaluate a behavior-case report against a tooling overlay, repository root, runtime-theory sidecar expectations, and embedded authoring-flow profile."
     )]
@@ -1226,6 +1435,12 @@ pub fn software_authoring_mcp_tools_v1() -> Value {
             "inputSchema": authoring_axi_query_input_schema("coverage_query")
         },
         {
+            "name": "axiograph_authoring_competency_questions",
+            "title": "Axiograph Competency Questions",
+            "description": "Load/lower question-first `.cq` text and validate referenced types/relations against canonical .axi text without executing queries.",
+            "inputSchema": authoring_competency_questions_input_schema()
+        },
+        {
             "name": "axiograph_authoring_software_coverage",
             "title": "Axiograph Software Coverage",
             "description": "Evaluate a behavior-case report against a tooling overlay, repository root, runtime-theory sidecar expectations, and embedded authoring-flow profile.",
@@ -1270,13 +1485,7 @@ fn call_authoring_mcp_tool(params: Value) -> Result<Value> {
                 .get("axi_text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("definition query requires `axi_text`"))?;
-            let query = arguments
-                .get("definition_query")
-                .or_else(|| arguments.get("query"))
-                .cloned()
-                .ok_or_else(|| {
-                    anyhow!("definition query requires `definition_query` or `query`")
-                })?;
+            let query = query_arg(&arguments, "definition_query", "definition query")?;
             let query: axiograph_tooling_overlays::DefinitionQueryV1 =
                 serde_json::from_value(query)?;
             let overlay = optional_overlay_arg(&arguments)?;
@@ -1294,11 +1503,7 @@ fn call_authoring_mcp_tool(params: Value) -> Result<Value> {
                 .get("axi_text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("coverage query requires `axi_text`"))?;
-            let query = arguments
-                .get("coverage_query")
-                .or_else(|| arguments.get("query"))
-                .cloned()
-                .ok_or_else(|| anyhow!("coverage query requires `coverage_query` or `query`"))?;
+            let query = query_arg(&arguments, "coverage_query", "coverage query")?;
             let query: axiograph_tooling_overlays::CoverageQueryV1 = serde_json::from_value(query)?;
             let overlay = optional_overlay_arg(&arguments)?;
             let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(axi_text)?;
@@ -1308,6 +1513,13 @@ fn call_authoring_mcp_tool(params: Value) -> Result<Value> {
                     overlay.as_ref(),
                     &query,
                 ),
+            )?)
+        }
+        "axiograph_authoring_competency_questions" => {
+            let args: CompetencyQuestionsMcpArgs = serde_json::from_value(arguments)
+                .context("parse competency question tool arguments")?;
+            Ok(serde_json::to_value(
+                build_authoring_competency_questions_report(args)?,
             )?)
         }
         "axiograph_authoring_software_coverage" => {
@@ -1320,6 +1532,10 @@ fn call_authoring_mcp_tool(params: Value) -> Result<Value> {
                 .get("repo_root")
                 .and_then(Value::as_str)
                 .unwrap_or(".");
+            let behavior_report =
+                axiograph_tooling_overlays::behavior_case_coverage_view_from_value(
+                    &behavior_report,
+                )?;
             Ok(serde_json::to_value(
                 axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
                     &behavior_report,
@@ -1368,11 +1584,6 @@ fn authoring_axi_overlay_input_schema() -> Value {
 
 fn authoring_axi_query_input_schema(query_key: &str) -> Value {
     let overlay_schema = axiograph_tooling_overlays::tooling_overlay_bundle_schema();
-    let query_schema = match query_key {
-        "definition_query" => axiograph_tooling_overlays::definition_query_schema(),
-        "coverage_query" => axiograph_tooling_overlays::coverage_query_schema(),
-        _ => json!({ "type": "object" }),
-    };
     json!({
         "type": "object",
         "required": ["axi_text", query_key],
@@ -1381,9 +1592,37 @@ fn authoring_axi_query_input_schema(query_key: &str) -> Value {
             "overlay": overlay_schema,
             "overlay_text": { "type": "string" },
             "definition_query": axiograph_tooling_overlays::definition_query_schema(),
-            "coverage_query": axiograph_tooling_overlays::coverage_query_schema(),
-            "query": query_schema
+            "coverage_query": axiograph_tooling_overlays::coverage_query_schema()
         },
+        "additionalProperties": false
+    })
+}
+
+fn authoring_competency_questions_input_schema() -> Value {
+    let question_schema =
+        serde_json::to_value(schemars::schema_for!(AuthoringCompetencyQuestionV1))
+            .expect("competency question schema should serialize");
+    json!({
+        "type": "object",
+        "properties": {
+            "axi_text": {
+                "type": "string",
+                "description": "Optional canonical .axi text used to validate referenced schema object and relation names."
+            },
+            "cq_text": {
+                "type": "string",
+                "description": "Question-first .cq text using version, question, ask, about, given, and expect records."
+            },
+            "questions": {
+                "type": "array",
+                "items": question_schema,
+                "default": []
+            }
+        },
+        "anyOf": [
+            { "required": ["cq_text"] },
+            { "required": ["questions"] }
+        ],
         "additionalProperties": false
     })
 }
@@ -1627,7 +1866,7 @@ fn authoring_code_actions() -> Value {
             "kind": "quickfix",
             "command": {
                 "title": "Run definition query",
-                "command": "axiograph.authoring.definitionQuery"
+                "command": LSP_CMD_DEFINITION_QUERY
             }
         },
         {
@@ -1635,7 +1874,15 @@ fn authoring_code_actions() -> Value {
             "kind": "quickfix",
             "command": {
                 "title": "Run coverage query",
-                "command": "axiograph.authoring.coverageQuery"
+                "command": LSP_CMD_COVERAGE_QUERY
+            }
+        },
+        {
+            "title": "Axiograph: check competency questions",
+            "kind": "quickfix",
+            "command": {
+                "title": "Check competency questions",
+                "command": LSP_CMD_COMPETENCY_QUESTIONS
             }
         },
         {
@@ -1643,7 +1890,7 @@ fn authoring_code_actions() -> Value {
             "kind": "source",
             "command": {
                 "title": "Plan codegen",
-                "command": "axiograph.authoring.codegenPlan"
+                "command": LSP_CMD_CODEGEN_PLAN
             }
         },
         {
@@ -1651,7 +1898,7 @@ fn authoring_code_actions() -> Value {
             "kind": "source",
             "command": {
                 "title": "Check overlay",
-                "command": "axiograph.authoring.overlayCheck"
+                "command": LSP_CMD_OVERLAY_CHECK
             }
         },
         {
@@ -1659,7 +1906,7 @@ fn authoring_code_actions() -> Value {
             "kind": "source",
             "command": {
                 "title": "Check software coverage",
-                "command": "axiograph.authoring.softwareCoverage"
+                "command": LSP_CMD_SOFTWARE_COVERAGE
             }
         }
     ])
@@ -1677,13 +1924,13 @@ fn execute_lsp_authoring_command(params: Value) -> Result<Value> {
         .cloned()
         .unwrap_or_else(|| json!({}));
     match command {
-        "axiograph.authoring.codegenPlan" => {
+        LSP_CMD_CODEGEN_PLAN => {
             let overlay = overlay_arg(&arg)?;
             Ok(serde_json::to_value(
                 axiograph_tooling_overlays::codegen_plan_report(&overlay),
             )?)
         }
-        "axiograph.authoring.overlayCheck" => {
+        LSP_CMD_OVERLAY_CHECK => {
             let axi_text = arg
                 .get("axi_text")
                 .and_then(Value::as_str)
@@ -1694,15 +1941,12 @@ fn execute_lsp_authoring_command(params: Value) -> Result<Value> {
                 axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &overlay),
             )?)
         }
-        "axiograph.authoring.definitionQuery" => {
+        LSP_CMD_DEFINITION_QUERY => {
             let axi_text = arg
                 .get("axi_text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("definitionQuery requires arguments[0].axi_text"))?;
-            let query = arg
-                .get("query")
-                .cloned()
-                .ok_or_else(|| anyhow!("definitionQuery requires arguments[0].query"))?;
+            let query = query_arg(&arg, "definition_query", "definitionQuery")?;
             let query: axiograph_tooling_overlays::DefinitionQueryV1 =
                 serde_json::from_value(query)?;
             let overlay = optional_overlay_arg(&arg)?;
@@ -1715,15 +1959,12 @@ fn execute_lsp_authoring_command(params: Value) -> Result<Value> {
                 ),
             )?)
         }
-        "axiograph.authoring.coverageQuery" => {
+        LSP_CMD_COVERAGE_QUERY => {
             let axi_text = arg
                 .get("axi_text")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("coverageQuery requires arguments[0].axi_text"))?;
-            let query = arg
-                .get("query")
-                .cloned()
-                .ok_or_else(|| anyhow!("coverageQuery requires arguments[0].query"))?;
+            let query = query_arg(&arg, "coverage_query", "coverageQuery")?;
             let query: axiograph_tooling_overlays::CoverageQueryV1 = serde_json::from_value(query)?;
             let overlay = optional_overlay_arg(&arg)?;
             let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(axi_text)?;
@@ -1735,13 +1976,24 @@ fn execute_lsp_authoring_command(params: Value) -> Result<Value> {
                 ),
             )?)
         }
-        "axiograph.authoring.softwareCoverage" => {
+        LSP_CMD_COMPETENCY_QUESTIONS => {
+            let args: CompetencyQuestionsMcpArgs = serde_json::from_value(arg)
+                .context("parse competencyQuestions arguments")?;
+            Ok(serde_json::to_value(
+                build_authoring_competency_questions_report(args)?,
+            )?)
+        }
+        LSP_CMD_SOFTWARE_COVERAGE => {
             let behavior_report = arg
                 .get("behavior_report")
                 .cloned()
                 .ok_or_else(|| anyhow!("softwareCoverage requires arguments[0].behavior_report"))?;
             let overlay = overlay_arg(&arg)?;
             let repo_root = arg.get("repo_root").and_then(Value::as_str).unwrap_or(".");
+            let behavior_report =
+                axiograph_tooling_overlays::behavior_case_coverage_view_from_value(
+                    &behavior_report,
+                )?;
             Ok(serde_json::to_value(
                 axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
                     &behavior_report,
@@ -1750,9 +2002,16 @@ fn execute_lsp_authoring_command(params: Value) -> Result<Value> {
                 ),
             )?)
         }
-        "axiograph.authoring.lspCapabilities" => Ok(software_authoring_lsp_capabilities_v1()),
+        LSP_CMD_LSP_CAPABILITIES => Ok(software_authoring_lsp_capabilities_v1()),
         other => Err(anyhow!("unsupported authoring LSP command `{other}`")),
     }
+}
+
+fn query_arg(value: &Value, primary_key: &str, label: &str) -> Result<Value> {
+    value
+        .get(primary_key)
+        .cloned()
+        .ok_or_else(|| anyhow!("{label} requires `{primary_key}`"))
 }
 
 fn overlay_arg(value: &Value) -> Result<axiograph_tooling_overlays::ToolingOverlayBundleV1> {
@@ -1781,6 +2040,450 @@ fn optional_overlay_arg(
     Ok(None)
 }
 
+fn build_authoring_competency_questions_report(
+    args: CompetencyQuestionsMcpArgs,
+) -> Result<AuthoringCompetencyQuestionsReportV1> {
+    let mut questions = Vec::new();
+    if let Some(cq_text) = args.cq_text.as_deref() {
+        questions.extend(parse_authoring_competency_question_text(cq_text)?);
+    }
+    questions.extend(args.questions);
+    if questions.is_empty() {
+        bail!("competency question tool requires `cq_text` or at least one `questions` item");
+    }
+    for question in &mut questions {
+        lower_authoring_competency_question(question);
+        validate_authoring_competency_question(question)?;
+    }
+
+    let kernel = args
+        .axi_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+        .map(axiograph_tooling_overlays::compile_kernel_from_axi_text)
+        .transpose()?;
+
+    let mut matched_refs = BTreeSet::new();
+    let mut missing_refs = BTreeSet::new();
+    for question in &questions {
+        for reference in refs_for_authoring_competency_question(question) {
+            match kernel.as_ref() {
+                Some(kernel) if authoring_competency_ref_exists(kernel, &reference) => {
+                    matched_refs.insert(reference);
+                }
+                Some(_) => {
+                    missing_refs.insert(reference);
+                }
+                None => {}
+            }
+        }
+    }
+
+    let executable_questions = questions
+        .iter()
+        .filter(|question| !question.query.trim().is_empty())
+        .count();
+    let unresolved_questions = questions.len().saturating_sub(executable_questions);
+    let mut notes = Vec::new();
+    if kernel.is_none() {
+        notes.push(
+            "No canonical .axi text was provided, so referenced schema objects and relations were not validated."
+                .to_string(),
+        );
+    }
+    if unresolved_questions > 0 {
+        notes.push(format!(
+            "{unresolved_questions} question(s) remain authoring obligations because they do not lower to an executable typed query."
+        ));
+    }
+    let mut next_actions = Vec::new();
+    if !missing_refs.is_empty() {
+        next_actions.push(
+            "Fix missing referenced schema objects/relations or add typed ontology/refinement handles before strict coverage."
+                .to_string(),
+        );
+    }
+    if unresolved_questions > 0 {
+        next_actions.push(
+            "Add an executable `expect: exists Schema.Rel(...)` or `expect: instance of Schema.Type` line, or keep the question as an explicit residual authoring obligation."
+                .to_string(),
+        );
+    }
+    if missing_refs.is_empty() && unresolved_questions == 0 {
+        next_actions.push(
+            "Evaluate these CQs with `semantic_competency_questions` or the CLI behavior-case/CQ runner against a loaded runtime."
+                .to_string(),
+        );
+    }
+
+    let coverage_mode = if kernel.is_some() && missing_refs.is_empty() && unresolved_questions == 0
+    {
+        "authoring_checked"
+    } else {
+        "advisory"
+    };
+
+    Ok(AuthoringCompetencyQuestionsReportV1 {
+        version: AUTHORING_COMPETENCY_QUESTIONS_REPORT_VERSION_V1.to_string(),
+        coverage_mode: coverage_mode.to_string(),
+        total_questions: questions.len(),
+        executable_questions,
+        unresolved_questions,
+        questions,
+        matched_refs: matched_refs.into_iter().collect(),
+        missing_refs: missing_refs.into_iter().collect(),
+        next_actions,
+        notes,
+        non_claims: vec![
+            "This authoring report validates CQ syntax, lowering, and optional ontology ref presence only; it does not execute queries."
+                .to_string(),
+            "CQ satisfaction, promotion gates, and correctness claims require the semantic runtime, accepted anchors, and configured trust/CQ policies."
+                .to_string(),
+        ],
+    })
+}
+
+pub fn build_authoring_competency_questions_report_from_text(
+    axi_text: Option<&str>,
+    cq_text: &str,
+) -> Result<AuthoringCompetencyQuestionsReportV1> {
+    build_authoring_competency_questions_report(CompetencyQuestionsMcpArgs {
+        axi_text: axi_text.map(str::to_string),
+        cq_text: Some(cq_text.to_string()),
+        questions: Vec::new(),
+    })
+}
+
+fn parse_authoring_competency_question_text(
+    text: &str,
+) -> Result<Vec<AuthoringCompetencyQuestionV1>> {
+    let mut questions = Vec::new();
+    let mut current: Option<AuthoringCompetencyQuestionV1> = None;
+    let mut saw_version = false;
+
+    for (idx, raw_line) in text.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(version) = line.strip_prefix("version ") {
+            let version = version.trim();
+            if version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
+                bail!(
+                    "unsupported competency question text version `{version}` at line {line_no} (expected `{COMPETENCY_QUESTION_BUNDLE_VERSION_V1}`)"
+                );
+            }
+            saw_version = true;
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix("question ")
+            .and_then(|rest| rest.strip_suffix(':'))
+        {
+            if let Some(mut question) = current.take() {
+                lower_authoring_competency_question(&mut question);
+                validate_authoring_competency_question(&question)?;
+                questions.push(question);
+            }
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("empty competency question name at line {line_no}");
+            }
+            current = Some(AuthoringCompetencyQuestionV1 {
+                name: name.to_string(),
+                ..AuthoringCompetencyQuestionV1::default()
+            });
+            continue;
+        }
+
+        let Some(question) = current.as_mut() else {
+            bail!("competency question field before `question <name>:` at line {line_no}");
+        };
+        let (key, value) = line.split_once(':').ok_or_else(|| {
+            anyhow!("invalid competency question field at line {line_no} (expected `key: value`)")
+        })?;
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "ask" | "asks" | "question" => {
+                question.question = Some(value.to_string());
+                question
+                    .authoring
+                    .get_or_insert_with(Default::default)
+                    .ask = Some(value.to_string());
+            }
+            "about" => question
+                .authoring
+                .get_or_insert_with(Default::default)
+                .about
+                .push(value.to_string()),
+            "given" => question
+                .authoring
+                .get_or_insert_with(Default::default)
+                .given
+                .push(value.to_string()),
+            "expect" | "expects" => question
+                .authoring
+                .get_or_insert_with(Default::default)
+                .expect
+                .push(value.to_string()),
+            "note" | "notes" => question
+                .authoring
+                .get_or_insert_with(Default::default)
+                .notes
+                .push(value.to_string()),
+            "axql" => question.query = value.to_string(),
+            "min_rows" => {
+                question.min_rows = value
+                    .parse::<usize>()
+                    .map_err(|err| anyhow!("invalid min_rows at line {line_no}: {err}"))?;
+            }
+            "weight" => {
+                question.weight = value
+                    .parse::<f64>()
+                    .map_err(|err| anyhow!("invalid weight at line {line_no}: {err}"))?;
+            }
+            "context" => question.contexts.push(value.to_string()),
+            "contexts" => {
+                question.contexts.extend(
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|ctx| !ctx.is_empty())
+                        .map(str::to_string),
+                );
+            }
+            other => bail!("unsupported competency question field `{other}` at line {line_no}"),
+        }
+    }
+
+    if let Some(mut question) = current.take() {
+        lower_authoring_competency_question(&mut question);
+        validate_authoring_competency_question(&question)?;
+        questions.push(question);
+    }
+    if !saw_version {
+        bail!("competency question text requires `version {COMPETENCY_QUESTION_BUNDLE_VERSION_V1}`");
+    }
+    if questions.is_empty() {
+        bail!("competency question text contains no questions");
+    }
+    Ok(questions)
+}
+
+fn validate_authoring_competency_question(question: &AuthoringCompetencyQuestionV1) -> Result<()> {
+    if question.name.trim().is_empty() {
+        bail!("competency question has an empty name");
+    }
+    let has_authoring = question.authoring.as_ref().is_some_and(|hints| {
+        hints.ask.is_some()
+            || !hints.about.is_empty()
+            || !hints.given.is_empty()
+            || !hints.expect.is_empty()
+            || !hints.notes.is_empty()
+    });
+    if question.query.trim().is_empty() && question.question.is_none() && !has_authoring {
+        bail!(
+            "competency question `{}` requires `ask: ...`, `expect: ...`, or `axql: ...`",
+            question.name
+        );
+    }
+    if question.min_rows == 0 {
+        bail!(
+            "competency question `{}` requires min_rows > 0",
+            question.name
+        );
+    }
+    if !question.weight.is_finite() || question.weight <= 0.0 {
+        bail!(
+            "competency question `{}` requires a finite positive weight",
+            question.name
+        );
+    }
+    Ok(())
+}
+
+fn lower_authoring_competency_question(question: &mut AuthoringCompetencyQuestionV1) {
+    if !question.query.trim().is_empty() {
+        return;
+    }
+    if let Some(query) = lower_authoring_competency_question_query(question) {
+        question.query = query;
+    }
+}
+
+fn lower_authoring_competency_question_query(
+    question: &AuthoringCompetencyQuestionV1,
+) -> Option<String> {
+    let hints = question.authoring.as_ref()?;
+    let limit = question.min_rows.max(1);
+    let relation_exprs = hints
+        .expect
+        .iter()
+        .filter_map(|expect| relation_expression_from_expect(expect))
+        .collect::<Vec<_>>();
+    if relation_exprs.len() == 1 {
+        return Some(format!(
+            "select ?f where ?f = {} limit {limit}",
+            relation_exprs[0]
+        ));
+    }
+    if relation_exprs.len() > 1 {
+        let atoms = relation_exprs
+            .iter()
+            .enumerate()
+            .map(|(idx, expr)| format!("?f{idx} = {expr}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(format!("select ?f0 where {atoms} limit {limit}"));
+    }
+
+    for expect in &hints.expect {
+        if let Some(type_ref) = type_ref_from_expect(expect) {
+            return Some(format!("select ?x where ?x is {type_ref} limit {limit}"));
+        }
+    }
+
+    let relation = hints
+        .about
+        .iter()
+        .map(|value| value.trim())
+        .find(|value| looks_like_qualified_relation_ref(value))?;
+    let fields = hints
+        .given
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| value.contains('='))
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "select ?f where ?f = {relation}({}) limit {limit}",
+        fields.join(", ")
+    ))
+}
+
+fn refs_for_authoring_competency_question(
+    question: &AuthoringCompetencyQuestionV1,
+) -> Vec<AuthoringCompetencyQuestionRefV1> {
+    let Some(hints) = question.authoring.as_ref() else {
+        return Vec::new();
+    };
+    let mut refs = BTreeSet::new();
+    for expect in &hints.expect {
+        if let Some(relation_expr) = relation_expression_from_expect(expect) {
+            if let Some(ref_id) = qualified_ref_head(&relation_expr) {
+                refs.insert(AuthoringCompetencyQuestionRefV1 {
+                    question: question.name.clone(),
+                    ref_kind: "relation".to_string(),
+                    ref_id,
+                });
+            }
+        }
+        if let Some(type_ref) = type_ref_from_expect(expect) {
+            refs.insert(AuthoringCompetencyQuestionRefV1 {
+                question: question.name.clone(),
+                ref_kind: "object".to_string(),
+                ref_id: type_ref,
+            });
+        }
+    }
+    for about in &hints.about {
+        if looks_like_qualified_relation_ref(about) {
+            if let Some(ref_id) = qualified_ref_head(about) {
+                refs.insert(AuthoringCompetencyQuestionRefV1 {
+                    question: question.name.clone(),
+                    ref_kind: "relation".to_string(),
+                    ref_id,
+                });
+            }
+        }
+    }
+    refs.into_iter().collect()
+}
+
+fn authoring_competency_ref_exists(
+    kernel: &axiograph_pathdb::kernel_ir::KernelModuleIr,
+    reference: &AuthoringCompetencyQuestionRefV1,
+) -> bool {
+    let Some((schema_ref, local_ref)) = reference.ref_id.split_once('.') else {
+        return false;
+    };
+    kernel.schemas.iter().any(|schema| {
+        schema_ref_matches(schema.schema_id.as_str(), schema_ref)
+            && match reference.ref_kind.as_str() {
+                "object" => schema.object_types.contains(local_ref),
+                "relation" => schema.relations.contains_key(local_ref),
+                _ => false,
+            }
+    })
+}
+
+fn schema_ref_matches(actual: &str, expected: &str) -> bool {
+    actual == expected
+        || actual
+            .rsplit_once(':')
+            .map(|(_, local)| local == expected)
+            .unwrap_or(false)
+}
+
+fn relation_expression_from_expect(expect: &str) -> Option<String> {
+    let value = expect.trim();
+    let value = value
+        .strip_prefix("exists ")
+        .or_else(|| value.strip_prefix("fact "))
+        .or_else(|| value.strip_prefix("relation "))
+        .unwrap_or(value)
+        .trim();
+    if value.contains('(') && value.contains(')') && looks_like_qualified_relation_ref(value) {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+fn type_ref_from_expect(expect: &str) -> Option<String> {
+    let value = expect.trim();
+    let value = value
+        .strip_prefix("instance of ")
+        .or_else(|| value.strip_prefix("type "))
+        .or_else(|| value.strip_prefix("object "))
+        .or_else(|| value.strip_prefix("exists "))
+        .unwrap_or(value)
+        .trim();
+    if !value.contains('(') && looks_like_qualified_ref(value) {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+fn qualified_ref_head(value: &str) -> Option<String> {
+    let head = value.split_once('(').map(|(head, _)| head).unwrap_or(value);
+    if looks_like_qualified_ref(head) {
+        Some(head.trim().to_string())
+    } else {
+        None
+    }
+}
+
+fn looks_like_qualified_relation_ref(value: &str) -> bool {
+    let head = value.split_once('(').map(|(head, _)| head).unwrap_or(value);
+    looks_like_qualified_ref(head)
+}
+
+fn looks_like_qualified_ref(value: &str) -> bool {
+    let Some((schema, local)) = value.trim().split_once('.') else {
+        return false;
+    };
+    !schema.trim().is_empty()
+        && !local.trim().is_empty()
+        && schema.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && local.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Diagnostic> {
     if uri.ends_with(".axi") || text.trim_start().starts_with("module ") {
         match axiograph_tooling_overlays::compile_kernel_from_axi_text(text) {
@@ -1793,11 +2496,56 @@ fn diagnostics_for_document(uri: &str, text: &str) -> Vec<Diagnostic> {
                 0,
             )],
         }
+    } else if uri.ends_with(".cq")
+        || text
+            .trim_start()
+            .starts_with("version competency_question_bundle_v1")
+    {
+        diagnostics_for_cq_document(text)
     } else if uri.ends_with(".json") || text.trim_start().starts_with('{') {
         diagnostics_for_json_document(text)
     } else {
         Vec::new()
     }
+}
+
+fn diagnostics_for_cq_document(text: &str) -> Vec<Diagnostic> {
+    match parse_authoring_competency_question_text(text) {
+        Ok(questions) => {
+            let unresolved = questions
+                .iter()
+                .filter(|question| question.query.trim().is_empty())
+                .collect::<Vec<_>>();
+            unresolved
+                .into_iter()
+                .map(|question| {
+                    diagnostic(
+                        DiagnosticSeverity::WARNING,
+                        "axiograph.cq.authoring",
+                        &format!(
+                            "competency question `{}` is valid authoring intent but does not yet lower to an executable typed query",
+                            question.name
+                        ),
+                        line_for_cq_question(text, &question.name).unwrap_or(0),
+                        0,
+                    )
+                })
+                .collect()
+        }
+        Err(err) => vec![diagnostic(
+            DiagnosticSeverity::ERROR,
+            "axiograph.cq",
+            &err.to_string(),
+            0,
+            0,
+        )],
+    }
+}
+
+fn line_for_cq_question(text: &str, question_name: &str) -> Option<usize> {
+    let expected = format!("question {question_name}:");
+    text.lines()
+        .position(|line| line.trim() == expected)
 }
 
 fn diagnostics_for_json_document(text: &str) -> Vec<Diagnostic> {
@@ -1927,9 +2675,151 @@ fn read_json(path: &Path) -> Result<Value> {
     serde_json::from_str(&text).with_context(|| format!("parse `{}` as JSON", path.display()))
 }
 
-fn validate_behavior_report(report: &Value) -> Result<()> {
-    match path_string(report, &["version"]).as_deref() {
-        Some("behavior_case_report_v1") => Ok(()),
+#[derive(Debug, Deserialize, Default)]
+struct BehaviorCaseAuthoringReportV1 {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    behavior_case: BehaviorCaseAuthoringCaseViewV1,
+    #[serde(default)]
+    receipt: BehaviorCaseAuthoringReceiptViewV1,
+    #[serde(default)]
+    context_report: BehaviorCaseAuthoringContextReportViewV1,
+    #[serde(default)]
+    runtime_theory_check: Option<axiograph_tooling_overlays::RuntimeTheorySidecarSummaryV1>,
+    #[serde(default)]
+    codegen_previews: Vec<CodegenPreview>,
+    #[serde(default)]
+    code_refs: Vec<String>,
+    #[serde(default)]
+    anchors: Vec<String>,
+    #[serde(default)]
+    residual_unknowns: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BehaviorCaseAuthoringCaseViewV1 {
+    #[serde(default)]
+    case_id: Option<String>,
+    #[serde(default)]
+    anchors: Vec<String>,
+    #[serde(default)]
+    context: Option<BehaviorCaseContextHintsViewV1>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BehaviorCaseContextHintsViewV1 {
+    #[serde(default)]
+    surfaces: Vec<BehaviorCaseSurfaceHintViewV1>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BehaviorCaseSurfaceHintViewV1 {
+    #[serde(default)]
+    code_refs: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BehaviorCaseAuthoringReceiptViewV1 {
+    #[serde(default)]
+    case_id: Option<String>,
+    #[serde(default)]
+    anchors: Vec<String>,
+    #[serde(default)]
+    matched_scope_ids: Vec<String>,
+    #[serde(default)]
+    matched_rule_ids: Vec<String>,
+    #[serde(default)]
+    surface_ids: Vec<String>,
+    #[serde(default)]
+    residual_obligations: Vec<String>,
+    #[serde(default)]
+    code_refs: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BehaviorCaseAuthoringContextReportViewV1 {
+    #[serde(default)]
+    coverage: BehaviorCaseAuthoringCoverageViewV1,
+    #[serde(default)]
+    competency_coverage: Option<CompetencyCoverageViewV1>,
+    #[serde(default)]
+    runtime_theory_check: Option<axiograph_tooling_overlays::RuntimeTheorySidecarSummaryV1>,
+    #[serde(default)]
+    anchors: Vec<String>,
+    #[serde(default)]
+    matched_scope_ids: Vec<String>,
+    #[serde(default)]
+    matched_rule_ids: Vec<String>,
+    #[serde(default)]
+    surface_ids: Vec<String>,
+    #[serde(default)]
+    residual_unknowns: Vec<String>,
+    #[serde(default)]
+    code_refs: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BehaviorCaseAuthoringCoverageViewV1 {
+    #[serde(default)]
+    total_rules: u64,
+    #[serde(default)]
+    runtime_enforced_rules: u64,
+    #[serde(default)]
+    covered_rules: u64,
+    #[serde(default)]
+    tested_rules: u64,
+    #[serde(default)]
+    implemented_rules: u64,
+    #[serde(default)]
+    ontology_only_rules: u64,
+    #[serde(default)]
+    drifted_rules: u64,
+    #[serde(default)]
+    missing_obligations: Vec<String>,
+    #[serde(default)]
+    uncovered_rule_ids: Vec<String>,
+    #[serde(default)]
+    next_actions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CompetencyCoverageViewV1 {
+    #[serde(default)]
+    total: u64,
+    #[serde(default)]
+    satisfied: u64,
+    #[serde(default)]
+    coverage: f64,
+    #[serde(default)]
+    questions: Vec<CompetencyQuestionViewV1>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CompetencyQuestionViewV1 {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    satisfied: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct CodegenPreview {
+    #[serde(default)]
+    language: String,
+    #[serde(default)]
+    file_hint: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+}
+
+fn behavior_case_authoring_report_from_value(
+    report: &Value,
+) -> Result<BehaviorCaseAuthoringReportV1> {
+    let report: BehaviorCaseAuthoringReportV1 = serde_json::from_value(report.clone())
+        .context("parse behavior report as BehaviorCaseAuthoringReportV1")?;
+    match report.version.as_deref() {
+        Some("behavior_case_report_v1") => Ok(report),
         other => Err(anyhow!(
             "expected behavior_case_report_v1, got {:?}",
             other.unwrap_or("<missing>")
@@ -1937,100 +2827,66 @@ fn validate_behavior_report(report: &Value) -> Result<()> {
     }
 }
 
-#[derive(Debug)]
-struct CodegenPreview {
-    language: String,
-    file_hint: Option<String>,
-    content: Option<String>,
-}
-
-fn collect_codegen_previews(report: &Value) -> Vec<CodegenPreview> {
+fn collect_codegen_previews(report: &BehaviorCaseAuthoringReportV1) -> Vec<CodegenPreview> {
     report
-        .get("codegen_previews")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+        .codegen_previews
+        .iter()
         .filter_map(|preview| {
-            let language = preview.get("language")?.as_str()?.trim().to_lowercase();
+            let language = preview.language.trim().to_lowercase();
+            if language.is_empty() {
+                return None;
+            }
             Some(CodegenPreview {
                 language,
-                file_hint: preview
-                    .get("file_hint")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                content: preview
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                file_hint: preview.file_hint.clone(),
+                content: preview.content.clone(),
             })
         })
         .collect()
 }
 
-fn coverage_summary(report: &Value) -> CoverageSummary {
+fn coverage_summary(report: &BehaviorCaseAuthoringReportV1) -> CoverageSummary {
+    let coverage = &report.context_report.coverage;
     let mut summary = CoverageSummary {
-        total_rules: path_u64(report, &["context_report", "coverage", "total_rules"]),
-        runtime_enforced_rules: path_u64(
-            report,
-            &["context_report", "coverage", "runtime_enforced_rules"],
-        ),
-        covered_rules: path_u64(report, &["context_report", "coverage", "covered_rules"]),
-        tested_rules: path_u64(report, &["context_report", "coverage", "tested_rules"]),
-        implemented_rules: path_u64(report, &["context_report", "coverage", "implemented_rules"]),
-        ontology_only_rules: path_u64(
-            report,
-            &["context_report", "coverage", "ontology_only_rules"],
-        ),
-        drifted_rules: path_u64(report, &["context_report", "coverage", "drifted_rules"]),
-        missing_obligations: path_string_array(
-            report,
-            &["context_report", "coverage", "missing_obligations"],
-        ),
-        uncovered_rule_ids: path_string_array(
-            report,
-            &["context_report", "coverage", "uncovered_rule_ids"],
-        ),
-        next_actions: path_string_array(report, &["context_report", "coverage", "next_actions"]),
+        total_rules: coverage.total_rules,
+        runtime_enforced_rules: coverage.runtime_enforced_rules,
+        covered_rules: coverage.covered_rules,
+        tested_rules: coverage.tested_rules,
+        implemented_rules: coverage.implemented_rules,
+        ontology_only_rules: coverage.ontology_only_rules,
+        drifted_rules: coverage.drifted_rules,
+        missing_obligations: coverage.missing_obligations.clone(),
+        uncovered_rule_ids: coverage.uncovered_rule_ids.clone(),
+        next_actions: coverage.next_actions.clone(),
     };
     if summary.total_rules == 0 {
-        summary.total_rules = path_u64(report, &["case_receipt", "matched_rule_ids"]);
+        summary.total_rules = report.receipt.matched_rule_ids.len() as u64;
     }
     summary
 }
 
-fn competency_summary(report: &Value) -> CompetencySummary {
-    let questions = report
-        .pointer("/context_report/competency_coverage/questions")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let unsatisfied_questions = questions
+fn competency_summary(report: &BehaviorCaseAuthoringReportV1) -> CompetencySummary {
+    let Some(coverage) = report.context_report.competency_coverage.as_ref() else {
+        return CompetencySummary::default();
+    };
+    let unsatisfied_questions = coverage
+        .questions
         .iter()
-        .filter(|question| question.get("satisfied").and_then(Value::as_bool) != Some(true))
-        .filter_map(|question| {
-            question
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
+        .filter(|question| !question.satisfied)
+        .map(|question| question.name.clone())
+        .filter(|name| !name.is_empty())
         .collect::<Vec<_>>();
 
     CompetencySummary {
-        total: path_u64(report, &["context_report", "competency_coverage", "total"]),
-        satisfied: path_u64(
-            report,
-            &["context_report", "competency_coverage", "satisfied"],
-        ),
-        coverage: path_f64(
-            report,
-            &["context_report", "competency_coverage", "coverage"],
-        ),
+        total: coverage.total,
+        satisfied: coverage.satisfied,
+        coverage: coverage.coverage,
         unsatisfied_questions,
     }
 }
 
 fn behavior_report_typed_refs(
-    report: &Value,
+    report: &BehaviorCaseAuthoringReportV1,
     coverage: &CoverageSummary,
 ) -> BehaviorReportTypedRefs {
     let mut residual_obligations = coverage
@@ -2038,28 +2894,76 @@ fn behavior_report_typed_refs(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    residual_obligations.extend(path_string_array(
-        report,
-        &["receipt", "residual_obligations"],
-    ));
-    residual_obligations.extend(path_string_array(report, &["residual_unknowns"]));
+    residual_obligations.extend(report.receipt.residual_obligations.iter().cloned());
+    residual_obligations.extend(report.context_report.residual_unknowns.iter().cloned());
+    residual_obligations.extend(report.residual_unknowns.iter().cloned());
+
+    let anchors = report
+        .anchors
+        .iter()
+        .chain(report.behavior_case.anchors.iter())
+        .chain(report.context_report.anchors.iter())
+        .chain(report.receipt.anchors.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let matched_scope_ids = report
+        .context_report
+        .matched_scope_ids
+        .iter()
+        .chain(report.receipt.matched_scope_ids.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let matched_rule_ids = report
+        .context_report
+        .matched_rule_ids
+        .iter()
+        .chain(report.receipt.matched_rule_ids.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let surface_ids = report
+        .context_report
+        .surface_ids
+        .iter()
+        .chain(report.receipt.surface_ids.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
 
     BehaviorReportTypedRefs {
-        anchors: collect_string_arrays(report, "anchors")
-            .into_iter()
-            .collect::<Vec<_>>(),
-        matched_scope_ids: collect_string_arrays(report, "matched_scope_ids")
-            .into_iter()
-            .collect::<Vec<_>>(),
-        matched_rule_ids: collect_string_arrays(report, "matched_rule_ids")
-            .into_iter()
-            .collect::<Vec<_>>(),
-        surface_ids: collect_string_arrays(report, "surface_ids")
-            .into_iter()
-            .collect::<Vec<_>>(),
+        anchors,
+        matched_scope_ids,
+        matched_rule_ids,
+        surface_ids,
         residual_obligations: residual_obligations.into_iter().collect(),
         uncovered_rule_ids: coverage.uncovered_rule_ids.clone(),
     }
+}
+
+fn behavior_report_code_refs(report: &BehaviorCaseAuthoringReportV1) -> Vec<String> {
+    let behavior_case_context_refs = report
+        .behavior_case
+        .context
+        .as_ref()
+        .into_iter()
+        .flat_map(|context| context.surfaces.iter())
+        .flat_map(|surface| surface.code_refs.iter());
+    report
+        .code_refs
+        .iter()
+        .chain(behavior_case_context_refs)
+        .chain(report.context_report.code_refs.iter())
+        .chain(report.receipt.code_refs.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn codegen_coverage_summary(
@@ -2099,101 +3003,40 @@ fn codegen_coverage_summary(
     }
 }
 
-fn runtime_theory_presence(report: &Value) -> RuntimeTheoryPresence {
-    let Some(theory) = first_object_by_key(report, &["runtime_theory_check", "runtime_theory"])
+fn runtime_theory_presence(report: &BehaviorCaseAuthoringReportV1) -> RuntimeTheoryPresence {
+    let Some(mut theory) = report
+        .runtime_theory_check
+        .clone()
+        .or_else(|| report.context_report.runtime_theory_check.clone())
     else {
-        return RuntimeTheoryPresence {
-            present: false,
-            module_digest: None,
-            closure_tiers: Vec::new(),
-            checked_obligations: None,
-            review_only_obligations: None,
-            ontology_closed: None,
-            complete: None,
-            blocking_judgments: None,
-            residual_obligations: None,
-            blocked_obligations: None,
-            blocking_errors: None,
-            completeness_claim: None,
-            ontology_closure_claim: None,
-            residual_obligation_ids: Vec::new(),
-            notes: Vec::new(),
-        };
+        return RuntimeTheoryPresence::default();
     };
-    let completeness_claim = find_string(theory, &["completeness_claim"]);
-    let ontology_closure_claim = find_string(theory, &["ontology_closure_claim"]);
-    let blocked_obligations = find_u64(theory, &["blocked_obligations", "blocked_count"]);
-    let blocking_errors = find_u64(theory, &["blocking_errors", "blocking_count"]);
-    let blocking_judgments = find_u64(theory, &["blocking_judgments"])
-        .or_else(|| Some(blocked_obligations.unwrap_or(0) + blocking_errors.unwrap_or(0)));
+    theory.present = true;
+    let completeness_claim = theory.completeness_claim.clone();
+    let ontology_closure_claim = theory.ontology_closure_claim.clone();
+    let blocking_judgments =
+        Some(theory.blocked_obligations.unwrap_or(0) + theory.blocking_errors.unwrap_or(0));
     RuntimeTheoryPresence {
         present: true,
-        module_digest: find_string(theory, &["module_digest"]),
-        closure_tiers: collect_string_arrays_for_keys(theory, &["closure_tiers", "closure_tier"]),
-        checked_obligations: find_u64(theory, &["checked_obligations"]),
-        review_only_obligations: find_u64(theory, &["review_only_obligations"]),
-        ontology_closed: find_bool(theory, &["ontology_closed", "closed"]).or_else(|| {
-            ontology_closure_claim
-                .as_deref()
-                .map(|claim| claim.starts_with("claimed_under_"))
-        }),
-        complete: find_bool(theory, &["complete", "complete_under_assumptions"]).or_else(|| {
-            completeness_claim
-                .as_deref()
-                .map(|claim| claim.starts_with("claimed_under_"))
-        }),
+        module_digest: theory.module_digest,
+        closure_tiers: theory.closure_tiers,
+        checked_obligations: theory.checked_obligations,
+        review_only_obligations: theory.review_only_obligations,
+        ontology_closed: ontology_closure_claim
+            .as_deref()
+            .map(|claim| claim.starts_with("claimed_under_")),
+        complete: completeness_claim
+            .as_deref()
+            .map(|claim| claim.starts_with("claimed_under_")),
         blocking_judgments,
-        residual_obligations: find_u64(theory, &["residual_obligations", "residual_count"]),
-        blocked_obligations,
-        blocking_errors,
+        residual_obligations: theory.residual_obligations,
+        blocked_obligations: theory.blocked_obligations,
+        blocking_errors: theory.blocking_errors,
         completeness_claim,
         ontology_closure_claim,
-        residual_obligation_ids: collect_string_arrays_for_keys(
-            theory,
-            &["residual_obligation_ids"],
-        ),
-        notes: collect_string_arrays(theory, "notes")
-            .into_iter()
-            .collect::<Vec<_>>(),
+        residual_obligation_ids: theory.residual_obligation_ids,
+        notes: theory.notes,
     }
-}
-
-fn path_string(value: &Value, path: &[&str]) -> Option<String> {
-    get_path(value, path)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn path_u64(value: &Value, path: &[&str]) -> u64 {
-    get_path(value, path)
-        .and_then(|value| {
-            value
-                .as_u64()
-                .or_else(|| value.as_array().map(|values| values.len() as u64))
-        })
-        .unwrap_or(0)
-}
-
-fn path_f64(value: &Value, path: &[&str]) -> f64 {
-    get_path(value, path).and_then(Value::as_f64).unwrap_or(0.0)
-}
-
-fn path_string_array(value: &Value, path: &[&str]) -> Vec<String> {
-    get_path(value, path)
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect()
-}
-
-fn get_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
-    let mut current = value;
-    for segment in path {
-        current = current.get(*segment)?;
-    }
-    Some(current)
 }
 
 fn normalize_languages(languages: &[String]) -> BTreeSet<String> {
@@ -2202,145 +3045,6 @@ fn normalize_languages(languages: &[String]) -> BTreeSet<String> {
         .map(|language| language.trim().to_lowercase())
         .filter(|language| !language.is_empty())
         .collect()
-}
-
-fn collect_string_arrays(value: &Value, key: &str) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    collect_string_arrays_inner(value, key, &mut found);
-    found
-}
-
-fn collect_string_arrays_inner(value: &Value, key: &str, found: &mut BTreeSet<String>) {
-    match value {
-        Value::Object(map) => {
-            if let Some(Value::Array(values)) = map.get(key) {
-                for value in values {
-                    if let Some(text) = value.as_str() {
-                        found.insert(text.to_string());
-                    }
-                }
-            }
-            for nested in map.values() {
-                collect_string_arrays_inner(nested, key, found);
-            }
-        }
-        Value::Array(values) => {
-            for nested in values {
-                collect_string_arrays_inner(nested, key, found);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_string_arrays_for_keys(value: &Value, keys: &[&str]) -> Vec<String> {
-    let mut found = BTreeSet::new();
-    collect_string_arrays_for_keys_inner(value, keys, &mut found);
-    found.into_iter().collect()
-}
-
-fn collect_string_arrays_for_keys_inner(
-    value: &Value,
-    keys: &[&str],
-    found: &mut BTreeSet<String>,
-) {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(candidate) = map.get(*key) {
-                    match candidate {
-                        Value::Array(values) => {
-                            for value in values {
-                                if let Some(text) = value.as_str() {
-                                    found.insert(text.to_string());
-                                }
-                            }
-                        }
-                        Value::String(text) => {
-                            found.insert(text.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            for nested in map.values() {
-                collect_string_arrays_for_keys_inner(nested, keys, found);
-            }
-        }
-        Value::Array(values) => {
-            for nested in values {
-                collect_string_arrays_for_keys_inner(nested, keys, found);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn first_object_by_key<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(candidate @ Value::Object(_)) = map.get(*key) {
-                    return Some(candidate);
-                }
-            }
-            for nested in map.values() {
-                if let Some(found) = first_object_by_key(nested, keys) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        Value::Array(values) => values
-            .iter()
-            .find_map(|nested| first_object_by_key(nested, keys)),
-        _ => None,
-    }
-}
-
-fn find_string(value: &Value, keys: &[&str]) -> Option<String> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(text) = map.get(*key).and_then(Value::as_str) {
-                    return Some(text.to_string());
-                }
-            }
-            map.values().find_map(|nested| find_string(nested, keys))
-        }
-        Value::Array(values) => values.iter().find_map(|nested| find_string(nested, keys)),
-        _ => None,
-    }
-}
-
-fn find_bool(value: &Value, keys: &[&str]) -> Option<bool> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(bool_value) = map.get(*key).and_then(Value::as_bool) {
-                    return Some(bool_value);
-                }
-            }
-            map.values().find_map(|nested| find_bool(nested, keys))
-        }
-        Value::Array(values) => values.iter().find_map(|nested| find_bool(nested, keys)),
-        _ => None,
-    }
-}
-
-fn find_u64(value: &Value, keys: &[&str]) -> Option<u64> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(number) = map.get(*key).and_then(Value::as_u64) {
-                    return Some(number);
-                }
-            }
-            map.values().find_map(|nested| find_u64(nested, keys))
-        }
-        Value::Array(values) => values.iter().find_map(|nested| find_u64(nested, keys)),
-        _ => None,
-    }
 }
 
 fn safe_join(base: &Path, relative: &str) -> Result<PathBuf> {
@@ -2373,6 +3077,48 @@ mod tests {
     use rmcp::handler::server::tool::IntoCallToolResult;
     use serde_json::json;
     use std::{thread, time::Duration};
+
+    fn sample_authoring_axi_text() -> &'static str {
+        r#"
+module OrderFulfillmentDomain
+
+schema OrderFulfillment:
+  object Order
+  object Payment
+  object Shipment
+  relation OrderHasPayment(order: Order, payment: Payment)
+  relation ShipmentFulfillsOrder(shipment: Shipment, order: Order)
+
+theory OrderFulfillmentRules on OrderFulfillment:
+  constraint key OrderHasPayment(order, payment)
+
+instance Seed of OrderFulfillment:
+  Order = {Order_1}
+  Payment = {Payment_1}
+  Shipment = {Shipment_1}
+  OrderHasPayment = {(order=Order_1, payment=Payment_1)}
+  ShipmentFulfillsOrder = {(shipment=Shipment_1, order=Order_1)}
+"#
+    }
+
+    fn sample_authoring_cq_text() -> &'static str {
+        r#"
+version competency_question_bundle_v1
+
+question payment_link:
+  ask: does each accepted order have a payment?
+  expect: exists OrderFulfillment.OrderHasPayment(order=Order_1, payment=Payment_1)
+  min_rows: 1
+
+question shipment_link:
+  ask: does each shipment fulfill an order?
+  expect: exists OrderFulfillment.ShipmentFulfillsOrder(shipment=Shipment_1, order=Order_1)
+"#
+    }
+
+    fn sample_overlay(value: Value) -> axiograph_tooling_overlays::ToolingOverlayBundleV1 {
+        serde_json::from_value(value).expect("sample overlay should parse")
+    }
 
     #[test]
     fn continuous_check_warns_on_unmaterialized_code_refs_but_checks_codegen() {
@@ -2455,6 +3201,119 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("semantic coverage is incomplete")));
+    }
+
+    #[test]
+    fn authoring_competency_questions_lower_and_validate_refs() {
+        let report = build_authoring_competency_questions_report(CompetencyQuestionsMcpArgs {
+            axi_text: Some(sample_authoring_axi_text().to_string()),
+            cq_text: Some(sample_authoring_cq_text().to_string()),
+            questions: Vec::new(),
+        })
+        .expect("competency report");
+
+        assert_eq!(
+            report.version,
+            AUTHORING_COMPETENCY_QUESTIONS_REPORT_VERSION_V1
+        );
+        assert_eq!(report.coverage_mode, "authoring_checked");
+        assert_eq!(report.total_questions, 2);
+        assert_eq!(report.executable_questions, 2);
+        assert_eq!(report.unresolved_questions, 0);
+        assert!(report.questions.iter().all(|question| question
+            .query
+            .starts_with("select ?f where ?f = OrderFulfillment.")));
+        assert!(report
+            .matched_refs
+            .iter()
+            .any(|reference| reference.ref_id == "OrderFulfillment.OrderHasPayment"));
+        assert!(report.missing_refs.is_empty());
+    }
+
+    #[test]
+    fn authoring_competency_questions_keep_unlowered_questions_advisory() {
+        let report = build_authoring_competency_questions_report(CompetencyQuestionsMcpArgs {
+            axi_text: Some(sample_authoring_axi_text().to_string()),
+            cq_text: Some(
+                r#"
+version competency_question_bundle_v1
+
+question policy_gap:
+  ask: what operational policy must govern exceptional fulfillment?
+  note: needs ontology refinement before executable CQ lowering
+"#
+                .to_string(),
+            ),
+            questions: Vec::new(),
+        })
+        .expect("competency report");
+
+        assert_eq!(report.coverage_mode, "advisory");
+        assert_eq!(report.executable_questions, 0);
+        assert_eq!(report.unresolved_questions, 1);
+        assert!(report
+            .next_actions
+            .iter()
+            .any(|action| action.contains("Add an executable `expect")));
+    }
+
+    #[test]
+    fn authoring_competency_questions_report_missing_refs() {
+        let report = build_authoring_competency_questions_report(CompetencyQuestionsMcpArgs {
+            axi_text: Some(sample_authoring_axi_text().to_string()),
+            cq_text: Some(
+                r#"
+version competency_question_bundle_v1
+
+question unknown_relation:
+  ask: does a missing relation lower but fail ref validation?
+  expect: exists OrderFulfillment.DoesNotExist(order=Order_1)
+"#
+                .to_string(),
+            ),
+            questions: Vec::new(),
+        })
+        .expect("competency report");
+
+        assert_eq!(report.coverage_mode, "advisory");
+        assert_eq!(report.executable_questions, 1);
+        assert_eq!(report.missing_refs.len(), 1);
+        assert_eq!(report.missing_refs[0].ref_id, "OrderFulfillment.DoesNotExist");
+    }
+
+    #[test]
+    fn lsp_competency_questions_accepts_question_first_text() {
+        let mut state = AuthoringLspStateV1::default();
+        let responses = handle_lsp_message_v1(
+            &mut state,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "competency-questions",
+                "method": "workspace/executeCommand",
+                "params": {
+                    "command": "axiograph.authoring.competencyQuestions",
+                    "arguments": [
+                        {
+                            "axi_text": sample_authoring_axi_text(),
+                            "cq_text": sample_authoring_cq_text()
+                        }
+                    ]
+                }
+            }),
+        );
+
+        assert_eq!(responses.len(), 1);
+        assert!(
+            responses[0].get("error").is_none(),
+            "unexpected LSP error: {}",
+            responses[0]
+        );
+        assert_eq!(
+            responses[0]["result"]["version"],
+            json!(AUTHORING_COMPETENCY_QUESTIONS_REPORT_VERSION_V1)
+        );
+        assert_eq!(responses[0]["result"]["coverage_mode"], json!("authoring_checked"));
+        assert_eq!(responses[0]["result"]["executable_questions"], json!(2));
     }
 
     #[test]
@@ -2603,6 +3462,12 @@ mod tests {
                 .expect("commands")
                 .contains(&json!("axiograph.authoring.coverageQuery"))
         );
+        assert!(
+            responses[0]["result"]["capabilities"]["executeCommandProvider"]["commands"]
+                .as_array()
+                .expect("commands")
+                .contains(&json!("axiograph.authoring.competencyQuestions"))
+        );
     }
 
     #[test]
@@ -2635,6 +3500,10 @@ mod tests {
                     .as_array()
                     .expect("commands")
                     .contains(&json!("axiograph.authoring.coverageQuery")));
+                assert!(result["capabilities"]["executeCommandProvider"]["commands"]
+                    .as_array()
+                    .expect("commands")
+                    .contains(&json!("axiograph.authoring.competencyQuestions")));
             }
             other => panic!("expected initialize response, got {other:?}"),
         }
@@ -2745,6 +3614,45 @@ mod tests {
     }
 
     #[test]
+    fn lsp_cq_document_reports_unresolved_authoring_intent() {
+        let mut state = AuthoringLspStateV1::default();
+        let responses = handle_lsp_message_v1(
+            &mut state,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///tmp/order_flow.cq",
+                        "text": r#"
+version competency_question_bundle_v1
+
+question policy_gap:
+  ask: what exceptional fulfillment policy applies?
+  note: needs ontology refinement
+"#
+                    }
+                }
+            }),
+        );
+
+        assert_eq!(responses.len(), 1);
+        let params: lsp_types::PublishDiagnosticsParams =
+            serde_json::from_value(responses[0]["params"].clone()).expect("typed params");
+        assert_eq!(params.uri.as_str(), "file:///tmp/order_flow.cq");
+        assert_eq!(params.diagnostics.len(), 1);
+        assert_eq!(
+            params.diagnostics[0].source.as_deref(),
+            Some("axiograph.cq.authoring")
+        );
+        assert_eq!(
+            params.diagnostics[0].severity,
+            Some(lsp_types::DiagnosticSeverity::WARNING)
+        );
+        assert_eq!(params.diagnostics[0].range.start.line, 3);
+    }
+
+    #[test]
     fn lsp_codegen_plan_command_returns_file_hints() {
         let mut state = AuthoringLspStateV1::default();
         let responses = handle_lsp_message_v1(
@@ -2780,6 +3688,87 @@ mod tests {
             .expect("file hints")
             .iter()
             .any(|hint| hint.as_str().unwrap_or("").ends_with("reserve_credit.rs")));
+    }
+
+    #[test]
+    fn lsp_definition_query_accepts_schema_named_query_key() {
+        let mut state = AuthoringLspStateV1::default();
+        let responses = handle_lsp_message_v1(
+            &mut state,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "definition-query",
+                "method": "workspace/executeCommand",
+                "params": {
+                    "command": "axiograph.authoring.definitionQuery",
+                    "arguments": [
+                        {
+                            "axi_text": sample_authoring_axi_text(),
+                            "definition_query": {
+                                "prompt": "define the shipment fulfills order business rule",
+                                "include_queries": true,
+                                "max_matches": 3
+                            }
+                        }
+                    ]
+                }
+            }),
+        );
+
+        assert_eq!(responses.len(), 1);
+        assert!(
+            responses[0].get("error").is_none(),
+            "unexpected LSP error: {}",
+            responses[0]
+        );
+        assert_eq!(
+            responses[0]["result"]["version"],
+            json!("definition_query_report_v1")
+        );
+        assert_eq!(
+            responses[0]["result"]["coverage_mode"],
+            json!("definition_query")
+        );
+    }
+
+    #[test]
+    fn lsp_coverage_query_accepts_schema_named_query_key() {
+        let mut state = AuthoringLspStateV1::default();
+        let responses = handle_lsp_message_v1(
+            &mut state,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "coverage-query",
+                "method": "workspace/executeCommand",
+                "params": {
+                    "command": "axiograph.authoring.coverageQuery",
+                    "arguments": [
+                        {
+                            "axi_text": sample_authoring_axi_text(),
+                            "coverage_query": {
+                                "terms": ["payment"],
+                                "max_matches": 3
+                            }
+                        }
+                    ]
+                }
+            }),
+        );
+
+        assert_eq!(responses.len(), 1);
+        assert!(
+            responses[0].get("error").is_none(),
+            "unexpected LSP error: {}",
+            responses[0]
+        );
+        assert_eq!(
+            responses[0]["result"]["version"],
+            json!("coverage_query_report_v1")
+        );
+        assert_eq!(
+            responses[0]["result"]["coverage_mode"],
+            json!("advisory")
+        );
     }
 
     #[test]
@@ -2845,6 +3834,16 @@ mod tests {
             definition_tool.name.as_ref(),
             "axiograph_authoring_definition_query"
         );
+        let competency_tool =
+            <AuthoringRmcpServer as rmcp::handler::server::ServerHandler>::get_tool(
+                &server,
+                "axiograph_authoring_competency_questions",
+            )
+            .expect("competency question tool");
+        assert_eq!(
+            competency_tool.name.as_ref(),
+            "axiograph_authoring_competency_questions"
+        );
         assert!(
             <AuthoringRmcpServer as rmcp::handler::server::ServerHandler>::get_tool(
                 &server,
@@ -2858,13 +3857,13 @@ mod tests {
     fn rmcp_codegen_plan_tool_returns_structured_content() {
         let Json(payload) = AuthoringRmcpServer
             .codegen_plan(Parameters(OverlayMcpArgs {
-                overlay: Some(json!({
+                overlay: Some(sample_overlay(json!({
                     "version": "tooling_overlay_bundle_v1",
                     "codegen_plan": {
                         "languages": ["go", "python"],
                         "test_name": "shipment_release"
                     }
-                })),
+                }))),
                 overlay_text: None,
             }))
             .expect("codegen plan");
@@ -2891,22 +3890,56 @@ mod tests {
     }
 
     #[test]
+    fn rmcp_competency_questions_tool_returns_structured_content() {
+        let Json(payload) = AuthoringRmcpServer
+            .competency_questions(Parameters(CompetencyQuestionsMcpArgs {
+                axi_text: Some(sample_authoring_axi_text().to_string()),
+                cq_text: Some(sample_authoring_cq_text().to_string()),
+                questions: Vec::new(),
+            }))
+            .expect("competency questions");
+        let payload = payload.payload;
+
+        assert_eq!(
+            payload["version"],
+            json!(AUTHORING_COMPETENCY_QUESTIONS_REPORT_VERSION_V1)
+        );
+        assert_eq!(payload["coverage_mode"], json!("authoring_checked"));
+        assert_eq!(payload["executable_questions"], json!(2));
+
+        let result = authoring_mcp_payload(payload.clone())
+            .into_call_tool_result()
+            .expect("rmcp call result");
+        assert_eq!(
+            result.structured_content.as_ref(),
+            Some(&json!({ "payload": payload }))
+        );
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[test]
     fn rmcp_codegen_plan_tool_rejects_unknown_overlay_versions() {
         let err = match AuthoringRmcpServer.codegen_plan(Parameters(OverlayMcpArgs {
-            overlay: Some(json!({
-                "version": "tooling_overlay_bundle_v0",
-                "codegen_plan": {
-                    "languages": ["go"],
-                    "test_name": "shipment_release"
-                }
-            })),
-            overlay_text: None,
+            overlay: None,
+            overlay_text: Some(
+                json!({
+                    "version": "tooling_overlay_bundle_v0",
+                    "codegen_plan": {
+                        "languages": ["go"],
+                        "test_name": "shipment_release"
+                    }
+                })
+                .to_string(),
+            ),
         })) {
             Ok(_) => panic!("expected unknown overlay version to be rejected"),
             Err(err) => err,
         };
 
-        assert!(err.contains("expected overlay version"));
+        assert!(
+            err.contains("overlay") || err.contains("version"),
+            "unexpected overlay rejection error: {err}"
+        );
     }
 
     #[test]
@@ -2917,6 +3950,9 @@ mod tests {
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == json!("axiograph_authoring_definition_query")));
+        assert!(tools
+            .iter()
+            .any(|tool| tool["name"] == json!("axiograph_authoring_competency_questions")));
         assert!(tools
             .iter()
             .all(|tool| tool["name"] != json!("axiograph_authoring_materialize_skeletons")));

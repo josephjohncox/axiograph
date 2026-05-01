@@ -88,7 +88,7 @@ Related roadmaps:
   handles instead of accepted facts.
 - [ ] Keep verification language pinned to accepted `.axi` anchors and the
   actual checked production `.axpd` path until verified-v2 storage converges.
-- [x] Finish the greenfield example cleanup by rewriting export-era REPL
+- [x] Finish the greenfield example cleanup by rewriting removed-export REPL
   scripts and `repl_scripts_canonical_smoke` so examples foreground canonical
   `.axi`, typed reports, certificates, behavior cases, and semantic previews
   instead of requiring every script to emit `*_export_v1.axi`.
@@ -97,7 +97,7 @@ Related roadmaps:
     `TypeHole_*` review obligations, and the proto-theory example uses a
     meaningful `ApiArtifact` umbrella type.
   - Guardrail: `examples_e2e` checks that the catalog and README keep
-    `PathDBExportV1` debug-only, stale REPL `export_axi` commands fail, and
+    `PathDBExportV1` debug-only, removed REPL `export_axi` commands fail, and
     REPL scripts do not emit `*_export_v1.axi` teaching snapshots.
 
 ## Current Slices To Build On

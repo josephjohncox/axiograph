@@ -20,7 +20,8 @@ For the base single-node design, see `docs/explanation/PATHDB_DESIGN.md`.
 
 ## 0. Executive summary
 
-PathDB today is a single-node, binary, indexed KG store. The most robust path to distribution is:
+PathDB today is a single-node, binary, indexed execution/query substrate. The
+most robust path to distribution is:
 
 1. Treat accepted canonical **`.axi` modules plus semantic VCS commits** as the
    replicated meaning state.
@@ -164,7 +165,7 @@ This fits Axiograph’s current worldview well: LLM outputs and ingestion are un
 
 ---
 
-## 4. Sharding strategies for a knowledge graph
+## 4. Sharding Strategies For The Derived Graph
 
 You will likely need different partitioning for different workloads.
 
@@ -323,7 +324,8 @@ Distributed systems amplify conflicts:
 Recommendations:
 
 1. Make reconciliation decisions explicit events in the canonical log (“resolution chosen because …”).
-2. Emit a reconciliation certificate whose meaning is defined in Lean (policy evaluation + any merge math).
+2. Emit a reconciliation certificate whose meaning is checked by Lean for the
+   supported policy-evaluation and merge fragments.
 3. Treat “proposal facts” as separate from “accepted facts” so the accepted snapshot stays coherent.
 
 If you need multi-writer reconciliation, CRDT-like designs can work, but only if the merge policy is explicit and certificate-checked.

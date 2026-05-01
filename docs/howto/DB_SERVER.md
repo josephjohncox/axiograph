@@ -57,11 +57,11 @@ CLI HTML exports now write a directory with `index.html`, `graph.json`, and
 ## Query over HTTP (`query_ir_v1`)
 
 ```bash
-curl -sS http://127.0.0.1:7878/status | jq .
+curl -sS http://127.0.0.1:7878/status
 ```
 
-`jq` is used only to pretty-print curl responses in these examples. Omit the
-pipe or use any JSON viewer.
+Pipe curl output to `jq` or another JSON viewer only when you want pretty
+printing.
 
 Structured query IR is the machine-facing query contract for HTTP/tooling:
 
@@ -105,7 +105,7 @@ curl -sS -X POST http://127.0.0.1:7878/query \
 Time-travel query (store-backed only):
 
 ```bash
-curl -sS http://127.0.0.1:7878/snapshots | jq .
+curl -sS http://127.0.0.1:7878/snapshots
 curl -sS -X POST http://127.0.0.1:7878/query \
   -H 'Content-Type: application/json' \
   -d '{
@@ -168,7 +168,7 @@ curl -sS -X POST http://127.0.0.1:7878/query \
           "limit":10
         },
         "certificate_policy":"emit"
-      }' | jq .
+      }'
 ```
 
 If you request `"certificate_policy":"verify"`, the server will also run the
@@ -190,7 +190,7 @@ curl -sS -X POST http://127.0.0.1:7878/query \
           "limit":10
         },
         "certificate_policy":"verify"
-      }' | jq .
+      }'
 ```
 
 The response still remains a **soundness-oriented** surface:
@@ -221,7 +221,7 @@ open 'http://127.0.0.1:7878/viz?focus_name=Alice&plane=both&typed_overlay=true&h
 Time-travel HTML (render a prior snapshot):
 
 ```bash
-curl -sS http://127.0.0.1:7878/snapshots | jq .
+curl -sS http://127.0.0.1:7878/snapshots
 open 'http://127.0.0.1:7878/viz?focus_name=Alice&plane=both&typed_overlay=true&hops=2&max_nodes=320&snapshot=<snapshot_id>'
 ```
 
@@ -351,7 +351,7 @@ curl -sS -X POST http://127.0.0.1:7878/proposals/relation \
     "validate":true,
     "quality_profile":"fast",
     "quality_plane":"both"
-  }' | jq .
+  }'
 ```
 
 ## Typed Olog Check
@@ -388,7 +388,7 @@ curl -sS -X POST http://127.0.0.1:7878/discover/check-olog \
             }
           ]
         }
-      }' | jq .
+      }'
 ```
 
 The response includes a `checked_olog` object with:
@@ -427,7 +427,7 @@ curl -sS -X POST http://127.0.0.1:7878/discover/check-olog \
           ]
         },
         "apply_refinement_handle_id": "olog_refine_v1:fnv1a64:..."
-      }' | jq .
+      }'
 ```
 
 When a refinement handle is applied the response also includes
@@ -479,7 +479,7 @@ curl -sS -X POST http://127.0.0.1:7878/semantic/coverage \
             "notes": ["covered by endpoint integration test"]
           }
         ]
-      }' | jq .
+      }'
 ```
 
 The response includes a typed `coverage` object with:
@@ -508,7 +508,7 @@ curl -sS -X POST http://127.0.0.1:7878/semantic/business-rule \
           "scope_class": "relation",
           "relation": "Parent"
         }
-      }' | jq .
+      }'
 ```
 
 The response includes a typed `report` object with:
@@ -562,7 +562,7 @@ curl -sS -X POST http://127.0.0.1:7878/semantic/agent-report \
           "status": "implemented",
           "notes": ["checked in endpoint handler"]
         }]
-      }' | jq .
+      }'
 ```
 
 The response includes a typed `report` object with:
@@ -597,7 +597,7 @@ curl -sS -X POST http://127.0.0.1:7878/admin/accept/pathdb-commit \
     "proposals": <paste proposals_json here>,
     "chunks": <paste chunks here>,
     "message":"add Jamison as Bob'\''s child"
-  }' | jq .
+  }'
 ```
 
 This writes a WAL commit under the snapshot store’s `pathdb/` layer and (when
@@ -637,7 +637,7 @@ Tool-loop (recommended):
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/llm/agent \
   -H 'Content-Type: application/json' \
-  -d '{"question":"find the grandparents of Alice","max_steps":6,"max_rows":25}' | jq .
+  -d '{"question":"find the grandparents of Alice","max_steps":6,"max_rows":25}'
 ```
 
 Question -> query (lower-level helper):
@@ -645,7 +645,7 @@ Question -> query (lower-level helper):
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/llm/to_query \
   -H 'Content-Type: application/json' \
-  -d '{"question":"list ProtoService"}' | jq .
+  -d '{"question":"list ProtoService"}'
 ```
 
 ---
@@ -678,7 +678,7 @@ Call the endpoint:
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
   -H 'Content-Type: application/json' \
-  -d '{"goals":["predict missing parent links"],"max_new_proposals":50}' | jq .
+  -d '{"goals":["predict missing parent links"],"max_new_proposals":50}'
 ```
 
 The server derives the world-model request from the canonical `.axi` module
@@ -691,7 +691,7 @@ Plan endpoint (multi-step MPC loop):
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
   -H 'Content-Type: application/json' \
-  -d '{"horizon_steps":3,"rollouts":2,"max_new_proposals":50,"goals":["fill missing parent links"]}' | jq .
+  -d '{"horizon_steps":3,"rollouts":2,"max_new_proposals":50,"goals":["fill missing parent links"]}'
 ```
 
 Stepwise auto-commit (commit each step and reload between steps):
@@ -700,17 +700,21 @@ Stepwise auto-commit (commit each step and reload between steps):
 curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <token>' \
-  -d '{"horizon_steps":3,"rollouts":2,"max_new_proposals":50,"auto_commit":true,"commit_stepwise":true}' | jq .
+  -d '{"horizon_steps":3,"rollouts":2,"max_new_proposals":50,"auto_commit":true,"commit_stepwise":true}'
 ```
 
 The response includes `commit_steps` (one WAL commit per step).
 
-Competency questions (coverage-driven cost):
+Competency questions are typed review-gate objects. For human-authored suites,
+prefer `.cq` files and the CLI/REPL loaders; the HTTP API still receives JSON
+because it is a wire protocol. See `examples/competency_questions/physics.cq`
+and `scripts/world_model_mpc_physics_server_demo.sh` for a complete request
+builder.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
   -H 'Content-Type: application/json' \
-  -d '{"competency_questions":[{"name":"has_parent","query":"select ?p where ?p is Person limit 1","min_rows":1,"weight":5.0}]}' | jq .
+  --data @build/world_model_mpc_physics_server_demo/plan_request.json
 ```
 
 To auto-commit the resulting proposals into the PathDB WAL, include:
@@ -719,7 +723,7 @@ To auto-commit the resulting proposals into the PathDB WAL, include:
 curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <token>' \
-  -d '{"goals":["predict missing parent links"],"auto_commit":true,"quality":"fast","quality_plane":"both"}' | jq .
+  -d '{"goals":["predict missing parent links"],"auto_commit":true,"quality":"fast","quality_plane":"both"}'
 ```
 
 Guardrail weights + task costs:
@@ -727,7 +731,7 @@ Guardrail weights + task costs:
 ```bash
 curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
   -H 'Content-Type: application/json' \
-  -d '{"guardrail_weights":{"quality_error":20,"rewrite_rule_error":8},"task_costs":[{"name":"latency","value":3.2,"weight":0.5,"unit":"ms"}]}' | jq .
+  -d '{"guardrail_weights":{"quality_error":20,"rewrite_rule_error":8},"task_costs":[{"name":"latency","value":3.2,"weight":0.5,"unit":"ms"}]}'
 ```
 
 ---
@@ -752,7 +756,7 @@ You can also configure it explicitly:
 Use `GET /status` to confirm the server sees the verifier:
 
 ```bash
-curl -sS http://127.0.0.1:7878/status | jq .certificates
+curl -sS http://127.0.0.1:7878/status
 ```
 
 ---
@@ -769,10 +773,12 @@ There are two recommended retrieval layers:
 2) **Optional model embeddings** (Ollama):
    - computed once and stored **snapshot-scoped** in the PathDB WAL as CBOR blobs.
 
-### A) Import `chunks.json` into the PathDB WAL
+### A) Import `EvidenceChunkBundleV1` into the PathDB WAL
 
-If you serve from a snapshot store (`--dir ... --layer pathdb`), commit chunks as
-an extension-layer overlay:
+If you serve from a snapshot store (`--dir ... --layer pathdb`), commit typed
+chunk evidence as an extension-layer overlay. The file is a
+`EvidenceChunkBundleV1`, not canonical ontology truth and not a bare chunk
+array:
 
 ```bash
 bin/axiograph db accept pathdb-commit \

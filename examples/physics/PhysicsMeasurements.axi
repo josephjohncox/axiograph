@@ -104,9 +104,9 @@ theory PhysicsMeasurementsRules on PhysicsMeasurements:
   constraint key MeasurementObs(run, quantity, unit, value_bin, ctx, time)
 
 instance PhysicsMeasurementsSeed of PhysicsMeasurements:
-  -- A small seed instance:
+  -- A compact seed instance:
   -- - provides stable identifiers for common quantities/units/contexts,
-  -- - keeps the accepted plane tiny,
+  -- - keeps the accepted plane inspectable,
   -- - real datasets are added as WAL overlays.
 
   Context = {ObservedSensors, Simulation, Literature, TacitNotes}
@@ -157,7 +157,7 @@ instance PhysicsMeasurementsSeed of PhysicsMeasurements:
   -- One seed bin: real bins are typically imported as overlay entities.
   ScalarBin = {Bin_0}
 
-  -- A couple of seed observations (accepted plane stays tiny).
+  -- A couple of seed observations (accepted plane stays inspectable).
   MeasurementObs = {
     (run=Run_Seed_0, quantity=PositionX, unit=Unit_Meter, value_bin=Bin_0, ctx=ObservedSensors, time=T0),
     (run=Run_Seed_0, quantity=Temperature, unit=Unit_Kelvin, value_bin=Bin_0, ctx=ObservedSensors, time=T0)

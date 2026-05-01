@@ -10,6 +10,7 @@ description = "Document/PDF/book ingestion for Axiograph knowledge graphs"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+schemars.workspace = true
 walkdir.workspace = true
 regex.workspace = true
 thiserror.workspace = true

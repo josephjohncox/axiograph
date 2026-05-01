@@ -81,7 +81,7 @@ outside the shipped verifier boundary until runtime `SemanticMergePlanV1` /
 
 ## Greenfield Policy
 
-Do not preserve legacy merge, export, wrapper, or query compatibility harnesses
+Do not preserve superseded merge, export, wrapper, or query compatibility harnesses
 unless they protect:
 
 - accepted snapshot anchors,

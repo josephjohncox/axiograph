@@ -912,9 +912,15 @@ impl<'db> TypedFactBuilder<'db> {
     }
 
     /// Set the confidence used for field edges (default = 1.0).
-    pub fn with_edge_confidence(mut self, confidence: f32) -> Self {
-        self.edge_confidence = confidence.clamp(0.0, 1.0);
-        self
+    pub fn with_edge_confidence(mut self, confidence: f32) -> Result<Self> {
+        if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
+            return Err(anyhow!(
+                "typed fact `{}` edge confidence must be finite and in [0, 1] (got {confidence})",
+                self.relation
+            ));
+        }
+        self.edge_confidence = confidence;
+        Ok(self)
     }
 
     /// Preview the canonical `.axi` fact id if the builder has enough stable context.
@@ -1404,6 +1410,43 @@ instance I of S:
         let meta = MetaPlaneIndex::from_db(&db)?;
         assert!(meta.typecheck_axi_facts(&db).ok());
         assert!(db.get_entity(fact).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn typed_fact_builder_rejects_invalid_edge_confidence() -> Result<()> {
+        let mut db = PathDB::new();
+        let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(parent: Person, child: Person)
+
+instance I of S:
+  Person = {Alice, Bob}
+"#;
+        crate::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+
+        let mut checked = CheckedDbMut::new(&mut db)?;
+        let err = match checked
+            .fact_builder("S", "Parent")?
+            .with_edge_confidence(f32::NAN)
+        {
+            Ok(_) => return Err(anyhow!("NaN confidence should be rejected")),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("edge confidence must be finite"));
+
+        let err = match checked
+            .fact_builder("S", "Parent")?
+            .with_edge_confidence(1.5)
+        {
+            Ok(_) => return Err(anyhow!("out-of-range confidence should be rejected")),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("edge confidence must be finite"));
         Ok(())
     }
 

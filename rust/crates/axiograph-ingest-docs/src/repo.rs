@@ -2,7 +2,7 @@
 //!
 //! Goal: provide a simple, dependency-light way to index a repo into:
 //!
-//! - document/code chunks (for approximate discovery),
+//! - `EvidenceChunkBundleV1` document/code chunks (for approximate discovery),
 //! - lightweight structured edges (for “repo knowledge graphs”),
 //! - and a stable output contract suitable for later reconciliation/certification.
 //!

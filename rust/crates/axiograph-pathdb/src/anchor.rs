@@ -22,12 +22,15 @@
 //! ```
 
 use axiograph_dsl::digest::{axi_digest_v1, AXI_DIGEST_V1_PREFIX, AXI_FACT_ID_V1_PREFIX};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 macro_rules! semantic_id_type {
     ($name:ident) => {
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[derive(
+            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+        )]
         #[serde(transparent)]
         pub struct $name(String);
 

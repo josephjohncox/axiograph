@@ -232,8 +232,8 @@ pub(crate) fn import_proposals_file_into_pathdb(
         let mut checked = CheckedDbMut::new(db)?;
 
         // Endpoints are schema-directed and explicit. Proposal relation overlays
-        // must name which compiled relation roles the legacy source/target
-        // fields mean; no name-convention or first-two-field inference is used.
+        // must name which compiled relation roles the source/target fields
+        // mean; no name-convention or first-two-field inference is used.
         let (src_field, dst_field) = resolve_endpoint_fields(attributes, rel_decl)?;
         let src_type_hint = rel_decl
             .fields
@@ -347,7 +347,7 @@ pub(crate) fn import_proposals_file_into_pathdb(
         // Use the typed builder so fact nodes are well-formed by construction.
         let mut builder = checked
             .fact_builder(&schema_name, &rel_type)?
-            .with_edge_confidence(confidence);
+            .with_edge_confidence(confidence)?;
 
         // Attach proposal provenance attrs to the fact node. Do not overwrite `name`:
         // keep the deterministic fact-node name derived from (schema, relation, fields).

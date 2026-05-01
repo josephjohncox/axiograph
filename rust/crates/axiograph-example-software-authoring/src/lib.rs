@@ -10,11 +10,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use axiograph_software_authoring::{
-    build_continuous_software_coverage_report, ContinuousCheckOptions,
+    build_continuous_software_coverage_report_from_json_str, ContinuousCheckOptions,
     ContinuousSoftwareCoverageReportV1,
 };
 use serde::Serialize;
-use serde_json::Value;
 
 pub const SOFTWARE_AUTHORING_EXAMPLE_CONTINUOUS_CHECK_VERSION_V1: &str =
     "software_authoring_example_continuous_check_v1";
@@ -42,10 +41,8 @@ pub fn run_continuous_semantic_coverage_example(
 ) -> Result<ContinuousSemanticCoverageExampleReportV1> {
     let behavior_report_text = fs::read_to_string(&options.behavior_report)
         .with_context(|| format!("read `{}`", options.behavior_report.display()))?;
-    let behavior_report: Value = serde_json::from_str(&behavior_report_text)
-        .with_context(|| format!("parse `{}` as JSON", options.behavior_report.display()))?;
-    let coverage_report = build_continuous_software_coverage_report(
-        &behavior_report,
+    let coverage_report = build_continuous_software_coverage_report_from_json_str(
+        &behavior_report_text,
         &ContinuousCheckOptions {
             repo_root: options.repo_root.clone(),
             require_codegen: options.require_codegen.clone(),
@@ -102,7 +99,7 @@ pub fn render_continuous_semantic_coverage_example(
 mod tests {
     use super::*;
 
-    fn write_behavior_report(json: Value, label: &str) -> PathBuf {
+    fn write_behavior_report(json: &str, label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "axiograph_software_authoring_example_{}_{}",
             label,
@@ -110,42 +107,69 @@ mod tests {
         ));
         fs::create_dir_all(&dir).expect("create temp dir");
         let path = dir.join("behavior_report.json");
-        fs::write(&path, serde_json::to_string_pretty(&json).expect("json")).expect("write report");
+        fs::write(&path, json).expect("write report");
         path
     }
 
-    fn complete_behavior_report() -> Value {
-        serde_json::json!({
-            "version": "behavior_case_report_v1",
-            "behavior_case": {
-                "case_id": "software_authoring.example"
+    fn complete_behavior_report() -> &'static str {
+        r##"{
+          "version": "behavior_case_report_v1",
+          "behavior_case": { "case_id": "software_authoring.example" },
+          "context_report": {
+            "coverage": {
+              "total_rules": 2,
+              "covered_rules": 2,
+              "tested_rules": 2,
+              "implemented_rules": 2,
+              "ontology_only_rules": 0,
+              "drifted_rules": 0,
+              "missing_obligations": []
             },
-            "context_report": {
-                "coverage": {
-                    "total_rules": 2,
-                    "covered_rules": 2,
-                    "tested_rules": 2,
-                    "implemented_rules": 2,
-                    "ontology_only_rules": 0,
-                    "drifted_rules": 0,
-                    "missing_obligations": []
-                },
-                "competency_coverage": {
-                    "total": 1,
-                    "satisfied": 1,
-                    "coverage": 1.0,
-                    "questions": [
-                        { "name": "reserve credit is executable", "satisfied": true }
-                    ]
-                }
+            "competency_coverage": {
+              "total": 1,
+              "satisfied": 1,
+              "coverage": 1.0,
+              "questions": [
+                { "name": "reserve credit is executable", "satisfied": true }
+              ]
+            }
+          },
+          "codegen_previews": [
+            { "language": "go", "file_hint": "internal/behaviorcases/example_test.go", "content": "package behaviorcases\n" },
+            { "language": "python", "file_hint": "tests/behavior_cases/test_example.py", "content": "def test_example(): pass\n" },
+            { "language": "rust", "file_hint": "tests/behavior_cases/example.rs", "content": "#[test] fn example() {}\n" },
+            { "language": "typescript", "file_hint": "tests/behavior-cases/example.spec.ts", "content": "it('example', () => {})\n" }
+          ]
+        }"##
+    }
+
+    fn rust_only_behavior_report() -> &'static str {
+        r##"{
+          "version": "behavior_case_report_v1",
+          "behavior_case": { "case_id": "software_authoring.example" },
+          "context_report": {
+            "coverage": {
+              "total_rules": 2,
+              "covered_rules": 2,
+              "tested_rules": 2,
+              "implemented_rules": 2,
+              "ontology_only_rules": 0,
+              "drifted_rules": 0,
+              "missing_obligations": []
             },
-            "codegen_previews": [
-                { "language": "go", "file_hint": "internal/behaviorcases/example_test.go", "content": "package behaviorcases\n" },
-                { "language": "python", "file_hint": "tests/behavior_cases/test_example.py", "content": "def test_example(): pass\n" },
-                { "language": "rust", "file_hint": "tests/behavior_cases/example.rs", "content": "#[test] fn example() {}\n" },
-                { "language": "typescript", "file_hint": "tests/behavior-cases/example.spec.ts", "content": "it('example', () => {})\n" }
-            ]
-        })
+            "competency_coverage": {
+              "total": 1,
+              "satisfied": 1,
+              "coverage": 1.0,
+              "questions": [
+                { "name": "reserve credit is executable", "satisfied": true }
+              ]
+            }
+          },
+          "codegen_previews": [
+            { "language": "rust", "file_hint": "tests/behavior_cases/example.rs", "content": "#[test] fn example() {}\n" }
+          ]
+        }"##
     }
 
     #[test]
@@ -177,11 +201,7 @@ mod tests {
 
     #[test]
     fn example_continuous_check_fails_when_codegen_is_missing() {
-        let mut report_json = complete_behavior_report();
-        report_json["codegen_previews"] = serde_json::json!([
-            { "language": "rust", "file_hint": "tests/behavior_cases/example.rs", "content": "#[test] fn example() {}\n" }
-        ]);
-        let path = write_behavior_report(report_json, "missing_codegen");
+        let path = write_behavior_report(rust_only_behavior_report(), "missing_codegen");
         let report =
             run_continuous_semantic_coverage_example(&ContinuousSemanticCoverageExampleOptions {
                 behavior_report: path,

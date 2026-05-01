@@ -42,7 +42,7 @@ This produces:
 
 - `../build/ingest/proto_api/descriptor.binpb` (binary Buf descriptor set)
 - `../build/ingest/proto_api/proposals.json` (entities + relations)
-- `../build/ingest/proto_api/chunks.json` (doc comment chunks for RAG)
+- `../build/ingest/proto_api/chunks.json` (`EvidenceChunkBundleV1` doc-comment evidence for RAG)
 
 ## What gets emitted
 

@@ -1,16 +1,17 @@
-# Path Verification: Dependent Types for Knowledge Graph Connections
+# Path Verification: Typed Path Witnesses And Certificates
 
 **Diataxis:** Explanation  
 **Audience:** contributors
 
-> NOTE (Rust+Lean release): Path equivalence, normalization, and reachability
-> are checked by Lean certificates. The old Idris proof-layer prototype is
-> historical only and is not part of the current build, trust boundary, or
-> compatibility surface.
+> Current status: path equivalence and normalization are checked by Lean
+> certificates for supported finite fragments. Runtime path checks remain
+> operational guardrails unless paired with accepted anchors and a verified
+> certificate.
 
 ## Core Insight
 
-**Paths in the knowledge graph are proofs of relationships.**
+Anchored path witnesses can become proof-carrying evidence for supported
+finite fragments.
 
 When we say "Steel is-a Material", we're asserting a connection. When we have multiple ways to derive this (direct assertion vs. inference chain), these are different *proofs* of the same relationship.
 

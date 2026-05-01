@@ -1,4 +1,5 @@
 {
+  "version": "behavior_case_check_request_v1",
   "behavior_case": {
     "case_id": "process_control.charge_authorization",
     "title": "Certified material and safe charge window authorize reactor charge",
@@ -26,22 +27,6 @@
         "The simulation supports the charge action.",
         "The interlock allows the charge action.",
         "The batch is cleared for reactor charge in the accepted world."
-      ],
-      "competency_questions": [
-        {
-          "name": "batch_has_certified_material",
-          "question": "Can lot certification be seen at the batch level?",
-          "query": "select ?f where ?f = ProcessControl.BatchHasCertifiedMaterial(batch=Batch_42, certificate=Cert_17, ctx=Accepted, time=T1) limit 1",
-          "min_rows": 1,
-          "weight": 1.0
-        },
-        {
-          "name": "batch_cleared_for_charge",
-          "question": "Is the batch cleared for reactor charge under accepted evidence?",
-          "query": "select ?f where ?f = ProcessControl.BatchClearedForCharge(batch=Batch_42, reactor=Reactor_A, ctx=Accepted, time=T1) limit 1",
-          "min_rows": 1,
-          "weight": 1.0
-        }
       ],
       "rule_scopes": [
         {

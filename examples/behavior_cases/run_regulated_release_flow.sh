@@ -37,6 +37,7 @@ run "${AXIOGRAPH_CMD[@]}" discover overlay-check "${AXI}" \
 
 run "${AXIOGRAPH_CMD[@]}" discover behavior-case "${AXI}" \
   --request "${BEHAVIOR_CASE}" \
+  --cq-file "${SCRIPT_DIR}/regulated_ship_release.cq" \
   --overlay "${OVERLAY}" \
   --out "${OUT_DIR}/behavior_case_report.json"
 

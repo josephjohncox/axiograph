@@ -1,38 +1,41 @@
-# LLM ↔ Knowledge Graph Bidirectional Sync
+# LLM Evidence And Ontology Proposal Loop
 
 **Diataxis:** Explanation  
 **Audience:** contributors
 
 ## Overview
 
-Axiograph provides **two-way synchronization** between Large Language Models and the Knowledge Graph:
+Axiograph uses LLMs as evidence extraction and planning components. LLM output
+may ground answers, propose facts, suggest relations, and draft schema/theory
+deltas, but it does not directly mutate accepted ontology state.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    BIDIRECTIONAL SYNC                               │
+│                    EVIDENCE / PROPOSAL LOOP                         │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│     LLM                    SYNC ENGINE                    KG        │
+│     LLM                 TOOLING ENGINE              AXIOGRAPH       │
 │    ┌───┐                   ┌───────┐                   ┌───┐       │
 │    │   │◄──── grounding ───┤       ├──── query ───────►│   │       │
 │    │   │                   │       │                   │   │       │
-│    │   │──── generation ──►│       │◄─── facts ────────┤   │       │
+│    │   │──── extraction ──►│       │◄─── typed refs ───┤   │       │
 │    │   │                   │       │                   │   │       │
-│    │   │◄─── validation ───┤       ├──── updates ─────►│   │       │
+│    │   │◄─── diagnostics ──┤       ├──── proposals ───►│   │       │
 │    └───┘                   └───────┘                   └───┘       │
 │                                                                     │
-│  DIRECTION 1: KG → LLM          DIRECTION 2: LLM → KG              │
+│  AXIOGRAPH → LLM                LLM → EVIDENCE/PROPOSALS          │
 │  • Grounding context            • Fact extraction                   │
 │  • Schema information           • Entity creation                   │
 │  • Guardrail warnings           • Relation proposals                │
-│  • Citation support             • Schema evolution                  │
+│  • Citation support             • Schema/theory delta proposals     │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Direction 1: KG → LLM (Grounding)
+## Direction 1: Axiograph → LLM Grounding
 
-The knowledge graph provides **grounded context** to LLM generation:
+Accepted `.axi`, compiled IR, typed reports, and evidence overlays provide
+grounding context to LLM generation:
 
 ### Grounding Context
 
@@ -60,7 +63,7 @@ GroundingContext {
 ### Usage in LLM Prompt
 
 ```
-You are generating a response using knowledge graph facts as grounding.
+You are generating a response using Axiograph facts as grounding.
 
 GROUNDING CONTEXT:
 [fact:42] Titanium requires cutting speeds under 60 m/min (confidence: 95%)
@@ -93,17 +96,17 @@ Key considerations:
 ⚠️ CRITICAL: Never exceed 60 m/min to prevent tool failure and work hardening.
 ```
 
-## Direction 2: LLM → KG (Generation)
+## Direction 2: LLM → Evidence/Proposal Generation
 
-LLM conversations generate new knowledge for the graph:
+LLM conversations generate evidence and proposed ontology deltas:
 
 ### Fact Extraction Pipeline
 
 ```
-Conversation → Pattern Extraction → LLM Extraction → Validation → Integration
+Conversation → Pattern Extraction → LLM Extraction → Runtime Validation → Review/Promotion
                     ↓                     ↓              ↓            ↓
-              Simple patterns      Complex facts    Schema check   Add to KG
-              "X is a Y"           Tacit knowledge  Conflict check Version++
+              Simple patterns      Complex facts    Schema check   Proposal overlay
+              "X is a Y"           Tacit knowledge  Conflict check Review branch
               "X causes Y"         Multi-entity     Human review   Provenance
 ```
 
@@ -164,7 +167,7 @@ User: I've been machining titanium for 20 years. Never use high speeds.
 }
 ```
 
-### Integration Flow
+### Proposal Flow
 
 ```rust
 // Process a conversation
@@ -175,10 +178,10 @@ let status = sync_manager.propose_fact(extracted_fact).await?;
 
 match status {
     FactStatus::Integrated { entity_ids } => {
-        println!("Fact added to graph as entities: {:?}", entity_ids);
+        println!("Evidence materialized for review as entities: {:?}", entity_ids);
     }
     FactStatus::Validated => {
-        println!("Fact validated, pending integration");
+        println!("Fact validated, pending review/promotion");
     }
     FactStatus::Conflicting { conflicts_with } => {
         println!("Conflict detected with existing facts");
@@ -232,11 +235,11 @@ SUGGESTED RESOLUTION: Merge
   - Add note about variance in recommendations
 ```
 
-## Protocol Messages
+## Tool/Message Shapes
 
-The sync uses a structured JSON protocol:
+The evidence loop uses structured JSON messages at tooling boundaries:
 
-### KG → LLM Messages
+### Axiograph → LLM Messages
 
 ```json
 // Grounding context
@@ -269,7 +272,7 @@ The sync uses a structured JSON protocol:
 }
 ```
 
-### LLM → KG Messages
+### LLM → Evidence/Proposal Messages
 
 ```json
 // Query
@@ -284,7 +287,7 @@ The sync uses a structured JSON protocol:
   "max_results": 10
 }
 
-// Propose fact
+// Propose evidence fact
 {
   "type": "ProposeFact",
   "request_id": "req-201",
@@ -296,7 +299,7 @@ The sync uses a structured JSON protocol:
   "reasoning": "Extracted from expert conversation"
 }
 
-// Schema extension
+// Schema/theory delta proposal
 {
   "type": "ProposeSchemaExtension",
   "request_id": "req-202",
@@ -325,14 +328,15 @@ FactSource {
 ```
 
 This enables:
-- **Audit trails**: Know where knowledge came from
+- **Audit trails**: Know where evidence came from
 - **Quality metrics**: Track accuracy by source
-- **Rollback**: Undo changes from bad sources
-- **Trust scoring**: Weight facts by source reliability
+- **Reconciliation**: Quarantine or supersede bad sources
+- **Trust scoring**: Weight evidence by source reliability
 
-## Version Control
+## Review And Version Control
 
-The sync maintains version history for rollback:
+Accepted ontology versioning happens through semantic VCS. Evidence/review
+state can still use local checkpoints while a proposal is being prepared:
 
 ```rust
 // Create checkpoint before major changes
@@ -354,11 +358,11 @@ if problems_detected {
 1. **Always provide grounding context** for factual queries
 2. **Require citations** (`[fact:ID]`) for important claims
 3. **Check guardrails** before presenting information
-4. **Propose new facts** when user shares expertise
+4. **Propose evidence facts** when user shares expertise
 
 ### For Knowledge Curation
 
-1. **Set confidence thresholds** for auto-integration (default: 0.9)
+1. **Set confidence thresholds** for advisory proposal ranking
 2. **Require human review** for constraint changes
 3. **Track provenance** for audit and quality
 4. **Monitor conflicts** for knowledge gaps
@@ -366,9 +370,9 @@ if problems_detected {
 ### For Schema Evolution
 
 1. **Propose extensions** when new concepts appear
-2. **Validate against existing** before adding
+2. **Validate against existing ontology before review**
 3. **Document reasoning** for schema changes
-4. **Version control** schema alongside data
+4. **Version control** accepted schema changes through semantic VCS
 
 ## Example: Complete Flow
 
@@ -401,21 +405,20 @@ let conversation = vec![
         content: "Actually, for Ti-6Al-4V specifically, I never go above 45 m/min...", ... },
 ];
 
-// 6. Extract and integrate new knowledge
+// 6. Extract evidence and prepare proposals
 let stats = sync_manager.process_conversation(&conversation).await?;
-println!("Integrated {} new facts", stats.facts_integrated);
+println!("Prepared {} evidence facts for review", stats.facts_integrated);
 
-// 7. Next query benefits from updated knowledge
+// 7. Next query can use reviewed grounding or advisory evidence, depending on policy
 let updated_context = grounding_engine.build_context("Ti-6Al-4V speed?", Some("machining"));
-// Now includes the newly learned fact
+// Advisory evidence remains distinct from accepted ontology truth.
 ```
 
 ## API Reference
 
 See `axiograph-llm-sync` crate documentation for full API:
 
-- `SyncManager`: Orchestrates bidirectional sync
+- `SyncManager`: Orchestrates evidence extraction and review preparation
 - `GroundingEngine`: Builds context for LLM
 - `FactExtractor`: Extracts facts from text
-- `SyncProtocol`: Message format and handlers
 - `PromptBuilder`: Constructs LLM prompts

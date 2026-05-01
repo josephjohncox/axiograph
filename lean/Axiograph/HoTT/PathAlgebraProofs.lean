@@ -2,11 +2,8 @@ import Axiograph.HoTT.KnowledgeGraph
 import Axiograph.Prob.Verified
 
 -- =============================================================================
--- Axiograph.HoTT.PathAlgebraProofs - Path algebra (Lean port)
+-- Axiograph.HoTT.PathAlgebraProofs - Path algebra
 -- =============================================================================
---
--- This module is a minimal, auditable port of
--- `idris/Axiograph/HoTT/PathAlgebraProofs.idr`.
 --
 -- It focuses on the parts needed for certificate-checking:
 -- - path length witnesses and computation

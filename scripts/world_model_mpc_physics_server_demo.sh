@@ -177,13 +177,55 @@ BASE_URL="http://127.0.0.1:${PORT}"
 
 echo ""
 echo "-- C) Build plan request (competency questions subset)"
-CQ_FILE="$ROOT_DIR/examples/competency_questions/physics_cq.json" \
+CQ_FILE="$ROOT_DIR/examples/competency_questions/physics.cq" \
 PLAN_REQ="$OUT_DIR/plan_request.json" python - <<'PY'
 import json
 import os
 
-with open(os.environ["CQ_FILE"]) as f:
-    cqs = json.load(f)
+def load_cq_text(path):
+    questions = []
+    current = None
+    with open(path) as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith("version "):
+                continue
+            if line.startswith("question ") and line.endswith(":"):
+                if current:
+                    questions.append(current)
+                current = {
+                    "name": line[len("question "):-1].strip(),
+                    "min_rows": 1,
+                    "weight": 1.0,
+                    "contexts": [],
+                }
+                continue
+            if current is None:
+                raise ValueError("CQ field before question header: {}".format(line))
+            key, value = line.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if key in ("asks", "question"):
+                current["question"] = value
+            elif key == "axql":
+                current["query"] = value
+            elif key == "min_rows":
+                current["min_rows"] = int(value)
+            elif key == "weight":
+                current["weight"] = float(value)
+            elif key == "context":
+                current["contexts"].append(value)
+            elif key == "contexts":
+                current["contexts"].extend(
+                    [item.strip() for item in value.split(",") if item.strip()]
+                )
+            else:
+                raise ValueError("unsupported CQ field {}".format(key))
+    if current:
+        questions.append(current)
+    return questions
+
+cqs = load_cq_text(os.environ["CQ_FILE"])
 
 req = {
     "horizon_steps": 2,

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Bidirectional LLM-Knowledge Graph synchronization"
+description = "LLM evidence extraction, grounding, and reconciliation inputs for Axiograph"
 
 [dependencies]
 axiograph-dsl = { path = "../axiograph-dsl" }

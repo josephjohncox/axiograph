@@ -27,18 +27,17 @@ else
 fi
 
 json_field() {
-  python3 - "$1" "$2" <<'PY'
-import json
-import sys
-
-path, key = sys.argv[1], sys.argv[2]
-with open(path, "r", encoding="utf-8") as f:
-    data = json.load(f)
-value = data
-for part in key.split("."):
-    value = value[part]
-print(value)
-PY
+  local path="$1"
+  local key="$2"
+  case "$key" in
+    sem_head_commit_id)
+      sed -n 's/^[[:space:]]*"sem_head_commit_id": "\([^"]*\)".*/\1/p' "$path" | head -n 1
+      ;;
+    *)
+      echo "unsupported json_field key: $key" >&2
+      return 2
+      ;;
+  esac
 }
 
 lean_path_arg() {
@@ -46,6 +45,16 @@ lean_path_arg() {
     /*) printf '%s\n' "$1" ;;
     *) printf '../%s\n' "$1" ;;
   esac
+}
+
+expect_contains() {
+  local path="$1"
+  local needle="$2"
+  local label="$3"
+  if ! grep -Fq "$needle" "$path"; then
+    echo "error: $label missing expected text in $path: $needle" >&2
+    exit 1
+  fi
 }
 
 echo "== Validate canonical plant modules =="
@@ -117,31 +126,18 @@ echo "== Check semantic VCS payloads in Lean =="
     "$(lean_path_arg "$OUT_DIR/merge_plan_lean.json")"
 )
 
-python3 - "$OUT_DIR/merge_plan_lean.json" <<'PY'
-import json
-import sys
+expect_contains "$OUT_DIR/merge_plan_lean.json" '"version": "semantic_vcs_lean_merge_plan_v1"' "merge Lean payload version"
+expect_contains "$OUT_DIR/merge_plan_lean.json" '"blockers": []' "merge Lean payload empty blockers"
+expect_contains "$OUT_DIR/merge_plan_lean.json" '"resolver_steps": []' "merge Lean payload empty resolver steps"
+expect_contains "$OUT_DIR/merge_plan_lean.json" '"residual_obligations": []' "merge Lean payload empty residual obligations"
+expect_contains "$OUT_DIR/merge_plan_lean.json" '"result": {' "merge Lean payload result object"
+expect_contains "$OUT_DIR/merge_plan_lean.json" '"refs": [' "merge Lean payload result refs"
 
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as f:
-    payload = json.load(f)
-assert payload["version"] == "semantic_vcs_lean_merge_plan_v1", payload["version"]
-assert payload["blockers"] == [], payload["blockers"]
-assert payload["resolver_steps"] == [], payload["resolver_steps"]
-assert payload["residual_obligations"] == [], payload["residual_obligations"]
-assert payload["result"]["refs"], "generated Lean merge payload should cite result refs"
-PY
-
-python3 - "$OUT_DIR/rebase_plan_lean.json" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as f:
-    payload = json.load(f)
-assert payload["version"] == "semantic_vcs_lean_rebase_plan_v1", payload["version"]
-assert payload["blockers"], "generated rebase payload should expose unresolved transport blockers"
-assert payload["residual_obligations"], "generated rebase payload should expose residual obligations"
-PY
+expect_contains "$OUT_DIR/rebase_plan_lean.json" '"version": "semantic_vcs_lean_rebase_plan_v1"' "rebase Lean payload version"
+expect_contains "$OUT_DIR/rebase_plan_lean.json" '"blockers": [' "rebase Lean payload blockers"
+expect_contains "$OUT_DIR/rebase_plan_lean.json" '"residual_obligation"' "rebase Lean payload residual blocker"
+expect_contains "$OUT_DIR/rebase_plan_lean.json" '"residual_obligations": [' "rebase Lean payload residual obligations"
+expect_contains "$OUT_DIR/rebase_plan_lean.json" 'failed transport for ExplicitIrRef `PlantSimulationSafety`' "rebase Lean payload failed transport"
 
 expect_lean_reject() {
   local payload="$1"
@@ -170,95 +166,88 @@ expect_lean_reject \
   "$(lean_path_arg "$OUT_DIR/rebase_plan_lean.json")" \
   "generated rebase plan with unresolved transports"
 
-python3 - "$OUT_DIR/semantic_vcs_conformance_coverage.json" <<'PY'
-import json
-import sys
-
-out = sys.argv[1]
-report = {
-    "version": "semantic_vcs_conformance_coverage_v1",
-    "scope": "finite semantic VCS merge/rebase checker surface",
-    "complete_for_claimed_surface": True,
-    "coverage_basis": [
-        "canonical .axi validation",
-        "runtime theory finite_fragment check",
-        "accepted-plane branch/review ref construction",
-        "Rust-generated semantic merge Lean payload",
-        "Lean executable semantic VCS checker"
-    ],
-    "cases": [
-        {
-            "case_id": "plant_modules_validate",
-            "operation": "canonical_axi_validate",
-            "expected": "pass",
-            "observed": "pass"
-        },
-        {
-            "case_id": "plant_core_theory_finite_fragment",
-            "operation": "runtime_theory_check",
-            "expected": "pass",
-            "observed": "pass"
-        },
-        {
-            "case_id": "accepted_plane_review_branch_split",
-            "operation": "semantic_vcs_refs",
-            "expected": "pass",
-            "observed": "pass"
-        },
-        {
-            "case_id": "clean_merge_fixture",
-            "operation": "lean_merge_materialization",
-            "expected": "pass",
-            "observed": "pass"
-        },
-        {
-            "case_id": "clean_rebase_fixture",
-            "operation": "lean_rebase_transport",
-            "expected": "pass",
-            "observed": "pass"
-        },
-        {
-            "case_id": "rust_generated_merge_payload",
-            "operation": "rust_to_lean_merge_payload",
-            "expected": "pass",
-            "observed": "pass"
-        },
-        {
-            "case_id": "conflicting_merge_fixture",
-            "operation": "lean_merge_materialization",
-            "expected": "reject",
-            "observed": "reject"
-        },
-        {
-            "case_id": "blocked_rebase_fixture",
-            "operation": "lean_rebase_materialization",
-            "expected": "reject",
-            "observed": "reject"
-        },
-        {
-            "case_id": "required_failed_transport_fixture",
-            "operation": "lean_rebase_transport",
-            "expected": "reject",
-            "observed": "reject"
-        },
-        {
-            "case_id": "rust_generated_blocked_rebase_payload",
-            "operation": "rust_to_lean_rebase_payload",
-            "expected": "reject",
-            "observed": "reject"
-        }
-    ],
-    "non_claims": [
-        "not complete ontology closure",
-        "not globally optimal semantic merge",
-        "not full HoTT or univalence",
-        "not a replacement for VerifyMain trusted certificate families",
-        "not backend-native mutation authority"
-    ]
+cat > "$OUT_DIR/semantic_vcs_conformance_coverage.json" <<'JSON'
+{
+  "version": "semantic_vcs_conformance_coverage_v1",
+  "scope": "finite semantic VCS merge/rebase checker surface",
+  "complete_for_claimed_surface": true,
+  "coverage_basis": [
+    "canonical .axi validation",
+    "runtime theory finite_fragment check",
+    "accepted-plane branch/review ref construction",
+    "Rust-generated semantic merge Lean payload",
+    "Lean executable semantic VCS checker"
+  ],
+  "cases": [
+    {
+      "case_id": "plant_modules_validate",
+      "operation": "canonical_axi_validate",
+      "expected": "pass",
+      "observed": "pass"
+    },
+    {
+      "case_id": "plant_core_theory_finite_fragment",
+      "operation": "runtime_theory_check",
+      "expected": "pass",
+      "observed": "pass"
+    },
+    {
+      "case_id": "accepted_plane_review_branch_split",
+      "operation": "semantic_vcs_refs",
+      "expected": "pass",
+      "observed": "pass"
+    },
+    {
+      "case_id": "clean_merge_fixture",
+      "operation": "lean_merge_materialization",
+      "expected": "pass",
+      "observed": "pass"
+    },
+    {
+      "case_id": "clean_rebase_fixture",
+      "operation": "lean_rebase_transport",
+      "expected": "pass",
+      "observed": "pass"
+    },
+    {
+      "case_id": "rust_generated_merge_payload",
+      "operation": "rust_to_lean_merge_payload",
+      "expected": "pass",
+      "observed": "pass"
+    },
+    {
+      "case_id": "conflicting_merge_fixture",
+      "operation": "lean_merge_materialization",
+      "expected": "reject",
+      "observed": "reject"
+    },
+    {
+      "case_id": "blocked_rebase_fixture",
+      "operation": "lean_rebase_materialization",
+      "expected": "reject",
+      "observed": "reject"
+    },
+    {
+      "case_id": "required_failed_transport_fixture",
+      "operation": "lean_rebase_transport",
+      "expected": "reject",
+      "observed": "reject"
+    },
+    {
+      "case_id": "rust_generated_blocked_rebase_payload",
+      "operation": "rust_to_lean_rebase_payload",
+      "expected": "reject",
+      "observed": "reject"
+    }
+  ],
+  "non_claims": [
+    "not complete ontology closure",
+    "not globally optimal semantic merge",
+    "not full HoTT or univalence",
+    "not a replacement for VerifyMain trusted certificate families",
+    "not backend-native mutation authority"
+  ]
 }
-with open(out, "w", encoding="utf-8") as f:
-    json.dump(report, f, indent=2, sort_keys=True)
-    f.write("\n")
-PY
+JSON
 
 echo "wrote reports under $OUT_DIR"

@@ -843,6 +843,7 @@ instance I of S:
                 question: Some(
                     "Does the bounded context return Bob as Alice's parent?".to_string(),
                 ),
+                authoring: None,
                 query: "select ?f where ?f = S.Parent(child=Alice, parent=Bob) limit 1".to_string(),
                 min_rows: 1,
                 weight: 1.0,

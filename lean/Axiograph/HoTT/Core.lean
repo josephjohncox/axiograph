@@ -7,16 +7,12 @@ import Mathlib.Logic.Equiv.Defs
 This module is the HoTT-flavored “core vocabulary” used by Axiograph’s formal
 semantics and certificate checker.
 
-In Idris2 we encode HoTT primitives directly (identity types, transport,
-equivalences, quotients, sections/retractions, …) and then build the
-knowledge-graph path algebra on top.
-
 Lean4’s built-in equality `Eq` lives in `Prop` and is proof-irrelevant, so this
 is **not** a full HoTT implementation. Nevertheless:
 
-1. We keep the same surface API as the Idris kernel (names like `Path`,
-   `transport`, `QuasiInverse`, …) so the Idris → Lean translation is auditable.
-2. The *non-trivial* higher/groupoid structure we care about is encoded
+1. The HoTT-flavored vocabulary (`Path`, `transport`, `QuasiInverse`, …) keeps
+   certificate code readable.
+2. The non-trivial higher/groupoid structure we care about is encoded
    explicitly in later modules (`Axiograph.HoTT.KnowledgeGraph`,
    `Axiograph.HoTT.PathAlgebraProofs`) via inductive witnesses.
 3. For “best in class” foundations, we reuse Lean/mathlib’s standard
@@ -37,7 +33,7 @@ abbrev Path {α : Sort u} (x y : α) : Prop := x = y
 /-| Reflexivity: every point has a trivial path to itself. -/
 theorem pathRefl {α : Sort u} (x : α) : Path x x := rfl
 
--- Idris-compatibility aliases
+-- Short aliases used by certificate code.
 abbrev Refl {α : Sort u} (x : α) : Path x x := pathRefl x
 
 /-| Symmetry: if `x = y` then `y = x`. -/
@@ -48,7 +44,7 @@ abbrev sym {α : Sort u} {x y : α} : Path x y → Path y x := pathSymm
 abbrev pathTrans {α : Sort u} {x y z : α} : Path x y → Path y z → Path x z := Eq.trans
 abbrev trans {α : Sort u} {x y z : α} : Path x y → Path y z → Path x z := pathTrans
 
-/-| Infix composition for paths (mirrors Idris `(@@)`). -/
+/-| Infix composition for paths. -/
 infixl:90 " @@" => pathTrans
 
 /-| Congruence: equality is respected by functions. -/
@@ -95,8 +91,7 @@ abbrev whiskerR {α : Sort u} {x y z : α} {q r : Path y z} (p : Path x y) :
 /-|
 A quasi-inverse for a function.
 
-This is the same record used in the Idris kernel, but in Lean we can also turn
-it into a standard `Equiv` (`Equiv α β`).
+This record can be turned into a standard Lean equivalence (`Equiv α β`).
 -/
 structure QuasiInverse {α : Sort u} {β : Sort v} (f : α → β) : Type (max u v) where
   inverse : β → α
@@ -116,7 +111,7 @@ def equivToQuasiInverse {α : Sort u} {β : Sort v} (e : Equiv α β) : QuasiInv
     left_inverse := e.left_inv
     right_inverse := e.right_inv }
 
-/-| Idris-style names for common equivalence operations. -/
+/-| Short names for common equivalence operations. -/
 abbrev idEquiv (α : Sort u) : Equiv α α := Equiv.refl α
 abbrev compEquiv {α : Sort u} {β : Sort v} {γ : Sort w} (e1 : Equiv α β) (e2 : Equiv β γ) : Equiv α γ :=
   e1.trans e2
@@ -129,9 +124,8 @@ abbrev invEquiv {α : Sort u} {β : Sort v} (e : Equiv α β) : Equiv β α := e
 /-!
 Lean4 + mathlib do not assume univalence.
 
-The Idris codebase currently treats univalence as an axiom (`believe_me`), so we
-mirror that here as an explicit axiom. We keep it isolated: the current checker
-does not *need* univalence to validate certificates.
+We keep univalence isolated as an explicit axiom. The current checker does not
+need univalence to validate shipped certificates.
 -/
 
 axiom ua {α β : Type u} : (Equiv α β) → α = β
@@ -227,8 +221,8 @@ def idSection (α : Sort u) : Section α α :=
 /-|
 `Quotient α r` identifies `r`-related elements.
 
-Lean’s `Quot` works with a `Prop`-valued relation. This matches the usage in the
-Idris codebase where quotient “path constructors” are axiomatized.
+Lean’s `Quot` works with a `Prop`-valued relation, which is enough for the
+current finite certificate fragments.
 -/
 abbrev Quotient (α : Sort u) (r : α → α → Prop) : Sort u := Quot r
 
@@ -258,8 +252,8 @@ abbrev PathEquivClass (α : Sort u) (equiv : α → α → Prop) : Sort u := Quo
 /-|
 Choose a representative for each equivalence class *as a function out of the quotient*.
 
-To be well-defined, `choose` must respect the relation.
-The Idris version axiomatizes this proof; here we require it explicitly.
+To be well-defined, `choose` must respect the relation. We require that proof
+explicitly.
 -/
 def canonical {α : Sort u} {r : α → α → Prop} (choose : α → α)
     (respect : (x y : α) → r x y → choose x = choose y) :

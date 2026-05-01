@@ -2,10 +2,17 @@
 
 Examples are teaching artifacts first. Canonical `.axi` modules are the public
 semantic input, and examples should demonstrate usable typed ontology workflows
-instead of acting as hidden compatibility fixtures.
+instead of acting as hidden regression fixtures.
 
 The machine-readable catalog is `examples/catalog.json`. The canonical parser
 and Rust/Lean parity corpus is `examples/canonical/corpus.json`.
+
+Check that every public example directory is cataloged with a teaching purpose
+and every Axiograph-owned JSON fixture carries an explicit top-level version:
+
+```bash
+python3 examples/check_catalog.py
+```
 
 ## Start Here
 
@@ -19,7 +26,7 @@ and Rust/Lean parity corpus is `examples/canonical/corpus.json`.
 | Business process | `examples/industrial/RegulatedProductionLine.axi` | BDD/DDD/fDDD, CQs, coverage, implementation surfaces |
 | Software authoring | `examples/software_authoring/OrderFulfillmentDomain.axi` | pure domain `.axi` plus DDD/fDDD tooling overlays, weak definition queries, typed theory checks, continuous semantic coverage, code skeleton previews |
 | Physics/domain modeling | `examples/physics/PhysicsOntology.axi` | scientific ontology and typed relation design |
-| Backend/interop | `examples/rdfowl/` | RDF/SHACL boundary-layer examples, not the kernel |
+| Backend/interop | `examples/backend_projection/`, `examples/rdfowl/` | native-readable TypeDB/TerminusDB projection contracts plus RDF/SHACL boundary-layer examples |
 
 ## Recommended Flow
 
@@ -35,6 +42,20 @@ Use examples in this order unless you are testing a specific subsystem:
    merge/rebase, then check the reduced Lean payloads.
 6. Treat backend-specific artifacts as read-only projections from compiled IR.
    They are useful for native inspection, not semantic authority or mutation.
+
+## JSON Fixtures
+
+Example JSON is a wire format for typed Axiograph contracts, not an invitation
+to pass anonymous ad hoc objects around. Public Axiograph-owned fixtures carry
+an explicit top-level `version`: most user-facing reports use string versions
+such as `tooling_overlay_bundle_v1`, while low-level parser/certificate parity
+fixtures may use numeric protocol versions consumed by Rust and Lean.
+
+One exception class is intentional:
+
+- `examples/software_authoring/host_integrations/*.json` are generic host
+  launcher examples for MCP/LSP clients. They follow host configuration shapes,
+  not Axiograph report schemas.
 
 ## Core Commands
 
@@ -98,6 +119,8 @@ Check a JSON behavior case over a canonical module:
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   discover behavior-case examples/industrial/RegulatedProductionLine.axi \
   --request examples/behavior_cases/regulated_ship_release.json \
+  --cq-file examples/behavior_cases/regulated_ship_release.cq \
+  --overlay examples/behavior_cases/regulated_ship_release_overlay.json \
   --out build/examples/regulated_ship_release_behavior_case_report.json
 ```
 
@@ -148,15 +171,22 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown
 
 | Directory | Role |
 | --- | --- |
+| `examples/anchors/` | narrow verification anchors for parser/certificate boundary tests, not authoring examples |
 | `examples/behavior_cases/` | JSON BDD/DDD cases that compile into receipts and test skeleton previews |
+| `examples/backend_projection/` | TypeDB/TerminusDB native-read projection contracts and caveats |
 | `examples/canonical/` | selected canonical `.axi` corpus for parser and semantics parity |
-| `examples/competency_questions/` | CQ fixtures for typed coverage and review gates |
-| `examples/demo_data/` | small constraint/fibered-closure modules for focused tests |
+| `examples/certificates/` | low-level Lean/Rust certificate fixtures, not the first teaching path |
+| `examples/competency_questions/` | human-authored `.cq` suites for typed coverage and review gates |
+| `examples/demo_data/` | focused constraint/fibered-closure modules for checker tests |
 | `examples/economics/` | business/economic flow ontology |
 | `examples/family/` | HoTT/path-oriented family examples |
 | `examples/industrial/` | co-evolving industrial process, business, and implementation example |
-| `examples/software_authoring/` | pure-domain software-authoring example with typed tooling overlays |
+| `examples/ingest_fixtures/` | source fixtures for evidence-plane ingestion tests and tutorials |
+| `examples/learning/` | learning and guardrail ontology material used by evidence/review flows |
+| `examples/llm_sync/` | evidence-overlay guidance for LLM/agent extraction flows |
+| `examples/machining/` | manufacturing and machining knowledge fixtures for learning and ingestion |
 | `examples/manufacturing/` | supply-chain HoTT/modal examples |
+| `examples/modal/` | compact context/world/modal example |
 | `examples/ontology/` | rewrites, schema evolution, and migration-preview examples |
 | `examples/physics/` | scientific ontology and measurement examples |
 | `examples/proto/` | proto/API semantics example |
@@ -164,6 +194,8 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown
 | `examples/repl_scripts/` | REPL smoke scripts for canonical imports, typed queries, and derived module exports |
 | `examples/schema_discovery/` | proposal-to-canonical `.axi` examples |
 | `examples/semantic_merge/` | plant-operations semantic VCS merge/rebase with Lean conformance fixtures |
+| `examples/social/` | compact relationship/path query domain |
+| `examples/software_authoring/` | pure-domain software-authoring examples with typed tooling overlays |
 
 ## Greenfield Example Rules
 
@@ -179,3 +211,8 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown
   accepted-plane promotion inputs, or certificate/query authorities.
 - Every nontrivial example should state which type, trust, CQ, coverage,
   merge/VCS, or backend-projection surface it exercises.
+- Any example not listed in `examples/catalog.json` should be either cataloged
+  with a clear teaching purpose or removed from the public examples path.
+- Avoid examples whose only lesson is “the command runs.” Prefer examples that
+  expose typed refs, obligations, reports, resolver handles, coverage deltas,
+  backend projection caveats, or explicit evidence-plane boundaries.

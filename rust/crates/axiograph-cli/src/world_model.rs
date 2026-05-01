@@ -25,6 +25,7 @@ use axiograph_pathdb::{
 use axiograph_pathdb::{Module, WellTypedModuleState};
 
 pub const WORLD_MODEL_PROTOCOL_V1: &str = "axiograph_world_model_v1";
+pub const COMPETENCY_QUESTION_BUNDLE_VERSION_V1: &str = "competency_question_bundle_v1";
 
 fn now_unix_secs() -> u64 {
     SystemTime::now()
@@ -434,6 +435,7 @@ pub fn parse_competency_questions(items: &[String]) -> Result<Vec<CompetencyQues
         out.push(CompetencyQuestionV1 {
             name: name.to_string(),
             question: None,
+            authoring: None,
             query: query.to_string(),
             min_rows: 1,
             weight: 1.0,
@@ -445,8 +447,288 @@ pub fn parse_competency_questions(items: &[String]) -> Result<Vec<CompetencyQues
 
 pub fn load_competency_questions(path: &Path) -> Result<Vec<CompetencyQuestionV1>> {
     let text = std::fs::read_to_string(path)?;
-    let questions: Vec<CompetencyQuestionV1> = serde_json::from_str(&text)?;
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if !ext.eq_ignore_ascii_case("json") {
+        return parse_competency_question_text(&text);
+    }
+    let bundle: CompetencyQuestionBundleV1 = serde_json::from_str(&text)?;
+    if bundle.version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
+        return Err(anyhow!(
+            "unsupported competency question bundle version `{}` (expected `{}`)",
+            bundle.version,
+            COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+        ));
+    }
+    Ok(bundle.questions)
+}
+
+pub fn parse_competency_question_text(text: &str) -> Result<Vec<CompetencyQuestionV1>> {
+    let mut questions = Vec::new();
+    let mut current: Option<CompetencyQuestionV1> = None;
+    let mut saw_version = false;
+
+    for (idx, raw_line) in text.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(version) = line.strip_prefix("version ") {
+            let version = version.trim();
+            if version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
+                return Err(anyhow!(
+                    "unsupported competency question text version `{}` at line {} (expected `{}`)",
+                    version,
+                    line_no,
+                    COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+                ));
+            }
+            saw_version = true;
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix("question ")
+            .and_then(|rest| rest.strip_suffix(':'))
+        {
+            if let Some(mut question) = current.take() {
+                lower_competency_question_text_record(&mut question);
+                validate_competency_question_text_record(&question)?;
+                questions.push(question);
+            }
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(anyhow!("empty competency question name at line {line_no}"));
+            }
+            current = Some(CompetencyQuestionV1 {
+                name: name.to_string(),
+                question: None,
+                authoring: None,
+                query: String::new(),
+                min_rows: 1,
+                weight: 1.0,
+                contexts: Vec::new(),
+            });
+            continue;
+        }
+
+        let Some(question) = current.as_mut() else {
+            return Err(anyhow!(
+                "competency question field before `question <name>:` at line {line_no}"
+            ));
+        };
+        let (key, value) = line.split_once(':').ok_or_else(|| {
+            anyhow!("invalid competency question field at line {line_no} (expected `key: value`)")
+        })?;
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "ask" | "asks" | "question" => {
+                question.question = Some(value.to_string());
+                question.authoring.get_or_insert_with(Default::default).ask =
+                    Some(value.to_string());
+            }
+            "about" => question
+                .authoring
+                .get_or_insert_with(Default::default)
+                .about
+                .push(value.to_string()),
+            "given" => question
+                .authoring
+                .get_or_insert_with(Default::default)
+                .given
+                .push(value.to_string()),
+            "expect" | "expects" => question
+                .authoring
+                .get_or_insert_with(Default::default)
+                .expect
+                .push(value.to_string()),
+            "note" | "notes" => question
+                .authoring
+                .get_or_insert_with(Default::default)
+                .notes
+                .push(value.to_string()),
+            "axql" => question.query = value.to_string(),
+            "min_rows" => {
+                question.min_rows = value
+                    .parse::<usize>()
+                    .map_err(|err| anyhow!("invalid min_rows at line {line_no}: {err}"))?;
+            }
+            "weight" => {
+                question.weight = value
+                    .parse::<f64>()
+                    .map_err(|err| anyhow!("invalid weight at line {line_no}: {err}"))?;
+            }
+            "context" => question.contexts.push(value.to_string()),
+            "contexts" => {
+                question.contexts.extend(
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|ctx| !ctx.is_empty())
+                        .map(str::to_string),
+                );
+            }
+            other => {
+                return Err(anyhow!(
+                    "unsupported competency question field `{other}` at line {line_no}"
+                ));
+            }
+        }
+    }
+
+    if let Some(mut question) = current.take() {
+        lower_competency_question_text_record(&mut question);
+        validate_competency_question_text_record(&question)?;
+        questions.push(question);
+    }
+    if !saw_version {
+        return Err(anyhow!(
+            "competency question text requires `version {}`",
+            COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+        ));
+    }
+    if questions.is_empty() {
+        return Err(anyhow!("competency question text contains no questions"));
+    }
     Ok(questions)
+}
+
+fn validate_competency_question_text_record(question: &CompetencyQuestionV1) -> Result<()> {
+    if question.name.trim().is_empty() {
+        return Err(anyhow!("competency question has an empty name"));
+    }
+    let has_authoring = question.authoring.as_ref().is_some_and(|hints| {
+        !hints.about.is_empty()
+            || !hints.given.is_empty()
+            || !hints.expect.is_empty()
+            || hints.ask.is_some()
+            || !hints.notes.is_empty()
+    });
+    if question.query.trim().is_empty() && question.question.is_none() && !has_authoring {
+        return Err(anyhow!(
+            "competency question `{}` requires `ask: ...`, `expect: ...`, or `axql: ...`",
+            question.name
+        ));
+    }
+    if question.min_rows == 0 {
+        return Err(anyhow!(
+            "competency question `{}` requires min_rows > 0",
+            question.name
+        ));
+    }
+    if !question.weight.is_finite() || question.weight <= 0.0 {
+        return Err(anyhow!(
+            "competency question `{}` requires a finite positive weight",
+            question.name
+        ));
+    }
+    Ok(())
+}
+
+fn lower_competency_question_text_record(question: &mut CompetencyQuestionV1) {
+    if !question.query.trim().is_empty() {
+        return;
+    }
+    if let Some(query) = lower_competency_question_authoring(question) {
+        question.query = query;
+    }
+}
+
+fn lower_competency_question_authoring(question: &CompetencyQuestionV1) -> Option<String> {
+    let hints = question.authoring.as_ref()?;
+    let limit = question.min_rows.max(1);
+
+    let relation_exprs = hints
+        .expect
+        .iter()
+        .filter_map(|expect| relation_expression_from_expect(expect))
+        .collect::<Vec<_>>();
+    if relation_exprs.len() == 1 {
+        return Some(format!(
+            "select ?f where ?f = {} limit {limit}",
+            relation_exprs[0]
+        ));
+    }
+    if relation_exprs.len() > 1 {
+        let atoms = relation_exprs
+            .iter()
+            .enumerate()
+            .map(|(idx, expr)| format!("?f{idx} = {expr}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(format!("select ?f0 where {atoms} limit {limit}"));
+    }
+
+    for expect in &hints.expect {
+        if let Some(type_ref) = type_ref_from_expect(expect) {
+            return Some(format!("select ?x where ?x is {type_ref} limit {limit}"));
+        }
+    }
+
+    let relation = hints
+        .about
+        .iter()
+        .map(|value| value.trim())
+        .find(|value| looks_like_qualified_relation_ref(value))?;
+    let fields = hints
+        .given
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| value.contains('='))
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "select ?f where ?f = {relation}({}) limit {limit}",
+        fields.join(", ")
+    ))
+}
+
+fn relation_expression_from_expect(expect: &str) -> Option<String> {
+    let value = expect.trim();
+    let value = value
+        .strip_prefix("exists ")
+        .or_else(|| value.strip_prefix("fact "))
+        .or_else(|| value.strip_prefix("relation "))
+        .unwrap_or(value)
+        .trim();
+    if value.contains('(') && value.contains(')') && looks_like_qualified_relation_ref(value) {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+fn looks_like_qualified_relation_ref(value: &str) -> bool {
+    let head = value.split_once('(').map(|(head, _)| head).unwrap_or(value);
+    looks_like_qualified_ref(head)
+}
+
+fn type_ref_from_expect(expect: &str) -> Option<String> {
+    let value = expect.trim();
+    let value = value
+        .strip_prefix("instance of ")
+        .or_else(|| value.strip_prefix("type "))
+        .or_else(|| value.strip_prefix("object "))
+        .or_else(|| value.strip_prefix("exists "))
+        .unwrap_or(value)
+        .trim();
+    if !value.contains('(') && looks_like_qualified_ref(value) {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+fn looks_like_qualified_ref(value: &str) -> bool {
+    let Some((schema, rel)) = value.split_once('.') else {
+        return false;
+    };
+    !schema.trim().is_empty()
+        && !rel.trim().is_empty()
+        && schema.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && rel.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 pub fn compute_guardrail_costs(
@@ -771,10 +1053,26 @@ pub struct WorldModelTaskCostV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompetencyQuestionAuthoringHintsV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub about: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub given: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompetencyQuestionV1 {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring: Option<CompetencyQuestionAuthoringHintsV1>,
     pub query: String,
     #[serde(default)]
     pub min_rows: usize,
@@ -782,6 +1080,15 @@ pub struct CompetencyQuestionV1 {
     pub weight: f64,
     #[serde(default)]
     pub contexts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompetencyQuestionBundleV1 {
+    pub version: String,
+    #[serde(default)]
+    pub questions: Vec<CompetencyQuestionV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1858,6 +2165,76 @@ mod tests {
     }
 
     #[test]
+    fn competency_question_text_loads_typed_records() {
+        let path = unique_temp_file("competency_questions").with_extension("cq");
+        fs::write(
+            &path,
+            r#"
+version competency_question_bundle_v1
+
+question shipment_release:
+  ask: Shipment release should be traceable.
+  expect: exists RegulatedLine.ShipmentFulfills(shipment=?s, order=?o, work_order=?wo, ctx=?c, time=?t)
+  min_rows: 1
+  weight: 2.5
+  contexts: Accepted, Released
+"#,
+        )
+        .expect("write cq");
+
+        let questions = load_competency_questions(&path).expect("load cq");
+        fs::remove_file(&path).ok();
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].name, "shipment_release");
+        assert_eq!(
+            questions[0].question.as_deref(),
+            Some("Shipment release should be traceable.")
+        );
+        assert_eq!(
+            questions[0].query,
+            "select ?f where ?f = RegulatedLine.ShipmentFulfills(shipment=?s, order=?o, work_order=?wo, ctx=?c, time=?t) limit 1"
+        );
+        assert_eq!(
+            questions[0]
+                .authoring
+                .as_ref()
+                .expect("authoring hints")
+                .expect,
+            vec![
+                "exists RegulatedLine.ShipmentFulfills(shipment=?s, order=?o, work_order=?wo, ctx=?c, time=?t)"
+                    .to_string()
+            ]
+        );
+        assert_eq!(questions[0].min_rows, 1);
+        assert_eq!(questions[0].weight, 2.5);
+        assert_eq!(
+            questions[0].contexts,
+            vec!["Accepted".to_string(), "Released".to_string()]
+        );
+    }
+
+    #[test]
+    fn competency_question_text_allows_unlowered_authored_questions() {
+        let questions = parse_competency_question_text(
+            r#"
+version competency_question_bundle_v1
+question missing_lowering:
+  ask: Which shipment release rule applies when the ERP hold is active?
+  about: shipment release
+  given: erp hold is active
+  expect: a typed shipment eligibility obligation exists
+"#,
+        )
+        .expect("authored CQ should load even before it has an executable lowering");
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].name, "missing_lowering");
+        assert!(questions[0].query.is_empty());
+        assert!(questions[0].authoring.is_some());
+    }
+
+    #[test]
     fn jepa_export_masks_fields() {
         let axi = r#"
 module M
@@ -1942,9 +2319,9 @@ instance I of S:
         let path = unique_temp_file("jepa_export_missing_proof");
         fs::write(
             &path,
-            serde_json::to_string_pretty(&json).expect("serialize stale export"),
+            serde_json::to_string_pretty(&json).expect("serialize malformed export"),
         )
-        .expect("write stale export");
+        .expect("write malformed export");
 
         let err = read_jepa_export(&path).expect_err("missing proof should fail closed");
         let _ = fs::remove_file(&path);

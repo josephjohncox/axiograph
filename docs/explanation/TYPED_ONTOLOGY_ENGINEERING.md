@@ -257,7 +257,7 @@ current trust boundary and what each layer is or is not licensed to claim.
   - ground them to sources, contexts, and accepted anchors,
   - synthesize reviewable candidate axioms,
   - and feed a typed review/promotion pipeline.
-- The goal is not "make Rust look like Idris".
+- The goal is not to make Rust imitate a proof assistant.
 - The goal is to make ontology engineering safer, more legible, more auditable,
   and more useful by putting the right invariants in the right layers.
 

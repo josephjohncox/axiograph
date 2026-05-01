@@ -72,7 +72,8 @@ abspath() {
 
 run_example() {
   local id="$1"
-  local title axi overlay behavior_case coverage_query out_dir generated_dir
+  local title axi overlay behavior_case cq_file out_dir generated_dir
+  local -a coverage_query_args
 
   title="$(software_authoring_example_field "${id}" title)"
 
@@ -84,20 +85,28 @@ run_example() {
   axi="$(abspath "$(software_authoring_example_field "${id}" axi)")"
   overlay="$(abspath "$(software_authoring_example_field "${id}" overlay)")"
   behavior_case="$(abspath "$(software_authoring_example_field "${id}" behavior_case)")"
-  coverage_query="$(abspath "$(software_authoring_example_field "${id}" coverage_query)")"
+  cq_file="$(abspath "$(software_authoring_example_field "${id}" cq_file)")"
+  coverage_query_args=()
+  while IFS= read -r arg; do
+    coverage_query_args+=("${arg}")
+  done < <(software_authoring_coverage_query_args "${id}")
   out_dir="${OUT_ROOT}/${id}"
   generated_dir="${out_dir}/generated-tests"
 
   mkdir -p "${out_dir}" "${generated_dir}"
 
   printf '\n=== %s: %s ===\n' "${id}" "${title}"
-  printf 'Flow: validate .axi -> runtime theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates\n'
+  printf 'Flow: validate .axi -> runtime theory -> CQ authoring -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates\n'
 
   run "${AXIOGRAPH_CMD[@]}" check validate "${axi}"
   run "${AXIOGRAPH_CMD[@]}" check theory "${axi}" \
     --closure-tier finite_fragment \
     --json \
     --out "${out_dir}/theory_check.json"
+  run "${AXIOGRAPH_CMD[@]}" authoring competency-questions \
+    --axi "${axi}" \
+    --cq "${cq_file}" \
+    --out "${out_dir}/competency_questions_authoring.json"
   run "${SCRIPT_DIR}/run_definition_queries.sh" \
     "${out_dir}/definitions" \
     "${id}" \
@@ -108,14 +117,16 @@ run_example() {
     --out "${out_dir}/overlay_validation.json"
   run "${AXIOGRAPH_CMD[@]}" discover coverage-query "${axi}" \
     --overlay "${overlay}" \
-    --query "${coverage_query}" \
+    "${coverage_query_args[@]}" \
     --out "${out_dir}/coverage_query.json"
   run "${AXIOGRAPH_CMD[@]}" discover behavior-case "${axi}" \
     --request "${behavior_case}" \
+    --cq-file "${cq_file}" \
     --overlay "${overlay}" \
     --out "${out_dir}/behavior_case_report.json"
   run "${AXIOGRAPH_CMD[@]}" check software-coverage "${axi}" \
     --behavior-case "${behavior_case}" \
+    --cq-file "${cq_file}" \
     --overlay "${overlay}" \
     --repo-root "${REPO_ROOT}" \
     --out "${out_dir}/software_coverage.json"

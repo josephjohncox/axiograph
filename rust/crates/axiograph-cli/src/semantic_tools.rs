@@ -19,6 +19,8 @@ pub(crate) const SEMANTIC_OVERLAY_REFS_TOOL_NAME: &str = "semantic_overlay_refs"
 pub(crate) const SEMANTIC_COVERAGE_QUERY_TOOL_NAME: &str = "semantic_coverage_query";
 pub(crate) const SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME: &str = "semantic_weak_coverage_probe";
 pub(crate) const SEMANTIC_DEFINITION_QUERY_TOOL_NAME: &str = "semantic_definition_query";
+pub(crate) const SEMANTIC_COMPETENCY_QUESTIONS_TOOL_NAME: &str =
+    "semantic_competency_questions";
 pub(crate) const SEMANTIC_SLICE_BUILD_TOOL_NAME: &str = "semantic_slice_build";
 pub(crate) const SEMANTIC_SLICE_SHOW_TOOL_NAME: &str = "semantic_slice_show";
 pub(crate) const SEMANTIC_SLICE_DIFF_TOOL_NAME: &str = "semantic_slice_diff";
@@ -43,6 +45,8 @@ const SEMANTIC_OVERLAY_REFS_TOOL_VERSION: &str = "axiograph_semantic_overlay_ref
 const SEMANTIC_COVERAGE_QUERY_TOOL_VERSION: &str = "axiograph_semantic_coverage_query_v1";
 const SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_VERSION: &str = "axiograph_semantic_weak_coverage_probe_v1";
 const SEMANTIC_DEFINITION_QUERY_TOOL_VERSION: &str = "axiograph_semantic_definition_query_v1";
+const SEMANTIC_COMPETENCY_QUESTIONS_TOOL_VERSION: &str =
+    "axiograph_semantic_competency_questions_v1";
 const SEMANTIC_SLICE_BUILD_TOOL_VERSION: &str = "axiograph_semantic_slice_build_v1";
 const SEMANTIC_SLICE_SHOW_TOOL_VERSION: &str = "axiograph_semantic_slice_show_v1";
 const SEMANTIC_SLICE_DIFF_TOOL_VERSION: &str = "axiograph_semantic_slice_diff_v1";
@@ -212,6 +216,16 @@ pub(crate) struct SemanticDefinitionQueryArgs {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SemanticCompetencyQuestionsArgs {
+    #[serde(default)]
+    pub cq_text: Option<String>,
+    #[serde(default)]
+    pub questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    #[serde(default)]
+    pub evaluate: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SemanticSliceBuildArgs {
     pub ref_view: crate::accepted_plane::SemRefViewV1,
     #[serde(default)]
@@ -305,7 +319,7 @@ pub(crate) struct SemanticOverlayCheckToolResultV1 {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SemanticSoftwareCoverageToolResultV1 {
     pub version: &'static str,
-    pub report: axiograph_tooling_overlays::ContinuousSoftwareCoverageReportV1,
+    pub report: axiograph_tooling_overlays::OverlaySoftwareCoverageReportV1,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -331,6 +345,22 @@ pub(crate) struct SemanticCoverageQueryToolResultV1 {
 pub(crate) struct SemanticDefinitionQueryToolResultV1 {
     pub version: &'static str,
     pub report: axiograph_tooling_overlays::DefinitionQueryReportV1,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SemanticCompetencyQuestionsToolResultV1 {
+    pub version: &'static str,
+    pub coverage_mode: &'static str,
+    pub questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    pub executable_questions: usize,
+    pub unresolved_questions: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation: Option<crate::competency_questions::CompetencyCoverageWithTrustV1>,
+    pub trust_boundary: &'static str,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next_actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -499,7 +529,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "required": ["behavior_case", "overlay"],
                 "properties": {
                     "behavior_case": behavior_case_json_schema(),
-                    "overlay": tooling_overlay_json_schema(),
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema(),
                     "lifecycle_state": { "type": "string" },
                     "evolution_preview": { "type": "object" },
                     "runtime_theory_check": { "type": "object" },
@@ -527,7 +557,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "required": ["axi_text", "overlay"],
                 "properties": {
                     "axi_text": { "type": "string" },
-                    "overlay": tooling_overlay_json_schema()
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema()
                 }
             }),
         },
@@ -539,7 +569,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "required": ["behavior_case", "overlay"],
                 "properties": {
                     "behavior_case": behavior_case_json_schema(),
-                    "overlay": tooling_overlay_json_schema(),
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema(),
                     "lifecycle_state": { "type": "string" },
                     "evolution_preview": { "type": "object" },
                     "runtime_theory_check": { "type": "object" },
@@ -556,7 +586,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "required": ["behavior_report", "overlay"],
                 "properties": {
                     "behavior_report": { "type": "object" },
-                    "overlay": tooling_overlay_json_schema(),
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema(),
                     "repo_root": { "type": "string" }
                 }
             }),
@@ -568,7 +598,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "type": "object",
                 "required": ["overlay"],
                 "properties": {
-                    "overlay": tooling_overlay_json_schema()
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema()
                 }
             }),
         },
@@ -580,7 +610,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "required": ["axi_text", "overlay"],
                 "properties": {
                     "axi_text": { "type": "string" },
-                    "overlay": tooling_overlay_json_schema()
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema()
                 }
             }),
         },
@@ -592,8 +622,8 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "required": ["axi_text", "query"],
                 "properties": {
                     "axi_text": { "type": "string" },
-                    "query": { "type": "object" },
-                    "overlay": tooling_overlay_json_schema()
+                    "query": axiograph_tooling_overlays::coverage_query_schema(),
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema()
                 }
             }),
         },
@@ -605,8 +635,8 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "required": ["axi_text", "probe"],
                 "properties": {
                     "axi_text": { "type": "string" },
-                    "probe": { "type": "object" },
-                    "overlay": tooling_overlay_json_schema()
+                    "probe": axiograph_tooling_overlays::weak_coverage_probe_schema(),
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema()
                 }
             }),
         },
@@ -618,8 +648,30 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
                 "required": ["axi_text", "query"],
                 "properties": {
                     "axi_text": { "type": "string" },
-                    "query": { "type": "object" },
-                    "overlay": tooling_overlay_json_schema()
+                    "query": axiograph_tooling_overlays::definition_query_schema(),
+                    "overlay": axiograph_tooling_overlays::tooling_overlay_bundle_schema()
+                }
+            }),
+        },
+        SemanticToolSpecV1 {
+            name: SEMANTIC_COMPETENCY_QUESTIONS_TOOL_NAME,
+            description: "Load/lower question-first `.cq` text or CompetencyQuestionV1 objects, then optionally evaluate them against the loaded snapshot. Use this for agent-authored coverage questions with `ask`/`expect` before dropping to typed query execution.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "cq_text": {
+                        "type": "string",
+                        "description": "A `.cq` document starting with `version competency_question_bundle_v1`; prefer `ask` plus `expect: exists Schema.Rel(...)` or `expect: instance of Schema.Type`."
+                    },
+                    "questions": {
+                        "type": "array",
+                        "items": { "type": "object" },
+                        "description": "Optional already-structured CompetencyQuestionV1 values."
+                    },
+                    "evaluate": {
+                        "type": "boolean",
+                        "description": "When true or omitted, evaluate executable CQs and report unresolved authored CQs as gaps."
+                    }
                 }
             }),
         },
@@ -768,6 +820,7 @@ pub(crate) fn is_semantic_tool(name: &str) -> bool {
             | SEMANTIC_COVERAGE_QUERY_TOOL_NAME
             | SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME
             | SEMANTIC_DEFINITION_QUERY_TOOL_NAME
+            | SEMANTIC_COMPETENCY_QUESTIONS_TOOL_NAME
             | SEMANTIC_SLICE_BUILD_TOOL_NAME
             | SEMANTIC_SLICE_SHOW_TOOL_NAME
             | SEMANTIC_SLICE_DIFF_TOOL_NAME
@@ -832,6 +885,10 @@ pub(crate) fn invoke_semantic_tool(
         }
         SEMANTIC_DEFINITION_QUERY_TOOL_NAME => {
             serde_json::to_value(call_semantic_definition_query(arguments)?).map_err(Into::into)
+        }
+        SEMANTIC_COMPETENCY_QUESTIONS_TOOL_NAME => {
+            serde_json::to_value(call_semantic_competency_questions(context, arguments)?)
+                .map_err(Into::into)
         }
         SEMANTIC_SLICE_BUILD_TOOL_NAME => {
             serde_json::to_value(call_semantic_slice_build(arguments)?).map_err(Into::into)
@@ -1089,8 +1146,10 @@ pub(crate) fn call_semantic_software_coverage(
     let args: SemanticSoftwareCoverageArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_software_coverage: invalid args: {err}"))?;
     let repo_root = args.repo_root.unwrap_or_else(|| ".".to_string());
+    let behavior_report =
+        axiograph_tooling_overlays::behavior_case_coverage_view_from_value(&args.behavior_report)?;
     let report = axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
-        &args.behavior_report,
+        &behavior_report,
         &args.overlay,
         std::path::Path::new(&repo_root),
     );
@@ -1152,6 +1211,7 @@ pub(crate) fn call_semantic_weak_coverage_probe(
     let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
         .map_err(|err| anyhow!("semantic_weak_coverage_probe: {err}"))?;
     let query = axiograph_tooling_overlays::CoverageQueryV1 {
+        version: Some(axiograph_tooling_overlays::COVERAGE_QUERY_VERSION_V1.to_string()),
         coverage_mode: axiograph_tooling_overlays::CoverageModeV1::Exploratory,
         terms: args.probe.terms,
         relation_names: Vec::new(),
@@ -1184,6 +1244,80 @@ pub(crate) fn call_semantic_definition_query(
     Ok(SemanticDefinitionQueryToolResultV1 {
         version: SEMANTIC_DEFINITION_QUERY_TOOL_VERSION,
         report,
+    })
+}
+
+pub(crate) fn call_semantic_competency_questions(
+    context: SemanticToolContext<'_>,
+    arguments: Value,
+) -> Result<SemanticCompetencyQuestionsToolResultV1> {
+    let args: SemanticCompetencyQuestionsArgs = serde_json::from_value(arguments)
+        .map_err(|err| anyhow!("semantic_competency_questions: invalid args: {err}"))?;
+    let mut questions = args.questions;
+    if let Some(cq_text) = args
+        .cq_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        questions.extend(
+            crate::world_model::parse_competency_question_text(cq_text)
+                .map_err(|err| anyhow!("semantic_competency_questions: {err}"))?,
+        );
+    }
+    if questions.is_empty() {
+        return Err(anyhow!(
+            "semantic_competency_questions requires `cq_text` or `questions`"
+        ));
+    }
+
+    let executable_questions = questions
+        .iter()
+        .filter(|question| !question.query.trim().is_empty())
+        .count();
+    let unresolved_questions = questions.len().saturating_sub(executable_questions);
+    let evaluate = args.evaluate.unwrap_or(true);
+    let evaluation = if evaluate {
+        Some(crate::competency_questions::evaluate_competency_questions_with_trust(
+            context.db,
+            &questions,
+        )?)
+    } else {
+        None
+    };
+
+    let mut next_actions = Vec::new();
+    if unresolved_questions > 0 {
+        next_actions.push(
+            "refine unresolved CQs with `expect: exists Schema.Rel(role=value, ...)`, `expect: instance of Schema.Type`, or typed query-refinement handles before using them as strict gates"
+                .to_string(),
+        );
+    }
+    if executable_questions > 0 {
+        next_actions.push(
+            "use returned executable `query` lowerings only as derived tool/report artifacts; keep authored `.cq` source question-first"
+                .to_string(),
+        );
+    }
+
+    Ok(SemanticCompetencyQuestionsToolResultV1 {
+        version: SEMANTIC_COMPETENCY_QUESTIONS_TOOL_VERSION,
+        coverage_mode: if unresolved_questions > 0 {
+            "advisory"
+        } else {
+            "runtime_checked"
+        },
+        questions,
+        executable_questions,
+        unresolved_questions,
+        evaluation,
+        trust_boundary:
+            "MCP/tool-loop CQ checks are Rust runtime checks over the loaded snapshot; unresolved authored CQs are not promotion gates or correctness claims.",
+        next_actions,
+        notes: vec![
+            "Prefer `.cq` authoring with `ask`/`about`/`given`/`expect`; AxQL remains an optional lowering/debug fixture.".to_string(),
+            "Strict CQ gates require executable typed lowerings and explicit anchors.".to_string(),
+        ],
     })
 }
 
@@ -1542,27 +1676,6 @@ fn behavior_case_json_schema() -> Value {
     })
 }
 
-fn tooling_overlay_json_schema() -> Value {
-    json!({
-        "type": "object",
-        "required": ["version"],
-        "properties": {
-            "version": {
-                "type": "string",
-                "const": axiograph_tooling_overlays::TOOLING_OVERLAY_BUNDLE_VERSION_V1
-            },
-            "fddd_context_map": { "type": "object" },
-            "implementation_surfaces": { "type": "object" },
-            "coverage_policy": { "type": "object" },
-            "codegen_plan": { "type": "object" },
-            "notes": {
-                "type": "array",
-                "items": { "type": "string" }
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1651,6 +1764,87 @@ instance FamilyInst of Family:
         assert_eq!(out.version, SEMANTIC_BUSINESS_RULE_TOOL_VERSION);
         assert_eq!(out.accepted_snapshot_id, Some(accepted));
         assert_eq!(out.report.scope.scope_id, "schema/family/relation/parent");
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_competency_questions_lowers_and_evaluates_authored_cq_text() -> Result<()> {
+        let (db, meta) = sample_db_and_meta()?;
+        let accepted = AcceptedSnapshotId::new("accepted:family");
+        let out = call_semantic_competency_questions(
+            SemanticToolContext {
+                db: &db,
+                meta: Some(&meta),
+                accepted_snapshot_id: Some(&accepted),
+            },
+            json!({
+                "cq_text": r#"
+version competency_question_bundle_v1
+
+question family_parent_lookup:
+  ask: Can the family lookup find Alice as Bob's parent?
+  expect: instance of Family.Person
+  min_rows: 1
+  weight: 1.0
+"#
+            }),
+        )?;
+
+        assert_eq!(out.version, SEMANTIC_COMPETENCY_QUESTIONS_TOOL_VERSION);
+        assert_eq!(out.coverage_mode, "runtime_checked");
+        assert_eq!(out.executable_questions, 1);
+        assert_eq!(out.unresolved_questions, 0);
+        assert_eq!(
+            out.questions[0].query,
+            "select ?x where ?x is Family.Person limit 1"
+        );
+        let evaluation = out.evaluation.expect("evaluation");
+        assert_eq!(evaluation.total, 1);
+        assert_eq!(evaluation.satisfied, 1);
+        assert_eq!(
+            evaluation.questions[0].prepared_query.as_ref().map(|meta| {
+                meta.prepared_query_id.starts_with("prepared_query_v1:")
+            }),
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_competency_questions_reports_unresolved_authoring_gap() -> Result<()> {
+        let (db, meta) = sample_db_and_meta()?;
+        let out = call_semantic_competency_questions(
+            SemanticToolContext {
+                db: &db,
+                meta: Some(&meta),
+                accepted_snapshot_id: None,
+            },
+            json!({
+                "cq_text": r#"
+version competency_question_bundle_v1
+
+question vague_policy_gap:
+  ask: Which shipping policy applies to the current account?
+  about: shipping policy
+  given: account is regulated
+  expect: the applicable policy is known
+"#
+            }),
+        )?;
+
+        assert_eq!(out.coverage_mode, "advisory");
+        assert_eq!(out.executable_questions, 0);
+        assert_eq!(out.unresolved_questions, 1);
+        let evaluation = out.evaluation.expect("evaluation");
+        assert_eq!(evaluation.satisfied, 0);
+        assert_eq!(
+            evaluation.questions[0].trust.trust_class,
+            "unresolved_authoring"
+        );
+        assert!(out
+            .next_actions
+            .iter()
+            .any(|action| action.contains("refine unresolved CQs")));
         Ok(())
     }
 
@@ -1957,6 +2151,7 @@ theory FamilyTheory on Family:
                 SEMANTIC_COVERAGE_QUERY_TOOL_NAME,
                 SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME,
                 SEMANTIC_DEFINITION_QUERY_TOOL_NAME,
+                SEMANTIC_COMPETENCY_QUESTIONS_TOOL_NAME,
                 SEMANTIC_SLICE_BUILD_TOOL_NAME,
                 SEMANTIC_SLICE_SHOW_TOOL_NAME,
                 SEMANTIC_SLICE_DIFF_TOOL_NAME,

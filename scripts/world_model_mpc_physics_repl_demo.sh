@@ -96,7 +96,7 @@ echo "-- Run REPL commands"
   --cmd "import_axi examples/physics/PhysicsMeasurements.axi" \
   --cmd "$WM_REPL_USE" \
   --cmd "wm model $WM_MODEL" \
-  --cmd "wm plan build/world_model_mpc_physics_plan.json --steps 2 --rollouts 2 --max 150 --guardrail strict --plane both --goal \"expand physics ontology coverage\" --axi examples/physics/PhysicsOntology.axi --cq-file examples/competency_questions/physics_cq.json"
+  --cmd "wm plan build/world_model_mpc_physics_plan.json --steps 2 --rollouts 2 --max 150 --guardrail strict --plane both --goal \"expand physics ontology coverage\" --axi examples/physics/PhysicsOntology.axi --cq-file examples/competency_questions/physics.cq"
 
 if [ -f "$ROOT_DIR/build/world_model_mpc_physics_plan.json" ]; then
   cp "$ROOT_DIR/build/world_model_mpc_physics_plan.json" "$OUT_DIR/"

@@ -1,0 +1,13 @@
+version competency_question_bundle_v1
+
+question reservation_normalizes_to_payment:
+  ask: Can the accepted reservation justify the payment fact used by checkout?
+  expect: exists OrderFulfillment.OrderHasPayment(order=Order_1001, payment=Payment_9001, ctx=Accepted, time=T1)
+  min_rows: 1
+  weight: 1.0
+
+question accepted_order_is_shipment_eligible:
+  ask: Can an accepted paid order become shipment-eligible?
+  expect: exists OrderFulfillment.OrderEligibleForShipment(order=Order_1001, shipment=Shipment_7001, ctx=Accepted, time=T1)
+  min_rows: 1
+  weight: 1.0

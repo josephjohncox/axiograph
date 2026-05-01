@@ -1,4 +1,4 @@
-//! End-to-end tests for unified storage
+//! End-to-end tests for runtime evidence storage.
 
 use super::*;
 use tempfile::tempdir;
@@ -23,7 +23,7 @@ fn test_storage() -> (UnifiedStorage, tempfile::TempDir) {
 }
 
 #[test]
-fn test_entity_lands_in_both_formats() {
+fn test_entity_materializes_to_evidence_record_and_pathdb_cache() {
     let (storage, dir) = test_storage();
 
     // Add entity

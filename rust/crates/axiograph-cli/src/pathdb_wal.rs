@@ -66,7 +66,7 @@ pub struct PathDbSnapshotV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "tag", rename_all = "snake_case")]
 pub enum PathDbWalOpV1 {
-    /// Import a `chunks.json` blob (array of `Chunk`) into the snapshot as `DocChunk` + `Document` nodes.
+    /// Import a typed `EvidenceChunkBundleV1` `chunks.json` blob into the snapshot as `DocChunk` + `Document` nodes.
     ///
     /// For fast replay, the commit step may also store a derived `chunks.cbor`
     /// sidecar. Replays will prefer CBOR when present.
@@ -1240,24 +1240,35 @@ fn apply_op(
             let chunks: Vec<axiograph_ingest_docs::Chunk> = if cbor_path.exists() {
                 match fs::read(&cbor_path)
                     .ok()
-                    .and_then(|cbor_bytes| ciborium::de::from_reader(cbor_bytes.as_slice()).ok())
+                    .and_then(|cbor_bytes| {
+                        ciborium::de::from_reader::<
+                            axiograph_ingest_docs::EvidenceChunkBundleV1,
+                            _,
+                        >(cbor_bytes.as_slice())
+                        .ok()
+                    })
                 {
-                    Some(chunks) => chunks,
+                    Some(bundle) => bundle.chunks,
                     None => {
                         parsed_from_json = true;
-                        serde_json::from_slice(&bytes)?
+                        axiograph_ingest_docs::chunks_from_json_slice(&bytes)?
                     }
                 }
             } else {
                 parsed_from_json = true;
-                serde_json::from_slice(&bytes)?
+                axiograph_ingest_docs::chunks_from_json_slice(&bytes)?
             };
 
             // Best-effort: if we had to parse JSON, cache a CBOR sidecar so future
             // replays can avoid JSON parsing.
             if parsed_from_json && !cbor_path.exists() {
                 let mut cbor_bytes: Vec<u8> = Vec::new();
-                if ciborium::ser::into_writer(&chunks, &mut cbor_bytes).is_ok() {
+                let bundle = axiograph_ingest_docs::evidence_chunk_bundle_from_chunks(
+                    "pathdb_wal_cache",
+                    stored_path.clone(),
+                    chunks.clone(),
+                );
+                if ciborium::ser::into_writer(&bundle, &mut cbor_bytes).is_ok() {
                     let _ = fs::write(&cbor_path, &cbor_bytes);
                 }
             }
@@ -1491,20 +1502,25 @@ instance I of S:
         .expect("promote accepted snapshot");
 
         let chunks_path = accepted_dir.join("chunks.json");
+        let chunk = axiograph_ingest_docs::Chunk {
+            chunk_id: "doc_test_0".to_string(),
+            document_id: "Test.axi".to_string(),
+            page: None,
+            span_id: "para_0".to_string(),
+            text: "Alice is Bob's parent.".to_string(),
+            bbox: None,
+            metadata: [("kind".to_string(), "demo_note".to_string())]
+                .into_iter()
+                .collect(),
+        };
         fs::write(
             &chunks_path,
-            r#"[
-  {
-    "chunk_id": "doc_test_0",
-    "document_id": "Test.axi",
-    "page": null,
-    "span_id": "para_0",
-    "text": "Alice is Bob's parent.",
-    "bbox": null,
-    "metadata": {"kind":"demo_note"}
-  }
-]
-"#,
+            axiograph_ingest_docs::chunks_to_json_for_chunks(
+                "pathdb_wal_test",
+                "Test.axi",
+                vec![chunk],
+            )
+            .expect("serialize chunks"),
         )
         .expect("write chunks.json");
 

@@ -4604,8 +4604,9 @@ impl LoweredQuery {
                                 let Some((schema_name, src_type, dst_type)) =
                                     relation_endpoints_canonical_types(rel)?
                                 else {
-                                    // If any step is ambiguous or unknown, we keep the old behavior
-                                    // (no strict composition check).
+                                    // Boundary selectors can mention ambiguous names. Leave those
+                                    // chains non-certifiable here rather than inventing endpoint
+                                    // types; strict reports surface typed holes/refinement handles.
                                     resolved.clear();
                                     break;
                                 };
@@ -4619,10 +4620,9 @@ impl LoweredQuery {
                             if resolved.len() == chain.len() {
                                 let schema_name = resolved[0].1.clone();
                                 if resolved.iter().any(|(_, s, _, _)| s != &schema_name) {
-                                    // Cross-schema chains are allowed in general (multi-schema
-                                    // “universe”), but we do not yet have a principled typing story
-                                    // for composing across schema boundaries here.
-                                    // Keep the old behavior (infer only outer endpoints).
+                                    // Cross-schema chains require explicit transport/morphism refs.
+                                    // This path remains runtime-only until that typing story is
+                                    // present in the prepared query metadata.
                                 } else if let Some(schema) = meta.schemas.get(&schema_name) {
                                     // Collect candidate types: object types + tuple (fact-node) types.
                                     let mut candidate_types: Vec<String> =

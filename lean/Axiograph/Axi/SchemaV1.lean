@@ -503,7 +503,7 @@ def parseConstraint (rest : String) : Except String ConstraintV1 := do
     match runLineParser p trimmed with
     | .ok v => return v
     | .error _msg =>
-        -- Some (older) `.axi` sources use more declarative forms like:
+        -- Some non-canonical `.axi` sources use more declarative forms like:
         --
         --   `constraint functional Rel(field0, field1, ...)`
         --   `constraint functional Rel(field0, ...) -> Rel.someOutput`

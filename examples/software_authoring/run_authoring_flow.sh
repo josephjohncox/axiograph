@@ -3,14 +3,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+source "${SCRIPT_DIR}/example_registry.sh"
 
 AXI="${REPO_ROOT}/examples/software_authoring/OrderFulfillmentDomain.axi"
 OVERLAY="${REPO_ROOT}/examples/software_authoring/order_fulfillment_tooling_overlay.json"
 BEHAVIOR_CASE="${REPO_ROOT}/examples/software_authoring/order_fulfillment_behavior_case.json"
-COVERAGE_QUERY="${REPO_ROOT}/examples/software_authoring/order_fulfillment_coverage_query.json"
+CQ_FILE="${REPO_ROOT}/examples/software_authoring/order_fulfillment.cq"
 OUT_DIR="${1:-${REPO_ROOT}/build/examples/software_authoring}"
 DEFINITION_OUT_DIR="${OUT_DIR}/definitions"
 GENERATED_TESTS_DIR="${OUT_DIR}/generated-tests"
+COVERAGE_QUERY_ARGS=()
+while IFS= read -r arg; do
+  COVERAGE_QUERY_ARGS+=("${arg}")
+done < <(software_authoring_coverage_query_args order_fulfillment)
 
 mkdir -p "${OUT_DIR}" "${DEFINITION_OUT_DIR}" "${GENERATED_TESTS_DIR}"
 
@@ -57,7 +62,7 @@ run_expected_report_gate() {
   fi
 }
 
-printf 'Flow: validate .axi -> runtime theory -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates\n'
+printf 'Flow: validate .axi -> runtime theory -> CQ authoring -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates\n'
 
 run "${AXIOGRAPH_CMD[@]}" check validate "${AXI}"
 
@@ -75,6 +80,11 @@ run "${AXIOGRAPH_CMD[@]}" authoring lsp-capabilities \
 run "${AXIOGRAPH_CMD[@]}" authoring integration-manifest \
   --out "${OUT_DIR}/integration_manifest.json"
 
+run "${AXIOGRAPH_CMD[@]}" authoring competency-questions \
+  --axi "${AXI}" \
+  --cq "${CQ_FILE}" \
+  --out "${OUT_DIR}/competency_questions_authoring.json"
+
 run "${SCRIPT_DIR}/run_definition_queries.sh" "${DEFINITION_OUT_DIR}"
 
 run "${AXIOGRAPH_CMD[@]}" discover overlay-check "${AXI}" \
@@ -83,16 +93,18 @@ run "${AXIOGRAPH_CMD[@]}" discover overlay-check "${AXI}" \
 
 run "${AXIOGRAPH_CMD[@]}" discover coverage-query "${AXI}" \
   --overlay "${OVERLAY}" \
-  --query "${COVERAGE_QUERY}" \
+  "${COVERAGE_QUERY_ARGS[@]}" \
   --out "${OUT_DIR}/coverage_query.json"
 
 run "${AXIOGRAPH_CMD[@]}" discover behavior-case "${AXI}" \
   --request "${BEHAVIOR_CASE}" \
+  --cq-file "${CQ_FILE}" \
   --overlay "${OVERLAY}" \
   --out "${OUT_DIR}/behavior_case_report.json"
 
 run "${AXIOGRAPH_CMD[@]}" check software-coverage "${AXI}" \
   --behavior-case "${BEHAVIOR_CASE}" \
+  --cq-file "${CQ_FILE}" \
   --overlay "${OVERLAY}" \
   --repo-root "${REPO_ROOT}" \
   --out "${OUT_DIR}/software_coverage.json"

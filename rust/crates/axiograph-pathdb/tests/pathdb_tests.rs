@@ -1,6 +1,8 @@
 //! PathDB E2E Tests
 
 use axiograph_pathdb::*;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use tempfile::tempdir;
 
 // ============================================================================
@@ -39,6 +41,36 @@ fn test_string_interner_serialization() {
     assert_eq!(restored.lookup(StrId::new(0)), Some("first".to_string()));
     assert_eq!(restored.lookup(StrId::new(1)), Some("second".to_string()));
     assert_eq!(restored.lookup(StrId::new(2)), Some("third".to_string()));
+}
+
+#[test]
+fn test_string_interner_concurrent_duplicate_insert_is_stable() {
+    let interner = Arc::new(StringInterner::new());
+    let barrier = Arc::new(Barrier::new(16));
+
+    let handles = (0..16)
+        .map(|_| {
+            let interner = Arc::clone(&interner);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                interner.intern("shared")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let ids = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("interner thread joins"))
+        .collect::<Vec<_>>();
+
+    assert!(ids.iter().all(|id| *id == ids[0]));
+    assert_eq!(interner.id_of("shared"), Some(ids[0]));
+    assert_eq!(interner.lookup(ids[0]), Some("shared".to_string()));
+
+    let restored = StringInterner::from_bytes(&interner.to_bytes()).expect("restore interner");
+    assert_eq!(restored.id_of("shared"), Some(ids[0]));
+    assert_eq!(restored.lookup(ids[0]), Some("shared".to_string()));
 }
 
 // ============================================================================

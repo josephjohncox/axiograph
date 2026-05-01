@@ -24,7 +24,7 @@ It assumes the following framing:
 - **Rust** should become the place where lifecycle state, schema scoping, snapshot anchoring, and typed execution are made operational and difficult to bypass.
 - The accepted plane should evolve into a **semantic VCS**, not just a snapshot store with `HEAD`.
 - Roadmap planning should assume a **greenfield target surface**:
-  - do not preserve legacy runtime/API/format behavior by default,
+  - do not preserve superseded runtime/API/format behavior by default,
   - replace old defaults with one canonical semantic contract where possible,
   - and keep compatibility only when it preserves trusted anchors, defended
     soundness claims, or an explicit migration window.
@@ -57,19 +57,19 @@ By the end of this program, Axiograph should have:
   - “already a dependently typed ontology engine”
   - “already a topos-theoretic kernel”
   - “PathDB is the meaning layer”
-- [ ] Keep compatibility language equally precise:
-  - do not promise backward compatibility by default,
+- [ ] Keep cutover language equally precise:
+  - do not promise long-term support for superseded public surfaces by default,
   - do not keep parallel public semantic contracts indefinitely,
   - and do not describe migration adapters as first-class long-term kernels.
-- [ ] Standard compatibility framing to use:
+- [ ] Standard cutover framing to use:
   - “greenfield target with explicit migration from older surfaces where
     justified”
-  - “compatibility retained only for trust-preserving anchors, audited
+  - “migration retained only for trust-preserving anchors, audited
     migration, or short-lived operational cutovers”
-- [ ] Standard compatibility framing to avoid:
-  - “must remain backward compatible unless proven otherwise”
+- [ ] Standard cutover framing to avoid:
+  - “retain superseded public surfaces unless proven unsafe”
   - “support both old and new semantics indefinitely”
-  - “keep the legacy path as a default until further notice”
+  - “keep the superseded path as a default until further notice”
 
 ### What counts as "making it one"
 
@@ -410,7 +410,7 @@ Align storage claims with actual runtime artifacts.
   - and treat every other format as either a migration/import path or non-production design work.
 - [ ] Replace default compatibility language with explicit cutover policy:
   - if sectioned verified v2 becomes production, ship a one-way audited import
-    path from legacy checkpoints and stop treating v1 as the default runtime
+    path from superseded checkpoints and stop treating v1 as the default runtime
     contract,
   - if live runtime bytes remain the production contract, remove v2 from
     production-facing claims and keep it only as design work until a real cutover
@@ -418,7 +418,7 @@ Align storage claims with actual runtime artifacts.
 - [ ] Add tests and fixtures over the **actual** production checkpoint format.
 - [ ] Add production-format contract tests:
   - golden `.axpd` fixtures produced by accepted-plane / WAL flows,
-  - migration/import tests only for explicitly supported legacy bytes,
+  - migration/import tests only for explicitly supported superseded bytes,
   - and a regression test proving the runtime rejects non-production bytes on
     the default path.
 - [ ] Keep PathDB as a derived execution substrate; do not let its current shape define ontology semantics.
@@ -1069,7 +1069,7 @@ surfaces once one branch-aware lifecycle path exists.
 - [ ] resolve `.axpd` format story
 - [ ] define stable semantic anchors
 - [ ] make lifecycle states explicit in Rust APIs
-- [ ] define which legacy APIs/formats survive only as migration shims and which
+- [ ] define which superseded APIs/formats survive only as migration shims and which
   are removed from default public use
 
 ### Phase 2: kernel/IR split

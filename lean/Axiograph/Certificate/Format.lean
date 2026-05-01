@@ -164,8 +164,8 @@ structure NormalizePathProofV2 where
   When present, Lean can validate that `normalized` is reachable from `input`
   by applying the listed rewrite steps (congruence-aware via positions).
 
-  When absent, Lean falls back to the original “recompute normalization and
-  compare” behavior for backwards compatibility.
+  When absent, Lean uses the current compact payload mode: recompute
+  normalization and compare.
   -/
   derivation? : Option (Array PathRewriteStepV2)
   deriving Repr
@@ -887,7 +887,7 @@ certificate to canonical `.axi` inputs (snapshot-scoped).
 
 We keep this wrapper separate so:
 
-* older fixtures remain valid (no anchors), and
+* fixtures without anchors remain valid, and
 * the trusted checker can opt into stronger checks when anchor contexts are
   provided (e.g. ensuring referenced fact IDs exist in the snapshot).
 -/

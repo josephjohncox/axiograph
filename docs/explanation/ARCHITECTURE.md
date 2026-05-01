@@ -3,11 +3,13 @@
 **Diataxis:** Explanation  
 **Audience:** contributors
 
-Axiograph is a knowledge engine with an explicit trust boundary:
+Axiograph is a typed ontology workbench with an explicit trust boundary:
 
-- **`.axi` is canonical** (schema + theory + instances in a reviewable format).
+- **Canonical `.axi` + compiled semantic IR is the meaning plane**.
 - **Rust** is the untrusted engine (ingest, store, query, optimize, reconcile).
 - **Lean4 + mathlib** is the trusted checker/spec (semantics + certificate checking).
+- **PathDB, graph databases, embeddings, and LLM outputs are derived
+  execution/evidence/projection surfaces**.
 
 The core idea is: **untrusted engine, trusted checker**. High-value results are
 only relied on when accompanied by a certificate that Lean verifies.
@@ -17,7 +19,9 @@ For a more “guided tour”, start with `./SYSTEM_OVERVIEW.md`.
 ## Design principles
 
 1. **Small trusted core**: Lean checks certificates against semantics, not “the same algorithm again”.
-2. **`.axi` is the meaning plane**: accepted knowledge is diffable, reviewable, and anchorable by digest.
+2. **Canonical spine**: accepted `.axi` compiles to `KernelModuleIr`,
+   `SchemaCategoryIr`, `TheoryIr`, `InstanceFunctorIr`, and `KernelSurfaceV1`
+   refs before it feeds query, CQ, coverage, merge, backend, or authoring tools.
 3. **Evidence is not truth**: ingestion emits evidence/proposals with provenance; promotion into canonical `.axi` is explicit.
 4. **Deterministic checking**: no floats in the trusted checker; certificates use fixed-point probabilities (`VProb`).
 5. **Open world by default**: missing facts are usually **unknown**, not **false**.
@@ -35,7 +39,7 @@ each with a different trust level.
 - theories (constraints + first-class rewrite rules)
 - instances (facts, reified as typed tuples)
 
-These are the inputs that certificates should ultimately be anchored to.
+These compile into the IR surfaces that all strict runtime reports should cite.
 
 Practical tooling:
 - validate: `axiograph check validate file.axi`
@@ -45,7 +49,7 @@ Practical tooling:
 
 Ingestion outputs evidence artifacts (provenance-first):
 
-- `chunks.json` (DocChunks: bounded text, metadata)
+- `chunks.json` (`EvidenceChunkBundleV1`: bounded text evidence plus metadata)
 - `proposals.json` (Evidence/Proposals schema; what *might* be true, with confidence)
 - optional `facts.json` (raw extractor output, not canonical)
 
@@ -56,7 +60,21 @@ Evidence artifacts are designed to support:
 
 How-to: `../howto/KNOWLEDGE_INGESTION.md`.
 
-### 3) Derived runtime plane (PathDB)
+### 3) Compiled semantic IR
+
+The compiled IR is the hinge between authoring and execution:
+
+- `KernelModuleIr` is the compiled module boundary.
+- `SchemaCategoryIr` represents object types, relation objects, role
+  projections, subtype arrows, and path structure.
+- `TheoryIr` represents constraints, equations, rewrites, obligations,
+  transports, and residuals.
+- `InstanceFunctorIr` interprets schema objects/arrows as finite runtime facts.
+- `KernelSurfaceV1` gives strict reports stable refs.
+
+User labels are ergonomics. Compiled refs are authority.
+
+### 4) Derived runtime plane (PathDB)
 
 PathDB (`.axpd`) is a **derived, indexed** representation used for performance:
 
@@ -69,7 +87,7 @@ PathDB is rebuildable from accepted snapshots; it is not the canonical truth.
 
 How-to: `../howto/SNAPSHOT_STORE.md` and `./PATHDB_DESIGN.md`.
 
-### 4) Certificates (Rust → Lean)
+### 5) Certificates (Rust → Lean)
 
 Certificates are versioned JSON payloads emitted by Rust and checked by Lean.
 They are the “proof-carrying” boundary between untrusted execution and trusted meaning.
@@ -81,12 +99,13 @@ How-to: `../howto/FORMAL_VERIFICATION.md`
 
 ```
 sources
-  → ingest (untrusted) → chunks.json + proposals.json
+  → ingest (untrusted) → EvidenceChunkBundleV1 + proposals/evidence overlays
   → discover/promote (explicit) → candidate .axi modules
-  → accept (append-only) → accepted-plane snapshot id
-  → build-pathdb (derived) → .axpd snapshot + WAL overlays
-  → query/ops (untrusted) → results + certificates
-  → verify (trusted) → Lean accepts/rejects certificates
+  → accept (semantic VCS) → accepted .axi snapshot/ref
+  → compile → KernelModuleIr + SchemaCategoryIr + TheoryIr + InstanceFunctorIr
+  → typed runtime reports → query/CQ/theory/coverage/merge/backend/authoring
+  → optional certificate → Lean accepts/rejects supported claims
+  → derived PathDB/backend projections for execution and native reads
 ```
 
 ## Data model (how knowledge is represented)
@@ -330,7 +349,7 @@ These can be wrong. They become meaningful when:
 ### Add a new ingestion source
 
 1. Add an adapter under `rust/crates/axiograph-ingest-*` (or extend `axiograph ingest dir`).
-2. Emit `chunks.json` (when applicable) and `proposals.json` with provenance pointers.
+2. Emit `EvidenceChunkBundleV1` chunks (when applicable) and `proposals.json` with provenance pointers.
 3. Ensure promotion into canonical `.axi` is explicit (candidates for review).
 4. Add/extend demos so “grounding always has evidence” is the default.
 

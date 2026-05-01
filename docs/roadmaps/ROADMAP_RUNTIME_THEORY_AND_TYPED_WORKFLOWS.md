@@ -128,7 +128,7 @@ Required capabilities:
 - typed answers preserve accepted anchors through validation and certification;
 - CQs and behavior cases can carry prepared-query trust summaries;
 - Lean-facing witnesses cite canonical `.axi` anchors and IR ids; and
-- old query-result/export-era families stay retired from public semantics.
+- superseded query-result/export families stay out of public semantics.
 
 Acceptance gates:
 

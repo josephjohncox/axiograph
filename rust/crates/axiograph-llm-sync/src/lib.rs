@@ -1,25 +1,27 @@
-//! Axiograph LLM Sync: Bidirectional Knowledge Graph ↔ LLM Integration
+//! Axiograph LLM Sync: Evidence-Plane LLM ↔ Knowledge Graph Integration
 //!
-//! This crate provides two-way synchronization between Axiograph knowledge graphs
-//! and Large Language Models, with unified storage to both `.axi` files and PathDB.
+//! This crate turns conversations and model output into evidence-plane facts,
+//! grounding contexts, reconciliation inputs, and review material. Accepted
+//! ontology meaning still comes from canonical `.axi`, compiled IR, typed review,
+//! semantic VCS, and optional Lean certificates.
 //!
 //! ## Architecture
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────────────┐
-//! │                       LLM ↔ KG SYNC PIPELINE                             │
+//! │                    LLM ↔ EVIDENCE/REVIEW PIPELINE                       │
 //! ├──────────────────────────────────────────────────────────────────────────┤
 //! │                                                                          │
 //! │  ┌───────────┐                                        ┌───────────────┐  │
-//! │  │    LLM    │◄──────── Grounding Context ───────────│  Unified      │  │
+//! │  │    LLM    │◄──────── Grounding Context ───────────│  Runtime      │  │
 //! │  │ (Claude,  │                                        │  Storage      │  │
-//! │  │  GPT-4,   │──────── Extracted Facts ──────────────►│               │  │
+//! │  │  GPT-4,   │──────── Evidence Facts ───────────────►│               │  │
 //! │  │  Local)   │                                        │  ┌─────────┐  │  │
-//! │  └───────────┘                                        │  │  .axi   │  │  │
-//! │       ▲                                               │  │  files  │  │  │
+//! │  └───────────┘                                        │  │Evidence │  │  │
+//! │       ▲                                               │  │records  │  │  │
 //! │       │                                               │  └─────────┘  │  │
 //! │   Conversation                                        │       ▲       │  │
-//! │       │                                               │       │sync   │  │
+//! │       │                                               │       │cache  │  │
 //! │  ┌────▼────┐     ┌───────────┐     ┌───────────┐     │  ┌────▼────┐  │  │
 //! │  │  User   │────►│ Extractor │────►│ Validator │────►│  │ PathDB  │  │  │
 //! │  └─────────┘     └───────────┘     └───────────┘     │  │ (binary)│  │  │
@@ -33,21 +35,21 @@
 //! └──────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## Direction 1: KG → LLM (Query/Grounding)
+//! ## Direction 1: Axiograph → LLM (Query/Grounding)
 //! - Semantic query interface for LLMs
 //! - Structured facts with provenance
 //! - Grounded generation with citations
 //!
-//! ## Direction 2: LLM → KG (Generation/Update)
+//! ## Direction 2: LLM → Evidence/Review (Generation)
 //! - Fact extraction from conversations
-//! - Schema-validated entity creation
+//! - Schema-aware candidate creation
 //! - Confidence-tracked knowledge addition
-//! - **Writes to both .axi files and PathDB**
+//! - Review and reconciliation before accepted ontology mutation
 //!
-//! ## Sync Protocol
-//! - Incremental updates with conflict resolution
-//! - Version tracking for rollback
-//! - Human-in-the-loop for critical changes
+//! ## Tooling Surface
+//! - Evidence extraction and grounding records
+//! - Reconciliation inputs for review
+//! - Human-in-the-loop promotion through Axiograph semantic workflows
 
 #![allow(dead_code)]
 
@@ -58,7 +60,6 @@ pub mod llm;
 pub mod path_optimized;
 pub mod path_verification;
 pub mod probabilistic;
-pub mod protocol;
 pub mod providers;
 pub mod reconciliation;
 pub mod reconciliation_format;

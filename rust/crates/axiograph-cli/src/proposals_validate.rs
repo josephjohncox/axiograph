@@ -753,6 +753,7 @@ instance FamInst of Fam:
                     crate::world_model::CompetencyQuestionV1 {
                         name: "jamison_parent".to_string(),
                         question: Some("Jamison should have Bob as a parent".to_string()),
+                        authoring: None,
                         query: "select ?f where ?f = Fam.Parent(child=Jamison, parent=Bob, ctx=FamilyTree, time=?t) limit 1".to_string(),
                         min_rows: 1,
                         weight: 1.0,
@@ -761,6 +762,7 @@ instance FamInst of Fam:
                     crate::world_model::CompetencyQuestionV1 {
                         name: "jamison_spouse".to_string(),
                         question: Some("Jamison should not yet have a spouse fact".to_string()),
+                        authoring: None,
                         query: "select ?f where ?f = Fam.Spouse(a=Jamison, b=Bob, ctx=FamilyTree) limit 1".to_string(),
                         min_rows: 1,
                         weight: 2.0,

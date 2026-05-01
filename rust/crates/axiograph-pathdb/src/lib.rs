@@ -168,6 +168,8 @@ pub struct StringInterner {
     id_to_str: DashMap<StrId, String>,
     /// Next available ID
     next_id: AtomicU32,
+    /// Serializes allocation so `str_to_id`, `id_to_str`, and `next_id` stay bijective.
+    allocation_lock: Mutex<()>,
 }
 
 impl StringInterner {
@@ -176,11 +178,17 @@ impl StringInterner {
             str_to_id: DashMap::new(),
             id_to_str: DashMap::new(),
             next_id: AtomicU32::new(0),
+            allocation_lock: Mutex::new(()),
         }
     }
 
     /// Intern a string, returning its ID
     pub fn intern(&self, s: &str) -> StrId {
+        if let Some(id) = self.str_to_id.get(s) {
+            return *id;
+        }
+
+        let _guard = self.allocation_lock.lock().expect("string interner lock poisoned");
         if let Some(id) = self.str_to_id.get(s) {
             return *id;
         }
@@ -203,6 +211,7 @@ impl StringInterner {
 
     /// Serialize to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
+        let _guard = self.allocation_lock.lock().expect("string interner lock poisoned");
         let strings: Vec<String> = (0..self.next_id.load(Ordering::SeqCst))
             .filter_map(|i| self.id_to_str.get(&StrId(i)).map(|s| s.clone()))
             .collect();

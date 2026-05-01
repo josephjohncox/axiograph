@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use axiograph_dsl::digest::{axi_digest_v1, axi_fact_id_v1};
@@ -115,7 +116,7 @@ pub struct KernelModuleIr {
 
 pub const KERNEL_SURFACE_VERSION_V1: &str = "kernel_surface_v1";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelRefV1 {
     Module {
@@ -266,7 +267,7 @@ impl KernelRefV1 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SchemaCategoryObjectRefIr {
     ObjectType {
@@ -287,7 +288,7 @@ impl SchemaCategoryObjectRefIr {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SchemaCategoryArrowRefIr {
     RoleProjection {
@@ -478,7 +479,7 @@ pub struct TheoryIr {
 
 pub const RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1: &str = "runtime_theory_fragment_summary_v1";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TheoryObligationKindIr {
     Constraint,
@@ -487,7 +488,7 @@ pub enum TheoryObligationKindIr {
     RewriteRule,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TheoryObligationRefIr {
     Constraint {
@@ -576,7 +577,7 @@ impl TheoryObligationRefIr {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TheorySubjectKindIr {
     Theory,
@@ -584,7 +585,7 @@ pub enum TheorySubjectKindIr {
     Role,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TheorySubjectRefIr {
     Theory {

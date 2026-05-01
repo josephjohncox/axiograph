@@ -36,7 +36,7 @@ enum Commands {
         /// Deterministic timestamp for this run.
         #[arg(long)]
         created_at_unix_secs: u64,
-        /// Print raw JSON.
+        /// Emit the typed `industrial_harness_run_response_v1` report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -57,7 +57,7 @@ enum Commands {
         /// Optional expected .axi digest for anchor verification.
         #[arg(long)]
         expected_axi_digest: Option<String>,
-        /// Print raw JSON.
+        /// Emit the typed `industrial_harness_inspection_result_v1` report as JSON.
         #[arg(long)]
         json: bool,
     },

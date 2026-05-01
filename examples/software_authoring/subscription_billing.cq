@@ -1,0 +1,13 @@
+version competency_question_bundle_v1
+
+question paid_invoice_grants_subscription_entitlement:
+  ask: Does the paid invoice grant the subscription entitlement?
+  expect: exists SubscriptionBilling.SubscriptionHasEntitlement(subscription=Sub_Pro, entitlement=Entitlement_API, ctx=Accepted, time=T1)
+  min_rows: 1
+  weight: 1.0
+
+question account_has_product_access:
+  ask: Does the account have the product entitlement used by access checks?
+  expect: exists SubscriptionBilling.AccountGrantedEntitlement(account=Account_Acme, entitlement=Entitlement_API, ctx=Accepted, time=T1)
+  min_rows: 1
+  weight: 1.0

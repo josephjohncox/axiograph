@@ -5309,6 +5309,7 @@ instance I of Fam:
                 competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
                     name: "carol_parent".to_string(),
                     question: Some("Carol should still have Bob as a parent".to_string()),
+                    authoring: None,
                     query: "select ?f where ?f = Fam.Parent(child=Carol, parent=Bob) limit 1"
                         .to_string(),
                     min_rows: 1,
@@ -5389,6 +5390,7 @@ instance I of Fam:
                 competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
                     name: "carol_parent".to_string(),
                     question: Some("Carol should gain Bob as a parent".to_string()),
+                    authoring: None,
                     query: "select ?f where ?f = Fam.Parent(child=Carol, parent=Bob) limit 1"
                         .to_string(),
                     min_rows: 1,
@@ -6187,7 +6189,7 @@ theory RefundRules on Refund:
     }
 
     #[test]
-    fn semantic_head_migrates_legacy_direct_commit_to_symbolic_ref() {
+    fn semantic_head_migrates_direct_commit_to_symbolic_ref() {
         let accepted_dir = temp_test_dir("sem-head-symbolic-migration");
         ensure_layout(&accepted_dir).expect("layout");
 
@@ -6200,7 +6202,7 @@ theory RefundRules on Refund:
             "head-migration",
         );
         write_sem_ref_pointer_for_main(&accepted_dir, &commit.commit_id).expect("write main ref");
-        write_sem_head_commit_id(&accepted_dir, &commit.commit_id).expect("legacy detached head");
+        write_sem_head_commit_id(&accepted_dir, &commit.commit_id).expect("detached head");
 
         let resolved = read_sem_head_commit_id(&accepted_dir).expect("read migrated head");
         assert_eq!(resolved, Some(commit.commit_id.clone()));
