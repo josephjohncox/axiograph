@@ -5606,7 +5606,23 @@ instance I of S:
             resp["typed_authoring"]["kernel_module_ir"]["instances"][0]["relation_facts"]
                 .as_array()
                 .map(|facts| facts.len()),
-            Some(1)
+            Some(0)
+        );
+        let axi_text = resp["axi_text"]
+            .as_str()
+            .expect("draft response should include canonical axi text");
+        assert!(axi_text.contains("object Person"));
+        assert!(
+            axi_text.contains("object TypeHole_Parent_to"),
+            "draft should keep the missing accepted-plane target endpoint as a typed hole"
+        );
+        assert!(
+            axi_text.contains("Jamison"),
+            "draft should include the newly proposed endpoint as a typed object inhabitant"
+        );
+        assert!(
+            axi_text.contains("references missing endpoint `Bob`"),
+            "draft should surface the missing target endpoint as a review obligation"
         );
         assert_eq!(
             resp["exploration_preview"]["kind"].as_str(),

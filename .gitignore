@@ -156,3 +156,4 @@ bin/
 !.envrc
 
 *.stderr
+!rust/crates/axiograph-pathdb/tests/ui/*.stderr

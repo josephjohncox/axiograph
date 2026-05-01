@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/ui/import_rejects_raw_schema_module.rs:12:62
+   |
+12 |     let _ = import_axi_schema_v1_module_into_pathdb(&mut db, &module);
+   |             ---------------------------------------          ^^^^^^^ expected `&Module<_>`, found `&AxiV1Module`
+   |             |
+   |             arguments to this function are incorrect
+   |
+   = note: expected reference `&axiograph_pathdb::Module<_>`
+              found reference `&AxiV1Module`
+note: function defined here
+  --> src/axi_module_import.rs
+   |
+   | pub fn import_axi_schema_v1_module_into_pathdb<S: WellTypedModuleState>(
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

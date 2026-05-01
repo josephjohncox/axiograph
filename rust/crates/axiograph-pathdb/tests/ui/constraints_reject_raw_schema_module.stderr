@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/ui/constraints_reject_raw_schema_module.rs:10:41
+   |
+10 |     let _ = check_axi_constraints_ok_v1(&module);
+   |             --------------------------- ^^^^^^^ expected `&Module<_>`, found `&AxiV1Module`
+   |             |
+   |             arguments to this function are incorrect
+   |
+   = note: expected reference `&axiograph_pathdb::Module<_>`
+              found reference `&AxiV1Module`
+note: function defined here
+  --> src/axi_module_constraints.rs
+   |
+   | pub fn check_axi_constraints_ok_v1<S: WellTypedModuleState>(
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^

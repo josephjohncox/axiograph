@@ -1,0 +1,20 @@
+error[E0308]: mismatched types
+ --> tests/ui/index_sidecar_rejects_accepted_snapshot_id.rs:5:44
+  |
+5 |     let _ = db.snapshot_index_sidecar(Some(AcceptedSnapshotId::new("accepted:42")));
+  |                                       ---- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `PathdbSnapshotId`, found `AcceptedSnapshotId`
+  |                                       |
+  |                                       arguments to this enum variant are incorrect
+  |
+help: the type constructed contains `AcceptedSnapshotId` due to the type of the argument passed
+ --> tests/ui/index_sidecar_rejects_accepted_snapshot_id.rs:5:39
+  |
+5 |     let _ = db.snapshot_index_sidecar(Some(AcceptedSnapshotId::new("accepted:42")));
+  |                                       ^^^^^--------------------------------------^
+  |                                            |
+  |                                            this argument influences the type of `Some`
+note: tuple variant defined here
+ --> $RUST/core/src/option.rs
+  |
+  |     Some(#[stable(feature = "rust1", since = "1.0.0")] T),
+  |     ^^^^

@@ -532,20 +532,111 @@ fn regulated_production_line_cq_questions() -> Result<Vec<CompetencyQuestionV1>>
             path.display()
         )
     })?;
-    let bundle: CompetencyQuestionBundleV1 = serde_json::from_str(&text).with_context(|| {
-        format!(
-            "parse regulated production line CQ file `{}`",
-            path.display()
-        )
-    })?;
-    if bundle.version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
+    parse_competency_question_text(&text)
+        .with_context(|| format!("parse regulated production line CQ file `{}`", path.display()))
+}
+
+fn parse_competency_question_text(text: &str) -> Result<Vec<CompetencyQuestionV1>> {
+    let mut version_seen = false;
+    let mut questions = Vec::new();
+    let mut current: Option<CompetencyQuestionV1> = None;
+
+    for (line_idx, raw_line) in text.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if let Some(version) = line.strip_prefix("version ").map(str::trim) {
+            if version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
+                return Err(anyhow!(
+                    "line {line_no}: unsupported competency question bundle version `{version}` (expected `{}`)",
+                    COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+                ));
+            }
+            version_seen = true;
+            continue;
+        }
+
+        if let Some(name) = line
+            .strip_prefix("question ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            .map(str::trim)
+        {
+            if name.is_empty() {
+                return Err(anyhow!("line {line_no}: question name must be non-empty"));
+            }
+            if let Some(question) = current.take() {
+                questions.push(finalize_competency_question(question)?);
+            }
+            current = Some(CompetencyQuestionV1 {
+                name: name.to_string(),
+                question: None,
+                query: String::new(),
+                min_rows: default_min_rows(),
+                weight: default_weight(),
+                contexts: Vec::new(),
+            });
+            continue;
+        }
+
+        let Some(question) = current.as_mut() else {
+            return Err(anyhow!(
+                "line {line_no}: expected `question <name>:` before question fields"
+            ));
+        };
+
+        if let Some(ask) = line.strip_prefix("ask:").map(str::trim) {
+            question.question = Some(ask.to_string()).filter(|ask| !ask.is_empty());
+        } else if let Some(expect) = line.strip_prefix("expect:").map(str::trim) {
+            if expect.is_empty() {
+                return Err(anyhow!("line {line_no}: expect clause must be non-empty"));
+            }
+            if !question.query.is_empty() {
+                question.query.push('\n');
+            }
+            question.query.push_str(expect);
+        } else if let Some(min_rows) = line.strip_prefix("min_rows:").map(str::trim) {
+            question.min_rows = min_rows
+                .parse::<usize>()
+                .with_context(|| format!("line {line_no}: invalid min_rows `{min_rows}`"))?;
+        } else if let Some(weight) = line.strip_prefix("weight:").map(str::trim) {
+            question.weight = weight
+                .parse::<f64>()
+                .with_context(|| format!("line {line_no}: invalid weight `{weight}`"))?;
+        } else if let Some(context) = line.strip_prefix("context:").map(str::trim) {
+            if !context.is_empty() {
+                question.contexts.push(context.to_string());
+            }
+        } else {
+            return Err(anyhow!("line {line_no}: unsupported CQ field `{line}`"));
+        }
+    }
+
+    if let Some(question) = current.take() {
+        questions.push(finalize_competency_question(question)?);
+    }
+    if !version_seen {
         return Err(anyhow!(
-            "unsupported competency question bundle version `{}` (expected `{}`)",
-            bundle.version,
+            "missing `version {}` header",
             COMPETENCY_QUESTION_BUNDLE_VERSION_V1
         ));
     }
-    Ok(bundle.questions)
+    if questions.is_empty() {
+        return Err(anyhow!("competency question file must define at least one question"));
+    }
+    Ok(questions)
+}
+
+fn finalize_competency_question(question: CompetencyQuestionV1) -> Result<CompetencyQuestionV1> {
+    if question.query.trim().is_empty() {
+        return Err(anyhow!(
+            "question `{}` must include at least one `expect:` clause",
+            question.name
+        ));
+    }
+    Ok(question)
 }
 
 fn regulated_production_line_surfaces() -> Vec<IndustrialSurfaceV1> {
