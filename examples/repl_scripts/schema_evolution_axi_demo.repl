@@ -38,14 +38,14 @@ q select ?m ?from ?to where ?m is Morphism, ?m -from-> ?from, ?m -to-> ?to limit
 
 # Visualize the schema meta-plane.
 viz build/schema_evolution_axi_schema.dot format dot plane meta focus_name OntologyMeta hops 3 max_nodes 360
-viz build/schema_evolution_axi_schema.html format html plane meta focus_name OntologyMeta hops 3 max_nodes 360
+viz build/schema_evolution_axi_schema.json format json plane meta focus_name OntologyMeta hops 3 max_nodes 360
 
 # Visualize a migration neighborhood (shows morphism witness nodes).
 viz build/schema_evolution_axi_addcategories_both.dot format dot plane both focus_name AddCategories hops 2 max_nodes 260
-viz build/schema_evolution_axi_addcategories_both.html format html plane both focus_name AddCategories hops 2 max_nodes 260
+viz build/schema_evolution_axi_addcategories_both.json format json plane both focus_name AddCategories hops 2 max_nodes 260
 
 # Visualize a schema node neighborhood (shows SchemaEquiv witness nodes).
 viz build/schema_evolution_axi_productv3_both.dot format dot plane both focus_name ProductV3 hops 2 max_nodes 260
-viz build/schema_evolution_axi_productv3_both.html format html plane both focus_name ProductV3 hops 2 max_nodes 260
+viz build/schema_evolution_axi_productv3_both.json format json plane both focus_name ProductV3 hops 2 max_nodes 260
 
 save build/schema_evolution_axi.axpd

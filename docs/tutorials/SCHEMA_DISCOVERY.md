@@ -266,14 +266,14 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
 # Meta-plane visualization (schema/theory)
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   tools viz build/Discovered.accepted.axpd \
-  --out build/Discovered.meta.html \
-  --format html --plane meta --focus-name Discovered --hops 3
+  --out build/Discovered.meta.json \
+  --format json --plane meta --focus-name Discovered --hops 3
 
 # Data-plane visualization (instances)
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   tools viz build/Discovered.accepted.axpd \
-  --out build/Discovered.data.html \
-  --format html --plane data --hops 2
+  --out build/Discovered.data.json \
+  --format json --plane data --hops 2
 ```
 
 For query-facing tooling, the canonical contract is: compile to `query_ir_v1`,

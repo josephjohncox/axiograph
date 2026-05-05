@@ -40,7 +40,7 @@ q select ?p1 ?p2 where name("HistoryEquivalence_Alice_to_Carol_0") -path1-> ?p1,
 # - Graphviz DOT (render with: `dot -Tsvg build/social_network_viz.dot -o build/social_network_viz.svg`)
 # - self-contained offline HTML explorer
 viz build/social_network_viz.dot format dot focus_name Alice_0 hops 2 max_nodes 120
-viz build/social_network_viz.html format html focus_name Alice_0 hops 2 max_nodes 120
+viz build/social_network_viz.json format json focus_name Alice_0 hops 2 max_nodes 120
 
 # Save the runnable `.axpd` snapshot.
 save build/social_network.axpd

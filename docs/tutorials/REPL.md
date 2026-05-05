@@ -364,29 +364,29 @@ For quick exploration beyond raw `show`/`follow`, the REPL can export a small
 neighborhood graph around an entity as:
 
 - Graphviz DOT (best layout; render to SVG/PNG with `dot`)
-- an HTML explorer (simple radial graph view + node inspector)
+- JSON graph data (clean-checkout friendly and used by the example scripts)
+- an optional HTML explorer when the frontend bundle has been built
 
 Note: HTML output is served from `frontend/viz/dist`. Run `make viz-build`
-once before exporting HTML (`viz ... format html`). The export now writes a
-directory containing `index.html` + `graph.json` + `assets/`. Open
-`index.html?data=graph.json` in a browser.
+once before exporting HTML (`viz ... format html`). Use JSON for tutorials,
+CI, and clean checkout scripts.
 
 Examples:
 
 ```text
 axiograph> viz build/graph.dot focus 0 hops 2
-axiograph> viz build/graph.html format html focus_name Alice_0 hops 2 max_nodes 120
-axiograph> viz build/graph_typed.html format html focus_name Alice_0 hops 2 max_nodes 120 typed_overlay
+axiograph> viz build/graph.json format json focus_name Alice_0 hops 2 max_nodes 120
+axiograph> viz build/graph_typed.json format json focus_name Alice_0 hops 2 max_nodes 120 typed_overlay
 axiograph> viz build/schema.dot format dot plane meta focus_name SupplyChainHoTT hops 3 max_nodes 220
-axiograph> viz build/schema.html format html plane meta focus_name SupplyChainHoTT hops 3 max_nodes 220
+axiograph> viz build/schema.json format json plane meta focus_name SupplyChainHoTT hops 3 max_nodes 220
 ```
 
 Tip: if multiple entities share a `name`, add `focus_type <TypeName>` to disambiguate.
 
 With `typed_overlay`, the visualization annotates data-plane nodes using the
 `.axi` meta-plane as a type layer (supertypes, relation signatures, and theory
-constraints). In DOT output this shows up as node tooltips; in HTML output it
-shows up in the node attribute inspector.
+constraints). In DOT output this shows up as node tooltips; in JSON output it
+is emitted as structured node metadata.
 
 In the HTML explorer:
 - scroll to zoom

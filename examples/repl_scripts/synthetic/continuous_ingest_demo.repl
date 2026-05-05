@@ -20,7 +20,7 @@ stats
 
 # Baseline: neighborhood around a service.
 viz build/continuous_ingest_round0.dot format dot plane data focus_name svc_0 hops 2 max_nodes 260
-viz build/continuous_ingest_round0.html format html plane data focus_name svc_0 hops 2 max_nodes 260
+viz build/continuous_ingest_round0.json format json plane data focus_name svc_0 hops 2 max_nodes 260
 
 # ----------------------------------------------------------------------------
 # Ingest tick 1: new doc arrives (mentions a service + endpoint).
@@ -48,7 +48,7 @@ add_equiv path_doc_stream_0_direct path_doc_stream_0_via_endpoint HomotopicPath
 
 # Visualize around the newly ingested doc (shows mutation + witness structure).
 viz build/continuous_ingest_round1.dot format dot plane data focus_name doc_stream_0 hops 2 max_nodes 320
-viz build/continuous_ingest_round1.html format html plane data focus_name doc_stream_0 hops 2 max_nodes 320
+viz build/continuous_ingest_round1.json format json plane data focus_name doc_stream_0 hops 2 max_nodes 320
 
 # ----------------------------------------------------------------------------
 # Ingest tick 2: another doc arrives; we add an approximate “candidate mapping”
@@ -63,7 +63,7 @@ add_edge mentionsTable doc_stream_1 svc_1.table confidence 0.60
 add_edge suggestsSameColumn svc_1.table.col_0 svc_0.table.col_0 confidence 0.55 match_kind=token_similarity
 
 viz build/continuous_ingest_round2.dot format dot plane data focus_name svc_1 hops 3 max_nodes 360
-viz build/continuous_ingest_round2.html format html plane data focus_name svc_1 hops 3 max_nodes 360
+viz build/continuous_ingest_round2.json format json plane data focus_name svc_1 hops 3 max_nodes 360
 
 # Sanity queries.
 q select ?svc where name("doc_stream_0") -mentionsService-> ?svc limit 10

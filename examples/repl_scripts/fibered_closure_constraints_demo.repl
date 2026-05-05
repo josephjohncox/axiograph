@@ -31,6 +31,6 @@ q select ?to where name("Alice") -Accessible-> ?to limit 10
 q select ?to where name("Alice") -Knows-> ?to limit 10
 
 # Render a small neighborhood showing both planes with the meta-plane as a type layer.
-viz build/fibered_closure_constraints.html format html plane both focus_name Alice hops 3 max_nodes 220 typed_overlay
+viz build/fibered_closure_constraints.json format json plane both focus_name Alice hops 3 max_nodes 220 typed_overlay
 
 save build/fibered_closure_constraints.axpd

@@ -34,7 +34,7 @@ validate_axi
 
 # Visualize the imported schema meta-plane (purely tooling; not certifiable).
 viz build/sql_schema_discovery_schema.dot format dot plane meta focus_name SqlSchema hops 3 max_nodes 240
-viz build/sql_schema_discovery_schema.html format html plane meta focus_name SqlSchema hops 3 max_nodes 240
+viz build/sql_schema_discovery_schema.json format json plane meta focus_name SqlSchema hops 3 max_nodes 240
 
 stats
 
@@ -44,7 +44,7 @@ q select ?t where Orders -SqlForeignKey-> ?t limit 10
 
 # Visualize a small neighborhood around one data-plane entity.
 viz build/sql_schema_discovery_users.dot format dot focus_name Users hops 2 max_nodes 140
-viz build/sql_schema_discovery_users.html format html focus_name Users hops 2 max_nodes 140
+viz build/sql_schema_discovery_users.json format json focus_name Users hops 2 max_nodes 140
 
 # Fact atoms query the reified tuple nodes (uses FactIndex via `axi_relation="SqlHasColumn"`).
 q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10

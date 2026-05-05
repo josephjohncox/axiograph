@@ -15,7 +15,7 @@ stats
 
 # Visualize a small neighborhood around the focal household (data-plane only).
 viz build/economic_flows_viz.dot format dot focus_name household_0 hops 2 max_nodes 180
-viz build/economic_flows_viz.html format html focus_name household_0 hops 2 max_nodes 180
+viz build/economic_flows_viz.json format json focus_name household_0 hops 2 max_nodes 180
 
 q select ?firm where name("household_0") -Consumption-> ?firm limit 10
 q select ?firm where name("household_0") -CardCharge/CardSettlement-> ?firm max_hops 4 limit 10

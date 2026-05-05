@@ -251,8 +251,8 @@ Run:
 
 Then open:
 
-- `build/supply_chain_modalities_hott_demo/viz_rawmetal_a.html`
-- `build/supply_chain_modalities_hott_demo/viz_erp_event_0.html`
+- `build/supply_chain_modalities_hott_demo/viz_rawmetal_a.json`
+- `build/supply_chain_modalities_hott_demo/viz_erp_event_0.json`
 
 If you prefer a pure REPL script (no wrapper), run:
 

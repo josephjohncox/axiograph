@@ -74,10 +74,10 @@ echo "-- A) Import canonical .axi, explore, and save a snapshot"
   >"$OUT_DIR/repl_output.txt"
 
 echo ""
-echo "-- B) Viz output (HTML explorer + typed overlay)"
+echo "-- B) Viz output (JSON graph + typed overlay)"
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_rawmetal_a.html" \
-  --format html \
+  --out "$OUT_DIR/viz_rawmetal_a.json" \
+  --format json \
   --plane both \
   --focus-name "RawMetal_A" \
   --hops 2 \
@@ -85,8 +85,8 @@ echo "-- B) Viz output (HTML explorer + typed overlay)"
   --typed-overlay
 
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_erp_event_0.html" \
-  --format html \
+  --out "$OUT_DIR/viz_erp_event_0.json" \
+  --format json \
   --plane both \
   --focus-name "ERPEvent_0" \
   --hops 2 \
@@ -99,5 +99,5 @@ echo "Outputs:"
 echo "  $AXPD"
 echo "  $MODULE_AXI"
 echo "  $OUT_DIR/repl_output.txt"
-echo "  $OUT_DIR/viz_rawmetal_a.html"
-echo "  $OUT_DIR/viz_erp_event_0.html"
+echo "  $OUT_DIR/viz_rawmetal_a.json"
+echo "  $OUT_DIR/viz_erp_event_0.json"

@@ -40,7 +40,7 @@ q select ?psvc where name("svc_users") -mapsToProtoService-> ?psvc limit 10
 
 # Visualize the mapping neighborhood: Service ↔ ProtoService ↔ ProtoRpc.
 viz build/enterprise_large_api_proto_import_mapping.dot format dot plane data focus_name svc_users hops 2 max_nodes 260
-viz build/enterprise_large_api_proto_import_mapping.html format html plane data focus_name svc_users hops 2 max_nodes 260
+viz build/enterprise_large_api_proto_import_mapping.json format json plane data focus_name svc_users hops 2 max_nodes 260
 
 # Now we can traverse from enterprise concepts into the imported proto surface.
 # Team → Service → ProtoService → ProtoRpc

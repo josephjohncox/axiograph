@@ -29,7 +29,7 @@ validate_axi
 
 # Visualize the imported schema meta-plane (purely tooling; not certifiable).
 viz build/proto_schema_discovery_schema.dot format dot plane meta focus_name ProtoApi hops 3 max_nodes 260
-viz build/proto_schema_discovery_schema.html format html plane meta focus_name ProtoApi hops 3 max_nodes 260
+viz build/proto_schema_discovery_schema.json format json plane meta focus_name ProtoApi hops 3 max_nodes 260
 
 stats
 
@@ -41,7 +41,7 @@ q select ?msg where GetUser -proto_rpc_response-> ?msg limit 10
 
 # Visualize a small neighborhood around the service.
 viz build/proto_schema_discovery_user_service.dot format dot focus_name UserService hops 2 max_nodes 140
-viz build/proto_schema_discovery_user_service.html format html focus_name UserService hops 2 max_nodes 140
+viz build/proto_schema_discovery_user_service.json format json focus_name UserService hops 2 max_nodes 140
 
 # Fact atoms query the reified tuple nodes (uses FactIndex via `axi_relation="proto_rpc_http_endpoint"`).
 q select ?f where ?f = proto_rpc_http_endpoint(from=GetUser, to=GET_v1_users_user_id) limit 10
