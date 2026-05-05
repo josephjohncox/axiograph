@@ -55,8 +55,8 @@ echo "-- visualize the imported schema (meta-plane) and a small neighborhood"
   --max-nodes 260
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/ProtoApi.proposals.axi" \
-  --out "$OUT_DIR/user_service.html" \
-  --format html \
+  --out "$OUT_DIR/user_service.json" \
+  --format json \
   --plane data \
   --focus-name UserService \
   --hops 2 \

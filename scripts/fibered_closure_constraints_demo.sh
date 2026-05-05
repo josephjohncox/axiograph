@@ -78,11 +78,11 @@ echo "wrote $CERT_FULL"
 make verify-lean-cert AXI="$INPUT_AXI" CERT="$CERT_FULL"
 
 echo ""
-echo "-- E) Render typed-overlay viz (HTML)"
-VIZ="$OUT_DIR/fibered_closure_constraints.html"
+echo "-- E) Render typed-overlay viz (JSON graph)"
+VIZ="$OUT_DIR/fibered_closure_constraints.json"
 "$AXIOGRAPH" tools viz "$INPUT_AXI" \
   --out "$VIZ" \
-  --format html \
+  --format json \
   --plane both \
   --typed-overlay \
   --all \

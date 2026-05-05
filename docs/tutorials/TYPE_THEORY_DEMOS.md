@@ -249,7 +249,7 @@ Run:
 ./scripts/supply_chain_modalities_hott_demo.sh
 ```
 
-Then open:
+Then inspect:
 
 - `build/supply_chain_modalities_hott_demo/viz_rawmetal_a.json`
 - `build/supply_chain_modalities_hott_demo/viz_erp_event_0.json`

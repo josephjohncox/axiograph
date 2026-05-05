@@ -260,8 +260,8 @@ ACCEPTED_WITH_CHUNKS_AXPD="$OUT_DIR/AllSources.accepted.with_chunks.axpd"
 echo ""
 echo "-- E1) visualize with typed overlay (meta-plane as type layer)"
 "$AXIOGRAPH" tools viz "$ACCEPTED_WITH_CHUNKS_AXPD" \
-  --out "$OUT_DIR/all_sources_both_typed.html" \
-  --format html \
+  --out "$OUT_DIR/all_sources_both_typed.json" \
+  --format json \
   --plane both \
   --typed-overlay \
   --hops 3 \
@@ -280,6 +280,6 @@ echo "  candidate axi:        $DRAFT_AXI"
 echo "  accepted plane dir:   $ACCEPTED_DIR"
 echo "  accepted axpd:        $ACCEPTED_AXPD"
 echo "  wal axpd:             $ACCEPTED_WITH_CHUNKS_AXPD"
-echo "  viz (typed overlay):  $OUT_DIR/all_sources_both_typed.html"
+echo "  viz (typed overlay):  $OUT_DIR/all_sources_both_typed.json"
 echo "  network report:       $OUT_DIR/network_axpd.json"
 echo "  quality report:       $OUT_DIR/quality_axpd.json"

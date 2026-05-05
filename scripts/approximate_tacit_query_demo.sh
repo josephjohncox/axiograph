@@ -63,10 +63,10 @@ echo "-- B) Run queries (approximate + confidence-threshold filtering)"
   >"$OUT_DIR/repl_output.txt"
 
 echo ""
-echo "-- C) Viz output (HTML explorer)"
+echo "-- C) Viz output (JSON graph)"
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_service0.html" \
-  --format html \
+  --out "$OUT_DIR/viz_service0.json" \
+  --format json \
   --plane both \
   --focus-name "acme.svc0.v1.Service0" \
   --hops 2 \
@@ -74,8 +74,8 @@ echo "-- C) Viz output (HTML explorer)"
   --typed-overlay
 
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_doc0.html" \
-  --format html \
+  --out "$OUT_DIR/viz_doc0.json" \
+  --format json \
   --plane data \
   --focus-name "doc_proto_api_0" \
   --hops 2 \
@@ -86,6 +86,5 @@ echo "Done."
 echo "Outputs:"
 echo "  $AXPD"
 echo "  $OUT_DIR/repl_output.txt"
-echo "  $OUT_DIR/viz_service0.html"
-echo "  $OUT_DIR/viz_doc0.html"
-
+echo "  $OUT_DIR/viz_service0.json"
+echo "  $OUT_DIR/viz_doc0.json"

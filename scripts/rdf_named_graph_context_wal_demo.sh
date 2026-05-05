@@ -101,8 +101,8 @@ echo "-- E) Query per-context (REPL non-interactive)"
 echo ""
 echo "-- F) Viz (typed overlay)"
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_a.html" \
-  --format html \
+  --out "$OUT_DIR/viz_a.json" \
+  --format json \
   --plane both \
   --typed-overlay \
   --focus-name a \
@@ -117,4 +117,4 @@ echo "  $CHUNKS"
 echo "  $PROPOSALS"
 echo "  $AXPD"
 echo "  $OUT_DIR/repl_output.txt"
-echo "  $OUT_DIR/viz_a.html"
+echo "  $OUT_DIR/viz_a.json"

@@ -103,8 +103,8 @@ echo ""
 echo "-- F) visualize accepted snapshot"
 
 "$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
-  --out "$OUT_DIR/PhysicsDiscovered.both.html" \
-  --format html \
+  --out "$OUT_DIR/PhysicsDiscovered.both.json" \
+  --format json \
   --plane both \
   --focus-name PhysicsDiscovered \
   --hops 3 \
@@ -117,4 +117,4 @@ echo "  $OUT_DIR/proposals.json"
 echo "  $DRAFT_AXI"
 echo "  $ACCEPTED_PLANE_DIR/HEAD"
 echo "  $ACCEPTED_AXPD"
-echo "  $OUT_DIR/PhysicsDiscovered.both.html"
+echo "  $OUT_DIR/PhysicsDiscovered.both.json"

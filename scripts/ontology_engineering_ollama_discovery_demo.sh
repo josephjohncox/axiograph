@@ -166,8 +166,8 @@ echo "-- validate drafted module parses + typechecks (AST-level)"
 echo ""
 echo "-- visualize a small neighborhood"
 "$AXIOGRAPH" tools viz "$OUT_DIR/ProtoApi.llm_draft.axi" \
-  --out "$OUT_DIR/proto_api_llm_draft_service.html" \
-  --format html \
+  --out "$OUT_DIR/proto_api_llm_draft_service.json" \
+  --format json \
   --plane data \
   --focus-name UserService \
   --hops 2 \
@@ -208,16 +208,16 @@ ACCEPTED_AXPD="$ACCEPTED_DIR/ProtoApi.accepted.axpd"
 echo ""
 echo "-- visualize meta-plane and data-plane (accepted snapshot)"
 "$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
-  --out "$ACCEPTED_DIR/proto_api_meta.html" \
-  --format html \
+  --out "$ACCEPTED_DIR/proto_api_meta.json" \
+  --format json \
   --plane meta \
   --focus-name ProtoApi \
   --hops 3 \
   --max-nodes 340
 
 "$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
-  --out "$ACCEPTED_DIR/proto_api_user_service.html" \
-  --format html \
+  --out "$ACCEPTED_DIR/proto_api_user_service.json" \
+  --format json \
   --plane data \
   --focus-name UserService \
   --hops 2 \
@@ -225,7 +225,7 @@ echo "-- visualize meta-plane and data-plane (accepted snapshot)"
 
 echo ""
 echo "-- (optional) emit a query certificate anchored to accepted canonical .axi"
-QUERY_CERT="$ACCEPTED_DIR/proto_api_query_cert_v1.json"
+QUERY_CERT="$ACCEPTED_DIR/proto_api_query_cert.json"
 "$AXIOGRAPH" cert query "$ACCEPTED_AXI" \
   'select ?rpc where UserService -proto_service_has_rpc-> ?rpc limit 10' \
   --out "$QUERY_CERT"
@@ -242,11 +242,11 @@ echo "  $OUT_DIR/semantic_proposals.aug.json"
 echo "  $OUT_DIR/candidates/"
 echo "Structural discovery outputs:"
 echo "  $OUT_DIR/ProtoApi.llm_draft.axi"
-echo "  $OUT_DIR/proto_api_llm_draft_service.html"
+echo "  $OUT_DIR/proto_api_llm_draft_service.json"
 echo "Accepted (gated) outputs:"
 echo "  $ACCEPTED_AXI"
 echo "  $ACCEPTED_AXPD"
 echo "  $TYPECHECK_CERT"
 echo "  $QUERY_CERT"
-echo "  $ACCEPTED_DIR/proto_api_meta.html"
-echo "  $ACCEPTED_DIR/proto_api_user_service.html"
+echo "  $ACCEPTED_DIR/proto_api_meta.json"
+echo "  $ACCEPTED_DIR/proto_api_user_service.json"

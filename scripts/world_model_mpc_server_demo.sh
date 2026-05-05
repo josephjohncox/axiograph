@@ -12,7 +12,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/build/world_model_mpc_server_demo"
 PLANE_DIR="$OUT_DIR/accepted_plane"
 READY_FILE="$OUT_DIR/server_ready.json"
-VIZ_DIR="$OUT_DIR/viz"
+VIZ_OUT="$OUT_DIR/viz.json"
 PLAN_OUT="$OUT_DIR/plan_response.json"
 AXPD_OUT="$OUT_DIR/server_snapshot.axpd"
 ADMIN_TOKEN="${ADMIN_TOKEN:-demo-token}"
@@ -189,10 +189,10 @@ echo "-- D) Build local PathDB snapshot for offline viz"
   --out "$AXPD_OUT"
 
 echo ""
-echo "-- E) Viz bundle (offline)"
+echo "-- E) Viz JSON (offline)"
 "$AXIOGRAPH" tools viz "$AXPD_OUT" \
-  --out "$VIZ_DIR" \
-  --format html \
+  --out "$VIZ_OUT" \
+  --format json \
   --plane both \
   --typed-overlay \
   --max-nodes 2000 \
@@ -204,7 +204,7 @@ echo "Outputs:"
 echo "  $OUT_DIR/server.log"
 echo "  $PLAN_OUT"
 echo "  $AXPD_OUT"
-echo "  $VIZ_DIR/index.html"
+echo "  $VIZ_OUT"
 echo "admin token: $ADMIN_TOKEN"
 
 echo ""
@@ -212,7 +212,7 @@ echo "Server URL:"
 echo "  $BASE_URL/viz"
 echo ""
 echo "=== Viz UI demo playbook ==="
-echo "Open:"
+echo "Server URL:"
 echo "  $BASE_URL/viz?focus_name=Alice&plane=both&typed_overlay=true&hops=3&max_nodes=420"
 cat <<'TXT'
 

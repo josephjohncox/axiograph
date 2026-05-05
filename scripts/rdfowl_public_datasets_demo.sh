@@ -63,16 +63,16 @@ FIXTURE_AXPD="$FIXTURE_OUT/Discovered_w3c_shacl_minimal.axpd"
 echo ""
 echo "-- C2) Viz: meta-plane + typed data-plane overlay"
 "$AXIOGRAPH" tools viz "$FIXTURE_AXPD" \
-  --out "$FIXTURE_OUT/viz_meta.html" \
-  --format html \
+  --out "$FIXTURE_OUT/viz_meta.json" \
+  --format json \
   --plane meta \
   --focus-name "Discovered_W3C_SHACL_Minimal" \
   --hops 3 \
   --max-nodes 520
 
 "$AXIOGRAPH" tools viz "$FIXTURE_AXPD" \
-  --out "$FIXTURE_OUT/viz_data_typed.html" \
-  --format html \
+  --out "$FIXTURE_OUT/viz_data_typed.json" \
+  --format json \
   --plane data \
   --typed-overlay \
   --focus-name Alice \
@@ -107,5 +107,5 @@ echo "  $FIXTURE_AXI"
 echo "  $FIXTURE_AXPD"
 echo "  $FIXTURE_OUT/network.json"
 echo "  $FIXTURE_OUT/quality.json"
-echo "  $FIXTURE_OUT/viz_meta.html"
-echo "  $FIXTURE_OUT/viz_data_typed.html"
+echo "  $FIXTURE_OUT/viz_meta.json"
+echo "  $FIXTURE_OUT/viz_data_typed.json"

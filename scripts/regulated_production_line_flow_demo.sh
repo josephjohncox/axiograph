@@ -7,7 +7,7 @@ OUT_DIR="$ROOT_DIR/build/regulated_production_line_flow_demo"
 PLANE_DIR="$OUT_DIR/accepted_plane"
 AXPD_OUT="$OUT_DIR/regulated_line.axpd"
 CQ_OUT="$OUT_DIR/regulated_line_cq_generated.json"
-VIZ_OUT="$OUT_DIR/regulated_line_viz"
+VIZ_OUT="$OUT_DIR/regulated_line_viz.json"
 
 if [ -z "${AXIOGRAPH_DEMO_KEEP:-}" ]; then
   rm -rf "$OUT_DIR"
@@ -44,7 +44,7 @@ echo "-- D) Run the canonical REPL demo on the promoted module"
 "$AXIOGRAPH" repl --script examples/repl_scripts/regulated_production_line_axi_demo.repl --quiet
 
 echo "-- E) Build focused typed-overlay visualization"
-"$AXIOGRAPH" tools viz "$AXPD_OUT" --out "$VIZ_OUT" --format html --plane both --typed-overlay --max-nodes 800 --max-edges 8000
+"$AXIOGRAPH" tools viz "$AXPD_OUT" --out "$VIZ_OUT" --format json --plane both --typed-overlay --max-nodes 800 --max-edges 8000
 
 echo "done"
 echo "accepted plane: $PLANE_DIR"

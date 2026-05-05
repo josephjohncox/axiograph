@@ -63,8 +63,8 @@ SQL
   --out "$OUT_DIR/sql_tick0.axpd"
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/sql_tick0.axpd" \
-  --out "$OUT_DIR/sql_tick0_schema.html" \
-  --format html \
+  --out "$OUT_DIR/sql_tick0_schema.json" \
+  --format json \
   --plane both \
   --focus-name SqlTick0 \
   --hops 3 \
@@ -109,8 +109,8 @@ SQL
   --out "$OUT_DIR/sql_tick1.axpd"
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/sql_tick1.axpd" \
-  --out "$OUT_DIR/sql_tick1_schema.html" \
-  --format html \
+  --out "$OUT_DIR/sql_tick1_schema.json" \
+  --format json \
   --plane both \
   --focus-name SqlTick1 \
   --hops 3 \
@@ -122,6 +122,6 @@ diff -u "$OUT_DIR/SqlTick0.proposals.axi" "$OUT_DIR/SqlTick1.proposals.axi" || t
 
 echo ""
 echo "Done."
-echo "Open:"
-echo "  $OUT_DIR/sql_tick0_schema.html"
-echo "  $OUT_DIR/sql_tick1_schema.html"
+echo "Outputs:"
+echo "  $OUT_DIR/sql_tick0_schema.json"
+echo "  $OUT_DIR/sql_tick1_schema.json"

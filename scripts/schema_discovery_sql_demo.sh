@@ -93,8 +93,8 @@ echo "-- visualize the imported schema (meta-plane) and a small neighborhood"
   --max-nodes 240
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/SqlSchema.proposals.axi" \
-  --out "$OUT_DIR/sql_schema_users.html" \
-  --format html \
+  --out "$OUT_DIR/sql_schema_users.json" \
+  --format json \
   --plane data \
   --focus-name Users \
   --hops 2 \

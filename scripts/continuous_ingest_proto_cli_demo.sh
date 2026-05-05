@@ -83,8 +83,8 @@ PROTO
 
 # Focus: the service node (name is sanitized; it's a single identifier in `.axi`).
 "$AXIOGRAPH" tools viz "$OUT_DIR/proto_tick0.axpd" \
-  --out "$OUT_DIR/proto_tick0_service.html" \
-  --format html \
+  --out "$OUT_DIR/proto_tick0_service.json" \
+  --format json \
   --plane data \
   --focus-name acme_toy_v1_ThingService \
   --hops 2 \
@@ -141,8 +141,8 @@ PROTO
   --out "$OUT_DIR/proto_tick1.axpd"
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/proto_tick1.axpd" \
-  --out "$OUT_DIR/proto_tick1_service.html" \
-  --format html \
+  --out "$OUT_DIR/proto_tick1_service.json" \
+  --format json \
   --plane data \
   --focus-name acme_toy_v1_ThingService \
   --hops 2 \
@@ -154,6 +154,6 @@ diff -u "$OUT_DIR/ProtoTick0.proposals.axi" "$OUT_DIR/ProtoTick1.proposals.axi" 
 
 echo ""
 echo "Done."
-echo "Open:"
-echo "  $OUT_DIR/proto_tick0_service.html"
-echo "  $OUT_DIR/proto_tick1_service.html"
+echo "Outputs:"
+echo "  $OUT_DIR/proto_tick0_service.json"
+echo "  $OUT_DIR/proto_tick1_service.json"

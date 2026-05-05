@@ -64,8 +64,8 @@ AXPD="$OUT_DIR/ontology_rewrites.axpd"
   >"$OUT_DIR/repl_query.txt"
 
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_alice.html" \
-  --format html \
+  --out "$OUT_DIR/viz_alice.json" \
+  --format json \
   --plane both \
   --focus-name Alice \
   --hops 3 \
@@ -78,4 +78,4 @@ echo "Outputs (selected):"
 echo "  $OUT_DIR/help_root.txt"
 echo "  $OUT_DIR/quality_report.json"
 echo "  $OUT_DIR/network_report.json"
-echo "  $OUT_DIR/viz_alice.html"
+echo "  $OUT_DIR/viz_alice.json"

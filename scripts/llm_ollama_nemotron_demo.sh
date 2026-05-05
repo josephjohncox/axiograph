@@ -72,11 +72,11 @@ echo "-- non-interactive REPL session (LLM tool loop)"
   --cmd "llm agent what is the HTTP endpoint for acme.svc0.v1.Service0.GetWidget?" \
   --cmd "llm agent what does doc_proto_api_0 mention?" \
   --cmd "llm agent what is the suggested next step after acme.svc0.v1.Service0.CreateWidget?" \
-  --cmd "viz $OUT_DIR/proto_api_service0.html format html plane data focus_name acme.svc0.v1.Service0 hops 2 max_nodes 320" \
-  --cmd "viz $OUT_DIR/proto_api_doc0.html format html plane data focus_name doc_proto_api_0 hops 2 max_nodes 360"
+  --cmd "viz $OUT_DIR/proto_api_service0.json format json plane data focus_name acme.svc0.v1.Service0 hops 2 max_nodes 320" \
+  --cmd "viz $OUT_DIR/proto_api_doc0.json format json plane data focus_name doc_proto_api_0 hops 2 max_nodes 360"
 
 echo ""
 echo "Done."
-echo "Open:"
-echo "  $OUT_DIR/proto_api_service0.html"
-echo "  $OUT_DIR/proto_api_doc0.html"
+echo "Outputs:"
+echo "  $OUT_DIR/proto_api_service0.json"
+echo "  $OUT_DIR/proto_api_doc0.json"

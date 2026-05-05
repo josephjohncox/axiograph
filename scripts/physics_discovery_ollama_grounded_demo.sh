@@ -172,8 +172,8 @@ ACCEPTED_AXPD="$ACCEPTED_DIR/PhysicsDiscovered.accepted.axpd"
 echo ""
 echo "-- viz (meta + data planes) for the accepted snapshot"
 "$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
-  --out "$ACCEPTED_DIR/physics_discovered_both.html" \
-  --format html \
+  --out "$ACCEPTED_DIR/physics_discovered_both.json" \
+  --format json \
   --plane both \
   --focus-name PhysicsDiscovered \
   --hops 3 \
@@ -190,8 +190,8 @@ MERGED_MODULE_AXI="$ACCEPTED_DIR/PhysicsKnowledge_plus_discovered.module.axi"
   --cmd "export_axi_module $MERGED_MODULE_AXI"
 
 "$AXIOGRAPH" tools viz "$MERGED_AXPD" \
-  --out "$ACCEPTED_DIR/physics_merged_both.html" \
-  --format html \
+  --out "$ACCEPTED_DIR/physics_merged_both.json" \
+  --format json \
   --plane both \
   --focus-name Physics \
   --hops 3 \
@@ -206,7 +206,7 @@ echo "  $DRAFT_AXI"
 echo "  $ACCEPTED_AXI"
 echo "  $ACCEPTED_AXPD"
 echo "  $TYPECHECK_CERT"
-echo "  $ACCEPTED_DIR/physics_discovered_both.html"
+echo "  $ACCEPTED_DIR/physics_discovered_both.json"
 echo "  $MERGED_AXPD"
 echo "  $MERGED_MODULE_AXI"
-echo "  $ACCEPTED_DIR/physics_merged_both.html"
+echo "  $ACCEPTED_DIR/physics_merged_both.json"

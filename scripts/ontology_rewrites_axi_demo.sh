@@ -49,17 +49,18 @@ echo "-- A) import canonical .axi, inspect rules, run queries (REPL non-interact
 echo ""
 echo "-- B) viz (meta + data)"
 "$AXIOGRAPH" tools viz "$OUT_DIR/ontology_rewrites_axi.axpd" \
-  --out "$OUT_DIR/ontology_rewrites_meta.html" \
-  --format html \
+  --out "$OUT_DIR/ontology_rewrites_meta.json" \
+  --format json \
   --plane meta \
   --focus-name OrgFamily \
   --hops 3 \
   --max-nodes 420
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/ontology_rewrites_axi.axpd" \
-  --out "$OUT_DIR/ontology_rewrites_data.html" \
-  --format html \
+  --out "$OUT_DIR/ontology_rewrites_data.json" \
+  --format json \
   --plane data \
+  --focus-name Bob \
   --hops 2 \
   --max-nodes 420
 
@@ -68,5 +69,5 @@ echo "Done."
 echo "Outputs:"
 echo "  $OUT_DIR/ontology_rewrites_axi_module.axi"
 echo "  $OUT_DIR/ontology_rewrites_axi.axpd"
-echo "  $OUT_DIR/ontology_rewrites_meta.html"
-echo "  $OUT_DIR/ontology_rewrites_data.html"
+echo "  $OUT_DIR/ontology_rewrites_meta.json"
+echo "  $OUT_DIR/ontology_rewrites_data.json"

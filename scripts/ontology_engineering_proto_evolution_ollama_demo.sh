@@ -192,8 +192,8 @@ run_tick() {
   echo ""
   echo "-- tick $tick: viz (meta-plane)"
   "$AXIOGRAPH" tools viz "$accepted_axpd" \
-    --out "$accepted_dir/proto_api_meta.html" \
-    --format html \
+    --out "$accepted_dir/proto_api_meta.json" \
+    --format json \
     --plane meta \
     --focus-name "$schema" \
     --hops 3 \
@@ -202,8 +202,8 @@ run_tick() {
   echo ""
   echo "-- tick $tick: viz (data-plane, focus service + docs)"
   "$AXIOGRAPH" tools viz "$accepted_axpd_with_chunks" \
-    --out "$accepted_dir/proto_api_${focus_service}.html" \
-    --format html \
+    --out "$accepted_dir/proto_api_${focus_service}.json" \
+    --format json \
     --plane data \
     --focus-name "$focus_service" \
     --hops 3 \
@@ -212,8 +212,8 @@ run_tick() {
   echo ""
   echo "-- tick $tick: viz (doc plane, focus proto file)"
   "$AXIOGRAPH" tools viz "$accepted_axpd_with_chunks" \
-    --out "$accepted_dir/proto_api_${focus_doc}.html" \
-    --format html \
+    --out "$accepted_dir/proto_api_${focus_doc}.json" \
+    --format json \
     --plane data \
     --focus-name "$focus_doc" \
     --hops 2 \
@@ -243,7 +243,7 @@ run_tick() {
 
   echo ""
   echo "-- tick $tick: optional certified query anchored to accepted canonical .axi"
-  local query_cert="$accepted_dir/proto_api_query_cert_v1.json"
+  local query_cert="$accepted_dir/proto_api_query_cert.json"
   "$AXIOGRAPH" cert query "$accepted_axi" \
     'select ?rpc where name("acme_payments_v1_PaymentService") -proto_service_has_rpc-> ?rpc limit 10' \
     --out "$query_cert"
@@ -255,9 +255,9 @@ run_tick() {
   echo "  accepted axpd:        $accepted_axpd"
   echo "  accepted axpd+chunks: $accepted_axpd_with_chunks"
   echo "  typecheck cert:       $typecheck_cert"
-  echo "  meta viz:             $accepted_dir/proto_api_meta.html"
-  echo "  service viz:          $accepted_dir/proto_api_${focus_service}.html"
-  echo "  doc viz:              $accepted_dir/proto_api_${focus_doc}.html"
+  echo "  meta viz:             $accepted_dir/proto_api_meta.json"
+  echo "  service viz:          $accepted_dir/proto_api_${focus_service}.json"
+  echo "  doc viz:              $accepted_dir/proto_api_${focus_doc}.json"
 }
 
 # ---------------------------------------------------------------------------
@@ -466,12 +466,12 @@ diff -u "$OUT_DIR/tick1/accepted/ProtoApi.tick1.accepted.axi" "$OUT_DIR/tick2/ac
 
 echo ""
 echo "Done."
-echo "Open the service viz pages for each tick:"
-echo "  $OUT_DIR/tick0/accepted/proto_api_acme_payments_v1_PaymentService.html"
-echo "  $OUT_DIR/tick1/accepted/proto_api_acme_orders_v1_OrderService.html"
-echo "  $OUT_DIR/tick2/accepted/proto_api_acme_fulfillment_v1_FulfillmentService.html"
+echo "Inspect the service JSON graph outputs for each tick:"
+echo "  $OUT_DIR/tick0/accepted/proto_api_acme_payments_v1_PaymentService.json"
+echo "  $OUT_DIR/tick1/accepted/proto_api_acme_orders_v1_OrderService.json"
+echo "  $OUT_DIR/tick2/accepted/proto_api_acme_fulfillment_v1_FulfillmentService.json"
 echo ""
-echo "Open the doc viz pages for each tick:"
-echo "  $OUT_DIR/tick0/accepted/proto_api_acme_payments_v1_payments_proto.html"
-echo "  $OUT_DIR/tick1/accepted/proto_api_acme_orders_v1_orders_proto.html"
-echo "  $OUT_DIR/tick2/accepted/proto_api_acme_fulfillment_v1_fulfillment_proto.html"
+echo "Inspect the doc JSON graph outputs for each tick:"
+echo "  $OUT_DIR/tick0/accepted/proto_api_acme_payments_v1_payments_proto.json"
+echo "  $OUT_DIR/tick1/accepted/proto_api_acme_orders_v1_orders_proto.json"
+echo "  $OUT_DIR/tick2/accepted/proto_api_acme_fulfillment_v1_fulfillment_proto.json"

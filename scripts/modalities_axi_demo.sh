@@ -47,16 +47,16 @@ echo "-- A) import canonical .axi and run a few queries (REPL non-interactive)"
 echo ""
 echo "-- B) viz (meta + data)"
 "$AXIOGRAPH" tools viz "$OUT_DIR/modalities_axi.axpd" \
-  --out "$OUT_DIR/modalities_meta.html" \
-  --format html \
+  --out "$OUT_DIR/modalities_meta.json" \
+  --format json \
   --plane meta \
   --focus-name Modal \
   --hops 3 \
   --max-nodes 420
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/modalities_axi.axpd" \
-  --out "$OUT_DIR/modalities_data.html" \
-  --format html \
+  --out "$OUT_DIR/modalities_data.json" \
+  --format json \
   --plane data \
   --hops 2 \
   --max-nodes 420
@@ -66,5 +66,5 @@ echo "Done."
 echo "Outputs:"
 echo "  $OUT_DIR/modalities_axi_module.axi"
 echo "  $OUT_DIR/modalities_axi.axpd"
-echo "  $OUT_DIR/modalities_meta.html"
-echo "  $OUT_DIR/modalities_data.html"
+echo "  $OUT_DIR/modalities_meta.json"
+echo "  $OUT_DIR/modalities_data.json"

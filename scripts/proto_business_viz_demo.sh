@@ -4,7 +4,7 @@ set -euo pipefail
 # Proto visualizer demo (business fleet):
 # - generates a large synthetic proto/gRPC API surface with *dozens* of services
 # - includes doc chunks for grounding (service/rpc docs + a checkout narrative)
-# - renders multiple HTML explorer views (orders/payments/docs)
+# - renders multiple JSON graph views (orders/payments/docs)
 #
 # Run from repo root:
 #   ./scripts/proto_business_viz_demo.sh
@@ -69,10 +69,10 @@ echo "-- B) Run a few representative queries (AxQL + doc grounding)"
   >"$OUT_DIR/repl_output.txt"
 
 echo ""
-echo "-- C) Viz output (HTML explorer)"
+echo "-- C) Viz output (JSON graph)"
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_orders_service.html" \
-  --format html \
+  --out "$OUT_DIR/viz_orders_service.json" \
+  --format json \
   --plane both \
   --focus-name "acme.orders.v1.OrderService" \
   --hops 2 \
@@ -80,8 +80,8 @@ echo "-- C) Viz output (HTML explorer)"
   --typed-overlay
 
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_payments_service.html" \
-  --format html \
+  --out "$OUT_DIR/viz_payments_service.json" \
+  --format json \
   --plane both \
   --focus-name "acme.payments.v1.PaymentService" \
   --hops 2 \
@@ -89,16 +89,16 @@ echo "-- C) Viz output (HTML explorer)"
   --typed-overlay
 
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_doc_orders.html" \
-  --format html \
+  --out "$OUT_DIR/viz_doc_orders.json" \
+  --format json \
   --plane data \
   --focus-name "doc_orders_api" \
   --hops 2 \
   --max-nodes 900
 
 "$AXIOGRAPH" tools viz "$AXPD" \
-  --out "$OUT_DIR/viz_checkout_chunk.html" \
-  --format html \
+  --out "$OUT_DIR/viz_checkout_chunk.json" \
+  --format json \
   --plane data \
   --focus-name "doc_proto_business_checkout_0" \
   --hops 2 \
@@ -109,7 +109,7 @@ echo "Done."
 echo "Outputs:"
 echo "  $AXPD"
 echo "  $OUT_DIR/repl_output.txt"
-echo "  $OUT_DIR/viz_orders_service.html"
-echo "  $OUT_DIR/viz_payments_service.html"
-echo "  $OUT_DIR/viz_doc_orders.html"
-echo "  $OUT_DIR/viz_checkout_chunk.html"
+echo "  $OUT_DIR/viz_orders_service.json"
+echo "  $OUT_DIR/viz_payments_service.json"
+echo "  $OUT_DIR/viz_doc_orders.json"
+echo "  $OUT_DIR/viz_checkout_chunk.json"

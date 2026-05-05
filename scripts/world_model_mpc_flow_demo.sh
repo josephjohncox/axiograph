@@ -19,7 +19,7 @@ PLAN_REPORT="$OUT_DIR/wm_plan.json"
 MERGED_PROPOSALS="$OUT_DIR/wm_plan_proposals.json"
 DRAFT_AXI="$OUT_DIR/wm_plan_draft.axi"
 AXPD_OUT="$OUT_DIR/wm_plan.axpd"
-VIZ_OUT_DIR="$OUT_DIR/wm_plan_viz"
+VIZ_OUT="$OUT_DIR/wm_plan_viz.json"
 
 if [ -z "${AXIOGRAPH_DEMO_KEEP:-}" ]; then
   rm -rf "$PLANE_DIR"
@@ -140,8 +140,8 @@ echo "-- E) Promote + rebuild PathDB"
 echo ""
 echo "-- F) Viz"
 "$AXIOGRAPH" tools viz "$AXPD_OUT" \
-  --out "$VIZ_OUT_DIR" \
-  --format html \
+  --out "$VIZ_OUT" \
+  --format json \
   --plane data \
   --focus-name Carol
 
@@ -152,4 +152,4 @@ echo "  $PLAN_REPORT"
 echo "  $MERGED_PROPOSALS"
 echo "  $DRAFT_AXI"
 echo "  $AXPD_OUT"
-echo "  $VIZ_OUT_DIR/index.html"
+echo "  $VIZ_OUT"

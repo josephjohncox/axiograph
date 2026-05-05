@@ -30,9 +30,8 @@ AXPD_BASE="$OUT_DIR/physics_base.axpd"
 AXPD_OUT="$OUT_DIR/physics_wm.axpd"
 AXPD_WAL="$OUT_DIR/physics_wm_full.axpd"
 CQ_OUT="$OUT_DIR/physics_cq.json"
-VIZ_OUT_DIR="$OUT_DIR/physics_wm_viz"
-VIZ_FULL_OUT_DIR="$OUT_DIR/physics_wm_viz_full"
-VIZ_FULL_JSON="$OUT_DIR/physics_wm_viz_full.json"
+VIZ_OUT="$OUT_DIR/physics_wm_viz.json"
+VIZ_FULL_OUT="$OUT_DIR/physics_wm_viz_full.json"
 MODEL_PATH="${WORLD_MODEL_MODEL_PATH:-models/world_model_small.onnx}"
 PYTHON="${PYTHON:-python3}"
 if [ -x "$ROOT_DIR/.venv-onnx/bin/python" ]; then
@@ -208,8 +207,8 @@ fi
 echo ""
 echo "-- I) Viz (focused)"
 "$AXIOGRAPH" tools viz "$AXPD_OUT" \
-  --out "$VIZ_OUT_DIR" \
-  --format html \
+  --out "$VIZ_OUT" \
+  --format json \
   --plane both \
   --typed-overlay \
   --max-nodes 1200 \
@@ -218,15 +217,7 @@ echo "-- I) Viz (focused)"
 echo ""
 echo "-- J) Viz (full graph, all planes)"
 "$AXIOGRAPH" tools viz "$AXPD_WAL" \
-  --out "$VIZ_FULL_OUT_DIR" \
-  --format html \
-  --plane both \
-  --typed-overlay \
-  --all \
-  --max-nodes 200000 \
-  --max-edges 400000
-"$AXIOGRAPH" tools viz "$AXPD_WAL" \
-  --out "$VIZ_FULL_JSON" \
+  --out "$VIZ_FULL_OUT" \
   --format json \
   --plane both \
   --typed-overlay \
@@ -242,6 +233,5 @@ echo "  $MERGED_PROPOSALS"
 echo "  $DRAFT_AXI"
 echo "  $AXPD_OUT"
 echo "  $AXPD_WAL"
-echo "  $VIZ_OUT_DIR/index.html"
-echo "  $VIZ_FULL_OUT_DIR/index.html"
-echo "  $VIZ_FULL_JSON"
+echo "  $VIZ_OUT"
+echo "  $VIZ_FULL_OUT"

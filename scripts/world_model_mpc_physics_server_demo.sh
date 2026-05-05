@@ -12,9 +12,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/build/world_model_mpc_physics_server_demo"
 PLANE_DIR="$OUT_DIR/accepted_plane"
 READY_FILE="$OUT_DIR/server_ready.json"
-VIZ_DIR="$OUT_DIR/viz"
-VIZ_FULL_DIR="$OUT_DIR/viz_full"
-VIZ_FULL_JSON="$OUT_DIR/viz_full.json"
+VIZ_OUT="$OUT_DIR/viz.json"
+VIZ_FULL_OUT="$OUT_DIR/viz_full.json"
 PLAN_OUT="$OUT_DIR/plan_response.json"
 AXPD_OUT="$OUT_DIR/server_snapshot.axpd"
 ADMIN_TOKEN="${ADMIN_TOKEN:-demo-token}"
@@ -256,10 +255,10 @@ echo "-- E) Build local PathDB snapshot for offline viz"
   --out "$AXPD_OUT"
 
 echo ""
-echo "-- F) Viz bundle (offline)"
+echo "-- F) Viz JSON (offline)"
 "$AXIOGRAPH" tools viz "$AXPD_OUT" \
-  --out "$VIZ_DIR" \
-  --format html \
+  --out "$VIZ_OUT" \
+  --format json \
   --plane both \
   --typed-overlay \
   --max-nodes 1200 \
@@ -268,15 +267,7 @@ echo "-- F) Viz bundle (offline)"
 echo ""
 echo "-- G) Full viz bundle (all nodes, all planes)"
 "$AXIOGRAPH" tools viz "$AXPD_OUT" \
-  --out "$VIZ_FULL_DIR" \
-  --format html \
-  --plane both \
-  --typed-overlay \
-  --all \
-  --max-nodes 200000 \
-  --max-edges 400000
-"$AXIOGRAPH" tools viz "$AXPD_OUT" \
-  --out "$VIZ_FULL_JSON" \
+  --out "$VIZ_FULL_OUT" \
   --format json \
   --plane both \
   --typed-overlay \
@@ -290,9 +281,8 @@ echo "Outputs:"
 echo "  $OUT_DIR/server.log"
 echo "  $PLAN_OUT"
 echo "  $AXPD_OUT"
-echo "  $VIZ_DIR/index.html"
-echo "  $VIZ_FULL_DIR/index.html"
-echo "  $VIZ_FULL_JSON"
+echo "  $VIZ_OUT"
+echo "  $VIZ_FULL_OUT"
 echo "admin token: $ADMIN_TOKEN"
 
 echo ""
@@ -300,7 +290,7 @@ echo "Server URL:"
 echo "  $BASE_URL/viz"
 echo ""
 echo "=== Viz UI demo playbook ==="
-echo "Open:"
+echo "Server URL:"
 echo "  $BASE_URL/viz?focus_name=PositionX&plane=both&typed_overlay=true&hops=3&max_nodes=600"
 cat <<'TXT'
 
