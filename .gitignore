@@ -149,6 +149,8 @@ latex.out/
 .bin/
 
 bin/
+!rust/crates/axiograph-dsl/src/bin/
+!rust/crates/axiograph-dsl/src/bin/*.rs
 
 # Local direnv overrides
 .envrc.local

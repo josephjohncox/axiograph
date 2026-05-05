@@ -291,13 +291,13 @@ verify-axi-parse-e2e: lean
 verify-axi-digest-e2e: lean dirs
 	@echo "━━━ Canonical .axi digest parity (Rust ↔ Lean) ━━━"
 	@if command -v $(LAKE) >/dev/null 2>&1; then \
-		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest_v1 -- ../examples/economics/EconomicFlows.axi > ../$(BUILD_DIR)/axi_digest_rust_economic.txt ) && \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest -- ../examples/economics/EconomicFlows.axi > ../$(BUILD_DIR)/axi_digest_rust_economic.txt ) && \
 		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/economics/EconomicFlows.axi | sed -n 's/^ok: loaded axi module digest=\([^ ]*\) file=.*$$/\1/p' > ../$(BUILD_DIR)/axi_digest_lean_economic.txt ) && \
 		diff -u $(BUILD_DIR)/axi_digest_rust_economic.txt $(BUILD_DIR)/axi_digest_lean_economic.txt && \
-		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest_v1 -- ../examples/learning/MachinistLearning.axi > ../$(BUILD_DIR)/axi_digest_rust_learning.txt ) && \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest -- ../examples/learning/MachinistLearning.axi > ../$(BUILD_DIR)/axi_digest_rust_learning.txt ) && \
 		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/learning/MachinistLearning.axi | sed -n 's/^ok: loaded axi module digest=\([^ ]*\) file=.*$$/\1/p' > ../$(BUILD_DIR)/axi_digest_lean_learning.txt ) && \
 		diff -u $(BUILD_DIR)/axi_digest_rust_learning.txt $(BUILD_DIR)/axi_digest_lean_learning.txt && \
-		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest_v1 -- ../examples/ontology/SchemaEvolution.axi > ../$(BUILD_DIR)/axi_digest_rust_ontology.txt ) && \
+		( cd $(RUST_DIR) && $(CARGO) run -q -p axiograph-dsl --bin axiograph_axi_digest -- ../examples/ontology/SchemaEvolution.axi > ../$(BUILD_DIR)/axi_digest_rust_ontology.txt ) && \
 		( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../examples/ontology/SchemaEvolution.axi | sed -n 's/^ok: loaded axi module digest=\([^ ]*\) file=.*$$/\1/p' > ../$(BUILD_DIR)/axi_digest_lean_ontology.txt ) && \
 		diff -u $(BUILD_DIR)/axi_digest_rust_ontology.txt $(BUILD_DIR)/axi_digest_lean_ontology.txt && \
 		echo "✓ Rust and Lean digests agree on the canonical corpus"; \

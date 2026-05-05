@@ -1615,11 +1615,27 @@ instance DemoInst of Demo:
 
     #[test]
     fn viz_dist_dir_resolves_from_crate_manifest_for_temp_cwd_scripts() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let dist = find_viz_dist_from(&manifest_dir)
-            .expect("repo checkout should contain frontend/viz/dist/index.html");
+        let root = std::env::temp_dir().join(format!(
+            "axiograph-viz-dist-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        let manifest_dir = root.join("rust").join("crates").join("axiograph-cli");
+        let dist = root.join("frontend").join("viz").join("dist");
+        std::fs::create_dir_all(&manifest_dir).expect("create fake manifest dir");
+        std::fs::create_dir_all(&dist).expect("create fake viz dist dir");
+        std::fs::write(dist.join("index.html"), "<!doctype html><html></html>")
+            .expect("write fake viz index");
 
-        assert!(dist.join("index.html").exists());
-        assert!(dist.ends_with("frontend/viz/dist"));
+        let resolved = find_viz_dist_from(&manifest_dir)
+            .expect("fake repo checkout should contain frontend/viz/dist/index.html");
+
+        assert_eq!(resolved, dist);
+        assert!(resolved.ends_with("frontend/viz/dist"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
