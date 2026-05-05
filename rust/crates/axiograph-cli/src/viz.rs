@@ -1383,17 +1383,38 @@ pub fn render_json(g: &VizGraph) -> Result<String> {
 
 pub fn viz_dist_dir() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut dir = cwd.clone();
+    if let Some(dist) = find_viz_dist_from(&cwd) {
+        return dist;
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(dist) = find_viz_dist_from(&manifest_dir) {
+        return dist;
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            if let Some(dist) = find_viz_dist_from(exe_dir) {
+                return dist;
+            }
+        }
+    }
+
+    cwd.join("frontend").join("viz").join("dist")
+}
+
+fn find_viz_dist_from(start: &std::path::Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
     loop {
         let candidate = dir.join("frontend").join("viz").join("dist");
         if candidate.join("index.html").exists() {
-            return candidate;
+            return Some(candidate);
         }
         if !dir.pop() {
             break;
         }
     }
-    cwd.join("frontend").join("viz").join("dist")
+    None
 }
 
 pub fn viz_index_path() -> PathBuf {
