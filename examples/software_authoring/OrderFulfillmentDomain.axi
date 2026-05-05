@@ -1,7 +1,7 @@
 -- Pure domain ontology for order fulfillment.
 --
--- DDD/fDDD context maps, implementation surfaces, code refs, codegen plans,
--- coverage policy, and continuous software checks intentionally live in
+-- DDD/fDDD context maps, software coverage targets, code refs, codegen plans,
+-- coverage policy, and continuous checks intentionally live in
 -- `order_fulfillment_tooling_overlay.json`, not in this `.axi` representation.
 
 module OrderFulfillmentDomain

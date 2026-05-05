@@ -23,7 +23,7 @@ python3 examples/check_catalog.py
 | Rewrites and equations | `examples/ontology/OntologyRewrites.axi` | runtime theory graph, rewrite/constraint surfaces |
 | Schema evolution | `examples/ontology/SchemaEvolution.axi` | migration-preview and typed transport examples |
 | Semantic merge | `examples/semantic_merge/` | realistic plant-operations merge/rebase plans checked against Lean theory |
-| Business process | `examples/industrial/RegulatedProductionLine.axi` | BDD/DDD/fDDD, CQs, coverage, implementation surfaces |
+| Business process | `examples/industrial/RegulatedProductionLine.axi` | regulated-process domain model plus CQ/coverage overlays |
 | Software authoring | `examples/software_authoring/OrderFulfillmentDomain.axi` | pure domain `.axi` plus DDD/fDDD tooling overlays, weak definition queries, typed theory checks, continuous semantic coverage, code skeleton previews |
 | Physics/domain modeling | `examples/physics/PhysicsOntology.axi` | scientific ontology and typed relation design |
 | Backend/interop | `examples/backend_projection/`, `examples/rdfowl/` | native-readable TypeDB/TerminusDB projection contracts plus RDF/SHACL boundary-layer examples |

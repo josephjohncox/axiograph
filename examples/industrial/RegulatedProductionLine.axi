@@ -7,11 +7,14 @@
 -- - certified incoming material,
 -- - inspection and release,
 -- - delivery and pricing commitments,
--- - implementation surfaces such as PLC routines, HMI screens, and SOP sections.
+-- - plant-control artifacts such as PLC routines, HMI screens, and SOP sections.
 --
 -- The point is not to model a whole plant. The point is to make one typed line
--- where ontology, process, business, and implementation surfaces have to stay
--- compatible under review/promotion.
+-- where ontology, process, business, and operational-control artifacts have to
+-- stay aligned under review/promotion.
+--
+-- Code refs, software coverage policy, and codegen plans are intentionally
+-- outside this domain representation and live in behavior/tooling overlays.
 
 module RegulatedProductionLine
 

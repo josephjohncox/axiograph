@@ -2,14 +2,19 @@
 
 `RegulatedProductionLine.axi` is a domain example, not part of the core
 semantic kernel. It models a regulated production line with business,
-industrial, and implementation surfaces:
+industrial, and operational-control artifacts:
 
 - ERP/MRP order and shipment lineage,
 - material lots and supplier certificates,
-- PLC/HMI/SOP process-control seams,
+- PLC/HMI/SOP process-control artifacts,
 - release review and inspection decisions,
 - delivery commitments and pricing terms,
-- competency questions and semantic coverage targets.
+- competency questions and semantic coverage targets supplied by adjacent
+  tooling overlays.
+
+The `.axi` module intentionally does not model code refs, test specs, coverage
+policy, or generated implementation surfaces. Those are tooling concepts that
+consume the ontology through behavior cases and overlays.
 
 The example is intentionally linked to the core through public runtime
 contracts:
@@ -52,7 +57,8 @@ cargo run --manifest-path rust/Cargo.toml \
 - `run.json` carries the accepted-style `.axi` anchor used by every artifact.
 - `cq_results.json` shows the competency-question smoke checks for the imported
   canonical instance.
-- `coverage.json` maps ontology relations to implementation/business surfaces.
+- `coverage.json` maps ontology relations to overlay-defined software/business
+  surfaces.
 - `agent_report.json` summarizes gaps and next actions for coding agents.
 - `distill.json` is the short handoff summary for review or agent planning.
 
