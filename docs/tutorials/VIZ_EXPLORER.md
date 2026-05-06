@@ -32,28 +32,31 @@ bin/axiograph db pathdb materialize-axi examples/ontology/OntologyRewrites.axi \
 
 ## 1b) Add DocChunks for LLM grounding (recommended)
 
-If you want the LLM panel to have *document-like evidence* to cite, import a
-`chunks.json` file as `DocChunk` nodes (extension layer).
+If you want the LLM panel to have *document-like evidence* to cite, generate a
+typed evidence bundle with the ingest tools, then attach it as `DocChunk` nodes
+to the local tutorial snapshot.
 
 ```bash
-cat > build/viz_tutorial_chunks.json <<'EOF'
-[
-  {
-    "chunk_id": "doc_viz_tutorial_0",
-    "document_id": "OntologyRewrites_notes.md",
-    "page": null,
-    "span_id": "para_0",
-    "text": "OntologyRewrites.axi includes Parent(parent, child) and Grandparent(grandparent, grandchild). Example people: Alice, Bob, Carol, Eve. Ask: who is Bob's parent?",
-    "bbox": null,
-    "metadata": {"kind":"demo_note"}
-  }
-]
+cat > build/viz_tutorial_notes.md <<'EOF'
+OntologyRewrites.axi includes Parent(parent, child) and
+Grandparent(grandparent, grandchild). Example people include Alice, Bob, Carol,
+and Eve. A useful natural-language prompt is: who is Bob's parent?
 EOF
+
+bin/axiograph ingest doc build/viz_tutorial_notes.md \
+  --out build/viz_tutorial_proposals.json \
+  --chunks build/viz_tutorial_chunks.json
 
 bin/axiograph db pathdb import-chunks build/viz_tutorial.axpd \
   --chunks build/viz_tutorial_chunks.json \
   --out build/viz_tutorial_with_chunks.axpd
 ```
+
+`build/viz_tutorial_chunks.json` is an `EvidenceChunkBundleV1` tool artifact,
+not hand-authored ontology truth. The `db pathdb import-chunks` command mutates
+only the local derived `.axpd` tutorial snapshot. For accepted-plane evidence
+overlays, use `axiograph db accept pathdb-commit ... --chunks <chunks.json>`
+instead.
 
 ---
 

@@ -1,13 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# A small end-to-end “evidence → discovery → candidates” demo.
+# Reference integration demo: evidence → discovery → candidates.
 #
 # This stays entirely in the evidence plane until the final step (promotion),
 # where we emit *candidate* `.axi` modules for human review.
+# It is intentionally broader than the first teaching path.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 OUT_DIR="$ROOT_DIR/build/discovery_demo"
 mkdir -p "$OUT_DIR"

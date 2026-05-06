@@ -494,7 +494,7 @@ graph tooling usually hides:
 - a binary edge is used where an attributed relation-object is required,
 - source and target roles are swapped,
 - a context-scoped claim is mistaken for global truth,
-- a proposal from an LLM or world model is treated as accepted semantics,
+- a proposal from an LLM or proposal adapter is treated as accepted semantics,
 - a migration silently changes meaning because its schema mapping was only
   implied by storage shape,
 - a query answer is treated as "the truth" rather than "a sound row under a
@@ -528,7 +528,7 @@ be typed by its trust boundary and its provenance, not only by its structure.
 | Rust workflow types | `Module<Validated>`, `AcceptedSnapshotId`, `AxiTypedFact` | lifecycle, anchor, schema, arity, endpoint discipline | untrusted but fail-closed guardrail |
 | Kernel IR | relation objects, roles, carrier specs, path equations | stable compiled semantic form | emerging semantic spine |
 | Derived execution | PathDB, AxQL elaboration, RDF/PG projections | performance and interoperability | untrusted runtime |
-| Evidence plane | `proposals.json`, `chunks.json`, world-model runs, LLM suggestions | grounded candidate changes | explicitly untrusted |
+| Evidence plane | `proposals.json`, `chunks.json`, proposal-adapter runs, LLM suggestions | grounded candidate changes | explicitly untrusted |
 
 The crucial architectural rule is:
 
@@ -974,7 +974,7 @@ The operational trust boundary is explicit in three tiers:
   artifacts, and migration previews that are emitted through trusted entrypoints
   and state what contract they satisfy;
 - untrusted execution and suggestion layers: PathDB layout order, heuristic
-  ranking, planner choices, adapter inference, LLM proposals, and world-model
+  ranking, planner choices, adapter inference, LLM proposals, and proposal-adapter
   rollouts.
 
 For each artifact outside the trusted kernel, the minimum response language is:
@@ -1027,7 +1027,7 @@ The most important existing patterns are:
   - `SchemaId`
   - `TheoryId`
   - `ContextId`
-  - `WorldModelRunId`
+  - `ProposalAdapterRunId`
 - well-typed module wrappers:
   - `Module<Validated>`
   - `Module<Reviewed>`
@@ -1259,7 +1259,7 @@ From a system perspective, typing should enable:
 - safer lowering into PathDB, RDF, and property graphs,
 - stronger query elaboration and plan selection,
 - stable semantic diffs and migrations,
-- typed world-model and LLM protocols,
+- typed proposal-adapter and LLM protocols,
 - and future proof artifacts that are easier to certify.
 
 The same contract should hold across authoring surfaces:
@@ -1592,7 +1592,7 @@ These can be mined from:
 - JSON payloads,
 - RDF/OWL sources,
 - logs and event streams,
-- world-model rollouts,
+- proposal-adapter rollouts,
 - LLM-assisted extraction and repair.
 
 ### 10.2 Grounding
@@ -1612,7 +1612,7 @@ The current architecture is already pointed the right way:
 - structured ingest emits `proposals.json`,
 - evidence/provenance stays attached,
 - named graphs and contexts are preserved,
-- world models and LLMs emit reviewable overlays,
+- proposal adapters and LLMs emit reviewable overlays,
 - accepted semantics only changes through promotion.
 
 For evidence-plane ontology work, grounding should be treated as an admission
@@ -1622,7 +1622,7 @@ contract for review tooling. A minimally admissible proposal bundle should carry
 - the accepted snapshot or exported source snapshot it was derived from,
 - source document/chunk/record references,
 - context/world anchors when the proposal is scoped,
-- proposer/run identity (LLM run, world-model run, import job, or human draft),
+- proposer/run identity (LLM run, proposal-adapter run, import job, or human draft),
 - and the current ontology objects it claims to extend, contradict, or refine.
 
 Bundles that lack those fields may still be useful exploration artifacts, but
@@ -1783,7 +1783,7 @@ explicitly type-driven.
 - kernel IR compiler as a first-class crate/module pair,
 - type-directed query IR and prepared handles,
 - semantic VCS with refs/commits/reconciliation,
-- typed world-model protocols and provenance ids,
+- typed proposal-adapter protocols and provenance ids,
 - certificate-aware API surfaces,
 - typed adapter layers for RDF/OWL/SHACL and property graphs.
 
@@ -1802,10 +1802,10 @@ accurately.
 - Rust lifecycle and anchor types,
 - schema-scoped typed wrappers for facts and entities,
 - an initial compiled schema IR for relation-role semantics,
-- evidence-plane proposal protocols for ingest, LLMs, and world models,
+- evidence-plane proposal protocols for ingest, LLMs, and proposal adapters,
 - a first CQ-gated proposal-preview slice with trust metadata,
 - first runtime trust-contract fields on query/certificate/proposal-preview paths,
-- and the first `sem/` lifecycle slice for persisted world-model run records.
+- and the first `sem/` lifecycle slice for persisted proposal-adapter run records.
 
 ### 13.2 What is not yet real
 
@@ -1819,7 +1819,7 @@ accurately.
 More concretely:
 
 - semantic VCS is still only a first slice: `sem/` exists, but mostly as
-  scaffolding plus persisted `world_model_runs`, not as the full semantic branch
+  scaffolding plus persisted `proposal_adapter_runs`, not as the full semantic branch
   / review / merge / promotion history;
 - semantic commits are still evolving toward explicit state-plus-delta objects
   with ancestry, policy metadata, and semantic diff payloads, rather than being
@@ -2306,7 +2306,7 @@ This document is best read alongside:
 - `docs/explanation/RUST_DEPENDENT_TYPES.md`
 - `docs/explanation/MATHEMATICAL_FOUNDATIONS.md`
 - `docs/explanation/OBJECTIVE_DRIVEN_AI.md`
-- `docs/reference/WORLD_MODEL_PLUGIN.md`
+- `docs/reference/PREDICTIVE_PROPOSAL_ADAPTER.md`
 - `docs/roadmaps/ROADMAP_ONTOLOGY_ENGINEERING.md`
 
 ## 16. Bottom Line

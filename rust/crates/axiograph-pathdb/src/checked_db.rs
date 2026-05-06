@@ -445,7 +445,7 @@ fn check_context_invariants(db: &PathDB, meta: &MetaPlaneIndex) -> ContextInvari
 
     // Compute the set of entity types that count as Contexts (including schema-local
     // subtypes of `Context`). This keeps the invariant robust when domains extend
-    // the context/world model.
+    // the context/predictive proposal adapter.
     let mut allowed_context_types: std::collections::HashSet<String> =
         ["Context".to_string(), "World".to_string()]
             .into_iter()

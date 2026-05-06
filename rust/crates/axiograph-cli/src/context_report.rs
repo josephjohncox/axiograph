@@ -43,7 +43,7 @@ pub struct BoundedContextV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edges: Vec<crate::semantic_claim::CoverageEdgeV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    pub competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
@@ -146,7 +146,7 @@ pub fn semantic_slice_selector_for_bounded_context(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
-        world_model_run_ids: Vec::new(),
+        proposal_adapter_run_ids: Vec::new(),
         explicit_ir_refs: explicit_ir_refs.into_iter().collect(),
     })
 }
@@ -259,7 +259,7 @@ fn selector_ref_set(
         .chain(selector.competency_question_names.iter())
         .chain(selector.behavior_case_ids.iter())
         .chain(selector.implementation_surface_ids.iter())
-        .chain(selector.world_model_run_ids.iter())
+        .chain(selector.proposal_adapter_run_ids.iter())
         .chain(selector.explicit_ir_refs.iter())
         .cloned()
         .collect()
@@ -838,7 +838,7 @@ instance I of S:
                 status: crate::semantic_claim::CoverageStatusV1::Tested,
                 notes: vec!["covered by endpoint integration test".to_string()],
             }],
-            competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
+            competency_questions: vec![crate::predictive_proposals::CompetencyQuestionV1 {
                 name: "parent_lookup_returns_bob".to_string(),
                 question: Some(
                     "Does the bounded context return Bob as Alice's parent?".to_string(),

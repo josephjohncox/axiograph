@@ -7,10 +7,9 @@
 //! - Deontic logic (obligation/permission)
 //! - Temporal logic
 //!
-//! All structures are designed to be:
-//! - Serializable to the shared binary format
-//! - Compatible with the PathDB `.axpd` schema and certificate checker model
-//! - Efficiently queryable via PathDB indexes
+//! The structures are serializable as current modal runtime payloads and can be
+//! queried through PathDB indexes. Certificate claims must cite explicit checked
+//! inputs; this module is not itself the trusted modal semantics.
 
 #![allow(unused_imports, unused_mut)]
 
@@ -278,7 +277,7 @@ impl ModalFrame {
     // Serialization
     // ========================================================================
 
-    /// Convert to binary-compatible encoding
+    /// Convert to the current runtime encoding used by PathDB payloads.
     pub fn to_encoded(&self) -> EncodedModalFrame {
         let frame_type = match self.frame_type {
             ModalFrameTypeTag::Kripke => ModalFrameType::Kripke,

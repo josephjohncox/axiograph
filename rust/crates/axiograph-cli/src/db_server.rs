@@ -43,13 +43,13 @@ use url::form_urlencoded;
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::{
     read_sidecar_file, AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, IndexSidecarWriter,
-    PathDB, PathdbSnapshotId, WorldModelRunId,
+    PathDB, PathdbSnapshotId, ProposalAdapterRunId,
 };
 
 use crate::accepted_plane::{AcceptedPlaneEventV1, AcceptedPlaneSnapshotV1};
 use crate::llm::{GeneratedQuery, LlmBackend, LlmState, ToolLoopOptions};
 use crate::pathdb_wal::{PathDbSnapshotV1, PathDbWalEventV1};
-use crate::world_model::{WorldModelBackend, WorldModelState};
+use crate::predictive_proposals::{ProposalAdapterBackend, ProposalAdapterState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServerRole {
@@ -93,8 +93,8 @@ struct ServerConfig {
     ready_file: Option<PathBuf>,
     cert_verify: CertVerifyConfig,
     llm: LlmState,
-    world_model: WorldModelState,
-    world_model_workers: usize,
+    predictive_proposal: ProposalAdapterState,
+    predictive_proposal_workers: usize,
     path_index_lru_capacity: usize,
     path_index_lru_async: bool,
     path_index_lru_queue: usize,
@@ -179,11 +179,11 @@ impl QueryPlanCache {
 }
 
 #[derive(Clone)]
-struct WorldModelExecutor {
+struct PredictiveProposalExecutor {
     semaphore: Arc<Semaphore>,
 }
 
-impl WorldModelExecutor {
+impl PredictiveProposalExecutor {
     fn new(workers: usize) -> Self {
         let workers = workers.max(1);
         Self {
@@ -201,13 +201,13 @@ impl WorldModelExecutor {
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| anyhow!("world model executor closed"))?;
+            .map_err(|_| anyhow!("predictive proposal adapter executor closed"))?;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             f()
         })
         .await
-        .map_err(|e| anyhow!("world model task join failed: {e}"))?
+        .map_err(|e| anyhow!("predictive proposal adapter task join failed: {e}"))?
     }
 }
 
@@ -215,7 +215,7 @@ struct ServerState {
     config: ServerConfig,
     loaded: RwLock<LoadedSnapshot>,
     query_cache: Mutex<QueryPlanCache>,
-    world_model_executor: WorldModelExecutor,
+    predictive_proposal_executor: PredictiveProposalExecutor,
 }
 
 fn now_unix_secs() -> u64 {
@@ -267,9 +267,9 @@ fn resolve_verifier_bin(config: &CertVerifyConfig) -> Option<PathBuf> {
 }
 
 fn export_canonical_module_axi(db: &PathDB) -> Result<(AxiDigest, String)> {
-    let exported = crate::world_model_input::export_pathdb_world_model_axi(
+    let exported = crate::predictive_proposal_input::export_pathdb_predictive_proposal_axi(
         db,
-        &crate::world_model_input::WorldModelAxiInputOptionsV1::default(),
+        &crate::predictive_proposal_input::PredictiveProposalAxiInputOptionsV1::default(),
     )?;
     Ok((exported.axi_digest_v1, exported.axi_text))
 }
@@ -471,46 +471,46 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
         llm.model = args.llm_model.clone();
     }
 
-    if (args.world_model_stub as usize)
-        + (args.world_model_plugin.is_some() as usize)
-        + (args.world_model_http.is_some() as usize)
-        + (args.world_model_llm as usize)
+    if (args.predictive_proposal_stub as usize)
+        + (args.predictive_proposal_plugin.is_some() as usize)
+        + (args.predictive_proposal_http.is_some() as usize)
+        + (args.predictive_proposal_llm as usize)
         > 1
     {
         return Err(anyhow!(
-            "db serve: choose at most one world model backend: `--world-model-stub`, `--world-model-plugin ...`, `--world-model-http ...`, or `--world-model-llm`"
+            "db serve: choose at most one predictive proposal adapter backend: `--proposal-adapter-stub`, `--proposal-adapter-plugin ...`, `--proposal-adapter-http ...`, or `--proposal-adapter-llm`"
         ));
     }
 
-    let mut world_model = WorldModelState::default();
-    if args.world_model_stub {
-        world_model.backend = WorldModelBackend::Stub;
-    } else if let Some(url) = args.world_model_http.as_ref() {
-        world_model.backend = WorldModelBackend::Http { url: url.clone() };
-    } else if args.world_model_llm {
+    let mut predictive_proposal = ProposalAdapterState::default();
+    if args.predictive_proposal_stub {
+        predictive_proposal.backend = ProposalAdapterBackend::Stub;
+    } else if let Some(url) = args.predictive_proposal_http.as_ref() {
+        predictive_proposal.backend = ProposalAdapterBackend::Http { url: url.clone() };
+    } else if args.predictive_proposal_llm {
         let exe = std::env::current_exe()
             .map_err(|e| anyhow!("db serve: failed to resolve current executable: {e}"))?;
-        let mut args_list = vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
-        let has_model_arg = args.world_model_plugin_arg.iter().any(|a| a == "--model");
-        if let Some(model) = args.world_model_model.as_ref() {
+        let mut args_list = vec!["ingest".to_string(), "predictive-proposals-llm".to_string()];
+        let has_model_arg = args.predictive_proposal_plugin_arg.iter().any(|a| a == "--model");
+        if let Some(model) = args.predictive_proposal_model.as_ref() {
             if !has_model_arg {
                 args_list.push("--model".to_string());
                 args_list.push(model.clone());
             }
         }
-        args_list.extend(args.world_model_plugin_arg.clone());
-        crate::llm::validate_world_model_llm_backend_arg(&args_list)?;
-        world_model.backend = WorldModelBackend::Command {
+        args_list.extend(args.predictive_proposal_plugin_arg.clone());
+        crate::llm::validate_predictive_proposal_llm_backend_arg(&args_list)?;
+        predictive_proposal.backend = ProposalAdapterBackend::Command {
             program: exe,
             args: args_list,
         };
-    } else if let Some(plugin) = args.world_model_plugin.as_ref() {
-        world_model.backend = WorldModelBackend::Command {
+    } else if let Some(plugin) = args.predictive_proposal_plugin.as_ref() {
+        predictive_proposal.backend = ProposalAdapterBackend::Command {
             program: plugin.clone(),
-            args: args.world_model_plugin_arg.clone(),
+            args: args.predictive_proposal_plugin_arg.clone(),
         };
     }
-    world_model.model = args.world_model_model.clone();
+    predictive_proposal.model = args.predictive_proposal_model.clone();
 
     let source = match (&args.axpd, &args.dir) {
         (Some(_), Some(_)) => {
@@ -546,8 +546,8 @@ pub(crate) fn cmd_db_serve(args: crate::DbServeArgs) -> Result<()> {
             },
         },
         llm,
-        world_model,
-        world_model_workers: args.world_model_workers,
+        predictive_proposal,
+        predictive_proposal_workers: args.predictive_proposal_workers,
         path_index_lru_capacity: args.path_index_lru_capacity,
         path_index_lru_async: args.path_index_lru_async,
         path_index_lru_queue: args.path_index_lru_queue,
@@ -573,7 +573,7 @@ async fn serve_async(config: ServerConfig) -> Result<()> {
         config: config.clone(),
         loaded: RwLock::new(initial),
         query_cache: Mutex::new(QueryPlanCache::default()),
-        world_model_executor: WorldModelExecutor::new(config.world_model_workers),
+        predictive_proposal_executor: PredictiveProposalExecutor::new(config.predictive_proposal_workers),
     });
 
     if config.watch_head {
@@ -757,38 +757,38 @@ async fn handle_request(
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
-        (Method::POST, "/world_model/propose") => {
+        (Method::POST, "/evidence/proposals/predict") => {
             let auth_header = req
                 .headers()
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let parsed = request_json!(req, WorldModelProposeRequestV1, "world_model/propose");
+            let parsed = request_json!(req, PredictiveProposalRequestEnvelopeV1, "evidence/proposals/predict");
             if parsed.auto_commit {
                 if let Err(resp) = require_admin_auth_header(auth_header.as_deref(), state.as_ref())
                 {
                     return Ok(resp);
                 }
             }
-            match handle_world_model_propose(&state, parsed).await {
+            match handle_predictive_proposals(&state, parsed).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
         }
-        (Method::POST, "/world_model/plan") => {
+        (Method::POST, "/planning/proposal-rollout") => {
             let auth_header = req
                 .headers()
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let parsed = request_json!(req, WorldModelPlanRequestV1, "world_model/plan");
+            let parsed = request_json!(req, BoundedProposalPlanRequestV1, "planning/proposal-rollout");
             if parsed.auto_commit {
                 if let Err(resp) = require_admin_auth_header(auth_header.as_deref(), state.as_ref())
                 {
                     return Ok(resp);
                 }
             }
-            match handle_world_model_plan(&state, parsed).await {
+            match handle_proposal_rollout_plan(&state, parsed).await {
                 Ok(v) => json_response(StatusCode::OK, &v),
                 Err(e) => json_error(StatusCode::BAD_REQUEST, &e.to_string()),
             }
@@ -1083,11 +1083,11 @@ fn status_payload(state: &ServerState) -> Result<serde_json::Value> {
         LlmBackend::Anthropic { base_url } => format!("anthropic({base_url})"),
         LlmBackend::Command { program, .. } => format!("command({})", program.display()),
     };
-    let world_model_backend = match &state.config.world_model.backend {
-        WorldModelBackend::Disabled => "disabled".to_string(),
-        WorldModelBackend::Stub => "stub".to_string(),
-        WorldModelBackend::Command { program, .. } => format!("command({})", program.display()),
-        WorldModelBackend::Http { url } => format!("http({url})"),
+    let predictive_proposal_backend = match &state.config.predictive_proposal.backend {
+        ProposalAdapterBackend::Disabled => "disabled".to_string(),
+        ProposalAdapterBackend::Stub => "stub".to_string(),
+        ProposalAdapterBackend::Command { program, .. } => format!("command({})", program.display()),
+        ProposalAdapterBackend::Http { url } => format!("http({url})"),
     };
     let verifier_bin = resolve_verifier_bin(&state.config.cert_verify);
     Ok(serde_json::json!({
@@ -1109,11 +1109,11 @@ fn status_payload(state: &ServerState) -> Result<serde_json::Value> {
             "model": state.config.llm.model.clone(),
             "status": state.config.llm.status_line(),
         },
-        "world_model": {
-            "enabled": !matches!(state.config.world_model.backend, WorldModelBackend::Disabled),
-            "backend": world_model_backend,
-            "model": state.config.world_model.model.clone(),
-            "status": state.config.world_model.status_line(),
+        "predictive_proposal_adapter": {
+            "enabled": !matches!(state.config.predictive_proposal.backend, ProposalAdapterBackend::Disabled),
+            "backend": predictive_proposal_backend,
+            "model": state.config.predictive_proposal.model.clone(),
+            "status": state.config.predictive_proposal.status_line(),
         },
         "certificates": {
             "lean_verifier_available": verifier_bin.is_some(),
@@ -1139,8 +1139,8 @@ fn capabilities_payload(state: &ServerState) -> Result<serde_json::Value> {
     let tool_loop_tools = crate::llm::tool_loop_tools_schema(
         store_ctx.as_ref(),
         !matches!(
-            state.config.world_model.backend,
-            WorldModelBackend::Disabled
+            state.config.predictive_proposal.backend,
+            ProposalAdapterBackend::Disabled
         ),
     );
     let mut semantic_services = vec![
@@ -1472,14 +1472,14 @@ struct LlmAgentRequestV1 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct WorldModelProposeRequestV1 {
-    /// Optional goals/targets for the world model (free-form).
+struct PredictiveProposalRequestEnvelopeV1 {
+    /// Optional goals/targets for the predictive proposal adapter (free-form).
     #[serde(default)]
     goals: Vec<String>,
-    /// Optional canonical `.axi` module name to export and feed into the world model.
+    /// Optional canonical `.axi` module name to export and feed into the predictive proposal adapter.
     #[serde(default)]
     axi_module: Option<String>,
-    /// Optional seed passed to the world model.
+    /// Optional seed passed to the predictive proposal adapter.
     #[serde(default)]
     seed: Option<u64>,
     /// Max new proposals to keep (0 = no cap).
@@ -1493,11 +1493,11 @@ struct WorldModelProposeRequestV1 {
     guardrail_plane: Option<String>,
     /// Optional guardrail weight overrides.
     #[serde(default)]
-    guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
-    /// Task costs (objective terms) passed to the world model.
+    guardrail_weights: Option<crate::predictive_proposals::GuardrailCostWeightsV1>,
+    /// Task costs (objective terms) passed to the predictive proposal adapter.
     #[serde(default)]
-    task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
-    /// Optional planning horizon (steps) passed to the world model.
+    task_costs: Vec<crate::predictive_proposals::ProposalTaskCostV1>,
+    /// Optional planning horizon (steps) passed to the predictive proposal adapter.
     #[serde(default)]
     horizon_steps: Option<usize>,
     /// Include guardrail report in the response (default: true).
@@ -1526,14 +1526,14 @@ struct WorldModelProposeRequestV1 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct WorldModelPlanRequestV1 {
-    /// Optional goals/targets for the world model (free-form).
+struct BoundedProposalPlanRequestV1 {
+    /// Optional goals/targets for the predictive proposal adapter (free-form).
     #[serde(default)]
     goals: Vec<String>,
-    /// Optional canonical `.axi` module name to export and feed into the world model.
+    /// Optional canonical `.axi` module name to export and feed into the predictive proposal adapter.
     #[serde(default)]
     axi_module: Option<String>,
-    /// Optional seed passed to the world model.
+    /// Optional seed passed to the predictive proposal adapter.
     #[serde(default)]
     seed: Option<u64>,
     /// Max new proposals to keep per step (0 = no cap).
@@ -1553,16 +1553,16 @@ struct WorldModelPlanRequestV1 {
     guardrail_plane: Option<String>,
     /// Optional guardrail weight overrides.
     #[serde(default)]
-    guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
-    /// Task costs (objective terms) passed to the world model.
+    guardrail_weights: Option<crate::predictive_proposals::GuardrailCostWeightsV1>,
+    /// Task costs (objective terms) passed to the predictive proposal adapter.
     #[serde(default)]
-    task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
-    /// Include guardrail report in the world model input (default: true).
+    task_costs: Vec<crate::predictive_proposals::ProposalTaskCostV1>,
+    /// Include guardrail report in the predictive proposal adapter input (default: true).
     #[serde(default)]
     include_guardrail: Option<bool>,
     /// Optional competency questions (AxQL) for coverage-driven cost.
     #[serde(default)]
-    competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     /// Auto-commit aggregated proposals into the PathDB WAL.
     #[serde(default)]
     auto_commit: bool,
@@ -1589,12 +1589,12 @@ struct WorldModelPlanRequestV1 {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct WorldModelProposeResponseV1 {
+struct PredictiveProposalResponseEnvelopeV1 {
     version: String,
-    trace_id: WorldModelRunId,
+    trace_id: ProposalAdapterRunId,
     proposals: axiograph_ingest_docs::ProposalsFileV1,
     #[serde(skip_serializing_if = "Option::is_none")]
-    guardrail: Option<crate::world_model::GuardrailCostReportV1>,
+    guardrail: Option<crate::predictive_proposals::GuardrailCostReportV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     commit: Option<PathdbCommitResponseV1>,
     #[serde(default)]
@@ -1602,9 +1602,9 @@ struct WorldModelProposeResponseV1 {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct WorldModelPlanResponseV1 {
+struct BoundedProposalPlanResponseV1 {
     version: String,
-    report: crate::world_model::WorldModelPlanReportV1,
+    report: crate::predictive_proposals::BoundedProposalPlanReportV1,
     #[serde(skip_serializing_if = "Option::is_none")]
     commit: Option<PathdbCommitResponseV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2321,14 +2321,14 @@ async fn handle_llm_agent(
             _ => None,
         };
 
-        let world_model_ctx = if matches!(
-            state2.config.world_model.backend,
-            WorldModelBackend::Disabled
+        let predictive_proposal_ctx = if matches!(
+            state2.config.predictive_proposal.backend,
+            ProposalAdapterBackend::Disabled
         ) {
             None
         } else {
-            Some(crate::llm::ToolLoopWorldModelContext {
-                world_model: state2.config.world_model.clone(),
+            Some(crate::llm::ToolLoopPredictiveProposalContext {
+                predictive_proposal: state2.config.predictive_proposal.clone(),
                 pathdb_snapshot_id: pathdb_snapshot_id.clone(),
                 accepted_snapshot_id: accepted_snapshot_id.clone(),
                 snapshot_label: snapshot_label.clone(),
@@ -2344,7 +2344,7 @@ async fn handle_llm_agent(
             accepted_snapshot_id.as_ref(),
             accepted_axi_anchor.as_ref(),
             store_ctx.as_ref(),
-            world_model_ctx.as_ref(),
+            predictive_proposal_ctx.as_ref(),
             embeddings.as_deref(),
             embed_host,
             &mut query_cache,
@@ -2705,16 +2705,16 @@ async fn handle_llm_agent(
     Ok(out)
 }
 
-async fn handle_world_model_propose(
+async fn handle_predictive_proposals(
     state: &Arc<ServerState>,
-    req: WorldModelProposeRequestV1,
+    req: PredictiveProposalRequestEnvelopeV1,
 ) -> Result<serde_json::Value> {
     if matches!(
-        state.config.world_model.backend,
-        WorldModelBackend::Disabled
+        state.config.predictive_proposal.backend,
+        ProposalAdapterBackend::Disabled
     ) {
         return Err(anyhow!(
-            "world model is disabled for this server (configure --world-model-plugin or --world-model-stub)"
+            "predictive proposal adapter is disabled for this server (configure --proposal-adapter-plugin or --proposal-adapter-stub)"
         ));
     }
 
@@ -2738,7 +2738,7 @@ async fn handle_world_model_propose(
 
     let req2 = req.clone();
     let (trace_id, proposals, provenance, guardrail, mut notes) = state
-        .world_model_executor
+        .predictive_proposal_executor
         .run(move || {
             let guardrail_profile = req2
                 .guardrail_profile
@@ -2757,9 +2757,9 @@ async fn handle_world_model_propose(
             let guardrail_weights = req2
                 .guardrail_weights
                 .clone()
-                .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+                .unwrap_or_else(crate::predictive_proposals::GuardrailCostWeightsV1::defaults);
             let guardrail = if include_guardrail && guardrail_profile != "off" {
-                Some(crate::world_model::compute_guardrail_costs(
+                Some(crate::predictive_proposals::compute_guardrail_costs(
                     db.as_ref(),
                     &format!("db_server:{snapshot_label}"),
                     &guardrail_profile,
@@ -2770,11 +2770,11 @@ async fn handle_world_model_propose(
                 None
             };
 
-            let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+            let build_opts = crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
                 module_name: req2.axi_module.clone(),
                 pathdb_snapshot_id: pathdb_snapshot_id_for_input.clone(),
                 accepted_snapshot_id: accepted_snapshot_id_for_input.clone(),
-                training_export: Some(crate::world_model::JepaExportOptions {
+                training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                     instance_filter: None,
                     max_items: req2
                         .max_new_proposals
@@ -2787,7 +2787,7 @@ async fn handle_world_model_propose(
                     exclude_relations: Vec::new(),
                 }),
             };
-            let mut input = crate::world_model_input::build_world_model_input_from_pathdb(
+            let mut input = crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
                 db.as_ref(),
                 &build_opts,
             )?;
@@ -2797,7 +2797,7 @@ async fn handle_world_model_propose(
             input.notes.push("source=db_server".to_string());
 
             let max_keep = req2.max_new_proposals.unwrap_or(0);
-            let mut options = crate::world_model::WorldModelOptionsV1::default();
+            let mut options = crate::predictive_proposals::PredictiveProposalOptionsV1::default();
             options.max_new_proposals = max_keep;
             options.seed = req2.seed;
             options.goals = req2.goals.clone();
@@ -2808,10 +2808,10 @@ async fn handle_world_model_propose(
             let input_pathdb_snapshot_id = input.pathdb_snapshot_id();
             let input_accepted_snapshot_id = input.accepted_snapshot_id();
             let input_module_name = input.semantic_input.module_name.clone();
-            let request = crate::world_model::make_world_model_request(input, options);
-            let mut response = config.world_model.propose(&request)?;
+            let request = crate::predictive_proposals::make_predictive_proposal_request(input, options);
+            let mut response = config.predictive_proposal.propose(&request)?;
             if let Some(err) = response.error.take() {
-                return Err(anyhow!("world model error: {err}"));
+                return Err(anyhow!("predictive proposal adapter error: {err}"));
             }
 
             let guardrail_profile_label = if guardrail_profile == "off" {
@@ -2825,10 +2825,10 @@ async fn handle_world_model_propose(
                 Some(guardrail_plane.clone())
             };
 
-            let provenance = crate::world_model::build_world_model_provenance(
+            let provenance = crate::predictive_proposals::build_predictive_proposal_provenance(
                 &response,
-                config.world_model.backend_label(),
-                config.world_model.model.clone(),
+                config.predictive_proposal.backend_label(),
+                config.predictive_proposal.model.clone(),
                 input_axi_digest,
                 input_pathdb_snapshot_id,
                 input_accepted_snapshot_id,
@@ -2838,7 +2838,7 @@ async fn handle_world_model_propose(
             )?;
 
             let mut proposals =
-                crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+                crate::predictive_proposals::apply_predictive_proposal_provenance(response.proposals, &provenance);
             if max_keep > 0 && proposals.proposals.len() > max_keep {
                 proposals.proposals.truncate(max_keep);
             }
@@ -2846,7 +2846,7 @@ async fn handle_world_model_propose(
             let mut notes = response.notes.clone();
             notes.push(format!(
                 "semantic_input={}",
-                crate::world_model::WORLD_MODEL_SEMANTIC_INPUT_KIND_V1
+                crate::predictive_proposals::PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1
             ));
             if let Some(m) = input_module_name.as_ref() {
                 notes.push(format!("semantic_module={m}"));
@@ -2872,24 +2872,24 @@ async fn handle_world_model_propose(
     }
 
     if let SnapshotSource::Store { dir, .. } = &state.config.source {
-        let run_record = crate::world_model::build_world_model_run_record(
+        let run_record = crate::predictive_proposals::build_proposal_adapter_run_record(
             &provenance,
             &proposals,
             commit.as_ref().map(|c| c.snapshot_id.clone()),
             commit.as_ref().map(|c| c.accepted_snapshot_id.clone()),
             notes.clone(),
         )?;
-        let run_path = crate::accepted_plane::persist_world_model_run_record(dir, &run_record)?;
+        let run_path = crate::accepted_plane::persist_proposal_adapter_run_record(dir, &run_record)?;
         let rel = run_path
             .strip_prefix(dir)
             .unwrap_or(&run_path)
             .to_string_lossy()
             .to_string();
-        notes.push(format!("world_model_run_record={rel}"));
+        notes.push(format!("proposal_adapter_run_record={rel}"));
     }
 
-    Ok(serde_json::json!(WorldModelProposeResponseV1 {
-        version: "axiograph_world_model_propose_v1".to_string(),
+    Ok(serde_json::json!(PredictiveProposalResponseEnvelopeV1 {
+        version: "axiograph_predictive_proposals_v1".to_string(),
         trace_id,
         proposals,
         guardrail,
@@ -2898,16 +2898,16 @@ async fn handle_world_model_propose(
     }))
 }
 
-async fn handle_world_model_plan(
+async fn handle_proposal_rollout_plan(
     state: &Arc<ServerState>,
-    req: WorldModelPlanRequestV1,
+    req: BoundedProposalPlanRequestV1,
 ) -> Result<serde_json::Value> {
     if matches!(
-        state.config.world_model.backend,
-        WorldModelBackend::Disabled
+        state.config.predictive_proposal.backend,
+        ProposalAdapterBackend::Disabled
     ) {
         return Err(anyhow!(
-            "world model is disabled for this server (configure --world-model-plugin or --world-model-stub)"
+            "predictive proposal adapter is disabled for this server (configure --proposal-adapter-plugin or --proposal-adapter-stub)"
         ));
     }
 
@@ -2928,7 +2928,7 @@ async fn handle_world_model_plan(
     let guardrail_weights = req
         .guardrail_weights
         .clone()
-        .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+        .unwrap_or_else(crate::predictive_proposals::GuardrailCostWeightsV1::defaults);
     let horizon_steps = req.horizon_steps.unwrap_or(3);
     let rollouts = req.rollouts.unwrap_or(2);
     let max_new = req.max_new_proposals.unwrap_or(0);
@@ -2942,8 +2942,8 @@ async fn handle_world_model_plan(
     let mut commit_steps: Option<Vec<PathdbCommitResponseV1>> = None;
 
     let report = if req.auto_commit && req.commit_stepwise {
-        let plan_trace = format!("wm_plan::{}", now_unix_nanos());
-        let mut steps: Vec<crate::world_model::WorldModelPlanStepV1> = Vec::new();
+        let plan_trace = format!("proposal_rollout_plan::{}", now_unix_nanos());
+        let mut steps: Vec<crate::predictive_proposals::BoundedProposalPlanStepV1> = Vec::new();
         let mut commits: Vec<PathdbCommitResponseV1> = Vec::new();
 
         for step_idx in 0..horizon_steps {
@@ -2967,13 +2967,13 @@ async fn handle_world_model_plan(
             let validation_profile = validation_profile.clone();
             let validation_plane = validation_plane.clone();
             let report_step = state
-                .world_model_executor
+                .predictive_proposal_executor
                 .run(move || {
-                    let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+                    let build_opts = crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
                         module_name: req2.axi_module.clone(),
                         pathdb_snapshot_id: pathdb_snapshot_id.clone(),
                         accepted_snapshot_id: accepted_snapshot_id.clone(),
-                        training_export: Some(crate::world_model::JepaExportOptions {
+                        training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                             instance_filter: None,
                             max_items: max_new.saturating_mul(20).min(2000).max(1000),
                             mask_fields: 1,
@@ -2982,7 +2982,7 @@ async fn handle_world_model_plan(
                         }),
                     };
                     let mut base_input =
-                        crate::world_model_input::build_world_model_input_from_pathdb(
+                        crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
                             db.as_ref(),
                             &build_opts,
                         )?;
@@ -2990,7 +2990,7 @@ async fn handle_world_model_plan(
                         .notes
                         .push(format!("source=db_server_plan step={step_idx}"));
 
-                    let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+                    let plan_opts = crate::predictive_proposals::BoundedProposalPlanOptionsV1 {
                         horizon_steps: 1,
                         rollouts,
                         max_new_proposals: max_new,
@@ -3006,13 +3006,13 @@ async fn handle_world_model_plan(
                         validation_plane: validation_plane.clone(),
                     };
 
-                    crate::world_model::run_world_model_plan(
+                    crate::predictive_proposals::run_proposal_rollout_plan(
                         db.as_ref(),
-                        &config.world_model,
+                        &config.predictive_proposal,
                         &base_input,
                         &plan_opts,
                     )
-                    .map_err(|e| anyhow!("world_model/plan step failed: {e}"))
+                    .map_err(|e| anyhow!("planning/proposal-rollout step failed: {e}"))
                 })
                 .await?;
 
@@ -3020,7 +3020,7 @@ async fn handle_world_model_plan(
                 .steps
                 .into_iter()
                 .next()
-                .ok_or_else(|| anyhow!("world_model/plan step returned no steps"))?;
+                .ok_or_else(|| anyhow!("planning/proposal-rollout step returned no steps"))?;
             step_report.step = step_idx;
             steps.push(step_report.clone());
 
@@ -3038,7 +3038,7 @@ async fn handle_world_model_plan(
                     .commit_message
                     .clone()
                     .map(|m| format!("step {step_idx}: {m}"))
-                    .or_else(|| Some(format!("world_model_plan step {step_idx}"))),
+                    .or_else(|| Some(format!("proposal_rollout_plan step {step_idx}"))),
             };
             let res = handle_pathdb_commit_req(state, commit_req).await?;
             commits.push(res);
@@ -3050,8 +3050,8 @@ async fn handle_world_model_plan(
 
         commit_steps = Some(commits);
 
-        crate::world_model::WorldModelPlanReportV1 {
-            version: "world_model_plan_v1".to_string(),
+        crate::predictive_proposals::BoundedProposalPlanReportV1 {
+            version: "proposal_rollout_plan_v1".to_string(),
             trace_id: plan_trace.into(),
             generated_at_unix_secs: now_unix_secs(),
             horizon_steps,
@@ -3083,13 +3083,13 @@ async fn handle_world_model_plan(
 
         let req2 = req.clone();
         let report = state
-            .world_model_executor
+            .predictive_proposal_executor
             .run(move || {
-                let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+                let build_opts = crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
                     module_name: req2.axi_module.clone(),
                     pathdb_snapshot_id: pathdb_snapshot_id_for_input.clone(),
                     accepted_snapshot_id: accepted_snapshot_id.clone(),
-                    training_export: Some(crate::world_model::JepaExportOptions {
+                    training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                         instance_filter: None,
                         max_items: max_new.saturating_mul(20).min(2000).max(1000),
                         mask_fields: 1,
@@ -3097,13 +3097,13 @@ async fn handle_world_model_plan(
                         exclude_relations: Vec::new(),
                     }),
                 };
-                let mut base_input = crate::world_model_input::build_world_model_input_from_pathdb(
+                let mut base_input = crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
                     db.as_ref(),
                     &build_opts,
                 )?;
                 base_input.notes.push("source=db_server_plan".to_string());
 
-                let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+                let plan_opts = crate::predictive_proposals::BoundedProposalPlanOptionsV1 {
                     horizon_steps,
                     rollouts,
                     max_new_proposals: max_new,
@@ -3119,13 +3119,13 @@ async fn handle_world_model_plan(
                     validation_plane: validation_plane.clone(),
                 };
 
-                crate::world_model::run_world_model_plan(
+                crate::predictive_proposals::run_proposal_rollout_plan(
                     db.as_ref(),
-                    &config.world_model,
+                    &config.predictive_proposal,
                     &base_input,
                     &plan_opts,
                 )
-                .map_err(|e| anyhow!("world_model/plan failed: {e}"))
+                .map_err(|e| anyhow!("planning/proposal-rollout failed: {e}"))
             })
             .await?;
 
@@ -3139,7 +3139,7 @@ async fn handle_world_model_plan(
                 version: axiograph_ingest_docs::proposals::PROPOSALS_VERSION_V1,
                 generated_at,
                 source: axiograph_ingest_docs::ProposalSourceV1 {
-                    source_type: "world_model_plan".to_string(),
+                    source_type: "proposal_rollout_plan".to_string(),
                     locator: report.trace_id.to_string(),
                 },
                 schema_hint: None,
@@ -3167,8 +3167,8 @@ async fn handle_world_model_plan(
         report
     };
 
-    Ok(serde_json::json!(WorldModelPlanResponseV1 {
-        version: "axiograph_world_model_plan_v1".to_string(),
+    Ok(serde_json::json!(BoundedProposalPlanResponseV1 {
+        version: "axiograph_proposal_rollout_plan_v1".to_string(),
         report,
         commit,
         commit_steps,
@@ -3899,7 +3899,7 @@ struct PromoteRequestV1 {
     #[serde(default)]
     quality: Option<String>,
     #[serde(default)]
-    competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     #[serde(default)]
     cq_fail_on_regression: bool,
     #[serde(default)]
@@ -4634,8 +4634,8 @@ pub(crate) fn load_read_only_semantic_runtime(
             timeout: None,
         },
         llm: LlmState::default(),
-        world_model: WorldModelState::default(),
-        world_model_workers: 0,
+        predictive_proposal: ProposalAdapterState::default(),
+        predictive_proposal_workers: 0,
         path_index_lru_capacity: 0,
         path_index_lru_async: false,
         path_index_lru_queue: 1024,
@@ -4912,22 +4912,22 @@ instance Tiny of S:
             Some("accepted:llm")
         );
 
-        let propose: WorldModelProposeRequestV1 = serde_json::from_value(json!({
-            "accepted_snapshot": "accepted:wm-propose"
+        let propose: PredictiveProposalRequestEnvelopeV1 = serde_json::from_value(json!({
+            "accepted_snapshot": "accepted:proposal-propose"
         }))
-        .expect("deserialize wm propose request");
+        .expect("deserialize proposal propose request");
         assert_eq!(
             propose.accepted_snapshot.as_ref().map(|id| id.as_str()),
-            Some("accepted:wm-propose")
+            Some("accepted:proposal-propose")
         );
 
-        let plan: WorldModelPlanRequestV1 = serde_json::from_value(json!({
-            "accepted_snapshot": "accepted:wm-plan"
+        let plan: BoundedProposalPlanRequestV1 = serde_json::from_value(json!({
+            "accepted_snapshot": "accepted:proposal-plan"
         }))
-        .expect("deserialize wm plan request");
+        .expect("deserialize proposal plan request");
         assert_eq!(
             plan.accepted_snapshot.as_ref().map(|id| id.as_str()),
-            Some("accepted:wm-plan")
+            Some("accepted:proposal-plan")
         );
 
         let commit: PathdbCommitRequestV1 = serde_json::from_value(json!({
@@ -4958,8 +4958,8 @@ instance Tiny of S:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?x"],
-                "where": [
+                "select_vars": ["?x"],
+                "where_atoms": [
                     { "kind": "type", "term": "?x", "type": "A" }
                 ],
                 "limit": 5
@@ -4998,8 +4998,8 @@ instance Tiny of S:
                 "lang": "query_ir_v1",
                 "query_ir_v1": {
                     "version": 1,
-                    "select": ["?x"],
-                    "where": [
+                    "select_vars": ["?x"],
+                    "where_atoms": [
                         { "kind": "type", "term": "?x", "type": "A" }
                     ],
                     "limit": 5
@@ -5094,11 +5094,11 @@ instance Tiny of S:
                     timeout: None,
                 },
                 llm: LlmState::default(),
-                world_model: WorldModelState {
-                    backend: WorldModelBackend::Disabled,
+                predictive_proposal: ProposalAdapterState {
+                    backend: ProposalAdapterBackend::Disabled,
                     model: None,
                 },
-                world_model_workers: 1,
+                predictive_proposal_workers: 1,
                 path_index_lru_capacity: 1024,
                 path_index_lru_async: false,
                 path_index_lru_queue: 128,
@@ -5118,7 +5118,7 @@ instance Tiny of S:
                 embeddings: None,
             }),
             query_cache: Mutex::new(QueryPlanCache::default()),
-            world_model_executor: WorldModelExecutor::new(1),
+            predictive_proposal_executor: PredictiveProposalExecutor::new(1),
         })
     }
 
@@ -5149,11 +5149,11 @@ instance Tiny of S:
                     timeout: None,
                 },
                 llm: LlmState::default(),
-                world_model: WorldModelState {
-                    backend: WorldModelBackend::Disabled,
+                predictive_proposal: ProposalAdapterState {
+                    backend: ProposalAdapterBackend::Disabled,
                     model: None,
                 },
-                world_model_workers: 1,
+                predictive_proposal_workers: 1,
                 path_index_lru_capacity: 1024,
                 path_index_lru_async: false,
                 path_index_lru_queue: 128,
@@ -5176,7 +5176,7 @@ instance Tiny of S:
                 embeddings: None,
             }),
             query_cache: Mutex::new(QueryPlanCache::default()),
-            world_model_executor: WorldModelExecutor::new(1),
+            predictive_proposal_executor: PredictiveProposalExecutor::new(1),
         })
     }
 
@@ -5197,8 +5197,8 @@ instance I of S:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?x"],
-                "where": [
+                "select_vars": ["?x"],
+                "where_atoms": [
                     { "kind": "type", "term": "?x", "type": "A" }
                 ],
                 "limit": 10
@@ -5274,8 +5274,8 @@ instance I of S:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?x"],
-                "where": [
+                "select_vars": ["?x"],
+                "where_atoms": [
                     { "kind": "type", "term": "?x", "type": "A" }
                 ],
                 "limit": 10
@@ -5317,8 +5317,8 @@ instance I of S:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     {
                         "kind": "fact",
                         "fact": "?f",
@@ -5391,8 +5391,8 @@ instance I of S:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     {
                         "kind": "fact",
                         "fact": "?f",
@@ -5456,8 +5456,8 @@ instance I of S:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?x"],
-                "where": [
+                "select_vars": ["?x"],
+                "where_atoms": [
                     { "kind": "type", "term": "?x", "type": "A" }
                 ],
                 "limit": 10
@@ -5507,8 +5507,8 @@ instance CensusInst of Census:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     { "kind": "edge", "left": "Carol", "path": "Parent", "right": "?p" }
                 ],
                 "limit": 10

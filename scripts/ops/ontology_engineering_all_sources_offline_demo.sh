@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ontology engineering demo (offline, all source types):
+# Ops/reference ontology engineering demo (offline, all source types):
 #   docs + SQL + JSON + RDF/SHACL + Confluence HTML + conversation + proto + repo index
 # → merge proposals/chunks → draft `.axi` → gate → promote → PathDB snapshot + WAL chunks overlay
 # → viz + network + quality reports.
 #
 # Run from repo root:
-#   ./scripts/ontology_engineering_all_sources_offline_demo.sh
+#   ./scripts/ops/ontology_engineering_all_sources_offline_demo.sh
 #
 # Notes:
 # - This script is deterministic and does not require any network/LLM access.
 # - Proto ingestion uses a checked-in binary descriptor set (no `buf` required).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT_DIR"
 
 OUT_DIR="$ROOT_DIR/build/ontology_engineering_all_sources_offline_demo"

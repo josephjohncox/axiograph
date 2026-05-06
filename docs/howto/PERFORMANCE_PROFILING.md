@@ -69,20 +69,23 @@ cargo build -p axiograph-cli --release --features profiling
 
 ---
 
-## World model MPC/eval harness
+## Predictive proposal rollout/eval harness
 
-The perf harness can exercise JEPA/world-model rollouts and report guardrail
-deltas plus basic precision/recall (when running against `.axi` with holdouts).
+The perf harness can exercise bounded predictive proposal rollouts and report
+guardrail deltas plus basic precision/recall (when running against `.axi` with
+holdouts). This is an evidence-plane evaluation harness, not an
+autonomous-execution claim.
 
 ```bash
-axiograph tools perf world-model \
+axiograph tools perf proposal-rollout \
   --input examples/Family.axi \
-  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py \
-  --world-model-plugin-arg --strategy oracle \
+  --proposal-adapter-plugin scripts/axiograph_predictive_proposal_plugin_baseline.py \
+  --proposal-adapter-plugin-arg=--strategy \
+  --proposal-adapter-plugin-arg=oracle \
   --horizon-steps 3 \
   --rollouts 2 \
   --holdout-frac 0.2 \
-  --out-json build/world_model_perf.json
+  --out-json build/predictive_proposal_perf.json
 ```
 
 Then run any command with `--profile`:
@@ -107,7 +110,7 @@ Live snapshots while running:
 
 - `--profile-interval <secs>` emits periodic snapshots.
 - `--profile-signal` emits a snapshot on `SIGUSR2` (Unix only).
-- `--profile-live-format <fmt>` controls snapshot format (default: `pprof`).
+- `--profile-live-format <fmt>` sets snapshot format (default: `pprof`).
 
 Example (periodic snapshots every 10s):
 

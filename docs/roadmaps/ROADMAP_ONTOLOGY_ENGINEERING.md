@@ -86,7 +86,7 @@ These rules apply to every workstream in this document.
 - Accepted snapshots, not PathDB byte layout, define semantic identity.
 - Trust contracts are about soundness, coverage, scope, and anchors.
 - Trust contracts must not imply completeness of answers or full ontology closure.
-- Evidence-plane artifacts (`proposals.json`, `chunks.json`, LLM/world-model outputs) remain untrusted by default.
+- Evidence-plane artifacts (`proposals.json`, `chunks.json`, LLM/proposal-adapter outputs) remain untrusted by default.
 - No workflow may silently write evidence-plane outputs into accepted meaning.
 - Semantic history must preserve explicit lifecycle transitions, not hide them behind mutable state.
 - CQ regression handling must become a default gate for ontology-changing operations, not a best-effort report.
@@ -118,7 +118,7 @@ The roadmap should build on the slices that already exist today.
 | Proposal preview validation | `proposals_validate` already does preview import, meta-plane typecheck, quality delta, optional CQ before/after reporting, and `fail_on_regression` / `fail_on_unsatisfied_after` policy | This is the first real CQ-gated evolution slice |
 | Accepted-plane promotion preview | reviewed `.axi` modules can already be previewed against the current accepted snapshot with quality delta, optional CQ gate, stored validation report, and a trust narrative | This proves accepted-plane mutation can be gated before commit |
 | Typed authoring draft path | `draft_axi_from_proposals` already distinguishes `draft_only` from `validated` canonical drafts and can surface an `axi_well_typed_proof_v1` summary | This is the first authoring surface that already speaks typing and review |
-| Semantic history store | `sem/` layout exists, including `sem/world_model_runs/` and `sem/validations/`; semantic commit structs exist in the accepted-plane layer | This is enough scaffolding to stop inventing one-off lineage paths |
+| Semantic history store | `sem/` layout exists, including `sem/evidence/proposal_adapter_runs/` and `sem/validations/`; semantic commit structs exist in the accepted-plane layer | This is enough scaffolding to stop inventing one-off lineage paths |
 | Accepted plane + PathDB WAL split | accepted snapshots plus PathDB WAL/checkpoints are live, with explicit promotion and `pathdb-commit` flows | This is the core evidence-plane to accepted-plane operating model |
 
 The roadmap below should close the gaps between these slices rather than invent a parallel workflow vocabulary.
@@ -157,11 +157,11 @@ Every ontology change, regardless of source, should converge on the same loop.
 
 4. **Persist review artifacts**
    - Store the preview report under `sem/validations/`.
-   - Attach proposal digests, world-model run ids, or source refs when relevant.
+   - Attach proposal digests, proposal-adapter run ids, or source refs when relevant.
    - Make the preview report the review unit, not an incidental log line.
 
 5. **Review on semantic history**
-   - Review on `review/*`, `evidence/*`, or `wm/*` branches as appropriate.
+   - Review on `review/*`, `evidence/*`, or `evidence/proposals/*` branches as appropriate.
    - Record lifecycle transitions explicitly.
 
 6. **Promote or reject**
@@ -726,7 +726,7 @@ opaque accepted-plane mutations.
 Implemented today:
 
 - `sem/` layout exists,
-- `sem/world_model_runs/` is already used,
+- `sem/evidence/proposal_adapter_runs/` is already used,
 - `sem/validations/` already exists as a persistence seam,
 - semantic commit structs already exist in the accepted-plane layer,
 - accepted-plane promotion already has enough metadata to reference validation artifacts.
@@ -738,14 +738,14 @@ The target branch vocabulary remains:
 - `refs/heads/main`
 - `refs/heads/review/<topic>`
 - `refs/heads/evidence/<source>`
-- `refs/heads/wm/<experiment>`
+- `refs/heads/evidence/proposals/<experiment>`
 - `refs/tags/<release>`
 
 Required persisted objects remain:
 
 - semantic commits,
 - reconciliation objects,
-- world-model run records,
+- proposal-adapter run records,
 - validation/preview reports.
 
 ### Gaps to close
@@ -755,7 +755,7 @@ Required persisted objects remain:
 - [ ] Add ancestry-aware semantic history for review branches and merges.
 - [ ] Make reconciliation objects carry conflict sets, decisions, attached certificates, and typed layer classification usable directly by preview/report tooling.
 - [ ] Treat merge as typed reconciliation over semantic deltas rather than as commit ancestry plus free-form notes.
-- [ ] Link world-model runs, proposal digests, validations, and resulting promotions through semantic history rather than loose filenames.
+- [ ] Link proposal-adapter runs, proposal digests, validations, and resulting promotions through semantic history rather than loose filenames.
 - [ ] Stop treating `sem/` as scaffolding only; make it the review audit trail for ontology change.
 
 ### Exit criteria
@@ -778,7 +778,7 @@ Make the evidence-to-meaning transition explicit, typed, and hard to bypass.
 ### Approved operating model
 
 1. **Ingest or generate evidence**
-   - Source artifacts become `proposals.json`, `chunks.json`, or world-model output.
+   - Source artifacts become `proposals.json`, `chunks.json`, or proposal-adapter output.
 
 2. **Optionally preserve evidence in the PathDB WAL**
    - Use WAL overlays for discovery, retrieval, grounding, and authoring assistance.
@@ -809,7 +809,7 @@ Make the evidence-to-meaning transition explicit, typed, and hard to bypass.
 These flows should remain impossible or explicitly unsupported:
 
 - evidence-plane proposal bundle directly mutates accepted `.axi`,
-- world-model run skips preview and writes to accepted meaning,
+- proposal-adapter run skips preview and writes to accepted meaning,
 - migration bypasses typed preview and only shows resulting runtime state,
 - review/promotion proceeds without a persisted validation artifact when policy requires one.
 
@@ -1006,7 +1006,7 @@ It should not mean:
 
 > treating model-generated text as ontology truth.
 
-- [ ] Require every AI/world-model/LLM proposal set to carry:
+- [ ] Require every AI/proposal-adapter/LLM proposal set to carry:
   - source evidence refs,
   - accepted snapshot anchor,
   - context/world scope,
@@ -1149,8 +1149,8 @@ Agents and operators should receive a structured report, not only prose:
 ### Phase 1: semantic review as the normal path
 
 - [ ] Emit semantic commits for accepted promotions.
-- [ ] Use review/evidence/world-model refs consistently.
-- [ ] Link world-model runs, proposal digests, and validation reports through semantic history.
+- [ ] Use review/evidence/proposal-adapter refs consistently.
+- [ ] Link proposal-adapter runs, proposal digests, and validation reports through semantic history.
 - [ ] Make promotion preview the standard handoff artifact from authoring/review to accepted mutation.
 - [ ] Remove older one-off review/promotion report shapes from the default path
   once they are subsumed by the shared preview object.
@@ -1427,7 +1427,7 @@ engine needs to be explicit.
 
 - [ ] Do not collapse the runtime into Lean.
 - [ ] Do not imply completeness or ontology closure by default.
-- [ ] Do not present heuristic discovery/LLM/world-model outputs as part of the
+- [ ] Do not present heuristic discovery/LLM/proposal-adapter outputs as part of the
   trusted kernel.
 
 ### 13.3 Exit criteria

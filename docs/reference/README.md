@@ -37,4 +37,4 @@ for engine tests.
 - `docs/reference/QUERY_LANG.md` — AxQL, SQL-ish elaboration, typed query metadata, and certified querying.
 - `docs/reference/SEMANTIC_VCS.md` — semantic refs, commits, merge/rebase, reconciliation, and projection manifests.
 - `docs/reference/LLM_REPL_PLUGIN.md` — LLM REPL plugin protocol.
-- `docs/reference/WORLD_MODEL_PLUGIN.md` — world-model plugin protocol.
+- `docs/reference/PREDICTIVE_PROPOSAL_ADAPTER.md` — predictive proposal adapter protocol.

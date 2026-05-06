@@ -111,11 +111,13 @@ See:
 - `docs/howto/FORMAL_VERIFICATION.md` (how to run checks)
 - `docs/explanation/BOOK.md` Part IV (certificate design and threat model)
 
-## Shared Binary Format (v2)
+## Derived Binary Format
 
-PathDB’s binary format is specified in Rust (and hardened with optional Rust
-verification tooling). Lean’s trusted core focuses on **certificate checking**
-and `.axi` anchors; it does not currently parse `.axpd` bytes directly.
+`.axpd` is an untrusted derived storage/checkpoint format. Modal/world semantics
+live in canonical `.axi`, compiled IR, and typed anchors; Lean’s trusted core
+focuses on certificate checking and `.axi` anchors, not parsing live PathDB
+bytes. Sectioned byte-format work is storage hardening until the live reader and
+writer use it as the single format.
 
 ```rust
 /// Magic number: "AXPD" in ASCII
@@ -144,7 +146,7 @@ pub struct BinaryHeader {
 }
 ```
 
-### Compatibility Proofs
+### Format Boundary Proofs
 
 In Verus, we verify header parsing:
 

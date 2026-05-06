@@ -30,7 +30,7 @@ the `.axi` **meta-plane** (schema + theory metadata):
 But many ingestion sources start in the evidence plane:
 
 - SQL DDL
-- proto descriptor sets
+- proto descriptor sets as optional evidence adapters
 - JSON payloads
 - repo/code analysis + extracted mentions
 
@@ -284,27 +284,20 @@ typed planning boundary.
 
 ## Storage Round-Trip Checks
 
-If you are testing storage byte round-trips, export the derived snapshot through
-the explicit DB command:
-
-```bash
-cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  db pathdb export-axi build/Discovered.accepted.axpd \
-  --out build/Discovered.snapshot_pathdb_export_v1.axi
-```
-
+If you are testing storage byte round-trips, use the debug-only commands
+documented in `docs/howto/TESTING.md` and `docs/explanation/PATHDB_DESIGN.md`.
 Do not teach this as the promotion, query, certificate, or semantic interchange
 path. It is a reversible storage/debug format only.
 
 ## Included demo assets
 
-- Example proposals: `examples/schema_discovery/sql_schema_proposals.json`
+- Example proposals: `examples/schema_discovery/fixtures/sql_schema_proposals.json`
 - Drafted module: `examples/schema_discovery/SqlSchema.proposals.axi`
 - REPL script: `examples/repl_scripts/sql_schema_discovery_axi_demo.repl`
-- Example proposals (proto toy): `examples/schema_discovery/proto_api_proposals.json`
-- Drafted module (proto toy): `examples/schema_discovery/ProtoApi.proposals.axi`
-- REPL script (proto toy): `examples/repl_scripts/proto_schema_discovery_axi_demo.repl`
+- Fixture proposals (proto toy evidence adapter): `examples/schema_discovery/fixtures/proto_api_proposals.json`
+- Drafted module from proto evidence: `examples/schema_discovery/ProtoApi.proposals.axi`
+- REPL smoke script for proto evidence: `examples/repl_scripts/proto_schema_discovery_axi_demo.repl`
 - Shell demo: `scripts/schema_discovery_sql_demo.sh`
 - Shell demo (LLM semantic + structural discovery via Ollama): `scripts/ontology_engineering_ollama_discovery_demo.sh`
-- Shell demo (Proto evolution over time, LLM augmentation via Ollama): `scripts/ontology_engineering_proto_evolution_ollama_demo.sh`
+- Ops/reference shell demo (proto evidence evolution over time, LLM augmentation via Ollama): `scripts/ops/ontology_engineering_proto_evolution_ollama_demo.sh`
 - Shell demo (Physics, LLM grounded expansion via Ollama): `scripts/physics_discovery_ollama_grounded_demo.sh`

@@ -222,8 +222,9 @@ pub struct QueryRefinementApplyResultV1 {
 pub fn query_ir_v1_json_schema() -> serde_json::Value {
     // Notes on schema design:
     //
-    // - We include both the canonical field names (`select_vars`, `where_atoms`) and the
-    //   user-friendly aliases (`select`, `where`) because serde accepts both.
+    // - The public contract is canonical `select_vars` and `where_atoms`.
+    //   Older `select`/`where` spellings are intentionally not accepted here;
+    //   boundary tools should normalize before calling the runtime.
     // - For terms/contexts we allow the compact string/integer forms, but models should
     //   prefer the explicit object forms to avoid ambiguity.
     //
@@ -234,9 +235,7 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
         "additionalProperties": false,
         "properties": {
             "version": { "type": "integer", "const": QUERY_IR_V1_VERSION },
-            "select": { "type": "array", "items": { "type": "string" } },
             "select_vars": { "type": "array", "items": { "type": "string" } },
-            "where": { "type": "array", "items": { "$ref": "#/$defs/query_atom" } },
             "where_atoms": { "type": "array", "items": { "$ref": "#/$defs/query_atom" } },
             "disjuncts": {
                 "type": "array",
@@ -249,7 +248,6 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
         },
         "required": ["version"],
         "oneOf": [
-            { "required": ["where"] },
             { "required": ["where_atoms"] },
             { "required": ["disjuncts"] }
         ],
@@ -447,21 +445,21 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
 /// - most terms can be written as simple strings (e.g. `"?x"`, `"Alice"`, `"_"`
 ///   where bare names mean `name("...")`)
 /// - paths are written as AxQL path expressions (e.g. `"rel_0/rel_1"`, `"(a|b)*"`)
-/// - disjunction is explicit via `disjuncts`, but a single `where` clause is also accepted
+/// - disjunction is explicit via `disjuncts`, but a single `where_atoms` clause is also accepted
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryIrV1 {
     #[serde(default = "default_query_ir_v1_version")]
     pub version: u32,
 
     /// Optional explicit select list. Empty means “implicit select”.
-    #[serde(default, alias = "select")]
+    #[serde(default)]
     pub select_vars: Vec<String>,
 
-    /// Convenience: a single conjunctive `where` clause.
+    /// Convenience: a single conjunctive `where_atoms` clause.
     ///
-    /// If present, this is compiled into `disjuncts = [where]` unless `disjuncts`
-    /// is also present.
-    #[serde(default, alias = "where")]
+    /// If present, this is compiled into `disjuncts = [where_atoms]` unless
+    /// `disjuncts` is also present.
+    #[serde(default)]
     pub where_atoms: Option<Vec<QueryAtomIrV1>>,
 
     /// Top-level disjunction (UCQ): OR of conjunctive branches.
@@ -1720,10 +1718,11 @@ impl<'a> AcceptedAnchoredPreparedQueryV1<'a> {
 }
 
 impl QueryIrV1 {
-    /// Convert an AxQL query into the typed JSON IR.
+    /// Lower a reviewed AxQL AST into `QueryIrV1`.
     ///
-    /// This is primarily used to keep the LLM/tooling pipeline “typed” even if
-    /// a backend returns (or a user supplies) AxQL text.
+    /// Server and tool paths should accept `QueryIrV1` directly. This lowering
+    /// exists for REPL/debug/import paths where AxQL text has already been parsed
+    /// and checked as syntax.
     ///
     /// Notes:
     /// - The conversion is best-effort but should preserve semantics for the
@@ -2568,8 +2567,8 @@ mod tests {
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"},
                 {"kind": "attr_eq", "term": "?x", "key": "name", "value": "a"}
               ],
@@ -2618,8 +2617,8 @@ mod tests {
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["p"],
-              "where": [
+              "select_vars": ["p"],
+              "where_atoms": [
                 {"kind": "edge", "left": "Alice", "path": "Parent", "right": "?p"}
               ],
               "limit": 10
@@ -2665,8 +2664,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"}
               ],
               "limit": 10
@@ -2719,8 +2718,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["dst"],
-              "where": [
+              "select_vars": ["dst"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -2784,8 +2783,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["src", "dst"],
-              "where": [
+              "select_vars": ["src", "dst"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -2857,8 +2856,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["dst"],
-              "where": [
+              "select_vars": ["dst"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3008,8 +3007,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["c"],
-              "where": [
+              "select_vars": ["c"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3082,8 +3081,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["dst"],
-              "where": [
+              "select_vars": ["dst"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3165,8 +3164,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["dst"],
-              "where": [
+              "select_vars": ["dst"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3210,8 +3209,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["prev", "dst"],
-              "where": [
+              "select_vars": ["prev", "dst"],
+              "where_atoms": [
                 { "kind": "edge", "left": "?prev", "path": "Flow", "right": "?dst" }
               ],
               "limit": 5
@@ -3279,8 +3278,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["dst"],
-              "where": [
+              "select_vars": ["dst"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3347,8 +3346,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["dst"],
-              "where": [
+              "select_vars": ["dst"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3388,7 +3387,7 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
+              "select_vars": ["x"],
               "disjuncts": [
                 [{ "kind": "type", "term": "?x", "type": "Node" }],
                 [{ "kind": "type", "term": "?x", "type": "Supplier" }]
@@ -3431,8 +3430,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"},
                 {"kind": "attr_contains", "term": "?x", "key": "name", "needle": "a"}
               ],
@@ -3470,8 +3469,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["f"],
-              "where": [
+              "select_vars": ["f"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3506,8 +3505,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"}
               ],
               "limit": 10
@@ -3539,7 +3538,7 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
+              "select_vars": ["x"],
               "disjuncts": [
                 [
                   {"kind": "type", "term": "?x", "type": "Node"}
@@ -3584,8 +3583,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["f"],
-              "where": [
+              "select_vars": ["f"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3617,7 +3616,7 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
+              "select_vars": ["x"],
               "disjuncts": [
                 [
                   {"kind": "type", "term": "?x", "type": "Node"}
@@ -3659,8 +3658,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["p"],
-              "where": [
+              "select_vars": ["p"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3707,8 +3706,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"}
               ],
               "limit": 10
@@ -3741,8 +3740,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["p"],
-              "where": [
+              "select_vars": ["p"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3800,8 +3799,8 @@ instance I of S:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["p"],
-              "where": [
+              "select_vars": ["p"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -3866,8 +3865,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"}
               ],
               "limit": 10
@@ -3914,8 +3913,8 @@ instance I of Demo:
         let q1: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"}
               ],
               "limit": 1
@@ -3924,8 +3923,8 @@ instance I of Demo:
         let q2: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"}
               ],
               "limit": 2
@@ -3954,8 +3953,8 @@ instance I of Demo:
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["x"],
-              "where": [
+              "select_vars": ["x"],
+              "where_atoms": [
                 {"kind": "type", "term": "?x", "type": "Node"}
               ],
               "limit": 10

@@ -26,9 +26,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use roaring::RoaringBitmap;
 
 use crate::query_ir::QueryIrV1;
-use crate::world_model::{
-    normalize_world_model_proposals_value, world_model_llm_prompt, WorldModelRequestV1,
-    WorldModelResponseV1,
+use crate::predictive_proposals::{
+    normalize_predictive_proposal_proposals_value, predictive_proposal_llm_prompt, PredictiveProposalRequestV1,
+    PredictiveProposalResponseV1,
 };
 use axiograph_ingest_docs::{Chunk, ProposalSourceV1, ProposalV1, ProposalsFileV1};
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
@@ -51,7 +51,7 @@ pub(crate) const AXIOGRAPH_LLM_TIMEOUT_SECS_ENV: &str = "AXIOGRAPH_LLM_TIMEOUT_S
 pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS";
 pub(crate) const AXIOGRAPH_LLM_MAX_STEPS_CAP_ENV: &str = "AXIOGRAPH_LLM_MAX_STEPS_CAP";
 pub(crate) const AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV: &str = "AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS";
-pub(crate) const WORLD_MODEL_BACKEND_ENV: &str = "WORLD_MODEL_BACKEND";
+pub(crate) const PREDICTIVE_PROPOSAL_BACKEND_ENV: &str = "PREDICTIVE_PROPOSAL_BACKEND";
 pub(crate) const AXIOGRAPH_LLM_REASONING_EFFORT_ENV: &str = "AXIOGRAPH_LLM_REASONING_EFFORT";
 pub(crate) const AXIOGRAPH_LLM_CHAT_MAX_MESSAGES_ENV: &str = "AXIOGRAPH_LLM_CHAT_MAX_MESSAGES";
 pub(crate) const AXIOGRAPH_LLM_JSON_REPAIR_ENV: &str = "AXIOGRAPH_LLM_JSON_REPAIR";
@@ -619,22 +619,22 @@ impl LlmState {
     }
 }
 
-pub(crate) fn world_model_llm_plugin(
+pub(crate) fn predictive_proposal_llm_plugin(
     llm: &LlmState,
-    req: &WorldModelRequestV1,
-) -> Result<WorldModelResponseV1> {
-    crate::world_model::validate_world_model_request(req)?;
+    req: &PredictiveProposalRequestV1,
+) -> Result<PredictiveProposalResponseV1> {
+    crate::predictive_proposals::validate_predictive_proposal_request(req)?;
     let _max_tokens_guard = maybe_bump_llm_max_output_tokens(req);
     let content = match &llm.backend {
         LlmBackend::Disabled => {
             return Err(anyhow!(
-                "world model LLM backend is disabled (configure `--llm-openai/--llm-ollama/--llm-anthropic`)"
+                "predictive proposal adapter LLM backend is disabled (configure `--llm-openai/--llm-ollama/--llm-anthropic`)"
             ))
         }
         LlmBackend::Mock => {
-            let proposals = normalize_world_model_proposals_value(&req.trace_id, json!({}));
-            return Ok(WorldModelResponseV1 {
-                protocol: crate::world_model::WORLD_MODEL_PROTOCOL_V1.to_string(),
+            let proposals = normalize_predictive_proposal_proposals_value(&req.trace_id, json!({}));
+            return Ok(PredictiveProposalResponseV1 {
+                protocol: crate::predictive_proposals::PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
                 trace_id: req.trace_id.clone(),
                 generated_at_unix_secs: now_unix_secs(),
                 proposals,
@@ -646,10 +646,10 @@ pub(crate) fn world_model_llm_plugin(
         LlmBackend::Ollama { host } => {
             let Some(model) = llm.model.as_deref() else {
                 return Err(anyhow!(
-                    "no model selected (use WORLD_MODEL_MODEL or set `llm model <ollama_model>`)"
+                    "no model selected (use PREDICTIVE_PROPOSAL_MODEL or set `llm model <ollama_model>`)"
                 ));
             };
-            let (system, summary) = world_model_llm_prompt(req);
+            let (system, summary) = predictive_proposal_llm_prompt(req);
             let user = serde_json::to_string_pretty(&summary)
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
@@ -660,10 +660,10 @@ pub(crate) fn world_model_llm_plugin(
         LlmBackend::OpenAI { base_url } => {
             let Some(model) = llm.model.as_deref() else {
                 return Err(anyhow!(
-                    "no model selected (use WORLD_MODEL_MODEL or set {OPENAI_MODEL_ENV})"
+                    "no model selected (use PREDICTIVE_PROPOSAL_MODEL or set {OPENAI_MODEL_ENV})"
                 ));
             };
-            let (system, summary) = world_model_llm_prompt(req);
+            let (system, summary) = predictive_proposal_llm_prompt(req);
             let user = serde_json::to_string_pretty(&summary)
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
@@ -674,10 +674,10 @@ pub(crate) fn world_model_llm_plugin(
         LlmBackend::Anthropic { base_url } => {
             let Some(model) = llm.model.as_deref() else {
                 return Err(anyhow!(
-                    "no model selected (use WORLD_MODEL_MODEL or set {ANTHROPIC_MODEL_ENV})"
+                    "no model selected (use PREDICTIVE_PROPOSAL_MODEL or set {ANTHROPIC_MODEL_ENV})"
                 ));
             };
-            let (system, summary) = world_model_llm_prompt(req);
+            let (system, summary) = predictive_proposal_llm_prompt(req);
             let user = serde_json::to_string_pretty(&summary)
                 .unwrap_or_else(|_| "{\"summary\":\"unavailable\"}".to_string());
             let timeout = llm_timeout(None)?;
@@ -685,15 +685,15 @@ pub(crate) fn world_model_llm_plugin(
         }
         LlmBackend::Command { .. } => {
             return Err(anyhow!(
-                "world model LLM backend does not support LLM command plugins (use openai/anthropic/ollama)"
+                "predictive proposal adapter LLM backend does not support LLM command plugins (use openai/anthropic/ollama)"
             ));
         }
     };
 
     let parsed: Value = parse_llm_json_object(&content)?;
-    let proposals = normalize_world_model_proposals_value(&req.trace_id, parsed);
-    Ok(WorldModelResponseV1 {
-        protocol: crate::world_model::WORLD_MODEL_PROTOCOL_V1.to_string(),
+    let proposals = normalize_predictive_proposal_proposals_value(&req.trace_id, parsed);
+    Ok(PredictiveProposalResponseV1 {
+        protocol: crate::predictive_proposals::PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
         trace_id: req.trace_id.clone(),
         generated_at_unix_secs: now_unix_secs(),
         proposals,
@@ -717,8 +717,8 @@ impl Drop for EnvVarGuard {
     }
 }
 
-fn maybe_bump_llm_max_output_tokens(req: &WorldModelRequestV1) -> Option<EnvVarGuard> {
-    let target = world_model_output_token_budget(req);
+fn maybe_bump_llm_max_output_tokens(req: &PredictiveProposalRequestV1) -> Option<EnvVarGuard> {
+    let target = predictive_proposal_output_token_budget(req);
     if target <= DEFAULT_LLM_MAX_OUTPUT_TOKENS {
         return None;
     }
@@ -734,7 +734,7 @@ fn maybe_bump_llm_max_output_tokens(req: &WorldModelRequestV1) -> Option<EnvVarG
     }
 }
 
-fn world_model_output_token_budget(req: &WorldModelRequestV1) -> u32 {
+fn predictive_proposal_output_token_budget(req: &PredictiveProposalRequestV1) -> u32 {
     let max_items = req.options.max_new_proposals.max(1) as u32;
     let estimate = 800 + max_items.saturating_mul(60);
     estimate.clamp(DEFAULT_LLM_MAX_OUTPUT_TOKENS, 12000)
@@ -892,8 +892,8 @@ Schema context:
 Query IR (preferred):
 - Use `query_ir_v1` with fields:
   - version: 1
-  - select: ["?x", ...]   (or omit for implicit select)
-  - where: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
+  - select_vars: ["?x", ...]   (or omit for implicit select)
+  - where_atoms: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
   - limit: N (optional)
   - max_hops: N (optional)
   - min_confidence: 0..1 (optional)
@@ -1030,8 +1030,8 @@ Schema context:
 Query IR (preferred):
 - Use `query_ir_v1` with fields:
   - version: 1
-  - select: ["?x", ...]   (or omit for implicit select)
-  - where: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
+  - select_vars: ["?x", ...]   (or omit for implicit select)
+  - where_atoms: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
   - limit: N (optional)
   - max_hops: N (optional)
   - min_confidence: 0..1 (optional)
@@ -1192,8 +1192,8 @@ Schema context:
 Query IR (preferred):
 - Use `query_ir_v1` with fields:
   - version: 1
-  - select: ["?x", ...]   (or omit for implicit select)
-  - where: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
+  - select_vars: ["?x", ...]   (or omit for implicit select)
+  - where_atoms: [ atoms... ]   (single conjunction), OR disjuncts: [ [atoms...], [atoms...] ] for OR
   - limit: N (optional)
   - max_hops: N (optional)
   - min_confidence: 0..1 (optional)
@@ -2483,7 +2483,7 @@ pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) ->
     serde_json::from_str(&candidate).map_err(|e| anyhow!("LLM returned invalid JSON: {e}"))
 }
 
-pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()> {
+pub(crate) fn validate_predictive_proposal_llm_backend_arg(args: &[String]) -> Result<()> {
     let mut backend: Option<String> = None;
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
@@ -2498,7 +2498,7 @@ pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()
 
     let backend = backend
         .or_else(|| {
-            std::env::var(WORLD_MODEL_BACKEND_ENV)
+            std::env::var(PREDICTIVE_PROPOSAL_BACKEND_ENV)
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
@@ -2508,7 +2508,7 @@ pub(crate) fn validate_world_model_llm_backend_arg(args: &[String]) -> Result<()
     match backend.trim().to_ascii_lowercase().as_str() {
         "openai" | "anthropic" | "ollama" | "mock" => Ok(()),
         other => Err(anyhow!(
-            "world model backend `{other}` is not supported by --world-model-llm / `axiograph ingest world-model-plugin-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --world-model-plugin or --world-model-http instead."
+            "predictive proposal adapter backend `{other}` is not supported by --proposal-adapter-llm / `axiograph ingest predictive-proposals-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --proposal-adapter-plugin or --proposal-adapter-http instead."
         )),
     }
 }
@@ -2546,7 +2546,7 @@ instance FamilyInst of Family:
     }
 
     #[test]
-    fn parse_llm_json_object_repairs_truncated_world_model_output() {
+    fn parse_llm_json_object_repairs_truncated_predictive_proposal_output() {
         // Realistic failure mode: the model produces a correct prefix but the
         // last closing delimiters are missing (often reported as "EOF while
         // parsing a list").
@@ -2554,18 +2554,18 @@ instance FamilyInst of Family:
 {
   "version": 1,
   "generated_at": "0",
-  "source": {"source_type":"world_model","locator":"wm::test"},
+  "source": {"source_type":"predictive_proposal_adapter","locator":"proposal::test"},
   "schema_hint": null,
   "proposals": [
     {
       "kind":"Relation",
-      "proposal_id":"wm::test::0",
+      "proposal_id":"proposal::test::0",
       "confidence":0.7,
       "evidence":[],
       "public_rationale":"demo",
       "metadata":{},
       "schema_hint":null,
-      "relation_id":"wm::test::r0",
+      "relation_id":"proposal::test::r0",
       "rel_type":"Parent",
       "source":"Alice",
       "target":"Bob",
@@ -2601,7 +2601,7 @@ instance FamilyInst of Family:
     #[test]
     fn tool_loop_parser_accepts_strict_tool_calls_contract() {
         let parsed = super::parse_tool_loop_response_json(
-            r#"{"tool_calls":[{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}}]}"#,
+            r#"{"tool_calls":[{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select_vars":["x"],"where_atoms":[]}}}]}"#,
             super::ToolLoopOptions::default(),
         )
         .expect("strict tool_calls should parse");
@@ -2624,7 +2624,7 @@ instance FamilyInst of Family:
     #[test]
     fn tool_loop_parser_rejects_top_level_tool_wrapper() {
         let err = super::parse_tool_loop_response_json(
-            r#"{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}}"#,
+            r#"{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select_vars":["x"],"where_atoms":[]}}}"#,
             super::ToolLoopOptions::default(),
         )
         .expect_err("top-level tool wrapper should fail");
@@ -2634,7 +2634,7 @@ instance FamilyInst of Family:
     #[test]
     fn tool_loop_parser_rejects_nested_tool_alias_wrapper() {
         let err = super::parse_tool_loop_response_json(
-            r#"{"tool_call":{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}}}"#,
+            r#"{"tool_call":{"tool":"axql_run","args":{"query_ir_v1":{"version":1,"select_vars":["x"],"where_atoms":[]}}}}"#,
             super::ToolLoopOptions::default(),
         )
         .expect_err("nested tool alias wrapper should fail");
@@ -2654,7 +2654,7 @@ instance FamilyInst of Family:
     #[test]
     fn tool_loop_parser_rejects_bare_query_ir_payload() {
         let err = super::parse_tool_loop_response_json(
-            r#"{"query_ir_v1":{"version":1,"select":["x"],"where":[]}}"#,
+            r#"{"query_ir_v1":{"version":1,"select_vars":["x"],"where_atoms":[]}}"#,
             super::ToolLoopOptions::default(),
         )
         .expect_err("bare query_ir_v1 wrapper should fail");
@@ -2754,7 +2754,7 @@ instance FamilyInst of Family:
         let args = serde_json::json!({
             "query_ir_v1": {
                 "version": 1,
-                "select": ["x"],
+                "select_vars": ["x"],
                 "disjuncts": [
                     [
                         {"kind": "type", "term": "?x", "type": "Node"}
@@ -2828,8 +2828,8 @@ instance I of Demo:
             "variable": "?dst",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["src", "dst"],
-                "where": [
+                "select_vars": ["src", "dst"],
+                "where_atoms": [
                     {
                         "kind": "fact",
                         "fact": "?f",
@@ -2876,8 +2876,8 @@ instance I of Demo:
         let args = serde_json::json!({
             "query_ir_v1": {
                 "version": 1,
-                "select": ["x"],
-                "where": [
+                "select_vars": ["x"],
+                "where_atoms": [
                     {"kind": "attr_eq", "term": "?x", "key": "name", "value": "Alice"}
                 ],
                 "limit": 3
@@ -2953,8 +2953,8 @@ instance I of S:
         let args = serde_json::json!({
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     {
                         "kind": "fact",
                         "fact": "?f",
@@ -3524,8 +3524,8 @@ pub(crate) struct ToolLoopStoreContext {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ToolLoopWorldModelContext {
-    pub world_model: crate::world_model::WorldModelState,
+pub(crate) struct ToolLoopPredictiveProposalContext {
+    pub predictive_proposal: crate::predictive_proposals::ProposalAdapterState,
     pub pathdb_snapshot_id: Option<axiograph_pathdb::PathdbSnapshotId>,
     pub accepted_snapshot_id: Option<axiograph_pathdb::AcceptedSnapshotId>,
     pub snapshot_label: String,
@@ -3655,8 +3655,8 @@ fn tool_loop_extract_generated_overlay(
         if step.tool != "propose_relation_proposals"
             && step.tool != "propose_relations_proposals"
             && step.tool != "propose_fact_proposals"
-            && step.tool != "world_model_propose"
-            && step.tool != "world_model_plan"
+            && step.tool != "predictive_proposals"
+            && step.tool != "proposal_rollout_plan"
         {
             continue;
         }
@@ -3993,7 +3993,7 @@ pub(crate) fn run_tool_loop_with_meta(
     accepted_snapshot_id: Option<&AcceptedSnapshotId>,
     accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
     store: Option<&ToolLoopStoreContext>,
-    world_model: Option<&ToolLoopWorldModelContext>,
+    predictive_proposal: Option<&ToolLoopPredictiveProposalContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
@@ -4004,7 +4004,7 @@ pub(crate) fn run_tool_loop_with_meta(
         Some(m) => SchemaContextV1::from_db_with_meta(db, m),
         None => SchemaContextV1::from_db(db),
     };
-    let tools = tool_loop_tools_schema(store, world_model.is_some());
+    let tools = tool_loop_tools_schema(store, predictive_proposal.is_some());
 
     let mut transcript: Vec<ToolLoopTranscriptItemV1> = Vec::new();
     // RAG-like flow (backend-owned): prefetch a compact overview + semantic-ish
@@ -4294,7 +4294,7 @@ pub(crate) fn run_tool_loop_with_meta(
                 accepted_snapshot_id,
                 accepted_axi_anchor,
                 store,
-                world_model,
+                predictive_proposal,
                 embeddings,
                 ollama_embed_host,
                 query_cache,
@@ -4758,7 +4758,7 @@ fn is_trivial_model_answer(answer: &str) -> bool {
 
 pub(crate) fn tool_loop_tools_schema(
     store: Option<&ToolLoopStoreContext>,
-    world_model_enabled: bool,
+    predictive_proposal_enabled: bool,
 ) -> Vec<ToolSpecV1> {
     let query_ir_v1_schema = crate::query_ir::query_ir_v1_json_schema();
 
@@ -5135,15 +5135,15 @@ pub(crate) fn tool_loop_tools_schema(
         });
     }
 
-    if world_model_enabled {
+    if predictive_proposal_enabled {
         out.push(ToolSpecV1 {
-            name: "world_model_propose".to_string(),
-            description: "Run the configured world model to propose new evidence-plane facts/relations (untrusted).".to_string(),
+            name: "predictive_proposals".to_string(),
+            description: "Run the configured predictive proposal adapter to propose new evidence-plane facts/relations (untrusted).".to_string(),
             args_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "goals": { "type": "array", "items": { "type": "string" } },
-                        "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
+                        "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the predictive proposal adapter." },
                         "seed": { "type": "integer", "minimum": 0 },
                         "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
                         "guardrail_profile": { "type": "string", "enum": ["off", "fast", "strict"] },
@@ -5156,13 +5156,13 @@ pub(crate) fn tool_loop_tools_schema(
             }),
         });
         out.push(ToolSpecV1 {
-            name: "world_model_plan".to_string(),
-            description: "Run an MPC-style world model plan (multi-step proposals + guardrail costs).".to_string(),
+            name: "proposal_rollout_plan".to_string(),
+            description: "Run a multi-step bounded proposal rollout (proposals + guardrail costs).".to_string(),
             args_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "goals": { "type": "array", "items": { "type": "string" } },
-                        "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the world model." },
+                        "axi_module": { "type": "string", "description": "Optional canonical `.axi` module name to export and feed into the predictive proposal adapter." },
                         "seed": { "type": "integer", "minimum": 0 },
                         "max_new_proposals": { "type": "integer", "minimum": 0, "maximum": 5000 },
                         "horizon_steps": { "type": "integer", "minimum": 1, "maximum": 20 },
@@ -5189,7 +5189,7 @@ fn execute_tool_call(
     accepted_snapshot_id: Option<&AcceptedSnapshotId>,
     accepted_axi_anchor: Option<&AcceptedAxiAnchor>,
     store: Option<&ToolLoopStoreContext>,
-    world_model: Option<&ToolLoopWorldModelContext>,
+    predictive_proposal: Option<&ToolLoopPredictiveProposalContext>,
     embeddings: Option<&crate::embeddings::ResolvedEmbeddingsIndexV1>,
     ollama_embed_host: Option<&str>,
     query_cache: &mut crate::axql::AxqlPreparedQueryCache,
@@ -5275,22 +5275,22 @@ fn execute_tool_call(
         "propose_relations_proposals" => {
             tool_propose_relations_proposals(db, default_contexts, &call.args)
         }
-        "world_model_propose" => tool_world_model_propose(db, world_model, &call.args),
-        "world_model_plan" => tool_world_model_plan(db, world_model, &call.args),
+        "predictive_proposals" => tool_predictive_proposals(db, predictive_proposal, &call.args),
+        "proposal_rollout_plan" => tool_proposal_rollout_plan(db, predictive_proposal, &call.args),
         "snapshots_list" => tool_snapshots_list(store, &call.args),
         "snapshot_diff" => tool_snapshot_diff(store, &call.args),
         other => Err(anyhow!("unknown tool `{other}`")),
     }
 }
 
-fn tool_world_model_propose(
+fn tool_predictive_proposals(
     db: &PathDB,
-    ctx: Option<&ToolLoopWorldModelContext>,
+    ctx: Option<&ToolLoopPredictiveProposalContext>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let Some(ctx) = ctx else {
         return Err(anyhow!(
-            "world_model_propose is unavailable (world model disabled)"
+            "predictive_proposals is unavailable (predictive proposal adapter disabled)"
         ));
     };
 
@@ -5298,7 +5298,7 @@ fn tool_world_model_propose(
     struct Args {
         #[serde(default)]
         goals: Vec<String>,
-        /// Optional canonical `.axi` module name to export and feed into the world model.
+        /// Optional canonical `.axi` module name to export and feed into the predictive proposal adapter.
         #[serde(default)]
         axi_module: Option<String>,
         #[serde(default)]
@@ -5310,9 +5310,9 @@ fn tool_world_model_propose(
         #[serde(default)]
         guardrail_plane: Option<String>,
         #[serde(default)]
-        guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
+        guardrail_weights: Option<crate::predictive_proposals::GuardrailCostWeightsV1>,
         #[serde(default)]
-        task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+        task_costs: Vec<crate::predictive_proposals::ProposalTaskCostV1>,
         #[serde(default)]
         horizon_steps: Option<usize>,
         #[serde(default)]
@@ -5320,7 +5320,7 @@ fn tool_world_model_propose(
     }
 
     let a: Args = serde_json::from_value(args.clone())
-        .map_err(|e| anyhow!("world_model_propose: invalid args: {e}"))?;
+        .map_err(|e| anyhow!("predictive_proposals: invalid args: {e}"))?;
 
     let guardrail_profile = a
         .guardrail_profile
@@ -5335,9 +5335,9 @@ fn tool_world_model_propose(
     let include_guardrail = a.include_guardrail.unwrap_or(true);
     let guardrail_weights = a
         .guardrail_weights
-        .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+        .unwrap_or_else(crate::predictive_proposals::GuardrailCostWeightsV1::defaults);
     let guardrail = if include_guardrail && guardrail_profile != "off" {
-        Some(crate::world_model::compute_guardrail_costs(
+        Some(crate::predictive_proposals::compute_guardrail_costs(
             db,
             &format!("llm_tool_loop:{}", ctx.snapshot_label),
             &guardrail_profile,
@@ -5348,11 +5348,11 @@ fn tool_world_model_propose(
         None
     };
 
-    let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+    let build_opts = crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
         module_name: a.axi_module.clone(),
         pathdb_snapshot_id: ctx.pathdb_snapshot_id.clone(),
         accepted_snapshot_id: ctx.accepted_snapshot_id.clone(),
-        training_export: Some(crate::world_model::JepaExportOptions {
+        training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
             instance_filter: None,
             max_items: a
                 .max_new_proposals
@@ -5365,24 +5365,24 @@ fn tool_world_model_propose(
             exclude_relations: Vec::new(),
         }),
     };
-    let mut input = crate::world_model_input::build_world_model_input_from_pathdb(db, &build_opts)?;
+    let mut input = crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(db, &build_opts)?;
     if let Some(guardrail) = guardrail.clone() {
         input.set_guardrail_layer(guardrail);
     }
     input.notes.push("source=llm_tool_loop".to_string());
 
     let max_keep = a.max_new_proposals.unwrap_or(0);
-    let mut options = crate::world_model::WorldModelOptionsV1::default();
+    let mut options = crate::predictive_proposals::PredictiveProposalOptionsV1::default();
     options.max_new_proposals = max_keep;
     options.seed = a.seed;
     options.goals = a.goals;
     options.task_costs = a.task_costs;
     options.horizon_steps = a.horizon_steps;
 
-    let req = crate::world_model::make_world_model_request(input.clone(), options);
-    let mut response = ctx.world_model.propose(&req)?;
+    let req = crate::predictive_proposals::make_predictive_proposal_request(input.clone(), options);
+    let mut response = ctx.predictive_proposal.propose(&req)?;
     if let Some(err) = response.error.take() {
-        return Err(anyhow!("world model error: {err}"));
+        return Err(anyhow!("predictive proposal adapter error: {err}"));
     }
 
     let guardrail_profile_label = if guardrail_profile == "off" {
@@ -5396,10 +5396,10 @@ fn tool_world_model_propose(
         Some(guardrail_plane.clone())
     };
 
-    let provenance = crate::world_model::build_world_model_provenance(
+    let provenance = crate::predictive_proposals::build_predictive_proposal_provenance(
         &response,
-        ctx.world_model.backend_label(),
-        ctx.world_model.model.clone(),
+        ctx.predictive_proposal.backend_label(),
+        ctx.predictive_proposal.model.clone(),
         input.axi_digest_v1.clone(),
         input.pathdb_snapshot_id(),
         input.accepted_snapshot_id(),
@@ -5409,13 +5409,13 @@ fn tool_world_model_propose(
     )?;
 
     let mut proposals =
-        crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+        crate::predictive_proposals::apply_predictive_proposal_provenance(response.proposals, &provenance);
     if max_keep > 0 && proposals.proposals.len() > max_keep {
         proposals.proposals.truncate(max_keep);
     }
 
     Ok(serde_json::json!({
-        "version": "axiograph_world_model_tool_propose_v1",
+        "version": "axiograph_predictive_proposals_tool_v1",
         "trace_id": response.trace_id,
         "proposals_json": proposals,
         "guardrail": guardrail,
@@ -5423,14 +5423,14 @@ fn tool_world_model_propose(
     }))
 }
 
-fn tool_world_model_plan(
+fn tool_proposal_rollout_plan(
     db: &PathDB,
-    ctx: Option<&ToolLoopWorldModelContext>,
+    ctx: Option<&ToolLoopPredictiveProposalContext>,
     args: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let Some(ctx) = ctx else {
         return Err(anyhow!(
-            "world_model_plan is unavailable (world model disabled)"
+            "proposal_rollout_plan is unavailable (predictive proposal adapter disabled)"
         ));
     };
 
@@ -5438,7 +5438,7 @@ fn tool_world_model_plan(
     struct Args {
         #[serde(default)]
         goals: Vec<String>,
-        /// Optional canonical `.axi` module name to export and feed into the world model.
+        /// Optional canonical `.axi` module name to export and feed into the predictive proposal adapter.
         #[serde(default)]
         axi_module: Option<String>,
         #[serde(default)]
@@ -5454,17 +5454,17 @@ fn tool_world_model_plan(
         #[serde(default)]
         guardrail_plane: Option<String>,
         #[serde(default)]
-        guardrail_weights: Option<crate::world_model::GuardrailCostWeightsV1>,
+        guardrail_weights: Option<crate::predictive_proposals::GuardrailCostWeightsV1>,
         #[serde(default)]
-        task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+        task_costs: Vec<crate::predictive_proposals::ProposalTaskCostV1>,
         #[serde(default)]
         include_guardrail: Option<bool>,
         #[serde(default)]
-        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+        competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     }
 
     let a: Args = serde_json::from_value(args.clone())
-        .map_err(|e| anyhow!("world_model_plan: invalid args: {e}"))?;
+        .map_err(|e| anyhow!("proposal_rollout_plan: invalid args: {e}"))?;
 
     let guardrail_profile = a
         .guardrail_profile
@@ -5479,16 +5479,16 @@ fn tool_world_model_plan(
     let include_guardrail = a.include_guardrail.unwrap_or(true);
     let guardrail_weights = a
         .guardrail_weights
-        .unwrap_or_else(crate::world_model::GuardrailCostWeightsV1::defaults);
+        .unwrap_or_else(crate::predictive_proposals::GuardrailCostWeightsV1::defaults);
     let horizon_steps = a.horizon_steps.unwrap_or(2).max(1);
     let rollouts = a.rollouts.unwrap_or(2).max(1);
     let max_new_proposals = a.max_new_proposals.unwrap_or(0);
 
-    let build_opts = crate::world_model_input::WorldModelInputBuildOptionsV1 {
+    let build_opts = crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
         module_name: a.axi_module.clone(),
         pathdb_snapshot_id: ctx.pathdb_snapshot_id.clone(),
         accepted_snapshot_id: ctx.accepted_snapshot_id.clone(),
-        training_export: Some(crate::world_model::JepaExportOptions {
+        training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
             instance_filter: None,
             max_items: max_new_proposals.saturating_mul(20).min(2000).max(1000),
             mask_fields: 1,
@@ -5497,10 +5497,10 @@ fn tool_world_model_plan(
         }),
     };
     let mut base_input =
-        crate::world_model_input::build_world_model_input_from_pathdb(db, &build_opts)?;
+        crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(db, &build_opts)?;
     base_input.notes.push("source=llm_tool_loop".to_string());
 
-    let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+    let plan_opts = crate::predictive_proposals::BoundedProposalPlanOptionsV1 {
         horizon_steps,
         rollouts,
         max_new_proposals,
@@ -5517,7 +5517,7 @@ fn tool_world_model_plan(
     };
 
     let report =
-        crate::world_model::run_world_model_plan(db, &ctx.world_model, &base_input, &plan_opts)?;
+        crate::predictive_proposals::run_proposal_rollout_plan(db, &ctx.predictive_proposal, &base_input, &plan_opts)?;
 
     let best = report
         .steps
@@ -5526,7 +5526,7 @@ fn tool_world_model_plan(
         .map(|s| s.proposals.clone());
 
     Ok(serde_json::json!({
-        "version": "axiograph_world_model_tool_plan_v1",
+        "version": "axiograph_proposal_rollout_tool_v1",
         "report": report,
         "proposals_json": best,
     }))
@@ -8441,7 +8441,7 @@ fn tool_propose_relation_proposals(
         #[serde(default)]
         quality_plane: Option<String>,
         #[serde(default)]
-        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+        competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
         #[serde(default)]
         cq_fail_on_regression: Option<bool>,
         #[serde(default)]
@@ -8529,7 +8529,7 @@ fn tool_propose_fact_proposals(
         #[serde(default)]
         quality_plane: Option<String>,
         #[serde(default)]
-        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+        competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
         #[serde(default)]
         cq_fail_on_regression: Option<bool>,
         #[serde(default)]
@@ -8626,7 +8626,7 @@ fn tool_propose_relations_proposals(
         #[serde(default)]
         quality_plane: Option<String>,
         #[serde(default)]
-        competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+        competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
         #[serde(default)]
         cq_fail_on_regression: Option<bool>,
         #[serde(default)]
@@ -9267,7 +9267,7 @@ You MUST return a single JSON object with one of these shapes:
 
 Examples:
 - {"tool_call":{"name":"describe_entity","args":{"name":"Alice","max_rel_types":12,"out_limit":6,"in_limit":6}}}
-- {"tool_calls":[{"name":"lookup_relation","args":{"relation":"Parent"}},{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select":["?x"],"where":[{"kind":"edge","left":"name(\"Alice\")","rel":"Parent","right":"?x"}],"limit":10}}}]}
+- {"tool_calls":[{"name":"lookup_relation","args":{"relation":"Parent"}},{"name":"axql_run","args":{"query_ir_v1":{"version":1,"select_vars":["?x"],"where_atoms":[{"kind":"edge","left":"name(\"Alice\")","rel":"Parent","right":"?x"}],"limit":10}}}]}
 - {"final_answer":{"answer":"Alice is connected to Bob via Parent(...)","public_rationale":"looked up Alice, inspected neighbors, and ran a small AxQL query","citations":[],"queries":[],"notes":[]}}
 
 Rules:

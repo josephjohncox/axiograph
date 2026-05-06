@@ -6,18 +6,19 @@ promotion accept them.
 
 - `ProtoApi.proposals.axi` is a proto/API proposal module.
 - `SqlSchema.proposals.axi` is a SQL-schema proposal module.
-- The adjacent `.json` files are `ProposalsFileV1` proposal inputs for
-  discovery workflows.
+- `fixtures/*.json` are `ProposalsFileV1` proposal inputs for discovery
+  workflows. They are checked-in tool fixtures, not the preferred human
+  authoring surface.
 
 ## Proto/API Review Flow
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  ingest proto ingest examples/proto/large_api \
-  --out build/examples/schema_discovery/proto_api_proposals.json
+	  ingest proto ingest examples/proto/large_api \
+	  --out build/examples/schema_discovery/proto_api_proposals.json
 
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  discover draft-module build/examples/schema_discovery/proto_api_proposals.json \
+	  discover draft-module build/examples/schema_discovery/proto_api_proposals.json \
   --module ProtoApi_Proposals \
   --schema ProtoApi \
   --instance Observed \

@@ -79,7 +79,7 @@ Related roadmaps:
   manifests. Canonical `.axi` should model domain meaning; tools should use the
   ontology through stable compiled IR refs. Track the detailed plan in
   `docs/roadmaps/ROADMAP_TOOLING_OVERLAY_SEPARATION.md`.
-- [ ] Keep AI/world-model outputs evidence-plane but richly typed: run anchors,
+- [ ] Keep AI/proposal-adapter outputs evidence-plane but richly typed: run anchors,
   proposal-set digests, grounded evidence links, candidate schema/theory/olog
   deltas, and explicit preview failures.
 - [ ] Treat embeddings as evidence/index sidecars: add anchored
@@ -119,7 +119,7 @@ Related roadmaps:
   soundness-scoped trust surface.
 - [x] CQ-gated proposal preview exists for evidence-plane overlays.
 - [x] Accepted-plane code already has `sem/commits`, `sem/refs`,
-  `sem/validations`, and `sem/world_model_runs`.
+  `sem/validations`, and `sem/evidence/proposal_adapter_runs`.
 - [x] Migration preview builders emit transport-along-morphism, transported
   path-equation, subtype-collapse, and merge-image primitives.
 - [x] Runtime theory transport plans classify compiled theory obligations under
@@ -183,7 +183,7 @@ Related roadmaps:
   de-emphasize raw `u32` and `String` surfaces in core execution.
 - [ ] Introduce first-class workflow types such as `FactId<A>`,
   `TypedFact<S, R, A>`, `ProposalSet<Validated, A>`, `WorldState<A>`,
-  `WorldModelRun<A>`, and `CertifiedAnswer<A>`.
+  `ProposalAdapterRun<A>`, and `CertifiedAnswer<A>`.
 - [x] Lift module kind into the type surface: distinguish canonical `.axi`
   modules from derived `PathDBExportV1` snapshots.
 - [ ] Expose first-class prepared/typechecked query handles so REPL, server,
@@ -223,15 +223,15 @@ Related roadmaps:
 - [ ] Show inferred types, ambiguity resolution, rewrite/normalization
   explanation, and suggested fixes as default UX, not debug-only output.
 
-## Semantic VCS And World Models
+## Semantic VCS And Proposal Adapters
 
 - [ ] Evolve the accepted-plane snapshot store into a first-class semantic VCS,
   not just `HEAD` plus logs.
 - [ ] Add refs beyond `HEAD`: `refs/heads/main`, `refs/heads/review/*`,
-  `refs/heads/evidence/*`, `refs/heads/wm/*`, and `refs/tags/*`.
+  `refs/heads/evidence/*`, `refs/heads/evidence/proposals/*`, and `refs/tags/*`.
 - [ ] Add semantic commit objects with parentage, author, timestamp, message,
   policy/reconciliation metadata, accepted modules, evidence overlays,
-  certificates, validation refs, and optional world-model runs.
+  certificates, validation refs, and optional proposal-adapter runs.
 - [ ] Add semantic diffs for schema, theory, instance, context/world,
   certificates, rules, CQs, trust, coverage, and implementation obligations.
 - [ ] Define merge as reconciliation with explicit conflict sets, decisions,
@@ -240,12 +240,12 @@ Related roadmaps:
   certificates, runs, and projection manifests.
 - [ ] Add semantic VCS CLI verbs for branch, checkout, status, diff, log, merge,
   tag, promote, supersede, and retract.
-- [ ] Make world-model branches and review branches first-class lifecycle
+- [ ] Make proposal-adapter branches and review branches first-class lifecycle
   surfaces.
 - [ ] Persist proposal/review bundles under `sem/validations/` with stable
   proposal-set and run anchors.
 - [ ] Require CQ-gated review/merge transitions before accepted-plane promotion.
-- [ ] Link committed world-model runs to semantic commit ids, refs, evaluations,
+- [ ] Link committed proposal-adapter runs to semantic commit ids, refs, evaluations,
   planner outcomes, and promotion tags.
 
 ## Interop And Backends

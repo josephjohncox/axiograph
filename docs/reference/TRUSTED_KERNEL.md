@@ -180,7 +180,7 @@ Keep these outside:
   import/typecheck wrappers
 - WAL replay mechanics
 - heuristic reconciliation
-- LLM/world-model scoring
+- LLM/proposal-adapter scoring
 - embedding search and embedding-derived relationship suggestions
 - general RDF/OWL entailment
 - explanation-level topos/sheaf/modal machinery

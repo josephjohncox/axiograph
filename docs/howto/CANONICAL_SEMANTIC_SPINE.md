@@ -84,8 +84,8 @@ For server/tooling requests, prefer structured `query_ir_v1`.
   "lang": "query_ir_v1",
   "query_ir_v1": {
     "version": 1,
-    "select": ["?x"],
-    "where": [
+    "select_vars": ["?x"],
+    "where_atoms": [
       { "kind": "type", "term": "?x", "type": "Order" }
     ],
     "limit": 10
@@ -102,9 +102,9 @@ Certificate policies:
 - `require_verified`: fail closed unless the accepted anchor, canonical text,
   certifiable fragment, verifier, and anchor match all succeed.
 
-Legacy request booleans such as `certify`, `verify`,
-`require_query_certs`, and `require_verified_queries` are intentionally
-rejected by server request parsing.
+Server request parsing accepts only the `certificate_policy` field for query
+certificate behavior. Boolean-style request fields are not part of the public
+contract.
 
 ## 5. Use Software-Authoring Overlays
 

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use axiograph_dsl::schema_v1::ConstraintV1;
 use axiograph_pathdb::{
     AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, PathdbSnapshotId, ProposalDigest,
-    WorldModelRunId,
+    ProposalAdapterRunId,
 };
 
 use crate::axi_input::require_canonical_axi_text;
@@ -53,10 +53,10 @@ const ACCEPTED_PLANE_SEM_REFS_DIR: &str = "sem/refs";
 const ACCEPTED_PLANE_SEM_HEADS_DIR: &str = "sem/refs/heads";
 const ACCEPTED_PLANE_SEM_HEADS_REVIEW_DIR: &str = "sem/refs/heads/review";
 const ACCEPTED_PLANE_SEM_HEADS_EVIDENCE_DIR: &str = "sem/refs/heads/evidence";
-const ACCEPTED_PLANE_SEM_HEADS_WM_DIR: &str = "sem/refs/heads/wm";
+const ACCEPTED_PLANE_SEM_HEADS_PROPOSALS_DIR: &str = "sem/refs/heads/evidence/proposals";
 const ACCEPTED_PLANE_SEM_TAGS_DIR: &str = "sem/refs/tags";
 const ACCEPTED_PLANE_SEM_VALIDATIONS_DIR: &str = "sem/validations";
-const ACCEPTED_PLANE_SEM_WORLD_MODEL_RUNS_DIR: &str = "sem/world_model_runs";
+const ACCEPTED_PLANE_SEM_PROPOSAL_ADAPTER_RUNS_DIR: &str = "sem/evidence/proposal_adapter_runs";
 const ACCEPTED_PLANE_SEM_PROJECTIONS_DIR: &str = "sem/projections";
 
 const ACCEPTED_PLANE_SNAPSHOT_VERSION_V1: &str = "accepted_plane_snapshot_v1";
@@ -70,7 +70,7 @@ const ACCEPTED_PLANE_SEM_REF_POINTER_VERSION_V1: &str = "accepted_plane_sem_ref_
 #[allow(dead_code)]
 const ACCEPTED_PLANE_SEM_RECONCILIATION_VERSION_V1: &str = "accepted_plane_sem_reconciliation_v1";
 #[cfg_attr(not(test), allow(dead_code))]
-const WORLD_MODEL_RUN_RECORD_VERSION_V1: &str = "world_model_run_record_v1";
+const PROPOSAL_ADAPTER_RUN_RECORD_VERSION_V1: &str = "proposal_adapter_run_record_v1";
 #[cfg_attr(not(test), allow(dead_code))]
 const BACKEND_PROJECTION_MANIFEST_VERSION_V1: &str = "backend_projection_manifest_v1";
 
@@ -139,7 +139,7 @@ pub struct PromotionPreviewOptionsV1 {
     pub quality_profile: String,
     pub quality_plane: String,
     #[serde(default)]
-    pub competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    pub competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     #[serde(default)]
     pub competency_gate: crate::proposals_validate::CompetencyGatePolicyV1,
 }
@@ -240,7 +240,7 @@ pub struct PromoteReviewedModuleOptionsV1 {
     pub quality_profile: String,
     pub quality_plane: String,
     #[serde(default)]
-    pub competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    pub competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     #[serde(default)]
     pub competency_gate: crate::proposals_validate::CompetencyGatePolicyV1,
     #[serde(default = "default_persist_validation_report")]
@@ -352,7 +352,7 @@ pub struct SemCommitV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_ok: Option<bool>,
     #[serde(default)]
-    pub world_model_run_id: Option<WorldModelRunId>,
+    pub proposal_adapter_run_id: Option<ProposalAdapterRunId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -364,7 +364,7 @@ pub enum SemCommitKindV1 {
     ProjectionMaterialization,
     Merge,
     Validation,
-    WorldModelRun,
+    PredictiveProposalRun,
     TagMove,
     Admin,
 }
@@ -378,7 +378,7 @@ pub struct SemCommitProvenanceV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_commit: Option<AxiDigest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub world_model_run_id: Option<WorldModelRunId>,
+    pub proposal_adapter_run_id: Option<ProposalAdapterRunId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -428,7 +428,7 @@ pub struct SemDeltaV1 {
     #[serde(default)]
     pub lifecycle_events: Vec<SemLifecycleEventV1>,
     #[serde(default)]
-    pub world_model_run_refs: Vec<WorldModelRunId>,
+    pub proposal_adapter_run_refs: Vec<ProposalAdapterRunId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -492,7 +492,7 @@ pub enum SemHeadV1 {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemRefNameV1 {
     Main,
-    WorldModel { name: String },
+    PredictiveProposal { name: String },
     Review { name: String },
     Evidence { name: String },
     Tag { name: String },
@@ -504,9 +504,9 @@ impl SemRefNameV1 {
         Self::Main
     }
 
-    pub fn world_model(name: impl Into<String>) -> Result<Self> {
-        Ok(Self::WorldModel {
-            name: validate_sem_ref_suffix(name.into(), "world-model branch")?,
+    pub fn predictive_proposal(name: impl Into<String>) -> Result<Self> {
+        Ok(Self::PredictiveProposal {
+            name: validate_sem_ref_suffix(name.into(), "proposal-adapter branch")?,
         })
     }
 
@@ -536,8 +536,8 @@ impl SemRefNameV1 {
         if trimmed == ACCEPTED_PLANE_SEM_HEADS_MAIN_REF {
             return Ok(Self::Main);
         }
-        if let Some(name) = trimmed.strip_prefix("heads/wm/") {
-            return Self::world_model(name);
+        if let Some(name) = trimmed.strip_prefix("heads/evidence/proposals/") {
+            return Self::predictive_proposal(name);
         }
         if let Some(name) = trimmed.strip_prefix("heads/review/") {
             return Self::review(name);
@@ -556,7 +556,7 @@ impl SemRefNameV1 {
     pub fn as_ref_name(&self) -> String {
         match self {
             Self::Main => ACCEPTED_PLANE_SEM_HEADS_MAIN_REF.to_string(),
-            Self::WorldModel { name } => format!("heads/wm/{name}"),
+            Self::PredictiveProposal { name } => format!("heads/evidence/proposals/{name}"),
             Self::Review { name } => format!("heads/review/{name}"),
             Self::Evidence { name } => format!("heads/evidence/{name}"),
             Self::Tag { name } => format!("tags/{name}"),
@@ -568,7 +568,7 @@ impl SemRefNameV1 {
     pub fn is_branch(&self) -> bool {
         matches!(
             self,
-            Self::Main | Self::WorldModel { .. } | Self::Review { .. } | Self::Evidence { .. }
+            Self::Main | Self::PredictiveProposal { .. } | Self::Review { .. } | Self::Evidence { .. }
         )
     }
 
@@ -628,7 +628,7 @@ pub struct PathdbSemanticCommitOptionsV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_summary: Option<crate::evolution_preview::SemGateSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub world_model_run_id: Option<WorldModelRunId>,
+    pub proposal_adapter_run_id: Option<ProposalAdapterRunId>,
     #[serde(default = "default_pathdb_semantic_commit_policy")]
     pub policy: String,
     #[serde(default = "default_semantic_commit_author")]
@@ -645,18 +645,18 @@ fn default_semantic_commit_author() -> String {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorldModelRunStatusV1 {
+pub enum ProposalAdapterRunStatusV1 {
     Previewed,
     CommittedToPathdb,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorldModelRunRecordV1 {
+pub struct ProposalAdapterRunRecordV1 {
     pub version: String,
-    pub run_id: WorldModelRunId,
-    pub trace_id: WorldModelRunId,
+    pub run_id: ProposalAdapterRunId,
+    pub trace_id: ProposalAdapterRunId,
     pub created_at_unix_secs: u64,
-    pub status: WorldModelRunStatusV1,
+    pub status: ProposalAdapterRunStatusV1,
     pub backend: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -1728,17 +1728,17 @@ fn persist_reconciliation_preview_report(
     Ok(rel_path)
 }
 
-pub fn persist_world_model_run_record(
+pub fn persist_proposal_adapter_run_record(
     accepted_dir: &Path,
-    record: &WorldModelRunRecordV1,
+    record: &ProposalAdapterRunRecordV1,
 ) -> Result<PathBuf> {
     ensure_layout(accepted_dir)?;
-    let path = world_model_run_record_path(accepted_dir, &record.run_id);
+    let path = proposal_adapter_run_record_path(accepted_dir, &record.run_id);
     if path.exists() {
-        let existing = read_world_model_run_record(accepted_dir, &record.run_id)?;
+        let existing = read_proposal_adapter_run_record(accepted_dir, &record.run_id)?;
         if existing != *record {
             return Err(anyhow!(
-                "world-model run id collision: `{}` already exists with different contents",
+                "proposal-adapter run id collision: `{}` already exists with different contents",
                 record.run_id
             ));
         }
@@ -1773,21 +1773,21 @@ pub fn persist_pathdb_semantic_commit(
     Ok(commit)
 }
 
-pub fn read_world_model_run_record(
+pub fn read_proposal_adapter_run_record(
     accepted_dir: &Path,
-    run_id: &WorldModelRunId,
-) -> Result<WorldModelRunRecordV1> {
-    let path = world_model_run_record_path(accepted_dir, run_id);
+    run_id: &ProposalAdapterRunId,
+) -> Result<ProposalAdapterRunRecordV1> {
+    let path = proposal_adapter_run_record_path(accepted_dir, run_id);
     let text = fs::read_to_string(&path).map_err(|e| {
         anyhow!(
-            "failed to read world-model run manifest `{}`: {e}",
+            "failed to read proposal-adapter run manifest `{}`: {e}",
             path.display()
         )
     })?;
-    let record: WorldModelRunRecordV1 = serde_json::from_str(&text)?;
+    let record: ProposalAdapterRunRecordV1 = serde_json::from_str(&text)?;
     if record.run_id != *run_id {
         return Err(anyhow!(
-            "world-model run manifest `{}` has mismatched id: expected={} got={}",
+            "proposal-adapter run manifest `{}` has mismatched id: expected={} got={}",
             path.display(),
             run_id,
             record.run_id
@@ -1876,10 +1876,10 @@ fn ensure_layout(accepted_dir: &Path) -> Result<()> {
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_REVIEW_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_EVIDENCE_DIR))?;
-    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_WM_DIR))?;
+    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_HEADS_PROPOSALS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_TAGS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_VALIDATIONS_DIR))?;
-    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_WORLD_MODEL_RUNS_DIR))?;
+    fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_PROPOSAL_ADAPTER_RUNS_DIR))?;
     fs::create_dir_all(accepted_dir.join(ACCEPTED_PLANE_SEM_PROJECTIONS_DIR))?;
     // Log is append-only; create it if it doesn't exist.
     let log_path = accepted_dir.join(ACCEPTED_PLANE_LOG_V1);
@@ -2037,42 +2037,42 @@ fn validate_semantic_ref_update(
                 ));
             }
         }
-        SemRefNameV1::WorldModel { .. } => {
-            if commit.kind != SemCommitKindV1::WorldModelRun {
+        SemRefNameV1::PredictiveProposal { .. } => {
+            if commit.kind != SemCommitKindV1::PredictiveProposalRun {
                 return Err(anyhow!(
-                    "world-model refs (`heads/wm/*`) require `WorldModelRun` commits; got {:?}",
+                    "proposal-adapter refs (`heads/evidence/proposals/*`) require `PredictiveProposalRun` commits; got {:?}",
                     commit.kind
                 ));
             }
             let run_id = commit
-                .world_model_run_id
+                .proposal_adapter_run_id
                 .as_ref()
-                .or(commit.provenance.world_model_run_id.as_ref())
+                .or(commit.provenance.proposal_adapter_run_id.as_ref())
                 .ok_or_else(|| {
                     anyhow!(
-                        "world-model ref `{ref_name}` requires a commit with world_model_run_id provenance"
+                        "proposal-adapter ref `{ref_name}` requires a commit with proposal_adapter_run_id provenance"
                     )
                 })?;
             if !commit
                 .delta
-                .world_model_run_refs
+                .proposal_adapter_run_refs
                 .iter()
                 .any(|id| id == run_id)
             {
                 return Err(anyhow!(
-                    "world-model ref `{ref_name}` requires delta.world_model_run_refs to include `{run_id}`"
+                    "proposal-adapter ref `{ref_name}` requires delta.proposal_adapter_run_refs to include `{run_id}`"
                 ));
             }
-            read_world_model_run_record(accepted_dir, run_id).map_err(|err| {
+            read_proposal_adapter_run_record(accepted_dir, run_id).map_err(|err| {
                 anyhow!(
-                    "world-model ref `{ref_name}` requires persisted WorldModelRunRecord `{run_id}`: {err}"
+                    "proposal-adapter ref `{ref_name}` requires persisted PredictiveProposalRunRecord `{run_id}`: {err}"
                 )
             })?;
         }
         SemRefNameV1::Review { .. } => {
-            if commit.kind == SemCommitKindV1::WorldModelRun && !gate_blockers.is_empty() {
+            if commit.kind == SemCommitKindV1::PredictiveProposalRun && !gate_blockers.is_empty() {
                 return Err(anyhow!(
-                    "review ref `{ref_name}` cannot accept world-model commit `{}` because gates are blocked: {}",
+                    "review ref `{ref_name}` cannot accept proposal-adapter commit `{}` because gates are blocked: {}",
                     commit.commit_id,
                     gate_blockers.join("; ")
                 ));
@@ -2082,11 +2082,11 @@ fn validate_semantic_ref_update(
             if !matches!(
                 commit.kind,
                 SemCommitKindV1::EvidenceCommit
-                    | SemCommitKindV1::WorldModelRun
+                    | SemCommitKindV1::PredictiveProposalRun
                     | SemCommitKindV1::Validation
             ) {
                 return Err(anyhow!(
-                    "evidence refs (`heads/evidence/*`) may only point at evidence, world-model, or validation commits; got {:?}",
+                    "evidence refs (`heads/evidence/*`) may only point at evidence, proposal-adapter, or validation commits; got {:?}",
                     commit.kind
                 ));
             }
@@ -2272,10 +2272,10 @@ fn snapshot_manifest_path(accepted_dir: &Path, snapshot_id: &str) -> PathBuf {
     accepted_dir.join(ACCEPTED_PLANE_SNAPSHOTS_DIR).join(file)
 }
 
-fn world_model_run_record_path(accepted_dir: &Path, run_id: &WorldModelRunId) -> PathBuf {
+fn proposal_adapter_run_record_path(accepted_dir: &Path, run_id: &ProposalAdapterRunId) -> PathBuf {
     let file = format!("{}.json", digest_to_filename(run_id.as_str()));
     accepted_dir
-        .join(ACCEPTED_PLANE_SEM_WORLD_MODEL_RUNS_DIR)
+        .join(ACCEPTED_PLANE_SEM_PROPOSAL_ADAPTER_RUNS_DIR)
         .join(file)
 }
 
@@ -2501,7 +2501,7 @@ fn sem_ref_head_migration_priority(ref_name: &str) -> u8 {
         0
     } else if ref_name.starts_with("heads/review/") {
         1
-    } else if ref_name.starts_with("heads/wm/") {
+    } else if ref_name.starts_with("heads/evidence/proposals/") {
         2
     } else if ref_name.starts_with("heads/evidence/") {
         3
@@ -3080,7 +3080,7 @@ fn semantic_commit_from_promotion(
             source: "accepted_plane".to_string(),
             command: Some("axiograph db accept promote".to_string()),
             source_commit: None,
-            world_model_run_id: None,
+            proposal_adapter_run_id: None,
         },
         state: SemStateRefV1 {
             accepted_snapshot_id_before: snapshot.previous_snapshot_id.clone(),
@@ -3120,7 +3120,7 @@ fn semantic_commit_from_promotion(
                 to: LifecycleStageV1::Accepted,
                 reason: event.message.clone(),
             }],
-            world_model_run_refs: Vec::new(),
+            proposal_adapter_run_refs: Vec::new(),
         },
         gate_summary,
         reconciliation_id: None,
@@ -3135,7 +3135,7 @@ fn semantic_commit_from_promotion(
         constraints_cert_path: event.constraints_cert_path.clone(),
         validation_report_path: event.validation_report_path.clone(),
         validation_ok: event.validation_ok,
-        world_model_run_id: None,
+        proposal_adapter_run_id: None,
     })
 }
 
@@ -3178,7 +3178,7 @@ fn semantic_commit_from_reconciliation(
             source: "semantic_vcs".to_string(),
             command: Some("axiograph sem merge".to_string()),
             source_commit: Some(reconciliation.left_commit_id.clone()),
-            world_model_run_id: None,
+            proposal_adapter_run_id: None,
         },
         state: SemStateRefV1 {
             accepted_snapshot_id_before: Some(before_snapshot_id.clone()),
@@ -3203,7 +3203,7 @@ fn semantic_commit_from_reconciliation(
             validation_report_refs_added: validation_report_path.clone().into_iter().collect(),
             projection_manifest_refs_added: Vec::new(),
             lifecycle_events: Vec::new(),
-            world_model_run_refs: Vec::new(),
+            proposal_adapter_run_refs: Vec::new(),
         },
         gate_summary: Some(gate_summary),
         reconciliation_id: Some(reconciliation.reconciliation_id.clone()),
@@ -3218,7 +3218,7 @@ fn semantic_commit_from_reconciliation(
         constraints_cert_path: None,
         validation_report_path,
         validation_ok: Some(preview.ok),
-        world_model_run_id: None,
+        proposal_adapter_run_id: None,
     })
 }
 
@@ -3226,7 +3226,7 @@ fn pathdb_overlay_digest_v1(
     accepted_snapshot_id: &AcceptedSnapshotId,
     pathdb_snapshot_id: &PathdbSnapshotId,
     proposal_digests: &[ProposalDigest],
-    world_model_run_id: Option<&WorldModelRunId>,
+    proposal_adapter_run_id: Option<&ProposalAdapterRunId>,
 ) -> AxiDigest {
     use std::fmt::Write as _;
 
@@ -3241,8 +3241,8 @@ fn pathdb_overlay_digest_v1(
     }
     let _ = write!(
         &mut material,
-        "wm_run={};",
-        world_model_run_id.map(|id| id.as_str()).unwrap_or("(none)")
+        "proposal_adapter_run={};",
+        proposal_adapter_run_id.map(|id| id.as_str()).unwrap_or("(none)")
     );
     AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
 }
@@ -3252,7 +3252,7 @@ fn sem_commit_id_for_pathdb_overlay_v1(
     accepted_snapshot_id: &AcceptedSnapshotId,
     pathdb_snapshot_id: &PathdbSnapshotId,
     proposal_digests: &[ProposalDigest],
-    world_model_run_id: Option<&WorldModelRunId>,
+    proposal_adapter_run_id: Option<&ProposalAdapterRunId>,
 ) -> AxiDigest {
     use std::fmt::Write as _;
 
@@ -3270,8 +3270,8 @@ fn sem_commit_id_for_pathdb_overlay_v1(
     }
     let _ = write!(
         &mut material,
-        "wm_run={};",
-        world_model_run_id.map(|id| id.as_str()).unwrap_or("(none)")
+        "proposal_adapter_run={};",
+        proposal_adapter_run_id.map(|id| id.as_str()).unwrap_or("(none)")
     );
     AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&material))
 }
@@ -3380,7 +3380,7 @@ fn semantic_commit_from_projection_manifest(
             source: "backend_projection".to_string(),
             command: Some("axiograph sem project-backend".to_string()),
             source_commit: manifest.source_sem_commit_id.clone(),
-            world_model_run_id: None,
+            proposal_adapter_run_id: None,
         },
         state: SemStateRefV1 {
             accepted_snapshot_id_before: Some(manifest.accepted_snapshot_id.clone()),
@@ -3405,7 +3405,7 @@ fn semantic_commit_from_projection_manifest(
             validation_report_refs_added: Vec::new(),
             projection_manifest_refs_added: vec![manifest.projection_id.clone()],
             lifecycle_events: Vec::new(),
-            world_model_run_refs: Vec::new(),
+            proposal_adapter_run_refs: Vec::new(),
         },
         gate_summary: None,
         reconciliation_id: None,
@@ -3420,7 +3420,7 @@ fn semantic_commit_from_projection_manifest(
         constraints_cert_path: None,
         validation_report_path: None,
         validation_ok: None,
-        world_model_run_id: None,
+        proposal_adapter_run_id: None,
     }
 }
 
@@ -3435,14 +3435,14 @@ fn semantic_commit_from_pathdb_overlay(
         &accepted_snapshot.snapshot_id,
         pathdb_snapshot_id,
         &options.proposal_digests,
-        options.world_model_run_id.as_ref(),
+        options.proposal_adapter_run_id.as_ref(),
     );
     SemCommitV1 {
         version: ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1.to_string(),
         commit_id,
         parent_commit_id,
-        kind: if options.world_model_run_id.is_some() {
-            SemCommitKindV1::WorldModelRun
+        kind: if options.proposal_adapter_run_id.is_some() {
+            SemCommitKindV1::PredictiveProposalRun
         } else {
             SemCommitKindV1::EvidenceCommit
         },
@@ -3451,14 +3451,14 @@ fn semantic_commit_from_pathdb_overlay(
         message: options.message.clone(),
         action: "pathdb_commit".to_string(),
         provenance: SemCommitProvenanceV1 {
-            source: if options.world_model_run_id.is_some() {
-                "world_model".to_string()
+            source: if options.proposal_adapter_run_id.is_some() {
+                "predictive_proposal_adapter".to_string()
             } else {
                 "pathdb_wal".to_string()
             },
             command: Some("axiograph db accept pathdb-commit".to_string()),
             source_commit: None,
-            world_model_run_id: options.world_model_run_id.clone(),
+            proposal_adapter_run_id: options.proposal_adapter_run_id.clone(),
         },
         state: SemStateRefV1 {
             accepted_snapshot_id_before: Some(accepted_snapshot.snapshot_id.clone()),
@@ -3501,7 +3501,7 @@ fn semantic_commit_from_pathdb_overlay(
                     reason: options.message.clone(),
                 })
                 .collect(),
-            world_model_run_refs: options.world_model_run_id.clone().into_iter().collect(),
+            proposal_adapter_run_refs: options.proposal_adapter_run_id.clone().into_iter().collect(),
         },
         gate_summary: options.gate_summary.clone(),
         reconciliation_id: None,
@@ -3515,13 +3515,13 @@ fn semantic_commit_from_pathdb_overlay(
             &accepted_snapshot.snapshot_id,
             pathdb_snapshot_id,
             &options.proposal_digests,
-            options.world_model_run_id.as_ref(),
+            options.proposal_adapter_run_id.as_ref(),
         ),
         quality_report_path: None,
         constraints_cert_path: None,
         validation_report_path: None,
         validation_ok: None,
-        world_model_run_id: options.world_model_run_id.clone(),
+        proposal_adapter_run_id: options.proposal_adapter_run_id.clone(),
     }
 }
 
@@ -3728,13 +3728,13 @@ pub struct SemStatusV1 {
     #[serde(default)]
     pub evidence_refs: Vec<SemRefPointerV1>,
     #[serde(default)]
-    pub world_model_refs: Vec<SemRefPointerV1>,
+    pub predictive_proposal_refs: Vec<SemRefPointerV1>,
     #[serde(default)]
     pub tag_refs: Vec<SemRefPointerV1>,
     #[serde(default)]
     pub reconciliation_ids: Vec<AxiDigest>,
     #[serde(default)]
-    pub world_model_run_ids: Vec<WorldModelRunId>,
+    pub proposal_adapter_run_ids: Vec<ProposalAdapterRunId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3777,7 +3777,7 @@ pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
     let refs_root = accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR).join("heads");
     let mut review_refs = Vec::new();
     let mut evidence_refs = Vec::new();
-    let mut world_model_refs = Vec::new();
+    let mut predictive_proposal_refs = Vec::new();
     if refs_root.exists() {
         let review_root = refs_root.join("review");
         if review_root.exists() {
@@ -3806,12 +3806,15 @@ pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
                     .strip_prefix(accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR))
                     .map_err(|e| anyhow!("failed to relativize semantic ref path: {e}"))?;
                 let ref_name = rel.to_string_lossy().replace('\\', "/");
+                if ref_name.starts_with("heads/evidence/proposals/") {
+                    continue;
+                }
                 evidence_refs.push(read_sem_ref_pointer(accepted_dir, &ref_name)?);
             }
         }
-        let wm_root = refs_root.join("wm");
-        if wm_root.exists() {
-            for entry in walkdir::WalkDir::new(&wm_root)
+        let proposal_root = refs_root.join("evidence").join("proposals");
+        if proposal_root.exists() {
+            for entry in walkdir::WalkDir::new(&proposal_root)
                 .into_iter()
                 .filter_map(|e| e.ok())
                 .filter(|e| e.file_type().is_file())
@@ -3821,13 +3824,13 @@ pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
                     .strip_prefix(accepted_dir.join(ACCEPTED_PLANE_SEM_REFS_DIR))
                     .map_err(|e| anyhow!("failed to relativize semantic ref path: {e}"))?;
                 let ref_name = rel.to_string_lossy().replace('\\', "/");
-                world_model_refs.push(read_sem_ref_pointer(accepted_dir, &ref_name)?);
+                predictive_proposal_refs.push(read_sem_ref_pointer(accepted_dir, &ref_name)?);
             }
         }
     }
     review_refs.sort_by(|a, b| a.ref_name.cmp(&b.ref_name));
     evidence_refs.sort_by(|a, b| a.ref_name.cmp(&b.ref_name));
-    world_model_refs.sort_by(|a, b| a.ref_name.cmp(&b.ref_name));
+    predictive_proposal_refs.sort_by(|a, b| a.ref_name.cmp(&b.ref_name));
 
     let tags_root = accepted_dir.join(ACCEPTED_PLANE_SEM_TAGS_DIR);
     let mut tag_refs = Vec::new();
@@ -3863,21 +3866,21 @@ pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
     }
     reconciliation_ids.sort();
 
-    let world_model_runs_root = accepted_dir.join(ACCEPTED_PLANE_SEM_WORLD_MODEL_RUNS_DIR);
-    let mut world_model_run_ids = Vec::new();
-    if world_model_runs_root.exists() {
-        for entry in fs::read_dir(&world_model_runs_root)? {
+    let proposal_adapter_runs_root = accepted_dir.join(ACCEPTED_PLANE_SEM_PROPOSAL_ADAPTER_RUNS_DIR);
+    let mut proposal_adapter_run_ids = Vec::new();
+    if proposal_adapter_runs_root.exists() {
+        for entry in fs::read_dir(&proposal_adapter_runs_root)? {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
             let text = fs::read_to_string(&path)?;
-            let run: WorldModelRunRecordV1 = serde_json::from_str(&text)?;
-            world_model_run_ids.push(run.run_id);
+            let run: ProposalAdapterRunRecordV1 = serde_json::from_str(&text)?;
+            proposal_adapter_run_ids.push(run.run_id);
         }
     }
-    world_model_run_ids.sort();
+    proposal_adapter_run_ids.sort();
 
     Ok(SemStatusV1 {
         version: "accepted_plane_sem_status_v1".to_string(),
@@ -3886,10 +3889,10 @@ pub fn sem_status(accepted_dir: &Path) -> Result<SemStatusV1> {
         main_ref,
         review_refs,
         evidence_refs,
-        world_model_refs,
+        predictive_proposal_refs,
         tag_refs,
         reconciliation_ids,
-        world_model_run_ids,
+        proposal_adapter_run_ids,
     })
 }
 
@@ -4049,13 +4052,13 @@ fn sem_delta_is_empty(delta: &SemDeltaV1) -> bool {
         && delta.validation_report_refs_added.is_empty()
         && delta.projection_manifest_refs_added.is_empty()
         && delta.lifecycle_events.is_empty()
-        && delta.world_model_run_refs.is_empty()
+        && delta.proposal_adapter_run_refs.is_empty()
 }
 
 fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
     if commit.action == "pathdb_commit" {
-        commit.kind = if commit.world_model_run_id.is_some() {
-            SemCommitKindV1::WorldModelRun
+        commit.kind = if commit.proposal_adapter_run_id.is_some() {
+            SemCommitKindV1::PredictiveProposalRun
         } else {
             SemCommitKindV1::EvidenceCommit
         };
@@ -4066,8 +4069,8 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
     if commit.provenance.source.is_empty() {
         commit.provenance = SemCommitProvenanceV1 {
             source: if commit.action == "pathdb_commit" {
-                if commit.world_model_run_id.is_some() {
-                    "world_model".to_string()
+                if commit.proposal_adapter_run_id.is_some() {
+                    "predictive_proposal_adapter".to_string()
                 } else {
                     "pathdb_wal".to_string()
                 }
@@ -4084,7 +4087,7 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                 Some("axiograph db accept promote".to_string())
             },
             source_commit: None,
-            world_model_run_id: commit.world_model_run_id.clone(),
+            proposal_adapter_run_id: commit.proposal_adapter_run_id.clone(),
         };
     }
 
@@ -4136,7 +4139,7 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                         reason: commit.message.clone(),
                     })
                     .collect(),
-                world_model_run_refs: commit.world_model_run_id.clone().into_iter().collect(),
+                proposal_adapter_run_refs: commit.proposal_adapter_run_id.clone().into_iter().collect(),
             }
         } else if commit.action == "backend_projection" {
             SemDeltaV1 {
@@ -4154,7 +4157,7 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                 validation_report_refs_added: Vec::new(),
                 projection_manifest_refs_added: vec![commit.module_digest.clone()],
                 lifecycle_events: Vec::new(),
-                world_model_run_refs: Vec::new(),
+                proposal_adapter_run_refs: Vec::new(),
             }
         } else {
             SemDeltaV1 {
@@ -4190,7 +4193,7 @@ fn normalize_semantic_commit(mut commit: SemCommitV1) -> SemCommitV1 {
                     to: LifecycleStageV1::Accepted,
                     reason: commit.message.clone(),
                 }],
-                world_model_run_refs: Vec::new(),
+                proposal_adapter_run_refs: Vec::new(),
             }
         };
     }
@@ -4747,24 +4750,24 @@ mod tests {
         commit
     }
 
-    fn sample_world_model_run_record(
-        run_id: WorldModelRunId,
+    fn sample_proposal_adapter_run_record(
+        run_id: ProposalAdapterRunId,
         accepted_snapshot_id: AcceptedSnapshotId,
-    ) -> WorldModelRunRecordV1 {
-        WorldModelRunRecordV1 {
-            version: WORLD_MODEL_RUN_RECORD_VERSION_V1.to_string(),
+    ) -> ProposalAdapterRunRecordV1 {
+        ProposalAdapterRunRecordV1 {
+            version: PROPOSAL_ADAPTER_RUN_RECORD_VERSION_V1.to_string(),
             trace_id: run_id.clone(),
             run_id,
             created_at_unix_secs: 1_700_000_111,
-            status: WorldModelRunStatusV1::CommittedToPathdb,
+            status: ProposalAdapterRunStatusV1::CommittedToPathdb,
             backend: "test".to_string(),
-            model: Some("test-world-model".to_string()),
+            model: Some("test-proposal-adapter".to_string()),
             axi_digest_v1: None,
             input_pathdb_snapshot_id: None,
             input_accepted_snapshot_id: Some(accepted_snapshot_id),
-            proposals_digest: ProposalDigest::new("fnv1a64:wm-proposals"),
+            proposals_digest: ProposalDigest::new("fnv1a64:proposal-adapter-proposals"),
             proposal_count: 1,
-            committed_pathdb_snapshot_id: Some(PathdbSnapshotId::new("fnv1a64:wm-pathdb")),
+            committed_pathdb_snapshot_id: Some(PathdbSnapshotId::new("fnv1a64:proposal-adapter-pathdb")),
             committed_accepted_snapshot_id: None,
             guardrail_total_cost: None,
             guardrail_profile: None,
@@ -4777,7 +4780,7 @@ mod tests {
         accepted_dir: &Path,
         snapshot_id: &str,
         parent_commit_id: Option<AxiDigest>,
-        run_id: Option<WorldModelRunId>,
+        run_id: Option<ProposalAdapterRunId>,
     ) -> SemCommitV1 {
         let accepted_snapshot = AcceptedPlaneSnapshotV1 {
             version: ACCEPTED_PLANE_SNAPSHOT_VERSION_V1.to_string(),
@@ -4789,7 +4792,7 @@ mod tests {
         let options = PathdbSemanticCommitOptionsV1 {
             message: Some("pathdb semantic commit".to_string()),
             proposal_digests: vec![ProposalDigest::new("fnv1a64:proposal-ref")],
-            world_model_run_id: run_id,
+            proposal_adapter_run_id: run_id,
             ..PathdbSemanticCommitOptionsV1::default()
         };
         let commit = semantic_commit_from_pathdb_overlay(
@@ -5174,16 +5177,16 @@ instance I of S:
     }
 
     #[test]
-    fn world_model_run_record_round_trips_typed_anchors() {
-        let accepted_dir = temp_test_dir("world-model-run-record");
+    fn proposal_adapter_run_record_round_trips_typed_anchors() {
+        let accepted_dir = temp_test_dir("proposal-adapter-run-record");
         ensure_layout(&accepted_dir).expect("layout");
 
-        let record = WorldModelRunRecordV1 {
-            version: WORLD_MODEL_RUN_RECORD_VERSION_V1.to_string(),
-            run_id: WorldModelRunId::new("wm::run"),
-            trace_id: WorldModelRunId::new("wm::trace"),
+        let record = ProposalAdapterRunRecordV1 {
+            version: PROPOSAL_ADAPTER_RUN_RECORD_VERSION_V1.to_string(),
+            run_id: ProposalAdapterRunId::new("proposal::run"),
+            trace_id: ProposalAdapterRunId::new("proposal::trace"),
             created_at_unix_secs: 123,
-            status: WorldModelRunStatusV1::CommittedToPathdb,
+            status: ProposalAdapterRunStatusV1::CommittedToPathdb,
             backend: "plugin".to_string(),
             model: Some("deterministic".to_string()),
             axi_digest_v1: Some(AxiDigest::new("fnv1a64:axi")),
@@ -5199,32 +5202,32 @@ instance I of S:
             notes: vec!["typed".to_string(), "anchored".to_string()],
         };
 
-        let path = persist_world_model_run_record(&accepted_dir, &record)
-            .expect("persist world-model run");
+        let path = persist_proposal_adapter_run_record(&accepted_dir, &record)
+            .expect("persist proposal-adapter run");
         assert!(
-            path.ends_with("sem/world_model_runs/wm__run.json"),
+            path.ends_with("sem/evidence/proposal_adapter_runs/proposal__run.json"),
             "unexpected persisted path: {}",
             path.display()
         );
 
         let round_trip =
-            read_world_model_run_record(&accepted_dir, &record.run_id).expect("read run record");
+            read_proposal_adapter_run_record(&accepted_dir, &record.run_id).expect("read run record");
         assert_eq!(round_trip, record);
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }
 
     #[test]
-    fn world_model_run_record_rejects_run_id_collision_with_different_typed_lineage() {
-        let accepted_dir = temp_test_dir("world-model-run-record-collision");
+    fn proposal_adapter_run_record_rejects_run_id_collision_with_different_typed_lineage() {
+        let accepted_dir = temp_test_dir("proposal-adapter-run-record-collision");
         ensure_layout(&accepted_dir).expect("layout");
 
-        let record = WorldModelRunRecordV1 {
-            version: WORLD_MODEL_RUN_RECORD_VERSION_V1.to_string(),
-            run_id: WorldModelRunId::new("wm::shared"),
-            trace_id: WorldModelRunId::new("wm::trace"),
+        let record = ProposalAdapterRunRecordV1 {
+            version: PROPOSAL_ADAPTER_RUN_RECORD_VERSION_V1.to_string(),
+            run_id: ProposalAdapterRunId::new("proposal::shared"),
+            trace_id: ProposalAdapterRunId::new("proposal::trace"),
             created_at_unix_secs: 123,
-            status: WorldModelRunStatusV1::Previewed,
+            status: ProposalAdapterRunStatusV1::Previewed,
             backend: "plugin".to_string(),
             model: None,
             axi_digest_v1: Some(AxiDigest::new("fnv1a64:axi")),
@@ -5239,11 +5242,11 @@ instance I of S:
             guardrail_plane: None,
             notes: vec!["preview".to_string()],
         };
-        persist_world_model_run_record(&accepted_dir, &record).expect("persist first record");
+        persist_proposal_adapter_run_record(&accepted_dir, &record).expect("persist first record");
 
-        let err = persist_world_model_run_record(
+        let err = persist_proposal_adapter_run_record(
             &accepted_dir,
-            &WorldModelRunRecordV1 {
+            &ProposalAdapterRunRecordV1 {
                 proposals_digest: ProposalDigest::new("fnv1a64:proposals-b"),
                 input_pathdb_snapshot_id: Some(PathdbSnapshotId::new("fnv1a64:pathdb-b")),
                 ..record
@@ -5251,8 +5254,8 @@ instance I of S:
         )
         .expect_err("mismatched run id must fail");
         let msg = format!("{err:#}");
-        assert!(msg.contains("world-model run id collision"));
-        assert!(msg.contains("wm::shared"));
+        assert!(msg.contains("proposal-adapter run id collision"));
+        assert!(msg.contains("proposal::shared"));
 
         fs::remove_dir_all(&accepted_dir).expect("cleanup temp dir");
     }
@@ -5306,7 +5309,7 @@ instance I of Fam:
                 message: Some("candidate".to_string()),
                 quality_profile: "off".to_string(),
                 quality_plane: "both".to_string(),
-                competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
+                competency_questions: vec![crate::predictive_proposals::CompetencyQuestionV1 {
                     name: "carol_parent".to_string(),
                     question: Some("Carol should still have Bob as a parent".to_string()),
                     authoring: None,
@@ -5387,7 +5390,7 @@ instance I of Fam:
                 message: Some("candidate".to_string()),
                 quality_profile: "off".to_string(),
                 quality_plane: "both".to_string(),
-                competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
+                competency_questions: vec![crate::predictive_proposals::CompetencyQuestionV1 {
                     name: "carol_parent".to_string(),
                     question: Some("Carol should gain Bob as a parent".to_string()),
                     authoring: None,
@@ -5681,7 +5684,7 @@ instance I of Fam:
     }
 
     #[test]
-    fn semantic_branch_refs_round_trip_for_wm_and_review() {
+    fn semantic_branch_refs_round_trip_for_proposal_and_review() {
         let accepted_dir = temp_test_dir("sem-branch-refs");
         ensure_layout(&accepted_dir).expect("layout");
 
@@ -5693,18 +5696,18 @@ instance I of Fam:
             "fnv1a64:module-base-ref-commit",
             "base",
         );
-        let run_id = WorldModelRunId::new("wmrun:demo-run");
-        persist_world_model_run_record(
+        let run_id = ProposalAdapterRunId::new("proposal-run:demo-run");
+        persist_proposal_adapter_run_record(
             &accepted_dir,
-            &sample_world_model_run_record(
+            &sample_proposal_adapter_run_record(
                 run_id.clone(),
-                AcceptedSnapshotId::new("fnv1a64:snap-wm-commit"),
+                AcceptedSnapshotId::new("fnv1a64:snap-proposal-commit"),
             ),
         )
-        .expect("persist wm run");
-        let wm_commit = seed_pathdb_semantic_commit(
+        .expect("persist proposal run");
+        let proposal_commit = seed_pathdb_semantic_commit(
             &accepted_dir,
-            "fnv1a64:snap-wm-commit",
+            "fnv1a64:snap-proposal-commit",
             Some(base_commit.commit_id.clone()),
             Some(run_id),
         )
@@ -5718,15 +5721,15 @@ instance I of Fam:
             "review",
         )
         .commit_id;
-        persist_semantic_ref(&accepted_dir, "heads/wm/demo_run", &wm_commit).expect("wm ref");
+        persist_semantic_ref(&accepted_dir, "heads/evidence/proposals/demo_run", &proposal_commit).expect("proposal ref");
         persist_semantic_ref(&accepted_dir, "heads/review/fam-parent", &review_commit)
             .expect("review ref");
 
         assert_eq!(
-            read_sem_ref_pointer(&accepted_dir, "heads/wm/demo_run")
-                .expect("read wm ref")
+            read_sem_ref_pointer(&accepted_dir, "heads/evidence/proposals/demo_run")
+                .expect("read proposal ref")
                 .commit_id,
-            wm_commit
+            proposal_commit
         );
         assert_eq!(
             read_sem_ref_pointer(&accepted_dir, "heads/review/fam-parent")
@@ -6085,7 +6088,7 @@ theory RefundRules on Refund:
     }
 
     #[test]
-    fn semantic_ref_targets_round_trip_for_main_wm_and_review() {
+    fn semantic_ref_targets_round_trip_for_main_proposal_and_review() {
         let accepted_dir = temp_test_dir("sem-ref-targets");
         ensure_layout(&accepted_dir).expect("layout");
 
@@ -6098,32 +6101,32 @@ theory RefundRules on Refund:
             "ref-targets",
         )
         .commit_id;
-        let run_id = WorldModelRunId::new("wmrun:ref-targets");
-        persist_world_model_run_record(
+        let run_id = ProposalAdapterRunId::new("proposal-run:ref-targets");
+        persist_proposal_adapter_run_record(
             &accepted_dir,
-            &sample_world_model_run_record(
+            &sample_proposal_adapter_run_record(
                 run_id.clone(),
-                AcceptedSnapshotId::new("fnv1a64:snap-ref-targets-wm"),
+                AcceptedSnapshotId::new("fnv1a64:snap-ref-targets-proposal"),
             ),
         )
-        .expect("persist wm run");
-        let wm_commit_id = seed_pathdb_semantic_commit(
+        .expect("persist proposal run");
+        let proposal_commit_id = seed_pathdb_semantic_commit(
             &accepted_dir,
-            "fnv1a64:snap-ref-targets-wm",
+            "fnv1a64:snap-ref-targets-proposal",
             Some(commit_id.clone()),
             Some(run_id),
         )
         .commit_id;
         let main = SemRefNameV1::parse("heads/main").expect("parse main");
-        let wm = SemRefNameV1::parse("heads/wm/demo-run").expect("parse wm");
+        let adapter = SemRefNameV1::parse("heads/evidence/proposals/demo-run").expect("parse proposal");
         let review = SemRefNameV1::parse("heads/review/schema-a").expect("parse review");
         let evidence = SemRefNameV1::parse("heads/evidence/source-a").expect("parse evidence");
         let tag = SemRefNameV1::parse("tags/v1.0.0").expect("parse tag");
 
         assert_eq!(main, SemRefNameV1::main());
         assert_eq!(
-            wm,
-            SemRefNameV1::world_model("demo-run").expect("wm target")
+            adapter,
+            SemRefNameV1::predictive_proposal("demo-run").expect("proposal target")
         );
         assert_eq!(
             review,
@@ -6137,11 +6140,11 @@ theory RefundRules on Refund:
 
         let main_pointer =
             persist_semantic_ref_target(&accepted_dir, &main, &commit_id).expect("write main");
-        let wm_pointer =
-            persist_semantic_ref_target(&accepted_dir, &wm, &wm_commit_id).expect("write wm");
+        let proposal_pointer =
+            persist_semantic_ref_target(&accepted_dir, &adapter, &proposal_commit_id).expect("write proposal");
         let review_pointer =
             persist_semantic_ref_target(&accepted_dir, &review, &commit_id).expect("write review");
-        let evidence_pointer = persist_semantic_ref_target(&accepted_dir, &evidence, &wm_commit_id)
+        let evidence_pointer = persist_semantic_ref_target(&accepted_dir, &evidence, &proposal_commit_id)
             .expect("write evidence");
         let tag_pointer =
             persist_semantic_ref_target(&accepted_dir, &tag, &commit_id).expect("write tag");
@@ -6151,8 +6154,8 @@ theory RefundRules on Refund:
             main_pointer
         );
         assert_eq!(
-            read_sem_ref_pointer_target(&accepted_dir, &wm).expect("read wm"),
-            wm_pointer
+            read_sem_ref_pointer_target(&accepted_dir, &adapter).expect("read proposal"),
+            proposal_pointer
         );
         assert_eq!(
             read_sem_ref_pointer_target(&accepted_dir, &review).expect("read review"),
@@ -6167,8 +6170,8 @@ theory RefundRules on Refund:
             tag_pointer
         );
         assert!(
-            accepted_dir.join("sem/refs/heads/wm/demo-run").exists(),
-            "wm branch ref should persist at sem/refs/heads/wm/<name>"
+            accepted_dir.join("sem/refs/heads/evidence/proposals/demo-run").exists(),
+            "proposal branch ref should persist at sem/refs/heads/evidence/proposals/<name>"
         );
         assert!(
             accepted_dir.join("sem/refs/heads/review/schema-a").exists(),
@@ -6341,45 +6344,45 @@ theory RefundRules on Refund:
             "unexpected error: {err:#}"
         );
 
-        let err = persist_semantic_ref(&accepted_dir, "heads/wm/no-run", &main_commit.commit_id)
-            .expect_err("promote commit must not move wm ref");
+        let err = persist_semantic_ref(&accepted_dir, "heads/evidence/proposals/no-run", &main_commit.commit_id)
+            .expect_err("promote commit must not move proposal ref");
         assert!(
-            err.to_string().contains("WorldModelRun"),
+            err.to_string().contains("PredictiveProposalRun"),
             "unexpected error: {err:#}"
         );
 
-        let run_id = WorldModelRunId::new("wmrun:validation-run");
-        let wm_commit_missing_record = seed_pathdb_semantic_commit(
+        let run_id = ProposalAdapterRunId::new("proposal-run:validation-run");
+        let proposal_commit_missing_record = seed_pathdb_semantic_commit(
             &accepted_dir,
-            "fnv1a64:snap-ref-validation-wm",
+            "fnv1a64:snap-ref-validation-proposal",
             Some(main_commit.commit_id.clone()),
             Some(run_id.clone()),
         );
         let err = persist_semantic_ref(
             &accepted_dir,
-            "heads/wm/missing-record",
-            &wm_commit_missing_record.commit_id,
+            "heads/evidence/proposals/missing-record",
+            &proposal_commit_missing_record.commit_id,
         )
-        .expect_err("wm ref requires persisted run record");
+        .expect_err("proposal ref requires persisted run record");
         assert!(
-            err.to_string().contains("WorldModelRunRecord"),
+            err.to_string().contains("PredictiveProposalRunRecord"),
             "unexpected error: {err:#}"
         );
 
-        persist_world_model_run_record(
+        persist_proposal_adapter_run_record(
             &accepted_dir,
-            &sample_world_model_run_record(
+            &sample_proposal_adapter_run_record(
                 run_id,
-                AcceptedSnapshotId::new("fnv1a64:snap-ref-validation-wm"),
+                AcceptedSnapshotId::new("fnv1a64:snap-ref-validation-proposal"),
             ),
         )
-        .expect("persist wm run");
+        .expect("persist proposal run");
         persist_semantic_ref(
             &accepted_dir,
-            "heads/wm/valid-record",
-            &wm_commit_missing_record.commit_id,
+            "heads/evidence/proposals/valid-record",
+            &proposal_commit_missing_record.commit_id,
         )
-        .expect("wm ref with run record");
+        .expect("proposal ref with run record");
 
         let err = persist_semantic_ref(
             &accepted_dir,
@@ -6467,7 +6470,7 @@ theory RefundRules on Refund:
             left_commit_id: AxiDigest::new("fnv1a64:left"),
             right_commit_id: AxiDigest::new("fnv1a64:right"),
             policy: "prefer_review".to_string(),
-            source_ref_name: Some("heads/wm/demo-run".to_string()),
+            source_ref_name: Some("heads/evidence/proposals/demo-run".to_string()),
             target_ref_name: Some("heads/review/schema-a".to_string()),
             resolved_ref_name: Some("heads/main".to_string()),
             outcome_commit_id: Some(AxiDigest::new("fnv1a64:merged")),
@@ -7349,13 +7352,13 @@ theory RefundRules on Refund:
                         &sample_evolution_preview(),
                     ),
                 ),
-                world_model_run_id: Some(WorldModelRunId::new("wm::run-a")),
+                proposal_adapter_run_id: Some(ProposalAdapterRunId::new("proposal::run-a")),
                 ..PathdbSemanticCommitOptionsV1::default()
             },
         );
 
-        assert_eq!(commit.kind, SemCommitKindV1::WorldModelRun);
-        assert_eq!(commit.provenance.source, "world_model");
+        assert_eq!(commit.kind, SemCommitKindV1::PredictiveProposalRun);
+        assert_eq!(commit.provenance.source, "predictive_proposal_adapter");
         assert_eq!(
             commit.state.accepted_snapshot_id_before,
             Some(AcceptedSnapshotId::new("fnv1a64:accepted-overlay"))
@@ -7378,8 +7381,8 @@ theory RefundRules on Refund:
             vec![ProposalDigest::new("fnv1a64:proposal-a")]
         );
         assert_eq!(
-            commit.delta.world_model_run_refs,
-            vec![WorldModelRunId::new("wm::run-a")]
+            commit.delta.proposal_adapter_run_refs,
+            vec![ProposalAdapterRunId::new("proposal::run-a")]
         );
         assert!(commit.delta.semantic_delta.is_none());
         assert!(commit.delta.trust_summary.is_none());
@@ -7409,7 +7412,7 @@ theory RefundRules on Refund:
         let base_axi = accepted_dir.join("Baseline.axi");
         fs::write(
             &base_axi,
-            r#"module WorldModelDemo
+            r#"module PredictiveProposalDemo
 
 schema Demo:
   object Node
@@ -7441,7 +7444,7 @@ instance I of Demo:
         assert_eq!(commit.accepted_snapshot_id, result_snapshot);
         assert_eq!(commit.action, "promote");
         assert_eq!(commit.kind, SemCommitKindV1::Promote);
-        assert_eq!(commit.module_name, "WorldModelDemo");
+        assert_eq!(commit.module_name, "PredictiveProposalDemo");
         assert_eq!(commit.parent_commit_id, None);
         assert_eq!(
             commit.state.accepted_snapshot_id_after,
@@ -7507,7 +7510,7 @@ instance I of Demo:
             &PathdbSemanticCommitOptionsV1 {
                 message: Some("overlay".to_string()),
                 proposal_digests: vec![ProposalDigest::new("fnv1a64:proposal-a")],
-                world_model_run_id: Some(WorldModelRunId::new("wm::overlay-run")),
+                proposal_adapter_run_id: Some(ProposalAdapterRunId::new("proposal::overlay-run")),
                 ..PathdbSemanticCommitOptionsV1::default()
             },
         )
@@ -7519,7 +7522,7 @@ instance I of Demo:
         assert_eq!(sem_head_after, overlay_commit.commit_id);
         assert_eq!(overlay_commit.parent_commit_id, Some(promote_head.clone()));
         assert_eq!(overlay_commit.action, "pathdb_commit");
-        assert_eq!(overlay_commit.kind, SemCommitKindV1::WorldModelRun);
+        assert_eq!(overlay_commit.kind, SemCommitKindV1::PredictiveProposalRun);
         assert_eq!(
             overlay_commit.pathdb_snapshot_id,
             Some(pathdb_commit.snapshot_id.clone())
@@ -7529,16 +7532,16 @@ instance I of Demo:
             vec![ProposalDigest::new("fnv1a64:proposal-a")]
         );
         assert_eq!(
-            overlay_commit.world_model_run_id,
-            Some(WorldModelRunId::new("wm::overlay-run"))
+            overlay_commit.proposal_adapter_run_id,
+            Some(ProposalAdapterRunId::new("proposal::overlay-run"))
         );
         assert_eq!(
             overlay_commit.state.pathdb_snapshot_id_after,
             Some(pathdb_commit.snapshot_id.clone())
         );
         assert_eq!(
-            overlay_commit.delta.world_model_run_refs,
-            vec![WorldModelRunId::new("wm::overlay-run")]
+            overlay_commit.delta.proposal_adapter_run_refs,
+            vec![ProposalAdapterRunId::new("proposal::overlay-run")]
         );
         assert!(overlay_commit.gate_summary.is_none());
 
@@ -7770,7 +7773,7 @@ instance I of Demo:
     }
 
     #[test]
-    fn sem_status_reports_refs_reconciliations_and_world_model_runs() {
+    fn sem_status_reports_refs_reconciliations_and_proposal_adapter_runs() {
         let accepted_dir = temp_test_dir("sem-status");
         ensure_layout(&accepted_dir).expect("layout");
 
@@ -7784,14 +7787,14 @@ instance I of Demo:
         )
         .commit_id;
         write_sem_head_commit_id(&accepted_dir, &commit_id).expect("write sem head");
-        let run = sample_world_model_run_record(
-            WorldModelRunId::new("wmrun:demo"),
-            AcceptedSnapshotId::new("fnv1a64:snap-status-wm"),
+        let run = sample_proposal_adapter_run_record(
+            ProposalAdapterRunId::new("proposal-run:demo"),
+            AcceptedSnapshotId::new("fnv1a64:snap-status-proposal"),
         );
-        persist_world_model_run_record(&accepted_dir, &run).expect("persist world model run");
-        let wm_commit_id = seed_pathdb_semantic_commit(
+        persist_proposal_adapter_run_record(&accepted_dir, &run).expect("persist predictive proposal adapter run");
+        let proposal_commit_id = seed_pathdb_semantic_commit(
             &accepted_dir,
-            "fnv1a64:snap-status-wm",
+            "fnv1a64:snap-status-proposal",
             Some(commit_id.clone()),
             Some(run.run_id.clone()),
         )
@@ -7800,9 +7803,9 @@ instance I of Demo:
         persist_semantic_ref(&accepted_dir, "heads/main", &commit_id).expect("write main ref");
         persist_semantic_ref(&accepted_dir, "heads/review/demo", &commit_id)
             .expect("write review ref");
-        persist_semantic_ref(&accepted_dir, "heads/wm/demo-run", &wm_commit_id)
-            .expect("write wm ref");
-        persist_semantic_ref(&accepted_dir, "heads/evidence/demo-source", &wm_commit_id)
+        persist_semantic_ref(&accepted_dir, "heads/evidence/proposals/demo-run", &proposal_commit_id)
+            .expect("write proposal ref");
+        persist_semantic_ref(&accepted_dir, "heads/evidence/demo-source", &proposal_commit_id)
             .expect("write evidence ref");
         persist_semantic_ref(&accepted_dir, "tags/status-v1", &commit_id).expect("write tag");
 
@@ -7835,15 +7838,15 @@ instance I of Demo:
         );
         assert_eq!(status.review_refs.len(), 1);
         assert_eq!(status.evidence_refs.len(), 1);
-        assert_eq!(status.world_model_refs.len(), 1);
+        assert_eq!(status.predictive_proposal_refs.len(), 1);
         assert_eq!(status.tag_refs.len(), 1);
         assert_eq!(
             status.reconciliation_ids,
             vec![AxiDigest::new("fnv1a64:reconcile-status")]
         );
         assert_eq!(
-            status.world_model_run_ids,
-            vec![WorldModelRunId::new("wmrun:demo")]
+            status.proposal_adapter_run_ids,
+            vec![ProposalAdapterRunId::new("proposal-run:demo")]
         );
     }
 
@@ -8251,7 +8254,7 @@ instance I of Demo:
             constraints_cert_path: None,
             validation_report_path: None,
             validation_ok: None,
-            world_model_run_id: None,
+            proposal_adapter_run_id: None,
         };
         let child = SemCommitV1 {
             version: ACCEPTED_PLANE_SEM_COMMIT_VERSION_V1.to_string(),
@@ -8278,7 +8281,7 @@ instance I of Demo:
             constraints_cert_path: None,
             validation_report_path: None,
             validation_ok: None,
-            world_model_run_id: None,
+            proposal_adapter_run_id: None,
         };
 
         write_semantic_commit(&accepted_dir, &parent).expect("write parent commit");

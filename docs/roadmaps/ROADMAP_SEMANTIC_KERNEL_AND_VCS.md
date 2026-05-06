@@ -38,9 +38,9 @@ By the end of this program, Axiograph should have:
 1. A small, explicit, honest **Lean trusted kernel**.
 2. A canonical **schema/category IR** that becomes the ontology kernel.
 3. A first-class Rust workflow for **lifecycle-typed, anchor-aware artifacts**.
-4. A real **semantic VCS** for ontology / semantic / world-model evolution.
+4. A real **semantic VCS** for ontology / semantic / proposal-adapter evolution.
 5. Clean **interop layers** for RDF/OWL/SHACL/property-graph systems.
-6. A disciplined **evidence plane** for AI/world-model/LLM tooling.
+6. A disciplined **evidence plane** for AI/proposal-adapter/LLM tooling.
 7. One typed operational currency across authoring, query, migration, certification, and review.
 
 ---
@@ -277,7 +277,7 @@ Make the semantic state machine explicit in the Rust layer.
     - `AxiDigest`
     - `PathdbSnapshotId`
     - `ProposalDigest`
-    - `WorldModelRunId`
+    - `ProposalAdapterRunId`
     - `SchemaId`
     - `TheoryId`
     - `ContextId`
@@ -299,7 +299,7 @@ Make the semantic state machine explicit in the Rust layer.
   - `FactId<A>`
   - `TypedFact<S, R, A>`
   - `WorldState<A>`
-  - `WorldModelRun<A>`
+  - `ProposalAdapterRun<A>`
   - `CertifiedAnswer<A>`
 - [ ] Add first-class typed handles for the seams that currently drift apart:
   - prepared queries over accepted anchors and compiled schema ids,
@@ -423,11 +423,11 @@ Align storage claims with actual runtime artifacts.
     the default path.
 - [ ] Keep PathDB as a derived execution substrate; do not let its current shape define ontology semantics.
 - [ ] Keep accepted `.axi` + schema/category IR as the meaning plane.
-- [ ] Treat `axiograph-storage` as non-foundational until prototype shortcuts are removed.
+- [ ] Treat `axiograph-storage` as non-foundational until temporary storage shortcuts are removed.
 - [ ] Split storage identity into two layers:
   - semantic anchor = accepted snapshot + canonical module digests + canonical fact ids,
   - runtime materialization id = accepted snapshot + overlay digests + build parameters + checkpoint/sidecar digests.
-- [x] Treat `PathDBExportV1` as a debug/interchange anchor, not the primary semantic truth anchor.
+- [x] Treat `PathDBExportV1` as a debug/live-byte/parser-parity fixture, not an interchange or semantic anchor.
   - Implemented: generic semantic/query/cert loading is canonical-only; `PathDBExportV1`
     remains under explicit `db pathdb` debug/live-byte/parser-parity commands.
   - Continued cleanup: REPL scripts no longer emit `*_export_v1.axi`, schema
@@ -473,16 +473,16 @@ The roadmap should build on the semantic-history code that already exists in
 - `accepted_plane.rs` already defines/persists:
   - `SemCommitV1`
   - `SemReconciliationV1`
-  - `WorldModelRunV1`
+  - `ProposalAdapterRunRecordV1`
   - `PromotionPreviewReportV1`
   - semantic ref pointers under `sem/refs/*`
 - promotion and validation flows can already carry:
   - `validation_report_path`
   - `constraints_cert_path`
   - `quality_report_path`
-  - `world_model_run_id`
+  - `proposal_adapter_run_id`
   - `reconciliation_id`
-- `sem/validations/` and `sem/world_model_runs/` already exist as real storage seams.
+- `sem/validations/` and `sem/evidence/proposal_adapter_runs/` already exist as real storage seams.
 
 The missing work is to make these the normal workflow currency and to define the
 branch/ref invariants around them.
@@ -496,16 +496,16 @@ Semantic refs should define permitted workflow, not just naming convention.
 | `refs/heads/main` | accepted ontology baseline | accepted-plane promotion, reviewed merge | commits that change state must carry before/after accepted anchors |
 | `refs/heads/review/<topic>` | candidate ontology review stream | human authoring, migration preview, reconciliation output | promotion-relevant commits should cite persisted validation preview refs |
 | `refs/heads/evidence/<source>` | source-aligned evidence stream | ingest/import/grounding flows | may advance without accepted-state change |
-| `refs/heads/wm/<experiment>` | world-model proposal stream | persisted `WorldModelRunV1` lifecycle | commit generation is illegal without `run_id` + `branch_ref` provenance |
+| `refs/heads/evidence/proposals/<experiment>` | proposal-adapter proposal stream | persisted `ProposalAdapterRunRecordV1` lifecycle | commit generation is illegal without `run_id` + `branch_ref` provenance |
 | `refs/tags/<release>` | immutable release pointer | semantic commit on `main` | tag move must not alter accepted state payload |
 
 - [ ] Treat `sem/HEAD` as a symbolic semantic-ref pointer, not a snapshot-id cache.
-- [x] Reject direct `wm/* -> main` transitions; world-model output must reconcile through `review/*`.
-- [x] Reserve tags for accepted/released states only; do not tag unreviewed evidence or wm branches.
+- [x] Reject direct `evidence/proposals/* -> main` transitions; proposal-adapter output must reconcile through `review/*`.
+- [x] Reserve tags for accepted/released states only; do not tag unreviewed evidence or proposal branches.
 - [x] Define ref-update validation centrally so branch invariants are enforced in one place rather than by CLI convention.
   - current runtime validation covers `heads/main`, `heads/review/*`,
-    `heads/evidence/*`, `heads/wm/*`, and immutable `tags/*`
-  - `heads/wm/*` requires `WorldModelRun` commits with run-id provenance,
+    `heads/evidence/*`, `heads/evidence/proposals/*`, and immutable `tags/*`
+  - `heads/evidence/proposals/*` requires `PredictiveProposalRun` commits with run-id provenance,
     delta refs, and persisted run records
 
 ### Semantic state objects vs semantic delta objects
@@ -532,14 +532,14 @@ Required delta payload:
 - certificate refs
 - validation refs
 - lifecycle events
-- world-model run refs
+- proposal-adapter run refs
 
 - [x] Land a first compact typed-layer sidecar on `SemDeltaV1`:
   - semantic commits can now carry `semantic_delta` copied from `EvolutionPreviewV1`
     without inlining the full preview report.
 - [~] Continue expanding `SemDeltaV1` beyond the first sidecar:
   - keep layer summaries compact,
-  - preserve refs for quality/validation/certs/world-model lineage,
+  - preserve refs for quality/validation/certs/proposal-adapter lineage,
   - and avoid copying full preview internals into commit history.
 - [ ] Keep `SemStateRefV1` pointer-only; it should not inline preview payloads or copy large reports.
 - [ ] Make semantic commits cite materialized state and persisted review artifacts, not duplicate them.
@@ -603,15 +603,15 @@ Merge should remain semantic reconciliation, not text concatenation.
 - [ ] `axiograph sem branch <name>`
 - [ ] `axiograph sem diff <a> <b> --semantic`
 - [ ] `axiograph sem tag <name>`
-- [ ] `axiograph sem show --object=world-model --run <id>`
+- [ ] `axiograph sem show --object=proposal-adapter --run <id>`
 - [ ] `axiograph sem merge --dry-run`
 
 ### Implementation-first actions
 
 - [ ] Wire auto-emit for `db accept promote` into `sem/commits`.
 - [ ] Wire auto-emit for `db accept pathdb-commit` into `sem/commits`.
-- [ ] Validate `WorldModelRunId` resolution whenever reading wm-annotated commits.
-- [ ] Add one semantic ref read/write path for `main`, `review/*`, `evidence/*`, `wm/*`, and tags rather than branch-specific helpers.
+- [ ] Validate `ProposalAdapterRunId` resolution whenever reading proposal-annotated commits.
+- [ ] Add one semantic ref read/write path for `main`, `review/*`, `evidence/*`, `evidence/proposals/*`, and tags rather than branch-specific helpers.
 - [ ] Keep the first implementation centered in:
   - `rust/crates/axiograph-cli/src/accepted_plane.rs`
   - `rust/crates/axiograph-cli/src/main.rs`
@@ -689,7 +689,7 @@ Required policy fields:
   - trust-change reasons
   - expected answer-shape reference where available
 - [ ] Fail closed on `review/* -> main` when the configured CQ gate fails.
-- [ ] Fail closed on `wm/* -> review/*` when the configured CQ gate fails for required suites.
+- [ ] Fail closed on `evidence/proposals/* -> review/*` when the configured CQ gate fails for required suites.
 
 ### Typed change summaries and residual obligations
 
@@ -759,7 +759,7 @@ merge, and promotion paths.
   - prepared-query introspection
   - evolution previews
   - reconciliation summaries
-  - world-model validation summaries
+  - proposal-adapter validation summaries
   - semantic-commit gate summaries
 - [ ] Keep explicit non-claims present everywhere:
   - no completeness claim
@@ -988,20 +988,20 @@ Make RDF/OWL/SHACL/property-graph interoperability strong without making any of 
 
 ### Goal
 
-Make AI/world-model outputs first-class evidence streams with full lineage.
+Make AI/proposal-adapter outputs first-class evidence streams with full lineage.
 
 ### Current implemented slice
 
-- `WorldModelRunV1` is already specified and persisted under `sem/world_model_runs/`.
+- `ProposalAdapterRunRecordV1` is already specified and persisted under `sem/evidence/proposal_adapter_runs/`.
 - proposal/promotion flows already have typed run and snapshot anchors available.
-- semantic commits already have a `world_model_run_id` seam.
+- semantic commits already have a `proposal_adapter_run_id` seam.
 
 ### Required lifecycle
 
 The lifecycle should be explicit and branch-resolved:
 
-1. create `WorldModelRunV1`
-2. bind it to `refs/heads/wm/<experiment>`
+1. create `ProposalAdapterRunRecordV1`
+2. bind it to `refs/heads/evidence/proposals/<experiment>`
 3. record base semantic commit / accepted snapshot
 4. emit proposal digests only
 5. run preview validation
@@ -1010,17 +1010,17 @@ The lifecycle should be explicit and branch-resolved:
 8. tag release if appropriate
 9. close the run with final status and resulting refs
 
-The run lifecycle should prefer one canonical write path. Older world-model
+The run lifecycle should prefer one canonical write path. Older proposal-adapter
 entrypoints may survive as import/adaptation layers for a time, but the roadmap
 should not assume indefinite compatibility between multiple proposal/run
 surfaces once one branch-aware lifecycle path exists.
 
 ### Branch and status invariants
 
-- [ ] Create the run record before the first wm-branch semantic commit.
-- [ ] Require every commit on `wm/*` to carry:
+- [ ] Create the run record before the first proposal-branch semantic commit.
+- [ ] Require every commit on `evidence/proposals/*` to carry:
   - `branch_ref`
-  - `world_model_run_id`
+  - `proposal_adapter_run_id`
   - proposal digests or status-update provenance
 - [ ] Persist status transitions at least:
   - `Pending`
@@ -1047,15 +1047,15 @@ surfaces once one branch-aware lifecycle path exists.
   - validation refs
   - reconciliation refs
   - promotion commit / tag refs
-- [ ] Add a minimal wm status/read surface before adding more write automation:
-  - `sem show --object=world-model --run <id>`
+- [ ] Add a minimal proposal status/read surface before adding more write automation:
+  - `sem show --object=proposal-adapter --run <id>`
   - `sem log --with-runs`
-  - `sem show <wm-ref>`
+  - `sem show <proposal-ref>`
 
 ### Implementation-first actions
 
-- [ ] Auto-materialize `WorldModelRunV1` on `/world_model/propose` and planner entrypoints before emitting proposals.
-- [ ] Return durable `run_id` values from CLI/server world-model commands.
+- [ ] Auto-materialize `ProposalAdapterRunRecordV1` on `/evidence/proposals/predict` and planner entrypoints before emitting proposals.
+- [ ] Return durable `run_id` values from CLI/server proposal-adapter commands.
 - [ ] Write proposal digests back to the run object atomically with proposal emission.
 - [ ] Require validation and reconciliation refs to be added to the run before promotion to `main`.
 
@@ -1093,22 +1093,22 @@ surfaces once one branch-aware lifecycle path exists.
 ### Phase 4: semantic VCS
 
 - [ ] add refs, semantic commits, parentage, semantic diff
-- [ ] add branch/ref invariants for `main`, `review/*`, `evidence/*`, `wm/*`, and tags
+- [ ] add branch/ref invariants for `main`, `review/*`, `evidence/*`, `evidence/proposals/*`, and tags
 - [ ] add reconciliation merges and lifecycle state transitions
 - [ ] persist validation previews and compact gate summaries in semantic history
-- [ ] persist first-class world-model runs and wire run IDs into commit provenance before merge automation
+- [ ] persist first-class proposal-adapter runs and wire run IDs into commit provenance before merge automation
 
 ### Phase 5: interop and ologs
 
 - [ ] add olog authoring surface
 - [ ] lower RDF/OWL/SHACL/property-graph systems through the same IR
 
-### Phase 6: world-model lifecycle integration
+### Phase 6: proposal-adapter lifecycle integration
 
-- [ ] bind world-model runs to semantic commits / refs / tags
+- [ ] bind proposal-adapter runs to semantic commits / refs / tags
 - [ ] make evaluation baselines and promoted lineage explicit
-- [ ] add persisted world-model run index keyed by branch with status transitions (`running`/`validated`/`promoted`/`failed`).
-- [ ] enforce `wm/* -> review/* -> main` as the only promotion ladder for world-model outputs
+- [ ] add persisted proposal-adapter run index keyed by branch with status transitions (`running`/`validated`/`promoted`/`failed`).
+- [ ] enforce `evidence/proposals/* -> review/* -> main` as the only promotion ladder for proposal-adapter outputs
 
 ### Phase 7: CQ-gated semantic review
 

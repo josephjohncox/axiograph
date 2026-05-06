@@ -31,9 +31,8 @@ pub enum MigrationFunctorKindV1 {
 /// category-shaped core (objects + arrows + functions), while the canonical
 /// `axi_schema_v1` surface syntax is relation-oriented.
 ///
-/// Long-term plan: express relations as objects + projection arrows so the
-/// migration operators work uniformly. For now, we keep this IR small and
-/// explicit.
+/// `SchemaV1` is migration-only IR. Rich relation-as-object/projection-arrow
+/// semantics live in the compiled kernel/category IR.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchemaV1 {
     pub name: Name,
@@ -195,7 +194,8 @@ pub struct DeltaFMigrationProofV1 {
     pub pulled_back_instance: InstanceV1,
 }
 
-/// Proof payload for Σ_F (placeholder).
+/// Runtime witness payload for Σ_F. This is not a Lean-certified proof unless a
+/// separate verifier accepts the emitted certificate fragment.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SigmaFMigrationProofV1 {
     pub operator: MigrationFunctorKindV1,

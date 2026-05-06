@@ -214,41 +214,42 @@ pub enum PerfCommands {
         out_json: Option<PathBuf>,
     },
 
-    /// World model MPC/eval harness (untrusted; evidence-plane rollouts).
-    WorldModel {
+    /// Bounded proposal rollout/eval harness (untrusted; evidence-plane rollouts).
+    #[command(name = "proposal-rollout")]
+    PredictiveProposal {
         /// Input `.axi` (preferred for eval) or `.axpd` snapshot.
         #[arg(long)]
         input: PathBuf,
 
-        /// World model plugin executable (speaks `axiograph_world_model_v1`).
-        #[arg(long)]
-        world_model_plugin: Option<PathBuf>,
+        /// Predictive proposal adapter plugin executable (speaks `axiograph_predictive_proposal_v1`).
+        #[arg(long = "proposal-adapter-plugin")]
+        predictive_proposal_plugin: Option<PathBuf>,
 
-        /// Extra args for `--world-model-plugin` (repeatable).
-        #[arg(long)]
-        world_model_plugin_arg: Vec<String>,
+        /// Extra args for `--proposal-adapter-plugin` (repeatable).
+        #[arg(long = "proposal-adapter-plugin-arg")]
+        predictive_proposal_plugin_arg: Vec<String>,
 
-        /// Optional world model HTTP endpoint (speaks `axiograph_world_model_v1`).
-        #[arg(long)]
-        world_model_http: Option<String>,
+        /// Optional predictive proposal adapter HTTP endpoint (speaks `axiograph_predictive_proposal_v1`).
+        #[arg(long = "proposal-adapter-http")]
+        predictive_proposal_http: Option<String>,
 
-        /// Use the built-in LLM-backed world model plugin.
-        #[arg(long)]
-        world_model_llm: bool,
+        /// Use the built-in LLM-backed predictive proposal adapter plugin.
+        #[arg(long = "proposal-adapter-llm")]
+        predictive_proposal_llm: bool,
 
-        /// Use stub world model backend (emits no proposals).
-        #[arg(long)]
-        world_model_stub: bool,
+        /// Use stub predictive proposal adapter backend (emits no proposals).
+        #[arg(long = "proposal-adapter-stub")]
+        predictive_proposal_stub: bool,
 
-        /// Optional world model model name (provenance only).
-        #[arg(long)]
-        world_model_model: Option<String>,
+        /// Optional predictive proposal adapter model name (provenance only).
+        #[arg(long = "proposal-adapter-model")]
+        predictive_proposal_model: Option<String>,
 
-        /// MPC horizon steps.
+        /// Bounded planning horizon steps.
         #[arg(long, default_value_t = 3)]
         horizon_steps: usize,
 
-        /// Number of rollouts per MPC step (best cost is chosen).
+        /// Number of rollouts per planning step (best cost is chosen).
         #[arg(long, default_value_t = 1)]
         rollouts: usize,
 
@@ -272,19 +273,19 @@ pub enum PerfCommands {
         #[arg(long)]
         task_cost: Vec<String>,
 
-        /// JEPA export: instance filter (only for `.axi` inputs).
+        /// masked-tuple training export: instance filter (only for `.axi` inputs).
         #[arg(long)]
         export_instance: Option<String>,
 
-        /// JEPA export: max items (0 = no cap).
+        /// masked-tuple training export: max items (0 = no cap).
         #[arg(long, default_value_t = 0)]
         export_max_items: usize,
 
-        /// JEPA export: mask fields per tuple.
+        /// masked-tuple training export: mask fields per tuple.
         #[arg(long, default_value_t = 1)]
         export_mask_fields: usize,
 
-        /// JEPA export: RNG seed.
+        /// masked-tuple training export: RNG seed.
         #[arg(long, default_value_t = 1)]
         export_seed: u64,
 
@@ -406,14 +407,14 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             seed,
             out_json.as_ref(),
         ),
-        PerfCommands::WorldModel {
+        PerfCommands::PredictiveProposal {
             input,
-            world_model_plugin,
-            world_model_plugin_arg,
-            world_model_http,
-            world_model_llm,
-            world_model_stub,
-            world_model_model,
+            predictive_proposal_plugin,
+            predictive_proposal_plugin_arg,
+            predictive_proposal_http,
+            predictive_proposal_llm,
+            predictive_proposal_stub,
+            predictive_proposal_model,
             horizon_steps,
             rollouts,
             max_new_proposals,
@@ -429,14 +430,14 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             holdout_max,
             seed,
             out_json,
-        } => cmd_perf_world_model(
+        } => cmd_perf_predictive_proposal(
             &input,
-            world_model_plugin.as_ref(),
-            &world_model_plugin_arg,
-            world_model_http.as_deref(),
-            world_model_llm,
-            world_model_stub,
-            world_model_model.as_deref(),
+            predictive_proposal_plugin.as_ref(),
+            &predictive_proposal_plugin_arg,
+            predictive_proposal_http.as_deref(),
+            predictive_proposal_llm,
+            predictive_proposal_stub,
+            predictive_proposal_model.as_deref(),
             horizon_steps,
             rollouts,
             max_new_proposals,
@@ -572,7 +573,7 @@ struct PrecisionRecallOut {
 }
 
 #[derive(Debug, Serialize, Clone)]
-struct WorldModelPerfStepV1 {
+struct PredictiveProposalPerfStepV1 {
     step: usize,
     rollouts: usize,
     proposals: usize,
@@ -587,7 +588,7 @@ struct WorldModelPerfStepV1 {
 }
 
 #[derive(Debug, Serialize)]
-struct WorldModelPerfReportV1 {
+struct PredictiveProposalPerfReportV1 {
     version: String,
     input: String,
     horizon_steps: usize,
@@ -595,14 +596,14 @@ struct WorldModelPerfReportV1 {
     max_new_proposals: usize,
     guardrail_profile: String,
     guardrail_plane: String,
-    guardrail_weights: crate::world_model::GuardrailCostWeightsV1,
-    task_costs: Vec<crate::world_model::WorldModelTaskCostV1>,
+    guardrail_weights: crate::predictive_proposals::GuardrailCostWeightsV1,
+    task_costs: Vec<crate::predictive_proposals::ProposalTaskCostV1>,
     task_cost_total: f64,
     holdout_count: usize,
-    steps: Vec<WorldModelPerfStepV1>,
+    steps: Vec<PredictiveProposalPerfStepV1>,
 }
 
-fn guardrail_summary(report: &crate::world_model::GuardrailCostReportV1) -> GuardrailSummaryOut {
+fn guardrail_summary(report: &crate::predictive_proposals::GuardrailCostReportV1) -> GuardrailSummaryOut {
     GuardrailSummaryOut {
         total_cost: report.summary.total_cost,
         error_count: report.quality.error_count,
@@ -792,14 +793,14 @@ fn precision_recall(
     }
 }
 
-fn cmd_perf_world_model(
+fn cmd_perf_predictive_proposal(
     input: &PathBuf,
-    world_model_plugin: Option<&PathBuf>,
-    world_model_plugin_arg: &[String],
-    world_model_http: Option<&str>,
-    world_model_llm: bool,
-    world_model_stub: bool,
-    world_model_model: Option<&str>,
+    predictive_proposal_plugin: Option<&PathBuf>,
+    predictive_proposal_plugin_arg: &[String],
+    predictive_proposal_http: Option<&str>,
+    predictive_proposal_llm: bool,
+    predictive_proposal_stub: bool,
+    predictive_proposal_model: Option<&str>,
     horizon_steps: usize,
     rollouts: usize,
     max_new_proposals: usize,
@@ -816,36 +817,36 @@ fn cmd_perf_world_model(
     seed: u64,
     out_json: Option<&PathBuf>,
 ) -> Result<()> {
-    let selected = (world_model_stub as usize)
-        + (world_model_plugin.is_some() as usize)
-        + (world_model_http.is_some() as usize)
-        + (world_model_llm as usize);
+    let selected = (predictive_proposal_stub as usize)
+        + (predictive_proposal_plugin.is_some() as usize)
+        + (predictive_proposal_http.is_some() as usize)
+        + (predictive_proposal_llm as usize);
     if selected > 1 {
         return Err(anyhow!(
-            "perf world-model: choose at most one backend: --world-model-stub, --world-model-plugin, --world-model-http, or --world-model-llm"
+            "perf proposal-adapter: choose at most one backend: --proposal-adapter-stub, --proposal-adapter-plugin, --proposal-adapter-http, or --proposal-adapter-llm"
         ));
     }
     if selected == 0 {
         return Err(anyhow!(
-            "perf world-model: missing backend (use --world-model-plugin, --world-model-http, --world-model-llm, or --world-model-stub)"
+            "perf proposal-adapter: missing backend (use --proposal-adapter-plugin, --proposal-adapter-http, --proposal-adapter-llm, or --proposal-adapter-stub)"
         ));
     }
 
     let guardrail_profile = guardrail_profile.trim().to_ascii_lowercase();
     let guardrail_plane = guardrail_plane.trim().to_ascii_lowercase();
     let guardrail_weights = if guardrail_weight.is_empty() {
-        crate::world_model::GuardrailCostWeightsV1::defaults()
+        crate::predictive_proposals::GuardrailCostWeightsV1::defaults()
     } else {
-        crate::world_model::parse_guardrail_weights(guardrail_weight)?
+        crate::predictive_proposals::parse_guardrail_weights(guardrail_weight)?
     };
-    let task_costs = crate::world_model::parse_task_costs(task_cost)?;
+    let task_costs = crate::predictive_proposals::parse_task_costs(task_cost)?;
     let task_cost_total: f64 = task_costs.iter().map(|t| t.value * t.weight).sum();
 
     let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
     let mut heldout: HashSet<String> = HashSet::new();
     let mut axi_text: Option<String> = None;
     let mut axi_digest: Option<axiograph_pathdb::AxiDigest> = None;
-    let mut jepa_export: Option<crate::world_model::JepaExportFileV1> = None;
+    let mut training_export: Option<crate::predictive_proposals::MaskedTupleTrainingExportV1> = None;
 
     let mut db = if ext.eq_ignore_ascii_case("axi") {
         let text = fs::read_to_string(input)?;
@@ -856,14 +857,14 @@ fn cmd_perf_world_model(
             build_holdout_module(canonical.module().module(), holdout_frac, holdout_max, seed)?;
         heldout = holdout_set;
 
-        let opts = crate::world_model::JepaExportOptions {
+        let opts = crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
             instance_filter: export_instance.map(|s| s.to_string()),
             max_items: export_max_items,
             mask_fields: export_mask_fields,
             seed: export_seed,
             exclude_relations: Vec::new(),
         };
-        jepa_export = Some(crate::world_model::build_jepa_export_from_axi_text(
+        training_export = Some(crate::predictive_proposals::build_training_export_from_axi_text(
             &text, &opts,
         )?);
 
@@ -879,48 +880,48 @@ fn cmd_perf_world_model(
         PathDB::from_bytes(&bytes)?
     } else {
         return Err(anyhow!(
-            "perf world-model: unsupported input `{}` (expected .axi or .axpd)",
+            "perf proposal-adapter: unsupported input `{}` (expected .axi or .axpd)",
             input.display()
         ));
     };
 
-    let mut wm = crate::world_model::WorldModelState::default();
-    if world_model_stub {
-        wm.backend = crate::world_model::WorldModelBackend::Stub;
-    } else if let Some(url) = world_model_http {
-        wm.backend = crate::world_model::WorldModelBackend::Http {
+    let mut adapter = crate::predictive_proposals::ProposalAdapterState::default();
+    if predictive_proposal_stub {
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Stub;
+    } else if let Some(url) = predictive_proposal_http {
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Http {
             url: url.to_string(),
         };
-    } else if world_model_llm {
+    } else if predictive_proposal_llm {
         let exe = std::env::current_exe()
-            .map_err(|e| anyhow!("perf world-model: failed to resolve current executable: {e}"))?;
-        let mut args_list = vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
-        let has_model_arg = world_model_plugin_arg.iter().any(|a| a == "--model");
-        if let Some(model) = world_model_model {
+            .map_err(|e| anyhow!("perf proposal-adapter: failed to resolve current executable: {e}"))?;
+        let mut args_list = vec!["ingest".to_string(), "predictive-proposals-llm".to_string()];
+        let has_model_arg = predictive_proposal_plugin_arg.iter().any(|a| a == "--model");
+        if let Some(model) = predictive_proposal_model {
             if !has_model_arg {
                 args_list.push("--model".to_string());
                 args_list.push(model.to_string());
             }
         }
-        args_list.extend(world_model_plugin_arg.iter().cloned());
-        wm.backend = crate::world_model::WorldModelBackend::Command {
+        args_list.extend(predictive_proposal_plugin_arg.iter().cloned());
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
             program: exe,
             args: args_list,
         };
-    } else if let Some(plugin) = world_model_plugin {
-        wm.backend = crate::world_model::WorldModelBackend::Command {
+    } else if let Some(plugin) = predictive_proposal_plugin {
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
             program: plugin.clone(),
-            args: world_model_plugin_arg.to_vec(),
+            args: predictive_proposal_plugin_arg.to_vec(),
         };
     }
-    wm.model = world_model_model.map(|s| s.to_string());
+    adapter.model = predictive_proposal_model.map(|s| s.to_string());
 
-    let mut steps: Vec<WorldModelPerfStepV1> = Vec::new();
+    let mut steps: Vec<PredictiveProposalPerfStepV1> = Vec::new();
 
     for step in 0..horizon_steps {
-        let guardrail_before = crate::world_model::compute_guardrail_costs(
+        let guardrail_before = crate::predictive_proposals::compute_guardrail_costs(
             &db,
-            &format!("perf_world_model:step{step}"),
+            &format!("perf_predictive_proposal:step{step}"),
             &guardrail_profile,
             &guardrail_plane,
             &guardrail_weights,
@@ -928,7 +929,7 @@ fn cmd_perf_world_model(
 
         let mut best: Option<(
             axiograph_ingest_docs::ProposalsFileV1,
-            crate::world_model::GuardrailCostReportV1,
+            crate::predictive_proposals::GuardrailCostReportV1,
             PrecisionRecallOut,
             bool,
             usize,
@@ -936,33 +937,33 @@ fn cmd_perf_world_model(
         )> = None;
 
         for rollout in 0..rollouts {
-            let mut input = crate::world_model::WorldModelInputV1::default();
+            let mut input = crate::predictive_proposals::PredictiveProposalInputV1::default();
             input.axi_digest_v1 = axi_digest.clone();
             input.axi_module_text = axi_text.clone();
-            if let Some(export) = jepa_export.clone() {
+            if let Some(export) = training_export.clone() {
                 input.set_training_export_layer(export);
             }
             input.set_guardrail_layer(guardrail_before.clone());
             input.notes.push(format!(
-                "source=perf_world_model step={step} rollout={rollout}"
+                "source=perf_predictive_proposal step={step} rollout={rollout}"
             ));
 
-            let mut options = crate::world_model::WorldModelOptionsV1::default();
+            let mut options = crate::predictive_proposals::PredictiveProposalOptionsV1::default();
             options.max_new_proposals = max_new_proposals;
             options.seed = Some(seed.wrapping_add((step as u64) * 1_000 + rollout as u64));
             options.task_costs = task_costs.clone();
             options.horizon_steps = Some(horizon_steps);
 
-            let req = crate::world_model::make_world_model_request(input, options);
-            let mut response = wm.propose(&req)?;
+            let req = crate::predictive_proposals::make_predictive_proposal_request(input, options);
+            let mut response = adapter.propose(&req)?;
             if let Some(err) = response.error.take() {
-                return Err(anyhow!("world model error: {err}"));
+                return Err(anyhow!("predictive proposal adapter error: {err}"));
             }
 
-            let provenance = crate::world_model::build_world_model_provenance(
+            let provenance = crate::predictive_proposals::build_predictive_proposal_provenance(
                 &response,
-                wm.backend_label(),
-                wm.model.clone(),
+                adapter.backend_label(),
+                adapter.model.clone(),
                 axi_digest.clone(),
                 None,
                 None,
@@ -979,16 +980,16 @@ fn cmd_perf_world_model(
                 },
             )?;
             let mut proposals =
-                crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+                crate::predictive_proposals::apply_predictive_proposal_provenance(response.proposals, &provenance);
             if max_new_proposals > 0 && proposals.proposals.len() > max_new_proposals {
                 proposals.proposals.truncate(max_new_proposals);
             }
 
             let mut candidate = clone_db(&db)?;
             apply_proposals(&mut candidate, &proposals)?;
-            let guardrail_after = crate::world_model::compute_guardrail_costs(
+            let guardrail_after = crate::predictive_proposals::compute_guardrail_costs(
                 &candidate,
-                &format!("perf_world_model:step{step}:rollout{rollout}"),
+                &format!("perf_predictive_proposal:step{step}:rollout{rollout}"),
                 &guardrail_profile,
                 &guardrail_plane,
                 &guardrail_weights,
@@ -1026,11 +1027,11 @@ fn cmd_perf_world_model(
         }
 
         let (proposals, guardrail_after, pr, validation_ok, validation_errors, total_cost) =
-            best.ok_or_else(|| anyhow!("perf world-model: no rollout produced proposals"))?;
+            best.ok_or_else(|| anyhow!("perf proposal-adapter: no rollout produced proposals"))?;
 
         apply_proposals(&mut db, &proposals)?;
 
-        let step_report = WorldModelPerfStepV1 {
+        let step_report = PredictiveProposalPerfStepV1 {
             step,
             rollouts,
             proposals: proposals.proposals.len(),
@@ -1047,8 +1048,8 @@ fn cmd_perf_world_model(
         steps.push(step_report);
     }
 
-    let report = WorldModelPerfReportV1 {
-        version: "perf_world_model_v1".to_string(),
+    let report = PredictiveProposalPerfReportV1 {
+        version: "perf_predictive_proposal_v1".to_string(),
         input: input.display().to_string(),
         horizon_steps,
         rollouts,

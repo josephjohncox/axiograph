@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Command-surface demo:
+# Operational CLI-help smoke demo:
 # - captures `--help` output for key command families
 # - runs a small set of representative commands on a canonical example
+# - belongs in the ops lane, not the first teaching path
 #
 # Run from repo root:
-#   ./scripts/cli_command_usage_demo.sh
+#   ./scripts/ops/cli_help_smoke_demo.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT_DIR"
 
-OUT_DIR="$ROOT_DIR/build/cli_command_usage_demo"
+OUT_DIR="$ROOT_DIR/build/cli_help_smoke_demo"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-echo "== CLI command usage demo =="
+echo "== Axiograph CLI help smoke demo =="
 echo "root: $ROOT_DIR"
 echo "out:  $OUT_DIR"
 

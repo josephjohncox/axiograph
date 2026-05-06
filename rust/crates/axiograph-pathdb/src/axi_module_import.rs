@@ -654,11 +654,11 @@ fn constraint_attrs(c: &ConstraintV1) -> (&'static str, Vec<(String, String)>) {
             ],
         ),
         ConstraintV1::Unknown { text } => {
-            // Best-effort: many domains want richer constraint vocabularies than the
-            // v1 parser understands (e.g. typing rules, graded-commutativity, etc).
+            // Unsupported constraint syntax stays addressable as `Unknown`.
+            // Accepted/certified claims require later typed constraint checking;
+            // this import path does not turn opaque text into trusted theory.
             //
-            // We keep the canonical parser permissive by storing these as `Unknown`,
-            // but we still try to extract a *relation name* so:
+            // We still try to extract a *relation name* so:
             // - `MetaPlaneIndex.constraints_by_relation` can index them, and
             // - the REPL can display them under `constraints <schema>`.
             let mut attrs = vec![(ATTR_CONSTRAINT_TEXT.to_string(), text.clone())];

@@ -44,8 +44,8 @@ CLI HTML exports now write a directory with `index.html`, `graph.json`, and
 `assets/`. Open `index.html?data=graph.json`.
 - `POST /llm/to_query` (LLM: question -> structured `query_ir_v1`)
 - `POST /llm/agent` (LLM: tool-loop, recommended)
-- `POST /world_model/propose` (world-model proposals -> evidence-plane `proposals.json`)
-- `POST /world_model/plan` (multi-step MPC plan -> proposals + costs)
+- `POST /evidence/proposals/predict` (predictive proposal adapter -> evidence-plane `proposals.json`)
+- `POST /planning/proposal-rollout` (bounded proposal rollout -> proposals + costs)
 - `POST /discover/draft-axi` (untrusted draft canonical `.axi` from `proposals.json` content, now with a typed-authoring lifecycle/trust summary so callers can distinguish `draft_only` from `validated` drafts)
 - `POST /discover/check-olog` (check a typed olog fragment against canonical `.axi`; subtype-aware, relation-object aware, and explicit about fragment-only soundness)
 - `POST /semantic/business-rule` (compute a typed business-rule applicability report for one relation/theory scope under the current loaded snapshot/meta-plane)
@@ -72,8 +72,8 @@ curl -sS -X POST http://127.0.0.1:7878/query \
         "lang":"query_ir_v1",
         "query_ir_v1":{
           "version":1,
-          "select":["?gc"],
-          "where":[
+          "select_vars":["?gc"],
+          "where_atoms":[
             {"kind":"edge","left":"Alice","path":"Grandparent","right":"?gc"}
           ],
           "limit":10
@@ -91,8 +91,8 @@ curl -sS -X POST http://127.0.0.1:7878/query \
         "lang":"query_ir_v1",
         "query_ir_v1":{
           "version":1,
-          "select":["?x"],
-          "where":[
+          "select_vars":["?x"],
+          "where_atoms":[
             {"kind":"type","term":"?x","type":"Person"}
           ],
           "limit":5
@@ -113,8 +113,8 @@ curl -sS -X POST http://127.0.0.1:7878/query \
         "lang":"query_ir_v1",
         "query_ir_v1":{
           "version":1,
-          "select":["?gc"],
-          "where":[
+          "select_vars":["?gc"],
+          "where_atoms":[
             {"kind":"edge","left":"Alice","path":"Grandparent","right":"?gc"}
           ],
           "limit":10
@@ -147,9 +147,8 @@ When `show_elaboration:true`, the response includes:
 Certified queries (optional)
 
 Use `certificate_policy` for all query certificate behavior. The supported
-values are `none`, `emit`, `verify`, and `require_verified`; older boolean
-aliases such as `certify`, `verify`, `require_query_certs`, and
-`require_verified_queries` are intentionally rejected.
+values are `none`, `emit`, `verify`, and `require_verified`; boolean-style
+request fields are not part of the public contract.
 
 If you request `"certificate_policy":"emit"`, the server emits a Lean-checkable
 typed query witness anchored to the current canonical `.axi` digest.
@@ -161,8 +160,8 @@ curl -sS -X POST http://127.0.0.1:7878/query \
         "lang":"query_ir_v1",
         "query_ir_v1":{
           "version":1,
-          "select":["?gc"],
-          "where":[
+          "select_vars":["?gc"],
+          "where_atoms":[
             {"kind":"edge","left":"Alice","path":"Grandparent","right":"?gc"}
           ],
           "limit":10
@@ -183,8 +182,8 @@ curl -sS -X POST http://127.0.0.1:7878/query \
         "lang":"query_ir_v1",
         "query_ir_v1":{
           "version":1,
-          "select":["?gc"],
-          "where":[
+          "select_vars":["?gc"],
+          "where_atoms":[
             {"kind":"edge","left":"Alice","path":"Grandparent","right":"?gc"}
           ],
           "limit":10
@@ -650,12 +649,15 @@ curl -sS -X POST http://127.0.0.1:7878/llm/to_query \
 
 ---
 
-### Enable world model proposals
+### Enable predictive proposal adapters
 
 Stub backend (no proposals; good for wiring/tests):
 
 ```bash
-bin/axiograph db serve --axpd build/my_snapshot.axpd --listen 127.0.0.1:7878 --world-model-stub
+bin/axiograph db serve \
+  --axpd build/my_snapshot.axpd \
+  --listen 127.0.0.1:7878 \
+  --proposal-adapter-stub
 ```
 
 Command plugin backend:
@@ -664,9 +666,9 @@ Command plugin backend:
 bin/axiograph db serve \
   --axpd build/my_snapshot.axpd \
   --listen 127.0.0.1:7878 \
-  --world-model-plugin /path/to/world_model_plugin \
-  --world-model-plugin-arg --some-flag \
-  --world-model-model my_world_model
+  --proposal-adapter-plugin /path/to/proposal_adapter \
+  --proposal-adapter-plugin-arg=--some-flag \
+  --proposal-adapter-model my_adapter
 ```
 
 Use command plugins only when you need a local/offline adapter boundary. Normal
@@ -676,20 +678,21 @@ Python adapter or custom JSON-RPC layer.
 Call the endpoint:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
+curl -sS -X POST http://127.0.0.1:7878/evidence/proposals/predict \
   -H 'Content-Type: application/json' \
   -d '{"goals":["predict missing parent links"],"max_new_proposals":50}'
 ```
 
-The server derives the world-model request from the canonical `.axi` module
-stored in the current snapshot, then attaches typed lineage anchors
+The server derives the predictive proposal request from the canonical `.axi`
+module stored in the current snapshot, then attaches typed lineage anchors
 (`axi_digest_v1`, `pathdb_snapshot_id`, `accepted_snapshot_id`) in the request
-metadata. It does not send derived snapshot text to world-model backends.
+metadata. It does not send derived snapshot text to predictive proposal
+adapters.
 
-Plan endpoint (multi-step MPC loop):
+Bounded rollout endpoint (multi-step proposal search/evaluation):
 
 ```bash
-curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
+curl -sS -X POST http://127.0.0.1:7878/planning/proposal-rollout \
   -H 'Content-Type: application/json' \
   -d '{"horizon_steps":3,"rollouts":2,"max_new_proposals":50,"goals":["fill missing parent links"]}'
 ```
@@ -697,7 +700,7 @@ curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
 Stepwise auto-commit (commit each step and reload between steps):
 
 ```bash
-curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
+curl -sS -X POST http://127.0.0.1:7878/planning/proposal-rollout \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <token>' \
   -d '{"horizon_steps":3,"rollouts":2,"max_new_proposals":50,"auto_commit":true,"commit_stepwise":true}'
@@ -708,19 +711,19 @@ The response includes `commit_steps` (one WAL commit per step).
 Competency questions are typed review-gate objects. For human-authored suites,
 prefer `.cq` files and the CLI/REPL loaders; the HTTP API still receives JSON
 because it is a wire protocol. See `examples/competency_questions/physics.cq`
-and `scripts/world_model_mpc_physics_server_demo.sh` for a complete request
-builder.
+and `scripts/physics_bounded_proposal_rollout_server_demo.sh` for a complete
+request builder.
 
 ```bash
-curl -sS -X POST http://127.0.0.1:7878/world_model/plan \
+curl -sS -X POST http://127.0.0.1:7878/planning/proposal-rollout \
   -H 'Content-Type: application/json' \
-  --data @build/world_model_mpc_physics_server_demo/plan_request.json
+  --data @build/physics_bounded_proposal_rollout_server_demo/plan_request.json
 ```
 
 To auto-commit the resulting proposals into the PathDB WAL, include:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
+curl -sS -X POST http://127.0.0.1:7878/evidence/proposals/predict \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <token>' \
   -d '{"goals":["predict missing parent links"],"auto_commit":true,"quality":"fast","quality_plane":"both"}'
@@ -729,7 +732,7 @@ curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
 Guardrail weights + task costs:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:7878/world_model/propose \
+curl -sS -X POST http://127.0.0.1:7878/evidence/proposals/predict \
   -H 'Content-Type: application/json' \
   -d '{"guardrail_weights":{"quality_error":20,"rewrite_rule_error":8},"task_costs":[{"name":"latency","value":3.2,"weight":0.5,"unit":"ms"}]}'
 ```

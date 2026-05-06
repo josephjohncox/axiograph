@@ -244,7 +244,7 @@ They can support:
 - software coverage exploration,
 - agent planning,
 - semantic search,
-- world-model proposal generation.
+- proposal-adapter proposal generation.
 
 They cannot support by themselves:
 

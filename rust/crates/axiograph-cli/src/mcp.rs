@@ -383,7 +383,7 @@ impl SemanticMcpServer {
         });
         if let Some(summary) = support_summary {
             out.as_object_mut()
-                .expect("MCP tool output should be a JSON object")
+                .expect("MCP axql_run output must be a structured ToolQueryResultsV1 envelope")
                 .insert(
                     "support_summary".to_string(),
                     serde_json::to_value(summary)?,
@@ -974,8 +974,8 @@ instance I of S:
         let response = server.call_axql_run(json!({
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     {
                         "kind": "fact",
                         "fact": "?f",

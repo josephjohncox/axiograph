@@ -146,7 +146,7 @@ Use maintained crates when they lower complexity without weakening semantics:
 - `assert_cmd` for CLI contracts once command tests are migrated away from
   hand-rolled process assertions.
 - `insta` for stable JSON/report golden snapshots where diffs are useful.
-- `wiremock` for HTTP-backed LLM/world-model tests.
+- `wiremock` for HTTP-backed LLM/proposal-adapter tests.
 - `config` for layered env/file/CLI configuration if provider/server config
   continues to grow.
 - `axum` plus `tower-http` if the DB server becomes a supported API surface

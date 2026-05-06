@@ -4059,8 +4059,9 @@ impl LoweredQuery {
         // resolved deterministically:
         //
         // - `?x -ZRel-> ?y` becomes `?x -S1.ZRel-> ?y` when `?x/?y` are known to be in schema `S1`.
-        // - If schema cannot be determined, we fall back to an RPQ alternation
-        //   `-(S1.ZRel|S2.ZRel)->` so the query still has a predictable “union” meaning.
+        // - If schema cannot be determined, we emit an RPQ alternation
+        //   `-(S1.ZRel|S2.ZRel)->` and retain typed-hole diagnostics so strict
+        //   authoring can require an explicit `Schema.Rel` refinement.
         let relation_name_count =
             |rel: &str| -> usize { schemas_by_relation.get(rel).map(|v| v.len()).unwrap_or(0) };
 
@@ -4209,7 +4210,9 @@ impl LoweredQuery {
                 continue;
             }
 
-            // Fall back to a union-of-schemas meaning: treat `rel` as `(S1.rel | S2.rel | ...)`.
+            // Runtime exploration keeps a union-of-schemas meaning: treat `rel`
+            // as `(S1.rel | S2.rel | ...)`. Strict authoring should apply the
+            // typed refinement handle instead of relying on this exploratory union.
             let alt = AxqlRegex::Alt(
                 candidates
                     .iter()

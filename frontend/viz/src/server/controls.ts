@@ -7,7 +7,7 @@ export async function initServerControls(ctx) {
     ui,
     selectedIdRef,
     setLlmStatus,
-    setWorldModelStatus,
+    setPredictiveProposalStatus,
     llmHistoryStorageKey,
     loadLlmHistoryForKey,
     renderLlmChat,
@@ -23,7 +23,7 @@ export async function initServerControls(ctx) {
     setDraftOverlayKey,
     pickRandomComponentNode,
     llmStatusEl,
-    wmStatusEl,
+    proposalStatusEl,
   } = ctx;
 
   if (!serverControlsEl) return;
@@ -86,11 +86,11 @@ export async function initServerControls(ctx) {
       if (status.llm.enabled) setLlmStatus(`ready (${status.llm.backend})`);
       else setLlmStatus("disabled");
     }
-    if (status && status.world_model && wmStatusEl) {
-      if (status.world_model.enabled) {
-        setWorldModelStatus(`ready (${status.world_model.backend})`);
+    if (status && status.predictive_proposal_adapter && proposalStatusEl) {
+      if (status.predictive_proposal_adapter.enabled) {
+        setPredictiveProposalStatus(`ready (${status.predictive_proposal_adapter.backend})`);
       } else {
-        setWorldModelStatus("disabled");
+        setPredictiveProposalStatus("disabled");
       }
     }
     const list = Array.isArray(snaps.snapshots) ? snaps.snapshots : [];

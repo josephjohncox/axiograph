@@ -29,7 +29,7 @@ RDF import is an ingestion adapter that produces:
 - optional draft `.axi` candidates (reviewable), and
 - evidence chunks (if the source has docs/comments).
 
-Recommended mapping (prototype; evolves):
+Current boundary-layer mapping for evidence import:
 
 - RDF resources (IRIs / blank nodes) → `ProposalV1::Entity`
 - `rdf:type` → entity `entity_type` (or an attribute, if ambiguous)
@@ -154,7 +154,7 @@ Provenance and context are first-class in Axiograph:
 
 ### 3.1 Modeling
 
-We support two compatible representations:
+We support two boundary representations:
 
 1) **Graph-level:** treat each accepted snapshot as a context; facts are snapshot-scoped.
 2) **In-graph:** represent contexts explicitly as objects, and attach facts to contexts.

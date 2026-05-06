@@ -9,7 +9,7 @@
 # - Fact atoms benefit from FactIndex and (optionally) key-based pruning.
 #
 # Source proposals:
-#   examples/schema_discovery/sql_schema_proposals.json
+#   examples/schema_discovery/fixtures/sql_schema_proposals.json
 #
 # Run (from repo root):
 #   make binaries

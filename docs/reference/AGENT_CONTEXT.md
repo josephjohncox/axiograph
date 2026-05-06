@@ -62,7 +62,7 @@ dependently typed kernel.
 Current useful Rust surfaces include:
 
 - stable semantic anchor newtypes such as `AxiDigest`, `AcceptedSnapshotId`,
-  `PathdbSnapshotId`, `ProposalDigest`, `WorldModelRunId`, `SchemaId`,
+  `PathdbSnapshotId`, `ProposalDigest`, `ProposalAdapterRunId`, `SchemaId`,
   `TheoryId`, `ContextId`, and `StableFactId`;
 - lifecycle wrappers such as `Module<Validated>` and `Module<Reviewed>`;
 - checked builders and importer entrypoints that require typed lifecycle state;
@@ -114,13 +114,13 @@ The accepted-plane code already has first slices of:
 - `sem/commits`,
 - `sem/refs`,
 - `sem/validations`,
-- `sem/world_model_runs`,
+- `sem/evidence/proposal_adapter_runs`,
 - persisted reconciliation previews,
 - compact gate/trust/rule/coverage summaries.
 
 The remaining direction is to make semantic VCS the default lifecycle backbone:
 refs, branches, tags, ancestry, typed semantic diffs, reconciliation decisions,
-CQ-gated review, world-model lineage, supersession, and retraction.
+CQ-gated review, predictive-proposal lineage, supersession, and retraction.
 
 ## Runtime Usefulness Bar
 
@@ -146,9 +146,9 @@ Prefer extending shared report families over creating one-off payloads:
 - typed authoring reports,
 - agent-facing semantic reports.
 
-## AI And World Models
+## AI And Proposal Adapters
 
-AI, LLM, and world-model outputs remain evidence-plane artifacts until reviewed.
+AI, LLM, and predictive-proposal outputs remain evidence-plane artifacts until reviewed.
 They should carry typed run/proposal/snapshot anchors, proposal digests,
 grounded evidence links, candidate schema/theory/olog deltas, and explicit
 preview failures.

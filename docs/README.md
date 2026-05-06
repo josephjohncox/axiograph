@@ -43,6 +43,9 @@ Repo-wide language rule:
 - Compiled IR ids and `KernelSurfaceV1` refs are authority.
 - LLM/MCP/tool-loop output is evidence or proposal material until accepted by
   typed review.
+- JEPA/MPC/world-model/control language describes external adapters or research
+  interpretations only; the core runtime exposes predictive proposal adapters
+  and bounded proposal rollout surfaces.
 - External graph databases and PathDB are projection/execution substrates, not
   ontology kernels.
 
@@ -55,7 +58,7 @@ Repo-wide language rule:
 - `docs/tutorials/TYPE_THEORY_DEMOS.md` — paths, homotopies, dependent structures, and certificates.
 - `docs/tutorials/SCHEMA_DISCOVERY.md` — automated ontology discovery loop.
 - `docs/tutorials/CONTINUOUS_INGEST_AND_DISCOVERY.md` — continuous ingest/discovery loop.
-- `docs/tutorials/WORLD_MODEL_LOOP.md` — world-model proposal loop with guardrails.
+- `docs/tutorials/BOUNDED_PROPOSAL_ROLLOUT.md` — bounded proposal rollout with guardrails.
 - `docs/tutorials/INDUSTRIAL_ENGINEERING_EXAMPLE.md` — industrial/business/process example harness.
 - `examples/software_authoring/README.md` — pure-domain DDD/fDDD authoring flow.
 
@@ -67,7 +70,7 @@ Repo-wide language rule:
 - `docs/howto/DB_SERVER.md` — HTTP query/viz server.
 - `docs/howto/SNAPSHOT_STORE.md` — accepted-plane and WAL workflow.
 - `docs/howto/KNOWLEDGE_INGESTION.md` — ingest to proposals to review.
-- `docs/howto/INGEST_PROTO.md` — proto/gRPC ingestion.
+- `docs/howto/INGEST_PROTO.md` — proto/gRPC evidence adapter to proposals/chunks.
 - `docs/howto/LLM_QUERY_INTEGRATION.md` — typed tool-loop query integration.
 - `docs/howto/PERFORMANCE_PROFILING.md` — profiling runtime hot paths.
 
@@ -87,7 +90,7 @@ Repo-wide language rule:
 - `docs/reference/QUERY_LANG.md` — AxQL, SQL-ish elaboration, and typed query metadata.
 - `docs/reference/SEMANTIC_VCS.md` — semantic refs, commits, merge/rebase, reconciliation, and projection manifests.
 - `docs/reference/LLM_REPL_PLUGIN.md` — LLM REPL plugin protocol.
-- `docs/reference/WORLD_MODEL_PLUGIN.md` — world-model plugin protocol.
+- `docs/reference/PREDICTIVE_PROPOSAL_ADAPTER.md` — predictive proposal adapter protocol.
 
 ## Research
 
@@ -114,7 +117,7 @@ Repo-wide language rule:
 - `docs/explanation/RUST_DEPENDENT_TYPES.md` — Rust branding/typestate/dependent-index patterns.
 - `docs/explanation/SEMANTIC_WEB_INTEROP.md` — RDF/OWL/SHACL/PROV boundary design.
 - `docs/explanation/KNOWLEDGE_GENERATION_AND_LEARNING.md` — learning and epistemics direction.
-- `docs/explanation/JEPA_INTEGRATION.md` — JEPA-style world models.
+- `docs/explanation/JEPA_INTEGRATION.md` — JEPA-style proposal adapters.
 - `docs/explanation/OBJECTIVE_DRIVEN_AI.md` — objective-driven AI mapping.
 - `docs/explanation/SELF_SUPERVISED_LEARNING.md` — self-supervised loops.
 - `docs/explanation/LLM_KG_SYNC.md` — LLM to KG sync at an untrusted boundary.

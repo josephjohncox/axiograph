@@ -1,12 +1,12 @@
-//! World-model input helpers for canonical `.axi` meaning-plane export.
+//! Predictive proposal input helpers for canonical `.axi` meaning-plane export.
 //!
-//! The world model should reason over the canonical `.axi` meaning-plane (schema/theory/instance),
+//! The predictive proposal adapter should reason over the canonical `.axi` meaning-plane (schema/theory/instance),
 //! not over reversible `PathDBExportV1` snapshots (which contain interned string tables and other
 //! implementation details).
 //!
 //! This module provides a single, shared exporter used by:
 //! - the REPL/LLM tool-loop (`llm.rs`)
-//! - the DB server world-model endpoints (`db_server.rs`)
+//! - the DB server proposal-adapter endpoints (`db_server.rs`)
 //!
 //! so the behavior cannot drift.
 
@@ -14,23 +14,23 @@ use anyhow::{anyhow, Result};
 use axiograph_pathdb::{AcceptedSnapshotId, AxiDigest, PathDB, PathdbSnapshotId};
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorldModelAxiInputV1 {
+pub(crate) struct PredictiveProposalAxiInputV1 {
     pub(crate) axi_digest_v1: AxiDigest,
     pub(crate) axi_text: String,
     pub(crate) selected_module_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct WorldModelAxiInputOptionsV1 {
+pub(crate) struct PredictiveProposalAxiInputOptionsV1 {
     pub(crate) module_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct WorldModelInputBuildOptionsV1 {
+pub(crate) struct PredictiveProposalInputBuildOptionsV1 {
     pub(crate) module_name: Option<String>,
     pub(crate) pathdb_snapshot_id: Option<PathdbSnapshotId>,
     pub(crate) accepted_snapshot_id: Option<AcceptedSnapshotId>,
-    pub(crate) training_export: Option<crate::world_model::JepaExportOptions>,
+    pub(crate) training_export: Option<crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1>,
 }
 
 fn entity_attr_string(db: &PathDB, entity_id: u32, key: &str) -> Option<String> {
@@ -92,10 +92,10 @@ fn choose_module_name(db: &PathDB, module_names: &[String]) -> Option<String> {
     }
 }
 
-pub(crate) fn export_pathdb_world_model_axi(
+pub(crate) fn export_pathdb_predictive_proposal_axi(
     db: &PathDB,
-    opts: &WorldModelAxiInputOptionsV1,
-) -> Result<WorldModelAxiInputV1> {
+    opts: &PredictiveProposalAxiInputOptionsV1,
+) -> Result<PredictiveProposalAxiInputV1> {
     // Prefer canonical module export when a meta-plane module is present.
     let module_names = list_module_names(db);
     let selected = if let Some(want) = opts.module_name.as_ref() {
@@ -123,7 +123,7 @@ pub(crate) fn export_pathdb_world_model_axi(
         ) {
             Ok(axi_text) => {
                 let digest = AxiDigest::from_axi_text(&axi_text);
-                return Ok(WorldModelAxiInputV1 {
+                return Ok(PredictiveProposalAxiInputV1 {
                     axi_digest_v1: digest,
                     axi_text,
                     selected_module_name: selected,
@@ -137,21 +137,21 @@ pub(crate) fn export_pathdb_world_model_axi(
         }
     }
     Err(anyhow!(
-        "no canonical `.axi` module is available in this snapshot (import a canonical module before running world-model or agent proposal flows)"
+        "no canonical `.axi` module is available in this snapshot (import a canonical module before running proposal-adapter or agent proposal flows)"
     ))
 }
 
-pub(crate) fn build_world_model_input_from_pathdb(
+pub(crate) fn build_predictive_proposal_input_from_pathdb(
     db: &PathDB,
-    opts: &WorldModelInputBuildOptionsV1,
-) -> Result<crate::world_model::WorldModelInputV1> {
-    let exported = export_pathdb_world_model_axi(
+    opts: &PredictiveProposalInputBuildOptionsV1,
+) -> Result<crate::predictive_proposals::PredictiveProposalInputV1> {
+    let exported = export_pathdb_predictive_proposal_axi(
         db,
-        &WorldModelAxiInputOptionsV1 {
+        &PredictiveProposalAxiInputOptionsV1 {
             module_name: opts.module_name.clone(),
         },
     )?;
-    build_world_model_input_from_axi_text(
+    build_predictive_proposal_input_from_axi_text(
         &exported.axi_text,
         exported.selected_module_name,
         opts.pathdb_snapshot_id.clone(),
@@ -160,15 +160,15 @@ pub(crate) fn build_world_model_input_from_pathdb(
     )
 }
 
-pub(crate) fn build_world_model_input_from_axi_text(
+pub(crate) fn build_predictive_proposal_input_from_axi_text(
     axi_text: &str,
     module_name: Option<String>,
     pathdb_snapshot_id: Option<PathdbSnapshotId>,
     accepted_snapshot_id: Option<AcceptedSnapshotId>,
-    training_export: Option<crate::world_model::JepaExportOptions>,
-) -> Result<crate::world_model::WorldModelInputV1> {
+    training_export: Option<crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1>,
+) -> Result<crate::predictive_proposals::PredictiveProposalInputV1> {
     let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
-    let mut input = crate::world_model::WorldModelInputV1::default();
+    let mut input = crate::predictive_proposals::PredictiveProposalInputV1::default();
     input.axi_digest_v1 = Some(canonical.digest().clone());
     input.axi_module_text = Some(axi_text.to_string());
     input.set_canonical_axi_semantics(
@@ -178,13 +178,13 @@ pub(crate) fn build_world_model_input_from_axi_text(
     );
     input.notes.push(format!(
         "semantic_input={}",
-        crate::world_model::WORLD_MODEL_SEMANTIC_INPUT_KIND_V1
+        crate::predictive_proposals::PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1
     ));
     if let Some(module_name) = input.semantic_input.module_name.as_ref() {
         input.notes.push(format!("semantic_module={module_name}"));
     }
     if let Some(export_opts) = training_export.as_ref() {
-        let export = crate::world_model::build_jepa_export_from_axi_text(axi_text, export_opts)?;
+        let export = crate::predictive_proposals::build_training_export_from_axi_text(axi_text, export_opts)?;
         input.set_training_export_layer(export);
     }
     Ok(input)
@@ -196,7 +196,7 @@ mod tests {
     use axiograph_pathdb::{AcceptedSnapshotId, PathdbSnapshotId};
 
     #[test]
-    fn canonical_world_model_export_avoids_pathdb_internals() {
+    fn canonical_predictive_proposal_export_avoids_pathdb_internals() {
         let mut db = axiograph_pathdb::PathDB::new();
         let axi = r#"
 module Demo
@@ -212,9 +212,9 @@ instance DemoInst of Demo:
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
             .expect("import demo module");
 
-        let opts = WorldModelAxiInputOptionsV1 { module_name: None };
+        let opts = PredictiveProposalAxiInputOptionsV1 { module_name: None };
         let out =
-            export_pathdb_world_model_axi(&db, &opts).expect("export canonical world-model axi");
+            export_pathdb_predictive_proposal_axi(&db, &opts).expect("export canonical proposal-adapter axi");
         assert!(out.axi_digest_v1.has_v1_prefix());
         assert!(
             !out.axi_text.contains("InternedString"),
@@ -231,29 +231,29 @@ instance DemoInst of Demo:
     }
 
     #[test]
-    fn world_model_export_errors_on_unknown_module() {
+    fn predictive_proposal_export_errors_on_unknown_module() {
         let mut db = axiograph_pathdb::PathDB::new();
         let axi = "module Demo\nschema Demo:\n  object X\ninstance I of Demo:\n  X = {a}\n";
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
             .expect("import demo module");
 
-        let opts = WorldModelAxiInputOptionsV1 {
+        let opts = PredictiveProposalAxiInputOptionsV1 {
             module_name: Some("NoSuchModule".to_string()),
         };
-        let err = export_pathdb_world_model_axi(&db, &opts).unwrap_err();
+        let err = export_pathdb_predictive_proposal_axi(&db, &opts).unwrap_err();
         assert!(err.to_string().contains("unknown module"));
     }
 
     #[test]
     fn canonical_export_fails_without_meta_plane_module() {
         let db = axiograph_pathdb::PathDB::new();
-        let opts = WorldModelAxiInputOptionsV1 { module_name: None };
-        let err = export_pathdb_world_model_axi(&db, &opts).unwrap_err();
+        let opts = PredictiveProposalAxiInputOptionsV1 { module_name: None };
+        let err = export_pathdb_predictive_proposal_axi(&db, &opts).unwrap_err();
         assert!(err.to_string().contains("no canonical"));
     }
 
     #[test]
-    fn built_world_model_input_uses_canonical_semantic_envelope() {
+    fn built_predictive_proposal_input_uses_canonical_semantic_envelope() {
         let mut db = axiograph_pathdb::PathDB::new();
         let axi = r#"
 module Demo
@@ -269,13 +269,13 @@ instance DemoInst of Demo:
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)
             .expect("import demo module");
 
-        let input = build_world_model_input_from_pathdb(
+        let input = build_predictive_proposal_input_from_pathdb(
             &db,
-            &WorldModelInputBuildOptionsV1 {
+            &PredictiveProposalInputBuildOptionsV1 {
                 module_name: None,
                 pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:test")),
                 accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:test")),
-                training_export: Some(crate::world_model::JepaExportOptions {
+                training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                     instance_filter: None,
                     max_items: 8,
                     mask_fields: 1,
@@ -284,7 +284,7 @@ instance DemoInst of Demo:
                 }),
             },
         )
-        .expect("build world-model input");
+        .expect("build proposal-adapter input");
 
         assert_eq!(input.semantic_input.kind, "canonical_axi_semantics_v1");
         assert_eq!(input.semantic_input.module_name.as_deref(), Some("Demo"));
@@ -309,7 +309,7 @@ instance DemoInst of Demo:
             "expected training export to be carried as a semantic layer"
         );
 
-        let json = serde_json::to_value(&input).expect("serialize world-model input");
+        let json = serde_json::to_value(&input).expect("serialize proposal-adapter input");
         assert_eq!(json["semantic_input"]["kind"], "canonical_axi_semantics_v1");
         assert_eq!(json["semantic_input"]["module_name"], "Demo");
         assert_eq!(json["semantic_input"]["pathdb_snapshot_id"], "pathdb:test");

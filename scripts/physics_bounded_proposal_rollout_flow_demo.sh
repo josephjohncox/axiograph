@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Physics-scale world model MPC flow:
+# Physics-scale bounded proposal rollout flow:
 # - build accepted plane
 # - generate competency questions
 # - plan proposals
@@ -9,30 +9,31 @@ set -euo pipefail
 # - rebuild PathDB + viz
 #
 # Run:
-#   ./scripts/world_model_mpc_physics_flow_demo.sh
+#   ./scripts/physics_bounded_proposal_rollout_flow_demo.sh
 #
 # Examples:
-#   WORLD_MODEL_BACKEND=openai OPENAI_API_KEY=... WORLD_MODEL_MODEL=gpt-4o-mini \
-#     ./scripts/world_model_mpc_physics_flow_demo.sh
-#   WORLD_MODEL_BACKEND=anthropic ANTHROPIC_API_KEY=... WORLD_MODEL_MODEL=claude-3-5-sonnet-latest \
-#     ./scripts/world_model_mpc_physics_flow_demo.sh
-#   WORLD_MODEL_BACKEND=ollama OLLAMA_MODEL=llama3.1:8b \
-#     ./scripts/world_model_mpc_physics_flow_demo.sh
+#   PREDICTIVE_PROPOSAL_BACKEND=baseline ./scripts/physics_bounded_proposal_rollout_flow_demo.sh
+#   PREDICTIVE_PROPOSAL_BACKEND=openai OPENAI_API_KEY=... PREDICTIVE_PROPOSAL_MODEL=gpt-4o-mini \
+#     ./scripts/physics_bounded_proposal_rollout_flow_demo.sh
+#   PREDICTIVE_PROPOSAL_BACKEND=anthropic ANTHROPIC_API_KEY=... PREDICTIVE_PROPOSAL_MODEL=claude-3-5-sonnet-latest \
+#     ./scripts/physics_bounded_proposal_rollout_flow_demo.sh
+#   PREDICTIVE_PROPOSAL_BACKEND=ollama OLLAMA_MODEL=llama3.1:8b \
+#     ./scripts/physics_bounded_proposal_rollout_flow_demo.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUT_DIR="$ROOT_DIR/build/world_model_mpc_physics_flow_demo"
+OUT_DIR="$ROOT_DIR/build/physics_bounded_proposal_rollout_flow_demo"
 PLANE_DIR="$OUT_DIR/accepted_plane"
-PLAN_REPORT="$OUT_DIR/wm_plan.json"
-MERGED_PROPOSALS="$OUT_DIR/wm_plan_proposals.json"
-DRAFT_AXI="$OUT_DIR/wm_plan_draft.axi"
+PLAN_REPORT="$OUT_DIR/proposal_rollout_plan.json"
+MERGED_PROPOSALS="$OUT_DIR/proposal_rollout_proposals.json"
+DRAFT_AXI="$OUT_DIR/proposal_rollout_draft.axi"
 AXPD_BASE="$OUT_DIR/physics_base.axpd"
-AXPD_OUT="$OUT_DIR/physics_wm.axpd"
-AXPD_WAL="$OUT_DIR/physics_wm_full.axpd"
+AXPD_OUT="$OUT_DIR/physics_proposal_rollout.axpd"
+AXPD_WAL="$OUT_DIR/physics_proposal_rollout_full.axpd"
 CQ_OUT="$OUT_DIR/physics_cq.json"
-VIZ_OUT="$OUT_DIR/physics_wm_viz.json"
-VIZ_FULL_OUT="$OUT_DIR/physics_wm_viz_full.json"
-MODEL_PATH="${WORLD_MODEL_MODEL_PATH:-models/world_model_small.onnx}"
+VIZ_OUT="$OUT_DIR/physics_proposal_rollout_viz.json"
+VIZ_FULL_OUT="$OUT_DIR/physics_proposal_rollout_viz_full.json"
+MODEL_PATH="${PREDICTIVE_PROPOSAL_MODEL_PATH:-models/predictive_proposal_small.onnx}"
 PYTHON="${PYTHON:-python3}"
 if [ -x "$ROOT_DIR/.venv-onnx/bin/python" ]; then
   PYTHON="$ROOT_DIR/.venv-onnx/bin/python"
@@ -43,7 +44,7 @@ if [ -z "${AXIOGRAPH_DEMO_KEEP:-}" ]; then
 fi
 mkdir -p "$OUT_DIR"
 
-echo "== Physics world model MPC flow demo =="
+echo "== Physics bounded proposal rollout flow demo =="
 echo "root: $ROOT_DIR"
 echo "out:  $OUT_DIR"
 
@@ -52,15 +53,15 @@ echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"
 make binaries
 
-if [ -z "${WORLD_MODEL_BACKEND:-}" ]; then
-  export WORLD_MODEL_BACKEND="openai"
+if [ -z "${PREDICTIVE_PROPOSAL_BACKEND:-}" ]; then
+  export PREDICTIVE_PROPOSAL_BACKEND="baseline"
 fi
 
-WM_REPL_USE="wm use llm"
-WM_DESC="llm"
-WM_MODEL="default"
+ADAPTER_REPL_USE="proposal use llm"
+ADAPTER_DESC="llm"
+ADAPTER_MODEL="default"
 
-if [ "$WORLD_MODEL_BACKEND" = "onnx" ]; then
+if [ "$PREDICTIVE_PROPOSAL_BACKEND" = "onnx" ]; then
   if ! "$PYTHON" - <<'PY' >/dev/null 2>&1
 import importlib
 importlib.import_module("onnxruntime")
@@ -70,7 +71,7 @@ PY
     if [ "${ALLOW_ONNX_PIP_INSTALL:-0}" = "1" ]; then
       "$ROOT_DIR/scripts/setup_onnx_runtime.sh"
     else
-      echo "error: WORLD_MODEL_BACKEND=onnx requires onnxruntime/onnx in $PYTHON" >&2
+      echo "error: PREDICTIVE_PROPOSAL_BACKEND=onnx requires onnxruntime/onnx in $PYTHON" >&2
       echo "hint: run ALLOW_ONNX_PIP_INSTALL=1 ./scripts/setup_onnx_runtime.sh, or set PYTHON to an environment that already has onnxruntime and onnx" >&2
       exit 2
     fi
@@ -80,41 +81,41 @@ PY
   fi
 
   if [ ! -f "$MODEL_PATH" ]; then
-    echo "note: building ONNX world model at $MODEL_PATH"
-    "$PYTHON" "$ROOT_DIR/scripts/build_world_model_onnx.py" --out "$MODEL_PATH"
+    echo "note: building ONNX predictive proposal adapter at $MODEL_PATH"
+    "$PYTHON" "$ROOT_DIR/scripts/build_predictive_proposal_onnx.py" --out "$MODEL_PATH"
   fi
-  export WORLD_MODEL_MODEL_PATH="$MODEL_PATH"
-  WM_REPL_USE="wm use command scripts/axiograph_world_model_plugin_onnx.py"
-  WM_DESC="onnx"
-  WM_MODEL="onnx_v1"
-elif [ "$WORLD_MODEL_BACKEND" = "baseline" ]; then
-  WM_REPL_USE="wm use command scripts/axiograph_world_model_plugin_baseline.py --strategy oracle"
-  WM_DESC="baseline"
-  WM_MODEL="baseline_oracle"
+  export PREDICTIVE_PROPOSAL_MODEL_PATH="$MODEL_PATH"
+  ADAPTER_REPL_USE="proposal use command scripts/axiograph_predictive_proposal_plugin_onnx.py"
+  ADAPTER_DESC="onnx"
+  ADAPTER_MODEL="onnx_v1"
+elif [ "$PREDICTIVE_PROPOSAL_BACKEND" = "baseline" ]; then
+  ADAPTER_REPL_USE="proposal use command scripts/axiograph_predictive_proposal_plugin_baseline.py --strategy oracle"
+  ADAPTER_DESC="baseline"
+  ADAPTER_MODEL="baseline_oracle"
 else
-  if [ "$WORLD_MODEL_BACKEND" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-    echo "error: OPENAI_API_KEY is required for WORLD_MODEL_BACKEND=openai"
+  if [ "$PREDICTIVE_PROPOSAL_BACKEND" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "error: OPENAI_API_KEY is required for PREDICTIVE_PROPOSAL_BACKEND=openai"
     exit 2
   fi
-  if [ "$WORLD_MODEL_BACKEND" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "error: ANTHROPIC_API_KEY is required for WORLD_MODEL_BACKEND=anthropic"
+  if [ "$PREDICTIVE_PROPOSAL_BACKEND" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "error: ANTHROPIC_API_KEY is required for PREDICTIVE_PROPOSAL_BACKEND=anthropic"
     exit 2
   fi
-  if [ "$WORLD_MODEL_BACKEND" = "ollama" ] && [ -z "${OLLAMA_HOST:-}" ] && [ -z "${OLLAMA_MODEL:-}" ]; then
-    echo "error: OLLAMA_HOST or OLLAMA_MODEL is required for WORLD_MODEL_BACKEND=ollama"
+  if [ "$PREDICTIVE_PROPOSAL_BACKEND" = "ollama" ] && [ -z "${OLLAMA_HOST:-}" ] && [ -z "${OLLAMA_MODEL:-}" ]; then
+    echo "error: OLLAMA_HOST or OLLAMA_MODEL is required for PREDICTIVE_PROPOSAL_BACKEND=ollama"
     exit 2
   fi
-  WM_MODEL="${WORLD_MODEL_MODEL:-${OPENAI_MODEL:-${ANTHROPIC_MODEL:-${OLLAMA_MODEL:-}}}}"
-  if [ -z "$WM_MODEL" ]; then
-    echo "error: WORLD_MODEL_MODEL (or OPENAI_MODEL / ANTHROPIC_MODEL / OLLAMA_MODEL) is required"
+  ADAPTER_MODEL="${PREDICTIVE_PROPOSAL_MODEL:-${OPENAI_MODEL:-${ANTHROPIC_MODEL:-${OLLAMA_MODEL:-}}}}"
+  if [ -z "$ADAPTER_MODEL" ]; then
+    echo "error: PREDICTIVE_PROPOSAL_MODEL (or OPENAI_MODEL / ANTHROPIC_MODEL / OLLAMA_MODEL) is required"
     exit 2
   fi
-  export WORLD_MODEL_MODEL="$WM_MODEL"
+  export PREDICTIVE_PROPOSAL_MODEL="$ADAPTER_MODEL"
 fi
 
 echo ""
-echo "-- World model backend: $WORLD_MODEL_BACKEND (mode=$WM_DESC model=$WM_MODEL)"
-echo "World Model Using: $WM_MODEL"
+echo "-- Predictive proposal backend: $PREDICTIVE_PROPOSAL_BACKEND (mode=$ADAPTER_DESC model=$ADAPTER_MODEL)"
+echo "Predictive Proposal Using: $ADAPTER_MODEL"
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
@@ -143,13 +144,13 @@ echo "-- C) Generate competency questions (schema-driven)"
   --max-questions 120
 
 echo ""
-echo "-- D) MPC plan (REPL non-interactive)"
+echo "-- D) Planning pass (REPL non-interactive)"
 "$AXIOGRAPH" repl --quiet \
   --cmd "import_axi examples/physics/PhysicsOntology.axi" \
   --cmd "import_axi examples/physics/PhysicsMeasurements.axi" \
-  --cmd "$WM_REPL_USE" \
-  --cmd "wm model $WM_MODEL" \
-  --cmd "wm plan $PLAN_REPORT --steps 2 --rollouts 2 --max 200 --guardrail strict --plane both --goal \"expand physics ontology coverage\" --axi examples/physics/PhysicsOntology.axi --cq-file $CQ_OUT"
+  --cmd "$ADAPTER_REPL_USE" \
+  --cmd "proposal model $ADAPTER_MODEL" \
+  --cmd "proposal plan $PLAN_REPORT --steps 2 --rollouts 2 --max 200 --guardrail strict --plane both --goal \"expand physics ontology coverage\" --axi examples/physics/PhysicsOntology.axi --cq-file $CQ_OUT"
 
 if [ ! -f "$PLAN_REPORT" ]; then
   echo "error: expected plan report at $PLAN_REPORT"
@@ -170,7 +171,7 @@ for step in report.get("steps", []):
 out = {
     "version": 1,
     "generated_at": str(int(time.time())),
-    "source": {"source_type": "world_model_plan", "locator": report.get("trace_id", "wm_plan")},
+    "source": {"source_type": "proposal_rollout_plan", "locator": report.get("trace_id", "proposal_rollout_plan")},
     "schema_hint": None,
     "proposals": proposals,
 }
@@ -183,19 +184,19 @@ echo "-- F) Draft canonical module"
 "$AXIOGRAPH" discover draft-module \
   "$MERGED_PROPOSALS" \
   --out "$DRAFT_AXI" \
-  --module PhysicsWM \
+  --module PhysicsProposalDraft \
   --schema Physics \
-  --instance WMPlan \
+  --instance ProposalRollout \
   --infer-constraints
 
 echo ""
 echo "-- G) Promote + rebuild PathDB (accepted plane)"
-"$AXIOGRAPH" db accept promote "$DRAFT_AXI" --dir "$PLANE_DIR" --message "wm plan draft (physics)" --quality fast
+"$AXIOGRAPH" db accept promote "$DRAFT_AXI" --dir "$PLANE_DIR" --message "bounded proposal rollout draft (physics)" --quality fast
 "$AXIOGRAPH" db accept build-pathdb --dir "$PLANE_DIR" --snapshot head --out "$AXPD_OUT"
 
 echo ""
 echo "-- H) Commit evidence (WAL) + full PathDB"
-COMMIT_OUT="$("$AXIOGRAPH" db accept pathdb-commit --dir "$PLANE_DIR" --accepted-snapshot head --proposals "$MERGED_PROPOSALS" --message "wm plan proposals (physics)")"
+COMMIT_OUT="$("$AXIOGRAPH" db accept pathdb-commit --dir "$PLANE_DIR" --accepted-snapshot head --proposals "$MERGED_PROPOSALS" --message "bounded proposal rollout proposals (physics)")"
 echo "$COMMIT_OUT"
 WAL_SNAPSHOT="$(echo "$COMMIT_OUT" | grep -oE 'fnv1a64:[0-9a-f]+' | tail -n1)"
 if [ -z "$WAL_SNAPSHOT" ]; then

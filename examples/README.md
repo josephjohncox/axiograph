@@ -6,6 +6,9 @@ instead of acting as hidden regression fixtures.
 
 The machine-readable catalog is `examples/catalog.json`. The canonical parser
 and Rust/Lean parity corpus is `examples/canonical/corpus.json`.
+Operational smoke/reference scripts live under `scripts/ops/`; keep those out
+of the first teaching path unless a user is explicitly testing CLI breadth or
+integration behavior.
 
 Check that every public example directory is cataloged with a teaching purpose
 and every Axiograph-owned JSON fixture carries an explicit top-level version:

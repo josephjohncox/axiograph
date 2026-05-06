@@ -3,7 +3,7 @@
 **Diataxis:** Explanation  
 **Audience:** contributors
 
-Axiograph treats learning systems, embeddings, LLM extraction, and world-model
+Axiograph treats learning systems, embeddings, LLM extraction, and proposal-adapter
 outputs as evidence-plane machinery. They can suggest ontology changes and
 implementation work, but they do not define accepted meaning.
 

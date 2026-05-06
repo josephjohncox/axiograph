@@ -3,6 +3,15 @@
 **Diataxis:** Explanation  
 **Audience:** contributors
 
+## Boundary
+
+Status note: this is an advanced/research integration note. Axiograph's core
+runtime surface is a predictive proposal adapter plus bounded proposal rollout.
+The core does **not** claim native JEPA, world-model, MPC, or control semantics.
+Calling a JEPA-style component a "world model" here is a research hypothesis
+about an external adapter implementation, not a claim about the trusted
+Axiograph kernel or default runtime.
+
 ## What is a JEPA (quick refresher)
 
 A Joint-Embedding Predictive Architecture (JEPA) learns representations by
@@ -103,11 +112,15 @@ Instead of raw facts, the JEPA predictor outputs **embeddings**:
 
 ## Current CLI / server hooks
 
-- **Training export:** `axiograph discover jepa-export ...` (from full `.axi` modules).
-- **World model proposals:** `axiograph ingest world-model ...` (emits `proposals.json`
-  with provenance) or the built-in LLM plugin `axiograph ingest world-model-plugin-llm`.
-- **REPL:** `wm` subcommand (configure backend, emit proposals, optional WAL commit).
-- **DB server:** `POST /world_model/propose` (evidence plane; optional WAL commit).
+- **Training export:** `axiograph discover training-export ...`
+  (from full `.axi` modules).
+- **Predictive proposals:** `axiograph ingest predictive-proposal ...` (emits
+  `proposals.json` with provenance) or the built-in LLM adapter
+  `axiograph ingest predictive-proposals-llm`.
+- **REPL:** `proposal` subcommand (configure adapter, emit proposals, optional
+  WAL commit).
+- **DB server:** `POST /evidence/proposals/predict` (evidence plane; optional
+  WAL commit) and `POST /planning/proposal-rollout` for bounded rollout reports.
 
 The plugin/request seam should be read this way:
 - `input.axi_module_text` + `axi_digest_v1` are the primary semantic contract.
@@ -127,8 +140,9 @@ The plugin/request seam should be read this way:
 - **Modal scoping:** contexts/worlds are explicit fields, not hidden filters.
 - **Verification:** promotion-time checks and certificates are the gate for
   high-value inferences.
-- **LLM integration:** LLMs can request JEPA proposals or combine them with
-  tool-loop suggestions; both are untrusted and must pass guardrails.
+- **LLM integration:** LLMs can request proposals from a JEPA-style adapter or
+  combine them with tool-loop suggestions; both are untrusted and must pass
+  guardrails.
 
 ## Guardrails and limitations
 
@@ -155,9 +169,9 @@ The plugin/request seam should be read this way:
   + instance) plus context/world metadata, not just a PathDB export.
 - Use accepted-plane anchors (snapshot ids) for reproducibility; PathDB exports
   are derived and optional convenience views.
-- Keep the world-model plugin request centered on canonical `.axi`; training
-  exports are derived metadata, and snapshot/store paths should stay out of the
-  primary request contract.
+- Keep the predictive proposal adapter request centered on canonical `.axi`;
+  training exports are derived metadata, and snapshot/store paths should stay
+  out of the primary request contract.
 - Treat predicted embeddings and nearest-neighbor structure as evidence/index
   sidecars, not semantic truth. Embedding-derived relationships must be lifted
   into typed proposals and reviewed before promotion; see
@@ -181,7 +195,7 @@ The plugin/request seam should be read this way:
 - Measure drift across contexts/snapshots (when JEPA predicts cross-context).
 
 **5) Runtime surfaces**
-- CLI entrypoint to generate JEPA proposals for a snapshot.
+- CLI entrypoint to generate predictive proposals for a snapshot.
 - Optional server endpoint to request JEPA-assisted candidates.
 - Keep all outputs in the evidence plane; do not bypass certificates.
 

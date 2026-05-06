@@ -281,9 +281,9 @@ fn validate_route_chain(db: &PathDB, route: &RouteChainV1) -> Result<()> {
 }
 
 fn try_anchor_digest(db: &PathDB) -> Option<AxiDigest> {
-    crate::world_model_input::export_pathdb_world_model_axi(
+    crate::predictive_proposal_input::export_pathdb_predictive_proposal_axi(
         db,
-        &crate::world_model_input::WorldModelAxiInputOptionsV1::default(),
+        &crate::predictive_proposal_input::PredictiveProposalAxiInputOptionsV1::default(),
     )
     .ok()
     .map(|exported| exported.axi_digest_v1)

@@ -151,7 +151,7 @@ echo "-- promote augmented proposals into candidate domain .axi modules"
 echo ""
 echo "-- B) structural discovery (draft a module + LLM structure suggestions)"
 "$AXIOGRAPH" discover draft-module \
-  "$ROOT_DIR/examples/schema_discovery/proto_api_proposals.json" \
+  "$ROOT_DIR/examples/schema_discovery/fixtures/proto_api_proposals.json" \
   --out "$OUT_DIR/ProtoApi.llm_draft.axi" \
   --module ProtoApi_LLM_Proposals \
   --schema ProtoApi \

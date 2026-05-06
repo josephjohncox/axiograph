@@ -145,8 +145,8 @@ Preferred response (typed IR):
 {
   "query_ir_v1": {
     "version": 1,
-    "select": ["?x"],
-    "where": [
+    "select_vars": ["?x"],
+    "where_atoms": [
       { "kind": "type", "term": "?x", "type": "Node" },
       { "kind": "attr_eq", "term": "?x", "key": "name", "value": "b" }
     ],
@@ -167,8 +167,8 @@ The plugin should produce a natural-language answer grounded in results.
     "kind": "query_ir_v1",
     "query_ir_v1": {
       "version": 1,
-      "select": ["?y"],
-      "where": [ ... ],
+      "select_vars": ["?y"],
+      "where_atoms": [ ... ],
       "limit": 20
     }
   },
@@ -215,7 +215,7 @@ Top-level (fields are optional; shape depends on the task):
 
 ```json
 {
-  "query_ir_v1": { "version": 1, "select": ["?x"], "where": [ ... ], "limit": 20 },
+  "query_ir_v1": { "version": 1, "select_vars": ["?x"], "where_atoms": [ ... ], "limit": 20 },
   "answer": "…",
   "added_proposals": [ ... ],
   "schema_hint_updates": [ { "proposal_id": "...", "schema_hint": "machinist_learning" } ],
@@ -278,7 +278,7 @@ boundary and relationship-lifting rule.
 
 ```json
 {
-  "tool_call": { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where": [ ... ] }, "limit": 25 } }
+  "tool_call": { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where_atoms": [ ... ] }, "limit": 25 } }
 }
 ```
 
@@ -291,7 +291,7 @@ execute sequentially:
 {
   "tool_calls": [
     { "name": "lookup_relation", "args": { "relation": "Parent" } },
-    { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where": [ ... ] }, "limit": 25 } }
+    { "name": "axql_run", "args": { "query_ir_v1": { "version": 1, "where_atoms": [ ... ] }, "limit": 25 } }
   ]
 }
 ```

@@ -112,7 +112,7 @@ fn init_store_backed_pathdb_head(bin: &Path, run_dir: &Path, input: &Path) -> Pa
         .arg("--dir")
         .arg(&accepted_dir)
         .arg("--message")
-        .arg("e2e: accept promote (world_model)")
+        .arg("e2e: accept promote (predictive_proposal)")
         .status()
         .expect("run axiograph db accept promote");
     assert!(
@@ -154,7 +154,7 @@ fn init_store_backed_pathdb_head(bin: &Path, run_dir: &Path, input: &Path) -> Pa
         .arg("--chunks")
         .arg(&chunks_path)
         .arg("--message")
-        .arg("e2e: init wal head (world_model)")
+        .arg("e2e: init wal head (predictive_proposal)")
         .status()
         .expect("run axiograph db accept pathdb-commit");
     assert!(
@@ -199,7 +199,7 @@ fn init_store_backed_accepted_head_from_axi_text(
     accepted_dir
 }
 
-fn write_world_model_plugin_script(
+fn write_predictive_proposal_plugin_script(
     run_dir: &Path,
     label: &str,
     response: &serde_json::Value,
@@ -222,7 +222,7 @@ fn write_world_model_plugin_script(
 fn export_module_digest(bin: &Path, run_dir: &Path, checkpoint: &Path, label: &str) -> String {
     let exported = run_dir
         .join("build")
-        .join(format!("{label}_world_model_input.axi"));
+        .join(format!("{label}_predictive_proposal_input.axi"));
     let status = Command::new(bin)
         .current_dir(run_dir)
         .arg("db")
@@ -571,8 +571,8 @@ fn db_serve_query_smoke() {
         "lang": "query_ir_v1",
         "query_ir_v1": {
             "version": 1,
-            "select": ["?gc"],
-            "where": [
+            "select_vars": ["?gc"],
+            "where_atoms": [
                 {"kind": "edge", "left": "Alice", "path": "Grandparent", "right": "?gc"}
             ],
             "limit": 10
@@ -608,8 +608,8 @@ fn db_serve_query_smoke() {
         "lang": "query_ir_v1",
         "query_ir_v1": {
             "version": 1,
-            "select": ["?gc"],
-            "where": [
+            "select_vars": ["?gc"],
+            "where_atoms": [
                 {"kind": "edge", "left": "Alice", "path": "Grandparent", "right": "?gc"}
             ],
             "limit": 10
@@ -831,8 +831,8 @@ instance I of S:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     {
                         "kind": "fact",
                         "fact": "?f",
@@ -928,8 +928,8 @@ instance I of S:
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     {
                         "kind": "fact",
                         "fact": "?f",
@@ -1243,8 +1243,8 @@ fn db_serve_llm_agent_auto_commit_smoke() {
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     {"kind": "edge", "left": "Jamison", "path": "Parent", "right": "?p"}
                 ],
                 "limit": 10
@@ -1444,8 +1444,8 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     { "kind": "type", "term": "?p", "type": "Person" }
                 ],
                 "limit": 20
@@ -1492,8 +1492,8 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
             "lang": "query_ir_v1",
             "query_ir_v1": {
                 "version": 1,
-                "select": ["?p"],
-                "where": [
+                "select_vars": ["?p"],
+                "where_atoms": [
                     { "kind": "type", "term": "?p", "type": "Person" }
                 ],
                 "limit": 20
@@ -1537,19 +1537,19 @@ fn db_serve_query_snapshot_override_uses_requested_anchor() {
 }
 
 #[test]
-fn db_serve_world_model_propose_lineage_smoke() {
+fn db_serve_predictive_proposals_lineage_smoke() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
-    let run_dir = unique_run_dir(&repo_root, "db_serve_world_model_propose_lineage");
+    let run_dir = unique_run_dir(&repo_root, "db_serve_predictive_proposals_lineage");
     let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
     let accepted_dir = init_store_backed_pathdb_head(&bin, &run_dir, &input);
 
-    let plugin_script = write_world_model_plugin_script(
+    let plugin_script = write_predictive_proposal_plugin_script(
         &run_dir,
         "lineage",
         &serde_json::json!({
-            "protocol": "axiograph_world_model_v1",
-            "trace_id": "wm::db_server_e2e::lineage",
+            "protocol": "axiograph_predictive_proposal_v1",
+            "trace_id": "proposal::db_server_e2e::lineage",
             "generated_at_unix_secs": 1,
             "proposals": {
                 "version": 1,
@@ -1558,13 +1558,13 @@ fn db_serve_world_model_propose_lineage_smoke() {
                 "schema_hint": "OrgFamily",
                 "proposals": [{
                     "kind": "Relation",
-                    "proposal_id": "wm-lineage-rel",
+                    "proposal_id": "proposal-lineage-rel",
                     "confidence": 0.77,
                     "evidence": [],
                     "public_rationale": "lineage smoke test",
                     "metadata": { "plugin_marker": "lineage" },
                     "schema_hint": "OrgFamily",
-                    "relation_id": "wm::lineage::rel",
+                    "relation_id": "proposal::lineage::rel",
                     "rel_type": "Parent",
                     "source": "Alice",
                     "target": "Bob",
@@ -1593,12 +1593,12 @@ fn db_serve_world_model_propose_lineage_smoke() {
         .arg("127.0.0.1:0")
         .arg("--ready-file")
         .arg(&ready_file)
-        .arg("--world-model-plugin")
+        .arg("--proposal-adapter-plugin")
         .arg("/bin/sh")
-        .arg("--world-model-plugin-arg")
+        .arg("--proposal-adapter-plugin-arg")
         .arg(&plugin_script)
         .spawn()
-        .expect("spawn db serve (world_model lineage)");
+        .expect("spawn db serve (predictive_proposal lineage)");
     let _guard = ChildGuard { child };
 
     let addr = wait_for_ready_addr(&ready_file);
@@ -1643,7 +1643,7 @@ fn db_serve_world_model_propose_lineage_smoke() {
 
     let (prop_status, prop_json) = http_post_json(
         &addr,
-        "/world_model/propose",
+        "/evidence/proposals/predict",
         &serde_json::json!({
             "guardrail_profile": "off",
             "include_guardrail": false,
@@ -1652,12 +1652,12 @@ fn db_serve_world_model_propose_lineage_smoke() {
     );
     assert_eq!(
         prop_status, 200,
-        "expected 200 for /world_model/propose, got {prop_status}: {prop_json}"
+        "expected 200 for /evidence/proposals/predict, got {prop_status}: {prop_json}"
     );
 
     let trace_id = prop_json["trace_id"].as_str().unwrap_or("");
     assert_eq!(
-        trace_id, "wm::db_server_e2e::lineage",
+        trace_id, "proposal::db_server_e2e::lineage",
         "expected deterministic plugin trace_id: {prop_json}"
     );
     assert_eq!(
@@ -1670,7 +1670,7 @@ fn db_serve_world_model_propose_lineage_smoke() {
 
     let proposal = prop_json
         .pointer("/proposals/proposals/0")
-        .expect("first proposal in world_model/propose response");
+        .expect("first proposal in evidence/proposals/predict response");
     let metadata = proposal["metadata"]
         .as_object()
         .expect("proposal.metadata is object");
@@ -1681,14 +1681,14 @@ fn db_serve_world_model_propose_lineage_smoke() {
     );
     assert_eq!(
         metadata
-            .get("axiograph_world_model_trace_id")
+            .get("axiograph_predictive_proposal_trace_id")
             .and_then(|v| v.as_str()),
         Some(trace_id),
         "expected trace lineage in proposal metadata: {prop_json}"
     );
     assert_eq!(
         metadata
-            .get("axiograph_world_model_run_id")
+            .get("axiograph_proposal_adapter_run_id")
             .and_then(|v| v.as_str()),
         Some(trace_id),
         "expected run_id lineage in proposal metadata: {prop_json}"
@@ -1725,17 +1725,17 @@ fn db_serve_world_model_propose_lineage_smoke() {
 
     let run_record_path = accepted_dir
         .join("sem")
-        .join("world_model_runs")
+        .join("evidence").join("proposal_adapter_runs")
         .join(format!("{}.json", snapshot_id_filename(trace_id)));
     assert!(
         run_record_path.exists(),
-        "expected persisted world-model run record: {}",
+        "expected persisted proposal-adapter run record: {}",
         run_record_path.display()
     );
     let run_record: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&run_record_path).expect("read world-model run record"),
+        &fs::read_to_string(&run_record_path).expect("read proposal-adapter run record"),
     )
-    .expect("parse world-model run record");
+    .expect("parse proposal-adapter run record");
     assert_eq!(run_record["run_id"].as_str(), Some(trace_id));
     assert_eq!(run_record["trace_id"].as_str(), Some(trace_id));
     assert_eq!(run_record["status"].as_str(), Some("previewed"));
@@ -1757,7 +1757,7 @@ fn db_serve_world_model_propose_lineage_smoke() {
         notes.iter().any(|note| {
             note.as_str()
                 .map(|s| {
-                    s == "world_model_run_record=sem/world_model_runs/wm__db_server_e2e__lineage.json"
+                    s == "proposal_adapter_run_record=sem/evidence/proposal_adapter_runs/proposal__db_server_e2e__lineage.json"
                 })
                 .unwrap_or(false)
         }),
@@ -1766,19 +1766,19 @@ fn db_serve_world_model_propose_lineage_smoke() {
 }
 
 #[test]
-fn db_serve_world_model_propose_auto_commit_smoke() {
+fn db_serve_predictive_proposals_auto_commit_smoke() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
-    let run_dir = unique_run_dir(&repo_root, "db_serve_world_model_propose_auto_commit");
+    let run_dir = unique_run_dir(&repo_root, "db_serve_predictive_proposals_auto_commit");
     let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
     let accepted_dir = init_store_backed_pathdb_head(&bin, &run_dir, &input);
 
-    let plugin_script = write_world_model_plugin_script(
+    let plugin_script = write_predictive_proposal_plugin_script(
         &run_dir,
         "auto_commit",
         &serde_json::json!({
-            "protocol": "axiograph_world_model_v1",
-            "trace_id": "wm::db_server_e2e::auto_commit",
+            "protocol": "axiograph_predictive_proposal_v1",
+            "trace_id": "proposal::db_server_e2e::auto_commit",
             "generated_at_unix_secs": 1,
             "proposals": {
                 "version": 1,
@@ -1787,13 +1787,13 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
                 "schema_hint": "OrgFamily",
                 "proposals": [{
                     "kind": "Entity",
-                    "proposal_id": "wm-auto-entity",
+                    "proposal_id": "proposal-auto-entity",
                     "confidence": 0.81,
                     "evidence": [],
-                    "public_rationale": "world_model auto_commit smoke",
+                    "public_rationale": "predictive_proposal auto_commit smoke",
                     "metadata": { "plugin_marker": "auto_commit" },
                     "schema_hint": "OrgFamily",
-                    "entity_id": "wm::jamison",
+                    "entity_id": "proposal::jamison",
                     "entity_type": "Person",
                     "name": "Jamison"
                 }]
@@ -1803,7 +1803,7 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
     );
 
     let ready_file = run_dir.join("build/ready.json");
-    let token = "e2e_world_model_admin_token";
+    let token = "e2e_predictive_proposal_admin_token";
     let child = Command::new(&bin)
         .current_dir(&run_dir)
         .arg("db")
@@ -1822,12 +1822,12 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
         .arg("master")
         .arg("--admin-token")
         .arg(token)
-        .arg("--world-model-plugin")
+        .arg("--proposal-adapter-plugin")
         .arg("/bin/sh")
-        .arg("--world-model-plugin-arg")
+        .arg("--proposal-adapter-plugin-arg")
         .arg(&plugin_script)
         .spawn()
-        .expect("spawn db serve (world_model auto_commit)");
+        .expect("spawn db serve (predictive_proposal auto_commit)");
     let _guard = ChildGuard { child };
 
     let addr = wait_for_ready_addr(&ready_file);
@@ -1868,13 +1868,13 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
 
     let (unauth_status, unauth_json) = http_post_json(
         &addr,
-        "/world_model/propose",
+        "/evidence/proposals/predict",
         &serde_json::json!({
             "auto_commit": true,
             "validate": false,
             "guardrail_profile": "off",
             "include_guardrail": false,
-            "commit_message": "e2e: world_model/propose auto_commit"
+            "commit_message": "e2e: evidence/proposals/predict auto_commit"
         }),
     );
     assert_eq!(
@@ -1884,29 +1884,29 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
 
     let (auth_status, auth_json) = http_post_json_auth(
         &addr,
-        "/world_model/propose",
+        "/evidence/proposals/predict",
         &serde_json::json!({
             "auto_commit": true,
             "validate": false,
             "guardrail_profile": "off",
             "include_guardrail": false,
-            "commit_message": "e2e: world_model/propose auto_commit"
+            "commit_message": "e2e: evidence/proposals/predict auto_commit"
         }),
         Some(token),
     );
     assert_eq!(
         auth_status, 200,
-        "expected 200 for authorized /world_model/propose, got {auth_status}: {auth_json}"
+        "expected 200 for authorized /evidence/proposals/predict, got {auth_status}: {auth_json}"
     );
 
     let trace_id = auth_json["trace_id"].as_str().unwrap_or("");
     assert_eq!(
-        trace_id, "wm::db_server_e2e::auto_commit",
+        trace_id, "proposal::db_server_e2e::auto_commit",
         "expected deterministic plugin trace_id: {auth_json}"
     );
     let proposal = auth_json
         .pointer("/proposals/proposals/0")
-        .expect("first proposal in authorized world_model/propose response");
+        .expect("first proposal in authorized evidence/proposals/predict response");
     let metadata = proposal["metadata"]
         .as_object()
         .expect("proposal.metadata is object");
@@ -1917,7 +1917,7 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
     );
     assert_eq!(
         metadata
-            .get("axiograph_world_model_trace_id")
+            .get("axiograph_predictive_proposal_trace_id")
             .and_then(|v| v.as_str()),
         Some(trace_id),
         "expected trace lineage in proposal metadata: {auth_json}"
@@ -1950,7 +1950,7 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
     let committed_snapshot_id = commit["snapshot_id"].as_str().unwrap_or("");
     assert!(
         !committed_snapshot_id.is_empty(),
-        "expected commit.snapshot_id in /world_model/propose auto_commit response: {auth_json}"
+        "expected commit.snapshot_id in /evidence/proposals/predict auto_commit response: {auth_json}"
     );
     assert_eq!(
         commit["accepted_snapshot_id"].as_str(),
@@ -1959,7 +1959,7 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
     );
     assert!(
         commit["ops_added"].as_u64().unwrap_or(0) > 0,
-        "expected commit.ops_added > 0 in /world_model/propose auto_commit response: {auth_json}"
+        "expected commit.ops_added > 0 in /evidence/proposals/predict auto_commit response: {auth_json}"
     );
 
     let (post_status, post_json) = http_get_json(&addr, "/status");
@@ -1977,17 +1977,17 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
 
     let run_record_path = accepted_dir
         .join("sem")
-        .join("world_model_runs")
+        .join("evidence").join("proposal_adapter_runs")
         .join(format!("{}.json", snapshot_id_filename(trace_id)));
     assert!(
         run_record_path.exists(),
-        "expected persisted world-model run record: {}",
+        "expected persisted proposal-adapter run record: {}",
         run_record_path.display()
     );
     let run_record: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&run_record_path).expect("read committed world-model run record"),
+        &fs::read_to_string(&run_record_path).expect("read committed proposal-adapter run record"),
     )
-    .expect("parse committed world-model run record");
+    .expect("parse committed proposal-adapter run record");
     assert_eq!(run_record["run_id"].as_str(), Some(trace_id));
     assert_eq!(run_record["status"].as_str(), Some("committed_to_pathdb"));
     assert_eq!(
@@ -2003,7 +2003,7 @@ fn db_serve_world_model_propose_auto_commit_smoke() {
         notes.iter().any(|note| {
             note.as_str()
                 .map(|s| {
-                    s == "world_model_run_record=sem/world_model_runs/wm__db_server_e2e__auto_commit.json"
+                    s == "proposal_adapter_run_record=sem/evidence/proposal_adapter_runs/proposal__db_server_e2e__auto_commit.json"
                 })
                 .unwrap_or(false)
         }),

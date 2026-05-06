@@ -330,11 +330,11 @@ The final repo-backed mapping from the later DDD implementation seam audit was:
 - `ContextMap` / context bridge → build over:
   - `ProjectionContextMappingV1`
   - backend context transport summaries
-  - world-model semantic input / context-bearing wrappers
+  - proposal-adapter semantic input / context-bearing wrappers
 - `UsageReceipt` / case receipt → build over:
   - certified/validated query answers
   - gate summaries
-  - world-model run records
+  - proposal-adapter run records
 
 That audit was explicit that **no DDD/fDDD/context wrappers exist yet under those names**. The correct move is a thin composition layer over the existing contracts, not new storage, new executors, or a parallel semantic architecture.
 

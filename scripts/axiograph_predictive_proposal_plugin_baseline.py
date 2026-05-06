@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Baseline world model plugin (axiograph_world_model_v1).
+Baseline predictive proposal adapter plugin (axiograph_predictive_proposal_v1).
 
 This is a deterministic, dependency-free example that:
 - reads canonical `.axi` semantics plus optional derived training export layers,
@@ -140,7 +140,7 @@ def main() -> int:
     raw = sys.stdin.read()
     req = json.loads(raw)
 
-    if req.get("protocol") != "axiograph_world_model_v1":
+    if req.get("protocol") != "axiograph_predictive_proposal_v1":
         raise SystemExit("unsupported protocol")
 
     export = load_training_export(req)
@@ -166,6 +166,9 @@ def main() -> int:
 
         rel = item.get("relation", "Rel")
         proposal_id = f"rel::{rel}::{src}::{dst}::{idx}"
+        attributes = {k: v for (k, v) in fields}
+        attributes["axi_source_field"] = src_field
+        attributes["axi_target_field"] = dst_field
         proposals.append(
             {
                 "kind": "Relation",
@@ -179,18 +182,18 @@ def main() -> int:
                 "rel_type": rel,
                 "source": src,
                 "target": dst,
-                "attributes": {k: v for (k, v) in fields},
+                "attributes": attributes,
             }
         )
 
     response = {
-        "protocol": "axiograph_world_model_v1",
-        "trace_id": req.get("trace_id", "wm::baseline"),
+        "protocol": "axiograph_predictive_proposal_v1",
+        "trace_id": req.get("trace_id", "proposal::baseline"),
         "generated_at_unix_secs": int(time.time()),
         "proposals": {
             "version": 1,
             "generated_at": str(int(time.time())),
-            "source": {"source_type": "world_model", "locator": req.get("trace_id", "")},
+            "source": {"source_type": "predictive_proposal_adapter", "locator": req.get("trace_id", "")},
             "schema_hint": None,
             "proposals": proposals,
         },

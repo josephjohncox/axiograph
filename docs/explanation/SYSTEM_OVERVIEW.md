@@ -178,4 +178,4 @@ make verify-semantics
 3. **Reports are typed**: previews, query metadata, trust contracts, and refinement handles are machine-readable.
 4. **PathDB is derived**: `.axpd` indexes are rebuildable from accepted `.axi`/semantic refs.
 5. **Certified query rows use `query_result_v3`**: Lean is the trusted checker for supported witnesses.
-6. **Overlays stay reviewable**: evidence, embeddings, LLM/world-model output, and tooling overlays need typed validation before promotion.
+6. **Overlays stay reviewable**: evidence, embeddings, LLM/proposal-adapter output, and tooling overlays need typed validation before promotion.

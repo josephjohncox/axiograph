@@ -9,7 +9,7 @@ use axiograph_pathdb::{
         KernelRefV1, SchemaCategoryArrowRefIr, SchemaCategoryObjectRefIr, TheoryIr,
         TheorySubjectRefIr,
     },
-    AcceptedSnapshotId, AxiDigest, ProposalDigest, WorldModelRunId,
+    AcceptedSnapshotId, AxiDigest, ProposalDigest, ProposalAdapterRunId,
 };
 
 pub const SEMANTIC_SLICE_MANIFEST_VERSION_V1: &str = "semantic_slice_manifest_v1";
@@ -84,7 +84,7 @@ pub struct SemanticSliceSelectorV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implementation_surface_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub world_model_run_ids: Vec<String>,
+    pub proposal_adapter_run_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub explicit_ir_refs: Vec<String>,
 }
@@ -99,7 +99,7 @@ impl SemanticSliceSelectorV1 {
             && self.competency_question_names.is_empty()
             && self.behavior_case_ids.is_empty()
             && self.implementation_surface_ids.is_empty()
-            && self.world_model_run_ids.is_empty()
+            && self.proposal_adapter_run_ids.is_empty()
             && self.explicit_ir_refs.is_empty()
     }
 }
@@ -123,7 +123,7 @@ pub struct SemanticSliceManifestV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proposal_digests: Vec<ProposalDigest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub world_model_run_ids: Vec<WorldModelRunId>,
+    pub proposal_adapter_run_ids: Vec<ProposalAdapterRunId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
@@ -336,12 +336,12 @@ pub fn semantic_slice_from_ref_view(
         &selector,
         &refs,
     );
-    let world_model_run_ids = view
+    let proposal_adapter_run_ids = view
         .commit
-        .world_model_run_id
+        .proposal_adapter_run_id
         .clone()
         .into_iter()
-        .chain(view.commit.delta.world_model_run_refs.iter().cloned())
+        .chain(view.commit.delta.proposal_adapter_run_refs.iter().cloned())
         .collect();
     SemanticSliceManifestV1 {
         version: SEMANTIC_SLICE_MANIFEST_VERSION_V1.to_string(),
@@ -361,7 +361,7 @@ pub fn semantic_slice_from_ref_view(
         selected_refs: refs,
         kernel_refs: Vec::new(),
         proposal_digests: view.commit.proposal_digests.clone(),
-        world_model_run_ids,
+        proposal_adapter_run_ids,
         notes: vec![
             "semantic slice is a finite runtime restriction over accepted typed ontology refs; it is not a completeness claim".to_string(),
             "relation objects, role projections, subtype inclusions, theory obligations, and instance functor refs are preserved when present in the commit delta or compiled kernel IR".to_string(),
@@ -1970,7 +1970,7 @@ fn selector_matches_ref(
             contains_ref(&selector.implementation_surface_ids, &reference.id)
         }
         SemanticSliceRefKindV1::Evidence => {
-            contains_ref(&selector.world_model_run_ids, &reference.id)
+            contains_ref(&selector.proposal_adapter_run_ids, &reference.id)
                 || contains_ref(&selector.explicit_ir_refs, &reference.id)
         }
         SemanticSliceRefKindV1::Commit
@@ -2001,7 +2001,7 @@ fn trust_class_for_commit(
             SemanticSliceTrustClassV1::RuntimeChecked
         }
         crate::accepted_plane::SemCommitKindV1::EvidenceCommit
-        | crate::accepted_plane::SemCommitKindV1::WorldModelRun => {
+        | crate::accepted_plane::SemCommitKindV1::PredictiveProposalRun => {
             SemanticSliceTrustClassV1::EvidenceBacked
         }
         crate::accepted_plane::SemCommitKindV1::ProjectionMaterialization
@@ -2197,7 +2197,7 @@ mod tests {
             selected_refs: refs,
             kernel_refs: Vec::new(),
             proposal_digests: Vec::new(),
-            world_model_run_ids: Vec::new(),
+            proposal_adapter_run_ids: Vec::new(),
             notes: Vec::new(),
         }
     }
@@ -2261,7 +2261,7 @@ mod tests {
             constraints_cert_path: None,
             validation_report_path: None,
             validation_ok: Some(true),
-            world_model_run_id: None,
+            proposal_adapter_run_id: None,
         }
     }
 

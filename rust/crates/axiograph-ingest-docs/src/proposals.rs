@@ -22,7 +22,7 @@ pub const PROPOSALS_VERSION_V1: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalsFileV1 {
     pub version: u32,
-    /// ISO-8601 timestamp (recommended) or unix seconds as string (prototype).
+    /// ISO-8601 timestamp (recommended) or unix seconds as a string.
     pub generated_at: String,
     pub source: ProposalSourceV1,
     /// Optional hint for downstream reconciliation (“machining”, “schema_v1”, etc).

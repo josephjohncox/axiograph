@@ -99,6 +99,6 @@ export function isTupleLike(n) {
 
 export function runIdForNode(n) {
   if (!n || !n.attrs) return "";
-  const raw = n.attrs.meta_axiograph_world_model_trace_id || n.attrs.axiograph_world_model_trace_id;
+  const raw = n.attrs.meta_axiograph_predictive_proposals_trace_id || n.attrs.axiograph_predictive_proposals_trace_id;
   return raw ? String(raw) : "";
 }

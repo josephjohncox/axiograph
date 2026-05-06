@@ -22,9 +22,8 @@ Operational note:
 - `/query` accepts `certificate_policy`; server agent/tool-loop paths accept
   `query_certificate_policy`. Both fields use the shared
   `QueryCertificatePolicyV1` values `none`, `emit`, `verify`, and
-  `require_verified`. Legacy `certify`, `verify`, `require_query_certs`, and
-  `require_verified_queries` boolean aliases are not part of the greenfield
-  public wire contract.
+  `require_verified`. Boolean request aliases are not part of the public wire
+  contract.
 - raw AxQL remains a human-facing REPL/debug surface, not the machine-facing
   HTTP/tool boundary.
 - `query_ir_v1` is now the preferred execution seam for tooling: `QueryIrV1::prepare_with_meta`
@@ -133,8 +132,11 @@ Supported atoms:
   - `fts(?x, "search_text", "PaymentService GetPayment")` (same operator, but commonly used for semantic metadata + identifiers)
   - `fuzzy(?x, "name", "titainum", 2)` (case-insensitive Levenshtein)
 
-`fts(...)` is most useful when you import evidence chunks into a snapshot (e.g.
-proto/doc ingestion): `axiograph db pathdb import-chunks <in.axpd> --chunks <chunks.json> --out <out.axpd>`.
+`fts(...)` is most useful when evidence chunks have been attached to a derived
+PathDB snapshot, usually through the accepted-plane WAL path:
+`axiograph db accept pathdb-commit ... --chunks <chunks.json>`. The lower-level
+`axiograph db pathdb import-chunks` command remains a local `.axpd` utility for
+debug/tutorial snapshots, not accepted ontology mutation.
 Current `chunks.json` files are typed `EvidenceChunkBundleV1` evidence-plane
 bundles, not bare arrays and not accepted ontology truth.
 This importer stores:

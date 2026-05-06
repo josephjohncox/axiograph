@@ -1,15 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# World model MPC demo with server + viz.
+# Bounded proposal rollout demo with server + viz.
 #
 # Run:
-#   ./scripts/world_model_mpc_server_demo.sh
-#   KEEP_RUNNING=0 ./scripts/world_model_mpc_server_demo.sh
+#   ./scripts/bounded_proposal_rollout_server_demo.sh
+#   KEEP_RUNNING=0 ./scripts/bounded_proposal_rollout_server_demo.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-OUT_DIR="$ROOT_DIR/build/world_model_mpc_server_demo"
+OUT_DIR="$ROOT_DIR/build/bounded_proposal_rollout_server_demo"
 PLANE_DIR="$OUT_DIR/accepted_plane"
 READY_FILE="$OUT_DIR/server_ready.json"
 VIZ_OUT="$OUT_DIR/viz.json"
@@ -22,7 +22,7 @@ if [ -z "${AXIOGRAPH_DEMO_KEEP:-}" ]; then
 fi
 mkdir -p "$OUT_DIR"
 
-echo "== World model MPC server demo =="
+echo "== Bounded proposal rollout server demo =="
 echo "root: $ROOT_DIR"
 echo "out:  $OUT_DIR"
 
@@ -40,42 +40,42 @@ echo "-- Build (via Makefile)"
 cd "$ROOT_DIR"
 make binaries
 
-if [ -z "${WORLD_MODEL_BACKEND:-}" ]; then
-  export WORLD_MODEL_BACKEND="openai"
+if [ -z "${PREDICTIVE_PROPOSAL_BACKEND:-}" ]; then
+  export PREDICTIVE_PROPOSAL_BACKEND="baseline"
 fi
 
-WM_MODEL="default"
-WM_BACKEND_FLAG="--world-model-llm"
+ADAPTER_MODEL="default"
+ADAPTER_BACKEND_FLAG="--proposal-adapter-llm"
 
-if [ "$WORLD_MODEL_BACKEND" = "baseline" ]; then
-  WM_BACKEND_FLAG="--world-model-plugin scripts/axiograph_world_model_plugin_baseline.py --world-model-plugin-arg --strategy --world-model-plugin-arg oracle"
-  WM_MODEL="baseline_oracle"
-elif [ "$WORLD_MODEL_BACKEND" = "onnx" ]; then
-  echo "error: WORLD_MODEL_BACKEND=onnx is not supported in this demo (use physics demos)"
+if [ "$PREDICTIVE_PROPOSAL_BACKEND" = "baseline" ]; then
+  ADAPTER_BACKEND_FLAG="--proposal-adapter-plugin scripts/axiograph_predictive_proposal_plugin_baseline.py --proposal-adapter-plugin-arg=--strategy --proposal-adapter-plugin-arg=oracle"
+  ADAPTER_MODEL="baseline_oracle"
+elif [ "$PREDICTIVE_PROPOSAL_BACKEND" = "onnx" ]; then
+  echo "error: PREDICTIVE_PROPOSAL_BACKEND=onnx is not supported in this demo (use physics demos)"
   exit 2
 else
-  if [ "$WORLD_MODEL_BACKEND" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
-    echo "error: OPENAI_API_KEY is required for WORLD_MODEL_BACKEND=openai"
+  if [ "$PREDICTIVE_PROPOSAL_BACKEND" = "openai" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "error: OPENAI_API_KEY is required for PREDICTIVE_PROPOSAL_BACKEND=openai"
     exit 2
   fi
-  if [ "$WORLD_MODEL_BACKEND" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "error: ANTHROPIC_API_KEY is required for WORLD_MODEL_BACKEND=anthropic"
+  if [ "$PREDICTIVE_PROPOSAL_BACKEND" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "error: ANTHROPIC_API_KEY is required for PREDICTIVE_PROPOSAL_BACKEND=anthropic"
     exit 2
   fi
-  if [ "$WORLD_MODEL_BACKEND" = "ollama" ] && [ -z "${OLLAMA_HOST:-}" ] && [ -z "${OLLAMA_MODEL:-}" ]; then
-    echo "error: OLLAMA_HOST or OLLAMA_MODEL is required for WORLD_MODEL_BACKEND=ollama"
+  if [ "$PREDICTIVE_PROPOSAL_BACKEND" = "ollama" ] && [ -z "${OLLAMA_HOST:-}" ] && [ -z "${OLLAMA_MODEL:-}" ]; then
+    echo "error: OLLAMA_HOST or OLLAMA_MODEL is required for PREDICTIVE_PROPOSAL_BACKEND=ollama"
     exit 2
   fi
-  WM_MODEL="${WORLD_MODEL_MODEL:-${OPENAI_MODEL:-${ANTHROPIC_MODEL:-${OLLAMA_MODEL:-}}}}"
-  if [ -z "$WM_MODEL" ]; then
-    echo "error: WORLD_MODEL_MODEL (or OPENAI_MODEL / ANTHROPIC_MODEL / OLLAMA_MODEL) is required"
+  ADAPTER_MODEL="${PREDICTIVE_PROPOSAL_MODEL:-${OPENAI_MODEL:-${ANTHROPIC_MODEL:-${OLLAMA_MODEL:-}}}}"
+  if [ -z "$ADAPTER_MODEL" ]; then
+    echo "error: PREDICTIVE_PROPOSAL_MODEL (or OPENAI_MODEL / ANTHROPIC_MODEL / OLLAMA_MODEL) is required"
     exit 2
   fi
-  export WORLD_MODEL_MODEL="$WM_MODEL"
+  export PREDICTIVE_PROPOSAL_MODEL="$ADAPTER_MODEL"
 fi
 
 echo ""
-echo "-- World model backend: $WORLD_MODEL_BACKEND (model=$WM_MODEL)"
+echo "-- Predictive proposal backend: $PREDICTIVE_PROPOSAL_BACKEND (model=$ADAPTER_MODEL)"
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
@@ -93,16 +93,22 @@ echo "-- A) Init accepted plane + seed snapshot"
 
 echo ""
 echo "-- A.1) Seed PathDB WAL snapshot (empty overlay)"
-EMPTY_PROPOSALS="$OUT_DIR/empty_proposals.json"
-cat >"$EMPTY_PROPOSALS" <<'JSON'
-{
-  "version": 1,
-  "generated_at": "0",
-  "source": {"source_type": "init", "locator": "empty"},
-  "schema_hint": null,
-  "proposals": []
+EMPTY_PROPOSALS="$OUT_DIR/empty_proposals_fixture.json"
+EMPTY_PROPOSALS="$EMPTY_PROPOSALS" python - <<'PY'
+import json
+import os
+
+fixture = {
+    "version": 1,
+    "generated_at": "0",
+    "source": {"source_type": "init", "locator": "empty"},
+    "schema_hint": None,
+    "proposals": [],
 }
-JSON
+with open(os.environ["EMPTY_PROPOSALS"], "w") as f:
+    json.dump(fixture, f, indent=2)
+print("wrote {}".format(os.environ["EMPTY_PROPOSALS"]))
+PY
 "$AXIOGRAPH" db accept pathdb-commit \
   --dir "$PLANE_DIR" \
   --accepted-snapshot head \
@@ -116,8 +122,8 @@ echo "-- B) Start server (master)"
   --layer pathdb \
   --snapshot head \
   --role master \
-  $WM_BACKEND_FLAG \
-  --world-model-model "$WM_MODEL" \
+  $ADAPTER_BACKEND_FLAG \
+  --proposal-adapter-model "$ADAPTER_MODEL" \
   --admin-token "$ADMIN_TOKEN" \
   --listen 127.0.0.1:0 \
   --ready-file "$READY_FILE" \
@@ -162,21 +168,32 @@ PY
 BASE_URL="http://127.0.0.1:${PORT}"
 
 echo ""
-echo "-- C) Run MPC plan (stepwise commit)"
-cat >"$OUT_DIR/plan_request.json" <<'JSON'
-{
-  "horizon_steps": 2,
-  "rollouts": 2,
-  "max_new_proposals": 50,
-  "auto_commit": true,
-  "commit_stepwise": true,
-  "competency_questions": [
-    {"name": "has_parent", "query": "select ?p where ?p is Person limit 1", "min_rows": 1, "weight": 5.0}
-  ]
-}
-JSON
+echo "-- C) Run planning pass (stepwise commit)"
+PLAN_REQ="$OUT_DIR/plan_request.json" python - <<'PY'
+import json
+import os
 
-curl -sS -X POST "$BASE_URL/world_model/plan" \
+request = {
+    "horizon_steps": 2,
+    "rollouts": 2,
+    "max_new_proposals": 50,
+    "auto_commit": True,
+    "commit_stepwise": True,
+    "competency_questions": [
+        {
+            "name": "has_parent",
+            "query": "select ?p where ?p is Person limit 1",
+            "min_rows": 1,
+            "weight": 5.0,
+        }
+    ],
+}
+with open(os.environ["PLAN_REQ"], "w") as f:
+    json.dump(request, f, indent=2)
+print("wrote {}".format(os.environ["PLAN_REQ"]))
+PY
+
+curl -sS -X POST "$BASE_URL/planning/proposal-rollout" \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   --data-binary @"$OUT_DIR/plan_request.json" >"$PLAN_OUT"
@@ -217,7 +234,7 @@ echo "  $BASE_URL/viz?focus_name=Alice&plane=both&typed_overlay=true&hops=3&max_
 cat <<'TXT'
 
 Explore tab:
-  - Search for Alice, Bob, or Carol; shift‑click to highlight Parent paths.
+  - Search for Alice, Bob, or Carol; shift-click to highlight Parent paths.
 
 Query tab (AxQL):
   select ?child ?parent where
@@ -228,11 +245,11 @@ LLM tab (tool loop):
   - "Who are the parents of Carol?"
   - "Show me all Parent relations."
 
-World Model tab:
+Predictive Proposal tab:
   - Goals: "predict missing parent links"
   - Max new proposals: 50
   - Steps: 2, Rollouts: 2, Guardrail: fast
-  - Click "plan" → review proposals in the Review tab.
+  - Click "plan" -> review proposals in the Review tab.
 
 Review tab:
   - Inspect proposals, deselect any you don't want, then commit (requires admin token).
@@ -241,9 +258,9 @@ Add tab (manual overlay):
   - Relation type: Parent
   - Source: Carol
   - Target: Alice
-  - Generate → review → commit
+  - Generate -> review -> commit
 
-Note: Auto‑commit in World Model tab requires the same admin token used by Review/Add.
+Note: Auto-commit in Predictive Proposal tab requires the same admin token used by Review/Add.
 TXT
 
 if [ "${KEEP_RUNNING:-1}" = "1" ]; then

@@ -369,7 +369,7 @@ For a longer walkthrough, see `docs/tutorials/REPL.md`.
 
 These scripts live under `scripts/` and are intended to be runnable from repo root:
 
-- Offline ontology-engineering (all source types): `scripts/ontology_engineering_all_sources_offline_demo.sh`
+- Offline ontology-engineering (all source types): `scripts/ops/ontology_engineering_all_sources_offline_demo.sh`
 - Large `.axpd` performance demo: `scripts/perf_large_proto_api_axpd.sh`
 - Public RDF/OWL/SHACL dataset ingest: `scripts/rdfowl_public_datasets_demo.sh`
 - Web ingest demos:

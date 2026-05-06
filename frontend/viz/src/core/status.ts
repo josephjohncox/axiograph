@@ -3,8 +3,8 @@
 export function initStatus(ctx) {
   const {
     addStatusEl,
-    wmStatusEl,
-    wmOutputEl,
+    proposalStatusEl,
+    proposalOutputEl,
     reviewStatusEl,
     reviewValidationEl,
     reviewOverlayRawEl,
@@ -24,15 +24,15 @@ function setAddStatus(msg) {
   addStatusEl.textContent = msg || "";
 }
 
-function setWorldModelStatus(msg) {
-  if (!wmStatusEl) return;
-  wmStatusEl.textContent = msg || "";
+function setPredictiveProposalStatus(msg) {
+  if (!proposalStatusEl) return;
+  proposalStatusEl.textContent = msg || "";
 }
 
-function setWorldModelOutput(obj) {
-  if (!wmOutputEl) return;
-  if (obj === null || obj === undefined) wmOutputEl.textContent = "";
-  else wmOutputEl.textContent = (typeof obj === "string") ? obj : JSON.stringify(obj, null, 2);
+function setPredictiveProposalOutput(obj) {
+  if (!proposalOutputEl) return;
+  if (obj === null || obj === undefined) proposalOutputEl.textContent = "";
+  else proposalOutputEl.textContent = (typeof obj === "string") ? obj : JSON.stringify(obj, null, 2);
 }
 
 function setReviewStatusHtml(html) {
@@ -93,8 +93,8 @@ function setAddPromoteOutput(obj) {
     setAddCommitOutput,
     setAddPromoteStatus,
     setAddPromoteOutput,
-    setWorldModelStatus,
-    setWorldModelOutput,
+    setPredictiveProposalStatus,
+    setPredictiveProposalOutput,
     setReviewStatusHtml,
     setReviewValidation,
     setReviewOverlayRaw,

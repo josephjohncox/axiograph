@@ -33,7 +33,7 @@ fi
 echo ""
 echo "-- draft a candidate .axi module (schema discovery)"
 "$AXIOGRAPH" discover draft-module \
-  "$ROOT_DIR/examples/schema_discovery/proto_api_proposals.json" \
+  "$ROOT_DIR/examples/schema_discovery/fixtures/proto_api_proposals.json" \
   --out "$OUT_DIR/ProtoApi.proposals.axi" \
   --module ProtoApi_Proposals \
   --schema ProtoApi \

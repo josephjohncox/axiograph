@@ -197,10 +197,10 @@ Axiograph needs modalities for real-world claims:
 - Possible worlds and scenario branches
 
 The design target is Lean semantics for these modalities plus Rust certificate
-emitters for concrete operations. Runtime world-model or LLM output stays in
+emitters for concrete operations. Runtime proposal-adapter or LLM output stays in
 the evidence plane until it passes typed validation, review, and promotion.
 
-**Status:** Planned Lean kernel expansion; do not treat runtime world-model
+**Status:** Planned Lean kernel expansion; do not treat runtime proposal-adapter
 output as trusted semantics.
 
 ---
@@ -269,7 +269,7 @@ certificate checking.
 
 - Add modal, temporal, and contextual kernels in Lean.
 - Require explicit anchors for worlds, snapshots, contexts, and accepted modules.
-- Keep LLM/world-model output in evidence branches until validated and promoted.
+- Keep LLM/proposal-adapter output in evidence branches until validated and promoted.
 
 ---
 

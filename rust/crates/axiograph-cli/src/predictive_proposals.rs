@@ -1,7 +1,7 @@
-//! World model interface + guardrail costs (objective-driven / JEPA hooks).
+//! Predictive proposal adapter interface + guardrail costs (objective-driven / training export hooks).
 //!
 //! This module provides:
-//! - a small plugin protocol (`axiograph_world_model_v1`),
+//! - a small plugin protocol (`axiograph_predictive_proposal_v1`),
 //! - a stub backend (returns empty proposals),
 //! - a command adapter (executes a local plugin),
 //! - guardrail cost extraction from existing checks.
@@ -20,11 +20,11 @@ use axiograph_ingest_docs::{
 use axiograph_pathdb::certificate::AxiWellTypedProofV1;
 use axiograph_pathdb::checked_db::CheckedDb;
 use axiograph_pathdb::{
-    AcceptedSnapshotId, AxiDigest, PathDB, PathdbSnapshotId, ProposalDigest, WorldModelRunId,
+    AcceptedSnapshotId, AxiDigest, PathDB, PathdbSnapshotId, ProposalDigest, ProposalAdapterRunId,
 };
 use axiograph_pathdb::{Module, WellTypedModuleState};
 
-pub const WORLD_MODEL_PROTOCOL_V1: &str = "axiograph_world_model_v1";
+pub const PREDICTIVE_PROPOSAL_PROTOCOL_V1: &str = "axiograph_predictive_proposal_v1";
 pub const COMPETENCY_QUESTION_BUNDLE_VERSION_V1: &str = "competency_question_bundle_v1";
 
 fn now_unix_secs() -> u64 {
@@ -34,27 +34,27 @@ fn now_unix_secs() -> u64 {
         .as_secs()
 }
 
-fn default_trace_id() -> WorldModelRunId {
-    WorldModelRunId::new(format!("wm::{}", now_unix_secs()))
+fn default_trace_id() -> ProposalAdapterRunId {
+    ProposalAdapterRunId::new(format!("proposal::{}", now_unix_secs()))
 }
 
 // ---------------------------------------------------------------------------
-// JEPA export
+// masked-tuple training export
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JepaExportFileV1 {
+pub struct MaskedTupleTrainingExportV1 {
     pub version: String,
     pub axi_digest_v1: AxiDigest,
     pub module_name: String,
     pub module_text: String,
     pub module: axiograph_dsl::schema_v1::SchemaV1Module,
     pub axi_well_typed_proof_v1: AxiWellTypedProofV1,
-    pub items: Vec<JepaExportItemV1>,
+    pub items: Vec<MaskedTupleTrainingExportItemV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JepaExportItemV1 {
+pub struct MaskedTupleTrainingExportItemV1 {
     pub schema: String,
     pub instance: String,
     pub relation: String,
@@ -63,7 +63,7 @@ pub struct JepaExportItemV1 {
 }
 
 #[derive(Debug, Clone)]
-pub struct JepaExportOptions {
+pub struct MaskedTupleTrainingExportOptionsV1 {
     pub instance_filter: Option<String>,
     pub max_items: usize,
     pub mask_fields: usize,
@@ -73,16 +73,16 @@ pub struct JepaExportOptions {
     pub exclude_relations: Vec<String>,
 }
 
-pub fn build_jepa_export_from_axi_text(
+pub fn build_training_export_from_axi_text(
     axi_text: &str,
-    opts: &JepaExportOptions,
-) -> Result<JepaExportFileV1> {
+    opts: &MaskedTupleTrainingExportOptionsV1,
+) -> Result<MaskedTupleTrainingExportV1> {
     if opts.mask_fields == 0 {
         return Err(anyhow!("--mask-fields must be > 0"));
     }
 
     let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
-    build_jepa_export_from_well_typed_module(
+    build_training_export_from_well_typed_module(
         axi_text,
         canonical.module(),
         canonical.digest().clone(),
@@ -90,12 +90,12 @@ pub fn build_jepa_export_from_axi_text(
     )
 }
 
-fn build_jepa_export_from_well_typed_module<S: WellTypedModuleState>(
+fn build_training_export_from_well_typed_module<S: WellTypedModuleState>(
     axi_text: &str,
     module: &Module<S>,
     digest: AxiDigest,
-    opts: &JepaExportOptions,
-) -> Result<JepaExportFileV1> {
+    opts: &MaskedTupleTrainingExportOptionsV1,
+) -> Result<MaskedTupleTrainingExportV1> {
     let typed_module = module.module();
 
     let mut relations_by_schema: HashMap<String, HashSet<String>> = HashMap::new();
@@ -109,7 +109,7 @@ fn build_jepa_export_from_well_typed_module<S: WellTypedModuleState>(
     }
 
     let mut rng = crate::synthetic_pathdb::XorShift64::new(opts.seed);
-    let mut items: Vec<JepaExportItemV1> = Vec::new();
+    let mut items: Vec<MaskedTupleTrainingExportItemV1> = Vec::new();
     let excluded: HashSet<&str> = opts.exclude_relations.iter().map(|s| s.as_str()).collect();
 
     for inst in &typed_module.instances {
@@ -148,7 +148,7 @@ fn build_jepa_export_from_well_typed_module<S: WellTypedModuleState>(
                     }
                 }
 
-                let entry = JepaExportItemV1 {
+                let entry = MaskedTupleTrainingExportItemV1 {
                     schema: inst.schema.clone(),
                     instance: inst.name.clone(),
                     relation: assign.name.clone(),
@@ -172,8 +172,8 @@ fn build_jepa_export_from_well_typed_module<S: WellTypedModuleState>(
         }
     }
 
-    Ok(JepaExportFileV1 {
-        version: "axi_jepa_export_v1".to_string(),
+    Ok(MaskedTupleTrainingExportV1 {
+        version: "axi_training_export_v1".to_string(),
         axi_digest_v1: digest,
         module_name: typed_module.module_name.clone(),
         module_text: axi_text.to_string(),
@@ -183,22 +183,22 @@ fn build_jepa_export_from_well_typed_module<S: WellTypedModuleState>(
     })
 }
 
-pub fn write_jepa_export(
+pub fn write_training_export(
     input: &Path,
     out: &Path,
-    opts: &JepaExportOptions,
-) -> Result<JepaExportFileV1> {
+    opts: &MaskedTupleTrainingExportOptionsV1,
+) -> Result<MaskedTupleTrainingExportV1> {
     let text = std::fs::read_to_string(input)?;
-    let export = build_jepa_export_from_axi_text(&text, opts)?;
+    let export = build_training_export_from_axi_text(&text, opts)?;
     let json = serde_json::to_string_pretty(&export)?;
     std::fs::write(out, json)?;
     Ok(export)
 }
 
 #[allow(dead_code)]
-pub fn read_jepa_export(path: &Path) -> Result<JepaExportFileV1> {
+pub fn read_training_export(path: &Path) -> Result<MaskedTupleTrainingExportV1> {
     let text = std::fs::read_to_string(path)?;
-    let export: JepaExportFileV1 = serde_json::from_str(&text)?;
+    let export: MaskedTupleTrainingExportV1 = serde_json::from_str(&text)?;
     Ok(export)
 }
 
@@ -370,8 +370,8 @@ pub fn parse_guardrail_weights(pairs: &[String]) -> Result<GuardrailCostWeightsV
     Ok(weights)
 }
 
-pub fn parse_task_costs(items: &[String]) -> Result<Vec<WorldModelTaskCostV1>> {
-    let mut out: Vec<WorldModelTaskCostV1> = Vec::new();
+pub fn parse_task_costs(items: &[String]) -> Result<Vec<ProposalTaskCostV1>> {
+    let mut out: Vec<ProposalTaskCostV1> = Vec::new();
     for raw in items {
         let (name, rest) = raw.split_once('=').ok_or_else(|| {
             anyhow!("invalid task cost `{raw}` (expected name=value[:weight[:unit]])")
@@ -408,7 +408,7 @@ pub fn parse_task_costs(items: &[String]) -> Result<Vec<WorldModelTaskCostV1>> {
                 "invalid task cost `{raw}` (expected name=value[:weight[:unit]])"
             ));
         }
-        out.push(WorldModelTaskCostV1 {
+        out.push(ProposalTaskCostV1 {
             name: name.trim().to_string(),
             value,
             weight,
@@ -835,20 +835,20 @@ pub fn compute_guardrail_costs(
 }
 
 // ---------------------------------------------------------------------------
-// World model plugin protocol
+// Predictive proposal adapter plugin protocol
 // ---------------------------------------------------------------------------
 
-pub const WORLD_MODEL_SEMANTIC_INPUT_KIND_V1: &str = "canonical_axi_semantics_v1";
+pub const PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1: &str = "canonical_axi_semantics_v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorldModelSemanticLayerV1 {
+pub enum PredictiveProposalSemanticLayerV1 {
     Guardrail { report: GuardrailCostReportV1 },
-    TrainingExport { export: JepaExportFileV1 },
+    TrainingExport { export: MaskedTupleTrainingExportV1 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorldModelSemanticInputV1 {
+pub struct PredictiveProposalSemanticInputV1 {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_name: Option<String>,
@@ -857,13 +857,13 @@ pub struct WorldModelSemanticInputV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accepted_snapshot_id: Option<AcceptedSnapshotId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub layers: Vec<WorldModelSemanticLayerV1>,
+    pub layers: Vec<PredictiveProposalSemanticLayerV1>,
 }
 
-impl Default for WorldModelSemanticInputV1 {
+impl Default for PredictiveProposalSemanticInputV1 {
     fn default() -> Self {
         Self {
-            kind: WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string(),
+            kind: PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string(),
             module_name: None,
             pathdb_snapshot_id: None,
             accepted_snapshot_id: None,
@@ -872,9 +872,9 @@ impl Default for WorldModelSemanticInputV1 {
     }
 }
 
-impl WorldModelSemanticInputV1 {
+impl PredictiveProposalSemanticInputV1 {
     pub fn is_empty(&self) -> bool {
-        self.kind == WORLD_MODEL_SEMANTIC_INPUT_KIND_V1
+        self.kind == PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1
             && self.module_name.is_none()
             && self.pathdb_snapshot_id.is_none()
             && self.accepted_snapshot_id.is_none()
@@ -883,40 +883,40 @@ impl WorldModelSemanticInputV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorldModelInputV1 {
+pub struct PredictiveProposalInputV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub axi_digest_v1: Option<AxiDigest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub axi_module_text: Option<String>,
-    #[serde(default, skip_serializing_if = "WorldModelSemanticInputV1::is_empty")]
-    pub semantic_input: WorldModelSemanticInputV1,
+    #[serde(default, skip_serializing_if = "PredictiveProposalSemanticInputV1::is_empty")]
+    pub semantic_input: PredictiveProposalSemanticInputV1,
     #[serde(default)]
     pub notes: Vec<String>,
 }
 
-impl WorldModelInputV1 {
+impl PredictiveProposalInputV1 {
     pub fn set_canonical_axi_semantics(
         &mut self,
         module_name: Option<String>,
         pathdb_snapshot_id: Option<PathdbSnapshotId>,
         accepted_snapshot_id: Option<AcceptedSnapshotId>,
     ) {
-        self.semantic_input.kind = WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string();
+        self.semantic_input.kind = PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string();
         self.semantic_input.module_name = module_name;
         self.semantic_input.pathdb_snapshot_id = pathdb_snapshot_id;
         self.semantic_input.accepted_snapshot_id = accepted_snapshot_id;
     }
 
-    fn replace_semantic_layer(&mut self, layer: WorldModelSemanticLayerV1) {
-        let same_kind = |candidate: &WorldModelSemanticLayerV1| {
+    fn replace_semantic_layer(&mut self, layer: PredictiveProposalSemanticLayerV1) {
+        let same_kind = |candidate: &PredictiveProposalSemanticLayerV1| {
             matches!(
                 (&layer, candidate),
                 (
-                    WorldModelSemanticLayerV1::Guardrail { .. },
-                    WorldModelSemanticLayerV1::Guardrail { .. }
+                    PredictiveProposalSemanticLayerV1::Guardrail { .. },
+                    PredictiveProposalSemanticLayerV1::Guardrail { .. }
                 ) | (
-                    WorldModelSemanticLayerV1::TrainingExport { .. },
-                    WorldModelSemanticLayerV1::TrainingExport { .. }
+                    PredictiveProposalSemanticLayerV1::TrainingExport { .. },
+                    PredictiveProposalSemanticLayerV1::TrainingExport { .. }
                 )
             )
         };
@@ -927,20 +927,20 @@ impl WorldModelInputV1 {
     }
 
     pub fn set_guardrail_layer(&mut self, report: GuardrailCostReportV1) {
-        self.replace_semantic_layer(WorldModelSemanticLayerV1::Guardrail { report });
+        self.replace_semantic_layer(PredictiveProposalSemanticLayerV1::Guardrail { report });
     }
 
-    pub fn set_training_export_layer(&mut self, export: JepaExportFileV1) {
-        self.replace_semantic_layer(WorldModelSemanticLayerV1::TrainingExport { export });
+    pub fn set_training_export_layer(&mut self, export: MaskedTupleTrainingExportV1) {
+        self.replace_semantic_layer(PredictiveProposalSemanticLayerV1::TrainingExport { export });
     }
 
-    pub fn training_export(&self) -> Option<&JepaExportFileV1> {
+    pub fn training_export(&self) -> Option<&MaskedTupleTrainingExportV1> {
         self.semantic_input
             .layers
             .iter()
             .find_map(|layer| match layer {
-                WorldModelSemanticLayerV1::TrainingExport { export } => Some(export),
-                WorldModelSemanticLayerV1::Guardrail { .. } => None,
+                PredictiveProposalSemanticLayerV1::TrainingExport { export } => Some(export),
+                PredictiveProposalSemanticLayerV1::Guardrail { .. } => None,
             })
     }
 
@@ -955,7 +955,7 @@ impl WorldModelInputV1 {
     pub fn validate_canonical_axi_contract(&self) -> Result<()> {
         let Some(axi_text) = self.axi_module_text.as_deref() else {
             return Err(anyhow!(
-                "world model input requires `axi_module_text` with a canonical `.axi` module"
+                "predictive proposal adapter input requires `axi_module_text` with a canonical `.axi` module"
             ));
         };
 
@@ -965,45 +965,45 @@ impl WorldModelInputV1 {
 
         let Some(input_digest) = self.axi_digest_v1.as_ref() else {
             return Err(anyhow!(
-                "world model input requires `axi_digest_v1` anchored to the canonical `.axi` input"
+                "predictive proposal adapter input requires `axi_digest_v1` anchored to the canonical `.axi` input"
             ));
         };
         if input_digest.as_str() != canonical_digest.as_str() {
             return Err(anyhow!(
-                "world model input `axi_digest_v1` `{}` does not match canonical `.axi` digest `{}`",
+                "predictive proposal adapter input `axi_digest_v1` `{}` does not match canonical `.axi` digest `{}`",
                 input_digest.as_str(),
                 canonical_digest.as_str()
             ));
         }
 
-        if self.semantic_input.kind != WORLD_MODEL_SEMANTIC_INPUT_KIND_V1 {
+        if self.semantic_input.kind != PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1 {
             return Err(anyhow!(
-                "world model input semantic kind `{}` is unsupported; expected `{}`",
+                "predictive proposal adapter input semantic kind `{}` is unsupported; expected `{}`",
                 self.semantic_input.kind,
-                WORLD_MODEL_SEMANTIC_INPUT_KIND_V1
+                PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1
             ));
         }
 
         if let Some(module_name) = self.semantic_input.module_name.as_deref() {
             if module_name != canonical_module_name {
                 return Err(anyhow!(
-                    "world model input semantic module `{module_name}` does not match canonical `.axi` module `{canonical_module_name}`"
+                    "predictive proposal adapter input semantic module `{module_name}` does not match canonical `.axi` module `{canonical_module_name}`"
                 ));
             }
         }
 
         for layer in &self.semantic_input.layers {
-            if let WorldModelSemanticLayerV1::TrainingExport { export } = layer {
+            if let PredictiveProposalSemanticLayerV1::TrainingExport { export } = layer {
                 if export.axi_digest_v1.as_str() != canonical_digest.as_str() {
                     return Err(anyhow!(
-                        "world model training export digest `{}` does not match canonical `.axi` digest `{}`",
+                        "predictive proposal adapter training export digest `{}` does not match canonical `.axi` digest `{}`",
                         export.axi_digest_v1.as_str(),
                         canonical_digest.as_str()
                     ));
                 }
                 if export.module_name != canonical_module_name {
                     return Err(anyhow!(
-                        "world model training export module `{}` does not match canonical `.axi` module `{}`",
+                        "predictive proposal adapter training export module `{}` does not match canonical `.axi` module `{}`",
                         export.module_name,
                         canonical_module_name
                     ));
@@ -1012,7 +1012,7 @@ impl WorldModelInputV1 {
                     crate::axi_input::require_canonical_axi_text(&export.module_text)?;
                 if export_canonical.digest().as_str() != canonical_digest.as_str() {
                     return Err(anyhow!(
-                        "world model training export module text does not match the canonical `.axi` input digest `{}`",
+                        "predictive proposal adapter training export module text does not match the canonical `.axi` input digest `{}`",
                         canonical_digest.as_str()
                     ));
                 }
@@ -1023,10 +1023,10 @@ impl WorldModelInputV1 {
     }
 }
 
-pub fn validate_world_model_request(req: &WorldModelRequestV1) -> Result<()> {
-    if req.protocol != WORLD_MODEL_PROTOCOL_V1 {
+pub fn validate_predictive_proposal_request(req: &PredictiveProposalRequestV1) -> Result<()> {
+    if req.protocol != PREDICTIVE_PROPOSAL_PROTOCOL_V1 {
         return Err(anyhow!(
-            "world model request protocol must be `{WORLD_MODEL_PROTOCOL_V1}`, got `{}`",
+            "predictive proposal adapter request protocol must be `{PREDICTIVE_PROPOSAL_PROTOCOL_V1}`, got `{}`",
             req.protocol
         ));
     }
@@ -1034,7 +1034,7 @@ pub fn validate_world_model_request(req: &WorldModelRequestV1) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorldModelObjectiveV1 {
+pub struct PredictiveProposalObjectiveV1 {
     pub name: String,
     pub description: String,
     #[serde(default)]
@@ -1042,7 +1042,7 @@ pub struct WorldModelObjectiveV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorldModelTaskCostV1 {
+pub struct ProposalTaskCostV1 {
     pub name: String,
     pub value: f64,
     pub weight: f64,
@@ -1112,7 +1112,7 @@ pub struct CompetencyCoverageSummaryV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WorldModelOptionsV1 {
+pub struct PredictiveProposalOptionsV1 {
     #[serde(default)]
     pub max_new_proposals: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1120,9 +1120,9 @@ pub struct WorldModelOptionsV1 {
     #[serde(default)]
     pub goals: Vec<String>,
     #[serde(default)]
-    pub objectives: Vec<WorldModelObjectiveV1>,
+    pub objectives: Vec<PredictiveProposalObjectiveV1>,
     #[serde(default)]
-    pub task_costs: Vec<WorldModelTaskCostV1>,
+    pub task_costs: Vec<ProposalTaskCostV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub horizon_steps: Option<usize>,
     #[serde(default)]
@@ -1130,19 +1130,19 @@ pub struct WorldModelOptionsV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorldModelRequestV1 {
+pub struct PredictiveProposalRequestV1 {
     pub protocol: String,
-    pub trace_id: WorldModelRunId,
+    pub trace_id: ProposalAdapterRunId,
     pub generated_at_unix_secs: u64,
-    pub input: WorldModelInputV1,
+    pub input: PredictiveProposalInputV1,
     #[serde(default)]
-    pub options: WorldModelOptionsV1,
+    pub options: PredictiveProposalOptionsV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorldModelResponseV1 {
+pub struct PredictiveProposalResponseV1 {
     pub protocol: String,
-    pub trace_id: WorldModelRunId,
+    pub trace_id: ProposalAdapterRunId,
     pub generated_at_unix_secs: u64,
     pub proposals: ProposalsFileV1,
     #[serde(default)]
@@ -1152,13 +1152,13 @@ pub struct WorldModelResponseV1 {
 }
 
 #[derive(Debug, Clone)]
-pub struct WorldModelPlanOptionsV1 {
+pub struct BoundedProposalPlanOptionsV1 {
     pub horizon_steps: usize,
     pub rollouts: usize,
     pub max_new_proposals: usize,
     pub seed: Option<u64>,
     pub goals: Vec<String>,
-    pub task_costs: Vec<WorldModelTaskCostV1>,
+    pub task_costs: Vec<ProposalTaskCostV1>,
     pub competency_questions: Vec<CompetencyQuestionV1>,
     pub guardrail_profile: String,
     pub guardrail_plane: String,
@@ -1169,9 +1169,9 @@ pub struct WorldModelPlanOptionsV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorldModelPlanStepV1 {
+pub struct BoundedProposalPlanStepV1 {
     pub step: usize,
-    pub trace_id: WorldModelRunId,
+    pub trace_id: ProposalAdapterRunId,
     pub proposals: ProposalsFileV1,
     pub guardrail_before: GuardrailPlanSummaryV1,
     pub guardrail_after: GuardrailPlanSummaryV1,
@@ -1192,9 +1192,9 @@ pub struct WorldModelPlanStepV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorldModelPlanReportV1 {
+pub struct BoundedProposalPlanReportV1 {
     pub version: String,
-    pub trace_id: WorldModelRunId,
+    pub trace_id: ProposalAdapterRunId,
     pub generated_at_unix_secs: u64,
     pub horizon_steps: usize,
     pub rollouts: usize,
@@ -1202,91 +1202,91 @@ pub struct WorldModelPlanReportV1 {
     pub guardrail_profile: String,
     pub guardrail_plane: String,
     pub guardrail_weights: GuardrailCostWeightsV1,
-    pub task_costs: Vec<WorldModelTaskCostV1>,
+    pub task_costs: Vec<ProposalTaskCostV1>,
     pub task_cost_total: f64,
     #[serde(default)]
     pub competency_questions: Vec<CompetencyQuestionV1>,
-    pub steps: Vec<WorldModelPlanStepV1>,
+    pub steps: Vec<BoundedProposalPlanStepV1>,
 }
 
 #[derive(Debug, Clone)]
-pub enum WorldModelBackend {
+pub enum ProposalAdapterBackend {
     Disabled,
     Stub,
     Command { program: PathBuf, args: Vec<String> },
     Http { url: String },
 }
 
-impl Default for WorldModelBackend {
+impl Default for ProposalAdapterBackend {
     fn default() -> Self {
-        WorldModelBackend::Disabled
+        ProposalAdapterBackend::Disabled
     }
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct WorldModelState {
-    pub backend: WorldModelBackend,
+pub struct ProposalAdapterState {
+    pub backend: ProposalAdapterBackend,
     pub model: Option<String>,
 }
 
-impl WorldModelState {
+impl ProposalAdapterState {
     pub fn status_line(&self) -> String {
         let backend = match &self.backend {
-            WorldModelBackend::Disabled => "disabled".to_string(),
-            WorldModelBackend::Stub => "stub".to_string(),
-            WorldModelBackend::Command { program, args } => {
-                if args.iter().any(|s| s == "world-model-plugin-llm") {
+            ProposalAdapterBackend::Disabled => "disabled".to_string(),
+            ProposalAdapterBackend::Stub => "stub".to_string(),
+            ProposalAdapterBackend::Command { program, args } => {
+                if args.iter().any(|s| s == "predictive-proposals-llm") {
                     "llm".to_string()
                 } else {
                     format!("command({})", program.display())
                 }
             }
-            WorldModelBackend::Http { url } => format!("http({url})"),
+            ProposalAdapterBackend::Http { url } => format!("http({url})"),
         };
         let model = self.model.as_ref().map(|s| s.as_str()).unwrap_or("default");
-        format!("world_model: backend={backend} model={model}")
+        format!("predictive_proposal: backend={backend} model={model}")
     }
 
-    pub fn propose(&self, req: &WorldModelRequestV1) -> Result<WorldModelResponseV1> {
-        validate_world_model_request(req)?;
+    pub fn propose(&self, req: &PredictiveProposalRequestV1) -> Result<PredictiveProposalResponseV1> {
+        validate_predictive_proposal_request(req)?;
         match &self.backend {
-            WorldModelBackend::Disabled => Err(anyhow!(
-                "world model backend is disabled (configure --world-model-plugin or use stub)"
+            ProposalAdapterBackend::Disabled => Err(anyhow!(
+                "predictive proposal adapter backend is disabled (configure --proposal-adapter-plugin or use stub)"
             )),
-            WorldModelBackend::Stub => Ok(WorldModelResponseV1 {
-                protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
+            ProposalAdapterBackend::Stub => Ok(PredictiveProposalResponseV1 {
+                protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
                 trace_id: req.trace_id.clone(),
                 generated_at_unix_secs: now_unix_secs(),
                 proposals: empty_proposals(&req.trace_id),
                 notes: vec!["stub backend (no proposals)".to_string()],
                 error: None,
             }),
-            WorldModelBackend::Command { program, args } => {
-                let response = run_world_model_plugin(program, args, req)?;
+            ProposalAdapterBackend::Command { program, args } => {
+                let response = run_predictive_proposal_plugin(program, args, req)?;
                 Ok(response)
             }
-            WorldModelBackend::Http { url } => run_world_model_http(url, req),
+            ProposalAdapterBackend::Http { url } => run_predictive_proposal_http(url, req),
         }
     }
 
     pub fn backend_label(&self) -> String {
         match &self.backend {
-            WorldModelBackend::Disabled => "disabled".to_string(),
-            WorldModelBackend::Stub => "stub".to_string(),
-            WorldModelBackend::Command { program, args } => {
-                if args.iter().any(|s| s == "world-model-plugin-llm") {
+            ProposalAdapterBackend::Disabled => "disabled".to_string(),
+            ProposalAdapterBackend::Stub => "stub".to_string(),
+            ProposalAdapterBackend::Command { program, args } => {
+                if args.iter().any(|s| s == "predictive-proposals-llm") {
                     "llm".to_string()
                 } else {
                     format!("command:{}", program.display())
                 }
             }
-            WorldModelBackend::Http { url } => format!("http:{url}"),
+            ProposalAdapterBackend::Http { url } => format!("http:{url}"),
         }
     }
 }
 
-#[cfg(feature = "world-model-http")]
-fn run_world_model_http(url: &str, req: &WorldModelRequestV1) -> Result<WorldModelResponseV1> {
+#[cfg(feature = "proposal-adapter-http")]
+fn run_predictive_proposal_http(url: &str, req: &PredictiveProposalRequestV1) -> Result<PredictiveProposalResponseV1> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .build()
@@ -1295,24 +1295,24 @@ fn run_world_model_http(url: &str, req: &WorldModelRequestV1) -> Result<WorldMod
         .post(url)
         .json(req)
         .send()
-        .map_err(|e| anyhow!("world model http backend failed: {e}"))?;
+        .map_err(|e| anyhow!("predictive proposal adapter http backend failed: {e}"))?;
     let status = resp.status();
     if !status.is_success() {
         let text = resp.text().unwrap_or_default();
         return Err(anyhow!(
-            "world model http backend returned {status}: {text}"
+            "predictive proposal adapter http backend returned {status}: {text}"
         ));
     }
     let parsed = resp
         .json()
-        .map_err(|e| anyhow!("world model http backend returned invalid JSON: {e}"))?;
+        .map_err(|e| anyhow!("predictive proposal adapter http backend returned invalid JSON: {e}"))?;
     Ok(parsed)
 }
 
-#[cfg(not(feature = "world-model-http"))]
-fn run_world_model_http(_url: &str, _req: &WorldModelRequestV1) -> Result<WorldModelResponseV1> {
+#[cfg(not(feature = "proposal-adapter-http"))]
+fn run_predictive_proposal_http(_url: &str, _req: &PredictiveProposalRequestV1) -> Result<PredictiveProposalResponseV1> {
     Err(anyhow!(
-        "world model http backend is unavailable (enable feature `world-model-http`)"
+        "predictive proposal adapter http backend is unavailable (enable feature `proposal-adapter-http`)"
     ))
 }
 
@@ -1322,7 +1322,7 @@ fn empty_proposals(trace_id: impl AsRef<str>) -> ProposalsFileV1 {
         version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
         generated_at: now_unix_secs().to_string(),
         source: ProposalSourceV1 {
-            source_type: "world_model".to_string(),
+            source_type: "predictive_proposal_adapter".to_string(),
             locator: trace_id.to_string(),
         },
         schema_hint: None,
@@ -1330,11 +1330,11 @@ fn empty_proposals(trace_id: impl AsRef<str>) -> ProposalsFileV1 {
     }
 }
 
-fn run_world_model_plugin(
+fn run_predictive_proposal_plugin(
     program: &Path,
     args: &[String],
-    req: &WorldModelRequestV1,
-) -> Result<WorldModelResponseV1> {
+    req: &PredictiveProposalRequestV1,
+) -> Result<PredictiveProposalResponseV1> {
     let payload = serde_json::to_vec(req)?;
     let mut child = Command::new(program)
         .args(args)
@@ -1344,7 +1344,7 @@ fn run_world_model_plugin(
         .spawn()
         .map_err(|e| {
             anyhow!(
-                "failed to start world model plugin `{}`: {e}",
+                "failed to start predictive proposal adapter plugin `{}`: {e}",
                 program.display()
             )
         })?;
@@ -1353,18 +1353,18 @@ fn run_world_model_plugin(
         use std::io::Write;
         stdin
             .write_all(&payload)
-            .map_err(|e| anyhow!("failed to write stdin for world model plugin: {e}"))?;
+            .map_err(|e| anyhow!("failed to write stdin for predictive proposal adapter plugin: {e}"))?;
     } else {
-        return Err(anyhow!("failed to open stdin for world model plugin"));
+        return Err(anyhow!("failed to open stdin for predictive proposal adapter plugin"));
     }
 
     let output = child
         .wait_with_output()
-        .map_err(|e| anyhow!("world model plugin `{}` failed: {e}", program.display()))?;
+        .map_err(|e| anyhow!("predictive proposal adapter plugin `{}` failed: {e}", program.display()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!(
-            "world model plugin `{}` failed (exit={:?}): {}",
+            "predictive proposal adapter plugin `{}` failed (exit={:?}): {}",
             program.display(),
             output.status.code(),
             stderr.trim()
@@ -1373,14 +1373,14 @@ fn run_world_model_plugin(
 
     let stdout = String::from_utf8(output.stdout).map_err(|e| {
         anyhow!(
-            "world model plugin `{}` returned non-utf8 stdout: {e}",
+            "predictive proposal adapter plugin `{}` returned non-utf8 stdout: {e}",
             program.display()
         )
     })?;
-    let response: WorldModelResponseV1 = serde_json::from_str(&stdout).map_err(|e| {
+    let response: PredictiveProposalResponseV1 = serde_json::from_str(&stdout).map_err(|e| {
         let preview: String = stdout.chars().take(400).collect();
         anyhow!(
-            "world model plugin `{}` returned invalid JSON: {e}; stdout starts with: {preview:?}",
+            "predictive proposal adapter plugin `{}` returned invalid JSON: {e}; stdout starts with: {preview:?}",
             program.display()
         )
     })?;
@@ -1392,9 +1392,9 @@ fn run_world_model_plugin(
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct WorldModelProvenance {
-    pub trace_id: WorldModelRunId,
-    pub run_id: WorldModelRunId,
+pub struct ProposalAdapterProvenance {
+    pub trace_id: ProposalAdapterRunId,
+    pub run_id: ProposalAdapterRunId,
     pub backend: String,
     pub model: Option<String>,
     pub axi_digest_v1: Option<AxiDigest>,
@@ -1408,9 +1408,9 @@ pub struct WorldModelProvenance {
 
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
-pub struct WorldModelProposalLineage {
-    pub trace_id: Option<WorldModelRunId>,
-    pub run_id: Option<WorldModelRunId>,
+pub struct ProposalAdapterLineage {
+    pub trace_id: Option<ProposalAdapterRunId>,
+    pub run_id: Option<ProposalAdapterRunId>,
     pub backend: Option<String>,
     pub model: Option<String>,
     pub axi_digest_v1: Option<AxiDigest>,
@@ -1422,8 +1422,8 @@ pub struct WorldModelProposalLineage {
     pub guardrail_plane: Option<String>,
 }
 
-pub fn build_world_model_provenance(
-    response: &WorldModelResponseV1,
+pub fn build_predictive_proposal_provenance(
+    response: &PredictiveProposalResponseV1,
     backend: String,
     model: Option<String>,
     axi_digest_v1: Option<AxiDigest>,
@@ -1432,8 +1432,8 @@ pub fn build_world_model_provenance(
     guardrail_total_cost: Option<f64>,
     guardrail_profile: Option<String>,
     guardrail_plane: Option<String>,
-) -> Result<WorldModelProvenance> {
-    Ok(WorldModelProvenance {
+) -> Result<ProposalAdapterProvenance> {
+    Ok(ProposalAdapterProvenance {
         trace_id: response.trace_id.clone(),
         run_id: response.trace_id.clone(),
         backend,
@@ -1448,25 +1448,25 @@ pub fn build_world_model_provenance(
     })
 }
 
-pub fn build_world_model_run_record(
-    provenance: &WorldModelProvenance,
+pub fn build_proposal_adapter_run_record(
+    provenance: &ProposalAdapterProvenance,
     proposals: &ProposalsFileV1,
     committed_pathdb_snapshot_id: Option<PathdbSnapshotId>,
     committed_accepted_snapshot_id: Option<AcceptedSnapshotId>,
     notes: Vec<String>,
-) -> Result<crate::accepted_plane::WorldModelRunRecordV1> {
+) -> Result<crate::accepted_plane::ProposalAdapterRunRecordV1> {
     let proposals_digest = provenance
         .proposals_digest
         .clone()
         .unwrap_or(proposals_digest(proposals)?);
     let status = if committed_pathdb_snapshot_id.is_some() {
-        crate::accepted_plane::WorldModelRunStatusV1::CommittedToPathdb
+        crate::accepted_plane::ProposalAdapterRunStatusV1::CommittedToPathdb
     } else {
-        crate::accepted_plane::WorldModelRunStatusV1::Previewed
+        crate::accepted_plane::ProposalAdapterRunStatusV1::Previewed
     };
 
-    Ok(crate::accepted_plane::WorldModelRunRecordV1 {
-        version: "world_model_run_record_v1".to_string(),
+    Ok(crate::accepted_plane::ProposalAdapterRunRecordV1 {
+        version: "proposal_adapter_run_record_v1".to_string(),
         run_id: provenance.run_id.clone(),
         trace_id: provenance.trace_id.clone(),
         created_at_unix_secs: now_unix_secs(),
@@ -1487,15 +1487,15 @@ pub fn build_world_model_run_record(
     })
 }
 
-pub fn apply_world_model_provenance(
+pub fn apply_predictive_proposal_provenance(
     mut proposals: ProposalsFileV1,
-    provenance: &WorldModelProvenance,
+    provenance: &ProposalAdapterProvenance,
 ) -> ProposalsFileV1 {
     if proposals.generated_at.trim().is_empty() {
         proposals.generated_at = now_unix_secs().to_string();
     }
     proposals.source = ProposalSourceV1 {
-        source_type: "world_model".to_string(),
+        source_type: "predictive_proposal_adapter".to_string(),
         locator: provenance.trace_id.to_string(),
     };
 
@@ -1511,7 +1511,7 @@ pub fn apply_world_model_provenance(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn extract_world_model_proposal_lineage(meta: &ProposalMetaV1) -> WorldModelProposalLineage {
+pub fn extract_predictive_proposal_proposal_lineage(meta: &ProposalMetaV1) -> ProposalAdapterLineage {
     fn optional_id<T>(meta: &ProposalMetaV1, key: &str) -> Option<T>
     where
         T: From<String>,
@@ -1519,11 +1519,11 @@ pub fn extract_world_model_proposal_lineage(meta: &ProposalMetaV1) -> WorldModel
         meta.metadata.get(key).cloned().map(T::from)
     }
 
-    WorldModelProposalLineage {
-        trace_id: optional_id(meta, "axiograph_world_model_trace_id"),
-        run_id: optional_id(meta, "axiograph_world_model_run_id"),
-        backend: meta.metadata.get("axiograph_world_model_backend").cloned(),
-        model: meta.metadata.get("axiograph_world_model_model").cloned(),
+    ProposalAdapterLineage {
+        trace_id: optional_id(meta, "axiograph_predictive_proposal_trace_id"),
+        run_id: optional_id(meta, "axiograph_proposal_adapter_run_id"),
+        backend: meta.metadata.get("axiograph_predictive_proposal_backend").cloned(),
+        model: meta.metadata.get("axiograph_predictive_proposal_model").cloned(),
         axi_digest_v1: optional_id(meta, "axiograph_axi_digest_v1"),
         pathdb_snapshot_id: optional_id(meta, "axiograph_pathdb_snapshot_id"),
         accepted_snapshot_id: optional_id(meta, "axiograph_accepted_snapshot_id"),
@@ -1537,7 +1537,7 @@ pub fn extract_world_model_proposal_lineage(meta: &ProposalMetaV1) -> WorldModel
     }
 }
 
-fn apply_provenance_meta(meta: &mut ProposalMetaV1, provenance: &WorldModelProvenance) {
+fn apply_provenance_meta(meta: &mut ProposalMetaV1, provenance: &ProposalAdapterProvenance) {
     fn set_reserved(meta: &mut ProposalMetaV1, key: &str, value: impl Into<String>) {
         meta.metadata.insert(key.to_string(), value.into());
     }
@@ -1556,22 +1556,22 @@ fn apply_provenance_meta(meta: &mut ProposalMetaV1, provenance: &WorldModelProve
     meta.confidence = meta.confidence.clamp(0.0, 1.0);
     set_reserved(
         meta,
-        "axiograph_world_model_trace_id",
+        "axiograph_predictive_proposal_trace_id",
         provenance.trace_id.to_string(),
     );
     set_reserved(
         meta,
-        "axiograph_world_model_run_id",
+        "axiograph_proposal_adapter_run_id",
         provenance.run_id.to_string(),
     );
     set_reserved(
         meta,
-        "axiograph_world_model_backend",
+        "axiograph_predictive_proposal_backend",
         provenance.backend.clone(),
     );
     set_optional_reserved(
         meta,
-        "axiograph_world_model_model",
+        "axiograph_predictive_proposal_model",
         provenance.model.clone(),
     );
     set_optional_reserved(
@@ -1622,7 +1622,7 @@ fn apply_provenance_meta(meta: &mut ProposalMetaV1, provenance: &WorldModelProve
     );
 }
 
-pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Value) {
+pub(crate) fn predictive_proposal_llm_prompt(req: &PredictiveProposalRequestV1) -> (String, Value) {
     let trace_id = if req.trace_id.as_str().trim().is_empty() {
         default_trace_id()
     } else {
@@ -1659,14 +1659,14 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
         .layers
         .iter()
         .map(|layer| match layer {
-            WorldModelSemanticLayerV1::Guardrail { report } => json!({
+            PredictiveProposalSemanticLayerV1::Guardrail { report } => json!({
                 "kind": "guardrail",
                 "profile": report.profile,
                 "plane": report.plane,
                 "total_cost": report.summary.total_cost,
                 "term_count": report.summary.term_count,
             }),
-            WorldModelSemanticLayerV1::TrainingExport { export } => json!({
+            PredictiveProposalSemanticLayerV1::TrainingExport { export } => json!({
                 "kind": "training_export",
                 "module_name": export.module_name,
                 "axi_digest_v1": export.axi_digest_v1,
@@ -1695,12 +1695,12 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
     });
 
     let prompt = [
-        "You are a world-model assistant for Axiograph.",
+        "You are a proposal-adapter assistant for Axiograph.",
         "Return ONLY JSON (no markdown) that conforms to:",
         "ProposalsFileV1 = {",
         "  \"version\": 1,",
         "  \"generated_at\": \"<unix-secs as string>\",",
-        "  \"source\": {\"source_type\": \"world_model\", \"locator\": \"<trace_id>\"},",
+        "  \"source\": {\"source_type\": \"predictive_proposal\", \"locator\": \"<trace_id>\"},",
         "  \"schema_hint\": null,",
         "  \"proposals\": [ ProposalV1 (entity or relation) ]",
         "}",
@@ -1713,7 +1713,7 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
         "  \"attributes\":{\"axi_source_field\":\"<declared role>\",\"axi_target_field\":\"<declared role>\",\"ctx\":\"...\",\"time\":\"...\"} }",
         "Rules:",
         "- Propose at most max_new_proposals items.",
-        "- Use stable ids (e.g. wm::<trace_id>::n).",
+        "- Use stable ids (e.g. proposal::<trace_id>::n).",
         "- Keep confidence between 0.55 and 0.9.",
         "- Relation proposals must include `axi_source_field` and `axi_target_field` attributes naming declared roles in the compiled relation; do not rely on source/target naming conventions.",
         "- Treat `axi_module_text` + `semantic_input` as the semantic source of truth.",
@@ -1726,7 +1726,7 @@ pub(crate) fn world_model_llm_prompt(req: &WorldModelRequestV1) -> (String, Valu
     (prompt, summary)
 }
 
-pub(crate) fn normalize_world_model_proposals_value(
+pub(crate) fn normalize_predictive_proposal_proposals_value(
     trace_id: impl AsRef<str>,
     value: Value,
 ) -> ProposalsFileV1 {
@@ -1759,7 +1759,7 @@ pub(crate) fn normalize_world_model_proposals_value(
         } else {
             "Relation"
         };
-        let base_id = format!("wm::{trace_id}::{idx}");
+        let base_id = format!("proposal::{trace_id}::{idx}");
         let proposal_id = p
             .get("proposal_id")
             .and_then(|v| v.as_str())
@@ -1774,7 +1774,7 @@ pub(crate) fn normalize_world_model_proposals_value(
         let public_rationale = p
             .get("public_rationale")
             .and_then(|v| v.as_str())
-            .unwrap_or("world model proposal")
+            .unwrap_or("predictive proposal adapter proposal")
             .to_string();
 
         let metadata = p
@@ -1889,7 +1889,7 @@ pub(crate) fn normalize_world_model_proposals_value(
         version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
         generated_at,
         source: ProposalSourceV1 {
-            source_type: "world_model".to_string(),
+            source_type: "predictive_proposal_adapter".to_string(),
             locator: trace_id.to_string(),
         },
         schema_hint,
@@ -1904,12 +1904,12 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
-pub fn make_world_model_request(
-    input: WorldModelInputV1,
-    options: WorldModelOptionsV1,
-) -> WorldModelRequestV1 {
-    WorldModelRequestV1 {
-        protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
+pub fn make_predictive_proposal_request(
+    input: PredictiveProposalInputV1,
+    options: PredictiveProposalOptionsV1,
+) -> PredictiveProposalRequestV1 {
+    PredictiveProposalRequestV1 {
+        protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
         trace_id: default_trace_id(),
         generated_at_unix_secs: now_unix_secs(),
         input,
@@ -1917,21 +1917,21 @@ pub fn make_world_model_request(
     }
 }
 
-pub fn run_world_model_plan(
+pub fn run_proposal_rollout_plan(
     db: &PathDB,
-    world_model: &WorldModelState,
-    base_input: &WorldModelInputV1,
-    options: &WorldModelPlanOptionsV1,
-) -> Result<WorldModelPlanReportV1> {
+    predictive_proposal: &ProposalAdapterState,
+    base_input: &PredictiveProposalInputV1,
+    options: &BoundedProposalPlanOptionsV1,
+) -> Result<BoundedProposalPlanReportV1> {
     if options.horizon_steps == 0 {
-        return Err(anyhow!("world model plan: horizon_steps must be > 0"));
+        return Err(anyhow!("bounded proposal rollout: horizon_steps must be > 0"));
     }
     if options.rollouts == 0 {
-        return Err(anyhow!("world model plan: rollouts must be > 0"));
+        return Err(anyhow!("bounded proposal rollout: rollouts must be > 0"));
     }
 
     let mut planning_db = clone_db(db)?;
-    let mut steps: Vec<WorldModelPlanStepV1> = Vec::new();
+    let mut steps: Vec<BoundedProposalPlanStepV1> = Vec::new();
     let task_cost_total: f64 = options.task_costs.iter().map(|t| t.value * t.weight).sum();
     let plan_trace = default_trace_id();
 
@@ -1961,7 +1961,7 @@ pub fn run_world_model_plan(
         };
 
         let mut best: Option<(
-            WorldModelRunId,
+            ProposalAdapterRunId,
             ProposalsFileV1,
             GuardrailCostReportV1,
             Option<CompetencyCoverageSummaryV1>,
@@ -1977,22 +1977,22 @@ pub fn run_world_model_plan(
                 input.set_guardrail_layer(guardrail_before.clone());
             }
             input.notes.push(format!(
-                "source=world_model_plan step={step} rollout={rollout}"
+                "source=proposal_rollout_plan step={step} rollout={rollout}"
             ));
 
-            let mut wm_opts = WorldModelOptionsV1::default();
-            wm_opts.max_new_proposals = options.max_new_proposals;
-            wm_opts.seed = options
+            let mut proposal_options = PredictiveProposalOptionsV1::default();
+            proposal_options.max_new_proposals = options.max_new_proposals;
+            proposal_options.seed = options
                 .seed
                 .map(|s| s.wrapping_add((step as u64) * 1_000 + rollout as u64));
-            wm_opts.goals = options.goals.clone();
-            wm_opts.task_costs = options.task_costs.clone();
-            wm_opts.horizon_steps = Some(options.horizon_steps);
+            proposal_options.goals = options.goals.clone();
+            proposal_options.task_costs = options.task_costs.clone();
+            proposal_options.horizon_steps = Some(options.horizon_steps);
 
-            let req = make_world_model_request(input, wm_opts);
-            let mut response = world_model.propose(&req)?;
+            let req = make_predictive_proposal_request(input, proposal_options);
+            let mut response = predictive_proposal.propose(&req)?;
             if let Some(err) = response.error.take() {
-                return Err(anyhow!("world model error: {err}"));
+                return Err(anyhow!("predictive proposal adapter error: {err}"));
             }
 
             let guardrail_profile_label = if options.guardrail_profile == "off" {
@@ -2006,10 +2006,10 @@ pub fn run_world_model_plan(
                 Some(options.guardrail_plane.clone())
             };
 
-            let provenance = build_world_model_provenance(
+            let provenance = build_predictive_proposal_provenance(
                 &response,
-                world_model.backend_label(),
-                world_model.model.clone(),
+                predictive_proposal.backend_label(),
+                predictive_proposal.model.clone(),
                 base_input.axi_digest_v1.clone(),
                 base_input.pathdb_snapshot_id(),
                 base_input.accepted_snapshot_id(),
@@ -2018,7 +2018,7 @@ pub fn run_world_model_plan(
                 guardrail_plane_label,
             )?;
 
-            let mut proposals = apply_world_model_provenance(response.proposals, &provenance);
+            let mut proposals = apply_predictive_proposal_provenance(response.proposals, &provenance);
             if options.max_new_proposals > 0
                 && proposals.proposals.len() > options.max_new_proposals
             {
@@ -2096,7 +2096,7 @@ pub fn run_world_model_plan(
             validation_errors,
             total_cost,
             notes,
-        ) = best.ok_or_else(|| anyhow!("world model plan: no rollout produced proposals"))?;
+        ) = best.ok_or_else(|| anyhow!("bounded proposal rollout: no rollout produced proposals"))?;
 
         apply_proposals_to_db(&mut planning_db, &proposals)?;
 
@@ -2105,7 +2105,7 @@ pub fn run_world_model_plan(
             (Some(before), Some(after)) => Some(after.coverage - before.coverage),
             _ => None,
         };
-        let step_report = WorldModelPlanStepV1 {
+        let step_report = BoundedProposalPlanStepV1 {
             step,
             trace_id,
             proposals,
@@ -2126,8 +2126,8 @@ pub fn run_world_model_plan(
         steps.push(step_report);
     }
 
-    Ok(WorldModelPlanReportV1 {
-        version: "world_model_plan_v1".to_string(),
+    Ok(BoundedProposalPlanReportV1 {
+        version: "proposal_rollout_plan_v1".to_string(),
         trace_id: plan_trace,
         generated_at_unix_secs: now_unix_secs(),
         horizon_steps: options.horizon_steps,
@@ -2235,7 +2235,7 @@ question missing_lowering:
     }
 
     #[test]
-    fn jepa_export_masks_fields() {
+    fn training_export_masks_fields() {
         let axi = r#"
 module M
 schema S:
@@ -2245,14 +2245,14 @@ instance I of S:
   A = {x, y}
   R = {(from=x, to=y)}
 "#;
-        let opts = JepaExportOptions {
+        let opts = MaskedTupleTrainingExportOptionsV1 {
             instance_filter: None,
             max_items: 0,
             mask_fields: 1,
             seed: 1,
             exclude_relations: Vec::new(),
         };
-        let export = build_jepa_export_from_axi_text(axi, &opts).expect("export");
+        let export = build_training_export_from_axi_text(axi, &opts).expect("export");
         assert!(!export.items.is_empty());
         for item in &export.items {
             assert_eq!(item.mask_fields.len(), 1);
@@ -2264,7 +2264,7 @@ instance I of S:
     }
 
     #[test]
-    fn jepa_export_can_exclude_relations() {
+    fn training_export_can_exclude_relations() {
         let axi = r#"
 module M
 schema S:
@@ -2276,14 +2276,14 @@ instance I of S:
   interned_string = {(id=x, text=y)}
   R = {(from=x, to=y)}
 "#;
-        let opts = JepaExportOptions {
+        let opts = MaskedTupleTrainingExportOptionsV1 {
             instance_filter: None,
             max_items: 0,
             mask_fields: 1,
             seed: 1,
             exclude_relations: vec!["interned_string".to_string()],
         };
-        let export = build_jepa_export_from_axi_text(axi, &opts).expect("export");
+        let export = build_training_export_from_axi_text(axi, &opts).expect("export");
         assert!(!export.items.is_empty());
         for item in &export.items {
             assert_ne!(item.relation, "interned_string");
@@ -2291,7 +2291,7 @@ instance I of S:
     }
 
     #[test]
-    fn read_jepa_export_requires_well_typed_proof() {
+    fn read_training_export_requires_well_typed_proof() {
         let axi = r#"
 module Current
 schema S:
@@ -2301,14 +2301,14 @@ instance I of S:
   A = {x, y}
   R = {(from=x, to=y)}
 "#;
-        let opts = JepaExportOptions {
+        let opts = MaskedTupleTrainingExportOptionsV1 {
             instance_filter: None,
             max_items: 0,
             mask_fields: 1,
             seed: 1,
             exclude_relations: Vec::new(),
         };
-        let export = build_jepa_export_from_axi_text(axi, &opts).expect("export");
+        let export = build_training_export_from_axi_text(axi, &opts).expect("export");
         let mut json = serde_json::to_value(&export).expect("serialize export");
         let removed = json
             .as_object_mut()
@@ -2316,20 +2316,20 @@ instance I of S:
             .remove("axi_well_typed_proof_v1");
         assert!(removed.is_some(), "expected serialized proof field");
 
-        let path = unique_temp_file("jepa_export_missing_proof");
+        let path = unique_temp_file("training_export_missing_proof");
         fs::write(
             &path,
             serde_json::to_string_pretty(&json).expect("serialize malformed export"),
         )
         .expect("write malformed export");
 
-        let err = read_jepa_export(&path).expect_err("missing proof should fail closed");
+        let err = read_training_export(&path).expect_err("missing proof should fail closed");
         let _ = fs::remove_file(&path);
         assert!(err.to_string().contains("axi_well_typed_proof_v1"));
     }
 
     #[test]
-    fn jepa_export_rejects_pathdb_export_snapshot_inputs() {
+    fn training_export_rejects_pathdb_export_snapshot_inputs() {
         let canonical = r#"
 module Demo
 schema S:
@@ -2346,15 +2346,15 @@ instance I of S:
         let snapshot_export = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)
             .expect("export pathdb snapshot");
 
-        let opts = JepaExportOptions {
+        let opts = MaskedTupleTrainingExportOptionsV1 {
             instance_filter: None,
             max_items: 10,
             mask_fields: 1,
             seed: 1,
             exclude_relations: Vec::new(),
         };
-        let err = build_jepa_export_from_axi_text(&snapshot_export, &opts)
-            .expect_err("JEPA export should reject PathDBExportV1 snapshots");
+        let err = build_training_export_from_axi_text(&snapshot_export, &opts)
+            .expect_err("masked-tuple training export should reject PathDBExportV1 snapshots");
         assert!(err
             .to_string()
             .contains("expected a canonical .axi module, but input is a PathDBExportV1 snapshot"));
@@ -2403,9 +2403,9 @@ instance I of S:
             }],
         };
 
-        let prov = WorldModelProvenance {
-            trace_id: WorldModelRunId::new("wm::trace"),
-            run_id: WorldModelRunId::new("wm::run"),
+        let prov = ProposalAdapterProvenance {
+            trace_id: ProposalAdapterRunId::new("proposal::trace"),
+            run_id: ProposalAdapterRunId::new("proposal::run"),
             backend: "stub".to_string(),
             model: Some("model".to_string()),
             axi_digest_v1: Some(AxiDigest::new("fnv1a64:digest")),
@@ -2417,21 +2417,21 @@ instance I of S:
             guardrail_plane: Some("both".to_string()),
         };
 
-        proposals = apply_world_model_provenance(proposals, &prov);
+        proposals = apply_predictive_proposal_provenance(proposals, &prov);
         let meta = match &proposals.proposals[0] {
             ProposalV1::Entity { meta, .. } => meta,
             _ => panic!("unexpected proposal kind"),
         };
         assert!(meta.confidence <= 1.0);
-        assert!(meta.metadata.contains_key("axiograph_world_model_trace_id"));
+        assert!(meta.metadata.contains_key("axiograph_predictive_proposal_trace_id"));
         assert_eq!(
             meta.metadata
-                .get("axiograph_world_model_run_id")
+                .get("axiograph_proposal_adapter_run_id")
                 .map(String::as_str),
-            Some("wm::run")
+            Some("proposal::run")
         );
-        assert!(meta.metadata.contains_key("axiograph_world_model_backend"));
-        assert!(meta.metadata.contains_key("axiograph_world_model_model"));
+        assert!(meta.metadata.contains_key("axiograph_predictive_proposal_backend"));
+        assert!(meta.metadata.contains_key("axiograph_predictive_proposal_model"));
         assert!(meta.metadata.contains_key("axiograph_axi_digest_v1"));
         assert_eq!(
             meta.metadata
@@ -2472,11 +2472,11 @@ instance I of S:
                     public_rationale: "r".to_string(),
                     metadata: HashMap::from([
                         (
-                            "axiograph_world_model_trace_id".to_string(),
+                            "axiograph_predictive_proposal_trace_id".to_string(),
                             "spoofed-trace".to_string(),
                         ),
                         (
-                            "axiograph_world_model_run_id".to_string(),
+                            "axiograph_proposal_adapter_run_id".to_string(),
                             "spoofed-run".to_string(),
                         ),
                         (
@@ -2492,7 +2492,7 @@ instance I of S:
                             "accepted:spoofed".to_string(),
                         ),
                         (
-                            "axiograph_world_model_model".to_string(),
+                            "axiograph_predictive_proposal_model".to_string(),
                             "spoofed-model".to_string(),
                         ),
                     ]),
@@ -2506,9 +2506,9 @@ instance I of S:
             }],
         };
 
-        let prov = WorldModelProvenance {
-            trace_id: WorldModelRunId::new("wm::authoritative"),
-            run_id: WorldModelRunId::new("wm::authoritative-run"),
+        let prov = ProposalAdapterProvenance {
+            trace_id: ProposalAdapterRunId::new("proposal::authoritative"),
+            run_id: ProposalAdapterRunId::new("proposal::authoritative-run"),
             backend: "stub".to_string(),
             model: None,
             axi_digest_v1: Some(AxiDigest::new("fnv1a64:real")),
@@ -2520,22 +2520,22 @@ instance I of S:
             guardrail_plane: None,
         };
 
-        proposals = apply_world_model_provenance(proposals, &prov);
+        proposals = apply_predictive_proposal_provenance(proposals, &prov);
         let meta = match &proposals.proposals[0] {
             ProposalV1::Entity { meta, .. } => meta,
             _ => panic!("unexpected proposal kind"),
         };
         assert_eq!(
             meta.metadata
-                .get("axiograph_world_model_trace_id")
+                .get("axiograph_predictive_proposal_trace_id")
                 .map(String::as_str),
-            Some("wm::authoritative")
+            Some("proposal::authoritative")
         );
         assert_eq!(
             meta.metadata
-                .get("axiograph_world_model_run_id")
+                .get("axiograph_proposal_adapter_run_id")
                 .map(String::as_str),
-            Some("wm::authoritative-run")
+            Some("proposal::authoritative-run")
         );
         assert_eq!(
             meta.metadata
@@ -2556,13 +2556,13 @@ instance I of S:
             Some("accepted:8")
         );
         assert!(
-            !meta.metadata.contains_key("axiograph_world_model_model"),
+            !meta.metadata.contains_key("axiograph_predictive_proposal_model"),
             "runtime-owned optional keys should be cleared when provenance omits them"
         );
     }
 
     #[test]
-    fn extracted_world_model_lineage_rehydrates_typed_ids_from_metadata() {
+    fn extracted_predictive_proposal_lineage_rehydrates_typed_ids_from_metadata() {
         let mut proposals = ProposalsFileV1 {
             version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
             generated_at: "".to_string(),
@@ -2588,9 +2588,9 @@ instance I of S:
             }],
         };
 
-        let prov = WorldModelProvenance {
-            trace_id: WorldModelRunId::new("wm::typed"),
-            run_id: WorldModelRunId::new("wm::typed-run"),
+        let prov = ProposalAdapterProvenance {
+            trace_id: ProposalAdapterRunId::new("proposal::typed"),
+            run_id: ProposalAdapterRunId::new("proposal::typed-run"),
             backend: "plugin".to_string(),
             model: Some("deterministic".to_string()),
             axi_digest_v1: Some(AxiDigest::new("fnv1a64:0123456789abcdef")),
@@ -2602,20 +2602,20 @@ instance I of S:
             guardrail_plane: Some("both".to_string()),
         };
 
-        proposals = apply_world_model_provenance(proposals, &prov);
+        proposals = apply_predictive_proposal_provenance(proposals, &prov);
         let meta = match &proposals.proposals[0] {
             ProposalV1::Entity { meta, .. } => meta,
             _ => panic!("unexpected proposal kind"),
         };
-        let lineage = extract_world_model_proposal_lineage(meta);
+        let lineage = extract_predictive_proposal_proposal_lineage(meta);
 
         assert_eq!(
             lineage.trace_id.as_ref().map(|id| id.as_str()),
-            Some("wm::typed")
+            Some("proposal::typed")
         );
         assert_eq!(
             lineage.run_id.as_ref().map(|id| id.as_str()),
-            Some("wm::typed-run")
+            Some("proposal::typed-run")
         );
         assert_eq!(lineage.backend.as_deref(), Some("plugin"));
         assert_eq!(lineage.model.as_deref(), Some("deterministic"));
@@ -2641,16 +2641,16 @@ instance I of S:
     }
 
     #[test]
-    fn world_model_request_round_trips_typed_ids_as_string_json() {
-        let req = WorldModelRequestV1 {
-            protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
-            trace_id: WorldModelRunId::new("wm::123"),
+    fn predictive_proposal_request_round_trips_typed_ids_as_string_json() {
+        let req = PredictiveProposalRequestV1 {
+            protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
+            trace_id: ProposalAdapterRunId::new("proposal::123"),
             generated_at_unix_secs: 123,
-            input: WorldModelInputV1 {
+            input: PredictiveProposalInputV1 {
                 axi_digest_v1: Some(AxiDigest::new("fnv1a64:abc")),
                 axi_module_text: Some("module Demo\n".to_string()),
-                semantic_input: WorldModelSemanticInputV1 {
-                    kind: WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string(),
+                semantic_input: PredictiveProposalSemanticInputV1 {
+                    kind: PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string(),
                     module_name: Some("Demo".to_string()),
                     pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:42")),
                     accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:9")),
@@ -2658,11 +2658,11 @@ instance I of S:
                 },
                 notes: vec!["typed".to_string()],
             },
-            options: WorldModelOptionsV1::default(),
+            options: PredictiveProposalOptionsV1::default(),
         };
 
         let json = serde_json::to_value(&req).expect("serialize request");
-        assert_eq!(json["trace_id"], "wm::123");
+        assert_eq!(json["trace_id"], "proposal::123");
         assert_eq!(json["input"]["axi_digest_v1"], "fnv1a64:abc");
         assert_eq!(
             json["input"]["semantic_input"]["pathdb_snapshot_id"],
@@ -2673,9 +2673,9 @@ instance I of S:
             "accepted:9"
         );
 
-        let round_trip: WorldModelRequestV1 =
+        let round_trip: PredictiveProposalRequestV1 =
             serde_json::from_value(json).expect("deserialize request");
-        assert_eq!(round_trip.trace_id.as_str(), "wm::123");
+        assert_eq!(round_trip.trace_id.as_str(), "proposal::123");
         assert_eq!(
             round_trip
                 .input
@@ -2705,7 +2705,7 @@ instance I of S:
     }
 
     #[test]
-    fn world_model_request_validation_rejects_pathdb_export_snapshot_text() {
+    fn predictive_proposal_request_validation_rejects_pathdb_export_snapshot_text() {
         let canonical = r#"
 module Demo
 schema S:
@@ -2722,15 +2722,15 @@ instance I of S:
         let snapshot_export = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)
             .expect("export pathdb snapshot");
 
-        let req = WorldModelRequestV1 {
-            protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
-            trace_id: WorldModelRunId::new("wm::bad-snapshot"),
+        let req = PredictiveProposalRequestV1 {
+            protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
+            trace_id: ProposalAdapterRunId::new("proposal::bad-snapshot"),
             generated_at_unix_secs: 1,
-            input: WorldModelInputV1 {
+            input: PredictiveProposalInputV1 {
                 axi_digest_v1: Some(AxiDigest::from_axi_text(&snapshot_export)),
                 axi_module_text: Some(snapshot_export),
-                semantic_input: WorldModelSemanticInputV1 {
-                    kind: WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string(),
+                semantic_input: PredictiveProposalSemanticInputV1 {
+                    kind: PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string(),
                     module_name: Some("Demo".to_string()),
                     pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:1")),
                     accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:1")),
@@ -2738,27 +2738,27 @@ instance I of S:
                 },
                 notes: Vec::new(),
             },
-            options: WorldModelOptionsV1::default(),
+            options: PredictiveProposalOptionsV1::default(),
         };
 
-        let err = validate_world_model_request(&req).expect_err("PathDB export must fail");
+        let err = validate_predictive_proposal_request(&req).expect_err("PathDB export must fail");
         assert!(err
             .to_string()
             .contains("expected a canonical .axi module, but input is a PathDBExportV1 snapshot"));
     }
 
     #[test]
-    fn world_model_request_validation_rejects_missing_digest_anchor() {
+    fn predictive_proposal_request_validation_rejects_missing_digest_anchor() {
         let canonical = "module Demo\nschema S:\n  object A\n";
-        let req = WorldModelRequestV1 {
-            protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
-            trace_id: WorldModelRunId::new("wm::missing-digest"),
+        let req = PredictiveProposalRequestV1 {
+            protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
+            trace_id: ProposalAdapterRunId::new("proposal::missing-digest"),
             generated_at_unix_secs: 1,
-            input: WorldModelInputV1 {
+            input: PredictiveProposalInputV1 {
                 axi_digest_v1: None,
                 axi_module_text: Some(canonical.to_string()),
-                semantic_input: WorldModelSemanticInputV1 {
-                    kind: WORLD_MODEL_SEMANTIC_INPUT_KIND_V1.to_string(),
+                semantic_input: PredictiveProposalSemanticInputV1 {
+                    kind: PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string(),
                     module_name: Some("Demo".to_string()),
                     pathdb_snapshot_id: None,
                     accepted_snapshot_id: None,
@@ -2766,20 +2766,20 @@ instance I of S:
                 },
                 notes: Vec::new(),
             },
-            options: WorldModelOptionsV1::default(),
+            options: PredictiveProposalOptionsV1::default(),
         };
 
-        let err = validate_world_model_request(&req).expect_err("missing digest anchor must fail");
+        let err = validate_predictive_proposal_request(&req).expect_err("missing digest anchor must fail");
         assert!(err
             .to_string()
             .contains("requires `axi_digest_v1` anchored to the canonical `.axi` input"));
     }
 
     #[test]
-    fn world_model_response_and_plan_report_round_trip_typed_ids_as_strings() {
-        let response = WorldModelResponseV1 {
-            protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
-            trace_id: WorldModelRunId::new("wm::response"),
+    fn predictive_proposal_response_and_plan_report_round_trip_typed_ids_as_strings() {
+        let response = PredictiveProposalResponseV1 {
+            protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
+            trace_id: ProposalAdapterRunId::new("proposal::response"),
             generated_at_unix_secs: 55,
             proposals: ProposalsFileV1 {
                 version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
@@ -2795,14 +2795,14 @@ instance I of S:
             error: None,
         };
         let response_json = serde_json::to_value(&response).expect("serialize response");
-        assert_eq!(response_json["trace_id"], "wm::response");
-        let response_round_trip: WorldModelResponseV1 =
+        assert_eq!(response_json["trace_id"], "proposal::response");
+        let response_round_trip: PredictiveProposalResponseV1 =
             serde_json::from_value(response_json).expect("deserialize response");
-        assert_eq!(response_round_trip.trace_id.as_str(), "wm::response");
+        assert_eq!(response_round_trip.trace_id.as_str(), "proposal::response");
 
-        let plan = WorldModelPlanReportV1 {
-            version: "wm_plan_v1".to_string(),
-            trace_id: WorldModelRunId::new("wm::plan"),
+        let plan = BoundedProposalPlanReportV1 {
+            version: "proposal_rollout_plan_v1".to_string(),
+            trace_id: ProposalAdapterRunId::new("proposal::plan"),
             generated_at_unix_secs: 77,
             horizon_steps: 1,
             rollouts: 2,
@@ -2810,7 +2810,7 @@ instance I of S:
             guardrail_profile: "fast".to_string(),
             guardrail_plane: "both".to_string(),
             guardrail_weights: GuardrailCostWeightsV1::defaults(),
-            task_costs: vec![WorldModelTaskCostV1 {
+            task_costs: vec![ProposalTaskCostV1 {
                 name: "completion".to_string(),
                 value: 1.0,
                 weight: 2.0,
@@ -2819,9 +2819,9 @@ instance I of S:
             }],
             task_cost_total: 2.0,
             competency_questions: Vec::new(),
-            steps: vec![WorldModelPlanStepV1 {
+            steps: vec![BoundedProposalPlanStepV1 {
                 step: 0,
-                trace_id: WorldModelRunId::new("wm::plan"),
+                trace_id: ProposalAdapterRunId::new("proposal::plan"),
                 proposals: ProposalsFileV1 {
                     version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
                     generated_at: "now".to_string(),
@@ -2847,19 +2847,19 @@ instance I of S:
             }],
         };
         let plan_json = serde_json::to_value(&plan).expect("serialize plan");
-        assert_eq!(plan_json["trace_id"], "wm::plan");
-        assert_eq!(plan_json["steps"][0]["trace_id"], "wm::plan");
-        let plan_round_trip: WorldModelPlanReportV1 =
+        assert_eq!(plan_json["trace_id"], "proposal::plan");
+        assert_eq!(plan_json["steps"][0]["trace_id"], "proposal::plan");
+        let plan_round_trip: BoundedProposalPlanReportV1 =
             serde_json::from_value(plan_json).expect("deserialize plan");
-        assert_eq!(plan_round_trip.trace_id.as_str(), "wm::plan");
-        assert_eq!(plan_round_trip.steps[0].trace_id.as_str(), "wm::plan");
+        assert_eq!(plan_round_trip.trace_id.as_str(), "proposal::plan");
+        assert_eq!(plan_round_trip.steps[0].trace_id.as_str(), "proposal::plan");
     }
 
     #[test]
-    fn build_world_model_provenance_computes_typed_proposal_digest_and_keeps_run_id_distinct() {
-        let base_response = WorldModelResponseV1 {
-            protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
-            trace_id: WorldModelRunId::new("wm::digest"),
+    fn build_predictive_proposal_provenance_computes_typed_proposal_digest_and_keeps_run_id_distinct() {
+        let base_response = PredictiveProposalResponseV1 {
+            protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
+            trace_id: ProposalAdapterRunId::new("proposal::digest"),
             generated_at_unix_secs: 77,
             proposals: ProposalsFileV1 {
                 version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
@@ -2889,7 +2889,7 @@ instance I of S:
             error: None,
         };
 
-        let provenance = build_world_model_provenance(
+        let provenance = build_predictive_proposal_provenance(
             &base_response,
             "stub".to_string(),
             Some("model".to_string()),
@@ -2902,8 +2902,8 @@ instance I of S:
         )
         .expect("build provenance");
 
-        assert_eq!(provenance.trace_id.as_str(), "wm::digest");
-        assert_eq!(provenance.run_id.as_str(), "wm::digest");
+        assert_eq!(provenance.trace_id.as_str(), "proposal::digest");
+        assert_eq!(provenance.run_id.as_str(), "proposal::digest");
         let digest = provenance
             .proposals_digest
             .as_ref()
@@ -2914,7 +2914,7 @@ instance I of S:
         if let ProposalV1::Entity { name, .. } = &mut changed.proposals.proposals[0] {
             *name = "thing-2".to_string();
         }
-        let changed_provenance = build_world_model_provenance(
+        let changed_provenance = build_predictive_proposal_provenance(
             &changed,
             "stub".to_string(),
             Some("model".to_string()),
@@ -2934,10 +2934,10 @@ instance I of S:
     }
 
     #[test]
-    fn build_world_model_run_record_carries_typed_anchor_lineage_and_commit_state() {
-        let response = WorldModelResponseV1 {
-            protocol: WORLD_MODEL_PROTOCOL_V1.to_string(),
-            trace_id: WorldModelRunId::new("wm::record"),
+    fn build_proposal_adapter_run_record_carries_typed_anchor_lineage_and_commit_state() {
+        let response = PredictiveProposalResponseV1 {
+            protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
+            trace_id: ProposalAdapterRunId::new("proposal::record"),
             generated_at_unix_secs: 77,
             proposals: ProposalsFileV1 {
                 version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
@@ -2966,7 +2966,7 @@ instance I of S:
             notes: vec!["unit".to_string()],
             error: None,
         };
-        let provenance = build_world_model_provenance(
+        let provenance = build_predictive_proposal_provenance(
             &response,
             "plugin".to_string(),
             Some("deterministic".to_string()),
@@ -2979,7 +2979,7 @@ instance I of S:
         )
         .expect("build provenance");
 
-        let record = build_world_model_run_record(
+        let record = build_proposal_adapter_run_record(
             &provenance,
             &response.proposals,
             Some(PathdbSnapshotId::new("pathdb:after")),
@@ -2988,11 +2988,11 @@ instance I of S:
         )
         .expect("build run record");
 
-        assert_eq!(record.run_id.as_str(), "wm::record");
-        assert_eq!(record.trace_id.as_str(), "wm::record");
+        assert_eq!(record.run_id.as_str(), "proposal::record");
+        assert_eq!(record.trace_id.as_str(), "proposal::record");
         assert_eq!(
             record.status,
-            crate::accepted_plane::WorldModelRunStatusV1::CommittedToPathdb
+            crate::accepted_plane::ProposalAdapterRunStatusV1::CommittedToPathdb
         );
         assert_eq!(record.backend, "plugin");
         assert_eq!(record.model.as_deref(), Some("deterministic"));

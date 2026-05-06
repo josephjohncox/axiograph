@@ -11,7 +11,7 @@ use axiograph_pathdb::kernel_ir::{CompiledSchemaIr, TheoryIr};
 use axiograph_pathdb::PathDB;
 
 use crate::llm::{GeneratedQuery, LlmState};
-use crate::world_model::CompetencyQuestionV1;
+use crate::predictive_proposals::CompetencyQuestionV1;
 
 #[derive(Debug, Clone)]
 pub struct CompetencyQuestionOptions {
@@ -491,9 +491,9 @@ fn unresolved_authored_competency_question_evaluation(
 pub fn evaluate_competency_questions(
     db: &PathDB,
     questions: &[CompetencyQuestionV1],
-) -> Result<crate::world_model::CompetencyCoverageSummaryV1> {
+) -> Result<crate::predictive_proposals::CompetencyCoverageSummaryV1> {
     let eval = evaluate_competency_questions_with_trust(db, questions)?;
-    Ok(crate::world_model::CompetencyCoverageSummaryV1 {
+    Ok(crate::predictive_proposals::CompetencyCoverageSummaryV1 {
         total: eval.total,
         satisfied: eval.satisfied,
         coverage: eval.coverage,
@@ -501,7 +501,7 @@ pub fn evaluate_competency_questions(
         questions: eval
             .questions
             .into_iter()
-            .map(|q| crate::world_model::CompetencyQuestionResultV1 {
+            .map(|q| crate::predictive_proposals::CompetencyQuestionResultV1 {
                 name: q.name,
                 rows: q.rows,
                 min_rows: q.min_rows,
@@ -910,7 +910,7 @@ instance I of Demo:
         let question = CompetencyQuestionV1 {
             name: "shipment_rule".to_string(),
             question: Some("Which shipment rule applies?".to_string()),
-            authoring: Some(crate::world_model::CompetencyQuestionAuthoringHintsV1 {
+            authoring: Some(crate::predictive_proposals::CompetencyQuestionAuthoringHintsV1 {
                 ask: Some("Which shipment rule applies?".to_string()),
                 about: vec!["shipment release".to_string()],
                 given: vec!["ERP hold is active".to_string()],

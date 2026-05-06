@@ -443,8 +443,8 @@ mod tests {
         let q: crate::query_ir::QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["?p"],
-              "where": [
+              "select_vars": ["?p"],
+              "where_atoms": [
                 {
                   "kind": "fact",
                   "fact": "?f",
@@ -550,8 +550,8 @@ instance I of S:
         let q: crate::query_ir::QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
-              "select": ["?p"],
-              "where": [
+              "select_vars": ["?p"],
+              "where_atoms": [
                 { "kind": "type", "term": "?p", "type": "Person" },
                 { "kind": "edge", "left": "Alice", "path": "S.Parent", "right": "?p" }
               ],

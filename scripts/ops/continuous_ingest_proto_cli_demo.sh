@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Continuous ingest demo (Proto): proto source changes → buf descriptor → proposals → drafted `.axi` → PathDB → viz.
+# Ops/reference ingest demo (Proto): proto source changes → buf descriptor → proposals → drafted `.axi` → PathDB → viz.
 #
 # Run:
-#   ./scripts/continuous_ingest_proto_cli_demo.sh
+#   ./scripts/ops/continuous_ingest_proto_cli_demo.sh
 #
 # This is intentionally CLI-only (no interactive REPL).
 #
@@ -12,7 +12,7 @@ set -euo pipefail
 # - `buf` must be installed (used via `axiograph ingest proto ingest`).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUT_DIR="$ROOT_DIR/build/continuous_ingest_proto_cli_demo"
 PROTO_ROOT="$OUT_DIR/proto_module"
 mkdir -p "$PROTO_ROOT/acme/toy/v1"

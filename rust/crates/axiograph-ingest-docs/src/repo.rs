@@ -6,11 +6,11 @@
 //! - lightweight structured edges (for “repo knowledge graphs”),
 //! - and a stable output contract suitable for later reconciliation/certification.
 //!
-//! This is intentionally a *prototype* ingester:
+//! This is intentionally a lightweight evidence adapter:
 //!
 //! - It uses regex-based extraction for symbol definitions/imports/TODOs.
-//! - It is designed to be replaced or upgraded (e.g. tree-sitter) without changing the
-//!   downstream artifact shape.
+//! - It can be upgraded (e.g. tree-sitter) without changing the downstream
+//!   `EvidenceChunkBundleV1` / proposal artifact shape.
 
 use crate::{extract_markdown, extract_text, Chunk, DocumentExtraction};
 use anyhow::Result;

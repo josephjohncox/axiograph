@@ -118,33 +118,6 @@ theory MachiningLearningContent on MachiningLearning:
     explains: DeepHoleCoolant
 
   -- ==========================================================================
-  -- Query patterns (preserved as opaque named constraint blocks for now)
-  -- ==========================================================================
-
-  constraint query_titaniumPrerequisites:
-    -- "What should I know before machining titanium?"
-    titaniumPrerequisites =
-      FollowPath(Titanium, [relatedTo, requires*])
-
-  constraint query_titaniumExamples:
-    -- "Show me examples of titanium machining"
-    titaniumExamples =
-      FindByRelation(demonstrates, TitaniumConcepts)
-      `And` FindByType(Example)
-
-  constraint query_titaniumRisks:
-    -- "What could go wrong if I use high speed on titanium?"
-    titaniumRisks =
-      FollowPath(HighSpeedTitanium, [causes])
-      `And` ProbabilisticQuery(_, minConfidence=0.8)
-
-  constraint query_applicableGuidelines:
-    -- "What safety guidelines apply to my operation?"
-    applicableGuidelines(op) =
-      FollowPath(op, [hasMaterial, relatedTo*, explains])
-      `And` FindByType(SafetyGuideline)
-
-  -- ==========================================================================
   -- Modal logic (deontic + epistemic) — preserved for future execution
   -- ==========================================================================
 
@@ -341,6 +314,10 @@ instance MachinistLearningExample of MachiningLearning:
     (concept=WorkHardening, prereq=ThermalConductivity),
     (concept=ChatterVibration, prereq=WorkHardening)
   }
+  explains = {
+    (concept=WorkHardening, guideline=TitaniumSpeed),
+    (concept=ChatterVibration, guideline=ThinWallChatter)
+  }
   conceptDescription = {
     (concept=ThermalConductivity, text=Text_Desc_ThermalConductivity),
     (concept=WorkHardening, text=Text_Desc_WorkHardening),
@@ -400,6 +377,15 @@ instance MachinistLearningExample of MachiningLearning:
   exampleOutcome = {
     (example=TitaniumSuccess, outcome=Success),
     (example=TitaniumFailure, outcome=ToolWear)
+  }
+  demonstrates = {
+    (example=TitaniumSuccess, concept=WorkHardening),
+    (example=TitaniumFailure, concept=WorkHardening),
+    (example=TitaniumFailure, concept=ChatterVibration)
+  }
+  causes = {
+    (op=Op_TitaniumSuccess, outcome=Success),
+    (op=Op_TitaniumFailure, outcome=ToolWear)
   }
 
   -- ==========================================================================

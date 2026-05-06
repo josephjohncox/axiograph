@@ -49,7 +49,7 @@ def _extract_json(text: str) -> Dict[str, Any]:
 
 
 def _summarize_request(req: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-    trace_id = req.get("trace_id", "wm::unknown")
+    trace_id = req.get("trace_id", "proposal::unknown")
     opts = req.get("options", {}) or {}
     input_obj = req.get("input", {}) or {}
     export = input_obj.get("export")
@@ -83,12 +83,12 @@ def _summarize_request(req: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         "export_summary": export_summary,
     }
     prompt = (
-        "You are a world-model assistant for Axiograph.\n"
+        "You are a predictive-proposal assistant for Axiograph.\n"
         "Return ONLY JSON (no markdown) that conforms to:\n"
         "ProposalsFileV1 = {\n"
         '  "version": 1,\n'
         '  "generated_at": "<unix-secs as string>",\n'
-        '  "source": {"source_type": "world_model", "locator": "<trace_id>"},\n'
+        '  "source": {"source_type": "predictive_proposal_adapter", "locator": "<trace_id>"},\n'
         '  "schema_hint": null,\n'
         '  "proposals": [\n'
         "    ProposalV1 (entity or relation)\n"
@@ -102,7 +102,7 @@ def _summarize_request(req: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         '  "relation_id":"...", "rel_type":"...", "source":"...", "target":"...", "attributes":{} }\n'
         "Rules:\n"
         "- Propose at most max_new_proposals items.\n"
-        "- Use stable ids (e.g. wm::<trace_id>::n).\n"
+        "- Use stable ids (e.g. proposal::<trace_id>::n).\n"
         "- Keep confidence between 0.55 and 0.9.\n"
         "- Use only info grounded in export_summary + goals.\n"
     )
@@ -113,7 +113,7 @@ def _normalize_proposals(trace_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     out = data if isinstance(data, dict) else {}
     out.setdefault("version", 1)
     out.setdefault("generated_at", str(int(time.time())))
-    out.setdefault("source", {"source_type": "world_model", "locator": trace_id})
+    out.setdefault("source", {"source_type": "predictive_proposal_adapter", "locator": trace_id})
     out.setdefault("schema_hint", None)
     proposals = out.get("proposals", [])
     if not isinstance(proposals, list):
@@ -124,12 +124,12 @@ def _normalize_proposals(trace_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
             continue
         kind = p.get("kind")
         kind = "Entity" if str(kind).lower() == "entity" else "Relation"
-        base_id = f"wm::{trace_id}::{idx}"
+        base_id = f"proposal::{trace_id}::{idx}"
         meta = {
             "proposal_id": p.get("proposal_id") or base_id,
             "confidence": float(p.get("confidence", 0.7)),
             "evidence": p.get("evidence") if isinstance(p.get("evidence"), list) else [],
-            "public_rationale": p.get("public_rationale") or "world model proposal",
+            "public_rationale": p.get("public_rationale") or "predictive proposal adapter proposal",
             "metadata": p.get("metadata") if isinstance(p.get("metadata"), dict) else {},
             "schema_hint": p.get("schema_hint"),
         }
@@ -162,7 +162,7 @@ def _call_openai(prompt: str, summary: Dict[str, Any]) -> str:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is required for openai backend")
     base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
-    model = os.environ.get("WORLD_MODEL_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+    model = os.environ.get("PREDICTIVE_PROPOSAL_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
     payload = {
         "model": model,
         "temperature": 0,
@@ -187,7 +187,7 @@ def _call_anthropic(prompt: str, summary: Dict[str, Any]) -> str:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is required for anthropic backend")
-    model = os.environ.get("WORLD_MODEL_MODEL") or os.environ.get("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20240620"
+    model = os.environ.get("PREDICTIVE_PROPOSAL_MODEL") or os.environ.get("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20240620"
     payload = {
         "model": model,
         "max_tokens": 1200,
@@ -214,7 +214,7 @@ def _call_anthropic(prompt: str, summary: Dict[str, Any]) -> str:
 
 def _call_ollama(prompt: str, summary: Dict[str, Any]) -> str:
     host = os.environ.get("OLLAMA_HOST", "").strip() or "http://127.0.0.1:11434"
-    model = os.environ.get("WORLD_MODEL_MODEL") or os.environ.get("OLLAMA_MODEL") or "llama3.1"
+    model = os.environ.get("PREDICTIVE_PROPOSAL_MODEL") or os.environ.get("OLLAMA_MODEL") or "llama3.1"
     payload = {
         "model": model,
         "stream": False,
@@ -236,9 +236,9 @@ def _call_ollama(prompt: str, summary: Dict[str, Any]) -> str:
 def main() -> None:
     req = _read_stdin_json()
     prompt, summary = _summarize_request(req)
-    trace_id = req.get("trace_id", "wm::unknown")
+    trace_id = req.get("trace_id", "proposal::unknown")
 
-    backend = os.environ.get("WORLD_MODEL_BACKEND", "").strip().lower()
+    backend = os.environ.get("PREDICTIVE_PROPOSAL_BACKEND", "").strip().lower()
     if not backend:
         if os.environ.get("OPENAI_API_KEY"):
             backend = "openai"
@@ -248,8 +248,8 @@ def main() -> None:
             backend = "ollama"
         else:
             raise RuntimeError(
-                "WORLD_MODEL_BACKEND not set and no API keys found. "
-                "Set WORLD_MODEL_BACKEND=openai|anthropic|ollama and configure keys."
+                "PREDICTIVE_PROPOSAL_BACKEND not set and no API keys found. "
+                "Set PREDICTIVE_PROPOSAL_BACKEND=openai|anthropic|ollama and configure keys."
             )
 
     if backend == "openai":
@@ -259,12 +259,12 @@ def main() -> None:
     elif backend == "ollama":
         raw = _call_ollama(prompt, summary)
     else:
-        raise RuntimeError(f"unsupported WORLD_MODEL_BACKEND={backend}")
+        raise RuntimeError(f"unsupported PREDICTIVE_PROPOSAL_BACKEND={backend}")
 
     parsed = _extract_json(raw)
     proposals = _normalize_proposals(trace_id, parsed)
     out = {
-        "protocol": req.get("protocol", "axiograph_world_model_v1"),
+        "protocol": req.get("protocol", "axiograph_predictive_proposal_v1"),
         "trace_id": trace_id,
         "generated_at_unix_secs": int(time.time()),
         "proposals": proposals,
@@ -279,13 +279,13 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         err = {
-            "protocol": "axiograph_world_model_v1",
-            "trace_id": "wm::error",
+            "protocol": "axiograph_predictive_proposal_v1",
+            "trace_id": "proposal::error",
             "generated_at_unix_secs": int(time.time()),
             "proposals": {
                 "version": 1,
                 "generated_at": str(int(time.time())),
-                "source": {"source_type": "world_model", "locator": "error"},
+                "source": {"source_type": "predictive_proposal_adapter", "locator": "error"},
                 "schema_hint": None,
                 "proposals": [],
             },

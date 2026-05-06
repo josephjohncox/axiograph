@@ -95,7 +95,7 @@ pub struct ProposalsValidationOptionsV1 {
     pub quality_profile: String,
     pub quality_plane: String,
     #[serde(default)]
-    pub competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    pub competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     #[serde(default)]
     pub competency_gate: CompetencyGatePolicyV1,
 }
@@ -238,7 +238,7 @@ pub fn quality_delta_report_v1(
 pub fn competency_gate_report_v1(
     base: &PathDB,
     preview: &PathDB,
-    questions: &[crate::world_model::CompetencyQuestionV1],
+    questions: &[crate::predictive_proposals::CompetencyQuestionV1],
     policy: &CompetencyGatePolicyV1,
 ) -> Result<CompetencyGateReportV1> {
     let before =
@@ -750,7 +750,7 @@ instance FamInst of Fam:
                 quality_profile: "fast".to_string(),
                 quality_plane: "both".to_string(),
                 competency_questions: vec![
-                    crate::world_model::CompetencyQuestionV1 {
+                    crate::predictive_proposals::CompetencyQuestionV1 {
                         name: "jamison_parent".to_string(),
                         question: Some("Jamison should have Bob as a parent".to_string()),
                         authoring: None,
@@ -759,7 +759,7 @@ instance FamInst of Fam:
                         weight: 1.0,
                         contexts: Vec::new(),
                     },
-                    crate::world_model::CompetencyQuestionV1 {
+                    crate::predictive_proposals::CompetencyQuestionV1 {
                         name: "jamison_spouse".to_string(),
                         question: Some("Jamison should not yet have a spouse fact".to_string()),
                         authoring: None,

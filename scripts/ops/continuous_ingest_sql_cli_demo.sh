@@ -1,15 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Continuous ingest demo (SQL): incremental DDL changes → proposals → drafted `.axi` → PathDB → viz.
+# Ops/reference ingest demo (SQL): incremental DDL changes → proposals → drafted `.axi` → PathDB → viz.
 #
 # Run:
-#   ./scripts/continuous_ingest_sql_cli_demo.sh
+#   ./scripts/ops/continuous_ingest_sql_cli_demo.sh
 #
 # This is intentionally CLI-only (no interactive REPL).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUT_DIR="$ROOT_DIR/build/continuous_ingest_sql_cli_demo"
 mkdir -p "$OUT_DIR"
 

@@ -18,7 +18,7 @@ def _load_onnx(model_path: str):
         import onnxruntime as ort  # type: ignore
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(
-            "onnxruntime is required for the ONNX world model plugin. "
+            "onnxruntime is required for the ONNX predictive proposal adapter plugin. "
             "Install with: pip install onnxruntime"
         ) from exc
     providers = ["CPUExecutionProvider"]
@@ -37,19 +37,19 @@ def _normalize_proposals(trace_id: str, proposals: List[Dict[str, Any]]) -> Dict
     out = {
         "version": 1,
         "generated_at": str(int(time.time())),
-        "source": {"source_type": "world_model", "locator": trace_id},
+        "source": {"source_type": "predictive_proposal_adapter", "locator": trace_id},
         "schema_hint": None,
         "proposals": [],
     }
     for idx, p in enumerate(proposals):
         kind = p.get("kind", "Relation")
         kind = "Entity" if str(kind).lower() == "entity" else "Relation"
-        base_id = f"wm::{trace_id}::{idx}"
+        base_id = f"proposal::{trace_id}::{idx}"
         meta = {
             "proposal_id": p.get("proposal_id") or base_id,
             "confidence": float(p.get("confidence", 0.7)),
             "evidence": p.get("evidence") if isinstance(p.get("evidence"), list) else [],
-            "public_rationale": p.get("public_rationale") or "onnx world model proposal",
+            "public_rationale": p.get("public_rationale") or "onnx predictive proposal adapter proposal",
             "metadata": p.get("metadata") if isinstance(p.get("metadata"), dict) else {},
             "schema_hint": p.get("schema_hint"),
         }
@@ -78,7 +78,7 @@ def _normalize_proposals(trace_id: str, proposals: List[Dict[str, Any]]) -> Dict
 
 def main() -> None:
     req = _read_stdin_json()
-    trace_id = req.get("trace_id", "wm::onnx")
+    trace_id = req.get("trace_id", "proposal::onnx")
     export = (req.get("input") or {}).get("export") or {}
     items = export.get("items", []) or []
 
@@ -91,8 +91,8 @@ def main() -> None:
     model_path = model_path or ""
     if not model_path:
         model_path = (
-            os.environ.get("WORLD_MODEL_MODEL_PATH", "").strip()
-            or "models/world_model_small.onnx"
+            os.environ.get("PREDICTIVE_PROPOSAL_MODEL_PATH", "").strip()
+            or "models/predictive_proposal_small.onnx"
         )
 
     session = _load_onnx(model_path)
@@ -118,7 +118,7 @@ def main() -> None:
             "proposal_id": f"rel::{rel}::{idx}",
             "confidence": conf,
             "evidence": [],
-            "public_rationale": "onnx world model prediction",
+            "public_rationale": "onnx predictive proposal adapter prediction",
             "metadata": {"model_path": model_path},
             "schema_hint": it.get("schema"),
             "relation_id": f"rel::{rel}::{idx}",
@@ -130,7 +130,7 @@ def main() -> None:
 
     proposals_file = _normalize_proposals(trace_id, proposals)
     out = {
-        "protocol": req.get("protocol", "axiograph_world_model_v1"),
+        "protocol": req.get("protocol", "axiograph_predictive_proposal_v1"),
         "trace_id": trace_id,
         "generated_at_unix_secs": int(time.time()),
         "proposals": proposals_file,
@@ -145,13 +145,13 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         err = {
-            "protocol": "axiograph_world_model_v1",
-            "trace_id": "wm::error",
+            "protocol": "axiograph_predictive_proposal_v1",
+            "trace_id": "proposal::error",
             "generated_at_unix_secs": int(time.time()),
             "proposals": {
                 "version": 1,
                 "generated_at": str(int(time.time())),
-                "source": {"source_type": "world_model", "locator": "error"},
+                "source": {"source_type": "predictive_proposal_adapter", "locator": "error"},
                 "schema_hint": None,
                 "proposals": [],
             },

@@ -1,6 +1,8 @@
 -- Draft `.axi` module generated from `proposals.json`.
 --
--- This output is *untrusted* (evidence-plane). Review before promotion.
+-- This output is a pre-vetted raw proposal fixture for teaching draft-module and
+-- typed review flows. It is *untrusted* evidence-plane material, not accepted
+-- ontology truth. Review before promotion.
 --
 -- Design notes:
 -- - Entities become object inhabitants.
@@ -13,7 +15,7 @@
 --
 -- Re-generate (from repo root):
 --   PATH=/opt/homebrew/bin:$PATH cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover draft-module \
---     examples/schema_discovery/proto_api_proposals.json \
+--     examples/schema_discovery/fixtures/proto_api_proposals.json \
 --     --out build/ProtoApi.proposals.axi \
 --     --module ProtoApi_Proposals \
 --     --schema ProtoApi \

@@ -13,7 +13,7 @@ Current implemented slice (2026-04):
 
 - `axiograph_pathdb::anchor` is live and re-exported from the crate root with
   `AxiDigest`, `AcceptedSnapshotId`, `PathdbSnapshotId`, `ProposalDigest`,
-  `WorldModelRunId`, `SchemaId`, `TheoryId`, `ContextId`, `StableFactId`, and
+  `ProposalAdapterRunId`, `SchemaId`, `TheoryId`, `ContextId`, `StableFactId`, and
   `AcceptedAxiAnchor`.
 - `axiograph_pathdb::lifecycle` is live and re-exported from the crate root
   with `Parsed`, `Validated`, `Reviewed`, `Accepted`, and `Certified`.
@@ -85,7 +85,7 @@ pub struct PathdbSnapshotId(String);
 pub struct ProposalDigest(String);
 
 #[serde(transparent)]
-pub struct WorldModelRunId(String);
+pub struct ProposalAdapterRunId(String);
 
 #[serde(transparent)]
 pub struct SchemaId(String);
@@ -353,7 +353,7 @@ Current status of the first implementation cut:
 
 1. Done: `anchor.rs` and `lifecycle.rs` are live.
 2. Done for the main semantic workflow seams: accepted-plane, WAL, db-server
-   snapshot state, and world-model lineage now use stable anchor newtypes
+   snapshot state, and proposal-adapter lineage now use stable anchor newtypes
    internally, while HTTP/CLI JSON remains string-compatible at the boundary.
 3. Done: the canonical `.axi` import boundary now uses
    `Module<Validated>` plus `Module<Reviewed>`.

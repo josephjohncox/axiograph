@@ -1,9 +1,11 @@
 {
   "version": 1,
   "generated_at": "0",
+  "fixture_role": "evidence_plane_review_candidate_fixture",
+  "non_claim": "Synthetic checked-in fixture for draft-module and typed review flows; not production evidence and not accepted ontology truth.",
   "source": {
     "source_type": "example",
-    "locator": "examples/schema_discovery/proto_api_proposals.json"
+    "locator": "examples/schema_discovery/fixtures/proto_api_proposals.json"
   },
   "schema_hint": "proto_api",
   "proposals": [
@@ -331,4 +333,3 @@
     }
   ]
 }
-

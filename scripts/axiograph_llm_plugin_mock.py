@@ -64,8 +64,8 @@ def respond_to_query(question: str) -> int:
         path = "/".join(rels) if rels else "rel_0/rel_1"
         query_ir_v1 = {
             "version": 1,
-            "select": ["?y"],
-            "where": [{"kind": "edge", "left": int(start), "path": path, "right": "?y"}],
+            "select_vars": ["?y"],
+            "where_atoms": [{"kind": "edge", "left": int(start), "path": path, "right": "?y"}],
             "limit": 20,
         }
         return respond_ok({"query_ir_v1": query_ir_v1})
@@ -89,14 +89,14 @@ def respond_to_query(question: str) -> int:
         where = ", ".join(atoms) if atoms else "?x is Node"
         if not ir_atoms:
             ir_atoms = [{"kind": "type", "term": "?x", "type": "Node"}]
-        query_ir_v1 = {"version": 1, "select": ["?x"], "where": ir_atoms, "limit": 20}
+        query_ir_v1 = {"version": 1, "select_vars": ["?x"], "where_atoms": ir_atoms, "limit": 20}
         return respond_ok({"query_ir_v1": query_ir_v1})
 
     # Fallback: a harmless AxQL query.
     query_ir_v1 = {
         "version": 1,
-        "select": ["?x"],
-        "where": [{"kind": "type", "term": "?x", "type": "Node"}],
+        "select_vars": ["?x"],
+        "where_atoms": [{"kind": "type", "term": "?x", "type": "Node"}],
         "limit": 20,
     }
     return respond_ok({"query_ir_v1": query_ir_v1})
@@ -204,8 +204,8 @@ def build_query_payload(question: str) -> Dict[str, Any]:
         path = "/".join(rels) if rels else "rel_0/rel_1"
         query_ir_v1 = {
             "version": 1,
-            "select": ["?y"],
-            "where": [{"kind": "edge", "left": int(start), "path": path, "right": "?y"}],
+            "select_vars": ["?y"],
+            "where_atoms": [{"kind": "edge", "left": int(start), "path": path, "right": "?y"}],
             "limit": 20,
         }
         return {"query_ir_v1": query_ir_v1}
@@ -228,13 +228,13 @@ def build_query_payload(question: str) -> Dict[str, Any]:
         where = ", ".join(atoms) if atoms else "?x is Node"
         if not ir_atoms:
             ir_atoms = [{"kind": "type", "term": "?x", "type": "Node"}]
-        query_ir_v1 = {"version": 1, "select": ["?x"], "where": ir_atoms, "limit": 20}
+        query_ir_v1 = {"version": 1, "select_vars": ["?x"], "where_atoms": ir_atoms, "limit": 20}
         return {"query_ir_v1": query_ir_v1}
 
     query_ir_v1 = {
         "version": 1,
-        "select": ["?x"],
-        "where": [{"kind": "type", "term": "?x", "type": "Node"}],
+        "select_vars": ["?x"],
+        "where_atoms": [{"kind": "type", "term": "?x", "type": "Node"}],
         "limit": 20,
     }
     return {"query_ir_v1": query_ir_v1}

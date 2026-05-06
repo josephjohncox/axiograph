@@ -1,4 +1,4 @@
-# Continuous Ingest and Continuous Discovery (Prototype)
+# Continuous Ingest and Continuous Discovery
 
 **Diataxis:** Tutorial  
 **Audience:** contributors
@@ -163,9 +163,11 @@ Example trace skeleton:
 
 ---
 
-## 5. Prototype CLI workflow (today)
+## 5. Current local CLI workflow
 
-The goal of the prototype tooling is to make this loop tangible without requiring a full distributed deployment.
+The goal of the local tooling is to make this loop tangible without requiring a
+distributed deployment. Ingestion mutates evidence-plane artifacts; promotion
+into canonical `.axi` remains explicit and reviewable.
 
 ### 5.1 Index a repo (evidence plane)
 
@@ -242,16 +244,17 @@ It starts from a base `enterprise` scenario, then applies two ingest ticks:
   - `build/continuous_ingest_round1.{dot,html}`
   - `build/continuous_ingest_round2.{dot,html}`
 
-This is a prototype for the production loop: ingestion mutates the evidence plane,
-while promotion into canonical `.axi` (and certificate checking) remains explicit.
+This is the local form of the production loop: ingestion mutates the evidence
+plane, while promotion into canonical `.axi` and certificate checking remains
+explicit.
 
 ### 5.5 Hands-on demos: continuous ingest from SQL / Proto (CLI-only)
 
 If you want to keep everything in the “CLI command” surface (no interactive REPL),
 use the demo scripts:
 
-- SQL: `scripts/continuous_ingest_sql_cli_demo.sh`
-- Proto: `scripts/continuous_ingest_proto_cli_demo.sh` (requires `buf`)
+- SQL: `scripts/ops/continuous_ingest_sql_cli_demo.sh`
+- Proto: `scripts/ops/continuous_ingest_proto_cli_demo.sh` (requires `buf`)
 
 Both demos run two “ticks”:
 

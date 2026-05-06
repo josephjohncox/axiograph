@@ -31,8 +31,9 @@ export -> train -> propose -> reconcile -> promote -> retrain
    - Target: masked facts/edges/attributes or snapshot deltas.
 
 2) **Train model**
-   - JEPA-style latent prediction or contrastive objectives.
-   - Multi-step rollouts for world-model training.
+   - JEPA-style latent prediction or contrastive objectives in research
+     adapters.
+   - Multi-step rollouts for predictive proposal training/evaluation.
 
 3) **Emit evidence**
    - Convert predictions into `proposals.json` (evidence plane).
@@ -60,11 +61,18 @@ export -> train -> propose -> reconcile -> promote -> retrain
 - **Cross-context prediction**
   - Predict facts in another context/world (Observed vs Simulation).
 
-## World model training (multi-step, recurrent)
+## Research note: multi-step predictive models
 
-The world model predicts *trajectories* of future states. Training uses
-multi-step rollouts where the model is applied repeatedly and the loss is
-accumulated across steps. This aligns with objective-driven planning and MPC.
+Some research adapters may predict sequences of future representation states.
+Training can use multi-step rollouts where a model is applied repeatedly and the
+loss is accumulated across steps. In Axiograph's general ontology-engineering
+demos, the core runtime surface is named bounded proposal rollout: an
+evidence-plane proposal search/evaluation loop.
+
+Do not treat that runtime surface as a native JEPA, world-model, MPC, or
+control-system claim. Those semantics belong to external adapters or
+deployments that supply explicit dynamics, objectives, constraints, and
+receding-horizon execution outside the trusted Axiograph boundary.
 
 ## Guardrails and evaluation
 
@@ -76,14 +84,22 @@ accumulated across steps. This aligns with objective-driven planning and MPC.
 ## Implementation hooks in the codebase
 
 - **Snapshot anchors**: accepted-plane snapshot ids (stable training inputs) and
-  optional `axiograph db pathdb export-axi` for derived convenience views.
-- **Training export**: `axiograph discover jepa-export` (canonical full `.axi` -> training pairs).
-- **World model proposals**: `axiograph ingest world-model` (evidence-plane `proposals.json`
-  with provenance) or the built-in LLM plugin `axiograph ingest world-model-plugin-llm`,
-  plus REPL `wm` and server `POST /world_model/propose`.
+  canonical `.axi` digests for derived training views.
+- **Training export**: `axiograph discover training-export`
+  (canonical full `.axi` -> training pairs).
+- **Predictive proposals**: `axiograph ingest predictive-proposal`
+  (evidence-plane `proposals.json` with provenance) or the built-in LLM adapter
+  `axiograph ingest predictive-proposals-llm`, plus REPL `proposal` and server
+  `POST /evidence/proposals/predict`.
+- **Bounded rollout**: REPL `proposal plan` and server
+  `POST /planning/proposal-rollout` produce bounded proposal reports, not
+  native MPC/control execution.
 - **Evidence plane**: `proposals.json` ingestion + WAL overlays.
 - **DocChunks**: existing chunk overlays for textual grounding.
 - **Certificates**: Lean checker for promotion-time validation.
+
+`PathDBExportV1` is not a training or semantic interchange surface. Keep it for
+debug/live-byte/parser parity only.
 
 ## Related docs
 

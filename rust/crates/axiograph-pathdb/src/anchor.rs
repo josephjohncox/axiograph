@@ -8,7 +8,7 @@
 //! They are the Rust-side foothold for:
 //!
 //! - accepted snapshot anchoring,
-//! - world-model lineage,
+//! - proposal-adapter lineage,
 //! - schema-scoped typed execution,
 //! - and semantic VCS history.
 //!
@@ -78,7 +78,7 @@ semantic_id_type!(AxiDigest);
 semantic_id_type!(AcceptedSnapshotId);
 semantic_id_type!(PathdbSnapshotId);
 semantic_id_type!(ProposalDigest);
-semantic_id_type!(WorldModelRunId);
+semantic_id_type!(ProposalAdapterRunId);
 semantic_id_type!(SchemaId);
 semantic_id_type!(TheoryId);
 semantic_id_type!(InstanceId);

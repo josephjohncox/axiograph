@@ -342,8 +342,8 @@ fn dispatch_repl_line_result(state: &mut ReplState, tokens: &[String]) -> Result
             cmd_llm(state, args)?;
             Ok(ReplControl::Continue)
         }
-        "wm" | "world_model" => {
-            cmd_world_model(state, args)?;
+        "proposal" | "predictive_proposal_adapter" => {
+            cmd_predictive_proposal(state, args)?;
             Ok(ReplControl::Continue)
         }
         "match_proto_enterprise" => {
@@ -363,7 +363,7 @@ struct ReplState {
     db: Option<axiograph_pathdb::PathDB>,
     meta: Option<axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
     llm: crate::llm::LlmState,
-    world_model: crate::world_model::WorldModelState,
+    predictive_proposal: crate::predictive_proposals::ProposalAdapterState,
     snapshot_key: String,
     contexts: Vec<crate::axql::AxqlContextSpec>,
     query_cache: crate::axql::AxqlPreparedQueryCache,
@@ -557,7 +557,7 @@ fn refresh_completion_data(
         "sql".to_string(),
         "ask".to_string(),
         "llm".to_string(),
-        "wm".to_string(),
+        "proposal".to_string(),
         "match_proto_enterprise".to_string(),
         "viz".to_string(),
     ];
@@ -820,7 +820,7 @@ fn print_help() {
   sql <SQL query>                SQL-ish dialect compiled into the same query core
   ask <query>                    Natural-language-ish templates compiled into AxQL
   llm <subcommand>               LLM-assisted query translation / answering
-  wm <subcommand>                World-model proposal generation (untrusted)
+  proposal <subcommand>          Predictive proposal adapter and bounded rollout planning (untrusted)
   match_proto_enterprise          Add heuristic links from `Service` → `ProtoService` (and reverse), so enterprise graphs can traverse into imported proto surfaces
   viz <out> [options...]         Export a neighborhood visualization (dot/html/json)
                                  Options:
@@ -4644,104 +4644,104 @@ fn tokenize_repl_line(line: &str) -> Vec<String> {
     split_command_line(line)
 }
 
-fn cmd_world_model(state: &mut ReplState, args: &[String]) -> Result<()> {
+fn cmd_predictive_proposal(state: &mut ReplState, args: &[String]) -> Result<()> {
     if args.is_empty() || args[0].eq_ignore_ascii_case("status") {
-        println!("{}", state.world_model.status_line());
+        println!("{}", state.predictive_proposal.status_line());
         return Ok(());
     }
 
     match args[0].to_ascii_lowercase().as_str() {
         "disable" => {
-            state.world_model.backend = crate::world_model::WorldModelBackend::Disabled;
-            println!("ok: {}", state.world_model.status_line());
+            state.predictive_proposal.backend = crate::predictive_proposals::ProposalAdapterBackend::Disabled;
+            println!("ok: {}", state.predictive_proposal.status_line());
             Ok(())
         }
         "model" => {
             if args.len() == 1 {
-                println!("{}", state.world_model.status_line());
+                println!("{}", state.predictive_proposal.status_line());
                 return Ok(());
             }
-            state.world_model.model = Some(args[1..].join(" "));
-            println!("ok: {}", state.world_model.status_line());
+            state.predictive_proposal.model = Some(args[1..].join(" "));
+            println!("ok: {}", state.predictive_proposal.status_line());
             Ok(())
         }
         "use" => {
             if args.len() < 2 {
                 return Err(anyhow!(
-                    "usage: wm use stub | wm use llm [args...] | wm use http <url> | wm use command <exe> [args...]"
+                    "usage: proposal use stub | proposal use llm [args...] | proposal use http <url> | proposal use command <exe> [args...]"
                 ));
             }
             match args[1].to_ascii_lowercase().as_str() {
                 "stub" => {
-                    state.world_model.backend = crate::world_model::WorldModelBackend::Stub;
-                    println!("ok: {}", state.world_model.status_line());
+                    state.predictive_proposal.backend = crate::predictive_proposals::ProposalAdapterBackend::Stub;
+                    println!("ok: {}", state.predictive_proposal.status_line());
                     Ok(())
                 }
                 "llm" => {
                     let exe =
                         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("bin/axiograph"));
                     let mut args_list =
-                        vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
+                        vec!["ingest".to_string(), "predictive-proposals-llm".to_string()];
                     if args.len() > 2 {
                         args_list.extend(args[2..].to_vec());
                     }
-                    crate::llm::validate_world_model_llm_backend_arg(&args_list)?;
-                    state.world_model.backend = crate::world_model::WorldModelBackend::Command {
+                    crate::llm::validate_predictive_proposal_llm_backend_arg(&args_list)?;
+                    state.predictive_proposal.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
                         program: exe,
                         args: args_list,
                     };
-                    if state.world_model.model.is_none() {
-                        let env_model = std::env::var("WORLD_MODEL_MODEL")
+                    if state.predictive_proposal.model.is_none() {
+                        let env_model = std::env::var("PREDICTIVE_PROPOSAL_MODEL")
                             .or_else(|_| std::env::var("OPENAI_MODEL"))
                             .or_else(|_| std::env::var("ANTHROPIC_MODEL"))
                             .or_else(|_| std::env::var("OLLAMA_MODEL"))
                             .ok()
                             .map(|s| s.trim().to_string())
                             .filter(|s| !s.is_empty());
-                        state.world_model.model = env_model;
+                        state.predictive_proposal.model = env_model;
                     }
-                    println!("ok: {}", state.world_model.status_line());
+                    println!("ok: {}", state.predictive_proposal.status_line());
                     Ok(())
                 }
                 "http" => {
                     if args.len() < 3 {
-                        return Err(anyhow!("usage: wm use http <url>"));
+                        return Err(anyhow!("usage: proposal use http <url>"));
                     }
-                    state.world_model.backend = crate::world_model::WorldModelBackend::Http {
+                    state.predictive_proposal.backend = crate::predictive_proposals::ProposalAdapterBackend::Http {
                         url: args[2].clone(),
                     };
-                    println!("ok: {}", state.world_model.status_line());
+                    println!("ok: {}", state.predictive_proposal.status_line());
                     Ok(())
                 }
                 "command" => {
                     if args.len() < 3 {
-                        return Err(anyhow!("usage: wm use command <exe> [args...]"));
+                        return Err(anyhow!("usage: proposal use command <exe> [args...]"));
                     }
-                    state.world_model.backend = crate::world_model::WorldModelBackend::Command {
+                    state.predictive_proposal.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
                         program: resolve_program_with_repo_fallback(&PathBuf::from(&args[2])),
                         args: args[3..].to_vec(),
                     };
-                    println!("ok: {}", state.world_model.status_line());
+                    println!("ok: {}", state.predictive_proposal.status_line());
                     Ok(())
                 }
-                other => Err(anyhow!("unknown wm backend `{other}`")),
+                other => Err(anyhow!("unknown proposal backend `{other}`")),
             }
         }
-        "propose" => cmd_world_model_propose_repl(state, &args[1..]),
-        "plan" => cmd_world_model_plan_repl(state, &args[1..]),
+        "propose" => cmd_predictive_proposals_repl(state, &args[1..]),
+        "plan" => cmd_proposal_rollout_plan_repl(state, &args[1..]),
         _ => Err(anyhow!(
-            "unknown wm subcommand (try: wm status | wm use ... | wm propose ... | wm plan ...)"
+            "unknown proposal subcommand (try: proposal status | proposal use ... | proposal propose ... | proposal plan ...)"
         )),
     }
 }
 
-fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Result<()> {
+fn cmd_predictive_proposals_repl(state: &mut ReplState, args: &[String]) -> Result<()> {
     let Some(db) = state.db.as_ref() else {
         return Err(anyhow!("no db loaded (use `load` or `import_axi`)"));
     };
     if args.is_empty() {
         return Err(anyhow!(
-            "usage: wm propose <out.json> [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--axi <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
+            "usage: proposal propose <out.json> [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--axi <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
         ));
     }
 
@@ -4875,19 +4875,19 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
         i += 1;
     }
 
-    let out = out.ok_or_else(|| anyhow!("wm propose: missing output path"))?;
+    let out = out.ok_or_else(|| anyhow!("proposal propose: missing output path"))?;
 
     let guardrail_profile = guardrail_profile.trim().to_ascii_lowercase();
     let guardrail_plane = guardrail_plane.trim().to_ascii_lowercase();
     let guardrail_weights = if guardrail_weight_pairs.is_empty() {
-        crate::world_model::GuardrailCostWeightsV1::defaults()
+        crate::predictive_proposals::GuardrailCostWeightsV1::defaults()
     } else {
-        crate::world_model::parse_guardrail_weights(&guardrail_weight_pairs)?
+        crate::predictive_proposals::parse_guardrail_weights(&guardrail_weight_pairs)?
     };
-    let task_costs = crate::world_model::parse_task_costs(&task_cost_pairs)?;
+    let task_costs = crate::predictive_proposals::parse_task_costs(&task_cost_pairs)?;
 
     let guardrail = if guardrail_profile != "off" {
-        Some(crate::world_model::compute_guardrail_costs(
+        Some(crate::predictive_proposals::compute_guardrail_costs(
             db,
             "repl",
             &guardrail_profile,
@@ -4901,12 +4901,12 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     let mut input = if let Some(axi) = axi_path.as_ref() {
         let axi = resolve_path_with_repo_fallback(axi)?;
         let text = fs::read_to_string(axi)?;
-        crate::world_model_input::build_world_model_input_from_axi_text(
+        crate::predictive_proposal_input::build_predictive_proposal_input_from_axi_text(
             &text,
             None,
             None,
             None,
-            Some(crate::world_model::JepaExportOptions {
+            Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                 instance_filter: None,
                 max_items: 0,
                 mask_fields: 1,
@@ -4915,13 +4915,13 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
             }),
         )?
     } else {
-        crate::world_model_input::build_world_model_input_from_pathdb(
+        crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
             db,
-            &crate::world_model_input::WorldModelInputBuildOptionsV1 {
+            &crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
                 module_name: None,
                 pathdb_snapshot_id: None,
                 accepted_snapshot_id: None,
-                training_export: Some(crate::world_model::JepaExportOptions {
+                training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                     instance_filter: None,
                     max_items: 0,
                     mask_fields: 1,
@@ -4934,9 +4934,9 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     if guardrail.is_some() {
         input.set_guardrail_layer(guardrail.clone().expect("guardrail already checked"));
     }
-    input.notes.push("source=repl_world_model".to_string());
+    input.notes.push("source=repl_predictive_proposals".to_string());
 
-    let mut options = crate::world_model::WorldModelOptionsV1::default();
+    let mut options = crate::predictive_proposals::PredictiveProposalOptionsV1::default();
     options.max_new_proposals = max_new;
     options.seed = seed;
     options.goals = goals;
@@ -4946,10 +4946,10 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     let input_axi_digest = input.axi_digest_v1.clone();
     let input_pathdb_snapshot_id = input.pathdb_snapshot_id();
     let input_accepted_snapshot_id = input.accepted_snapshot_id();
-    let req = crate::world_model::make_world_model_request(input, options);
-    let mut response = state.world_model.propose(&req)?;
+    let req = crate::predictive_proposals::make_predictive_proposal_request(input, options);
+    let mut response = state.predictive_proposal.propose(&req)?;
     if let Some(err) = response.error.take() {
-        return Err(anyhow!("world model error: {err}"));
+        return Err(anyhow!("predictive proposal adapter error: {err}"));
     }
 
     let guardrail_profile_label = if guardrail_profile == "off" {
@@ -4963,10 +4963,10 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
         Some(guardrail_plane.clone())
     };
 
-    let provenance = crate::world_model::build_world_model_provenance(
+    let provenance = crate::predictive_proposals::build_predictive_proposal_provenance(
         &response,
-        state.world_model.backend_label(),
-        state.world_model.model.clone(),
+        state.predictive_proposal.backend_label(),
+        state.predictive_proposal.model.clone(),
         input_axi_digest,
         input_pathdb_snapshot_id,
         input_accepted_snapshot_id,
@@ -4976,7 +4976,7 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     )?;
 
     let mut proposals =
-        crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+        crate::predictive_proposals::apply_predictive_proposal_provenance(response.proposals, &provenance);
 
     if max_new > 0 && proposals.proposals.len() > max_new {
         proposals.proposals.truncate(max_new);
@@ -5035,13 +5035,13 @@ fn cmd_world_model_propose_repl(state: &mut ReplState, args: &[String]) -> Resul
     Ok(())
 }
 
-fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<()> {
+fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Result<()> {
     let Some(db) = state.db.as_ref() else {
         return Err(anyhow!("no db loaded (use `load` or `import_axi`)"));
     };
     if args.is_empty() {
         return Err(anyhow!(
-            "usage: wm plan <out.json> [--steps N] [--rollouts N] [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--axi <file>] [--cq <name=query>] [--cq-file <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
+            "usage: proposal plan <out.json> [--steps N] [--rollouts N] [--goal <text>] [--max N] [--guardrail off|fast|strict] [--plane meta|data|both] [--axi <file>] [--cq <name=query>] [--cq-file <file>] [--commit-dir <dir>] [--accepted-snapshot <id>] [--message <msg>] [--no-validate]"
         ));
     }
 
@@ -5216,32 +5216,32 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
         i += 1;
     }
 
-    let out = out.ok_or_else(|| anyhow!("wm plan: missing output path"))?;
+    let out = out.ok_or_else(|| anyhow!("proposal plan: missing output path"))?;
 
     let guardrail_profile = guardrail_profile.trim().to_ascii_lowercase();
     let guardrail_plane = guardrail_plane.trim().to_ascii_lowercase();
     let guardrail_weights = if guardrail_weight_pairs.is_empty() {
-        crate::world_model::GuardrailCostWeightsV1::defaults()
+        crate::predictive_proposals::GuardrailCostWeightsV1::defaults()
     } else {
-        crate::world_model::parse_guardrail_weights(&guardrail_weight_pairs)?
+        crate::predictive_proposals::parse_guardrail_weights(&guardrail_weight_pairs)?
     };
-    let task_costs = crate::world_model::parse_task_costs(&task_cost_pairs)?;
-    let mut competency_questions = crate::world_model::parse_competency_questions(&cq_pairs)?;
+    let task_costs = crate::predictive_proposals::parse_task_costs(&task_cost_pairs)?;
+    let mut competency_questions = crate::predictive_proposals::parse_competency_questions(&cq_pairs)?;
     for path in &cq_files {
         let path = resolve_path_with_repo_fallback(path)?;
-        let mut loaded = crate::world_model::load_competency_questions(&path)?;
+        let mut loaded = crate::predictive_proposals::load_competency_questions(&path)?;
         competency_questions.append(&mut loaded);
     }
 
     let mut base_input = if let Some(axi) = axi_path.as_ref() {
         let axi = resolve_path_with_repo_fallback(axi)?;
         let text = fs::read_to_string(axi)?;
-        crate::world_model_input::build_world_model_input_from_axi_text(
+        crate::predictive_proposal_input::build_predictive_proposal_input_from_axi_text(
             &text,
             None,
             None,
             None,
-            Some(crate::world_model::JepaExportOptions {
+            Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                 instance_filter: None,
                 max_items: 0,
                 mask_fields: 1,
@@ -5250,13 +5250,13 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
             }),
         )?
     } else {
-        crate::world_model_input::build_world_model_input_from_pathdb(
+        crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
             db,
-            &crate::world_model_input::WorldModelInputBuildOptionsV1 {
+            &crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
                 module_name: None,
                 pathdb_snapshot_id: None,
                 accepted_snapshot_id: None,
-                training_export: Some(crate::world_model::JepaExportOptions {
+                training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                     instance_filter: None,
                     max_items: 0,
                     mask_fields: 1,
@@ -5268,9 +5268,9 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
     };
     base_input
         .notes
-        .push("source=repl_world_model_plan".to_string());
+        .push("source=repl_proposal_rollout_plan".to_string());
 
-    let plan_opts = crate::world_model::WorldModelPlanOptionsV1 {
+    let plan_opts = crate::predictive_proposals::BoundedProposalPlanOptionsV1 {
         horizon_steps: steps,
         rollouts,
         max_new_proposals: max_new,
@@ -5287,7 +5287,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
     };
 
     let report =
-        crate::world_model::run_world_model_plan(db, &state.world_model, &base_input, &plan_opts)?;
+        crate::predictive_proposals::run_proposal_rollout_plan(db, &state.predictive_proposal, &base_input, &plan_opts)?;
 
     let json = serde_json::to_string_pretty(&report)?;
     fs::write(&out, json)?;
@@ -5303,7 +5303,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
             version: axiograph_ingest_docs::proposals::PROPOSALS_VERSION_V1,
             generated_at,
             source: axiograph_ingest_docs::ProposalSourceV1 {
-                source_type: "world_model_plan".to_string(),
+                source_type: "proposal_rollout_plan".to_string(),
                 locator: report.trace_id.to_string(),
             },
             schema_hint: None,
@@ -5332,7 +5332,7 @@ fn cmd_world_model_plan_repl(state: &mut ReplState, args: &[String]) -> Result<(
         }
 
         let tmp_path = std::env::temp_dir().join(format!(
-            "axiograph_wm_plan_{}.json",
+            "axiograph_proposal_rollout_plan_{}.json",
             report.trace_id.as_str().replace(':', "_")
         ));
         let json = serde_json::to_string_pretty(&merged)?;

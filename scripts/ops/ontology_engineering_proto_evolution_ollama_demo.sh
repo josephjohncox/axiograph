@@ -15,7 +15,7 @@ set -euo pipefail
 #       5) build `.axpd` snapshot + optional reversible debug export + viz pages
 #
 # Run:
-#   ./scripts/ontology_engineering_proto_evolution_ollama_demo.sh
+#   ./scripts/ops/ontology_engineering_proto_evolution_ollama_demo.sh
 #
 # Requirements:
 # - `buf` installed (used by `axiograph ingest proto ingest`)
@@ -28,7 +28,7 @@ set -euo pipefail
 # - `AXIOGRAPH_LLM_TIMEOUT_SECS=600` to allow longer-running model calls (0 disables).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUT_DIR="$ROOT_DIR/build/ontology_engineering_proto_evolution_ollama_demo"
 PROTO_ROOT="$OUT_DIR/proto_workspace"
 
@@ -184,7 +184,7 @@ run_tick() {
   "$AXIOGRAPH" db pathdb materialize-axi "$accepted_axi" --out "$accepted_axpd"
 
   echo ""
-  echo "-- tick $tick: import doc chunks into the snapshot (extension layer)"
+  echo "-- tick $tick: import doc chunks into the local derived snapshot (extension layer)"
   "$AXIOGRAPH" db pathdb import-chunks "$accepted_axpd" \
     --chunks "$chunks" \
     --out "$accepted_axpd_with_chunks"

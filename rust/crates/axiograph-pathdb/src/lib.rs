@@ -73,7 +73,7 @@ use std::time::Duration;
 pub use anchor::{
     AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, ConstraintId, ContextId, EquationId,
     InstanceId, ObjectTypeId, PathdbSnapshotId, ProposalDigest, RelationId, RewriteRuleId, RoleId,
-    SchemaId, StableFactId, TheoryId, WorldModelRunId,
+    SchemaId, StableFactId, TheoryId, ProposalAdapterRunId,
 };
 pub use axi_module_typecheck::{
     review_axi_v1_module, validate_axi_v1_module, Module, ReviewStamp, WellTypedModuleState,

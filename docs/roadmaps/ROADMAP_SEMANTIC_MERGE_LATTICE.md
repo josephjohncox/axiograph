@@ -107,7 +107,7 @@ Each slice must carry:
 - selector used to extract it,
 - selected stable refs for schema/category objects, relation objects, roles,
   subtype inclusions, theory obligations, instances, contexts/worlds, CQs,
-  behavior cases, implementation surfaces, evidence, and world-model runs,
+  behavior cases, implementation surfaces, evidence, and proposal-adapter runs,
 - trust class,
 - non-claims around completeness and certification.
 
@@ -131,7 +131,7 @@ sem/slices/<slice-id>.json
 - bounded contexts,
 - behavior cases,
 - implementation surfaces,
-- world-model runs,
+- proposal-adapter runs,
 - explicit IR refs.
 
 Selectors must resolve to stable IR refs where possible. Raw names are allowed

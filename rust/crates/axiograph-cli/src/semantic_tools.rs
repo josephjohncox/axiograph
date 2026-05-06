@@ -220,7 +220,7 @@ pub(crate) struct SemanticCompetencyQuestionsArgs {
     #[serde(default)]
     pub cq_text: Option<String>,
     #[serde(default)]
-    pub questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    pub questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     #[serde(default)]
     pub evaluate: Option<bool>,
 }
@@ -351,7 +351,7 @@ pub(crate) struct SemanticDefinitionQueryToolResultV1 {
 pub(crate) struct SemanticCompetencyQuestionsToolResultV1 {
     pub version: &'static str,
     pub coverage_mode: &'static str,
-    pub questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    pub questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     pub executable_questions: usize,
     pub unresolved_questions: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -563,7 +563,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_NAME,
-            description: "Read-only alias for semantic_behavior_case for planning behavior cases from ontology plus tooling overlay.",
+            description: "Plan/check BehaviorCaseV1 from canonical .axi plus ToolingOverlayBundleV1, returning typed receipt and codegen preview data.",
             input_schema: json!({
                 "type": "object",
                 "required": ["behavior_case", "overlay"],
@@ -580,7 +580,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_SOFTWARE_COVERAGE_TOOL_NAME,
-            description: "Check a BehaviorCaseReportV1 JSON value against a typed overlay policy for continuous software coverage.",
+            description: "Check a BehaviorCaseCoverageViewV1 payload (`version=behavior_case_report_v1`) against a typed overlay policy for continuous software coverage.",
             input_schema: json!({
                 "type": "object",
                 "required": ["behavior_report", "overlay"],
@@ -1261,7 +1261,7 @@ pub(crate) fn call_semantic_competency_questions(
         .filter(|value| !value.is_empty())
     {
         questions.extend(
-            crate::world_model::parse_competency_question_text(cq_text)
+            crate::predictive_proposals::parse_competency_question_text(cq_text)
                 .map_err(|err| anyhow!("semantic_competency_questions: {err}"))?,
         );
     }

@@ -2,22 +2,22 @@
 
 import { parseTextList } from "../util/text";
 
-export function initWorldModelTab(ctx) {
+export function initPredictiveProposalTab(ctx) {
   const {
     ui,
-    wmGoalsEl,
-    wmMaxNewEl,
-    wmSeedEl,
-    wmStepsEl,
-    wmRolloutsEl,
-    wmGuardrailProfileEl,
-    wmGuardrailPlaneEl,
-    wmIncludeGuardrailEl,
-    wmTaskCostsEl,
-    wmAutoCommitEl,
-    wmCommitStepwiseEl,
-    wmProposeBtn,
-    wmPlanBtn,
+    proposalGoalsEl,
+    proposalMaxNewEl,
+    proposalSeedEl,
+    proposalStepsEl,
+    proposalRolloutsEl,
+    proposalGuardrailProfileEl,
+    proposalGuardrailPlaneEl,
+    proposalIncludeGuardrailEl,
+    proposalTaskCostsEl,
+    proposalAutoCommitEl,
+    proposalCommitStepwiseEl,
+    proposalProposeBtn,
+    proposalPlanBtn,
     reviewAdminTokenEl,
     addAdminTokenEl,
     reviewMessageEl,
@@ -25,8 +25,8 @@ export function initWorldModelTab(ctx) {
     setDraftOverlay,
     setAddCommitOutput,
     setReviewCommitOutput,
-    setWorldModelOutput,
-    setWorldModelStatus,
+    setPredictiveProposalOutput,
+    setPredictiveProposalStatus,
     clearDraftOverlay,
     isServerMode,
   } = ctx;
@@ -56,16 +56,16 @@ function parseTaskCosts(text) {
   return out;
 }
 
-function buildWorldModelBaseRequest() {
-  const goals = parseTextList(wmGoalsEl && wmGoalsEl.value || "");
-  const maxNewRaw = wmMaxNewEl ? String(wmMaxNewEl.value || "").trim() : "";
-  const seedRaw = wmSeedEl ? String(wmSeedEl.value || "").trim() : "";
+function buildPredictiveProposalBaseRequest() {
+  const goals = parseTextList(proposalGoalsEl && proposalGoalsEl.value || "");
+  const maxNewRaw = proposalMaxNewEl ? String(proposalMaxNewEl.value || "").trim() : "";
+  const seedRaw = proposalSeedEl ? String(proposalSeedEl.value || "").trim() : "";
   const maxNew = maxNewRaw ? Number(maxNewRaw) : NaN;
   const seed = seedRaw ? Number(seedRaw) : NaN;
-  const guardrailProfile = wmGuardrailProfileEl ? String(wmGuardrailProfileEl.value || "fast") : "fast";
-  const guardrailPlane = wmGuardrailPlaneEl ? String(wmGuardrailPlaneEl.value || "both") : "both";
-  const includeGuardrail = wmIncludeGuardrailEl ? !!wmIncludeGuardrailEl.checked : true;
-  const taskCosts = parseTaskCosts(wmTaskCostsEl && wmTaskCostsEl.value || "");
+  const guardrailProfile = proposalGuardrailProfileEl ? String(proposalGuardrailProfileEl.value || "fast") : "fast";
+  const guardrailPlane = proposalGuardrailPlaneEl ? String(proposalGuardrailPlaneEl.value || "both") : "both";
+  const includeGuardrail = proposalIncludeGuardrailEl ? !!proposalIncludeGuardrailEl.checked : true;
+  const taskCosts = parseTaskCosts(proposalTaskCostsEl && proposalTaskCostsEl.value || "");
   const body = {
     goals,
     guardrail_profile: guardrailProfile,
@@ -78,14 +78,14 @@ function buildWorldModelBaseRequest() {
   return body;
 }
 
-function worldModelHeaders() {
+function predictiveProposalHeaders() {
   const headers = { "content-type": "application/json" };
   const token = (reviewAdminTokenEl && reviewAdminTokenEl.value || addAdminTokenEl && addAdminTokenEl.value || "").trim();
   if (token) headers["authorization"] = `Bearer ${token}`;
   return headers;
 }
 
-function mergeWorldModelPlanProposals(report) {
+function mergePredictiveProposalPlanProposals(report) {
   if (!report || !Array.isArray(report.steps)) return null;
   const proposals = [];
   for (const step of report.steps) {
@@ -95,38 +95,38 @@ function mergeWorldModelPlanProposals(report) {
     proposals.push(...p);
   }
   if (!proposals.length) return null;
-  const traceId = report.trace_id || "world_model_plan";
+  const traceId = report.trace_id || "proposal_rollout_plan";
   const generatedAt = String(report.generated_at_unix_secs || Math.floor(Date.now() / 1000));
   return {
     version: 1,
     generated_at: generatedAt,
-    source: { source_type: "world_model_plan", locator: traceId },
+    source: { source_type: "proposal_rollout_plan", locator: traceId },
     schema_hint: null,
     proposals,
   };
 }
 
-async function runWorldModelPropose() {
-  setWorldModelStatus("");
-  setWorldModelOutput(null);
+async function runPredictiveProposalPropose() {
+  setPredictiveProposalStatus("");
+  setPredictiveProposalOutput(null);
   setAddCommitOutput(null);
   setReviewCommitOutput(null);
   ui.reviewActionStatus = "";
 
   if (!isServerMode()) {
-    setWorldModelStatus("requires server mode (`axiograph db serve`)");
+    setPredictiveProposalStatus("requires server mode (`axiograph db serve`)");
     return;
   }
 
-  const body = buildWorldModelBaseRequest();
-  const steps = wmStepsEl ? Number(wmStepsEl.value || "") : NaN;
+  const body = buildPredictiveProposalBaseRequest();
+  const steps = proposalStepsEl ? Number(proposalStepsEl.value || "") : NaN;
   if (Number.isFinite(steps)) body.horizon_steps = Math.max(1, Math.floor(steps));
 
-  const autoCommit = wmAutoCommitEl ? !!wmAutoCommitEl.checked : false;
+  const autoCommit = proposalAutoCommitEl ? !!proposalAutoCommitEl.checked : false;
   if (autoCommit) {
     const token = (reviewAdminTokenEl && reviewAdminTokenEl.value || addAdminTokenEl && addAdminTokenEl.value || "").trim();
     if (!token) {
-      setWorldModelStatus("auto-commit requires admin token");
+      setPredictiveProposalStatus("auto-commit requires admin token");
       return;
     }
     body.auto_commit = true;
@@ -135,19 +135,19 @@ async function runWorldModelPropose() {
   }
 
   try {
-    setWorldModelStatus("running…");
-    const resp = await fetch("/world_model/propose", {
+    setPredictiveProposalStatus("running…");
+    const resp = await fetch("/evidence/proposals/predict", {
       method: "POST",
-      headers: worldModelHeaders(),
+      headers: predictiveProposalHeaders(),
       body: JSON.stringify(body),
     });
     const data = await resp.json();
-    setWorldModelOutput(data);
+    setPredictiveProposalOutput(data);
     if (!resp.ok) {
-      setWorldModelStatus(`error (${resp.status})`);
+      setPredictiveProposalStatus(`error (${resp.status})`);
       return;
     }
-    setWorldModelStatus("ok");
+    setPredictiveProposalStatus("ok");
     if (data && data.commit) {
       setReviewCommitOutput(data.commit);
     }
@@ -161,82 +161,82 @@ async function runWorldModelPropose() {
       const overlay = {
         proposals_json: data.proposals,
         chunks: [],
-        summary: { source: "world_model_propose", trace_id: data.trace_id },
+        summary: { source: "predictive_proposal", trace_id: data.trace_id },
       };
-      setDraftOverlay(overlay, { notePrefix: "generated from world model" });
+      setDraftOverlay(overlay, { notePrefix: "generated from predictive proposals" });
     }
   } catch (e) {
-    setWorldModelStatus("error");
-    setWorldModelOutput(String(e));
+    setPredictiveProposalStatus("error");
+    setPredictiveProposalOutput(String(e));
   }
 }
 
-async function runWorldModelPlan() {
-  setWorldModelStatus("");
-  setWorldModelOutput(null);
+async function runPredictiveProposalPlan() {
+  setPredictiveProposalStatus("");
+  setPredictiveProposalOutput(null);
   setAddCommitOutput(null);
   setReviewCommitOutput(null);
   ui.reviewActionStatus = "";
 
   if (!isServerMode()) {
-    setWorldModelStatus("requires server mode (`axiograph db serve`)");
+    setPredictiveProposalStatus("requires server mode (`axiograph db serve`)");
     return;
   }
 
-  const body = buildWorldModelBaseRequest();
-  const steps = wmStepsEl ? Number(wmStepsEl.value || "") : NaN;
-  const rollouts = wmRolloutsEl ? Number(wmRolloutsEl.value || "") : NaN;
+  const body = buildPredictiveProposalBaseRequest();
+  const steps = proposalStepsEl ? Number(proposalStepsEl.value || "") : NaN;
+  const rollouts = proposalRolloutsEl ? Number(proposalRolloutsEl.value || "") : NaN;
   if (Number.isFinite(steps)) body.horizon_steps = Math.max(1, Math.floor(steps));
   if (Number.isFinite(rollouts)) body.rollouts = Math.max(1, Math.floor(rollouts));
 
-  const autoCommit = wmAutoCommitEl ? !!wmAutoCommitEl.checked : false;
+  const autoCommit = proposalAutoCommitEl ? !!proposalAutoCommitEl.checked : false;
   if (autoCommit) {
     const token = (reviewAdminTokenEl && reviewAdminTokenEl.value || addAdminTokenEl && addAdminTokenEl.value || "").trim();
     if (!token) {
-      setWorldModelStatus("auto-commit requires admin token");
+      setPredictiveProposalStatus("auto-commit requires admin token");
       return;
     }
     body.auto_commit = true;
-    body.commit_stepwise = wmCommitStepwiseEl ? !!wmCommitStepwiseEl.checked : false;
+    body.commit_stepwise = proposalCommitStepwiseEl ? !!proposalCommitStepwiseEl.checked : false;
     const message = (reviewMessageEl && reviewMessageEl.value || addMessageEl && addMessageEl.value || "").trim();
     if (message) body.commit_message = message;
   }
 
   try {
-    setWorldModelStatus("running…");
-    const resp = await fetch("/world_model/plan", {
+    setPredictiveProposalStatus("running…");
+    const resp = await fetch("/planning/proposal-rollout", {
       method: "POST",
-      headers: worldModelHeaders(),
+      headers: predictiveProposalHeaders(),
       body: JSON.stringify(body),
     });
     const data = await resp.json();
-    setWorldModelOutput(data);
+    setPredictiveProposalOutput(data);
     if (!resp.ok) {
-      setWorldModelStatus(`error (${resp.status})`);
+      setPredictiveProposalStatus(`error (${resp.status})`);
       return;
     }
-    setWorldModelStatus("ok");
+    setPredictiveProposalStatus("ok");
     if (data && data.commit) {
       setReviewCommitOutput(data.commit);
     }
-    const merged = data && data.report ? mergeWorldModelPlanProposals(data.report) : null;
+    const merged = data && data.report ? mergePredictiveProposalPlanProposals(data.report) : null;
     if (merged && merged.proposals && merged.proposals.length) {
       const overlay = {
         proposals_json: merged,
         chunks: [],
-        summary: { source: "world_model_plan", trace_id: data.report && data.report.trace_id },
+        summary: { source: "proposal_rollout_plan", trace_id: data.report && data.report.trace_id },
       };
-      setDraftOverlay(overlay, { notePrefix: "generated from world model plan" });
+      setDraftOverlay(overlay, { notePrefix: "generated from predictive proposals plan" });
     }
   } catch (e) {
-    setWorldModelStatus("error");
-    setWorldModelOutput(String(e));
+    setPredictiveProposalStatus("error");
+    setPredictiveProposalOutput(String(e));
   }
 }
 
-if (wmProposeBtn) wmProposeBtn.addEventListener("click", runWorldModelPropose);
-if (wmPlanBtn) wmPlanBtn.addEventListener("click", runWorldModelPlan);
+if (proposalProposeBtn) proposalProposeBtn.addEventListener("click", runPredictiveProposalPropose);
+if (proposalPlanBtn) proposalPlanBtn.addEventListener("click", runPredictiveProposalPlan);
 
 
-  return { setWorldModelStatus, setWorldModelOutput, mergeWorldModelPlanProposals };
+  return { setPredictiveProposalStatus, setPredictiveProposalOutput, mergePredictiveProposalPlanProposals };
 }

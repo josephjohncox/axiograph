@@ -10,7 +10,7 @@ The Axiograph REPL is a lightweight interactive shell for working with:
 - Typed query/report surfaces: AxQL lowers toward `query_ir_v1` /
   `PreparedQueryV1` metadata, and certified query rows use `.axi`-anchored
   `query_result_v3` witnesses outside the REPL.
-- Evidence, LLM, world-model, and chunk overlays that remain reviewable until
+- Evidence, LLM, predictive-proposal, and chunk overlays that remain reviewable until
   validated and promoted through the semantic VCS.
 
 It’s intended for quick experiments, typed teaching flows, and debugging (not a
@@ -557,23 +557,23 @@ This supports:
 
 See `docs/reference/LLM_REPL_PLUGIN.md` for the plugin protocol.
 
-### 3f) World model proposals (JEPA / objective-driven)
+### 3f) Predictive proposal adapter output (JEPA / objective-driven)
 
-The REPL also supports a **world model** proposal flow (untrusted, evidence-plane):
-
-```text
-axiograph> wm use stub
-axiograph> wm status
-axiograph> wm propose build/wm_proposals.json --goal "predict missing parent links" --max 50
-```
-
-MPC-style planning loop (multi-step):
+The REPL also supports a **proposal adapter** proposal flow (untrusted, evidence-plane):
 
 ```text
-axiograph> wm plan build/wm_plan.json --steps 3 --rollouts 2 --goal "fill missing parent links" --cq "has_parent=select ?p where ?p is Person limit 1"
+axiograph> proposal use stub
+axiograph> proposal status
+axiograph> proposal propose build/proposal_candidates.json --goal "predict missing parent links" --max 50
 ```
 
-You can also generate a CQ file from the schema and pass it to `wm plan`:
+Bounded planning loop:
+
+```text
+axiograph> proposal plan build/proposal_rollout_plan.json --steps 3 --rollouts 2 --goal "fill missing parent links" --cq "has_parent=select ?p where ?p is Person limit 1"
+```
+
+You can also generate a CQ file from the schema and pass it to `proposal plan`:
 
 ```bash
 bin/axiograph discover competency-questions \
@@ -582,7 +582,7 @@ bin/axiograph discover competency-questions \
 ```
 
 ```text
-axiograph> wm plan build/wm_plan.json --steps 3 --rollouts 2 --goal "fill missing parent links" --cq-file build/family_cq.json
+axiograph> proposal plan build/proposal_rollout_plan.json --steps 3 --rollouts 2 --goal "fill missing parent links" --cq-file build/family_cq.json
 ```
 
 To store proposals as a reviewable PathDB WAL/evidence overlay, pass
@@ -591,7 +591,7 @@ need typed validation, review, reconciliation as needed, and semantic VCS
 promotion into canonical `.axi`.
 
 ```text
-axiograph> wm propose build/wm_proposals.json --commit-dir build/accepted_plane --message "wm: parent predictions"
+axiograph> proposal propose build/wm_proposals.json --commit-dir build/accepted_plane --message "proposal: parent predictions"
 ```
 
 Built-in deterministic backend (good for demos/tests):
@@ -717,14 +717,9 @@ axiograph> stats
 ## Derived Snapshot Checks
 
 If you need storage byte round-trips, leave the REPL and use the explicit DB
-debug commands. Keep that flow out of ontology authoring tutorials.
-
-```bash
-axiograph db pathdb export-axi build/snapshot.axpd --out build/snapshot_pathdb_export_v1.axi
-axiograph db pathdb import-axi build/snapshot_pathdb_export_v1.axi --out build/snapshot_roundtrip.axpd
-```
-
-The exported snapshot is not semantic/query/certificate authority.
+debug commands documented in `docs/howto/TESTING.md` and
+`docs/explanation/PATHDB_DESIGN.md`. Keep that flow out of ontology authoring
+tutorials. The exported snapshot is not semantic/query/certificate authority.
 
 ## Command Reference (quick)
 

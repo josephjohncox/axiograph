@@ -9,7 +9,7 @@ def build_model(out_path: Path, scale: float, bias: float) -> None:
         from onnx import TensorProto, helper
     except Exception as exc:  # pragma: no cover
         raise SystemExit(
-            "onnx is required to build the ONNX world model. Install with: pip install onnx"
+            "onnx is required to build the ONNX predictive proposal adapter. Install with: pip install onnx"
         ) from exc
 
     input_info = helper.make_tensor_value_info("seed", TensorProto.INT64, [1])
@@ -27,7 +27,7 @@ def build_model(out_path: Path, scale: float, bias: float) -> None:
 
     graph = helper.make_graph(
         nodes,
-        "axiograph_world_model_small",
+        "axiograph_predictive_proposal_small",
         [input_info],
         [output_info],
         initializer=[scale_tensor, bias_tensor],
@@ -39,10 +39,10 @@ def build_model(out_path: Path, scale: float, bias: float) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build a minimal ONNX world model.")
+    parser = argparse.ArgumentParser(description="Build a minimal ONNX predictive proposal adapter.")
     parser.add_argument(
         "--out",
-        default="models/world_model_small.onnx",
+        default="models/predictive_proposal_small.onnx",
         help="Output ONNX model path",
     )
     parser.add_argument(

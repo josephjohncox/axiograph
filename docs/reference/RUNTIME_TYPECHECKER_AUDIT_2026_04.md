@@ -196,7 +196,7 @@ surface currently centers on:
 - `axql_explore`
 - `axql_run`
 - proposal helpers
-- world-model helpers
+- proposal-adapter helpers
 
 Missing consequences:
 

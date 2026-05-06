@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Transformer world model stub (axiograph_world_model_v1).
+Transformer predictive proposal adapter stub (axiograph_predictive_proposal_v1).
 
 This is a skeleton for a PyTorch-based JEPA predictor. It does not implement
 training/inference; it just returns an empty proposals file so you can wire the
@@ -16,18 +16,18 @@ def main() -> int:
     raw = sys.stdin.read()
     req = json.loads(raw)
 
-    if req.get("protocol") != "axiograph_world_model_v1":
+    if req.get("protocol") != "axiograph_predictive_proposal_v1":
         raise SystemExit("unsupported protocol")
 
     # TODO: load model, run forward pass, decode proposals
     response = {
-        "protocol": "axiograph_world_model_v1",
-        "trace_id": req.get("trace_id", "wm::transformer_stub"),
+        "protocol": "axiograph_predictive_proposal_v1",
+        "trace_id": req.get("trace_id", "proposal::transformer_stub"),
         "generated_at_unix_secs": int(time.time()),
         "proposals": {
             "version": 1,
             "generated_at": str(int(time.time())),
-            "source": {"source_type": "world_model", "locator": req.get("trace_id", "")},
+            "source": {"source_type": "predictive_proposal_adapter", "locator": req.get("trace_id", "")},
             "schema_hint": None,
             "proposals": [],
         },

@@ -65,7 +65,7 @@ pub struct BehaviorWhenV1 {
     pub kind: BehaviorStimulusKindV1,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub query: Option<crate::world_model::CompetencyQuestionV1>,
+    pub query: Option<crate::predictive_proposals::CompetencyQuestionV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
@@ -75,7 +75,7 @@ pub struct BehaviorThenV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expected_outcomes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub competency_questions: Vec<crate::world_model::CompetencyQuestionV1>,
+    pub competency_questions: Vec<crate::predictive_proposals::CompetencyQuestionV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rule_scopes: Vec<crate::semantic_claim::RuntimeRuleScopeV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -568,8 +568,8 @@ fn extend_scopes(
 }
 
 fn push_competency_question_if_new(
-    target: &mut Vec<crate::world_model::CompetencyQuestionV1>,
-    question: crate::world_model::CompetencyQuestionV1,
+    target: &mut Vec<crate::predictive_proposals::CompetencyQuestionV1>,
+    question: crate::predictive_proposals::CompetencyQuestionV1,
 ) {
     if !target
         .iter()
@@ -945,7 +945,7 @@ instance I of Family:
             }),
             then: Some(BehaviorThenV1 {
                 expected_outcomes: vec!["Alice's accepted parent is Bob".to_string()],
-                competency_questions: vec![crate::world_model::CompetencyQuestionV1 {
+                competency_questions: vec![crate::predictive_proposals::CompetencyQuestionV1 {
                     name: "family_lookup_returns_bob".to_string(),
                     question: Some("Does the case return Bob as Alice's parent?".to_string()),
                     authoring: None,

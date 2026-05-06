@@ -123,32 +123,42 @@ Current structured adapters in `axiograph ingest dir`:
 
 Semantic Web interop design notes: `docs/explanation/SEMANTIC_WEB_INTEROP.md`.
 
-### 5. GitHub repos (code + proto APIs)
+### 5. GitHub repos (code + optional proto API evidence)
 
 For “codebase discovery” we can ingest a repo into:
 
 - `chunks.json` as `EvidenceChunkBundleV1` (for RAG / approximate discovery),
 - lightweight repo edges (definitions/imports/TODOs),
-- and (optionally) protobuf/gRPC API structure from a Buf descriptor set.
+- and optionally protobuf/gRPC API structure from a Buf descriptor set.
 
-### 6. World model proposals (JEPA / objective-driven)
+The proto path is an evidence adapter. It emits proposal/chunk artifacts only;
+it does not bypass reviewed canonical `.axi` promotion or query/certificate
+typing.
 
-World models are **untrusted** proposal generators that emit evidence-plane
-`proposals.json` overlays. They plug into the same ingest/promote pipeline.
+### 6. Predictive proposal adapters
+
+Predictive proposal adapters are **untrusted** generators that emit
+evidence-plane `proposals.json` overlays. They plug into the same
+ingest/promote pipeline as document, repo, SQL, RDF, and web evidence.
+
+This core ingestion path makes no autonomous-execution or learned-dynamics
+claim. Research adapters can use richer predictive techniques internally, but
+Axiograph receives typed proposals and keeps them in the evidence plane until
+review.
 
 Example (baseline plugin):
 
 ```bash
-axiograph discover jepa-export examples/Family.axi --out build/family_jepa.json
-axiograph ingest world-model \
-  --input examples/Family.axi \
-  --export build/family_jepa.json \
+axiograph discover training-export examples/Family.axi \
+  --out build/family_training_export.json
+axiograph ingest predictive-proposal examples/Family.axi \
   --out build/family_proposals.json \
-  --world-model-plugin scripts/axiograph_world_model_plugin_baseline.py
+  --proposal-adapter-plugin scripts/axiograph_predictive_proposal_plugin_baseline.py
 ```
 
 Note: use full canonical `.axi` modules (schema + theory + instance + contexts)
-as the training/export source. PathDB snapshots are derived execution artifacts.
+as the training/export source. PathDB snapshots are derived execution artifacts;
+`PathDBExportV1` remains debug/live-byte/parser parity only.
 
 Offline/local repo:
 
@@ -156,7 +166,8 @@ Offline/local repo:
 axiograph ingest github import /path/to/repo --out-dir build/github_import/demo
 ```
 
-Proto APIs without requiring `buf` (use an existing binary descriptor set):
+Proto API evidence without requiring `buf` (use an existing binary descriptor
+set):
 
 ```bash
 axiograph ingest github import /path/to/repo --out-dir build/github_import/demo \
@@ -364,12 +375,9 @@ canonical `.axi` and semantic VCS history.
 Use `PreparedQueryV1` metadata/trust reports for machine query flows and
 `query_result_v3` witnesses for supported certified answers.
 
-For storage byte round-trip checks only, use the explicit DB snapshot commands:
-
-```bash
-axiograph db pathdb export-axi knowledge.axpd --out snapshot_pathdb_export_v1.axi
-axiograph db pathdb import-axi snapshot_pathdb_export_v1.axi --out knowledge.axpd
-```
+Storage byte round-trip checks live in `docs/howto/TESTING.md` and
+`docs/explanation/PATHDB_DESIGN.md`. Keep them out of ingest, query, and
+promotion walkthroughs.
 
 Do not feed derived snapshots into semantic/query/certificate commands. Those
 flows require canonical accepted `.axi` modules and typed anchors.

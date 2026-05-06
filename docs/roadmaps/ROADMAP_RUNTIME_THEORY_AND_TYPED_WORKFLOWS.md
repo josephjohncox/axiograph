@@ -101,7 +101,7 @@ lifecycle backbone.
 
 Required capabilities:
 
-- central validation for `main`, `review/*`, `evidence/*`, `wm/*`, and tags;
+- central validation for `main`, `review/*`, `evidence/*`, `evidence/proposals/*`, and tags;
 - symbolic `sem/HEAD` and typed ref pointers;
 - state/delta commits with compact CQ/trust/coverage/theory summaries;
 - dry-run merge/rebase plans that materialize resolver steps and blockers;
@@ -113,7 +113,7 @@ Required capabilities:
 Acceptance gates:
 
 - invalid ref transitions are rejected centrally;
-- direct `wm/* -> main` mutation is rejected;
+- direct `evidence/proposals/* -> main` mutation is rejected;
 - unresolved required resolver steps block materialization;
 - merge/rebase dry-runs persist enough typed state for review; and
 - semantic commits cite stored previews rather than duplicating large reports.

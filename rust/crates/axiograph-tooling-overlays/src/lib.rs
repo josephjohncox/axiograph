@@ -1010,9 +1010,7 @@ pub fn behavior_case_coverage_view_from_value(
     behavior_report: &Value,
 ) -> Result<BehaviorCaseCoverageViewV1> {
     serde_json::from_value(behavior_report.clone()).map_err(|err| {
-        anyhow!(
-            "behavior report is not a BehaviorCaseCoverageViewV1-compatible typed report: {err}"
-        )
+        anyhow!("expected BehaviorCaseCoverageViewV1 payload (`version=behavior_case_report_v1`): {err}")
     })
 }
 

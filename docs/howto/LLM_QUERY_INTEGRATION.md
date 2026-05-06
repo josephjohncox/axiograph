@@ -1,398 +1,200 @@
 # LLM Query Integration
 
-**Diataxis:** How-to  
-**Audience:** users (and contributors)
+**Diataxis:** How-to
+**Audience:** users, tool authors, and agent harness authors
 
-This document describes how LLMs can query Axiograph with rich semantic understanding, going far beyond traditional RAG.
+LLM-assisted Axiograph workflows are typed tool workflows. The model may help
+draft questions, queries, definitions, or proposals, but Axiograph remains the
+authority for type checking, execution, trust contracts, and promotion.
 
-Note: This doc mixes **conceptual** representations with what the code actually
-parses today.
+Use this rule:
 
-**Today**, the REPL supports structured LLM/agent integration through typed
-plugin, API, and tool-loop surfaces. "LLM-assisted" here should be read as
-typed `query_ir_v1` generation, `axql_explore` / `axql_elaborate` / `axql_run`
-tool calls, and evidence-plane proposal workflows, not free-form semantic
-authority.
+- humans ask in natural language, `.cq`, or AxQL;
+- tools lower to `query_ir_v1` / `PreparedQueryV1`;
+- Rust elaborates, typechecks, runs, and reports typed metadata;
+- Lean verification is optional and only applies to supported certified
+  fragments;
+- model output stays weak/advisory until accepted through review, CQ/trust
+  gates, and semantic VCS.
 
-The REPL supports two structured integration modes:
+Do not copy old conceptual JSON query snippets as a protocol. JSON exists at
+typed tool boundaries, not as the authoring experience.
 
-- **Query mode**: the LLM proposes a structured `query_ir_v1` query.
-- **Tool-loop mode** (`llm agent ...`, recommended): the LLM calls tools like `fts_chunks` and `axql_run`;
-  Rust executes them against the snapshot; the LLM produces a grounded answer.
-- **Typed semantic service mode** (DB/API surfaces): agents call typed runtime
-  services such as query elaboration/exploration, typed olog checks, semantic
-  coverage, and agent-facing engineering reports. This is the intended path for
-  MCP/skill/API integrations where the model should consume typed semantic
-  objects rather than scrape prose.
+## Preferred Surfaces
 
-Protocol framing is delegated to maintained surfaces: command plugins exchange
-typed payloads over stdin/stdout for debugging, MCP hosts use the `rmcp`-backed
-server, editor integrations use `lsp-server`/`lsp-types`, and HTTP clients use
-the typed DB-server endpoints plus maintained HTTP client libraries. Do not
-treat the examples below as a custom JSON-RPC contract.
+| Use Case | Preferred Surface | Why |
+| --- | --- | --- |
+| Agent asks and runs queries | `axiograph mcp` or DB server typed endpoints | Host-managed MCP/API lifecycle, typed tool schemas, no custom JSON-RPC |
+| Human explores in the terminal | REPL `ask`, `q --elaborate`, `q --typecheck` | Fast feedback, inferred types, typed holes, refinement handles |
+| CQ/BDD/DDD authoring | `.cq` plus behavior-case/overlay tools | Question-first, domain readable, lowerable to typed query checks |
+| Weak definition discovery | `discover define` / `semantic_definition_query` | Advisory grounding for “define this process/rule/function” prompts |
+| Promotion-sensitive query results | `PreparedQueryV1` plus certificate policy | Shared query lifecycle and fail-closed verifier policy |
 
-See:
+See also:
 
-- `docs/reference/QUERY_LANG.md` (AxQL + SQL-ish)
-- `docs/reference/LLM_REPL_PLUGIN.md` (plugin protocol; v2 query mode + v3 tool-loop mode)
+- `docs/reference/LLM_REPL_PLUGIN.md`
+- `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`
+- `docs/howto/CANONICAL_SEMANTIC_SPINE.md`
+- `docs/reference/QUERY_LANG.md`
 
-The JSON blocks below mix **conceptual** “semantic query” ideas with the
-concrete `query_ir_v1` wire format. Not every concept here is implemented as a
-first-class IR atom yet; when in doubt, prefer the exact `query_ir_v1` schema in
-`docs/reference/LLM_REPL_PLUGIN.md`.
+## MCP And Tool-Loop Flow
 
-## Why structured queries > traditional RAG
+Run the semantic MCP server for Cursor, Codex, Claude Code, or another MCP host:
 
-| Traditional RAG | Axiograph structured queries (AxQL) |
-|-----------------|---------------------------|
-| Vector similarity on text chunks | Type-aware structured queries |
-| No understanding of relationships | Path-based reasoning |
-| Single-hop retrieval | Multi-hop traversal |
-| No reasoning about equivalences | Typed path/equivalence queries where supported |
-| Flat confidence scores | Probabilistic provenance |
-| No query composition | Boolean algebra on queries |
-| No schema awareness | Meta-queries on schema |
-
-## Query Types
-
-### 1. Type Queries
-Find all entities of a given type:
-
-```json
-{
-  "type": "FindByType",
-  "type_name": "Material"
-}
+```bash
+axiograph mcp --axi examples/software_authoring/OrderFulfillmentDomain.axi
 ```
 
-**Natural language**: "What materials do we have?"
+The host should call typed tools rather than asking the model to invent raw
+AxQL. The useful query/exploration loop is:
 
-### 2. Relation Queries
-Find entities by relationship:
+1. `semantic_definition_query` for weak process/function/business-rule discovery.
+2. `axql_explore` or CQ authoring tools for candidate query shapes and typed
+   holes.
+3. `axql_elaborate` for type inference, prepared metadata, and repair handles.
+4. `axql_run` only after the query is well-typed enough to execute.
+5. Certificate policy `emit`, `verify`, or `require_verified` only when the
+   canonical `.axi`, accepted anchor, certifiable fragment, and verifier are
+   available.
 
-```json
-{
-  "type": "FindByRelation",
-  "relation": "RecommendedFor",
-  "role": "object",
-  "value": "Titanium"
-}
+For software-authoring flows, prefer the dedicated read-only authoring MCP:
+
+```bash
+axiograph authoring mcp
 ```
 
-**Natural language**: "What tools are recommended for titanium?"
+That server exposes overlay checks, weak coverage probes, behavior-case planning,
+software coverage, codegen previews, and integration metadata without writing
+files.
 
-### 3. Path Traversal
-Follow a chain of relationships:
+## REPL Flow
 
-```json
-{
-  "type": "FollowPath",
-  "start": "Alice",
-  "path": ["Parent", "Sibling", "Child"]
-}
+The REPL is useful when a human wants tight feedback:
+
+```text
+axiograph> import_axi examples/software_authoring/OrderFulfillmentDomain.axi
+axiograph> ask which accepted orders are eligible to ship?
+axiograph> q --elaborate select ?order where ?order is Order, ?order -OrderEligibleForShipment-> ?eligibility limit 20
+axiograph> q --typecheck select ?order where ?order is Order limit 20
 ```
 
-**Natural language**: "Who are Alice's cousins?" (parent's sibling's child)
+Use `ask` for natural-language-ish exploration. Use `q --elaborate` when you
+want the typed query plan, inferred variable types, and refinement handles. Use
+`q --typecheck` in scripts when execution is not needed.
 
-### 4. Path Discovery
-Find all paths between entities:
+## CQ-First Authoring
 
-```json
-{
-  "type": "FindPaths",
-  "from": "Steel_Billet",
-  "to": "Customer_X",
-  "max_depth": 6
-}
+Competency questions should be readable domain questions first, not raw AxQL
+first. A `.cq` file can express the authoring intent:
+
+```text
+ask accepted orders can be shipped only when payment is captured
+about OrderEligibleForShipment
+given accepted_order
+expect shipment_eligible
 ```
 
-**Natural language**: "How does steel get from raw material to the customer?"
+Then lower and check it through the authoring tools:
 
-### 5. Equivalence Queries (HoTT!)
-Find equivalent entities:
-
-```json
-{
-  "type": "FindEquivalent",
-  "entity": "RawMetal_A",
-  "equivalence_type": "SupplierEquiv"
-}
+```bash
+axiograph authoring competency-questions \
+  --axi examples/software_authoring/OrderFulfillmentDomain.axi \
+  --cq examples/software_authoring/order_fulfillment.cq \
+  --out build/examples/software_authoring/competency_questions_authoring.json
 ```
 
-**Natural language**: "What other suppliers can provide the same material?"
+Raw AxQL remains available as a precise lowering/debug format, but it is not the
+primary way to ask business-domain coverage questions.
 
-### 6. Constrained Queries
-Filter results by constraints:
+## Definition Queries
 
-```json
-{
-  "type": "ConstrainedQuery",
-  "base": {
-    "type": "FindByType",
-    "type_name": "Material"
-  },
-  "constraints": [
-    { "type": "AttrCompare", "attr": "hardness", "op": "Gt", "value": "50" },
-    { "type": "HasRelation", "relation": "MachinableWith" }
-  ]
-}
+For weak discovery, let the tool classify and ground the prompt:
+
+```bash
+axiograph discover define examples/software_authoring/OrderFulfillmentDomain.axi \
+  --prompt "define the shipment eligibility business rule" \
+  --include-queries
 ```
 
-**Natural language**: "Find materials harder than 50 HRC that can be machined"
+This returns candidate ontology refs, likely relations/paths/CQs, ambiguity
+notes, and suggested next queries. It is deliberately weak: it cannot satisfy
+promotion gates or enforced software coverage.
 
-### 7. Probabilistic Queries
-Filter by confidence:
+## Typed Query Lifecycle
 
-```json
-{
-  "type": "ProbabilisticQuery",
-  "base": {
-    "type": "FindByRelation",
-    "relation": "RecommendedSpeed",
-    "role": "object",
-    "value": "100_SFM"
-  },
-  "min_confidence": 0.8
-}
+Every promotion-sensitive query should follow one lifecycle:
+
+```text
+QueryIrV1 -> PreparedQueryV1 -> ValidatedQueryAnswer -> CertifiedQueryAnswer
 ```
 
-**Natural language**: "What are the confident recommendations for 100 SFM cutting speed?"
+The shared certificate policy is:
 
-### 8. Meta Queries
-Query the schema itself:
+- `none`: runtime type/execution report only.
+- `emit`: emit verifier-facing witness when the fragment supports it.
+- `verify`: run the verifier when available, otherwise report verifier failure.
+- `require_verified`: fail closed unless canonical `.axi`, accepted anchor,
+  certifiable fragment, Lean verifier, and anchor match are all present.
 
-```json
-{
-  "type": "MetaQuery",
-  "about": { "ListTypes": null }
-}
+This policy is shared across CLI, REPL, server `/query`, MCP tools, CQ runners,
+behavior-case reports, and Lean fixtures.
+
+## Strong And Weak Outputs
+
+Use the output class correctly:
+
+- **Strong query/report claim:** typed over canonical `.axi`, anchored,
+  well-typed, executed under declared context/world assumptions, and optionally
+  verified for a supported fragment.
+- **Weak discovery claim:** grounded by candidate refs, text, embeddings,
+  evidence, or model output, but not accepted or fully checked.
+- **Unknown:** the ontology lacks enough typed structure to decide.
+- **Conflicted:** multiple accepted/review/evidence-plane interpretations are
+  active.
+
+Do not collapse these into a scalar confidence score. Agents should surface
+trust class, anchors, caveats, residual obligations, and next actions.
+
+## Minimal End-To-End Example
+
+```bash
+axiograph check validate examples/software_authoring/OrderFulfillmentDomain.axi
+
+axiograph check theory examples/software_authoring/OrderFulfillmentDomain.axi \
+  --closure-tier finite_fragment \
+  --json \
+  --out build/examples/software_authoring/theory_check.json
+
+axiograph discover define examples/software_authoring/OrderFulfillmentDomain.axi \
+  --prompt "define the reserve-credit process" \
+  --include-queries \
+  --out build/examples/software_authoring/definition_query.json
+
+axiograph authoring competency-questions \
+  --axi examples/software_authoring/OrderFulfillmentDomain.axi \
+  --cq examples/software_authoring/order_fulfillment.cq \
+  --out build/examples/software_authoring/competency_questions_authoring.json
+
+axiograph discover behavior-case examples/software_authoring/OrderFulfillmentDomain.axi \
+  --request examples/software_authoring/order_fulfillment_behavior_case.json \
+  --cq-file examples/software_authoring/order_fulfillment.cq \
+  --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json \
+  --out build/examples/software_authoring/behavior_case_report.json
 ```
 
-**Natural language**: "What kinds of entities exist in this knowledge base?"
+For the complete DDD/fDDD software-authoring path, run:
 
-### 9. Composite Queries
-Boolean combinations:
-
-```json
-{
-  "type": "And",
-  "left": {
-    "type": "FindByType",
-    "type_name": "Tool"
-  },
-  "right": {
-    "type": "FindByRelation",
-    "relation": "RecommendedFor",
-    "role": "subject",
-    "value": "Carbide"
-  }
-}
+```bash
+examples/software_authoring/run_authoring_flow.sh
 ```
 
-**Natural language**: "Find carbide tools that are recommended for something"
+## Integration Boundaries
 
-## LLM Integration Flow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User Question                            │
-│     "What suppliers can I use instead of RawMetal_A?"           │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              LLM Structured Query Proposal                       │
-│                                                                  │
-│  Input: Question + Schema Context + Examples                     │
-│  Output: typed query_ir_v1 + diagnostics + alternatives          │
-│                                                                  │
-│  Rust prepares PreparedQueryV1 and rejects unsupported structure │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   Query Execution Engine                         │
-│                                                                  │
-│  - Traverse knowledge graph                                      │
-│  - Apply constraints                                             │
-│  - Compute paths                                                 │
-│  - Score by confidence                                           │
-│  - Find equivalences (HoTT)                                      │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Query Results                                 │
-│                                                                  │
-│  [{ entity_id: "RawMetal_B",                                     │
-│     score: 1.0,                                                  │
-│     derivation: "Equivalent via SupplierEquiv",                  │
-│     evidence: [{ text: "RawMetal_A ≃ RawMetal_B (QualityEquiv)", │
-│                  confidence: 1.0 }] }]                           │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    LLM Answer Generation                         │
-│                                                                  │
-│  Input: Results + Original Question + Schema                     │
-│  Output: Grounded Answer with Citations                          │
-│                                                                  │
-│  "RawMetal_B is an equivalent supplier to RawMetal_A.            │
-│   They both provide Steel_Billet at Q_Premium quality level.     │
-│   [Source: SupplierEquiv relation in SupplyChain ontology]"      │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Example: Complete Query Session
-
-### User Question
-"How can materials get from suppliers to customers, and what alternative routes exist?"
-
-### Step 1: LLM Parses to Semantic Query
-```json
-{
-  "type": "FindPaths",
-  "from": "RawMetal_A",
-  "to": "Customer_X",
-  "max_depth": 8
-}
-```
-
-### Step 2: Execute Path Discovery
-Results show multiple paths through the supply chain.
-
-### Step 3: Follow-up with Equivalence Query
-```json
-{
-  "type": "And",
-  "left": {
-    "type": "FindPaths",
-    "from": "RawMetal_B",
-    "to": "Customer_X",
-    "max_depth": 8
-  },
-  "right": {
-    "type": "FindEquivalent",
-    "entity": "Route_Via_SupplierA",
-    "equivalence_type": "RouteEquivalence"
-  }
-}
-```
-
-### Step 4: Grounded Answer
-
-> **Answer**: There are 3 main routes from suppliers to customers:
->
-> 1. **RawMetal_A → RawMaterial_WH → Machining_Plant → WIP_WH → Assembly_Plant → Finished_WH → Customer_X** (7 steps)
->
-> 2. **RawMetal_B → RawMaterial_WH → Machining_Plant → ...** (equivalent route via backup supplier)
->
-> 3. **Direct route** (skipping warehouse staging)
->
-> **Key insight**: Routes via RawMetal_A and RawMetal_B are *equivalent* (proven by SupplierEquiv relation - both provide Steel_Billet at Q_Premium quality). This means dual-sourcing is valid.
->
-> **Citations**:
-> - [SupplyChain.RouteEquivalence] Route_Via_SupplierA ≃ Route_Via_SupplierB (SameMaterial)
-> - [SupplyChain.SupplierEquiv] RawMetal_A ≃ RawMetal_B (QualityEquiv)
-
-## Advanced: Reasoning Chains
-
-For complex questions, the LLM can decompose into multiple queries:
-
-### Question
-"If I want to machine titanium with good surface finish, what should I do?"
-
-### Decomposition
-1. **Find constraints**: What affects surface finish?
-   ```json
-   { "type": "FindByRelation", "relation": "AffectsSurfaceFinish", "role": "any", "value": "*" }
-   ```
-
-2. **Find recommendations**: What's recommended for titanium?
-   ```json
-   { "type": "FindByRelation", "relation": "RecommendedFor", "role": "object", "value": "Titanium" }
-   ```
-
-3. **Follow heuristics**: What do experts say?
-   ```json
-   {
-     "type": "ConstrainedQuery",
-     "base": { "type": "FindByType", "type_name": "Heuristic" },
-     "constraints": [
-       { "type": "AttrCompare", "attr": "domain", "op": "Eq", "value": "machining" },
-       { "type": "MinConfidence", "threshold": 0.7 }
-     ]
-   }
-   ```
-
-4. **Combine results**: Apply constraints to recommendations
-
-### Grounded Answer
-> Based on the knowledge graph:
->
-> 1. **Speed**: Use low cutting speed (~100 SFM) [Source: TitaniumLowSpeed heuristic, conf: 0.9]
->
-> 2. **Feed**: High feed rate (0.004+ IPT) to avoid rubbing [Source: Sample conversation, Sarah at 10:36]
->
-> 3. **Tool**: TiAlN coated carbide [Source: Mike's recommendation, conf: 0.7]
->
-> 4. **Coolant**: Flood coolant, high pressure [Source: Sarah at 10:40, conf: 0.8]
->
-> **Reasoning**: Titanium has poor thermal conductivity (HeatPartitionHeuristic), so heat must go into the chip. Lower speeds give more time for chip formation; higher feeds ensure material removal rather than rubbing.
-
-## Schema Context for LLM
-
-When prompting an LLM to parse queries, provide:
-
-```json
-{
-  "types": [
-    { "name": "Material", "attributes": ["hardness", "conductivity"] },
-    { "name": "Tool", "attributes": ["coating", "geometry"] },
-    { "name": "Supplier", "attributes": ["lead_time", "quality_level"] }
-  ],
-  "relations": [
-    { "name": "RecommendedFor", "source_type": "Tool", "target_type": "Material" },
-    { "name": "SupplierEquiv", "source_type": "Supplier", "target_type": "Supplier", "is_symmetric": true }
-  ],
-  "example_queries": [
-    {
-      "natural_language": "What tools work for aluminum?",
-      "axql": "select ?t where ?t is Tool, ?t -RecommendedFor-> name(\"Aluminum\") limit 20"
-    }
-  ]
-}
-```
-
-## Comparison: RAG vs Axiograph
-
-| Question | Traditional RAG | Axiograph |
-|----------|-----------------|-----------|
-| "What tools for titanium?" | Search chunks containing "titanium" and "tool" | Follow `RecommendedFor` relation with `object=Titanium` |
-| "How is Alice related to Bob?" | Can't answer (no reasoning) | `FindPaths(Alice, Bob, 5)` returns kinship chain |
-| "Can I use Supplier B instead of A?" | Requires chunk to explicitly state | `FindEquivalent(SupplierA)` uses HoTT equivalence |
-| "High confidence recommendations only" | No confidence model | `ProbabilisticQuery(base, min_confidence=0.8)` |
-| "What entities exist?" | Can't introspect | `MetaQuery(ListTypes)` |
-
-## Implementation Notes
-
-- **Query parsing** happens in the LLM (with schema context)
-- **Query execution** happens in Rust (`axiograph-cli` AxQL engine over PathDB)
-- **Trusted checking** happens in Lean for supported certificate fragments
-- **Answer generation** returns to LLM (with grounded results)
-
-The LLM may propose structure, but execution only uses structure that the Rust
-tooling can resolve against typed ontology/query surfaces.
-
-## REPL support (today)
-
-The `axiograph` REPL can run:
-
-- **Deterministic NL templates**: `ask …` → AxQL
-- **LLM-assisted single-shot query generation**: `llm query …` → `query_ir_v1`
-- **LLM-assisted tool loop (RAG-like, multi-step)**: `llm ask …` / `llm answer …` (calls tools, elaborates/runs queries, proposes overlays)
-
-The LLM layer is intentionally “untrusted”: it produces candidate queries; the
-engine executes them, and certifiable fragments can emit `query_result_v3`
-witnesses for Lean checking.
+- MCP uses the `rmcp`-backed server surfaces.
+- LSP uses `lsp-server` and `lsp-types`.
+- HTTP clients should use typed DB-server endpoints and maintained HTTP client
+  libraries.
+- Command plugins are local adapter/debug boundaries: one typed request on
+  stdin, one typed response on stdout. They are not the product protocol.
+- PathDBExport snapshots are storage/debug/parser parity only and must not be
+  used as query, certificate, or semantic authority.

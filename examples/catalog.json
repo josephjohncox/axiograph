@@ -7,6 +7,11 @@
     "Examples that use weak, advisory, or evidence-plane outputs must say so explicitly.",
     "Non-catalog examples should be cataloged with a purpose or removed."
   ],
+  "example_tiers": {
+    "teaching": "Start here: canonical .axi, .cq, typed reports, overlays, codegen previews, or semantic VCS examples with clear learning goals.",
+    "evidence_plane": "Review/discovery inputs and generated candidate modules. Useful for engineering workflows, but not accepted ontology truth.",
+    "projection_or_ops": "Backend projection, interop, smoke, or operational workflows. Useful for integration testing, not primary ontology authoring."
+  },
   "recommended_flow": [
     {
       "step": "validate_canonical_axi",
@@ -254,7 +259,7 @@
       "path": "examples/physics/PhysicsOntology.axi",
       "kind": "reference_axi_fixture",
       "feature_tags": ["physics", "scientific-ontology", "typed-relations"],
-      "flow": ["inspect_scientific_object_and_relation_types", "use_with_measurement_or_world_model_examples"]
+      "flow": ["inspect_scientific_object_and_relation_types", "use_with_measurement_or_predictive_proposal_examples"]
     },
     {
       "id": "physics-measurements",
@@ -262,7 +267,7 @@
       "path": "examples/physics/PhysicsMeasurements.axi",
       "kind": "reference_axi_fixture",
       "feature_tags": ["physics", "measurements", "observations", "typed-facts"],
-      "flow": ["inspect_measurement_fact_model", "use_with_runtime_theory_or_world_model_examples"]
+      "flow": ["inspect_measurement_fact_model", "use_with_runtime_theory_or_predictive_proposal_examples"]
     },
     {
       "id": "machining-knowledge",
@@ -286,7 +291,8 @@
       "path": "examples/learning/MachinistLearning.axi",
       "kind": "reference_axi_fixture",
       "feature_tags": ["learning", "machining", "evidence", "guardrails"],
-      "flow": ["inspect_review_and_evidence_terms", "use_with_llm_evidence_overlay_example"]
+      "flow": ["validate_domain_axi", "run_question_first_cq_examples", "use_with_llm_evidence_overlay_example"],
+      "related": ["examples/learning/machinist_learning.cq"]
     },
     {
       "id": "ingest-source-fixtures",
@@ -319,11 +325,12 @@
       "id": "schema-discovery-review-candidates",
       "title": "Review-plane schema discovery candidates",
       "path": "examples/schema_discovery",
-      "kind": "review_candidate_fixture",
+      "kind": "evidence_plane_review_candidate",
+      "teaching_tier": "evidence_plane",
       "feature_tags": ["schema-discovery", "proposals", "review-plane", "typed-refinement"],
-      "flow": ["read_proposals", "draft_candidate_axi", "validate_candidate", "promote_only_after_review"],
+      "flow": ["read_proposals_as_evidence", "draft_candidate_axi", "validate_candidate", "promote_only_after_review"],
       "commands": [
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover draft-module examples/schema_discovery/proto_api_proposals.json --module ProtoApi_Proposals --schema ProtoApi --instance Observed --out build/examples/schema_discovery/ProtoApi.proposals.axi",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover draft-module examples/schema_discovery/fixtures/proto_api_proposals.json --module ProtoApi_Proposals --schema ProtoApi --instance Observed --out build/examples/schema_discovery/ProtoApi.proposals.axi",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate build/examples/schema_discovery/ProtoApi.proposals.axi"
       ]
     },
@@ -342,8 +349,9 @@
       "id": "rdf-shacl-boundary",
       "title": "RDF and SHACL boundary-layer fixtures",
       "path": "examples/rdfowl",
-      "kind": "interop_fixture",
-      "feature_tags": ["rdf", "shacl", "interop", "named-graphs", "contexts"],
+      "kind": "projection_interop_fixture",
+      "teaching_tier": "projection_or_ops",
+      "feature_tags": ["rdf", "shacl", "interop", "named-graphs", "contexts", "boundary-layer"],
       "flow": ["ingest_rdf_boundary_fixture", "draft_candidate_axi", "validate_review_material", "keep_axiograph_as_semantic_authority"],
       "commands": [
         "./scripts/rdf_named_graph_context_demo.sh",

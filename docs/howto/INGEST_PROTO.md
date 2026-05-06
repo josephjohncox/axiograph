@@ -3,8 +3,10 @@
 **Diataxis:** How-to  
 **Audience:** users (and contributors)
 
-This repo supports ingesting large Protobuf/gRPC APIs into the generic Axiograph
-Evidence/Proposals schema (`proposals.json`).
+This repo supports a Protobuf/gRPC evidence adapter that emits typed
+`ProposalsFileV1` and `EvidenceChunkBundleV1` artifacts. It is not a semantic,
+query, certificate, or accepted-plane authority until reviewed into canonical
+`.axi`.
 
 The goal is to capture:
 
@@ -29,7 +31,7 @@ The example module is in `examples/proto/large_api/` and includes:
 - custom RPC + field annotations (`acme.annotations.v1.*`)
 - doc comments that describe typical interaction flows
 
-Run ingestion (release mode recommended):
+Run evidence extraction (release mode recommended):
 
 ```bash
 cd rust
@@ -38,7 +40,7 @@ cargo run -p axiograph-cli --release -- ingest proto ingest ../examples/proto/la
   --chunks ../build/ingest/proto_api/chunks.json
 ```
 
-This produces:
+This produces evidence-plane artifacts:
 
 - `../build/ingest/proto_api/descriptor.binpb` (binary Buf descriptor set)
 - `../build/ingest/proto_api/proposals.json` (entities + relations)
@@ -93,14 +95,16 @@ cargo run -p axiograph-cli --release -- ingest proto ingest /unused/root \
 
 ## End-to-end ontology engineering (Proto, over time)
 
-For a full “ingest → LLM augmentation → draft `.axi` → promotion gate → PathDB + viz”
-demo across multiple proto services and several evolution ticks, run:
+For a full “evidence extraction → LLM augmentation → draft `.axi` → review gate
+→ derived PathDB + viz” demo across multiple proto services and several
+evolution ticks, run:
 
 ```bash
-./scripts/ontology_engineering_proto_evolution_ollama_demo.sh
+./scripts/ops/ontology_engineering_proto_evolution_ollama_demo.sh
 ```
 
-This demo also imports doc comment chunks into the produced `.axpd` snapshots
-as `DocChunk` nodes (`axiograph db pathdb import-chunks ...`), enabling `fts(...)`
-queries and LLM grounding over real doc text, plus semantic metadata (FQNs,
-kinds, message/field names, etc) via `DocChunk.search_text`.
+This demo can attach doc comment chunks to the accepted-plane PathDB layer with
+`axiograph db accept pathdb-commit ... --chunks <chunks.json>` so local search
+and LLM grounding can cite `DocChunk` evidence. Promotion still requires a
+reviewed canonical `.axi` candidate and the normal CQ/trust/runtime-theory
+gates.

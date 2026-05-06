@@ -64,8 +64,8 @@ mod typed_authoring;
 mod typed_refinement;
 mod viz;
 mod web;
-mod world_model;
-mod world_model_input;
+mod predictive_proposals;
+mod predictive_proposal_input;
 
 #[derive(Parser)]
 #[command(name = "axiograph")]
@@ -334,7 +334,7 @@ enum ToolsCommands {
 
 #[derive(Subcommand)]
 enum AuthoringCommands {
-    /// Run a cataloged software-authoring example flow and emit one combined report.
+        /// Run a cataloged software-authoring example flow and emit `authoring_suite_run_report_v1`.
     Run {
         /// JSON suite catalog, for example examples/software_authoring/software_authoring_examples.json.
         #[arg(long)]
@@ -348,10 +348,10 @@ enum AuthoringCommands {
         /// Repository root used to resolve code_refs.
         #[arg(long, default_value = ".")]
         repo_root: PathBuf,
-        /// Optional directory for per-step report JSON files.
+        /// Optional directory for typed per-step report files.
         #[arg(long)]
         out_dir: Option<PathBuf>,
-        /// Output combined JSON path. Defaults to stdout.
+        /// Output `authoring_suite_run_report_v1` path. Defaults to stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
         /// Return a non-zero exit code when the selected profile fails.
@@ -531,7 +531,7 @@ struct DbServeArgs {
     #[arg(long)]
     admin_token: Option<String>,
 
-    /// If set, write a small JSON file once the server is listening.
+    /// If set, write an `axiograph_db_server_ready_v1` file once the server is listening.
     ///
     /// Useful for scripts/tests to learn the chosen port when `--listen ...:0`.
     #[arg(long)]
@@ -599,36 +599,36 @@ struct DbServeArgs {
     #[arg(long)]
     llm_model: Option<String>,
 
-    /// Enable world model plugin endpoints for proposal generation.
+    /// Enable predictive proposal adapter plugin endpoints for proposal generation.
     ///
-    /// Choose at most one backend: `--world-model-stub`, `--world-model-plugin ...`,
-    /// `--world-model-http ...`, or `--world-model-llm`.
-    #[arg(long)]
-    world_model_stub: bool,
+    /// Choose at most one backend: `--proposal-adapter-stub`, `--proposal-adapter-plugin ...`,
+    /// `--proposal-adapter-http ...`, or `--proposal-adapter-llm`.
+    #[arg(long = "proposal-adapter-stub")]
+    predictive_proposal_stub: bool,
 
-    /// Optional world model plugin executable (speaks `axiograph_world_model_v1`).
-    #[arg(long)]
-    world_model_plugin: Option<PathBuf>,
+    /// Optional predictive proposal adapter plugin executable (speaks `axiograph_predictive_proposal_v1`).
+    #[arg(long = "proposal-adapter-plugin")]
+    predictive_proposal_plugin: Option<PathBuf>,
 
-    /// Extra args for `--world-model-plugin` (repeatable).
-    #[arg(long)]
-    world_model_plugin_arg: Vec<String>,
+    /// Extra args for `--proposal-adapter-plugin` (repeatable).
+    #[arg(long = "proposal-adapter-plugin-arg")]
+    predictive_proposal_plugin_arg: Vec<String>,
 
-    /// Optional world model HTTP endpoint (speaks `axiograph_world_model_v1`).
-    #[arg(long)]
-    world_model_http: Option<String>,
+    /// Optional predictive proposal adapter HTTP endpoint (speaks `axiograph_predictive_proposal_v1`).
+    #[arg(long = "proposal-adapter-http")]
+    predictive_proposal_http: Option<String>,
 
-    /// Use the built-in LLM-backed world model plugin.
-    #[arg(long)]
-    world_model_llm: bool,
+    /// Use the built-in LLM-backed predictive proposal adapter plugin.
+    #[arg(long = "proposal-adapter-llm")]
+    predictive_proposal_llm: bool,
 
-    /// Optional world model model name for provenance (free-form).
-    #[arg(long)]
-    world_model_model: Option<String>,
+    /// Optional predictive proposal adapter model name for provenance (free-form).
+    #[arg(long = "proposal-adapter-model")]
+    predictive_proposal_model: Option<String>,
 
-    /// Number of worker slots reserved for world-model jobs.
-    #[arg(long, default_value_t = 2)]
-    world_model_workers: usize,
+    /// Number of worker slots reserved for proposal-adapter jobs.
+    #[arg(long = "proposal-adapter-workers", default_value_t = 2)]
+    predictive_proposal_workers: usize,
 
     /// LRU capacity (number of path signatures) for deeper-than-indexed paths.
     /// `0` disables the LRU cache.
@@ -940,12 +940,12 @@ enum IngestCommands {
         schema_hint: Option<String>,
     },
 
-    /// Run a world model plugin to propose new facts/relations (evidence plane).
-    WorldModel(WorldModelProposeArgs),
+    /// Run a predictive proposal adapter plugin to propose new facts/relations (evidence plane).
+    PredictiveProposal(PredictiveProposalsArgs),
 
-    /// Built-in world model plugin (LLM-backed). Reads request JSON from stdin and writes a response to stdout.
-    #[command(name = "world-model-plugin-llm")]
-    WorldModelPluginLlm(WorldModelPluginLlmArgs),
+    /// Built-in predictive proposal adapter plugin (LLM-backed). Reads request JSON from stdin and writes a response to stdout.
+    #[command(name = "predictive-proposals-llm")]
+    PredictiveProposalPluginLlm(PredictiveProposalsLlmArgs),
 }
 
 #[derive(Subcommand)]
@@ -1246,16 +1246,17 @@ enum DiscoverCommands {
         llm_timeout_secs: Option<u64>,
     },
 
-    /// Export JEPA/SSL training pairs from a canonical `.axi` module.
+    /// Export masked-tuple SSL training pairs from a canonical `.axi` module.
     ///
     /// This exports **full** schema+theory+instance context and a list of
     /// masked targets derived from instance tuples. It is anchored to the
     /// module's `axi_digest_v1` and is suitable for self-supervised training
     /// pipelines.
-    JepaExport {
+    #[command(name = "training-export")]
+    MaskedTupleTrainingExport {
         /// Input `.axi` module (canonical `axi_v1`)
         input: PathBuf,
-        /// Output JSON file
+        /// Output `MaskedTupleTrainingExportV1` (`version=axi_training_export_v1`).
         #[arg(short, long)]
         out: PathBuf,
         /// Optional instance name filter (only export targets from this instance)
@@ -1313,8 +1314,8 @@ enum DiscoverCommands {
     /// Emit runtime theory checker closure/completeness reports from canonical `.axi`.
     TheoryCheck(DiscoverTheoryCheckArgs),
 
-    /// Run a world model plugin to propose new facts/relations (evidence plane).
-    WorldModelPropose(WorldModelProposeArgs),
+    /// Run a predictive proposal adapter plugin to propose new facts/relations (evidence plane).
+    PredictiveProposalPropose(PredictiveProposalsArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1649,31 +1650,23 @@ struct DiscoverTransportPreviewArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct WorldModelProposeArgs {
+struct PredictiveProposalsArgs {
     /// Input `.axi` or `.axpd` snapshot (used for guardrails / validation).
     input: PathBuf,
 
-    /// Optional JEPA export JSON (if provided, passed to the world model).
-    #[arg(long)]
-    export: Option<PathBuf>,
-
-    /// Optional output path for a generated JEPA export.
-    #[arg(long)]
-    export_out: Option<PathBuf>,
-
-    /// Instance filter for generated JEPA export (only when `--export` is not set).
+    /// Instance filter for generated masked-tuple training input.
     #[arg(long)]
     export_instance: Option<String>,
 
-    /// Cap the number of JEPA items generated (0 = no cap).
+    /// Cap the number of masked-tuple training items generated (0 = no cap).
     #[arg(long, default_value_t = 0)]
     export_max_items: usize,
 
-    /// Number of fields to mask per JEPA item.
+    /// Number of fields to mask per training item.
     #[arg(long, default_value_t = 1)]
     export_mask_fields: usize,
 
-    /// Random seed for JEPA export masking.
+    /// Random seed for masked-tuple training item generation.
     #[arg(long, default_value_t = 1)]
     export_seed: u64,
 
@@ -1681,39 +1674,39 @@ struct WorldModelProposeArgs {
     #[arg(short, long)]
     out: PathBuf,
 
-    /// Optional world model plugin executable (speaks `axiograph_world_model_v1`).
-    #[arg(long)]
-    world_model_plugin: Option<PathBuf>,
+    /// Optional predictive proposal adapter plugin executable (speaks `axiograph_predictive_proposal_v1`).
+    #[arg(long = "proposal-adapter-plugin")]
+    predictive_proposal_plugin: Option<PathBuf>,
 
-    /// Extra args for `--world-model-plugin` (repeatable).
-    #[arg(long)]
-    world_model_plugin_arg: Vec<String>,
+    /// Extra args for `--proposal-adapter-plugin` (repeatable).
+    #[arg(long = "proposal-adapter-plugin-arg")]
+    predictive_proposal_plugin_arg: Vec<String>,
 
-    /// Optional world model HTTP endpoint (speaks `axiograph_world_model_v1`).
-    #[arg(long)]
-    world_model_http: Option<String>,
+    /// Optional predictive proposal adapter HTTP endpoint (speaks `axiograph_predictive_proposal_v1`).
+    #[arg(long = "proposal-adapter-http")]
+    predictive_proposal_http: Option<String>,
 
-    /// Use the built-in LLM-backed world model plugin.
-    #[arg(long)]
-    world_model_llm: bool,
+    /// Use the built-in LLM-backed predictive proposal adapter plugin.
+    #[arg(long = "proposal-adapter-llm")]
+    predictive_proposal_llm: bool,
 
-    /// Use the stub world model backend (emits no proposals).
-    #[arg(long)]
-    world_model_stub: bool,
+    /// Use the stub predictive proposal adapter backend (emits no proposals).
+    #[arg(long = "proposal-adapter-stub")]
+    predictive_proposal_stub: bool,
 
     /// Optional model name for provenance (free-form).
-    #[arg(long)]
-    world_model_model: Option<String>,
+    #[arg(long = "proposal-adapter-model")]
+    predictive_proposal_model: Option<String>,
 
     /// Max new proposals to keep (0 = no cap).
     #[arg(long, default_value_t = 0)]
     max_new_proposals: usize,
 
-    /// Optional goal strings passed to the world model (repeatable).
+    /// Optional goal strings passed to the predictive proposal adapter (repeatable).
     #[arg(long)]
     goal: Vec<String>,
 
-    /// Optional random seed passed to the world model.
+    /// Optional random seed passed to the predictive proposal adapter.
     #[arg(long)]
     seed: Option<u64>,
 
@@ -1736,7 +1729,7 @@ struct WorldModelProposeArgs {
     #[arg(long)]
     task_cost: Vec<String>,
 
-    /// Optional planning horizon (steps) passed to the world model.
+    /// Optional planning horizon (steps) passed to the predictive proposal adapter.
     #[arg(long)]
     horizon_steps: Option<usize>,
 
@@ -1770,12 +1763,12 @@ struct WorldModelProposeArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct WorldModelPluginLlmArgs {
-    /// Backend: openai|anthropic|ollama|mock (defaults to WORLD_MODEL_BACKEND or openai).
+struct PredictiveProposalsLlmArgs {
+    /// Backend: openai|anthropic|ollama|mock (defaults to PREDICTIVE_PROPOSAL_BACKEND or openai).
     #[arg(long)]
     backend: Option<String>,
 
-    /// Optional model name (defaults to WORLD_MODEL_MODEL or provider defaults).
+    /// Optional model name (defaults to PREDICTIVE_PROPOSAL_MODEL or provider defaults).
     #[arg(long)]
     model: Option<String>,
 
@@ -2203,7 +2196,7 @@ enum AcceptedCommands {
 
 #[derive(Subcommand)]
 enum SemCommands {
-    /// Show a summary of semantic refs, semantic head, reconciliations, and world-model runs.
+    /// Show a summary of semantic refs, semantic head, reconciliations, and proposal-adapter runs.
     Status {
         /// Accepted-plane directory.
         #[arg(long, default_value = "build/accepted_plane")]
@@ -2217,7 +2210,7 @@ enum SemCommands {
         /// Accepted-plane directory.
         #[arg(long, default_value = "build/accepted_plane")]
         dir: PathBuf,
-        /// Branch family: main, review, evidence, or wm.
+        /// Branch family: main, review, evidence, or proposal.
         #[arg(long, default_value = "review")]
         family: String,
         /// Branch name. Ignored for family=main.
@@ -2254,12 +2247,12 @@ enum SemCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Show a semantic ref, commit, or world-model run from the semantic store.
+    /// Show a semantic ref, commit, or proposal-adapter run from the semantic store.
     Show {
         /// Accepted-plane directory.
         #[arg(long, default_value = "build/accepted_plane")]
         dir: PathBuf,
-        /// Optional ref name (e.g. heads/main, heads/review/demo, heads/wm/run).
+        /// Optional ref name (e.g. heads/main, heads/review/demo, heads/evidence/proposals/run).
         #[arg(long)]
         r#ref: Option<String>,
         /// Optional commit id.
@@ -2268,9 +2261,9 @@ enum SemCommands {
         /// Optional reconciliation id.
         #[arg(long)]
         reconciliation: Option<String>,
-        /// Optional world-model run id.
+        /// Optional proposal-adapter run id.
         #[arg(long)]
-        world_model_run: Option<String>,
+        proposal_adapter_run: Option<String>,
         /// Print the typed semantic object report as JSON.
         #[arg(long)]
         json: bool,
@@ -2561,11 +2554,11 @@ fn main() -> Result<()> {
                         schema_hint.as_deref(),
                     )?;
                 }
-                IngestCommands::WorldModel(args) => {
-                    cmd_world_model_propose(&args)?;
+                IngestCommands::PredictiveProposal(args) => {
+                    cmd_predictive_proposals(&args)?;
                 }
-                IngestCommands::WorldModelPluginLlm(args) => {
-                    cmd_world_model_plugin_llm(&args)?;
+                IngestCommands::PredictiveProposalPluginLlm(args) => {
+                    cmd_predictive_proposal_plugin_llm(&args)?;
                 }
             },
             Commands::Check { command } => match command {
@@ -2838,7 +2831,7 @@ fn main() -> Result<()> {
                     fs::write(&out, draft)?;
                     println!("wrote {}", out.display());
                 }
-                DiscoverCommands::JepaExport {
+                DiscoverCommands::MaskedTupleTrainingExport {
                     input,
                     out,
                     instance,
@@ -2846,7 +2839,7 @@ fn main() -> Result<()> {
                     mask_fields,
                     seed,
                 } => {
-                    cmd_discover_jepa_export(
+                    cmd_discover_training_export(
                         &input,
                         &out,
                         instance.as_deref(),
@@ -2894,8 +2887,8 @@ fn main() -> Result<()> {
                 DiscoverCommands::TheoryCheck(args) => {
                     cmd_discover_theory_check(&args)?;
                 }
-                DiscoverCommands::WorldModelPropose(args) => {
-                    cmd_world_model_propose(&args)?;
+                DiscoverCommands::PredictiveProposalPropose(args) => {
+                    cmd_predictive_proposals(&args)?;
                 }
             },
             Commands::Sem { command } => {
@@ -3029,7 +3022,7 @@ fn cmd_accept(command: AcceptedCommands) -> Result<()> {
             cq_fail_on_unsatisfied_after,
         } => {
             let competency_questions = if let Some(path) = competency_questions.as_ref() {
-                crate::world_model::load_competency_questions(path)?
+                crate::predictive_proposals::load_competency_questions(path)?
             } else {
                 Vec::new()
             };
@@ -3241,16 +3234,16 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
                 for pointer in &status.review_refs {
                     println!("    - {} -> {}", pointer.ref_name, pointer.commit_id);
                 }
-                println!("  world-model refs: {}", status.world_model_refs.len());
-                for pointer in &status.world_model_refs {
+                println!("  proposal-adapter refs: {}", status.predictive_proposal_refs.len());
+                for pointer in &status.predictive_proposal_refs {
                     println!("    - {} -> {}", pointer.ref_name, pointer.commit_id);
                 }
                 println!("  reconciliations: {}", status.reconciliation_ids.len());
                 for reconciliation_id in &status.reconciliation_ids {
                     println!("    - {}", reconciliation_id);
                 }
-                println!("  world-model runs: {}", status.world_model_run_ids.len());
-                for run_id in &status.world_model_run_ids {
+                println!("  proposal-adapter runs: {}", status.proposal_adapter_run_ids.len());
+                for run_id in &status.proposal_adapter_run_ids {
                     println!("    - {}", run_id);
                 }
             }
@@ -3306,21 +3299,21 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
             r#ref,
             commit,
             reconciliation,
-            world_model_run,
+            proposal_adapter_run,
             json,
         } => {
             let provided = [
                 r#ref.is_some(),
                 commit.is_some(),
                 reconciliation.is_some(),
-                world_model_run.is_some(),
+                proposal_adapter_run.is_some(),
             ]
             .into_iter()
             .filter(|v| *v)
             .count();
             if provided != 1 {
                 return Err(anyhow!(
-                    "sem show requires exactly one of --ref, --commit, --reconciliation, or --world-model-run"
+                    "sem show requires exactly one of --ref, --commit, --reconciliation, or --proposal-adapter-run"
                 ));
             }
 
@@ -3399,15 +3392,15 @@ fn cmd_sem(command: SemCommands) -> Result<()> {
                     );
                     println!("  ok: {}", view.preview.ok);
                 }
-            } else if let Some(run_id) = world_model_run {
-                let run = accepted_plane::read_world_model_run_record(
+            } else if let Some(run_id) = proposal_adapter_run {
+                let run = accepted_plane::read_proposal_adapter_run_record(
                     &dir,
-                    &axiograph_pathdb::WorldModelRunId::new(run_id),
+                    &axiograph_pathdb::ProposalAdapterRunId::new(run_id),
                 )?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&run)?);
                 } else {
-                    println!("world model run");
+                    println!("predictive proposal adapter run");
                     println!("  run: {}", run.run_id);
                     println!("  status: {:?}", run.status);
                     println!("  backend: {}", run.backend);
@@ -3753,11 +3746,11 @@ fn semantic_branch_target(
         "evidence" => accepted_plane::SemRefNameV1::evidence(
             name.ok_or_else(|| anyhow!("sem branch --family evidence requires <name>"))?,
         ),
-        "wm" | "world-model" | "world_model" => accepted_plane::SemRefNameV1::world_model(
-            name.ok_or_else(|| anyhow!("sem branch --family wm requires <name>"))?,
+        "proposal" | "proposal-adapter" | "predictive_proposal_adapter" => accepted_plane::SemRefNameV1::predictive_proposal(
+            name.ok_or_else(|| anyhow!("sem branch --family proposal requires <name>"))?,
         ),
         other => Err(anyhow!(
-            "unknown semantic branch family `{other}` (expected main|review|evidence|wm)"
+            "unknown semantic branch family `{other}` (expected main|review|evidence|proposal)"
         )),
     }
 }
@@ -8400,7 +8393,7 @@ fn cmd_discover_augment_proposals(
     Ok(())
 }
 
-fn cmd_discover_jepa_export(
+fn cmd_discover_training_export(
     input: &PathBuf,
     out: &PathBuf,
     instance_filter: Option<&str>,
@@ -8408,14 +8401,14 @@ fn cmd_discover_jepa_export(
     mask_fields: usize,
     seed: u64,
 ) -> Result<()> {
-    let opts = crate::world_model::JepaExportOptions {
+    let opts = crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
         instance_filter: instance_filter.map(|s| s.to_string()),
         max_items,
         mask_fields,
         seed,
         exclude_relations: Vec::new(),
     };
-    crate::world_model::write_jepa_export(input, out, &opts)?;
+    crate::predictive_proposals::write_training_export(input, out, &opts)?;
     println!("wrote {}", out.display());
     Ok(())
 }
@@ -8881,7 +8874,7 @@ fn attach_behavior_case_cq_files(
     }
     let mut loaded = Vec::new();
     for path in cq_files {
-        loaded.extend(crate::world_model::load_competency_questions(path)?);
+        loaded.extend(crate::predictive_proposals::load_competency_questions(path)?);
     }
     let then = request
         .behavior_case
@@ -9008,14 +9001,14 @@ fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<(
         contexts: args.context.clone(),
     };
 
-    let mut out: Vec<crate::world_model::CompetencyQuestionV1> = Vec::new();
+    let mut out: Vec<crate::predictive_proposals::CompetencyQuestionV1> = Vec::new();
     if !args.no_schema {
         let mut generated = crate::competency_questions::generate_from_schema(&db, &options)?;
         out.append(&mut generated);
     }
 
     if let Some(path) = args.from_cq.as_ref() {
-        let mut loaded = crate::world_model::load_competency_questions(path)?;
+        let mut loaded = crate::predictive_proposals::load_competency_questions(path)?;
         out.append(&mut loaded);
     }
 
@@ -9197,17 +9190,17 @@ fn resolve_llm_state_for_competency_questions(
     Err(anyhow!("no LLM backend configured"))
 }
 
-const WORLD_MODEL_BACKEND_ENV: &str = "WORLD_MODEL_BACKEND";
-const WORLD_MODEL_MODEL_ENV: &str = "WORLD_MODEL_MODEL";
+const PREDICTIVE_PROPOSAL_BACKEND_ENV: &str = "PREDICTIVE_PROPOSAL_BACKEND";
+const PREDICTIVE_PROPOSAL_MODEL_ENV: &str = "PREDICTIVE_PROPOSAL_MODEL";
 
-fn resolve_llm_state_for_world_model_plugin(
-    args: &WorldModelPluginLlmArgs,
+fn resolve_llm_state_for_predictive_proposal_plugin(
+    args: &PredictiveProposalsLlmArgs,
 ) -> Result<crate::llm::LlmState> {
     let backend = args
         .backend
         .clone()
         .or_else(|| {
-            env::var(WORLD_MODEL_BACKEND_ENV)
+            env::var(PREDICTIVE_PROPOSAL_BACKEND_ENV)
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
@@ -9215,7 +9208,7 @@ fn resolve_llm_state_for_world_model_plugin(
         .unwrap_or_else(|| "openai".to_string());
 
     let model = args.model.clone().or_else(|| {
-        env::var(WORLD_MODEL_MODEL_ENV)
+        env::var(PREDICTIVE_PROPOSAL_MODEL_ENV)
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -9245,7 +9238,7 @@ fn resolve_llm_state_for_world_model_plugin(
                 let model = model
                     .or_else(|| env::var("OLLAMA_MODEL").ok().filter(|s| !s.trim().is_empty()))
                     .ok_or_else(|| {
-                        anyhow!("no model selected (use --model, set WORLD_MODEL_MODEL, or set OLLAMA_MODEL)")
+                        anyhow!("no model selected (use --model, set PREDICTIVE_PROPOSAL_MODEL, or set OLLAMA_MODEL)")
                     })?;
                 llm.backend = crate::llm::LlmBackend::Ollama { host };
                 llm.model = Some(model);
@@ -9282,7 +9275,7 @@ fn resolve_llm_state_for_world_model_plugin(
                     .or_else(|| env::var(crate::llm::ANTHROPIC_MODEL_ENV).ok().filter(|s| !s.trim().is_empty()))
                     .ok_or_else(|| {
                         anyhow!(
-                            "no model selected (use --model, set WORLD_MODEL_MODEL, or set {})",
+                            "no model selected (use --model, set PREDICTIVE_PROPOSAL_MODEL, or set {})",
                             crate::llm::ANTHROPIC_MODEL_ENV
                         )
                     })?;
@@ -9321,7 +9314,7 @@ fn resolve_llm_state_for_world_model_plugin(
                     .or_else(|| env::var(crate::llm::OPENAI_MODEL_ENV).ok().filter(|s| !s.trim().is_empty()))
                     .ok_or_else(|| {
                         anyhow!(
-                            "no model selected (use --model, set WORLD_MODEL_MODEL, or set {})",
+                            "no model selected (use --model, set PREDICTIVE_PROPOSAL_MODEL, or set {})",
                             crate::llm::OPENAI_MODEL_ENV
                         )
                     })?;
@@ -9337,61 +9330,55 @@ fn resolve_llm_state_for_world_model_plugin(
             }
         }
         other => Err(anyhow!(
-            "world model backend `{other}` is not supported by --world-model-llm / `axiograph ingest world-model-plugin-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --world-model-plugin or --world-model-http instead."
+            "predictive proposal adapter backend `{other}` is not supported by --proposal-adapter-llm / `axiograph ingest predictive-proposals-llm` (expected openai|anthropic|ollama|mock). If you meant an ONNX or custom model, use --proposal-adapter-plugin or --proposal-adapter-http instead."
         )),
     }
 }
 
-fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
-    let selected = (args.world_model_stub as usize)
-        + (args.world_model_plugin.is_some() as usize)
-        + (args.world_model_http.is_some() as usize)
-        + (args.world_model_llm as usize);
+fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
+    let selected = (args.predictive_proposal_stub as usize)
+        + (args.predictive_proposal_plugin.is_some() as usize)
+        + (args.predictive_proposal_http.is_some() as usize)
+        + (args.predictive_proposal_llm as usize);
     if selected > 1 {
         return Err(anyhow!(
-            "choose at most one world model backend: --world-model-stub, --world-model-plugin, --world-model-http, or --world-model-llm"
+            "choose at most one predictive proposal adapter backend: --proposal-adapter-stub, --proposal-adapter-plugin, --proposal-adapter-http, or --proposal-adapter-llm"
         ));
     }
     if selected == 0 {
         return Err(anyhow!(
-            "world model backend is not configured (use --world-model-plugin, --world-model-http, --world-model-llm, or --world-model-stub)"
+            "predictive proposal adapter backend is not configured (use --proposal-adapter-plugin, --proposal-adapter-http, --proposal-adapter-llm, or --proposal-adapter-stub)"
         ));
     }
 
-    let mut wm = crate::world_model::WorldModelState::default();
-    if args.world_model_stub {
-        wm.backend = crate::world_model::WorldModelBackend::Stub;
-    } else if let Some(url) = args.world_model_http.as_ref() {
-        wm.backend = crate::world_model::WorldModelBackend::Http { url: url.clone() };
-    } else if args.world_model_llm {
+    let mut adapter = crate::predictive_proposals::ProposalAdapterState::default();
+    if args.predictive_proposal_stub {
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Stub;
+    } else if let Some(url) = args.predictive_proposal_http.as_ref() {
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Http { url: url.clone() };
+    } else if args.predictive_proposal_llm {
         let exe = std::env::current_exe()
             .map_err(|e| anyhow!("failed to resolve current executable: {e}"))?;
-        let mut args_list = vec!["ingest".to_string(), "world-model-plugin-llm".to_string()];
-        let has_model_arg = args.world_model_plugin_arg.iter().any(|a| a == "--model");
-        if let Some(model) = args.world_model_model.as_ref() {
+        let mut args_list = vec!["ingest".to_string(), "predictive-proposals-llm".to_string()];
+        let has_model_arg = args.predictive_proposal_plugin_arg.iter().any(|a| a == "--model");
+        if let Some(model) = args.predictive_proposal_model.as_ref() {
             if !has_model_arg {
                 args_list.push("--model".to_string());
                 args_list.push(model.clone());
             }
         }
-        args_list.extend(args.world_model_plugin_arg.clone());
-        wm.backend = crate::world_model::WorldModelBackend::Command {
+        args_list.extend(args.predictive_proposal_plugin_arg.clone());
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
             program: exe,
             args: args_list,
         };
-    } else if let Some(plugin) = args.world_model_plugin.as_ref() {
-        wm.backend = crate::world_model::WorldModelBackend::Command {
+    } else if let Some(plugin) = args.predictive_proposal_plugin.as_ref() {
+        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
             program: plugin.clone(),
-            args: args.world_model_plugin_arg.clone(),
+            args: args.predictive_proposal_plugin_arg.clone(),
         };
     }
-    wm.model = args.world_model_model.clone();
-
-    if args.export.is_some() || args.export_out.is_some() {
-        return Err(anyhow!(
-            "world-model propose no longer accepts `--export`/`--export-out`; world-model input is canonical `.axi` semantics, and derived training exports belong in `axiograph discover jepa-export`"
-        ));
-    }
+    adapter.model = args.predictive_proposal_model.clone();
 
     let input_ext = args
         .input
@@ -9400,7 +9387,7 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         .unwrap_or("");
 
     let mut db: Option<axiograph_pathdb::PathDB> = None;
-    let training_export = Some(crate::world_model::JepaExportOptions {
+    let training_export = Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
         instance_filter: args.export_instance.clone(),
         max_items: args.export_max_items,
         mask_fields: args.export_mask_fields,
@@ -9411,16 +9398,16 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
     let guardrail_profile = args.guardrail_profile.trim().to_ascii_lowercase();
     let guardrail_plane = args.guardrail_plane.trim().to_ascii_lowercase();
     let guardrail_weights = if args.guardrail_weight.is_empty() {
-        crate::world_model::GuardrailCostWeightsV1::defaults()
+        crate::predictive_proposals::GuardrailCostWeightsV1::defaults()
     } else {
-        crate::world_model::parse_guardrail_weights(&args.guardrail_weight)?
+        crate::predictive_proposals::parse_guardrail_weights(&args.guardrail_weight)?
     };
 
-    let task_costs = crate::world_model::parse_task_costs(&args.task_cost)?;
+    let task_costs = crate::predictive_proposals::parse_task_costs(&args.task_cost)?;
 
     let guardrail = if guardrail_profile != "off" {
         let loaded = crate::load_pathdb_for_cli(&args.input)?;
-        let report = crate::world_model::compute_guardrail_costs(
+        let report = crate::predictive_proposals::compute_guardrail_costs(
             &loaded,
             &args.input.display().to_string(),
             &guardrail_profile,
@@ -9440,7 +9427,7 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
 
     let mut input = if input_ext.eq_ignore_ascii_case("axi") {
         let text = fs::read_to_string(&args.input)?;
-        crate::world_model_input::build_world_model_input_from_axi_text(
+        crate::predictive_proposal_input::build_predictive_proposal_input_from_axi_text(
             &text,
             None,
             None,
@@ -9453,9 +9440,9 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         } else {
             crate::load_pathdb_for_cli(&args.input)?
         };
-        let built = crate::world_model_input::build_world_model_input_from_pathdb(
+        let built = crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
             &loaded,
-            &crate::world_model_input::WorldModelInputBuildOptionsV1 {
+            &crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
                 module_name: None,
                 pathdb_snapshot_id: None,
                 accepted_snapshot_id: None,
@@ -9466,15 +9453,15 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
         built
     } else {
         return Err(anyhow!(
-            "world model input must be a canonical `.axi` module or an `.axpd` snapshot with an imported canonical module"
+            "predictive proposal adapter input must be a canonical `.axi` module or an `.axpd` snapshot with an imported canonical module"
         ));
     };
     if guardrail.is_some() {
         input.set_guardrail_layer(guardrail.clone().expect("guardrail already checked"));
     }
-    input.notes.push("source=cli_world_model".to_string());
+    input.notes.push("source=cli_predictive_proposals".to_string());
 
-    let mut options = crate::world_model::WorldModelOptionsV1::default();
+    let mut options = crate::predictive_proposals::PredictiveProposalOptionsV1::default();
     options.max_new_proposals = args.max_new_proposals;
     options.seed = args.seed;
     options.goals = args.goal.clone();
@@ -9483,16 +9470,16 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
 
     let input_pathdb_snapshot_id = input.pathdb_snapshot_id();
     let input_accepted_snapshot_id = input.accepted_snapshot_id();
-    let req = crate::world_model::make_world_model_request(input, options);
-    let mut response = wm.propose(&req)?;
+    let req = crate::predictive_proposals::make_predictive_proposal_request(input, options);
+    let mut response = adapter.propose(&req)?;
     if let Some(err) = response.error.take() {
-        return Err(anyhow!("world model error: {err}"));
+        return Err(anyhow!("predictive proposal adapter error: {err}"));
     }
 
-    let provenance = crate::world_model::build_world_model_provenance(
+    let provenance = crate::predictive_proposals::build_predictive_proposal_provenance(
         &response,
-        wm.backend_label(),
-        wm.model.clone(),
+        adapter.backend_label(),
+        adapter.model.clone(),
         req.input.axi_digest_v1.clone(),
         input_pathdb_snapshot_id,
         input_accepted_snapshot_id,
@@ -9510,7 +9497,7 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
     )?;
 
     let mut proposals =
-        crate::world_model::apply_world_model_provenance(response.proposals, &provenance);
+        crate::predictive_proposals::apply_predictive_proposal_provenance(response.proposals, &provenance);
 
     if args.max_new_proposals > 0 && proposals.proposals.len() > args.max_new_proposals {
         proposals.proposals.truncate(args.max_new_proposals);
@@ -9551,14 +9538,14 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
             &[args.out.clone()],
             args.commit_message.as_deref(),
         )?;
-        let run_record = crate::world_model::build_world_model_run_record(
+        let run_record = crate::predictive_proposals::build_proposal_adapter_run_record(
             &provenance,
             &proposals,
             Some(res.snapshot_id.clone()),
             Some(res.accepted_snapshot_id.clone()),
             Vec::new(),
         )?;
-        let run_path = crate::accepted_plane::persist_world_model_run_record(dir, &run_record)?;
+        let run_path = crate::accepted_plane::persist_proposal_adapter_run_record(dir, &run_record)?;
         let semantic_commit = crate::accepted_plane::persist_pathdb_semantic_commit(
             dir,
             &res.accepted_snapshot_id,
@@ -9566,12 +9553,12 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
             &crate::accepted_plane::PathdbSemanticCommitOptionsV1 {
                 message: args.commit_message.clone(),
                 proposal_digests: vec![run_record.proposals_digest.clone()],
-                world_model_run_id: Some(run_record.run_id.clone()),
+                proposal_adapter_run_id: Some(run_record.run_id.clone()),
                 ..crate::accepted_plane::PathdbSemanticCommitOptionsV1::default()
             },
         )?;
-        let wm_ref = format!(
-            "heads/wm/{}",
+        let proposal_ref = format!(
+            "heads/evidence/proposals/{}",
             run_record
                 .run_id
                 .as_str()
@@ -9583,20 +9570,23 @@ fn cmd_world_model_propose(args: &WorldModelProposeArgs) -> Result<()> {
                 })
                 .collect::<String>()
         );
-        let _ =
-            crate::accepted_plane::persist_semantic_ref(dir, &wm_ref, &semantic_commit.commit_id)?;
+        let _ = crate::accepted_plane::persist_semantic_ref(
+            dir,
+            &proposal_ref,
+            &semantic_commit.commit_id,
+        )?;
         println!(
             "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
             res.ops_added, res.accepted_snapshot_id, res.snapshot_id
         );
-        println!("ok persisted world-model run record {}", run_path.display());
+        println!("ok persisted proposal-adapter run record {}", run_path.display());
         println!("ok persisted semantic commit {}", semantic_commit.commit_id);
     }
 
     Ok(())
 }
 
-fn cmd_world_model_plugin_llm(args: &WorldModelPluginLlmArgs) -> Result<()> {
+fn cmd_predictive_proposal_plugin_llm(args: &PredictiveProposalsLlmArgs) -> Result<()> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
@@ -9604,10 +9594,10 @@ fn cmd_world_model_plugin_llm(args: &WorldModelPluginLlmArgs) -> Result<()> {
     if input.trim().is_empty() {
         return Err(anyhow!("expected JSON request on stdin"));
     }
-    let req: crate::world_model::WorldModelRequestV1 =
+    let req: crate::predictive_proposals::PredictiveProposalRequestV1 =
         serde_json::from_str(&input).map_err(|e| anyhow!("invalid JSON request: {e}"))?;
-    let llm = resolve_llm_state_for_world_model_plugin(args)?;
-    let resp = crate::llm::world_model_llm_plugin(&llm, &req)?;
+    let llm = resolve_llm_state_for_predictive_proposal_plugin(args)?;
+    let resp = crate::llm::predictive_proposal_llm_plugin(&llm, &req)?;
     let json = serde_json::to_string(&resp)?;
     println!("{json}");
     Ok(())
@@ -10016,8 +10006,8 @@ fn cmd_ingest_merge(
     Ok(())
 }
 
-// Legacy `.axi` emission has been removed. Ingestion produces `proposals.json`
-// first; promotion into canonical `.axi` is explicit and reviewable.
+// Ingestion emits `ProposalsFileV1` evidence first; promotion into canonical
+// `.axi` is explicit and reviewable.
 
 #[cfg(test)]
 mod tests {

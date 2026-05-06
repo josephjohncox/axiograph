@@ -6,7 +6,7 @@
 This document specifies the target git-style semantic workflow for Axiograph.
 
 The goal is not to replace Git for source code. The goal is to give ontology,
-semantic, evidence, and world-model evolution a first-class history model.
+semantic, evidence, and predictive-proposal evolution a first-class history model.
 
 This document is the storage contract seam: typed anchors already exist in the code;
 this doc defines how they must be persisted as semantic VCS objects.
@@ -72,20 +72,21 @@ sem/
       main
       review/
       evidence/
-      wm/
+      evidence/proposals/
     tags/
   commits/
   reconciliations/
   projections/
-  world_model_runs/
+  evidence/
+    proposal_adapter_runs/
   validations/
 ```
 
-`commits/`, `reconciliations/`, `projections/`, and `world_model_runs/` are
-phase-1 persisted object locations. Only accepted refs and commits participate
-in semantic authority. `projections/` are derived read surfaces, and
-`world_model_runs/` are evidence-plane proposal records until typed review and
-promotion accept them.
+`commits/`, `reconciliations`, `projections/`, and
+`evidence/proposal_adapter_runs/` are phase-1 persisted object locations. Only
+accepted refs and commits participate in semantic authority. `projections/` are
+derived read surfaces, and proposal-adapter runs are evidence-plane proposal
+records until typed review and promotion accept them.
 
 ## Refs
 
@@ -94,7 +95,7 @@ Required symbolic refs:
 - `refs/heads/main`
 - `refs/heads/review/<topic>`
 - `refs/heads/evidence/<source>`
-- `refs/heads/wm/<experiment>`
+- `refs/heads/evidence/proposals/<experiment>`
 - `refs/tags/<release>`
 
 `HEAD` points to the currently checked-out semantic ref, not directly to an
@@ -110,17 +111,17 @@ matching persisted semantic ref already exists, readers normalize the file to
 the symbolic `ref: ...` form while preserving the same resolved commit id. New
 writers must emit the symbolic form.
 
-`refs/heads/wm/*` must be reserved for proposal-generation branches. Branches
+`refs/heads/evidence/proposals/*` must be reserved for proposal-generation branches. Branches
 must move by semantic commits only (no ad-hoc branch files), and every run
-observed through these branches must have a persisted `WorldModelRun` object.
+observed through these branches must have a persisted `PredictiveProposalRun` object.
 
 Ref updates are validated centrally. The current normalized runtime names are
-`heads/main`, `heads/review/*`, `heads/evidence/*`, `heads/wm/*`, and `tags/*`
+`heads/main`, `heads/review/*`, `heads/evidence/*`, `heads/evidence/proposals/*`, and `tags/*`
 under `sem/refs/`.
 
 The Rust helper surface is the current first-class branch/checkout/tag API:
 
-- `SemRefNameV1::main|review|evidence|world_model|tag|parse`
+- `SemRefNameV1::main|review|evidence|predictive_proposal|tag|parse`
 - `persist_semantic_branch_ref(...)`
 - `persist_semantic_tag_ref(...)`
 - `checkout_semantic_ref(...)`
@@ -131,15 +132,15 @@ Required ref-family invariants:
 - `heads/main` may point only at accepted promotion, reviewed merge, or
   validation commits, and gate summaries must not contain materialization
   blockers.
-- `heads/review/*` is the reconciliation/review landing area; world-model
+- `heads/review/*` is the reconciliation/review landing area; predictive-proposal
   commits may enter only when their compact gates are not blocked.
-- `heads/evidence/*` may point at evidence, world-model, or validation commits;
+- `heads/evidence/*` may point at evidence, predictive-proposal, or validation commits;
   accepted promotion commits do not move evidence refs.
-- `heads/wm/*` may point only at `WorldModelRun` commits whose
-  `world_model_run_id` appears in provenance and delta refs and whose
-  `sem/world_model_runs/<run-id>.json` record exists.
+- `heads/evidence/proposals/*` may point only at `PredictiveProposalRun` commits whose
+  `proposal_adapter_run_id` appears in provenance and delta refs and whose
+  `sem/evidence/proposal_adapter_runs/<run-id>.json` record exists.
 - `tags/*` are immutable release pointers over accepted/reviewed commits; tags
-  do not point at unreviewed evidence or world-model commits.
+  do not point at unreviewed evidence or predictive-proposal commits.
 
 ## Semantic Commit
 
@@ -170,7 +171,7 @@ pub struct SemCommitProvenanceV1 {
     pub source: String,
     pub command: Option<String>,
     pub source_commit: Option<SemCommitId>,
-    pub world_model_run_id: Option<WorldModelRunId>,
+    pub proposal_adapter_run_id: Option<ProposalAdapterRunId>,
 }
 ```
 
@@ -188,7 +189,7 @@ pub enum SemCommitKind {
     ProjectionMaterialization,
     Merge,
     Validation,
-    WorldModelRun,
+    PredictiveProposalRun,
     TagMove,
     Admin,
 }
@@ -230,7 +231,7 @@ pub struct SemDeltaV1 {
     pub validation_report_refs_added: Vec<String>,
     pub projection_manifest_refs_added: Vec<AxiDigest>,
     pub lifecycle_events: Vec<SemLifecycleEventV1>,
-    pub world_model_run_refs: Vec<WorldModelRunId>,
+    pub proposal_adapter_run_refs: Vec<ProposalAdapterRunId>,
 }
 ```
 
@@ -465,7 +466,7 @@ pub enum LifecycleStage {
 ```
 
 These events are the semantic audit trail for facts, modules, proposals,
-certificates, and world-model outputs.
+certificates, and predictive-proposal outputs.
 
 ## Reconciliation Objects
 
@@ -552,14 +553,16 @@ blocked rebase fixture fails closed.
 
 ## World-Model Run Objects
 
-World-model lineage is persisted as first-class, branch-resolved objects, not as
-ephemeral server state.
+## Proposal Adapter Run Objects
+
+Proposal-adapter lineage is persisted as first-class, branch-resolved objects,
+not as ephemeral server state.
 
 ```rust
-pub struct WorldModelRunV1 {
-    pub run_id: WorldModelRunId,
+pub struct ProposalAdapterRunRecordV1 {
+    pub run_id: ProposalAdapterRunId,
     pub branch_ref: String,
-    pub status: WorldModelRunStatus,
+    pub status: ProposalAdapterRunStatusV1,
     pub base_commit: Option<SemCommitId>,
     pub start_accepted_snapshot_id: Option<AcceptedSnapshotId>,
     pub start_pathdb_snapshot_id: Option<PathdbSnapshotId>,
@@ -574,13 +577,13 @@ pub struct WorldModelRunV1 {
     pub finished_utc: Option<String>,
     pub run_error: Option<String>,
     pub proposal_digests: Vec<ProposalDigest>,
-    pub proposal_meta: Vec<WorldModelProposalMetaV1>,
+    pub proposal_meta: Vec<ProposalAdapterProposalMetaV1>,
     pub evaluation_refs: Vec<String>,
     pub generated_by: String,
     pub promotion_commit: Option<SemCommitId>,
 }
 
-pub enum WorldModelRunStatus {
+pub enum ProposalAdapterRunStatusV1 {
     Pending,
     Running,
     ProposalsReady,
@@ -591,7 +594,7 @@ pub enum WorldModelRunStatus {
     Aborted,
 }
 
-pub struct WorldModelProposalMetaV1 {
+pub struct ProposalAdapterProposalMetaV1 {
     pub proposal_digest: ProposalDigest,
     pub source: String,
     pub generated_utc: String,
@@ -600,9 +603,9 @@ pub struct WorldModelProposalMetaV1 {
 }
 ```
 
-Persistence invariants for world-model runs:
+Persistence invariants for predictive-proposal runs:
 
-1. Exactly one file exists under `sem/world_model_runs/<run_id>.json` for each
+1. Exactly one file exists under `sem/evidence/proposal_adapter_runs/<run_id>.json` for each
    run.
 2. A run must include `branch_ref`, `model_backend`, `started_utc`, and at least
    one `start_*` anchor (`start_accepted_snapshot_id` or
@@ -616,13 +619,13 @@ Persistence invariants for world-model runs:
 
 Target branch model:
 
-- `wm/<experiment>` for proposal streams
+- `evidence/proposals/<experiment>` for proposal streams
 - `review/<topic>` for reconciled candidate ontology changes
-- `main` for accepted ontology/world state
+- `main` for accepted ontology state
 
-`WorldModelRunV1` is expected to be recorded on `refs/heads/wm/<experiment>` and
+`ProposalAdapterRunRecordV1` is expected to be recorded on `refs/heads/evidence/proposals/<experiment>` and
 any commit emitted in that branch that creates proposal commitments must include
-its `world_model_run_id` in commit provenance.
+its `proposal_adapter_run_id` in commit provenance.
 
 ## CLI Surface
 
@@ -645,8 +648,8 @@ axiograph sem retract <artifact>
 
 CLI must expose persisted run objects as read-only records:
 
-- `sem show --object=world-model --run <id>` should render the run payload and linked commits.
-- `sem log --with-runs` should surface active and failed `WorldModelRunV1` entries.
+- `sem show --object=predictive-proposal --run <id>` should render the run payload and linked commits.
+- `sem log --with-runs` should surface active and failed `ProposalAdapterRunRecordV1` entries.
 
 ## Diff Semantics
 
@@ -659,7 +662,7 @@ CLI must expose persisted run objects as read-only records:
    - evidence blobs
    - certificates
    - lifecycle transitions
-   - world-model runs
+   - predictive-proposal runs
 
 It should not be limited to raw text diff.
 
@@ -734,12 +737,12 @@ Instead:
 
 ## Validation and Persistence Rules
 
-- Every `SemCommitV1` that references a `WorldModelRunId` must have a
-  corresponding file in `sem/world_model_runs/<run_id>.json`.
-- `WorldModelRunV1` must persist `proposal_digests` as proposal anchors, not inlined
+- Every `SemCommitV1` that references a `ProposalAdapterRunId` must have a
+  corresponding file in `sem/evidence/proposal_adapter_runs/<run_id>.json`.
+- `ProposalAdapterRunRecordV1` must persist `proposal_digests` as proposal anchors, not inlined
   proposals.
-- Branch commits for `refs/heads/wm/*` must only carry commits of kind
-  `WorldModelRun`, `EvidenceCommit`, `Merge`, or `Validation` so semantic history
+- Branch commits for `refs/heads/evidence/proposals/*` must only carry commits of kind
+  `PredictiveProposalRun`, `EvidenceCommit`, `Merge`, or `Validation` so semantic history
   stays auditable and machine-parseable.
 - `SemCommitV1` should include stable accepted/pathdb anchor pairs before/after whenever it changes state.
 - Reconciliations must be explicit `SemReconciliationV1` objects.
@@ -778,23 +781,23 @@ The rule for semantic history is:
 The first shipping slice should minimize surface area and lock down persistence
 before full UX polish:
 
-1. Add `sem/` storage with refs and commit logs; make `sem/world_model_runs/` required.
+1. Add `sem/` storage with refs and commit logs; make `sem/evidence/proposal_adapter_runs/` required.
 2. Add persisted schemas for:
    - `SemCommitV1`
    - `SemStateRefV1`
-   - `WorldModelRunV1`
-   - `WorldModelProposalMetaV1`
+   - `ProposalAdapterRunRecordV1`
+   - `ProposalAdapterProposalMetaV1`
 3. Auto-emit commits when:
    - `db accept promote` succeeds,
    - `db accept pathdb-commit` succeeds.
-4. Persist run manifests from world-model proposal/planning flows, including:
+4. Persist run manifests from predictive-proposal proposal/planning flows, including:
    - `run_id`
    - `branch_ref`
    - anchors (`start_accepted_snapshot_id`, `start_pathdb_snapshot_id`)
    - `proposal_digests`
 5. Implement run-linked validation checks:
-   - unknown `WorldModelRunId` in commit references is an error,
-   - wm branch commits require a valid `branch_ref`.
+   - unknown `ProposalAdapterRunId` in commit references is an error,
+   - proposal branch commits require a valid `branch_ref`.
 6. Ship read-only first:
    - `sem status`
    - `sem log`
