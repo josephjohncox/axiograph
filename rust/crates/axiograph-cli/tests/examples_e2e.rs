@@ -362,11 +362,6 @@ fn validate_all_examples_axi() {
         .filter(|e| e.file_type().is_file())
         .map(|e| e.into_path())
         .filter(|p| p.extension().map(|s| s == "axi").unwrap_or(false))
-        .filter(|p| {
-            p.file_name()
-                .map(|name| name != "pathdb_export_anchor_v1.axi")
-                .unwrap_or(true)
-        })
         .collect();
     axi_files.sort();
 
@@ -2586,7 +2581,7 @@ fn querycert_rejects_pathdb_export_snapshot_smoke() {
 
     let run_dir = unique_run_dir(&repo_root, "anchor_snapshot_export");
 
-    let input = repo_root.join("examples/anchors/pathdb_export_anchor_v1.axi");
+    let input = repo_root.join("fixtures/verification/pathdb_export_anchor_v1.axi");
     let cert_path = run_dir.join("build/anchor_query_cert.json");
 
     let query = "select ?y where name(\"a\") -r1-> ?y limit 10";

@@ -174,7 +174,6 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown
 
 | Directory | Role |
 | --- | --- |
-| `examples/anchors/` | narrow verification anchors for parser/certificate boundary tests, not authoring examples |
 | `examples/behavior_cases/` | JSON BDD/DDD cases that compile into receipts and test skeleton previews |
 | `examples/backend_projection/` | TypeDB/TerminusDB native-read projection contracts and caveats |
 | `examples/canonical/` | selected canonical `.axi` corpus for parser and semantics parity |

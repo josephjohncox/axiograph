@@ -11,9 +11,9 @@ canonical .axi
   -> optional Lean verifier
 ```
 
-Use these docs as the source of truth for current behavior. Pages should describe
-the current architecture directly; old protocol or prototype notes belong in git
-history, not in the active docs path.
+Use these docs as the source of truth for current behavior. Pages should
+describe the current architecture directly; superseded protocol notes belong in
+git history, not in the active docs path.
 
 ## Start Here
 

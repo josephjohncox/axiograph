@@ -40,17 +40,6 @@
   ],
   "examples": [
     {
-      "id": "verification-anchors",
-      "title": "Verification anchors for parser and certificate boundary tests",
-      "path": "examples/anchors",
-      "kind": "verification_fixture",
-      "feature_tags": ["anchors", "certificates", "parser-parity", "debug-only-boundary"],
-      "flow": ["inspect_anchor_scope", "run_targeted_checker_tests", "do_not_use_as_authoring_path"],
-      "commands": [
-        "make verify-pathdb-export-axi-v1"
-      ]
-    },
-    {
       "id": "canonical-corpus",
       "title": "Canonical-syntax parser and Rust/Lean parity corpus",
       "path": "examples/canonical",

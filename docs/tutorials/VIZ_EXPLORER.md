@@ -176,7 +176,8 @@ curl -sS -X POST http://127.0.0.1:7878/llm/agent \
 ```
 
 Supported values are `none`, `emit`, `verify`, and `require_verified`.
-Legacy query-certificate booleans are intentionally rejected.
+Use that policy field directly; boolean query-certificate fields are not part of
+the public request contract.
 
 ---
 

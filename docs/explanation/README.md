@@ -1,7 +1,7 @@
 # Explanation
 
 Explanation docs describe why the current system works the way it does. They
-should not be used as a place to preserve old protocol or prototype history.
+should not be used as a place to preserve superseded protocol history.
 
 ## Current Architecture
 

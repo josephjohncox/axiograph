@@ -22,7 +22,7 @@ fn main() {
     // A tiny replayable rewrite derivation using an `.axi`-declared rule:
     //   trans(refl(a), step(a,r,b))  ↦  step(a,r,b)
     //
-    // The rule is defined in `examples/anchors/rewrite_rules_anchor_v1.axi` as:
+    // The rule is defined in `fixtures/verification/rewrite_rules_anchor_v1.axi` as:
     //   theory T: rewrite id_left_axi
     let input = PathExprV3::Trans {
         left: Box::new(PathExprV3::Reflexive {

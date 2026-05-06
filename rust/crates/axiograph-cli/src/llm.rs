@@ -9756,9 +9756,9 @@ fn parse_tool_loop_response_json(
     // - { "final_answer": { ... } }
     // - { "error": "..." }
     //
-    // Legacy bare `answer`, top-level `tool`/`name`, and bare `query_ir_v1`
-    // payloads are intentionally rejected so every agent/MCP path uses the
-    // same typed tool surface.
+    // Bare `answer`, top-level `tool`/`name`, and bare `query_ir_v1` payloads
+    // are intentionally rejected so every agent/MCP path uses the same typed
+    // tool surface.
     let v: serde_json::Value = parse_llm_json_object(content)?;
     let obj = v
         .as_object()

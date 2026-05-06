@@ -5788,7 +5788,7 @@ instance I of S:
     #[tokio::test]
     async fn handle_discover_check_olog_rejects_pathdb_export_axi_text() {
         let body = serde_json::to_vec(&json!({
-            "axi_text": include_str!("../../../../examples/anchors/pathdb_export_anchor_v1.axi"),
+            "axi_text": include_str!("../../../../fixtures/verification/pathdb_export_anchor_v1.axi"),
             "schema_name": "PathDBExportV1",
             "fragment": {}
         }))
