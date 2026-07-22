@@ -38,7 +38,7 @@ mod tests {
         ] {
             let text = std::fs::read_to_string(repo_root().join(path)).expect("read .axi");
             let module = parse_axi_v1(&text).expect("parse axi_v1");
-            assert_eq!(module.module_name.is_empty(), false);
+            assert!(!module.module_name.is_empty());
         }
     }
 }

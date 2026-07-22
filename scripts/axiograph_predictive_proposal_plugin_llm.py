@@ -48,13 +48,24 @@ def _extract_json(text: str) -> Dict[str, Any]:
     return json.loads(s[start:end])
 
 
+def _training_export(input_obj: Dict[str, Any]) -> Dict[str, Any]:
+    semantic_input = input_obj.get("semantic_input") or {}
+    layers = semantic_input.get("layers")
+    if not isinstance(layers, list):
+        return {}
+    for layer in layers:
+        if layer.get("kind") == "training_export" and isinstance(layer.get("export"), dict):
+            return layer["export"]
+    return {}
+
+
 def _summarize_request(req: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     trace_id = req.get("trace_id", "proposal::unknown")
     opts = req.get("options", {}) or {}
     input_obj = req.get("input", {}) or {}
-    export = input_obj.get("export")
+    export = _training_export(input_obj)
     export_summary = None
-    if isinstance(export, dict):
+    if export:
         items = export.get("items", []) or []
         sample = []
         for it in items[:3]:

@@ -304,7 +304,7 @@ fn compute_confidence(base: f64, chunk: &Chunk, evidence: &str) -> f64 {
     }
 
     // Clamp to [0, 1]
-    conf.min(1.0).max(0.0)
+    conf.clamp(0.0, 1.0)
 }
 
 /// Aggregate facts, merging duplicates and adjusting confidence

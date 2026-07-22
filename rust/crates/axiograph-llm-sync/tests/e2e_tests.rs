@@ -20,8 +20,6 @@ fn test_env() -> (Arc<UnifiedStorage>, SyncManager, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -108,7 +106,7 @@ async fn test_facts_land_in_axi() {
     // May not exist if all facts need review
     if axi_path.exists() {
         let content = std::fs::read_to_string(&axi_path).unwrap();
-        assert!(content.len() > 0, "Should have content");
+        assert!(!content.is_empty(), "Should have content");
         assert!(
             content.contains("LLM extraction"),
             "Should have source comment"
@@ -131,10 +129,10 @@ async fn test_facts_land_in_pathdb() {
     // Should have at least one entity type
     let has_entities = ["Material", "Tool", "TacitKnowledge"]
         .iter()
-        .any(|t| db.find_by_type(t).map_or(false, |e| !e.is_empty()));
+        .any(|t| db.find_by_type(t).is_some_and(|e| !e.is_empty()));
 
     // May not have entities if all need review, which is also valid
-    println!("Entities found in PathDB: {}", has_entities);
+    println!("Entities found in PathDB: {has_entities}");
 }
 
 #[tokio::test]
@@ -306,8 +304,6 @@ async fn test_pending_review_workflow() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -353,8 +349,6 @@ async fn test_reject_fact() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -444,7 +438,7 @@ async fn test_event_emission() {
     let events_clone = Arc::clone(&events);
 
     sync.on_event(Box::new(move |event| {
-        events_clone.lock().unwrap().push(format!("{:?}", event));
+        events_clone.lock().unwrap().push(format!("{event:?}"));
     }));
 
     sync.sync_from_conversation(&machinist_conversation(), None)
@@ -570,10 +564,7 @@ async fn test_large_conversation() {
     let conversation: Vec<ConversationTurn> = (0..100)
         .map(|i| ConversationTurn {
             role: Role::Assistant,
-            content: format!(
-                "Material{} is a Material with property{} of value{}.",
-                i, i, i
-            ),
+            content: format!("Material{i} is a Material with property{i} of value{i}."),
             timestamp: Utc::now(),
             metadata: Default::default(),
         })
@@ -610,7 +601,7 @@ async fn test_custom_provider() {
         .sync_from_conversation(&machinist_conversation(), None)
         .await
         .unwrap();
-    println!("Custom provider result: {:?}", result);
+    println!("Custom provider result: {result:?}");
 }
 
 // ============================================================================
@@ -633,7 +624,7 @@ async fn test_full_roundtrip() {
     let axi_files: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "axi"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "axi"))
         .collect();
 
     println!("Created {} .axi files", axi_files.len());
@@ -644,7 +635,7 @@ async fn test_full_roundtrip() {
 
     // 5. Verify end state
     let stats = sync.stats();
-    println!("Final stats: {:?}", stats);
+    println!("Final stats: {stats:?}");
 
     // Should have processed something
     assert!(

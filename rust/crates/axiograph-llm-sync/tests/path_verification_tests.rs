@@ -480,8 +480,8 @@ fn test_graph_preserves_invariants_under_operations() {
         graph
             .add_node(FactNode {
                 id,
-                fact_type: format!("Type{}", i),
-                content: make_entity(&format!("Entity{}", i)),
+                fact_type: format!("Type{i}"),
+                content: make_entity(&format!("Entity{i}")),
                 weight: 0.5 + (i as f32) * 0.05,
             })
             .unwrap();
@@ -494,12 +494,12 @@ fn test_graph_preserves_invariants_under_operations() {
 
     // All nodes should have valid weights
     for node in graph.nodes() {
-        assert!(node.weight >= 0.0 && node.weight <= 1.0);
+        assert!((0.0..=1.0).contains(&node.weight));
     }
 
     // All paths should have valid confidence
     for path in graph.find_paths(ids[0], ids[9], 15) {
         let conf = path.confidence().value();
-        assert!(conf >= 0.0 && conf <= 1.0);
+        assert!((0.0..=1.0).contains(&conf));
     }
 }

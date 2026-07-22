@@ -23,14 +23,14 @@ use std::marker::PhantomData;
 use anyhow::{anyhow, Result};
 
 use axiograph_dsl::schema_v1::{
-    parse_path_expr_v3, ConstraintV1, PathExprV3, RelationDeclV1, RewriteRuleV1, RewriteVarTypeV1,
-    SchemaV1Instance, SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1,
+    parse_path_expr_v3, ConstraintV1, GeneratorDeclV1, PathExprV3, RelationDeclV1, RewriteRuleV1,
+    RewriteVarTypeV1, SchemaV1Instance, SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1,
 };
 
 use crate::certificate::AxiWellTypedProofV1;
 use crate::kernel_ir::{
-    classify_role, compile_relation_semantics, compile_theory_ir, CompiledSchemaIr,
-    RelationSemanticsIr, RoleIr, RuntimeTheoryFragmentSummaryV1, TheoryIr,
+    derive_relation_semantics, derive_runtime_theory_index, role_kind_from_decl,
+    RelationSemanticsIr, RoleIr, RuntimeSchemaIndex, RuntimeTheoryFragmentSummaryV1, TheoryIr,
 };
 use crate::lifecycle::{LifecycleState, Reviewed, Validated};
 
@@ -93,7 +93,7 @@ impl<S: WellTypedModuleState> Module<S> {
         build_schema_indexes(&self.module)
     }
 
-    pub fn compiled_schema_ir(&self, schema_name: &str) -> Result<Option<CompiledSchemaIr>> {
+    pub fn compiled_schema_ir(&self, schema_name: &str) -> Result<Option<RuntimeSchemaIndex>> {
         Ok(self
             .schema_indexes()?
             .get(schema_name)
@@ -205,6 +205,7 @@ struct SchemaIndex {
     name: String,
     object_types: HashSet<String>,
     relation_decls: HashMap<String, RelationDeclV1>,
+    generator_decls: HashMap<String, GeneratorDeclV1>,
     supertypes_of: HashMap<String, HashSet<String>>,
     subtypes_of: HashMap<String, HashSet<String>>,
 }
@@ -222,6 +223,11 @@ impl SchemaIndex {
             }
         }
 
+        let relation_names = schema
+            .relations
+            .iter()
+            .map(|relation| relation.name.clone())
+            .collect::<HashSet<_>>();
         let mut relation_decls: HashMap<String, RelationDeclV1> = HashMap::new();
         for relation in &schema.relations {
             let mut seen_fields = HashSet::new();
@@ -234,6 +240,20 @@ impl SchemaIndex {
                         field.field
                     ));
                 }
+                let target = field.ty.referenced_name();
+                let known = match field.ty.relation_object_name() {
+                    Some(relation) => relation_names.contains(relation),
+                    None => object_types.contains(target),
+                };
+                if !known {
+                    return Err(anyhow!(
+                        "schema `{}` relation `{}` field `{}` references unknown value type `{}`",
+                        schema.name,
+                        relation.name,
+                        field.field,
+                        field.ty
+                    ));
+                }
             }
             if relation_decls
                 .insert(relation.name.clone(), relation.clone())
@@ -244,6 +264,36 @@ impl SchemaIndex {
                     schema.name,
                     relation.name
                 ));
+            }
+        }
+
+        let mut generator_decls = HashMap::new();
+        for generator in &schema.generators {
+            if object_types.contains(&generator.name)
+                || relation_decls.contains_key(&generator.name)
+                || generator_decls
+                    .insert(generator.name.clone(), generator.clone())
+                    .is_some()
+            {
+                return Err(anyhow!(
+                    "schema `{}` declares duplicate or colliding generator `{}`",
+                    schema.name,
+                    generator.name
+                ));
+            }
+            for (endpoint, target) in [
+                ("source", generator.source.as_str()),
+                ("target", generator.target.as_str()),
+            ] {
+                if !object_types.contains(target) && !relation_decls.contains_key(target) {
+                    return Err(anyhow!(
+                        "schema `{}` generator `{}` references unknown {} `{}`",
+                        schema.name,
+                        generator.name,
+                        endpoint,
+                        target
+                    ));
+                }
             }
         }
 
@@ -291,9 +341,14 @@ impl SchemaIndex {
             name: schema.name.clone(),
             object_types,
             relation_decls,
+            generator_decls,
             supertypes_of,
             subtypes_of,
         })
+    }
+
+    fn is_value_type(&self, ty: &str) -> bool {
+        self.object_types.contains(ty) || self.relation_decls.contains_key(ty)
     }
 
     fn is_subtype(&self, sub: &str, sup: &str) -> bool {
@@ -365,17 +420,12 @@ impl SchemaIndex {
                     self.name, relation_name, field.field
                 )),
                 name: field.field.clone(),
-                target_type: field.ty.clone(),
+                target_type: field.ty.referenced_name().to_string(),
                 order: idx as u16,
-                kind: classify_role(
-                    field.field.as_str(),
-                    field.ty.as_str(),
-                    self.is_subtype(&field.ty, "Context"),
-                    self.is_subtype(&field.ty, "Time"),
-                ),
+                kind: role_kind_from_decl(field.kind),
             })
             .collect::<Vec<_>>();
-        Some(compile_relation_semantics(
+        Some(derive_relation_semantics(
             &self.name,
             relation_name,
             if self.object_types.contains(relation_name) {
@@ -387,7 +437,7 @@ impl SchemaIndex {
         ))
     }
 
-    fn compiled_schema_ir(&self) -> CompiledSchemaIr {
+    fn compiled_schema_ir(&self) -> RuntimeSchemaIndex {
         let relations = self
             .relation_decls
             .keys()
@@ -407,7 +457,7 @@ impl SchemaIndex {
             })
             .collect::<HashMap<_, _>>();
 
-        let mut compiled = CompiledSchemaIr {
+        let mut compiled = RuntimeSchemaIndex {
             schema_id: crate::SchemaId::new(self.name.clone()),
             object_types: self.object_types.clone(),
             object_type_ids,
@@ -466,7 +516,15 @@ pub fn typecheck_axi_v1_module(module: &SchemaV1Module) -> Result<AxiWellTypedPr
         }
     }
 
+    let mut seen_instances = HashSet::new();
     for inst in &module.instances {
+        if !seen_instances.insert((inst.schema.clone(), inst.name.clone())) {
+            return Err(anyhow!(
+                "duplicate instance `{}` on schema `{}` in module",
+                inst.name,
+                inst.schema
+            ));
+        }
         typecheck_instance(inst, &schemas)?;
     }
 
@@ -505,7 +563,15 @@ fn typecheck_instance(
         ));
     };
 
+    let mut seen_assignments = HashSet::new();
     for assignment in &instance.assignments {
+        if !seen_assignments.insert(assignment.name.clone()) {
+            return Err(anyhow!(
+                "instance `{}` repeats assignment `{}`",
+                instance.name,
+                assignment.name
+            ));
+        }
         let all_idents = assignment
             .value
             .items
@@ -547,6 +613,30 @@ fn typecheck_instance(
         }
     }
 
+    let mut fact_labels = HashMap::<String, String>::new();
+    for assignment in &instance.assignments {
+        if !schema_index.relation_decls.contains_key(&assignment.name) {
+            continue;
+        }
+        for item in &assignment.value.items {
+            if let SetItemV1::Tuple {
+                label: Some(label), ..
+            } = item
+            {
+                if fact_labels
+                    .insert(label.clone(), assignment.name.clone())
+                    .is_some()
+                {
+                    return Err(anyhow!(
+                        "instance `{}` repeats fact label `{}`",
+                        instance.name,
+                        label
+                    ));
+                }
+            }
+        }
+    }
+
     // Simulate importer semantics: relation tuples may introduce objects
     // implicitly, but subtyping-based name reuse must remain unambiguous.
     let mut entities_by_key: HashSet<(String, String)> = HashSet::new();
@@ -568,9 +658,65 @@ fn typecheck_instance(
             continue;
         }
 
+        if let Some(generator) = schema_index.generator_decls.get(&assignment.name) {
+            for item in &assignment.value.items {
+                let SetItemV1::Tuple {
+                    label: None,
+                    fields,
+                } = item
+                else {
+                    return Err(anyhow!(
+                        "instance `{}` generator `{}` expects unlabeled tuples",
+                        instance.name,
+                        generator.name
+                    ));
+                };
+                let values = fields
+                    .iter()
+                    .map(|(field, value)| (field.as_str(), value.as_str()))
+                    .collect::<HashMap<_, _>>();
+                if values.len() != 2
+                    || !values.contains_key("source")
+                    || !values.contains_key("target")
+                {
+                    return Err(anyhow!(
+                        "instance `{}` generator `{}` expects exactly source/target fields",
+                        instance.name,
+                        generator.name
+                    ));
+                }
+                for (endpoint, target_type) in [
+                    ("source", generator.source.as_str()),
+                    ("target", generator.target.as_str()),
+                ] {
+                    let value = values[endpoint];
+                    if schema_index.relation_decls.contains_key(target_type) {
+                        if fact_labels.get(value).map(String::as_str) != Some(target_type) {
+                            return Err(anyhow!(
+                                "instance `{}` generator `{}` {} references unknown fact `{}` of relation `{}`",
+                                instance.name,
+                                generator.name,
+                                endpoint,
+                                value,
+                                target_type
+                            ));
+                        }
+                    } else {
+                        get_or_create_entity(
+                            schema_index,
+                            &mut entities_by_key,
+                            target_type,
+                            value,
+                        )?;
+                    }
+                }
+            }
+            continue;
+        }
+
         let Some(rel_decl) = schema_index.relation_decls.get(&assignment.name) else {
             return Err(anyhow!(
-                "instance `{}` assignment `{}` contains tuples but `{}` is not a declared relation in schema `{}`",
+                "instance `{}` assignment `{}` contains tuples but `{}` is not a declared relation or generator in schema `{}`",
                 instance.name,
                 assignment.name,
                 assignment.name,
@@ -579,7 +725,7 @@ fn typecheck_instance(
         };
 
         for it in &assignment.value.items {
-            let SetItemV1::Tuple { fields } = it else {
+            let SetItemV1::Tuple { fields, .. } = it else {
                 continue;
             };
 
@@ -616,9 +762,10 @@ fn typecheck_instance(
                     ));
                 };
 
-                if !schema_index.object_types.contains(&f.ty) {
+                let target = f.ty.referenced_name();
+                if !schema_index.is_value_type(target) {
                     return Err(anyhow!(
-                        "instance `{}` relation `{}`: field `{}` expects unknown object type `{}`",
+                        "instance `{}` relation `{}`: field `{}` expects unknown value type `{}`",
                         instance.name,
                         assignment.name,
                         f.field,
@@ -626,7 +773,20 @@ fn typecheck_instance(
                     ));
                 }
 
-                get_or_create_entity(schema_index, &mut entities_by_key, &f.ty, value_name)?;
+                if let Some(target_relation) = f.ty.relation_object_name() {
+                    if fact_labels.get(value_name).map(String::as_str) != Some(target_relation) {
+                        return Err(anyhow!(
+                            "instance `{}` relation `{}` field `{}` references unknown fact label `{}` of relation `{}`",
+                            instance.name,
+                            assignment.name,
+                            f.field,
+                            value_name,
+                            target_relation
+                        ));
+                    }
+                } else {
+                    get_or_create_entity(schema_index, &mut entities_by_key, target, value_name)?;
+                }
             }
         }
     }
@@ -674,7 +834,7 @@ fn typecheck_theory(
         typecheck_constraint(theory, schema_index, constraint)?;
     }
 
-    compile_theory_ir(&schema_index.compiled_schema_ir(), theory)
+    derive_runtime_theory_index(&schema_index.compiled_schema_ir(), theory)
         .map_err(|message| anyhow!(message))
 }
 
@@ -1022,9 +1182,9 @@ fn typecheck_rewrite_rule(
         }
         match &variable.ty {
             RewriteVarTypeV1::Object { ty } => {
-                if !schema_index.object_types.contains(ty) {
+                if !schema_index.is_value_type(ty) {
                     return Err(anyhow!(
-                        "theory `{}` rewrite rule `{}` references unknown object type `{}` for variable `{}`",
+                        "theory `{}` rewrite rule `{}` references unknown value type `{}` for variable `{}`",
                         theory.name,
                         rule.name,
                         ty,
@@ -1101,9 +1261,9 @@ fn unify_object_requirement(
     variable: &str,
     expected_type: &str,
 ) -> std::result::Result<(), String> {
-    if !schema_index.object_types.contains(expected_type) {
+    if !schema_index.is_value_type(expected_type) {
         return Err(format!(
-            "unknown object type `{}` in schema `{}`",
+            "unknown value type `{}` in schema `{}`",
             expected_type, schema_index.name
         ));
     }
@@ -1120,8 +1280,7 @@ fn unify_object_requirement(
         }
         Some(existing) if schema_index.is_subtype(&existing, expected_type) => Ok(()),
         Some(existing) => Err(format!(
-            "variable `{}` is required to have incompatible object types `{}` and `{}`",
-            variable, existing, expected_type
+            "variable `{variable}` is required to have incompatible object types `{existing}` and `{expected_type}`"
         )),
     }
 }
@@ -1147,10 +1306,7 @@ fn get_or_create_entity(
 
     if candidates.len() > 1 {
         return Err(anyhow!(
-            "ambiguous element `{}`: multiple entities exist across related types for `{}`: {:?}",
-            name,
-            desired_type,
-            candidates
+            "ambiguous element `{name}`: multiple entities exist across related types for `{desired_type}`: {candidates:?}"
         ));
     }
 

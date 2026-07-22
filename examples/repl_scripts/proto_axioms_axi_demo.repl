@@ -32,9 +32,3 @@ q select ?ep where UserService -proto_service_has_rpc/proto_rpc_http_endpoint-> 
 # query low-level witness/fact nodes first.
 q select ?rpc where name("Doc_UserService_Overview") -mentions_rpc-> ?rpc limit 10
 q select ?ep where name("UserService") -proto_service_has_endpoint-> ?ep limit 10
-
-# Export the canonical module back out of PathDB (nice `.axi`).
-export_axi_module build/proto_axioms_axi_module.axi ProtoApiSemantics
-
-# Save the runnable `.axpd` snapshot.
-save build/proto_axioms_axi.axpd

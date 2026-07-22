@@ -1,6 +1,6 @@
 # Competency Questions
 
-Competency-question fixtures encode the questions an ontology or behavior case
+Competency-question examples encode the questions an ontology or behavior case
 must answer. They are review gates, coverage drivers, and useful agent-facing
 prompts for typed ontology repair.
 
@@ -23,7 +23,7 @@ structured `ask` / `about` / `given` / `expect` records still load, but reports
 mark them as unresolved authoring obligations until a typed lowering exists.
 
 JSON `competency_question_bundle_v1` remains supported as a tool/report boundary
-and test harness format, not as the preferred authoring surface.
+and test-fixture format, not as the preferred authoring surface.
 
 To inspect the lowered tool boundary explicitly:
 

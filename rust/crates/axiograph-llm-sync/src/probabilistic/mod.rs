@@ -98,6 +98,12 @@ pub struct Variable {
     pub observed: Option<usize>, // Observed value if any
 }
 
+impl Default for FactorGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FactorGraph {
     pub fn new() -> Self {
         Self {
@@ -391,9 +397,9 @@ impl BeliefPropagation {
                     }
                 } else {
                     // Sum over columns
-                    for j in 0..values.len() {
+                    for (j, value) in values.iter_mut().enumerate() {
                         for (i, &prob) in other_msg.values.iter().enumerate() {
-                            values[j] += matrix[i][j] * prob;
+                            *value += matrix[i][j] * prob;
                         }
                     }
                 }
@@ -463,6 +469,12 @@ pub struct PlattCalibrator {
     a: f64,
     b: f64,
     fitted: bool,
+}
+
+impl Default for PlattCalibrator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PlattCalibrator {

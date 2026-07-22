@@ -13,7 +13,7 @@ The current loop is:
 ```text
 documents / code / conversations / embeddings / business traces
   -> evidence chunks and sidecars
-  -> weak definition and coverage probes
+  -> advisory definition and coverage probes
   -> typed proposals or refinement handles
   -> EvolutionPreviewV1 / SemanticMergePlanV1 / authoring reports
   -> CQ, trust, coverage, and runtime-theory gates

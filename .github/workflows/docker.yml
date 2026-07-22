@@ -1,96 +1,218 @@
 name: Container
 
 on:
-  push:
-    branches: [main]
-    tags:
-      - "v*"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      publish_tag:
+        description: Allow tag publication from the release-gated caller
+        required: true
+        type: boolean
 
 permissions:
   contents: read
-  packages: write
+
+env:
+  AXIOGRAPH_CLI_VERSION: 0.6.0
 
 jobs:
   build-and-push:
-    name: Build and push container
+    name: Build, audit, and push linux/${{ matrix.arch }} by digest
+    if: inputs.publish_tag
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - name: Require release tag caller
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/*) ;;
+            *)
+              echo "container publication requires a refs/tags/* ref" >&2
+              exit 1
+              ;;
+          esac
+      # actions/checkout pinned to an immutable commit.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      # docker/setup-buildx-action pinned to an immutable commit.
+      - uses: >-
+          docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Validate Dockerfile with BuildKit
+        run: docker buildx build --check --progress=plain -f Dockerfile .
+      # docker/login-action pinned to an immutable commit.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        # docker/metadata-action pinned to an immutable commit.
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
+            type=ref,event=tag,enable=${{ inputs.publish_tag }}
             type=sha
-      - name: Build and push
+      - name: Build and push untagged image digest
         id: build
-        uses: docker/build-push-action@v5
+        # docker/build-push-action pinned to an immutable commit.
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: .
           file: Dockerfile
           push: true
           platforms: linux/${{ matrix.arch }}
-          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true
+          outputs: >-
+            type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true
           labels: ${{ steps.meta.outputs.labels }}
-      - name: Write image digest
+      - name: Pull and audit pushed image digest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          REF="${IMAGE}@${IMAGE_DIGEST}"
+          docker pull "$REF"
+          docker run --rm --entrypoint /bin/sh "$REF" -ec '
+            test "$(id -u)" = 10001
+            test "$(id -g)" = 10001
+            test ! -w /usr/local/bin/axiograph
+            test ! -w /usr/local/bin/axiograph_verify
+            test ! -w /usr/local/share/axiograph/axiograph_verify.sha256
+            test ! -w /usr/local/share/axiograph/accepted-plane-smoke.json
+            cd /usr/local/bin
+            sha256sum -c \
+              /usr/local/share/axiograph/axiograph_verify.sha256
+            marker=/usr/local/share/axiograph/accepted-plane-smoke.json
+            grep -Fx "  \"accepted_manifest\": \"verified\"," "$marker"
+            schema_value=axiograph-container-accepted-plane-smoke-v2
+            grep -Fx "  \"schema\": \"$schema_value\"," "$marker"
+            grep -Fx "  \"unaccepted_manifest\": \"rejected\"" "$marker"
+          '
+          docker run --rm "$REF" --version |
+            grep -Fx "axiograph ${AXIOGRAPH_CLI_VERSION}"
+          checker_dir="$(mktemp -d)"
+          container_id="$(docker create "$REF")"
+          cleanup() {
+            if [ -n "$container_id" ]; then
+              docker rm -f "$container_id" >/dev/null 2>&1 || true
+            fi
+            rm -rf "$checker_dir"
+          }
+          trap cleanup EXIT
+          docker cp \
+            "$container_id:/usr/local/bin/axiograph_verify" \
+            "$checker_dir/axiograph_verify"
+          docker rm "$container_id" >/dev/null
+          container_id=""
+          chmod 0755 "$checker_dir/axiograph_verify"
+          python3 scripts/run_release_fixture_suite.py \
+            --checker "$checker_dir/axiograph_verify" \
+            --manifest release/fixtures.json \
+            --repo-root "$PWD"
+      - name: Smoke canonical input and authenticated DB CLI contract
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          REF="${IMAGE}@${IMAGE_DIGEST}"
+          fixture="$PWD/examples/ontology/OntologyRewrites.axi"
+
+          docker run --rm \
+            -v "$fixture:/tmp/ContainerSmoke.axi:ro" \
+            "$REF" check validate /tmp/ContainerSmoke.axi
+
+          help="$(docker run --rm "$REF" db --help)"
+          grep -q 'materialize' <<<"$help"
+          grep -q 'materialization-show' <<<"$help"
+          grep -q 'serve' <<<"$help"
+          if grep -qE '(^|[[:space:]])accept([[:space:]]|$)' <<<"$help"; then
+            echo "removed accepted-plane CLI unexpectedly present" >&2
+            exit 1
+          fi
+
+          if docker run --rm "$REF" db serve \
+            --axpd /tmp/unbound.axpd --listen 127.0.0.1:7878; then
+            echo "bare --axpd server startup unexpectedly succeeded" >&2
+            exit 1
+          fi
+      - name: Write audited image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           mkdir -p /tmp/digests
-          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}.digest"
-      - name: Upload digest artifact
-        uses: actions/upload-artifact@v4
+          digest_file="/tmp/digests/${{ matrix.arch }}.digest"
+          printf '%s\n' "$IMAGE_DIGEST" > "$digest_file"
+      - name: Upload audited digest artifact
+        # actions/upload-artifact pinned to an immutable commit.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: image-digests-${{ matrix.arch }}
           path: /tmp/digests/${{ matrix.arch }}.digest
+          if-no-files-found: error
 
   publish-manifest:
-    name: Publish multi-arch manifest
-    runs-on: ubuntu-latest
+    name: Publish audited multi-arch manifest
+    if: inputs.publish_tag
+    runs-on: ubuntu-24.04
     needs: build-and-push
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      # actions/checkout pinned to an immutable commit.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      # docker/setup-buildx-action pinned to an immutable commit.
+      - uses: >-
+          docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      # docker/login-action pinned to an immutable commit.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        # docker/metadata-action pinned to an immutable commit.
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
+            type=ref,event=tag,enable=${{ inputs.publish_tag }}
             type=sha
-      - uses: actions/download-artifact@v4
+      # actions/download-artifact pinned to an immutable commit.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: /tmp/digests
       - name: Create and push manifest list
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
-          amd64_digest="$(cat /tmp/digests/image-digests-amd64/amd64.digest)"
-          arm64_digest="$(cat /tmp/digests/image-digests-arm64/arm64.digest)"
-          refs="ghcr.io/${{ github.repository }}@${amd64_digest} ghcr.io/${{ github.repository }}@${arm64_digest}"
-          echo "${{ steps.meta.outputs.tags }}" | while read -r tag; do
+          IFS= read -r amd64_digest \
+            < /tmp/digests/image-digests-amd64/amd64.digest
+          IFS= read -r arm64_digest \
+            < /tmp/digests/image-digests-arm64/arm64.digest
+          refs=(
+            "${IMAGE}@${amd64_digest}"
+            "${IMAGE}@${arm64_digest}"
+          )
+          while IFS= read -r tag; do
             [ -n "$tag" ] || continue
-            docker buildx imagetools create -t "$tag" $refs
-          done
+            docker buildx imagetools create -t "$tag" "${refs[@]}"
+          done <<< "$TAGS"

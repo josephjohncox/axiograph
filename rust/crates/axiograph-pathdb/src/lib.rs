@@ -1,10 +1,9 @@
-//! PathDB: Efficient Binary Path-Indexed Knowledge Graph Storage
+//! PathDB: in-memory path-indexed query engine hydrated from authenticated
+//! SQLite materializations.
 //!
-//! Based on research from:
-//! - Graph database path query optimization (Gubichev et al.)
-//! - Roaring Bitmaps for set operations (Lemire et al.)
-//! - Succinct data structures for compact representation
-//! - Checked binary deserialization for runtime `.axpd` artifacts
+//! Accepted `.axi` and compiled kernel IR remain semantic authority. Durable
+//! query state is owned by `axiograph_store::AxiStore`; this crate exposes no
+//! standalone persistence codec.
 //!
 //! Key innovations:
 //! 1. **String Interning**: All strings stored once, referenced by u32 ID
@@ -17,10 +16,8 @@
 //! This crate is designed for provable correctness:
 //! - **Lean**: trusted checker/spec for certificates (`lean/Axiograph/*`)
 //! - **Verus**: additive runtime invariant hardening (`rust/verus/` + `verified.rs`)
-//! - **Shared binary format**:
-//!   - production runtime format is currently `.axpd` v1,
-//!   - sectioned `.axpd` v2 work exists in `verified.rs` but is not yet the
-//!     end-to-end runtime format
+//! - **SQLite materialization**: exact/logical digests and semantic anchors are
+//!   verified by `axiograph_store` before this crate hydrates runtime indexes.
 //!
 //! ## Module Organization
 //!
@@ -30,11 +27,8 @@
 
 #![allow(unused_variables)]
 
-pub mod anchor;
-pub mod axi_export;
 pub mod axi_meta;
 pub mod axi_module_constraints;
-pub mod axi_module_export;
 pub mod axi_module_import;
 pub mod axi_module_typecheck;
 pub mod axi_semantics;
@@ -45,14 +39,15 @@ pub mod certificate;
 pub mod checked_db;
 pub mod fact_index;
 pub mod guardrails;
-mod index_sidecar;
 pub mod kernel_ir;
 pub mod learning;
 pub mod lifecycle;
+pub mod materialization;
 pub mod migration;
 pub mod modal;
 pub mod optimizer;
 pub mod proof_mode;
+pub mod runtime_handle;
 pub mod runtime_theory_checker;
 pub mod text_index;
 pub mod typestate;
@@ -70,43 +65,40 @@ use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::Duration;
 
 // Re-export key types
-pub use anchor::{
-    AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, ConstraintId, ContextId, EquationId,
-    InstanceId, ObjectTypeId, PathdbSnapshotId, ProposalDigest, RelationId, RewriteRuleId, RoleId,
-    SchemaId, StableFactId, TheoryId, ProposalAdapterRunId,
-};
 pub use axi_module_typecheck::{
     review_axi_v1_module, validate_axi_v1_module, Module, ReviewStamp, WellTypedModuleState,
 };
 pub use axi_type::{AxiType, TypingEnv};
 pub use branding::{DbBranded, DbToken, DbTokenMismatch};
 pub use certificate::{
-    AxiAnchorV1, AxiConstraintsOkProofV1, AxiWellTypedProofV1, CertificateV2,
-    FixedPointProbability, FixedProb, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
-    PathRewriteStepV3, ResolutionDecisionV2, ResolutionProofV2, RewriteDerivationProofV2,
-    RewriteDerivationProofV3, VProb, CERTIFICATE_VERSION_V2, FIXED_POINT_DENOMINATOR,
+    answer_digest_v1, certificate_digest_v2, selected_rows_v1, AxiAnchorV1,
+    AxiConstraintsOkProofV1, AxiWellTypedProofV1, CertificateAnchorV2, CertificateV2,
+    CertificateV3, FixedPointProbability, FixedProb, NormalizePathProofV2, PathEquivProofV2,
+    PathExprV2, PathRewriteStepV3, PreparedQueryBindingV1, PreparedQueryClaimKindV1,
+    QueryResultProofV4, ResolutionDecisionV2, ResolutionProofV2, RewriteDerivationProofV2,
+    RewriteDerivationProofV3, StableSelectedRowV1, VProb, CERTIFICATE_VERSION_V2,
+    CERTIFICATE_VERSION_V3, FIXED_POINT_DENOMINATOR, PREPARED_QUERY_BINDING_VERSION_V1,
 };
 pub use checked_db::{
     stable_fact_id_v1_for_declared_fields, CheckedDb, CheckedDbMut, CheckedDbReport,
     TypedFactBuilder,
 };
 pub use guardrails::{GuardrailEngine, GuardrailRule, GuardrailViolation, Severity};
-pub use index_sidecar::{
-    read_sidecar_file, write_sidecar_file, IndexSidecarWriter, LruSnapshot, PathDbIndexSidecarV1,
-    PATHDB_INDEX_SIDECAR_VERSION_V1,
-};
 pub use kernel_ir::{
-    build_kernel_surface_v1, compile_instance_functor_ir, compile_instance_ir,
-    compile_kernel_module_ir, compile_schema_category_ir, InstanceArrowImageIr,
-    InstanceArrowMappingIr, InstanceFunctorIr, InstanceIr, InstanceObjectImageIr, KernelModuleIr,
-    KernelRefV1, KernelSurfaceV1, ObjectMembershipIr, RelationFactIr, RoleValueIr,
+    build_runtime_semantic_index, derive_runtime_instance_index, derive_runtime_module_index,
+    derive_runtime_package_index, derive_runtime_schema_index, validate_runtime_package_adapter,
+    CanonicalKernelCitationIr, InstanceIr, ObjectMembershipIr, RelationFactIr, RoleValueIr,
+    RuntimeIrRef, RuntimeModuleIndex, RuntimeSchemaIndex, RuntimeSemanticIndex,
     RuntimeTheoryFragmentSummaryV1, RuntimeTheoryObligationFragmentStatusV1,
-    RuntimeTheoryObligationStatusV1, RuntimeTheoryObligationTrustClassV1, SchemaCategoryArrowIr,
-    SchemaCategoryArrowKindIr, SchemaCategoryArrowRefIr, SchemaCategoryIr, SchemaCategoryObjectIr,
-    SchemaCategoryObjectRefIr, TheoryObligationKindIr, TheoryObligationRefIr, TheorySubjectKindIr,
-    TheorySubjectRefIr, KERNEL_SURFACE_VERSION_V1, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
+    RuntimeTheoryObligationStatusV1, RuntimeTheoryObligationTrustClassV1, TheoryObligationKindIr,
+    TheoryObligationRefIr, TheorySubjectKindIr, TheorySubjectRefIr, RUNTIME_SEMANTIC_INDEX_VERSION,
+    RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1,
 };
-pub use lifecycle::{Accepted, Certified, LifecycleState, Parsed, Reviewed, Validated};
+pub use lifecycle::{
+    Accepted, CertificateEmitted, Certified, LeanVerified, LifecycleState, Parsed, Reviewed,
+    Validated,
+};
+pub use materialization::{load_verified_pathdb, publish_kernel_pathdb, MaterializedPathDb};
 pub use migration::{
     ArrowDeclV1, ArrowMapV1, ArrowMappingV1, DeltaFMigrationProofV1, InstanceV1,
     MigrationFunctorKindV1, Name, ObjectElementsV1, ObjectMappingV1, SchemaMorphismV1, SchemaV1,
@@ -115,20 +107,25 @@ pub use migration::{
 pub use modal::{ModalFrame, ModalPathDB, ModalWorld, Modality};
 pub use optimizer::{MigrationOperatorV1, OptimizerRuleV1, ProofProducingOptimizer};
 pub use proof_mode::{NoProof, ProofJournal, ProofMode, Proved, WithProof};
+pub use runtime_handle::{
+    AcceptedAxiAnchor, AcceptedSnapshotId, AnswerIdV2, AxiDigest, CertificateIdV2, CommitIdV2,
+    ConstraintId, ConstraintIdV2, ContextId, EquationId, EquationIdV2, FactIdV2, InstanceId,
+    InstanceIdV2, KernelRefV2, MaterializationIdV2, ObjectBlobIdV2, ObjectTypeId, ObjectTypeIdV2,
+    ProposalAdapterRunId, ProposalDigest, QueryIdV2, ReconciliationIdV2, RelationId, RelationIdV2,
+    RevisionDigestV2, RewriteRuleId, RewriteRuleIdV2, RoleId, RoleIdV2, SchemaId, SchemaIdV2,
+    SnapshotIdV2, StableFactId, TheoryId, TheoryIdV2,
+};
 pub use runtime_theory_checker::{
     check_runtime_theory_v1, check_runtime_theory_with_options_v1, default_evidence_policy_v1,
-    default_world_assumption_v1, CompletenessClaimV1, EvidencePolicyV1, EvidenceWeightSemanticsV1,
-    OntologyClosureClaimV1, RuntimeTheoryAxisRoleV1, RuntimeTheoryCheckReportV1,
-    RuntimeTheoryCheckSeverityV1, RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureReportV1,
-    RuntimeTheoryClosureStepKindV1, RuntimeTheoryClosureStepV1, RuntimeTheoryClosureTierV1,
-    RuntimeTheoryFragmentV1, RuntimeTheoryJudgmentV1, RuntimeTheoryNonClaimV1,
-    RuntimeTheoryTypedEndpointV1, WorldAssumptionV1, RUNTIME_THEORY_CHECK_REPORT_VERSION_V1,
+    default_world_assumption_v1, EvidencePolicyV1, EvidenceWeightSemanticsV1,
+    RuntimeTheoryAdmissibilityScanV1, RuntimeTheoryAxisRoleV1, RuntimeTheoryCheckReportV1,
+    RuntimeTheoryCheckSeverityV1, RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureStepKindV1,
+    RuntimeTheoryClosureStepV1, RuntimeTheoryClosureTierV1, RuntimeTheoryFragmentV1,
+    RuntimeTheoryJudgmentV1, RuntimeTheoryNonClaimV1, RuntimeTheoryTypedEndpointV1,
+    WorldAssumptionV1, RUNTIME_THEORY_CHECK_REPORT_VERSION_V1,
 };
 pub use typestate::{NormalizedPathExprV2, UnnormalizedPathExprV2};
-pub use verified::{
-    axpd_convergence_status_v1, AxpdConvergenceStatusV1, BinaryHeader, ReachabilityProof,
-    VerifiedPathSig, VerifiedProb, AXPD_LIVE_FORMAT_VERSION_V1, AXPD_SECTIONED_FORMAT_VERSION_V2,
-};
+pub use verified::{ReachabilityProof, VerifiedPathSig, VerifiedProb};
 
 use fact_index::FactIndexCache;
 use text_index::TextIndexCache;
@@ -188,7 +185,10 @@ impl StringInterner {
             return *id;
         }
 
-        let _guard = self.allocation_lock.lock().expect("string interner lock poisoned");
+        let _guard = self
+            .allocation_lock
+            .lock()
+            .expect("string interner lock poisoned");
         if let Some(id) = self.str_to_id.get(s) {
             return *id;
         }
@@ -207,25 +207,6 @@ impl StringInterner {
     /// Look up string by ID
     pub fn lookup(&self, id: StrId) -> Option<String> {
         self.id_to_str.get(&id).map(|s| s.clone())
-    }
-
-    /// Serialize to bytes
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let _guard = self.allocation_lock.lock().expect("string interner lock poisoned");
-        let strings: Vec<String> = (0..self.next_id.load(Ordering::SeqCst))
-            .filter_map(|i| self.id_to_str.get(&StrId(i)).map(|s| s.clone()))
-            .collect();
-        bincode::serialize(&strings).unwrap_or_default()
-    }
-
-    /// Deserialize from bytes
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let strings: Vec<String> = bincode::deserialize(bytes)?;
-        let interner = Self::new();
-        for s in strings {
-            interner.intern(&s);
-        }
-        Ok(interner)
     }
 }
 
@@ -294,16 +275,13 @@ impl EntityStore {
         self.types[id as usize] = type_id;
 
         // Update type index
-        self.type_index
-            .entry(type_id)
-            .or_insert_with(RoaringBitmap::new)
-            .insert(id);
+        self.type_index.entry(type_id).or_default().insert(id);
 
         // Store attributes
         for (attr_name, attr_value) in attrs {
             self.attrs
                 .entry(attr_name)
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(id, attr_value);
         }
 
@@ -396,18 +374,15 @@ impl RelationStore {
         // Update indexes
         self.forward_index
             .entry((rel.source, rel.rel_type))
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(id);
 
         self.backward_index
             .entry((rel.target, rel.rel_type))
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(id);
 
-        self.type_index
-            .entry(rel.rel_type)
-            .or_insert_with(RoaringBitmap::new)
-            .insert(id);
+        self.type_index.entry(rel.rel_type).or_default().insert(id);
 
         self.relations.push(rel);
         id
@@ -681,12 +656,7 @@ enum IndexUpdate {
         path_sig: PathSig,
     },
     SetCapacity(usize),
-    Load {
-        capacity: usize,
-        order: Vec<PathSig>,
-    },
     Clear,
-    Snapshot(mpsc::Sender<LruWorkerSnapshot>),
     Flush(mpsc::Sender<()>),
 }
 
@@ -694,12 +664,6 @@ enum IndexUpdate {
 struct LruWorkerState {
     capacity: usize,
     order: VecDeque<PathSig>,
-}
-
-#[derive(Debug, Clone)]
-struct LruWorkerSnapshot {
-    capacity: usize,
-    order: Vec<PathSig>,
 }
 
 impl LruWorkerState {
@@ -747,7 +711,7 @@ impl LruWorkerState {
             return;
         }
         {
-            let mut entry = entries.entry(sig.clone()).or_insert_with(AHashMap::new);
+            let mut entry = entries.entry(sig.clone()).or_default();
             entry.insert(start, targets);
         }
         self.touch(&sig);
@@ -760,27 +724,6 @@ impl LruWorkerState {
                 break;
             };
             entries.remove(&oldest);
-        }
-    }
-
-    fn load_order(
-        &mut self,
-        order: Vec<PathSig>,
-        entries: &DashMap<PathSig, AHashMap<u32, RoaringBitmap>>,
-    ) {
-        self.order.clear();
-        for sig in order {
-            if entries.contains_key(&sig) {
-                self.order.push_back(sig);
-            }
-        }
-        self.evict_if_needed(entries);
-    }
-
-    fn snapshot(&self) -> LruWorkerSnapshot {
-        LruWorkerSnapshot {
-            capacity: self.capacity,
-            order: self.order.iter().cloned().collect(),
         }
     }
 }
@@ -801,9 +744,6 @@ pub struct PathIndex {
     /// Optional async update channel for LRU inserts.
     #[serde(skip, default)]
     async_tx: Mutex<Option<mpsc::SyncSender<IndexUpdate>>>,
-    /// Optional sidecar writer (to persist LRU state).
-    #[serde(skip, default)]
-    sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
 }
 
 impl Default for PathIndex {
@@ -820,7 +760,6 @@ impl PathIndex {
             lru_entries: Arc::new(DashMap::new()),
             lru_capacity: AtomicUsize::new(0),
             async_tx: Mutex::new(None),
-            sidecar: Mutex::new(None),
         }
     }
 
@@ -830,22 +769,6 @@ impl PathIndex {
 
     pub fn set_max_depth(&mut self, max_depth: usize) {
         self.max_depth = max_depth;
-    }
-
-    pub fn attach_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
-        let mut guard = self.sidecar.lock().expect("path index sidecar poisoned");
-        *guard = Some(writer);
-    }
-
-    fn mark_sidecar_dirty(&self) {
-        if let Some(writer) = self
-            .sidecar
-            .lock()
-            .expect("path index sidecar poisoned")
-            .as_ref()
-        {
-            writer.mark_dirty();
-        }
     }
 
     pub fn lru_capacity(&self) -> usize {
@@ -872,7 +795,6 @@ impl PathIndex {
         } else if capacity == 0 {
             self.lru_entries.clear();
         }
-        self.mark_sidecar_dirty();
     }
 
     pub fn enable_async_updates(&self, queue_size: usize) {
@@ -908,15 +830,8 @@ impl PathIndex {
                         IndexUpdate::SetCapacity(capacity) => {
                             state.set_capacity(capacity, &lru_entries);
                         }
-                        IndexUpdate::Load { capacity, order } => {
-                            state.set_capacity(capacity, &lru_entries);
-                            state.load_order(order, &lru_entries);
-                        }
                         IndexUpdate::Clear => {
                             state.clear(&lru_entries);
-                        }
-                        IndexUpdate::Snapshot(resp) => {
-                            let _ = resp.send(state.snapshot());
                         }
                         IndexUpdate::Flush(ack) => {
                             let _ = ack.send(());
@@ -945,10 +860,10 @@ impl PathIndex {
             return false;
         };
         let (ack_tx, ack_rx) = mpsc::channel();
-        if tx.try_send(IndexUpdate::Flush(ack_tx.clone())).is_err() {
-            if tx.send(IndexUpdate::Flush(ack_tx)).is_err() {
-                return false;
-            }
+        if tx.try_send(IndexUpdate::Flush(ack_tx.clone())).is_err()
+            && tx.send(IndexUpdate::Flush(ack_tx)).is_err()
+        {
+            return false;
         }
         ack_rx.recv_timeout(PATH_INDEX_ASYNC_FLUSH_TIMEOUT).is_ok()
     }
@@ -964,7 +879,6 @@ impl PathIndex {
         } else {
             self.lru_entries.clear();
         }
-        self.mark_sidecar_dirty();
     }
 
     /// Query the LRU cache for deeper-than-indexed paths (diagnostic/testing).
@@ -987,63 +901,6 @@ impl PathIndex {
         Some(targets)
     }
 
-    pub fn snapshot_lru(&self) -> Option<LruSnapshot> {
-        if self.lru_capacity() == 0 {
-            return None;
-        }
-        let mut capacity = self.lru_capacity();
-        let order = if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
-            let (resp_tx, resp_rx) = mpsc::channel();
-            let _ = tx.try_send(IndexUpdate::Snapshot(resp_tx));
-            resp_rx
-                .recv_timeout(PATH_INDEX_ASYNC_FLUSH_TIMEOUT)
-                .ok()
-                .map(|s| {
-                    capacity = s.capacity;
-                    s.order
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let mut entries: HashMap<PathSig, AHashMap<u32, RoaringBitmap>> = HashMap::new();
-        for item in self.lru_entries.iter() {
-            entries.insert(item.key().clone(), item.value().clone());
-        }
-
-        Some(LruSnapshot {
-            capacity,
-            order,
-            entries,
-        })
-    }
-
-    pub fn restore_lru(&self, snapshot: LruSnapshot) {
-        self.lru_capacity
-            .store(snapshot.capacity, Ordering::Relaxed);
-        self.lru_entries.clear();
-        for (sig, map) in snapshot.entries {
-            self.lru_entries.insert(sig, map);
-        }
-        if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
-            let _ = tx.try_send(IndexUpdate::Load {
-                capacity: snapshot.capacity,
-                order: snapshot.order,
-            });
-        }
-    }
-
     fn cache_result(&self, path_sig: PathSig, start: u32, targets: RoaringBitmap) {
         if self.lru_capacity() == 0 {
             return;
@@ -1061,7 +918,6 @@ impl PathIndex {
             start,
             targets,
         });
-        self.mark_sidecar_dirty();
     }
 
     /// Build path index from relation store
@@ -1082,9 +938,9 @@ impl PathIndex {
             let sig = PathSig::new(vec![rel.rel_type]);
             self.index
                 .entry(sig)
-                .or_insert_with(AHashMap::new)
+                .or_default()
                 .entry(rel.source)
-                .or_insert_with(RoaringBitmap::new)
+                .or_default()
                 .insert(rel.target);
         }
 
@@ -1192,9 +1048,6 @@ pub struct PathDB {
     /// Cached inverted indexes for attribute full-text search (rebuilt on demand).
     #[serde(skip)]
     text_index: TextIndexCache,
-    /// Optional writer for durable index sidecars.
-    #[serde(skip)]
-    index_sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
 }
 
 pub const CANONICAL_FACT_LOG_VERSION_V1: u32 = 1;
@@ -1202,9 +1055,9 @@ pub const LIVE_PATHDB_DIGEST_VERSION_V1: u32 = 1;
 
 /// Deterministic, `.axi`-anchored fact log extracted from PathDB fact nodes.
 ///
-/// This is scaffolding for accepted-plane append logs: it does not replace the
-/// live `.axpd` reader/writer, and it intentionally records canonical fact ids
-/// rather than PathDB row positions.
+/// This deterministic view records canonical fact ids rather than PathDB row
+/// positions. It is an input to authenticated materialization, not a standalone
+/// persistence format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalFactLogV1 {
     pub version: u32,
@@ -1291,7 +1144,7 @@ impl CanonicalFactLogV1 {
         let certified_only = diagnostics.is_empty()
             && entries
                 .iter()
-                .all(|entry| entry.axi_fact_id.has_v1_prefix());
+                .all(|entry| entry.axi_fact_id.is_fact_id_v2());
 
         Ok(Self {
             version: CANONICAL_FACT_LOG_VERSION_V1,
@@ -1341,7 +1194,6 @@ impl PathDB {
             confidence_index: Vec::new(),
             fact_index: FactIndexCache::default(),
             text_index: TextIndexCache::default(),
-            index_sidecar: Mutex::new(None),
         }
     }
 
@@ -1383,7 +1235,7 @@ impl PathDB {
         self.entities
             .attrs
             .entry(key_id)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(entity_id, value_id);
         Ok(())
     }
@@ -1405,7 +1257,7 @@ impl PathDB {
         self.entities
             .type_index
             .entry(type_id)
-            .or_insert_with(RoaringBitmap::new)
+            .or_default()
             .insert(entity_id);
         Ok(())
     }
@@ -1448,11 +1300,11 @@ impl PathDB {
         let equiv_type_id = self.interner.intern(equiv_type);
         self.equivalences
             .entry(e1)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((e2, equiv_type_id));
         self.equivalences
             .entry(e2)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push((e1, equiv_type_id));
     }
 
@@ -1473,58 +1325,6 @@ impl PathDB {
     pub fn attach_async_index_source(&self, source: Weak<PathDB>) {
         self.fact_index.attach_async_source(source.clone());
         self.text_index.attach_async_source(source);
-    }
-
-    /// Attach a durable index sidecar writer.
-    pub fn attach_index_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
-        self.fact_index.attach_sidecar_writer(writer.clone());
-        self.text_index.attach_sidecar_writer(writer.clone());
-        self.path_index.attach_sidecar_writer(writer.clone());
-        let mut guard = self.index_sidecar.lock().expect("index sidecar poisoned");
-        *guard = Some(writer);
-    }
-
-    /// Snapshot durable indexes into a sidecar payload.
-    pub fn snapshot_index_sidecar(
-        &self,
-        snapshot_id: Option<PathdbSnapshotId>,
-    ) -> PathDbIndexSidecarV1 {
-        let fact_gen = self.fact_index.generation();
-        let text_gen = self.text_index.generation();
-        let mut sidecar = PathDbIndexSidecarV1::new(snapshot_id);
-        sidecar.fact_index = self.fact_index.snapshot(fact_gen);
-        sidecar.text_indexes = self.text_index.snapshot(text_gen);
-        sidecar.path_lru = self.path_index.snapshot_lru();
-        sidecar
-    }
-
-    /// Load durable indexes from a sidecar payload.
-    pub fn load_index_sidecar(&mut self, sidecar: PathDbIndexSidecarV1) {
-        let fact_gen = self.fact_index.generation();
-        let text_gen = self.text_index.generation();
-        if let Some(idx) = sidecar.fact_index {
-            self.fact_index.load_index(idx, fact_gen);
-        }
-        if !sidecar.text_indexes.is_empty() {
-            self.text_index.load_indexes(text_gen, sidecar.text_indexes);
-        }
-        if let Some(lru) = sidecar.path_lru {
-            self.path_index.restore_lru(lru);
-        }
-    }
-
-    /// Deterministic digest over live PathDB facts, excluding rebuildable indexes.
-    ///
-    /// This is a live-byte hardening helper, not a trusted semantic certificate:
-    /// it includes PathDB entity/relation ids and confidence bit patterns, and
-    /// it intentionally ignores path/text/fact indexes because those are
-    /// rebuildable derived state.
-    pub fn stable_live_snapshot_digest_v1(&self) -> Result<PathdbSnapshotId> {
-        let payload = live_pathdb_digest_payload_v1(self)?;
-        let bytes = serde_json::to_vec(&payload)?;
-        Ok(PathdbSnapshotId::new(
-            axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes),
-        ))
     }
 
     /// Extract a deterministic canonical fact log from `.axi` fact nodes.
@@ -1805,30 +1605,35 @@ impl PathDB {
         current
     }
 
-    /// Find paths between two entities
+    /// Find simple paths between two entities.
+    ///
+    /// Visited state is path-local: a global visited set would incorrectly
+    /// suppress a second path when two branches share an intermediate node.
     pub fn find_paths(&self, from: u32, to: u32, max_depth: usize) -> Vec<Vec<StrId>> {
         let mut results = Vec::new();
-        let mut queue: Vec<(u32, Vec<StrId>)> = vec![(from, vec![])];
-        let mut visited = RoaringBitmap::new();
-        visited.insert(from);
+        let mut initial_visited = RoaringBitmap::new();
+        initial_visited.insert(from);
+        let mut queue: Vec<(u32, Vec<StrId>, RoaringBitmap)> =
+            vec![(from, vec![], initial_visited)];
 
-        while let Some((current, path)) = queue.pop() {
+        while let Some((current, path, visited)) = queue.pop() {
             if path.len() >= max_depth {
                 continue;
             }
 
-            // Check all outgoing relations
             for rel in &self.relations.relations {
-                if rel.source == current && !visited.contains(rel.target) {
-                    let mut new_path = path.clone();
-                    new_path.push(rel.rel_type);
+                if rel.source != current || visited.contains(rel.target) {
+                    continue;
+                }
+                let mut new_path = path.clone();
+                new_path.push(rel.rel_type);
 
-                    if rel.target == to {
-                        results.push(new_path);
-                    } else {
-                        visited.insert(rel.target);
-                        queue.push((rel.target, new_path));
-                    }
+                if rel.target == to {
+                    results.push(new_path);
+                } else {
+                    let mut next_visited = visited.clone();
+                    next_visited.insert(rel.target);
+                    queue.push((rel.target, new_path, next_visited));
                 }
             }
         }
@@ -1848,29 +1653,32 @@ impl PathDB {
         let min_confidence = min_confidence.clamp(0.0, 1.0);
 
         let mut results = Vec::new();
-        let mut queue: Vec<(u32, Vec<StrId>)> = vec![(from, vec![])];
-        let mut visited = RoaringBitmap::new();
-        visited.insert(from);
+        let mut initial_visited = RoaringBitmap::new();
+        initial_visited.insert(from);
+        let mut queue: Vec<(u32, Vec<StrId>, RoaringBitmap)> =
+            vec![(from, vec![], initial_visited)];
 
-        while let Some((current, path)) = queue.pop() {
+        while let Some((current, path, visited)) = queue.pop() {
             if path.len() >= max_depth {
                 continue;
             }
 
             for rel in &self.relations.relations {
-                if rel.confidence < min_confidence {
+                if rel.confidence < min_confidence
+                    || rel.source != current
+                    || visited.contains(rel.target)
+                {
                     continue;
                 }
-                if rel.source == current && !visited.contains(rel.target) {
-                    let mut new_path = path.clone();
-                    new_path.push(rel.rel_type);
+                let mut new_path = path.clone();
+                new_path.push(rel.rel_type);
 
-                    if rel.target == to {
-                        results.push(new_path);
-                    } else {
-                        visited.insert(rel.target);
-                        queue.push((rel.target, new_path));
-                    }
+                if rel.target == to {
+                    results.push(new_path);
+                } else {
+                    let mut next_visited = visited.clone();
+                    next_visited.insert(rel.target);
+                    queue.push((rel.target, new_path, next_visited));
                 }
             }
         }
@@ -1910,112 +1718,96 @@ impl PathDB {
             .collect()
     }
 
-    // ========================================================================
-    // Serialization
-    // ========================================================================
+    /// Create a detached in-memory copy from canonical runtime rows.
+    ///
+    /// This is intentionally not a persistence codec. Durable PathDB state is
+    /// published and loaded only through the authenticated SQLite `.axpd`
+    /// materialization API.
+    pub fn detached_clone(&self) -> Result<Self> {
+        let payload = live_pathdb_digest_payload_v1(self)?;
+        let mut cloned = Self::new();
 
-    /// Serialize to binary format
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let interner_bytes = self.interner.to_bytes();
-        let db_bytes = bincode::serialize(&(
-            &self.entities,
-            &self.relations,
-            &self.path_index,
-            &self.equivalences,
-            &self.confidence_index,
-        ))?;
-
-        let mut result = Vec::new();
-        // Header: magic number + version
-        result.extend_from_slice(b"AXPD"); // Axiograph PathDB
-        result.extend_from_slice(&1u32.to_le_bytes()); // version 1
-
-        // Interner
-        result.extend_from_slice(&(interner_bytes.len() as u64).to_le_bytes());
-        result.extend_from_slice(&interner_bytes);
-
-        // DB
-        result.extend_from_slice(&(db_bytes.len() as u64).to_le_bytes());
-        result.extend_from_slice(&db_bytes);
-
-        Ok(result)
-    }
-
-    /// Deserialize from binary format
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        // Check header
-        if bytes.len() < 8 || &bytes[0..4] != b"AXPD" {
-            return Err(anyhow::anyhow!("Invalid PathDB file"));
+        for row in &payload.strings {
+            let id = cloned.interner.intern(&row.value);
+            if id.raw() != row.id {
+                return Err(anyhow::anyhow!(
+                    "runtime string order changed while cloning PathDB"
+                ));
+            }
         }
-
-        let version = u32::from_le_bytes(bytes[4..8].try_into()?);
-        if version != 1 {
-            return Err(anyhow::anyhow!("Unsupported PathDB version: {}", version));
+        for row in &payload.entities {
+            let type_id = cloned
+                .interner
+                .id_of(&row.type_name)
+                .ok_or_else(|| anyhow::anyhow!("missing cloned entity type `{}`", row.type_name))?;
+            let attrs = row
+                .attrs
+                .iter()
+                .map(|attr| {
+                    Ok((
+                        cloned.interner.id_of(&attr.key).ok_or_else(|| {
+                            anyhow::anyhow!("missing cloned attr key `{}`", attr.key)
+                        })?,
+                        cloned.interner.id_of(&attr.value).ok_or_else(|| {
+                            anyhow::anyhow!("missing cloned attr value `{}`", attr.value)
+                        })?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let id = cloned.entities.add(type_id, attrs);
+            if id != row.id {
+                return Err(anyhow::anyhow!(
+                    "runtime entity order changed while cloning PathDB"
+                ));
+            }
         }
-
-        let mut offset = 8;
-
-        // Interner
-        let interner_len = read_pathdb_len(bytes, &mut offset, "interner length")?;
-        let interner_bytes = read_pathdb_slice(bytes, &mut offset, interner_len, "interner")?;
-        let interner = StringInterner::from_bytes(interner_bytes)?;
-
-        // DB
-        let db_len = read_pathdb_len(bytes, &mut offset, "database length")?;
-        let db_bytes = read_pathdb_slice(bytes, &mut offset, db_len, "database")?;
-        if offset != bytes.len() {
-            return Err(anyhow::anyhow!(
-                "Invalid PathDB file: {} trailing byte(s)",
-                bytes.len().saturating_sub(offset)
-            ));
+        for row in &payload.relations {
+            let rel_type = cloned.interner.id_of(&row.rel_type).ok_or_else(|| {
+                anyhow::anyhow!("missing cloned relation type `{}`", row.rel_type)
+            })?;
+            let attrs = row
+                .attrs
+                .iter()
+                .map(|attr| {
+                    Ok((
+                        cloned.interner.id_of(&attr.key).ok_or_else(|| {
+                            anyhow::anyhow!("missing cloned relation attr key `{}`", attr.key)
+                        })?,
+                        cloned.interner.id_of(&attr.value).ok_or_else(|| {
+                            anyhow::anyhow!("missing cloned relation attr value `{}`", attr.value)
+                        })?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let id = cloned.relations.add(Relation {
+                rel_type,
+                source: row.source,
+                target: row.target,
+                confidence: f32::from_bits(row.confidence_bits),
+                attrs,
+            });
+            if id != row.id {
+                return Err(anyhow::anyhow!(
+                    "runtime relation order changed while cloning PathDB"
+                ));
+            }
+            cloned
+                .confidence_index
+                .push(f32::from_bits(row.confidence_bits));
         }
-        let (entities, relations, path_index, equivalences, confidence_index): (
-            EntityStore,
-            RelationStore,
-            PathIndex,
-            HashMap<u32, Vec<(u32, StrId)>>,
-            Vec<f32>,
-        ) = bincode::deserialize(db_bytes)?;
-
-        Ok(Self {
-            db_token: DbToken::new(),
-            interner,
-            entities,
-            relations,
-            path_index,
-            equivalences,
-            confidence_index,
-            fact_index: FactIndexCache::default(),
-            text_index: TextIndexCache::default(),
-            index_sidecar: Mutex::new(None),
-        })
+        for row in &payload.equivalences {
+            let equiv_type = cloned.interner.id_of(&row.equiv_type).ok_or_else(|| {
+                anyhow::anyhow!("missing cloned equivalence type `{}`", row.equiv_type)
+            })?;
+            cloned
+                .equivalences
+                .entry(row.source)
+                .or_default()
+                .push((row.target, equiv_type));
+        }
+        cloned.build_indexes_with_depth(self.path_index.max_depth());
+        Ok(cloned)
     }
-}
-
-fn read_pathdb_len(bytes: &[u8], offset: &mut usize, what: &str) -> Result<usize> {
-    let len_bytes = read_pathdb_slice(bytes, offset, 8, what)?;
-    let len = u64::from_le_bytes(len_bytes.try_into()?);
-    usize::try_from(len).map_err(|_| anyhow::anyhow!("Invalid PathDB file: {what} too large"))
-}
-
-fn read_pathdb_slice<'a>(
-    bytes: &'a [u8],
-    offset: &mut usize,
-    len: usize,
-    what: &str,
-) -> Result<&'a [u8]> {
-    let end = offset
-        .checked_add(len)
-        .ok_or_else(|| anyhow::anyhow!("Invalid PathDB file: {what} length overflow"))?;
-    if end > bytes.len() {
-        return Err(anyhow::anyhow!(
-            "Invalid PathDB file: truncated {what} (need {len} byte(s), have {})",
-            bytes.len().saturating_sub(*offset)
-        ));
-    }
-    let slice = &bytes[*offset..end];
-    *offset = end;
-    Ok(slice)
 }
 
 fn pathdb_string(db: &PathDB, id: StrId, what: &str) -> Result<String> {
@@ -2053,7 +1845,7 @@ fn canonical_fact_log_digest_v1(entries: &[CanonicalFactLogEntryV1]) -> Result<A
         entries: entries.to_vec(),
     };
     let bytes = serde_json::to_vec(&payload)?;
-    Ok(AxiDigest::new(axiograph_dsl::digest::fnv1a64_digest_bytes(
+    Ok(AxiDigest::new(axiograph_kernel::object_blob_digest_v2(
         &bytes,
     )))
 }
@@ -2179,7 +1971,7 @@ fn canonical_fact_log_entries_v1(
             .iter()
             .map(|(field, value)| (*field, value.as_str()))
             .collect();
-        let computed_fact_id = StableFactId::new(axiograph_dsl::digest::axi_fact_id_v1(
+        let computed_fact_id = StableFactId::new(axiograph_kernel::runtime_fact_id_v2(
             &module,
             &schema,
             &instance,
@@ -2481,7 +2273,7 @@ impl PathDB {
             return RoaringBitmap::new();
         };
         let mut out = RoaringBitmap::new();
-        for (&entity_id, _) in col {
+        for &entity_id in col.keys() {
             for &rid in self
                 .relations
                 .outgoing_relation_ids(entity_id, context_rel_id)
@@ -2856,21 +2648,93 @@ mod tests {
     }
 
     #[test]
-    fn pathdb_from_bytes_round_trips_v1_envelope() {
+    fn find_paths_keeps_distinct_branches_with_a_shared_tail() {
         let mut db = PathDB::new();
-        let alice = db.add_entity("Person", vec![("name", "Alice")]);
-        let bob = db.add_entity("Person", vec![("name", "Bob")]);
-        db.add_relation("knows", alice, bob, 1.0, vec![]);
-        db.build_indexes();
+        let source = db.add_entity("Node", vec![]);
+        let left = db.add_entity("Node", vec![]);
+        let right = db.add_entity("Node", vec![]);
+        let shared = db.add_entity("Node", vec![]);
+        let target = db.add_entity("Node", vec![]);
 
-        let bytes = db.to_bytes().expect("serialize PathDB");
-        let round_trip = PathDB::from_bytes(&bytes).expect("deserialize PathDB");
+        db.add_relation("left", source, left, 1.0, vec![]);
+        db.add_relation("right", source, right, 1.0, vec![]);
+        db.add_relation("merge", left, shared, 1.0, vec![]);
+        db.add_relation("merge", right, shared, 1.0, vec![]);
+        db.add_relation("finish", shared, target, 1.0, vec![]);
 
-        assert!(round_trip.follow_one(alice, "knows").contains(bob));
+        let mut paths: Vec<Vec<String>> = db
+            .find_paths(source, target, 3)
+            .iter()
+            .map(|path| {
+                path.iter()
+                    .map(|id| {
+                        db.interner
+                            .lookup(*id)
+                            .unwrap_or_else(|| "<missing>".to_string())
+                    })
+                    .collect()
+            })
+            .collect();
+        paths.sort_unstable();
+
+        assert_eq!(
+            paths,
+            vec![
+                vec![
+                    "left".to_string(),
+                    "merge".to_string(),
+                    "finish".to_string()
+                ],
+                vec![
+                    "right".to_string(),
+                    "merge".to_string(),
+                    "finish".to_string()
+                ]
+            ]
+        );
     }
 
     #[test]
-    fn stable_live_snapshot_digest_v1_survives_v1_envelope_roundtrip() -> Result<()> {
+    fn find_paths_with_min_confidence_keeps_only_eligible_branches() {
+        let mut db = PathDB::new();
+        let source = db.add_entity("Node", vec![]);
+        let left = db.add_entity("Node", vec![]);
+        let right = db.add_entity("Node", vec![]);
+        let shared = db.add_entity("Node", vec![]);
+        let target = db.add_entity("Node", vec![]);
+
+        db.add_relation("left", source, left, 0.5, vec![]);
+        db.add_relation("right", source, right, 1.0, vec![]);
+        db.add_relation("merge", left, shared, 1.0, vec![]);
+        db.add_relation("merge", right, shared, 1.0, vec![]);
+        db.add_relation("finish", shared, target, 1.0, vec![]);
+
+        let paths: Vec<Vec<String>> = db
+            .find_paths_with_min_confidence(source, target, 3, 0.8)
+            .iter()
+            .map(|path| {
+                path.iter()
+                    .map(|id| {
+                        db.interner
+                            .lookup(*id)
+                            .unwrap_or_else(|| "<missing>".to_string())
+                    })
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            paths,
+            vec![vec![
+                "right".to_string(),
+                "merge".to_string(),
+                "finish".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn detached_clone_preserves_runtime_rows_without_a_persistence_codec() -> Result<()> {
         let mut db = PathDB::new();
         let alice = db.add_entity("Person", vec![("z", "last"), ("name", "Alice")]);
         let bob = db.add_entity("Person", vec![("name", "Bob"), ("a", "first")]);
@@ -2878,12 +2742,14 @@ mod tests {
         db.add_equivalence(alice, bob, "sameAs");
         db.build_indexes();
 
-        let digest = db.stable_live_snapshot_digest_v1()?;
-        let bytes = db.to_bytes()?;
-        let round_trip = PathDB::from_bytes(&bytes)?;
+        let expected_rows = serde_json::to_vec(&live_pathdb_digest_payload_v1(&db)?)?;
+        let cloned = db.detached_clone()?;
 
-        assert_eq!(digest, round_trip.stable_live_snapshot_digest_v1()?);
-        assert!(round_trip.follow_one(alice, "knows").contains(bob));
+        assert_eq!(
+            expected_rows,
+            serde_json::to_vec(&live_pathdb_digest_payload_v1(&cloned)?)?
+        );
+        assert!(cloned.follow_one(alice, "knows").contains(bob));
         Ok(())
     }
 
@@ -2908,7 +2774,7 @@ instance I of S:
         assert!(log.diagnostics.is_empty());
         assert_eq!(log.entries.len(), 1);
         let entry = &log.entries[0];
-        assert!(entry.axi_fact_id.has_v1_prefix());
+        assert!(entry.axi_fact_id.is_fact_id_v2());
         assert_eq!(entry.module, "Demo");
         assert_eq!(entry.schema, "S");
         assert_eq!(entry.instance, "I");
@@ -2927,10 +2793,10 @@ instance I of S:
             ]
         );
 
-        let round_trip = PathDB::from_bytes(&db.to_bytes()?)?;
-        let round_trip_log = round_trip.certified_canonical_fact_log_v1()?;
-        assert_eq!(log.digest, round_trip_log.digest);
-        assert_eq!(log.entries, round_trip_log.entries);
+        let cloned = db.detached_clone()?;
+        let cloned_log = cloned.certified_canonical_fact_log_v1()?;
+        assert_eq!(log.digest, cloned_log.digest);
+        assert_eq!(log.entries, cloned_log.entries);
         Ok(())
     }
 
@@ -2957,7 +2823,7 @@ instance I of S:
         db.upsert_entity_attr(
             fact,
             axi_meta::ATTR_AXI_FACT_ID,
-            "factfnv1a64:0000000000000000",
+            &format!("axi:fact:v2:sha256:{}", "0".repeat(64)),
         )?;
 
         let err = db
@@ -2965,44 +2831,5 @@ instance I of S:
             .expect_err("mismatched canonical fact id must fail closed");
         assert!(err.to_string().contains("mismatch"));
         Ok(())
-    }
-
-    #[test]
-    fn pathdb_from_bytes_rejects_truncated_v1_envelope_without_panic() {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"AXPD");
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-
-        let err = match PathDB::from_bytes(&bytes) {
-            Ok(_) => panic!("truncated length must fail"),
-            Err(err) => err,
-        };
-        assert!(err.to_string().contains("truncated interner length"));
-    }
-
-    #[test]
-    fn pathdb_from_bytes_rejects_truncated_section_without_panic() {
-        let db = PathDB::new();
-        let mut bytes = db.to_bytes().expect("serialize PathDB");
-        bytes.truncate(bytes.len().saturating_sub(1));
-
-        let err = match PathDB::from_bytes(&bytes) {
-            Ok(_) => panic!("truncated payload must fail"),
-            Err(err) => err,
-        };
-        assert!(err.to_string().contains("truncated database"));
-    }
-
-    #[test]
-    fn pathdb_from_bytes_rejects_trailing_bytes() {
-        let db = PathDB::new();
-        let mut bytes = db.to_bytes().expect("serialize PathDB");
-        bytes.push(0);
-
-        let err = match PathDB::from_bytes(&bytes) {
-            Ok(_) => panic!("trailing bytes must fail"),
-            Err(err) => err,
-        };
-        assert!(err.to_string().contains("trailing byte"));
     }
 }

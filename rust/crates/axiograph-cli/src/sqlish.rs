@@ -49,7 +49,7 @@ pub fn parse_sqlish_query(input: &str) -> Result<AxqlQuery> {
     lower_query(&query)
 }
 
-fn lower_query(query: &Box<Query>) -> Result<AxqlQuery> {
+fn lower_query(query: &Query) -> Result<AxqlQuery> {
     let limit = query
         .limit
         .as_ref()
@@ -114,10 +114,13 @@ fn lower_select_items(items: &[SelectItem]) -> Result<Vec<String>> {
             }
             SelectItem::UnnamedExpr(Expr::Identifier(id)) => vars.push(axql_var(id)?),
             SelectItem::ExprWithAlias { expr, alias } => match expr {
+                Expr::Identifier(id) if id.value == alias.value => vars.push(axql_var(id)?),
                 Expr::Identifier(id) => {
-                    // `SELECT x AS y` => select `?y` (alias), not the original binding name.
-                    vars.push(axql_var(alias)?);
-                    let _ = id; // keep for clarity; bindings are still by WHERE atoms.
+                    return Err(anyhow!(
+                        "SELECT aliases are not supported: `{}` cannot be projected as `{}`",
+                        id.value,
+                        alias.value
+                    ));
                 }
                 other => return Err(anyhow!("unsupported SELECT expression: {other:?}")),
             },
@@ -288,7 +291,7 @@ mod tests {
         let q = parse_sqlish_query(
             "SELECT y FROM Node AS y WHERE FOLLOW(0, 'rel_0/rel_1', y) LIMIT 10;",
         )?;
-        let res = crate::axql::execute_axql_query(&db, &q)?;
+        let res = crate::axql::execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?y").copied(), Some(2));
         Ok(())
@@ -300,10 +303,19 @@ mod tests {
         let q = parse_sqlish_query(
             "SELECT x FROM Node AS x WHERE HAS(x, 'rel_0') AND ATTR(x, 'name') = 'a' LIMIT 5;",
         )?;
-        let res = crate::axql::execute_axql_query(&db, &q)?;
+        let res = crate::axql::execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
+    }
+
+    #[test]
+    fn sqlish_rejects_projection_aliases_instead_of_selecting_an_unbound_variable() {
+        let error = parse_sqlish_query("SELECT x AS y FROM Node AS x LIMIT 10;")
+            .expect_err("projection aliases require an explicit rename operator");
+        assert!(error
+            .to_string()
+            .contains("SELECT aliases are not supported"));
     }
 
     #[test]
@@ -311,7 +323,7 @@ mod tests {
         let db = tiny_db();
         let q =
             parse_sqlish_query("SELECT x FROM Node AS x WHERE FOLLOW(x, 'rel_0', 'b') LIMIT 10;")?;
-        let res = crate::axql::execute_axql_query(&db, &q)?;
+        let res = crate::axql::execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())

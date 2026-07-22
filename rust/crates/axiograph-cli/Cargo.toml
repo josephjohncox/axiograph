@@ -2,6 +2,7 @@
 name = "axiograph-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Axiograph command-line interface"
@@ -10,6 +11,9 @@ description = "Axiograph command-line interface"
 name = "axiograph"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 axiograph-dsl = { path = "../axiograph-dsl" }
 axiograph-ingest-sql = { path = "../axiograph-ingest-sql" }
@@ -17,7 +21,11 @@ axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
 axiograph-ingest-json = { path = "../axiograph-ingest-json" }
 axiograph-ingest-proto = { path = "../axiograph-ingest-proto" }
 axiograph-ingest-rdfowl = { path = "../axiograph-ingest-rdfowl" }
+axiograph-kernel = { path = "../axiograph-kernel" }
 axiograph-pathdb = { path = "../axiograph-pathdb" }
+axiograph-projections = { path = "../axiograph-projections" }
+axiograph-security = { path = "../axiograph-security" }
+axiograph-store = { path = "../axiograph-store" }
 axiograph-software-authoring = { path = "../axiograph-software-authoring" }
 axiograph-tooling-overlays = { path = "../axiograph-tooling-overlays" }
 anyhow.workspace = true
@@ -25,35 +33,47 @@ clap.workspace = true
 colored.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+sha2.workspace = true
+tempfile = "3"
+uuid.workspace = true
 walkdir.workspace = true
 nom.workspace = true
 roaring.workspace = true
 sqlparser.workspace = true
 tokio.workspace = true
 ciborium.workspace = true
-hnsw_rs.workspace = true
 pprof = { workspace = true, optional = true }
 signal-hook = { workspace = true, optional = true }
 hyper = { version = "1.9", features = ["server", "http1"] }
-hyper-util = "0.1.20"
+hyper-util = { version = "0.1.20", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1.11"
+crossbeam-channel.workspace = true
 rustyline = { version = "14.0", optional = true, default-features = true }
-reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
 rmcp.workspace = true
+lsp-server.workspace = true
+lsp-types.workspace = true
 url.workspace = true
+percent-encoding.workspace = true
 scraper.workspace = true
 htmd.workspace = true
 robotstxt.workspace = true
 
 [features]
-default = ["repl-rustyline", "llm-ollama", "llm-openai", "llm-anthropic", "proposal-adapter-http"]
+default = [
+  "repl-rustyline",
+  "llm-ollama",
+  "llm-openai",
+  "llm-anthropic",
+  "proposal-adapter-http",
+]
 repl-rustyline = ["dep:rustyline"]
-llm-ollama = ["dep:reqwest"]
-llm-openai = ["dep:reqwest"]
-llm-anthropic = ["dep:reqwest"]
+llm-ollama = []
+llm-openai = []
+llm-anthropic = []
 profiling = ["dep:pprof", "dep:signal-hook"]
-proposal-adapter-http = ["dep:reqwest"]
+proposal-adapter-http = []
 
 [dev-dependencies]
 proptest.workspace = true

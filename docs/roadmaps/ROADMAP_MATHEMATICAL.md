@@ -10,11 +10,10 @@ provides operational checking and report generation.
 ## Current Spine
 
 ```text
-canonical .axi
-  -> KernelModuleIr
-  -> SchemaCategoryIr + TheoryIr + InstanceFunctorIr
-  -> KernelSurfaceV1 refs
-  -> RuntimeTheoryCheckReportV1 / typed reports
+exact canonical .axi bytes + import closure + accepted snapshot handle
+  -> CanonicalCompiler
+  -> CompiledKernelSnapshot
+  -> derived RuntimeSemanticIndex / RuntimeTheoryCheckReportV1
   -> optional Lean certificates
 ```
 
@@ -41,14 +40,16 @@ canonical .axi
   residual, and obligation addressable by stable refs.
 - [ ] Feed runtime theory checks into CQ gates, behavior cases, software
   coverage, migration preview, semantic merge/rebase, and backend projection.
-- [ ] Export `KernelSurfaceV1` refs to Lean-readable checker payloads.
+- [ ] Export the canonical compiled-snapshot manifest and validated derived
+  `RuntimeIrRef` citations to Lean-readable checker payloads.
 - [ ] Centralize finite closure semantics so “complete” means every in-scope
   obligation is checked or explicitly residual.
 
 ## Category And Migration Work
 
-- [ ] Make `SchemaCategoryIr` the shared surface for queries, CQ repair,
-  migrations, reconciliation, semantic merge, backend projection, and authoring.
+- [x] Make canonical `SchemaPresentationIr` the shared category presentation;
+  derived runtime reports cite it through `KernelRefV2` instead of duplicating
+  category objects or arrows.
 - [ ] Represent schema morphisms and context maps as first-class typed runtime
   objects.
 - [ ] Implement functorial migration operators as runtime plans first:

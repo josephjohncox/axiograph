@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Mixed-source web ingest demo (no crawling).
 #
-# This is a small “scrape a few pages” smoke test. It’s useful for validating:
+# This is a small “scrape a few pages” integration runner. It’s useful for validating:
 # - HTML → Markdown conversion
 # - chunk extraction
 # - proposals emission

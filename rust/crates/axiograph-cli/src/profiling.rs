@@ -7,7 +7,7 @@ mod enabled {
     use pprof::protos::Message;
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
-    use std::io::{BufWriter, Write};
+    use std::io::Write;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -30,9 +30,10 @@ mod enabled {
     pub struct ProfileArgs {
         /// Enable CPU profiling (feature `profiling`).
         ///
-        /// Values: off|flamegraph|pprof|folded|all. `--profile` alone defaults to flamegraph.
+        /// Values: off|flamegraph|pprof|folded|all. `--cpu-profile` alone defaults to flamegraph.
         #[arg(
-            long,
+            id = "cpu_profile",
+            long = "cpu-profile",
             value_enum,
             default_value_t = ProfileFormat::Off,
             default_missing_value = "flamegraph",
@@ -43,7 +44,7 @@ mod enabled {
 
         /// Output path for the profile artifact (file or base path).
         ///
-        /// If `--profile=all`, extensions are added per output kind.
+        /// If `--cpu-profile=all`, extensions are added per output kind.
         #[arg(long, global = true)]
         pub profile_out: Option<PathBuf>,
 
@@ -300,10 +301,8 @@ mod enabled {
     }
 
     fn output_path(base: &Path, kind: OutputKind, force_ext: bool) -> PathBuf {
-        if !force_ext {
-            if base.extension().is_some() {
-                return base.to_path_buf();
-            }
+        if !force_ext && base.extension().is_some() {
+            return base.to_path_buf();
         }
         let mut path = base.to_path_buf();
         path.set_extension(kind.ext());
@@ -362,36 +361,32 @@ mod enabled {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            match kind {
+            let bytes = match kind {
                 OutputKind::Flamegraph => {
-                    let mut file = fs::File::create(&path)
-                        .map_err(|e| anyhow!("failed to create {}: {e}", path.display()))?;
+                    let mut bytes = Vec::new();
                     report
-                        .flamegraph(&mut file)
-                        .map_err(|e| anyhow!("failed to write flamegraph: {e}"))?;
+                        .flamegraph(&mut bytes)
+                        .map_err(|e| anyhow!("failed to render flamegraph: {e}"))?;
+                    bytes
                 }
                 OutputKind::Pprof => {
                     let profile = profile
                         .as_ref()
                         .ok_or_else(|| anyhow!("pprof profile missing (unexpected state)"))?;
-                    let file = fs::File::create(&path)
-                        .map_err(|e| anyhow!("failed to create {}: {e}", path.display()))?;
-                    let mut buf = Vec::new();
+                    let mut bytes = Vec::new();
                     profile
-                        .encode(&mut buf)
+                        .encode(&mut bytes)
                         .map_err(|e| anyhow!("failed to encode pprof: {e}"))?;
-                    let mut writer = BufWriter::new(file);
-                    writer
-                        .write_all(&buf)
-                        .map_err(|e| anyhow!("failed to write pprof: {e}"))?;
+                    bytes
                 }
                 OutputKind::Folded => {
                     let profile = profile
                         .as_ref()
                         .ok_or_else(|| anyhow!("pprof profile missing (unexpected state)"))?;
-                    write_folded(profile, &path)?;
+                    render_folded(profile)?
                 }
-            }
+            };
+            crate::security::write_output_bounded(&path, bytes, "profiling output")?;
             written.push(path);
         }
 
@@ -413,7 +408,7 @@ mod enabled {
         Ok(())
     }
 
-    fn write_folded(profile: &pprof::protos::Profile, path: &Path) -> Result<()> {
+    fn render_folded(profile: &pprof::protos::Profile) -> Result<Vec<u8>> {
         let mut func_names: HashMap<u64, String> = HashMap::new();
         for func in &profile.function {
             let name = profile
@@ -439,7 +434,7 @@ mod enabled {
 
         let mut stacks: BTreeMap<String, i64> = BTreeMap::new();
         for sample in &profile.sample {
-            let value = sample.value.get(0).copied().unwrap_or(1);
+            let value = sample.value.first().copied().unwrap_or(1);
             if value <= 0 {
                 continue;
             }
@@ -458,14 +453,12 @@ mod enabled {
             *stacks.entry(key).or_insert(0) += value;
         }
 
-        let file = fs::File::create(path)
-            .map_err(|e| anyhow!("failed to create {}: {e}", path.display()))?;
-        let mut writer = BufWriter::new(file);
+        let mut bytes = Vec::new();
         for (stack, value) in stacks {
-            writeln!(writer, "{} {}", stack, value)
-                .map_err(|e| anyhow!("failed to write folded stacks: {e}"))?;
+            writeln!(bytes, "{stack} {value}")
+                .map_err(|e| anyhow!("failed to render folded stacks: {e}"))?;
         }
-        Ok(())
+        Ok(bytes)
     }
 }
 

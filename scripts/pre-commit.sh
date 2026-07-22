@@ -32,7 +32,7 @@ else
   echo "  - Lean build skipped (lake not found or lean/lakefile.lean missing)"
 fi
 
-echo "  - AGENTS.md harness checks"
+echo "  - AGENTS.md quality checks"
 agents_lines="$(wc -l < AGENTS.md | tr -d ' ')"
 if [ "$agents_lines" -gt 150 ]; then
   echo "AGENTS.md has $agents_lines lines; keep it below 150 or document why"

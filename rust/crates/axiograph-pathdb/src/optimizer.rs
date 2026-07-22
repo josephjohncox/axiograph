@@ -5,7 +5,7 @@
 //! - a runtime implementation that can optimize/transform data structures, and
 //! - a proof/certificate witness that a trusted checker can validate.
 //!
-//! This module provides a minimal, extensible scaffold:
+//! This module provides a small, extensible runtime slice:
 //!
 //! - **Path normalization** (free-groupoid word reduction) with explicit rewrite steps.
 //! - **Reconciliation** (resolution decision) with a recomputable proof payload.
@@ -57,7 +57,7 @@ pub enum MigrationOperatorV1 {
 // Path normalization (v2)
 // =============================================================================
 
-/// Proof-producing optimizer entrypoint (scaffold).
+/// Proof-producing optimizer entrypoint for supported runtime slices.
 #[derive(Debug, Default, Clone)]
 pub struct ProofProducingOptimizer;
 
@@ -516,7 +516,7 @@ impl ProofProducingOptimizer {
     }
 
     // =============================================================================
-    // Δ_F / Σ_F schema migration (v1 scaffold)
+    // Δ_F / Σ_F schema migration (v1 runtime slice)
     // =============================================================================
 
     /// Compute the pullback (Δ_F) of an instance along a schema morphism.
@@ -579,7 +579,7 @@ impl ProofProducingOptimizer {
         })
     }
 
-    /// Left pushforward (Σ_F) scaffold.
+    /// Left pushforward (Σ_F) partial runtime operator.
     ///
     /// In general Σ_F is a left Kan extension and may require:
     /// - generating new IDs,
@@ -699,10 +699,7 @@ fn delta_f_compute(
 
             if !codomain_set.contains(image.as_str()) {
                 return Err(anyhow!(
-                    "delta_f: arrow `{source_arrow_name}` maps `{}` to `{}`, but `{}` is not in the codomain object `{target_dst_object}`",
-                    domain_elem,
-                    image,
-                    image
+                    "delta_f: arrow `{source_arrow_name}` maps `{domain_elem}` to `{image}`, but `{image}` is not in the codomain object `{target_dst_object}`"
                 ));
             }
 
@@ -731,9 +728,8 @@ fn build_arrow_functions(instance: &InstanceV1) -> Result<HashMap<&str, HashMap<
         for (src, dst) in &entry.pairs {
             if mapping.insert(src.as_str(), dst.as_str()).is_some() {
                 return Err(anyhow!(
-                    "delta_f: duplicate mapping for arrow `{}` at source element `{}`",
-                    entry.arrow,
-                    src
+                    "delta_f: duplicate mapping for arrow `{}` at source element `{src}`",
+                    entry.arrow
                 ));
             }
         }
@@ -745,20 +741,18 @@ fn build_arrow_functions(instance: &InstanceV1) -> Result<HashMap<&str, HashMap<
 
 fn apply_arrow_path(
     arrow_functions: &HashMap<&str, HashMap<&str, &str>>,
-    start: &String,
+    start: &str,
     path: &[String],
 ) -> Result<String> {
-    let mut current: &str = start.as_str();
+    let mut current: &str = start;
 
     for arrow_name in path {
         let Some(f) = arrow_functions.get(arrow_name.as_str()) else {
-            return Err(anyhow!("missing arrow function for `{}`", arrow_name));
+            return Err(anyhow!("missing arrow function for `{arrow_name}`"));
         };
         let Some(next) = f.get(current) else {
             return Err(anyhow!(
-                "arrow `{}` missing mapping for input element `{}`",
-                arrow_name,
-                current
+                "arrow `{arrow_name}` missing mapping for input element `{current}`"
             ));
         };
         current = next;
@@ -774,7 +768,7 @@ mod tests {
 
     #[test]
     fn optimizer_normalize_path_v2_produces_proof_in_with_proof_mode() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
 
         let input = PathExprV2::Trans {
             left: Box::new(PathExprV2::Inv {
@@ -818,7 +812,7 @@ mod tests {
 
     #[test]
     fn branded_optimizer_proofs_cannot_cross_db_tokens() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
         let db1 = DbToken::new();
         let db2 = DbToken::new();
 
@@ -844,7 +838,7 @@ mod tests {
 
     #[test]
     fn branded_equivalence_proofs_cannot_cross_db_tokens() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
         let db1 = DbToken::new();
         let db2 = DbToken::new();
 
@@ -871,7 +865,7 @@ mod tests {
 
     #[test]
     fn branded_reconciliation_proofs_cannot_cross_db_tokens() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
         let db1 = DbToken::new();
         let db2 = DbToken::new();
 
@@ -887,7 +881,7 @@ mod tests {
 
     #[test]
     fn path_equiv_congruence_builders_produce_valid_equivalence_proofs() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
 
         // Base equivalence: two different spellings of `p ; q`.
         let p = PathExprV2::Step {
@@ -988,7 +982,7 @@ mod tests {
 
     #[test]
     fn branded_congruence_rejects_mismatched_base_proof_token() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
         let db1 = DbToken::new();
         let db2 = DbToken::new();
 
@@ -1036,7 +1030,7 @@ mod tests {
 
     #[test]
     fn delta_f_copies_objects_and_composes_arrows() {
-        let optimizer = ProofProducingOptimizer::default();
+        let optimizer = ProofProducingOptimizer;
 
         let source_schema = SchemaV1 {
             name: "S1".to_string(),

@@ -26,9 +26,9 @@ The public spine is:
 
 ```text
 canonical .axi
-  -> SchemaCategoryIr + TheoryIr + InstanceFunctorIr
-  -> WellTypedPath / NormalizedPath / RuntimeTheoryCheckReportV1
-  -> optional Lean certificate
+  -> KernelSnapshotIr / SchemaPresentationIr / TypedTheoryIr / InstanceModelIr
+  -> canonical RuntimeIrRef citations + typed runtime reports
+  -> optional Lean certificate for the supported fragment
 ```
 
 Runtime path checking must prove enough to be operationally useful:

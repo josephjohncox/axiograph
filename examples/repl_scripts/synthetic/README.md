@@ -1,7 +1,7 @@
 # Synthetic REPL Scripts
 
 These scripts use REPL-generated or hand-mutated data to exercise interactive
-features such as `gen`, `fts`, mutation commands, and ad hoc visualization.
+features such as `gen`, `fts`, mutation commands, and REPL-local visualization.
 
 They are not the preferred teaching path for ontology authoring. Prefer the
 canonical `.axi` scripts in `examples/repl_scripts/` for current workflows.

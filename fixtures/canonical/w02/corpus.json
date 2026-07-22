@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "description": "W02 canonical compiler and Rust/Lean parser/typechecker conformance cases.",
+  "cases": [
+    {"path":"fixtures/canonical/w02/valid_full.axi","parse":true,"typecheck":true,"compile":true},
+    {"path":"fixtures/canonical/w02/valid_explicit_axes.axi","parse":true,"typecheck":true,"compile":true},
+    {"path":"fixtures/canonical/w02/reject_missing_header.axi","parse":false,"typecheck":false,"compile":false},
+    {"path":"fixtures/canonical/w02/reject_repeated_module.axi","parse":false,"typecheck":false,"compile":false},
+    {"path":"fixtures/canonical/w02/reject_duplicate_schema.axi","parse":true,"typecheck":false,"compile":false},
+    {"path":"fixtures/canonical/w02/reject_duplicate_role.axi","parse":true,"typecheck":false,"compile":false},
+    {"path":"fixtures/canonical/w02/reject_unknown_target.axi","parse":true,"typecheck":false,"compile":false},
+    {"path":"fixtures/canonical/w02/reject_subtype_cycle.axi","parse":true,"typecheck":false,"compile":false},
+    {"path":"fixtures/canonical/w02/reject_relation_ghost.axi","parse":true,"typecheck":false,"compile":false},
+    {"path":"fixtures/canonical/w02/reject_partial_function.axi","parse":true,"typecheck":true,"compile":false},
+    {"path":"fixtures/canonical/w02/reject_violated_equation.axi","parse":true,"typecheck":false,"compile":false}
+  ]
+}

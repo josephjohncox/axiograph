@@ -5,8 +5,9 @@
 
 This document describes how Axiograph ingests knowledge from various sources,
 produces evidence-plane artifacts, drafts candidate canonical `.axi`, and then
-uses typed reports, semantic VCS promotion, and derived PathDB snapshots for
-querying.
+uses typed reports and semantic VCS promotion. Derived PathDB snapshots can then
+be materialized for query/index workflows, but they are not the semantic
+authority.
 
 ## Overview
 
@@ -50,7 +51,7 @@ The knowledge ingestion pipeline follows Axiograph's core principle:
 │   proposals.json → candidate domain `.axi` modules (explicit review)        │
 │   accepted `.axi` → runtime PathDB `.axpd` (derived, rebuildable)           │
 │   typed previews/reports → semantic VCS history                              │
-│   prepared queries → query_result_v3 witnesses → Lean checks                 │
+│   prepared queries → query_result_v4 witnesses → Lean checks                 │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -66,10 +67,12 @@ axiograph ingest conversation input.txt --out proposals.json \
 ```
 
 Formats supported:
+
 - `slack`: "Speaker (timestamp): message"
 - `meeting`: "SPEAKER NAME:" followed by paragraphs
 
 Extracts:
+
 - Non-question turns as potential knowledge
 - Technical content detection (materials, tools, parameters)
 - Speaker attribution for provenance
@@ -84,6 +87,7 @@ axiograph ingest confluence page.html --out proposals.json \
 ```
 
 Extracts:
+
 - Sections (h2-h6) as separate chunks
 - Tables (structured data)
 - Code blocks (examples, procedures)
@@ -100,6 +104,7 @@ axiograph ingest doc manual.txt --out proposals.json \
 ```
 
 The `--machining` flag enables domain-specific:
+
 - Material mention detection
 - Tool and parameter extraction
 - Quality/observation tagging
@@ -157,8 +162,8 @@ axiograph ingest predictive-proposal examples/Family.axi \
 ```
 
 Note: use full canonical `.axi` modules (schema + theory + instance + contexts)
-as the training/export source. PathDB snapshots are derived execution artifacts;
-`PathDBExportV1` remains debug/live-byte/parser parity only.
+as the training/export source. Authenticated SQLite `.axpd` files are derived
+execution artifacts and cannot be reverse-exported into accepted meaning.
 
 Offline/local repo:
 
@@ -202,7 +207,7 @@ The ingestion layer uses pattern matching to extract facts with confidence:
 ### Fact Types
 
 | Type | Description | Example |
-|------|-------------|---------|
+| ------ | ------------- | --------- |
 | Recommendation | "use X for Y" | "use carbide for titanium" |
 | Observation | "we saw X" | "we saw chatter at 3000 RPM" |
 | Causation | "X causes Y" | "increasing speed causes more heat" |
@@ -216,7 +221,7 @@ The ingestion layer uses pattern matching to extract facts with confidence:
 Base confidence is pattern-dependent, then adjusted by:
 
 | Factor | Adjustment |
-|--------|------------|
+| -------- | ------------ |
 | Technical source (Confluence, manual) | +10% |
 | Expert attribution | +15% |
 | Short evidence (<30 chars) | -10% |
@@ -234,8 +239,8 @@ In the Rust+Lean architecture:
 - promotion produces candidate **canonical** `.axi` modules (explicit + reviewable)
 - preview/review flows produce typed reports such as `EvolutionPreviewV1`,
   trust/coverage reports, and refinement handles
-- machine query flows prepare `query_ir_v1` as `PreparedQueryV1`; supported
-  certified answers emit canonical `.axi`-anchored `query_result_v3` witnesses
+- machine query flows compile `query_ir_v1` as `CompiledFiniteQuery`; supported
+  certified answers emit query-and-answer-bound `query_result_v4` witnesses
   (Rust emits, Lean verifies)
 - accepted deltas move through semantic VCS history; PathDB remains derived
 
@@ -274,19 +279,10 @@ axiograph discover draft-module manual_proposals.json \
   --instance DiscoveredInstance \
   --infer-constraints
 
-# 6. Promote reviewed candidates through the accepted plane / semantic VCS
-axiograph db accept promote build/candidates/MachinistLearning.proposals.axi \
-  --dir build/accepted_plane \
-  --message "reviewed: machinist learning ingestion"
+# 6. Build a typed PromotionPlan from the exact reviewed `.axi` bytes and
+#    promote it with AxiStore::promote; see docs/howto/SNAPSHOT_STORE.md.
 
-# 7. Build a derived query snapshot from the accepted snapshot, not the
-#    candidate artifact path.
-axiograph db accept pathdb-build \
-  --dir build/accepted_plane \
-  --snapshot head \
-  --out build/machinist_learning.axpd
-
-# 8. Run the semantics verification suite (Rust + Lean certificates/parsers)
+# 7. Run the semantics verification suite (Rust + Lean certificates/parsers)
 make verify-semantics
 ```
 
@@ -300,6 +296,7 @@ The `PhysicsKnowledge.axi` example shows how to encode:
 - **Heuristics**: "titanium needs low speed, high feed"
 
 These are typed in the canonical `.axi` module, enabling:
+
 1. Constraint checking (dimensional consistency)
 2. Inference (if A and B, then C)
 3. Probabilistic queries (confidence-weighted)
@@ -372,8 +369,8 @@ PathDB snapshots (`.axpd`). These snapshots are fast query/index artifacts and
 can carry reviewable evidence overlays, but accepted semantics still live in
 canonical `.axi` and semantic VCS history.
 
-Use `PreparedQueryV1` metadata/trust reports for machine query flows and
-`query_result_v3` witnesses for supported certified answers.
+Use `CompiledFiniteQuery` metadata/trust reports for machine query flows and
+`query_result_v4` witnesses for supported certified answers.
 
 Storage byte round-trip checks live in `docs/howto/TESTING.md` and
 `docs/explanation/PATHDB_DESIGN.md`. Keep them out of ingest, query, and

@@ -16,14 +16,18 @@ If you want the query language reference, see `docs/reference/QUERY_LANG.md`.
 
 ## 0) Mental model (why “type theory” shows up)
 
-At runtime, PathDB is “just a graph”, but the design treats:
+The canonical schema semantics does not treat every relation as a binary edge.
+It treats:
 
-- **entities** as *points*,
-- **relations** as *generating arrows*,
-- **paths** as *composites*,
-- and **equivalence witnesses** as explicit artifacts that tie alternative derivations together.
+- object types and **relation objects** as category objects;
+- each relation role as a total **projection arrow** from the relation object;
+- explicit aspects/functions/subtype inclusions as other generators;
+- endpoint-indexed paths as composites; and
+- parallel-path equations/equivalence witnesses as explicit artifacts.
 
-This is the core HoTT/groupoid intuition: “paths between paths” are first-class.
+PathDB may derive binary traversal views when a carrier pair is explicit. That
+projection is not the meaning plane. The HoTT/groupoid intuition applies to the
+indexed path layer: alternative paths can carry explicit paths-between-paths.
 
 In the migration plan, Rust is the **untrusted engine** and Lean is the **trusted checker**:
 
@@ -33,6 +37,33 @@ In the migration plan, Rust is the **untrusted engine** and Lean is the **truste
 
 That’s what “proof-relevant” means here: the system can tell you *why* it believes something,
 not just *that* it does.
+
+### Run the finite semantics demo
+
+From `axiograph_v6/`:
+
+```bash
+make verify-lean-theory
+```
+
+This runs the finite Lean category/dependent/groupoid fragment and focused Rust
+regressions. The positive cases exercise:
+
+- relation objects with typed role projections;
+- indexed category paths and mathlib-backed groupoid laws;
+- dependent role and context witnesses;
+- finite refinements and typed holes; and
+- bounded reachability saturation with replayable explanations.
+
+The adversarial cases require rejection of bad role projections,
+non-composable equations, unsupported/out-of-range refinements, exceeded
+finite bounds, and tampered explanations.
+
+The resulting saturation claim is intentionally narrow: finite generator
+reachability. It does not execute arbitrary ontology rewrites, prove
+termination/confluence, close an open world, or establish unrestricted HoTT or
+topos semantics. The module is theorem support outside `VerifyMain` until a
+versioned anchored certificate family is reviewed and dispatched there.
 
 ## 1) Proof-irrelevant exploration (REPL)
 
@@ -83,33 +114,33 @@ For this walkthrough we use:
 
 - `examples/ontology/OntologyRewrites.axi`
 
-### 2.2 Emit a canonical `.axi`-anchored typed query witness (Rust)
+### 2.2 Compile the canonical finite query
+
+For everyday authoring, start from `.cq` or `ask` and let tooling lower the
+question into `query_ir_v1`, then `CompiledFiniteQuery`. The direct
+emission-only certificate command was removed; certified product routes must
+bind the compiled query, exact accepted bytes, answer, and Lean receipt.
 
 From `axiograph_v6/`:
 
 ```bash
-cd rust
-cargo run -p axiograph-cli -- cert query ../examples/ontology/OntologyRewrites.axi --lang axql \
-  'select ?p where ?f = Parent(parent=?p, child=Bob) limit 10' \
-  > build/ontology_rewrites_query_cert.json
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  discover competency-questions examples/ontology/OntologyRewrites.axi \
+  --from-cq examples/competency_questions/bob_parent.cq \
+  --no-schema \
+  --out build/ontology_rewrites_bob_parent_cq.json
 ```
 
-This witness is **proof-relevant**:
-
-- every returned row includes **path witnesses**,
-- each witness is anchored to canonical `.axi` tuple facts / stable names,
-- confidences are fixed-point (`*_fp`) so Lean can check them without floats.
+A V4 result is **proof-relevant**: every returned full binding carries typed
+atom witnesses anchored to canonical `.axi` names/facts, while Lean separately
+checks exact equality with the bounded finite denotation.
 
 ### 2.3 Verify in Lean (trusted checker)
 
-```bash
-make verify-lean-cert AXI=examples/ontology/OntologyRewrites.axi CERT=rust/build/ontology_rewrites_query_cert.json
-```
-
-Or run the repo’s anchored query e2e target:
+Run the repository's positive and adversarial V4 gates:
 
 ```bash
-make verify-lean-e2e-query-result-module-v3
+make verify-lean-e2e-query-result-module-v4
 ```
 
 ## 3) Proof relevance vs proof irrelevance (practical take)
@@ -119,7 +150,7 @@ In type theory, *proof irrelevance* roughly means “the program doesn’t care 
 In Axiograph:
 
 - **proof-irrelevant execution** is for iteration and performance (`repl`, `q`, `sql`, `ask`).
-- **proof-relevant execution** is for auditability (`axiograph cert query`, normalization certs, reconciliation certs, …).
+- **proof-relevant execution** is for auditability (bound `query_result_v4`, normalization certs, reconciliation certs, …).
 
 The system is designed so you can:
 
@@ -243,22 +274,11 @@ with:
 - **proof terms** for obligations (`JustificationPath` objects),
 - and a small “knowledge generation” slice by adding `DocChunk(text=...)` nodes in the REPL and exploring them with `fts(...)`.
 
-Run:
+Run the canonical REPL script:
 
 ```bash
-./scripts/supply_chain_modalities_hott_demo.sh
-```
-
-Then inspect:
-
-- `build/supply_chain_modalities_hott_demo/viz_rawmetal_a.json`
-- `build/supply_chain_modalities_hott_demo/viz_erp_event_0.json`
-
-If you prefer a pure REPL script (no wrapper), run:
-
-```bash
-cd rust
-cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/supply_chain_modalities_hott_demo.repl
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  repl --script examples/repl_scripts/supply_chain_modalities_hott_demo.repl
 ```
 
 ### 4.2 Tacit knowledge via ingestion + explicit promotion (reviewable `.axi`)
@@ -270,14 +290,14 @@ This is the “GraphRAG → Axiograph” flow:
 ```bash
 cd rust
 mkdir -p build/demo
-cargo run -p axiograph-cli -- ingest doc ../examples/ingest_fixtures/machining_conversation.txt \
+cargo run -p axiograph-cli -- ingest doc ../examples/ingest_sources/machining_conversation.txt \
   --out build/demo/proposals.json \
   --machining \
   --chunks build/demo/chunks.json \
   --facts build/demo/facts.json
 ```
 
-2) **Promote** proposals into *candidate* domain `.axi` modules (for review):
+1) **Promote** proposals into *candidate* domain `.axi` modules (for review):
 
 ```bash
 cd rust
@@ -291,7 +311,7 @@ This writes (for example):
 - `rust/build/demo/candidates/MachinistLearning.proposals.axi`
 - `rust/build/demo/candidates/promotion_trace.json`
 
-3) Validate the candidate module parses:
+1) Validate the candidate module parses:
 
 ```bash
 cd rust
@@ -300,8 +320,8 @@ cargo run -p axiograph-cli -- check validate build/demo/candidates/MachinistLear
 
 The candidate `.axi` is **not canonical**: promotion into the accepted `.axi` plane is meant to be explicit (human review / policy gate).
 
-For an end-to-end, no-LLM version of this loop (including accepted-plane snapshot ids),
-see: `scripts/physics_discovery_deterministic_demo.sh`.
+For a deterministic no-LLM loop, use the ingest, draft, validate, and typed
+AxiStore promotion steps above. There is no filesystem accepted-plane script.
 
 ## 5) “Path algebra” / groupoid demos (normalization, path equivalence)
 

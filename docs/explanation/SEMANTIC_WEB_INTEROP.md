@@ -49,7 +49,7 @@ Supported serializations (via Sophia):
 
 We keep large public datasets out of git, but provide:
 
-- a tiny SHACL fixture under `examples/rdfowl/w3c_shacl_minimal/` (committed),
+- a tiny committed SHACL boundary example under `examples/rdfowl/w3c_shacl_minimal/`,
 - scripts to fetch and ingest public datasets into `build/` (optional, networked).
 
 Recommended workflow:
@@ -58,7 +58,7 @@ Recommended workflow:
 
    - `./scripts/fetch_public_rdfowl_datasets.sh`
 
-2) Run a deterministic local demo (fixture) and an optional W3C slice ingest:
+2) Run a deterministic local boundary-layer demo and an optional W3C slice ingest:
 
    - `./scripts/rdfowl_public_datasets_demo.sh`
 
@@ -76,9 +76,14 @@ Notes:
   - a proposed rewrite rule (engine proposes, Lean checks), or
   - a proposed constraint/shape (engine validates, Lean checks).
 
-Minimal offline named-graph demo:
+Minimal offline named-graph ingest:
 
-- `./scripts/rdf_named_graph_context_demo.sh`
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  ingest dir examples/rdfowl/named_graphs_minimal \
+  --out-dir build/examples/rdfowl/named_graphs_minimal \
+  --domain rdfowl
+```
 
 ### 1.2 OWL import (ontology → constraints + patterns)
 

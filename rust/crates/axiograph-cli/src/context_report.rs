@@ -169,7 +169,7 @@ pub fn context_map_between_bounded_contexts(
     let merge_policy_hint = match relationship {
         ContextMapRelationshipV1::SharedKernel => "require_explicit_shared_kernel_review",
         ContextMapRelationshipV1::CustomerSupplier => {
-            "prefer_target_contract_with_source_compatibility_review"
+            "prefer_target_contract_with_source_contract_review"
         }
         ContextMapRelationshipV1::Conformist => "target_context_is_upstream",
         ContextMapRelationshipV1::AntiCorruptionLayer => {
@@ -224,7 +224,7 @@ pub fn context_map_between_bounded_contexts(
     });
     let map_id = format!(
         "context_map_v1:{}",
-        axiograph_dsl::digest::axi_digest_v1(&serde_json::to_string(&digest_input)?)
+        axiograph_kernel::revision_digest_v2(&serde_json::to_string(&digest_input)?)
     );
 
     Ok(ContextMapV1 {
@@ -435,15 +435,9 @@ fn aggregate_trust_class(
                 .map(|report| report.trust_class),
         )
         .collect::<Vec<_>>();
-    if classes
-        .iter()
-        .any(|class| *class == crate::semantic_claim::RuntimeRuleTrustClassV1::RuntimeEnforced)
-    {
+    if classes.contains(&crate::semantic_claim::RuntimeRuleTrustClassV1::RuntimeEnforced) {
         crate::semantic_claim::RuntimeRuleTrustClassV1::RuntimeEnforced
-    } else if classes
-        .iter()
-        .any(|class| *class == crate::semantic_claim::RuntimeRuleTrustClassV1::RuntimeAdvisory)
-    {
+    } else if classes.contains(&crate::semantic_claim::RuntimeRuleTrustClassV1::RuntimeAdvisory) {
         crate::semantic_claim::RuntimeRuleTrustClassV1::RuntimeAdvisory
     } else {
         crate::semantic_claim::RuntimeRuleTrustClassV1::ReviewOnly
@@ -473,8 +467,8 @@ fn aggregate_strength(
     let theory_ok = runtime_theory_check
         .map(|summary| {
             summary.blocking_errors == 0
-                && summary.completeness_claim.starts_with("claimed_under_")
-                && summary.ontology_closure_claim.starts_with("claimed_under_")
+                && summary.review_only_obligations == 0
+                && summary.residual_obligations == 0
         })
         .unwrap_or(true);
     let runtime_coverage_ok = coverage.drifted_rules == 0
@@ -527,8 +521,11 @@ pub fn discover_context_report_from_request_json(
     accepted_snapshot_id: Option<AcceptedSnapshotId>,
     request_json: &str,
 ) -> Result<ContextReportV1> {
-    let request: ContextReportRequestV1 = serde_json::from_str(request_json)
-        .map_err(|err| anyhow!("failed to parse context report request JSON: {err}"))?;
+    let request: ContextReportRequestV1 = crate::security::parse_json_bounded(
+        request_json.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "context report request",
+    )?;
     build_context_report_from_request(db, meta, accepted_snapshot_id, request)
 }
 
@@ -897,8 +894,8 @@ theory PlantTransport on Plant:
             blocked_obligations: 0,
             excluded_by_evidence: 0,
             blocking_errors: 0,
-            closure_tiers: vec!["finite_fragment".to_string()],
-            closure_trace: Default::default(),
+            admissibility_scopes: vec!["finite_fragment".to_string()],
+            admissibility_trace: Default::default(),
             transport_summary: Default::default(),
             completeness_claim: "not_claimed_for_all_obligations".to_string(),
             ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
@@ -994,6 +991,27 @@ theory PlantTransport on Plant:
             context_map.target_selector.implementation_surface_ids,
             vec!["workflow:update_family".to_string()]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn customer_supplier_context_map_uses_current_contract_review_hint() -> Result<()> {
+        let source = sample_context();
+        let mut target = sample_context();
+        target.context_id = DomainContextId::new("domain:family_write_model");
+        target.label = "Family write model".to_string();
+
+        let context_map = context_map_between_bounded_contexts(
+            &source,
+            &target,
+            ContextMapRelationshipV1::CustomerSupplier,
+        )?;
+
+        assert_eq!(
+            context_map.merge_policy_hint,
+            "prefer_target_contract_with_source_contract_review"
+        );
+        assert!(context_map.residual_obligations.is_empty());
         Ok(())
     }
 

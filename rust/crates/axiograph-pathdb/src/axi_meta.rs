@@ -69,7 +69,7 @@ pub const META_ATTR_NAME: &str = "name";
 /// Dialect tag (currently `"axi_v1"` / `"axi_schema_v1"`).
 pub const META_ATTR_DIALECT: &str = "axi_dialect";
 
-/// Digest of the original `.axi` text (FNV-1a 64-bit), if known.
+/// Exact accepted-text revision identity, if known.
 pub const META_ATTR_AXI_DIGEST_V1: &str = "axi_digest_v1";
 
 /// Reused on instance data and meta entities to indicate provenance.
@@ -84,6 +84,7 @@ pub const ATTR_AXI_FACT_ID: &str = "axi_fact_id";
 // Field decl attrs
 pub const ATTR_FIELD_NAME: &str = "axi_field";
 pub const ATTR_FIELD_TYPE: &str = "axi_field_type";
+pub const ATTR_FIELD_KIND: &str = "axi_field_kind";
 pub const ATTR_FIELD_INDEX: &str = "axi_field_index";
 
 // Subtype decl attrs

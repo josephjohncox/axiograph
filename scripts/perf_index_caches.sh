@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Perf harness for cache/index layers (fact/text caches + path LRU).
+# Perf runner for cache/index layers (fact/text caches + path LRU).
 #
 # Run from repo root:
 #   ./scripts/perf_index_caches.sh

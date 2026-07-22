@@ -6,6 +6,7 @@
 ## Why Axiograph is a good SSL substrate
 
 Axiograph provides a *grounded* and *provable* knowledge substrate:
+
 - **Grounded snapshots**: accepted-plane anchors (snapshot ids) define stable
   states for training and evaluation.
 - **Typed structure**: schema-scoped facts/relations allow explicit targets.
@@ -25,8 +26,9 @@ export -> train -> propose -> reconcile -> promote -> retrain
 
 1) **Export training pairs**
    - Sample (context, target) pairs from a snapshot anchor.
-   - Prefer *full* `.axi` modules (schema + theory + instance) plus context
-     metadata; PathDB exports are derived convenience views.
+   - Prefer *full* canonical `.axi` modules (schema + theory + instance) plus
+     context metadata. Derived PathDB rows and `.axpd` images are not training
+     or semantic interchange.
    - Context: subgraph + context metadata + DocChunks.
    - Target: masked facts/edges/attributes or snapshot deltas.
 
@@ -94,12 +96,13 @@ receding-horizon execution outside the trusted Axiograph boundary.
 - **Bounded rollout**: REPL `proposal plan` and server
   `POST /planning/proposal-rollout` produce bounded proposal reports, not
   native MPC/control execution.
-- **Evidence plane**: `proposals.json` ingestion + WAL overlays.
-- **DocChunks**: existing chunk overlays for textual grounding.
+- **Evidence plane**: reviewed proposal objects and ordered, content-digested overlays.
+- **DocChunks**: typed overlay inputs for textual grounding.
 - **Certificates**: Lean checker for promotion-time validation.
 
-`PathDBExportV1` is not a training or semantic interchange surface. Keep it for
-debug/live-byte/parser parity only.
+Derived `.axpd` materializations are not training or semantic interchange
+surfaces. Training inputs must come from exact accepted `.axi` bytes and typed
+evidence objects.
 
 ## Related docs
 

@@ -240,7 +240,7 @@ pub fn readings_to_extraction(readings: &[RecommendedReading], doc_id: &str) -> 
             );
 
             Chunk {
-                chunk_id: format!("{}_{}", doc_id, i),
+                chunk_id: format!("{doc_id}_{i}"),
                 document_id: doc_id.to_string(),
                 page: None,
                 span_id: r.bib.id.clone(),

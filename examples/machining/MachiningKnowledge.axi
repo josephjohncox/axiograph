@@ -52,9 +52,9 @@ schema Machining:
   object ShearZone
   object BuiltUpEdge
 
-  relation CuttingProducesChip(mat: Material, tool: Tool, chipType: ChipType, ctx: Context)
-  relation ChipFormationShearAngle(mat: Material, tool: Tool, angle: Scalar, ctx: Context)
-  relation BUEConditions(mat: Material, tool: Tool, speed: Scalar, ctx: Context)
+  relation CuttingProducesChip(mat: Material, tool: Tool, chipType: ChipType, ctx: Context @context)
+  relation ChipFormationShearAngle(mat: Material, tool: Tool, angle: Scalar, ctx: Context @context)
+  relation BUEConditions(mat: Material, tool: Tool, speed: Scalar, ctx: Context @context)
 
   -- ==========================================================================
   -- Tool Wear
@@ -62,8 +62,8 @@ schema Machining:
   object WearType           -- flank, crater, notch, thermal cracking
   object WearMechanism      -- abrasion, adhesion, diffusion, oxidation
 
-  relation ObservedWear(tool: Tool, wearType: WearType, amount: Scalar, time: Time, ctx: Context)
-  relation WearMechanismActive(mat: Material, tool: Tool, mechanism: WearMechanism, ctx: Context)
+  relation ObservedWear(tool: Tool, wearType: WearType, amount: Scalar, time: Time @temporal, ctx: Context @context)
+  relation WearMechanismActive(mat: Material, tool: Tool, mechanism: WearMechanism, ctx: Context @context)
   relation TaylorToolLife(mat: Material, tool: Tool, C: Scalar, n: Scalar)  -- V*T^n = C
 
   -- ==========================================================================
@@ -77,7 +77,7 @@ schema Machining:
   relation RecommendedSpeed(mat: Material, tool: Tool, regime: CuttingRegime, sfm: Scalar)
   relation RecommendedFeed(mat: Material, tool: Tool, regime: CuttingRegime, ipt: Scalar)
   relation RecommendedDOC(mat: Material, tool: Tool, regime: CuttingRegime, doc: Scalar)
-  relation ActualParameters(op: Operation, speed: Scalar, feed: Scalar, doc: Scalar, time: Time)
+  relation ActualParameters(op: Operation, speed: Scalar, feed: Scalar, doc: Scalar, time: Time @temporal)
 
   -- ==========================================================================
   -- Chatter and Vibration
@@ -87,7 +87,7 @@ schema Machining:
   object FrequencyMode
 
   relation StabilityBoundary(tool: Tool, setup: Setup, rpm: Scalar, docLimit: Scalar)
-  relation ObservedChatter(op: Operation, freq: Scalar, amplitude: Scalar, time: Time, ctx: Context)
+  relation ObservedChatter(op: Operation, freq: Scalar, amplitude: Scalar, time: Time @temporal, ctx: Context @context)
   relation ChatterModeShape(chatter: ChatterEvent, mode: FrequencyMode)
   relation RegenerativeChatter(tool: Tool, workpiece: Workpiece, dominantFreq: Scalar)
 
@@ -111,10 +111,10 @@ schema Machining:
   object CMMMeasurement
   object InspectionMethodKind   -- CMM, optical, surface profilometry, etc.
 
-  relation InspectionResult(insp: Inspection, feat: Feature, measured: Scalar, nominal: Scalar, time: Time)
+  relation InspectionResult(insp: Inspection, feat: Feature, measured: Scalar, nominal: Scalar, time: Time @temporal)
   relation InspectionUsesMethod(insp: Inspection, method: InspectionMethodKind)
   relation PassFail(insp: Inspection, pass: Bool)
-  relation SurfaceFinishMeasurement(insp: Inspection, feat: Feature, Ra: Scalar, time: Time)
+  relation SurfaceFinishMeasurement(insp: Inspection, feat: Feature, Ra: Scalar, time: Time @temporal)
 
   -- ==========================================================================
   -- Process Planning
@@ -139,9 +139,9 @@ schema Machining:
   object TimeSlot
 
   relation MachineCapability(machine: Machine, op: Operation)
-  relation OperationCycleTime(op: Operation, estimated: Scalar, actual: Scalar, ctx: Context)
+  relation OperationCycleTime(op: Operation, estimated: Scalar, actual: Scalar, ctx: Context @context)
   relation MachineAvailability(machine: Machine, slot: TimeSlot, available: Bool)
-  relation QueueLength(machine: Machine, jobs: Scalar, time: Time)
+  relation QueueLength(machine: Machine, jobs: Scalar, time: Time @temporal)
 
   -- ==========================================================================
   -- Auxiliary concepts
@@ -190,7 +190,11 @@ instance MachinistKnowledge of Machining:
   CuttingRegime = {Roughing, SemiFinish, Finish, HSM}
 
   -- Cutting recommendations (tacit knowledge encoded)
-  Scalar = {SFM100, SFM300, SFM500, SFM800, SFM1200, IPT0_002, IPT0_005, IPT0_010, DOC0_050, DOC0_100, DOC0_250}
+  Scalar = {
+    SFM100, SFM300, SFM500, SFM800, SFM1200,
+    IPT0_002, IPT0_005, IPT0_010, DOC0_050, DOC0_100, DOC0_250,
+    95, 36, 40, 28, 79, 1200, 0_25, 200, 0_20, 400, 0_22
+  }
 
   RecommendedSpeed = {
     (mat=Al6061_T6, tool=Endmill_Carbide_0.5, regime=Roughing, sfm=SFM800),

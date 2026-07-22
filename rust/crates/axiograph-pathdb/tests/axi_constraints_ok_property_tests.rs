@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use axiograph_dsl::schema_v1::{
-    ConstraintV1, FieldDeclV1, InstanceAssignmentV1, RelationDeclV1, SchemaV1Instance,
-    SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1, SetLiteralV1,
+    ConstraintV1, FieldDeclV1, InstanceAssignmentV1, RelationDeclV1, RoleKindV1, SchemaV1Instance,
+    SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1, SetLiteralV1, TypeExprV1,
 };
 use axiograph_pathdb::axi_module_constraints::check_axi_constraints_ok_v1;
 use axiograph_pathdb::axi_module_typecheck::validate_axi_v1_module;
@@ -33,10 +33,14 @@ fn build_single_relation_module(
                 .iter()
                 .map(|f| FieldDeclV1 {
                     field: f.clone(),
-                    ty: object_ty.clone(),
+                    ty: TypeExprV1::Object {
+                        name: object_ty.clone(),
+                    },
+                    kind: RoleKindV1::Data,
                 })
                 .collect(),
         }],
+        generators: Vec::new(),
     };
 
     let theory = SchemaV1Theory {
@@ -72,6 +76,7 @@ fn build_single_relation_module(
                 items: tuples
                     .iter()
                     .map(|vals| SetItemV1::Tuple {
+                        label: None,
                         fields: relation_fields
                             .iter()
                             .cloned()
@@ -91,6 +96,7 @@ fn build_single_relation_module(
 
     SchemaV1Module {
         module_name: "PropTest".to_string(),
+        imports: Vec::new(),
         schemas: vec![schema],
         theories: vec![theory],
         instances: vec![inst],
@@ -489,7 +495,7 @@ proptest! {
         // Key fields are chosen from the allowed closure fields: (a,b,ctx,time) (no witness).
         let mut key_idxs: Vec<usize> = key_idx_set.into_iter().collect();
         key_idxs.sort();
-        let allowed_fields = vec!["a", "b", "ctx", "time"];
+        let allowed_fields = ["a", "b", "ctx", "time"];
         let key_fields: Vec<String> = key_idxs.into_iter().map(|i| allowed_fields[i].to_string()).collect();
 
         let constraints = vec![

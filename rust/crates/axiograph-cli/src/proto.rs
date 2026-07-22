@@ -4,7 +4,7 @@
 //! 1. Run `buf build --as-file-descriptor-set -o descriptor.binpb`
 //! 2. Decode binary descriptor set → `proposals.json` (+ optional chunks)
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use clap::Subcommand;
 use colored::Colorize;
 use std::fs;
@@ -91,6 +91,7 @@ pub fn cmd_proto(command: ProtoCommands) -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_proto_ingest(
     root: &PathBuf,
     out: &PathBuf,
@@ -122,12 +123,11 @@ fn cmd_proto_ingest(
         &descriptor_path_owned
     };
 
-    let descriptor_bytes = fs::read(descriptor_path).with_context(|| {
-        format!(
-            "failed to read binary descriptor set: {}",
-            descriptor_path.display()
-        )
-    })?;
+    let descriptor_bytes = crate::security::read_file_bounded(
+        descriptor_path,
+        crate::security::MAX_BINARY_INPUT_BYTES,
+        "protobuf descriptor set",
+    )?;
 
     let ingest = axiograph_ingest_proto::ingest_descriptor_set_bytes(
         &descriptor_bytes,
@@ -145,7 +145,7 @@ fn cmd_proto_ingest(
         descriptor_path.display().to_string(),
         ingest.chunks.clone(),
     )?;
-    fs::write(&chunks_path, &json)?;
+    crate::security::write_output_bounded(&chunks_path, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_path.display());
 
     let generated_at = SystemTime::now()
@@ -166,7 +166,7 @@ fn cmd_proto_ingest(
 
     let json = serde_json::to_string_pretty(&proposals_file)?;
     fs::create_dir_all(out.parent().unwrap_or(Path::new(".")))?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
 
     println!(
@@ -210,10 +210,17 @@ pub(crate) fn build_descriptor_set_binpb(
     let _ = fs::create_dir_all(&cache_dir);
     cmd.env("XDG_CACHE_HOME", cache_dir);
 
-    let output = cmd.output().with_context(|| "failed to run `buf build`")?;
+    let limits = crate::security::ProcessLimits::plugin(std::time::Duration::from_secs(300))?;
+    let output = crate::security::run_command_bounded(cmd, b"", limits, "buf build")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!("buf build failed:\n{stderr}"));
     }
+    const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024 * 1024;
+    let _ = crate::security::read_file_bounded(
+        out,
+        MAX_DESCRIPTOR_BYTES,
+        "generated protobuf descriptor",
+    )?;
     Ok(())
 }

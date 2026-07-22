@@ -38,7 +38,7 @@ pub fn stable_entity_id_v1(db: &PathDB, entity_id: u32) -> Result<String> {
         .ok_or_else(|| anyhow!("internal error: missing string interner entry {name_val:?}"))
 }
 
-fn relation_axi_fact_id_v1(db: &PathDB, rel_id: u32) -> Result<String> {
+fn relation_runtime_fact_id_v2(db: &PathDB, rel_id: u32) -> Result<String> {
     let rel = db
         .relations
         .get_relation(rel_id)
@@ -71,8 +71,8 @@ fn relation_axi_fact_id_v1(db: &PathDB, rel_id: u32) -> Result<String> {
 /// Build a `.axi`-anchored, name-based `ReachabilityProofV3` from a chain of
 /// PathDB relation ids.
 ///
-/// This format does not rely on `PathDBExportV1` snapshot tables: it references
-/// canonical `.axi` tuple facts via `axi_fact_id`.
+/// This format references canonical `.axi` tuple facts via `axi_fact_id`; it
+/// never treats a derived PathDB materialization as accepted meaning.
 pub fn reachability_proof_v3_from_relation_ids(
     db: &PathDB,
     start: u32,
@@ -126,7 +126,7 @@ pub fn reachability_proof_v3_from_relation_ids(
             rel: rel_name,
             to: stable_entity_id_v1(db, rel.target)?,
             rel_confidence_fp,
-            axi_fact_id: relation_axi_fact_id_v1(db, rel_id)?,
+            axi_fact_id: relation_runtime_fact_id_v2(db, rel_id)?,
             rest: Box::new(rest),
         };
     }

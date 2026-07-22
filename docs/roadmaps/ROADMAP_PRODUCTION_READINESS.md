@@ -36,44 +36,71 @@ Last updated: 2026-04-28.
 
 ### 0.2 Certificates (implemented, but not yet everywhere)
 
-- Implemented Lean-checked certificates: reachability v1/v2 (incl. anchored), resolution v2, normalize_path v2 (optional derivations), rewrite_derivation v2, path_equiv v2, delta_f v1.
+- Implemented: envelope V3 / `query_result_v4` binds exact finite query
+  completeness to the accepted module bytes, compiled query, ordered answer,
+  and approved Lean receipt through typed SHA-256 identities.
+- The legacy query family was deleted; `query_result_v4` is the only query
+  certificate family. Separate non-query families include `reachability_v3`,
+  `rewrite_derivation_v3`, `resolution_v2`, `normalize_path_v2`,
+  `path_equiv_v2`, and `delta_f_v1`; none can satisfy the V4 query gate.
   - Specs: `docs/reference/CERTIFICATES.md`
   - Rust: `rust/crates/axiograph-pathdb/src/certificate.rs`
-  - Lean: `lean/Axiograph/Certificate/Format.lean`, `lean/Axiograph/Certificate/Check.lean`
-- Missing (critical): “query answers are certified by default” for the real query endpoints.
+  - Lean: `lean/Axiograph/Certificate/Format.lean`,
+    `lean/Axiograph/Certificate/Check.lean`
+- Missing: verified-by-default behavior across every query/grounding endpoint;
+  unsupported query fragments must continue to fail closed or remain explicit
+  execution-only results.
 
 ### 0.3 Anchoring (partial)
 
-- Implemented: `axi_digest_v1` (FNV-1a 64-bit) as a snapshot-scoping anchor for `.axi` text (stability identity, not a security primitive).
-  - Rust: `rust/crates/axiograph-dsl/src/digest.rs`
-  - Lean: `lean/Axiograph/Util/Fnv1a.lean`
-- Implemented historically: anchored reachability used `relation_id` fact IDs
-  against `PathDBExportV1` `.axi` snapshots; that public raw path-cert surface
-  is retired.
-- Current direction: typed query witnesses and canonical `.axi` anchors are the
+- Implemented: `ModuleDigestV2` uses full SHA-256 over one domain-separated,
+  length-framed preimage of the exact accepted UTF-8 bytes. Rust and Lean
+  recompute it independently.
+- `axi_digest_v1` is not an accepted-state or materialization identity;
+  security-sensitive anchors use the typed V2 SHA-256 families.
+- Removed: PathDB-to-`.axi` export, bincode/sectioned readers, custom WAL,
+  sidecars, and bare-file query-service loading.
+- Typed query witnesses and exact canonical `.axi` anchors are the
   user/server/agent certificate path.
-- Implemented scaffolding: `CanonicalFactLogV1`,
-  `PathDB::stable_live_snapshot_digest_v1`, and
-  `TypedFactBuilder::commit_certified_only` provide deterministic fact-log,
-  live-byte digest, and stable `axi_fact_id` hardening without changing the live
-  `.axpd` reader.
-- Guarded: generic semantic/query/certificate/viz loading and accepted-plane
-  promotion reject `PathDBExportV1` snapshots; examples foreground canonical
-  `.axi`, typed reports, certificates, and semantic previews.
-  - Tests: `axiograph-cli --test examples_e2e`
-    `canonical_only_cert_commands_reject_pathdb_export_snapshots`,
-    `accept_promote_rejects_pathdb_export_snapshot_without_mutating_store`,
-    `querycert_rejects_pathdb_export_snapshot_smoke`,
-    `repl_scripts_canonical_smoke`, and
-    `repl_rejects_stale_export_axi_command`.
+- Operational hardening: `CanonicalFactLogV1`, stable typed fact ids, and the
+  authenticated SQLite materializer provide deterministic logical rows, exact
+  image identity, semantic anchors, and bounded read-only verification.
+- Guarded: semantic inspection, proposal, certificate, and server paths reject
+  derived images where exact accepted bytes or AxiStore receipts are required.
+  - Tests: `axiograph-store --test materialization`,
+    `axiograph-pathdb --test materialization_tests`, and
+    `axiograph-cli --test db_server_e2e`.
 - Partial: imported canonical `.axi` tuple facts already carry `axi_fact_id`;
   typed runtime construction can now fail closed through `commit_certified_only`.
   Remaining work is to thread those ids through every public certificate,
   accepted-plane manifest, and compiled-IR object/projection id.
-- Missing: a distributed accepted snapshot id contract that binds canonical
-  module digest, fact log digest, live `.axpd` checkpoint digest, and manifest.
+- Missing: a distributed replica protocol that transfers and validates the
+  complete AxiStore object/receipt closure before advancing local refs.
 
-### 0.4 Grounding / “safe to use” (not enforced)
+### 0.4 Release/build audit (repository gate implemented, release open)
+
+- Implemented: `make release-gate` pins rustc 1.88.0 and combines catalog,
+  formatting, no-unsafe, full locked workspace, CLI feature-matrix,
+  identity/certificate/lineage/merge/storage, semantics, and diff checks.
+- Implemented: tag bundles use Rust host triples, deterministic archives,
+  inner/outer SHA-256 checks, fresh extraction, Unix mode checks, CLI version,
+  and a real envelope V3 / stdio V2 accepted verification.
+- Implemented: the container is non-root with a dedicated group, root-owned
+  non-writable binaries, an installed-checker checksum check, canonical-input
+  validation, authenticated DB command-surface checks, bare-`.axpd` rejection,
+  BuildKit `--check`, and
+  digest-first multi-architecture publication with safe arrays.
+- Open CI-only blocker: no tag workflow has yet built and smoked every hosted
+  runner lane and published both release assets and the GHCR manifest. Until an
+  immutable run records that evidence, Linux x86_64, macOS arm64, and Windows
+  x86_64 are configured candidates, not supported release platforms.
+- Unsupported: native Linux arm64 bundles, macOS Intel bundles, Windows arm64
+  bundles, and any other unexecuted hosted-runner path. Linux arm64 remains a
+  container candidate only.
+- W05 is a greenfield cutover: obsolete PathDB readers/writers are deleted;
+  old bytes fail closed and must be rebuilt from exact accepted inputs.
+
+### 0.5 Grounding / “safe to use” (not enforced)
 
 - Implemented: grounding uses PathDB content, guardrails, and schema hints.
   - Code: `rust/crates/axiograph-llm-sync/src/grounding.rs`
@@ -85,15 +112,13 @@ Last updated: 2026-04-28.
 
 ### 1.1 Enforce knowledge planes (proposal vs accepted)
 
-- [ ] Establish a standard on-disk layout:
-  - `knowledge/proposals/` (untrusted; LLM extractions; promotion candidates),
-  - `knowledge/accepted/` (reviewed; canonical `.axi`),
-  - `knowledge/snapshots/` (`.axpd` checkpoints and explicit PathDBExport debug/parity snapshots),
-  - `knowledge/certificates/` (JSON cert fixtures or emitted proofs).
-- [ ] Update `axiograph-storage` to load schema/indexes from **accepted** modules only.
-  - Code: `rust/crates/axiograph-storage/src/lib.rs` (`load_axi_files`, `append_to_axi`).
-- [ ] Add a “promotion gate” command that moves reviewed candidate `.axi` into `accepted/` and records provenance.
-  - CLI: add `axiograph db accept ...` (or `axiograph promote accept ...`) in `rust/crates/axiograph-cli/src/main.rs`.
+- [x] Establish one AxiStore directory family for accepted objects, refs,
+  commits, audit, and authenticated materialization receipts.
+- [x] Remove persistence authority from `axiograph-storage`; it is process-local
+  evidence staging only.
+- [x] Keep accepted-state promotion behind typed `AxiStore::promote` plans,
+  complete gate closures, and generation CAS. Do not restore the removed
+  filesystem `accepted/` layout or `db accept` CLI.
 
 ### 1.2 Make review policies real (not warnings)
 
@@ -108,8 +133,10 @@ Last updated: 2026-04-28.
 - [x] Remove placeholder relation endpoints in storage writes (`source_id = 0`, `target_id = 1`).
   - Implemented: relation materialization is fail-closed when endpoints cannot
     be resolved; storage no longer invents `0 -> 1` placeholders.
-- [ ] Add a stable name→entity_id index (or content-addressed entity ids) for PathDB writes.
-- [ ] Add tests that assert relation endpoints are correct after persistence reload.
+- [ ] Add a stable name→entity_id index (or content-addressed entity ids) for
+  in-memory PathDB construction.
+- [x] Assert relation endpoints are correct after authenticated SQLite
+  materialization hydration; direct PathDB persistence reload no longer exists.
 
 ### 1.4 Put “certified” on the API boundary
 
@@ -126,22 +153,22 @@ Last updated: 2026-04-28.
 ### 2.1 Anchor certificates to real inputs everywhere
 
 - [~] Gate: deterministic module digest anchors.
-  - Pass when fixed canonical `.axi` fixtures produce the same `axi_digest_v1`
-    in Rust and Lean, and certificate writers surface that digest in their
-    anchor fields.
+  - Pass when fixed canonical `.axi` inputs produce the same exact-byte
+    `revision_digest_v2` in Rust and Lean, and certificate writers surface that
+    typed digest in their anchor fields.
   - Current checks: `make verify-semantics`, `make verify-axi-digest-e2e`,
-    `axiograph-cli --test examples_e2e querycert_canonical_axi_v3_smoke`.
+    `axiograph-cli --test examples_e2e querycert_canonical_axi_v3_regression`.
 - [~] Gate: stable canonical fact ids.
   - Pass when canonical domain `.axi` emits stable ids for facts, relation
     objects, projection arrows, theory obligations, and snapshots from module
     digest plus local/content identity.
-  - Current scaffolding: imported tuple facts carry `axi_fact_id`, typed builders
+  - Current implemented slice: imported tuple facts carry `axi_fact_id`, typed builders
     can preview/commit certified-only facts with stable ids, and
     `CanonicalFactLogV1` rejects mismatched fact ids.
-  - Required regression: parse/import/export-module/promote the same canonical
-    module twice and assert identical ids, manifest entries, and certificate
-    references. Numeric PathDB row positions must not appear in public
-    certificates.
+  - Required regression: parse, compile, promote, and materialize the same
+    canonical module twice and assert identical ids, manifest entries,
+    certificates, logical digests, and exact image digests. Numeric PathDB row
+    positions must not appear in public certificates.
 - [ ] Gate: production certificates require anchors.
   - Pass when every endpoint/command that claims "certified" fails closed if the
     certificate lacks a canonical anchor or if verification cannot bind the
@@ -154,14 +181,14 @@ Last updated: 2026-04-28.
     manifests, and trust contracts reject floating-point fields or encode them
     through fixed-point/domain-specific types.
 - [ ] Gate: deterministic certificate JSON golden bytes.
-  - Pass when fixed typecheck, constraints, and query-certificate fixtures emit
+  - Pass when fixed typecheck, constraints, and query-certificate inputs emit
     byte-identical JSON across repeated runs. Tests must compare exact bytes,
     not only parsed JSON.
 - [ ] Gate: same inputs imply same outputs.
   - Pass when CLI and server certificate emitters, semantic previews, accepted
-    snapshot manifests, and PathDB export-module output run twice from the same
-    accepted snapshot and produce identical bytes except for explicitly scoped
-    run metadata.
+    snapshot manifests, and SQLite `.axpd` materialization run twice from the
+    same accepted closure and produce identical bytes except for explicitly
+    scoped run metadata.
 
 ### 2.3 Certificate ubiquity for real queries
 
@@ -201,27 +228,19 @@ Last updated: 2026-04-28.
 
 This section should be pursued only after “planes + anchors + certificates” are solid.
 
-- [~] Gate: canonical fact log plus snapshots.
-  - Pass when accepted-plane promotion appends an immutable JSONL event, writes a
-    snapshot manifest, updates `HEAD` only after durable writes, and can rebuild
-    the accepted state from log plus canonical module bytes. Rejected
-    `PathDBExportV1` snapshots must not mutate `HEAD`, logs, or manifests.
-  - Current scaffolding: `CanonicalFactLogV1::certified_from_db` extracts a
-    deterministic fact log from canonical fact nodes after Rust-side checks, and
-    `PathDB::stable_live_snapshot_digest_v1` provides a deterministic digest for
-    live PathDB facts excluding rebuildable indexes.
-- [ ] Gate: live `.axpd` and verified `.axpd` convergence.
-  - Pass when an actual production `.axpd` checkpoint created from accepted
-    canonical state can be parsed, served, snapshotted, reloaded, and compared
-    against the accepted module digest and snapshot id. A `PathDBExportV1`
-    `.axi` roundtrip is only a debug/parity subcheck.
-  - Current status: production live reads still use the v1 `PathDB::to_bytes`
-    envelope. The sectioned v2 `BinaryHeader` in `verified.rs` is verified
-    scaffolding and is not the runtime format; `axpd_convergence_status_v1()`
-    intentionally reports this as not converged.
-- [ ] Gate: indexes are derived rebuildable state.
-  - Pass when a replica/shard can delete and rebuild indexes from canonical
-    facts plus PathDB/WAL bytes without changing accepted ids or query answers.
+- [x] Gate: canonical fact log plus snapshots.
+  - AxiStore owns immutable objects, snapshot/tree identities, semantic commits,
+    repository-bound refs, audit records, and materialization receipts. Derived
+    query images cannot mutate or reconstruct accepted state.
+- [x] Gate: live `.axpd` and verified `.axpd` convergence.
+  - SQLite is the only runtime format. `MaterializationIdV2` binds accepted
+    snapshot/tree, ordered module closure, kernel/fact-log/configuration/overlay
+    inputs, logical rows, and exact image bytes. Read-only open verifies all of
+    them before hydration.
+- [x] Gate: indexes are derived rebuildable state.
+  - Fact, text, path, interning, and LRU indexes are process-local. Tests delete
+    and deterministically rebuild images without changing logical digests or
+    finite query answers.
 - [ ] Gate: optional snapshot commitments.
   - Pass only if offline/third-party verification is required; then add a Merkle
     root or transparency-log commitment test that verifies a committed snapshot

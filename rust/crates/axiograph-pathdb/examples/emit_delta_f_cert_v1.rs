@@ -72,7 +72,7 @@ fn main() {
         }],
     };
 
-    let optimizer = ProofProducingOptimizer::default();
+    let optimizer = ProofProducingOptimizer;
     let proved = optimizer
         .delta_f_certificate_v1::<WithProof>(morphism, source_schema, target_instance)
         .expect("delta_f certificate should be emitted");

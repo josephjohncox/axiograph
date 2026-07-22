@@ -11,21 +11,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axiograph_ingest_docs::{
     EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1,
 };
+use axiograph_kernel::MaterializationIdV2;
 use axiograph_pathdb::certificate::AxiWellTypedProofV1;
 use axiograph_pathdb::checked_db::CheckedDb;
 use axiograph_pathdb::{
-    AcceptedSnapshotId, AxiDigest, PathDB, PathdbSnapshotId, ProposalDigest, ProposalAdapterRunId,
+    AcceptedSnapshotId, AxiDigest, PathDB, ProposalAdapterRunId, ProposalDigest,
 };
 use axiograph_pathdb::{Module, WellTypedModuleState};
 
 pub const PREDICTIVE_PROPOSAL_PROTOCOL_V1: &str = "axiograph_predictive_proposal_v1";
 pub const COMPETENCY_QUESTION_BUNDLE_VERSION_V1: &str = "competency_question_bundle_v1";
+const MAX_COMPETENCY_QUESTIONS: usize = 10_000;
 
 fn now_unix_secs() -> u64 {
     SystemTime::now()
@@ -45,7 +47,7 @@ fn default_trace_id() -> ProposalAdapterRunId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaskedTupleTrainingExportV1 {
     pub version: String,
-    pub axi_digest_v1: AxiDigest,
+    pub revision_digest_v2: AxiDigest,
     pub module_name: String,
     pub module_text: String,
     pub module: axiograph_dsl::schema_v1::SchemaV1Module,
@@ -100,9 +102,7 @@ fn build_training_export_from_well_typed_module<S: WellTypedModuleState>(
 
     let mut relations_by_schema: HashMap<String, HashSet<String>> = HashMap::new();
     for schema in &typed_module.schemas {
-        let entry = relations_by_schema
-            .entry(schema.name.clone())
-            .or_insert_with(HashSet::new);
+        let entry = relations_by_schema.entry(schema.name.clone()).or_default();
         for rel in &schema.relations {
             entry.insert(rel.name.clone());
         }
@@ -130,7 +130,7 @@ fn build_training_export_from_well_typed_module<S: WellTypedModuleState>(
                 continue;
             }
             for item in &assign.value.items {
-                let axiograph_dsl::schema_v1::SetItemV1::Tuple { fields } = item else {
+                let axiograph_dsl::schema_v1::SetItemV1::Tuple { fields, .. } = item else {
                     continue;
                 };
                 if fields.is_empty() {
@@ -174,7 +174,7 @@ fn build_training_export_from_well_typed_module<S: WellTypedModuleState>(
 
     Ok(MaskedTupleTrainingExportV1 {
         version: "axi_training_export_v1".to_string(),
-        axi_digest_v1: digest,
+        revision_digest_v2: digest,
         module_name: typed_module.module_name.clone(),
         module_text: axi_text.to_string(),
         module: typed_module.clone(),
@@ -188,17 +188,29 @@ pub fn write_training_export(
     out: &Path,
     opts: &MaskedTupleTrainingExportOptionsV1,
 ) -> Result<MaskedTupleTrainingExportV1> {
-    let text = std::fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let export = build_training_export_from_axi_text(&text, opts)?;
     let json = serde_json::to_string_pretty(&export)?;
-    std::fs::write(out, json)?;
+    crate::security::write_output_bounded(out, json, "CLI output")?;
     Ok(export)
 }
 
 #[allow(dead_code)]
 pub fn read_training_export(path: &Path) -> Result<MaskedTupleTrainingExportV1> {
-    let text = std::fs::read_to_string(path)?;
-    let export: MaskedTupleTrainingExportV1 = serde_json::from_str(&text)?;
+    let text = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let export: MaskedTupleTrainingExportV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "masked tuple training export",
+    )?;
     Ok(export)
 }
 
@@ -327,7 +339,7 @@ fn proposals_digest(file: &ProposalsFileV1) -> Result<ProposalDigest> {
     let bytes = serde_json::to_vec(file)
         .map_err(|e| anyhow!("failed to serialize proposals for digest: {e}"))?;
     Ok(ProposalDigest::new(
-        axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes),
+        axiograph_kernel::object_blob_digest_v2(&bytes),
     ))
 }
 
@@ -339,8 +351,7 @@ fn apply_proposals_to_db(db: &mut PathDB, proposals: &ProposalsFileV1) -> Result
 }
 
 fn clone_db(db: &PathDB) -> Result<PathDB> {
-    let bytes = db.to_bytes()?;
-    Ok(PathDB::from_bytes(&bytes)?)
+    db.detached_clone()
 }
 
 pub fn parse_guardrail_weights(pairs: &[String]) -> Result<GuardrailCostWeightsV1> {
@@ -446,12 +457,25 @@ pub fn parse_competency_questions(items: &[String]) -> Result<Vec<CompetencyQues
 }
 
 pub fn load_competency_questions(path: &Path) -> Result<Vec<CompetencyQuestionV1>> {
-    let text = std::fs::read_to_string(path)?;
+    let text = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     if !ext.eq_ignore_ascii_case("json") {
         return parse_competency_question_text(&text);
     }
-    let bundle: CompetencyQuestionBundleV1 = serde_json::from_str(&text)?;
+    let bundle: CompetencyQuestionBundleV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "competency question bundle",
+    )?;
+    if bundle.questions.len() > MAX_COMPETENCY_QUESTIONS {
+        return Err(anyhow!(
+            "competency question count exceeds {MAX_COMPETENCY_QUESTIONS}"
+        ));
+    }
     if bundle.version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
         return Err(anyhow!(
             "unsupported competency question bundle version `{}` (expected `{}`)",
@@ -477,10 +501,7 @@ pub fn parse_competency_question_text(text: &str) -> Result<Vec<CompetencyQuesti
             let version = version.trim();
             if version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
                 return Err(anyhow!(
-                    "unsupported competency question text version `{}` at line {} (expected `{}`)",
-                    version,
-                    line_no,
-                    COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+                    "unsupported competency question text version `{version}` at line {line_no} (expected `{COMPETENCY_QUESTION_BUNDLE_VERSION_V1}`)"
                 ));
             }
             saw_version = true;
@@ -493,6 +514,11 @@ pub fn parse_competency_question_text(text: &str) -> Result<Vec<CompetencyQuesti
             if let Some(mut question) = current.take() {
                 lower_competency_question_text_record(&mut question);
                 validate_competency_question_text_record(&question)?;
+                if questions.len() >= MAX_COMPETENCY_QUESTIONS {
+                    return Err(anyhow!(
+                        "competency question count exceeds {MAX_COMPETENCY_QUESTIONS}"
+                    ));
+                }
                 questions.push(question);
             }
             let name = name.trim();
@@ -579,12 +605,16 @@ pub fn parse_competency_question_text(text: &str) -> Result<Vec<CompetencyQuesti
     if let Some(mut question) = current.take() {
         lower_competency_question_text_record(&mut question);
         validate_competency_question_text_record(&question)?;
+        if questions.len() >= MAX_COMPETENCY_QUESTIONS {
+            return Err(anyhow!(
+                "competency question count exceeds {MAX_COMPETENCY_QUESTIONS}"
+            ));
+        }
         questions.push(question);
     }
     if !saw_version {
         return Err(anyhow!(
-            "competency question text requires `version {}`",
-            COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+            "competency question text requires `version {COMPETENCY_QUESTION_BUNDLE_VERSION_V1}`"
         ));
     }
     if questions.is_empty() {
@@ -607,6 +637,12 @@ fn validate_competency_question_text_record(question: &CompetencyQuestionV1) -> 
     if question.query.trim().is_empty() && question.question.is_none() && !has_authoring {
         return Err(anyhow!(
             "competency question `{}` requires `ask: ...`, `expect: ...`, or `axql: ...`",
+            question.name
+        ));
+    }
+    if question.contexts.len() > 1_024 {
+        return Err(anyhow!(
+            "competency question `{}` context count exceeds 1024",
             question.name
         ));
     }
@@ -727,7 +763,9 @@ fn looks_like_qualified_ref(value: &str) -> bool {
     };
     !schema.trim().is_empty()
         && !rel.trim().is_empty()
-        && schema.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && schema
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
         && rel.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -853,7 +891,7 @@ pub struct PredictiveProposalSemanticInputV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    pub materialization_id: Option<MaterializationIdV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accepted_snapshot_id: Option<AcceptedSnapshotId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -865,7 +903,7 @@ impl Default for PredictiveProposalSemanticInputV1 {
         Self {
             kind: PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string(),
             module_name: None,
-            pathdb_snapshot_id: None,
+            materialization_id: None,
             accepted_snapshot_id: None,
             layers: Vec::new(),
         }
@@ -876,7 +914,7 @@ impl PredictiveProposalSemanticInputV1 {
     pub fn is_empty(&self) -> bool {
         self.kind == PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1
             && self.module_name.is_none()
-            && self.pathdb_snapshot_id.is_none()
+            && self.materialization_id.is_none()
             && self.accepted_snapshot_id.is_none()
             && self.layers.is_empty()
     }
@@ -885,10 +923,13 @@ impl PredictiveProposalSemanticInputV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PredictiveProposalInputV1 {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub axi_digest_v1: Option<AxiDigest>,
+    pub revision_digest_v2: Option<AxiDigest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub axi_module_text: Option<String>,
-    #[serde(default, skip_serializing_if = "PredictiveProposalSemanticInputV1::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "PredictiveProposalSemanticInputV1::is_empty"
+    )]
     pub semantic_input: PredictiveProposalSemanticInputV1,
     #[serde(default)]
     pub notes: Vec<String>,
@@ -898,12 +939,12 @@ impl PredictiveProposalInputV1 {
     pub fn set_canonical_axi_semantics(
         &mut self,
         module_name: Option<String>,
-        pathdb_snapshot_id: Option<PathdbSnapshotId>,
+        materialization_id: Option<MaterializationIdV2>,
         accepted_snapshot_id: Option<AcceptedSnapshotId>,
     ) {
         self.semantic_input.kind = PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string();
         self.semantic_input.module_name = module_name;
-        self.semantic_input.pathdb_snapshot_id = pathdb_snapshot_id;
+        self.semantic_input.materialization_id = materialization_id;
         self.semantic_input.accepted_snapshot_id = accepted_snapshot_id;
     }
 
@@ -944,8 +985,8 @@ impl PredictiveProposalInputV1 {
             })
     }
 
-    pub fn pathdb_snapshot_id(&self) -> Option<PathdbSnapshotId> {
-        self.semantic_input.pathdb_snapshot_id.clone()
+    pub fn materialization_id(&self) -> Option<MaterializationIdV2> {
+        self.semantic_input.materialization_id.clone()
     }
 
     pub fn accepted_snapshot_id(&self) -> Option<AcceptedSnapshotId> {
@@ -963,14 +1004,14 @@ impl PredictiveProposalInputV1 {
         let canonical_digest = canonical.digest();
         let canonical_module_name = canonical.module().module().module_name.as_str();
 
-        let Some(input_digest) = self.axi_digest_v1.as_ref() else {
+        let Some(input_digest) = self.revision_digest_v2.as_ref() else {
             return Err(anyhow!(
-                "predictive proposal adapter input requires `axi_digest_v1` anchored to the canonical `.axi` input"
+                "predictive proposal adapter input requires `revision_digest_v2` anchored to the canonical `.axi` input"
             ));
         };
         if input_digest.as_str() != canonical_digest.as_str() {
             return Err(anyhow!(
-                "predictive proposal adapter input `axi_digest_v1` `{}` does not match canonical `.axi` digest `{}`",
+                "predictive proposal adapter input `revision_digest_v2` `{}` does not match canonical `.axi` digest `{}`",
                 input_digest.as_str(),
                 canonical_digest.as_str()
             ));
@@ -994,10 +1035,10 @@ impl PredictiveProposalInputV1 {
 
         for layer in &self.semantic_input.layers {
             if let PredictiveProposalSemanticLayerV1::TrainingExport { export } = layer {
-                if export.axi_digest_v1.as_str() != canonical_digest.as_str() {
+                if export.revision_digest_v2.as_str() != canonical_digest.as_str() {
                     return Err(anyhow!(
                         "predictive proposal adapter training export digest `{}` does not match canonical `.axi` digest `{}`",
-                        export.axi_digest_v1.as_str(),
+                        export.revision_digest_v2.as_str(),
                         canonical_digest.as_str()
                     ));
                 }
@@ -1031,6 +1072,25 @@ pub fn validate_predictive_proposal_request(req: &PredictiveProposalRequestV1) -
         ));
     }
     req.input.validate_canonical_axi_contract()
+}
+
+fn validate_predictive_proposal_response(
+    response: &PredictiveProposalResponseV1,
+    expected_trace_id: &ProposalAdapterRunId,
+) -> Result<()> {
+    if response.protocol != PREDICTIVE_PROPOSAL_PROTOCOL_V1
+        || &response.trace_id != expected_trace_id
+    {
+        return Err(anyhow!(
+            "predictive proposal response protocol or trace id does not match request"
+        ));
+    }
+    if response.notes.len() > 1_024 {
+        return Err(anyhow!(
+            "predictive proposal response note count exceeds 1024"
+        ));
+    }
+    axiograph_ingest_docs::validate_proposals_file_v1(&response.proposals)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1209,18 +1269,18 @@ pub struct BoundedProposalPlanReportV1 {
     pub steps: Vec<BoundedProposalPlanStepV1>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ProposalAdapterBackend {
+    #[default]
     Disabled,
     Stub,
-    Command { program: PathBuf, args: Vec<String> },
-    Http { url: String },
-}
-
-impl Default for ProposalAdapterBackend {
-    fn default() -> Self {
-        ProposalAdapterBackend::Disabled
-    }
+    Command {
+        program: PathBuf,
+        args: Vec<String>,
+    },
+    Http {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1243,30 +1303,36 @@ impl ProposalAdapterState {
             }
             ProposalAdapterBackend::Http { url } => format!("http({url})"),
         };
-        let model = self.model.as_ref().map(|s| s.as_str()).unwrap_or("default");
+        let model = self.model.as_deref().unwrap_or("default");
         format!("predictive_proposal: backend={backend} model={model}")
     }
 
-    pub fn propose(&self, req: &PredictiveProposalRequestV1) -> Result<PredictiveProposalResponseV1> {
+    pub fn propose(
+        &self,
+        req: &PredictiveProposalRequestV1,
+    ) -> Result<PredictiveProposalResponseV1> {
         validate_predictive_proposal_request(req)?;
-        match &self.backend {
-            ProposalAdapterBackend::Disabled => Err(anyhow!(
-                "predictive proposal adapter backend is disabled (configure --proposal-adapter-plugin or use stub)"
-            )),
-            ProposalAdapterBackend::Stub => Ok(PredictiveProposalResponseV1 {
+        let response = match &self.backend {
+            ProposalAdapterBackend::Disabled => {
+                return Err(anyhow!(
+                    "predictive proposal adapter backend is disabled (configure --proposal-adapter-plugin or use stub)"
+                ))
+            }
+            ProposalAdapterBackend::Stub => PredictiveProposalResponseV1 {
                 protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
                 trace_id: req.trace_id.clone(),
                 generated_at_unix_secs: now_unix_secs(),
                 proposals: empty_proposals(&req.trace_id),
                 notes: vec!["stub backend (no proposals)".to_string()],
                 error: None,
-            }),
+            },
             ProposalAdapterBackend::Command { program, args } => {
-                let response = run_predictive_proposal_plugin(program, args, req)?;
-                Ok(response)
+                run_predictive_proposal_plugin(program, args, req)?
             }
-            ProposalAdapterBackend::Http { url } => run_predictive_proposal_http(url, req),
-        }
+            ProposalAdapterBackend::Http { url } => run_predictive_proposal_http(url, req)?,
+        };
+        validate_predictive_proposal_response(&response, &req.trace_id)?;
+        Ok(response)
     }
 
     pub fn backend_label(&self) -> String {
@@ -1286,31 +1352,62 @@ impl ProposalAdapterState {
 }
 
 #[cfg(feature = "proposal-adapter-http")]
-fn run_predictive_proposal_http(url: &str, req: &PredictiveProposalRequestV1) -> Result<PredictiveProposalResponseV1> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| anyhow!("failed to build http client: {e}"))?;
-    let resp = client
-        .post(url)
-        .json(req)
-        .send()
-        .map_err(|e| anyhow!("predictive proposal adapter http backend failed: {e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().unwrap_or_default();
+fn run_predictive_proposal_http(
+    url: &str,
+    req: &PredictiveProposalRequestV1,
+) -> Result<PredictiveProposalResponseV1> {
+    let payload = serde_json::to_vec(req)?;
+    if payload.len() > crate::security::MAX_JSON_INPUT_BYTES {
+        return Err(anyhow!("predictive proposal request exceeds byte limit"));
+    }
+    let endpoint = url::Url::parse(url)
+        .map_err(|error| anyhow!("invalid predictive proposal adapter URL: {error}"))?;
+    if endpoint.scheme() != "https" {
         return Err(anyhow!(
-            "predictive proposal adapter http backend returned {status}: {text}"
+            "predictive proposal HTTP adapters require a public HTTPS endpoint; use the command adapter for local processes"
         ));
     }
-    let parsed = resp
-        .json()
-        .map_err(|e| anyhow!("predictive proposal adapter http backend returned invalid JSON: {e}"))?;
-    Ok(parsed)
+    let transport = crate::web::PinnedPublicClient::new(
+        &endpoint,
+        reqwest::header::HeaderMap::new(),
+        Duration::from_secs(120),
+    )?;
+    let response = transport
+        .post()
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(payload)
+        .send()
+        .map_err(|e| anyhow!("predictive proposal adapter HTTP backend failed: {e}"))?;
+    let resp = transport.verify_response(response)?;
+    let status = resp.status();
+    let limit = if status.is_success() {
+        crate::security::MAX_NETWORK_RESPONSE_BYTES
+    } else {
+        crate::security::MAX_NETWORK_ERROR_BYTES
+    };
+    let bytes = crate::security::read_blocking_response_bounded(
+        resp,
+        limit,
+        "predictive proposal adapter response",
+    )?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "predictive proposal adapter http backend returned {status}: {}",
+            String::from_utf8_lossy(&bytes).trim()
+        ));
+    }
+    crate::security::parse_json_bounded(
+        &bytes,
+        crate::security::MAX_NETWORK_RESPONSE_BYTES,
+        "predictive proposal adapter response",
+    )
 }
 
 #[cfg(not(feature = "proposal-adapter-http"))]
-fn run_predictive_proposal_http(_url: &str, _req: &PredictiveProposalRequestV1) -> Result<PredictiveProposalResponseV1> {
+fn run_predictive_proposal_http(
+    _url: &str,
+    _req: &PredictiveProposalRequestV1,
+) -> Result<PredictiveProposalResponseV1> {
     Err(anyhow!(
         "predictive proposal adapter http backend is unavailable (enable feature `proposal-adapter-http`)"
     ))
@@ -1336,31 +1433,11 @@ fn run_predictive_proposal_plugin(
     req: &PredictiveProposalRequestV1,
 ) -> Result<PredictiveProposalResponseV1> {
     let payload = serde_json::to_vec(req)?;
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            anyhow!(
-                "failed to start predictive proposal adapter plugin `{}`: {e}",
-                program.display()
-            )
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        stdin
-            .write_all(&payload)
-            .map_err(|e| anyhow!("failed to write stdin for predictive proposal adapter plugin: {e}"))?;
-    } else {
-        return Err(anyhow!("failed to open stdin for predictive proposal adapter plugin"));
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| anyhow!("predictive proposal adapter plugin `{}` failed: {e}", program.display()))?;
+    let limits = crate::security::ProcessLimits::plugin(Duration::from_secs(120))?;
+    let context = format!("predictive proposal adapter plugin `{}`", program.display());
+    let mut command = Command::new(program);
+    command.args(args);
+    let output = crate::security::run_command_bounded(command, &payload, limits, &context)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!(
@@ -1377,7 +1454,12 @@ fn run_predictive_proposal_plugin(
             program.display()
         )
     })?;
-    let response: PredictiveProposalResponseV1 = serde_json::from_str(&stdout).map_err(|e| {
+    let response: PredictiveProposalResponseV1 = crate::security::parse_json_bounded(
+        stdout.as_bytes(),
+        axiograph_security::DEFAULT_PLUGIN_STDOUT_BYTES,
+        "predictive proposal plugin response",
+    )
+    .map_err(|e| {
         let preview: String = stdout.chars().take(400).collect();
         anyhow!(
             "predictive proposal adapter plugin `{}` returned invalid JSON: {e}; stdout starts with: {preview:?}",
@@ -1397,8 +1479,8 @@ pub struct ProposalAdapterProvenance {
     pub run_id: ProposalAdapterRunId,
     pub backend: String,
     pub model: Option<String>,
-    pub axi_digest_v1: Option<AxiDigest>,
-    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    pub revision_digest_v2: Option<AxiDigest>,
+    pub materialization_id: Option<MaterializationIdV2>,
     pub accepted_snapshot_id: Option<AcceptedSnapshotId>,
     pub proposals_digest: Option<ProposalDigest>,
     pub guardrail_total_cost: Option<f64>,
@@ -1413,8 +1495,8 @@ pub struct ProposalAdapterLineage {
     pub run_id: Option<ProposalAdapterRunId>,
     pub backend: Option<String>,
     pub model: Option<String>,
-    pub axi_digest_v1: Option<AxiDigest>,
-    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    pub revision_digest_v2: Option<AxiDigest>,
+    pub materialization_id: Option<MaterializationIdV2>,
     pub accepted_snapshot_id: Option<AcceptedSnapshotId>,
     pub proposals_digest: Option<ProposalDigest>,
     pub guardrail_total_cost: Option<f64>,
@@ -1422,12 +1504,13 @@ pub struct ProposalAdapterLineage {
     pub guardrail_plane: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_predictive_proposal_provenance(
     response: &PredictiveProposalResponseV1,
     backend: String,
     model: Option<String>,
-    axi_digest_v1: Option<AxiDigest>,
-    pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    revision_digest_v2: Option<AxiDigest>,
+    materialization_id: Option<MaterializationIdV2>,
     accepted_snapshot_id: Option<AcceptedSnapshotId>,
     guardrail_total_cost: Option<f64>,
     guardrail_profile: Option<String>,
@@ -1438,52 +1521,13 @@ pub fn build_predictive_proposal_provenance(
         run_id: response.trace_id.clone(),
         backend,
         model,
-        axi_digest_v1,
-        pathdb_snapshot_id,
+        revision_digest_v2,
+        materialization_id,
         accepted_snapshot_id,
         proposals_digest: Some(proposals_digest(&response.proposals)?),
         guardrail_total_cost,
         guardrail_profile,
         guardrail_plane,
-    })
-}
-
-pub fn build_proposal_adapter_run_record(
-    provenance: &ProposalAdapterProvenance,
-    proposals: &ProposalsFileV1,
-    committed_pathdb_snapshot_id: Option<PathdbSnapshotId>,
-    committed_accepted_snapshot_id: Option<AcceptedSnapshotId>,
-    notes: Vec<String>,
-) -> Result<crate::accepted_plane::ProposalAdapterRunRecordV1> {
-    let proposals_digest = provenance
-        .proposals_digest
-        .clone()
-        .unwrap_or(proposals_digest(proposals)?);
-    let status = if committed_pathdb_snapshot_id.is_some() {
-        crate::accepted_plane::ProposalAdapterRunStatusV1::CommittedToPathdb
-    } else {
-        crate::accepted_plane::ProposalAdapterRunStatusV1::Previewed
-    };
-
-    Ok(crate::accepted_plane::ProposalAdapterRunRecordV1 {
-        version: "proposal_adapter_run_record_v1".to_string(),
-        run_id: provenance.run_id.clone(),
-        trace_id: provenance.trace_id.clone(),
-        created_at_unix_secs: now_unix_secs(),
-        status,
-        backend: provenance.backend.clone(),
-        model: provenance.model.clone(),
-        axi_digest_v1: provenance.axi_digest_v1.clone(),
-        input_pathdb_snapshot_id: provenance.pathdb_snapshot_id.clone(),
-        input_accepted_snapshot_id: provenance.accepted_snapshot_id.clone(),
-        proposals_digest,
-        proposal_count: proposals.proposals.len(),
-        committed_pathdb_snapshot_id,
-        committed_accepted_snapshot_id,
-        guardrail_total_cost: provenance.guardrail_total_cost,
-        guardrail_profile: provenance.guardrail_profile.clone(),
-        guardrail_plane: provenance.guardrail_plane.clone(),
-        notes,
     })
 }
 
@@ -1511,7 +1555,9 @@ pub fn apply_predictive_proposal_provenance(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn extract_predictive_proposal_proposal_lineage(meta: &ProposalMetaV1) -> ProposalAdapterLineage {
+pub fn extract_predictive_proposal_proposal_lineage(
+    meta: &ProposalMetaV1,
+) -> ProposalAdapterLineage {
     fn optional_id<T>(meta: &ProposalMetaV1, key: &str) -> Option<T>
     where
         T: From<String>,
@@ -1522,10 +1568,19 @@ pub fn extract_predictive_proposal_proposal_lineage(meta: &ProposalMetaV1) -> Pr
     ProposalAdapterLineage {
         trace_id: optional_id(meta, "axiograph_predictive_proposal_trace_id"),
         run_id: optional_id(meta, "axiograph_proposal_adapter_run_id"),
-        backend: meta.metadata.get("axiograph_predictive_proposal_backend").cloned(),
-        model: meta.metadata.get("axiograph_predictive_proposal_model").cloned(),
-        axi_digest_v1: optional_id(meta, "axiograph_axi_digest_v1"),
-        pathdb_snapshot_id: optional_id(meta, "axiograph_pathdb_snapshot_id"),
+        backend: meta
+            .metadata
+            .get("axiograph_predictive_proposal_backend")
+            .cloned(),
+        model: meta
+            .metadata
+            .get("axiograph_predictive_proposal_model")
+            .cloned(),
+        revision_digest_v2: optional_id(meta, "axiograph_revision_digest_v2"),
+        materialization_id: meta
+            .metadata
+            .get("axiograph_materialization_id")
+            .and_then(|value| value.parse().ok()),
         accepted_snapshot_id: optional_id(meta, "axiograph_accepted_snapshot_id"),
         proposals_digest: optional_id(meta, "axiograph_proposals_digest"),
         guardrail_total_cost: meta
@@ -1576,14 +1631,17 @@ fn apply_provenance_meta(meta: &mut ProposalMetaV1, provenance: &ProposalAdapter
     );
     set_optional_reserved(
         meta,
-        "axiograph_axi_digest_v1",
-        provenance.axi_digest_v1.as_ref().map(ToString::to_string),
+        "axiograph_revision_digest_v2",
+        provenance
+            .revision_digest_v2
+            .as_ref()
+            .map(ToString::to_string),
     );
     set_optional_reserved(
         meta,
-        "axiograph_pathdb_snapshot_id",
+        "axiograph_materialization_id",
         provenance
-            .pathdb_snapshot_id
+            .materialization_id
             .as_ref()
             .map(ToString::to_string),
     );
@@ -1648,7 +1706,7 @@ pub(crate) fn predictive_proposal_llm_prompt(req: &PredictiveProposalRequestV1) 
             .collect::<Vec<_>>();
         json!({
             "module_name": export.module_name,
-            "axi_digest_v1": export.axi_digest_v1,
+            "revision_digest_v2": export.revision_digest_v2,
             "items": export.items.len(),
             "sample": sample,
         })
@@ -1669,7 +1727,7 @@ pub(crate) fn predictive_proposal_llm_prompt(req: &PredictiveProposalRequestV1) 
             PredictiveProposalSemanticLayerV1::TrainingExport { export } => json!({
                 "kind": "training_export",
                 "module_name": export.module_name,
-                "axi_digest_v1": export.axi_digest_v1,
+                "revision_digest_v2": export.revision_digest_v2,
                 "items": export.items.len(),
             }),
         })
@@ -1683,11 +1741,11 @@ pub(crate) fn predictive_proposal_llm_prompt(req: &PredictiveProposalRequestV1) 
         "task_costs": opts.task_costs,
         "max_new_proposals": opts.max_new_proposals,
         "notes": opts.notes,
-        "axi_digest_v1": input.axi_digest_v1,
+        "revision_digest_v2": input.revision_digest_v2,
         "semantic_input": {
             "kind": input.semantic_input.kind,
             "module_name": input.semantic_input.module_name,
-            "pathdb_snapshot_id": input.semantic_input.pathdb_snapshot_id,
+            "materialization_id": input.semantic_input.materialization_id,
             "accepted_snapshot_id": input.semantic_input.accepted_snapshot_id,
             "layers": semantic_layers_summary,
         },
@@ -1924,7 +1982,9 @@ pub fn run_proposal_rollout_plan(
     options: &BoundedProposalPlanOptionsV1,
 ) -> Result<BoundedProposalPlanReportV1> {
     if options.horizon_steps == 0 {
-        return Err(anyhow!("bounded proposal rollout: horizon_steps must be > 0"));
+        return Err(anyhow!(
+            "bounded proposal rollout: horizon_steps must be > 0"
+        ));
     }
     if options.rollouts == 0 {
         return Err(anyhow!("bounded proposal rollout: rollouts must be > 0"));
@@ -1960,7 +2020,7 @@ pub fn run_proposal_rollout_plan(
             )?)
         };
 
-        let mut best: Option<(
+        type BestRollout = (
             ProposalAdapterRunId,
             ProposalsFileV1,
             GuardrailCostReportV1,
@@ -1969,7 +2029,8 @@ pub fn run_proposal_rollout_plan(
             usize,
             f64,
             Vec<String>,
-        )> = None;
+        );
+        let mut best: Option<BestRollout> = None;
 
         for rollout in 0..options.rollouts {
             let mut input = base_input.clone();
@@ -1980,14 +2041,16 @@ pub fn run_proposal_rollout_plan(
                 "source=proposal_rollout_plan step={step} rollout={rollout}"
             ));
 
-            let mut proposal_options = PredictiveProposalOptionsV1::default();
-            proposal_options.max_new_proposals = options.max_new_proposals;
-            proposal_options.seed = options
-                .seed
-                .map(|s| s.wrapping_add((step as u64) * 1_000 + rollout as u64));
-            proposal_options.goals = options.goals.clone();
-            proposal_options.task_costs = options.task_costs.clone();
-            proposal_options.horizon_steps = Some(options.horizon_steps);
+            let proposal_options = PredictiveProposalOptionsV1 {
+                max_new_proposals: options.max_new_proposals,
+                seed: options
+                    .seed
+                    .map(|s| s.wrapping_add((step as u64) * 1_000 + rollout as u64)),
+                goals: options.goals.clone(),
+                task_costs: options.task_costs.clone(),
+                horizon_steps: Some(options.horizon_steps),
+                ..Default::default()
+            };
 
             let req = make_predictive_proposal_request(input, proposal_options);
             let mut response = predictive_proposal.propose(&req)?;
@@ -2010,15 +2073,16 @@ pub fn run_proposal_rollout_plan(
                 &response,
                 predictive_proposal.backend_label(),
                 predictive_proposal.model.clone(),
-                base_input.axi_digest_v1.clone(),
-                base_input.pathdb_snapshot_id(),
+                base_input.revision_digest_v2.clone(),
+                base_input.materialization_id(),
                 base_input.accepted_snapshot_id(),
                 Some(guardrail_before.summary.total_cost),
                 guardrail_profile_label,
                 guardrail_plane_label,
             )?;
 
-            let mut proposals = apply_predictive_proposal_provenance(response.proposals, &provenance);
+            let mut proposals =
+                apply_predictive_proposal_provenance(response.proposals, &provenance);
             if options.max_new_proposals > 0
                 && proposals.proposals.len() > options.max_new_proposals
             {
@@ -2096,7 +2160,8 @@ pub fn run_proposal_rollout_plan(
             validation_errors,
             total_cost,
             notes,
-        ) = best.ok_or_else(|| anyhow!("bounded proposal rollout: no rollout produced proposals"))?;
+        ) =
+            best.ok_or_else(|| anyhow!("bounded proposal rollout: no rollout produced proposals"))?;
 
         apply_proposals_to_db(&mut planning_db, &proposals)?;
 
@@ -2167,19 +2232,16 @@ mod tests {
     #[test]
     fn competency_question_text_loads_typed_records() {
         let path = unique_temp_file("competency_questions").with_extension("cq");
-        fs::write(
-            &path,
-            r#"
-version competency_question_bundle_v1
+        crate::security::write_output_bounded(&path, r#"
+        version competency_question_bundle_v1
 
-question shipment_release:
-  ask: Shipment release should be traceable.
-  expect: exists RegulatedLine.ShipmentFulfills(shipment=?s, order=?o, work_order=?wo, ctx=?c, time=?t)
-  min_rows: 1
-  weight: 2.5
-  contexts: Accepted, Released
-"#,
-        )
+        question shipment_release:
+          ask: Shipment release should be traceable.
+          expect: exists RegulatedLine.ShipmentFulfills(shipment=?s, order=?o, work_order=?wo, ctx=?c, time=?t)
+          min_rows: 1
+          weight: 2.5
+          contexts: Accepted, Released
+        "#, "CLI output")
         .expect("write cq");
 
         let questions = load_competency_questions(&path).expect("load cq");
@@ -2317,47 +2379,16 @@ instance I of S:
         assert!(removed.is_some(), "expected serialized proof field");
 
         let path = unique_temp_file("training_export_missing_proof");
-        fs::write(
+        crate::security::write_output_bounded(
             &path,
             serde_json::to_string_pretty(&json).expect("serialize malformed export"),
+            "CLI output",
         )
         .expect("write malformed export");
 
         let err = read_training_export(&path).expect_err("missing proof should fail closed");
         let _ = fs::remove_file(&path);
         assert!(err.to_string().contains("axi_well_typed_proof_v1"));
-    }
-
-    #[test]
-    fn training_export_rejects_pathdb_export_snapshot_inputs() {
-        let canonical = r#"
-module Demo
-schema S:
-  object A
-  relation R(from: A, to: A)
-instance I of S:
-  A = {x, y}
-  R = {(from=x, to=y)}
-"#;
-        let mut db = axiograph_pathdb::PathDB::new();
-        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, canonical)
-            .expect("import canonical module");
-        db.build_indexes();
-        let snapshot_export = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)
-            .expect("export pathdb snapshot");
-
-        let opts = MaskedTupleTrainingExportOptionsV1 {
-            instance_filter: None,
-            max_items: 10,
-            mask_fields: 1,
-            seed: 1,
-            exclude_relations: Vec::new(),
-        };
-        let err = build_training_export_from_axi_text(&snapshot_export, &opts)
-            .expect_err("masked-tuple training export should reject PathDBExportV1 snapshots");
-        assert!(err
-            .to_string()
-            .contains("expected a canonical .axi module, but input is a PathDBExportV1 snapshot"));
     }
 
     #[test]
@@ -2408,8 +2439,12 @@ instance I of S:
             run_id: ProposalAdapterRunId::new("proposal::run"),
             backend: "stub".to_string(),
             model: Some("model".to_string()),
-            axi_digest_v1: Some(AxiDigest::new("fnv1a64:digest")),
-            pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:snap")),
+            revision_digest_v2: Some(AxiDigest::new(
+                "axi:revision:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )),
+            materialization_id: Some(MaterializationIdV2::from_canonical_fields(&[
+                b"proposal-test-materialization-snapshot",
+            ])),
             accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:snap")),
             proposals_digest: Some(ProposalDigest::new("fnv1a64:proposals")),
             guardrail_total_cost: Some(1.25),
@@ -2423,21 +2458,29 @@ instance I of S:
             _ => panic!("unexpected proposal kind"),
         };
         assert!(meta.confidence <= 1.0);
-        assert!(meta.metadata.contains_key("axiograph_predictive_proposal_trace_id"));
+        assert!(meta
+            .metadata
+            .contains_key("axiograph_predictive_proposal_trace_id"));
         assert_eq!(
             meta.metadata
                 .get("axiograph_proposal_adapter_run_id")
                 .map(String::as_str),
             Some("proposal::run")
         );
-        assert!(meta.metadata.contains_key("axiograph_predictive_proposal_backend"));
-        assert!(meta.metadata.contains_key("axiograph_predictive_proposal_model"));
-        assert!(meta.metadata.contains_key("axiograph_axi_digest_v1"));
+        assert!(meta
+            .metadata
+            .contains_key("axiograph_predictive_proposal_backend"));
+        assert!(meta
+            .metadata
+            .contains_key("axiograph_predictive_proposal_model"));
+        assert!(meta.metadata.contains_key("axiograph_revision_digest_v2"));
         assert_eq!(
             meta.metadata
-                .get("axiograph_pathdb_snapshot_id")
+                .get("axiograph_materialization_id")
                 .map(String::as_str),
-            Some("pathdb:snap")
+            prov.materialization_id
+                .as_ref()
+                .map(MaterializationIdV2::as_str)
         );
         assert_eq!(
             meta.metadata
@@ -2480,12 +2523,15 @@ instance I of S:
                             "spoofed-run".to_string(),
                         ),
                         (
-                            "axiograph_axi_digest_v1".to_string(),
-                            "fnv1a64:spoofed".to_string(),
+                            "axiograph_revision_digest_v2".to_string(),
+                            "axi:revision:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
                         ),
                         (
-                            "axiograph_pathdb_snapshot_id".to_string(),
-                            "pathdb:spoofed".to_string(),
+                            "axiograph_materialization_id".to_string(),
+                            MaterializationIdV2::from_canonical_fields(&[
+                                b"spoofed-materialization",
+                            ])
+                            .to_string(),
                         ),
                         (
                             "axiograph_accepted_snapshot_id".to_string(),
@@ -2511,8 +2557,12 @@ instance I of S:
             run_id: ProposalAdapterRunId::new("proposal::authoritative-run"),
             backend: "stub".to_string(),
             model: None,
-            axi_digest_v1: Some(AxiDigest::new("fnv1a64:real")),
-            pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:7")),
+            revision_digest_v2: Some(AxiDigest::new(
+                "axi:revision:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            )),
+            materialization_id: Some(MaterializationIdV2::from_canonical_fields(&[
+                b"proposal-test-materialization-7",
+            ])),
             accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:8")),
             proposals_digest: None,
             guardrail_total_cost: None,
@@ -2539,15 +2589,17 @@ instance I of S:
         );
         assert_eq!(
             meta.metadata
-                .get("axiograph_axi_digest_v1")
+                .get("axiograph_revision_digest_v2")
                 .map(String::as_str),
-            Some("fnv1a64:real")
+            Some("axi:revision:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
         );
         assert_eq!(
             meta.metadata
-                .get("axiograph_pathdb_snapshot_id")
+                .get("axiograph_materialization_id")
                 .map(String::as_str),
-            Some("pathdb:7")
+            prov.materialization_id
+                .as_ref()
+                .map(MaterializationIdV2::as_str)
         );
         assert_eq!(
             meta.metadata
@@ -2556,7 +2608,9 @@ instance I of S:
             Some("accepted:8")
         );
         assert!(
-            !meta.metadata.contains_key("axiograph_predictive_proposal_model"),
+            !meta
+                .metadata
+                .contains_key("axiograph_predictive_proposal_model"),
             "runtime-owned optional keys should be cleared when provenance omits them"
         );
     }
@@ -2593,8 +2647,12 @@ instance I of S:
             run_id: ProposalAdapterRunId::new("proposal::typed-run"),
             backend: "plugin".to_string(),
             model: Some("deterministic".to_string()),
-            axi_digest_v1: Some(AxiDigest::new("fnv1a64:0123456789abcdef")),
-            pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:55")),
+            revision_digest_v2: Some(AxiDigest::new(
+                "axi:revision:v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            )),
+            materialization_id: Some(MaterializationIdV2::from_canonical_fields(&[
+                b"proposal-test-materialization-55",
+            ])),
             accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:21")),
             proposals_digest: Some(ProposalDigest::new("fnv1a64:proposals-typed")),
             guardrail_total_cost: Some(1.25),
@@ -2620,12 +2678,14 @@ instance I of S:
         assert_eq!(lineage.backend.as_deref(), Some("plugin"));
         assert_eq!(lineage.model.as_deref(), Some("deterministic"));
         assert_eq!(
-            lineage.axi_digest_v1.as_ref().map(|id| id.as_str()),
-            Some("fnv1a64:0123456789abcdef")
+            lineage.revision_digest_v2.as_ref().map(|id| id.as_str()),
+            Some("axi:revision:v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
         );
         assert_eq!(
-            lineage.pathdb_snapshot_id.as_ref().map(|id| id.as_str()),
-            Some("pathdb:55")
+            lineage.materialization_id.as_ref().map(|id| id.as_str()),
+            prov.materialization_id
+                .as_ref()
+                .map(MaterializationIdV2::as_str)
         );
         assert_eq!(
             lineage.accepted_snapshot_id.as_ref().map(|id| id.as_str()),
@@ -2642,17 +2702,20 @@ instance I of S:
 
     #[test]
     fn predictive_proposal_request_round_trips_typed_ids_as_string_json() {
+        let revision = format!("axi:revision:v2:sha256:{}", "0".repeat(64));
+        let materialization_id =
+            MaterializationIdV2::from_canonical_fields(&[b"proposal-test-materialization-42"]);
         let req = PredictiveProposalRequestV1 {
             protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
             trace_id: ProposalAdapterRunId::new("proposal::123"),
             generated_at_unix_secs: 123,
             input: PredictiveProposalInputV1 {
-                axi_digest_v1: Some(AxiDigest::new("fnv1a64:abc")),
+                revision_digest_v2: Some(AxiDigest::new(revision.clone())),
                 axi_module_text: Some("module Demo\n".to_string()),
                 semantic_input: PredictiveProposalSemanticInputV1 {
                     kind: PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string(),
                     module_name: Some("Demo".to_string()),
-                    pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:42")),
+                    materialization_id: Some(materialization_id.clone()),
                     accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:9")),
                     layers: Vec::new(),
                 },
@@ -2663,10 +2726,10 @@ instance I of S:
 
         let json = serde_json::to_value(&req).expect("serialize request");
         assert_eq!(json["trace_id"], "proposal::123");
-        assert_eq!(json["input"]["axi_digest_v1"], "fnv1a64:abc");
+        assert_eq!(json["input"]["revision_digest_v2"], revision);
         assert_eq!(
-            json["input"]["semantic_input"]["pathdb_snapshot_id"],
-            "pathdb:42"
+            json["input"]["semantic_input"]["materialization_id"],
+            materialization_id.as_str()
         );
         assert_eq!(
             json["input"]["semantic_input"]["accepted_snapshot_id"],
@@ -2679,19 +2742,19 @@ instance I of S:
         assert_eq!(
             round_trip
                 .input
-                .axi_digest_v1
+                .revision_digest_v2
                 .as_ref()
                 .map(AxiDigest::as_str),
-            Some("fnv1a64:abc")
+            Some(revision.as_str())
         );
         assert_eq!(
             round_trip
                 .input
                 .semantic_input
-                .pathdb_snapshot_id
+                .materialization_id
                 .as_ref()
-                .map(PathdbSnapshotId::as_str),
-            Some("pathdb:42")
+                .map(MaterializationIdV2::as_str),
+            Some(materialization_id.as_str())
         );
         assert_eq!(
             round_trip
@@ -2705,49 +2768,6 @@ instance I of S:
     }
 
     #[test]
-    fn predictive_proposal_request_validation_rejects_pathdb_export_snapshot_text() {
-        let canonical = r#"
-module Demo
-schema S:
-  object A
-  relation R(from: A, to: A)
-instance I of S:
-  A = {x, y}
-  R = {(from=x, to=y)}
-"#;
-        let mut db = axiograph_pathdb::PathDB::new();
-        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, canonical)
-            .expect("import canonical module");
-        db.build_indexes();
-        let snapshot_export = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)
-            .expect("export pathdb snapshot");
-
-        let req = PredictiveProposalRequestV1 {
-            protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
-            trace_id: ProposalAdapterRunId::new("proposal::bad-snapshot"),
-            generated_at_unix_secs: 1,
-            input: PredictiveProposalInputV1 {
-                axi_digest_v1: Some(AxiDigest::from_axi_text(&snapshot_export)),
-                axi_module_text: Some(snapshot_export),
-                semantic_input: PredictiveProposalSemanticInputV1 {
-                    kind: PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string(),
-                    module_name: Some("Demo".to_string()),
-                    pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:1")),
-                    accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:1")),
-                    layers: Vec::new(),
-                },
-                notes: Vec::new(),
-            },
-            options: PredictiveProposalOptionsV1::default(),
-        };
-
-        let err = validate_predictive_proposal_request(&req).expect_err("PathDB export must fail");
-        assert!(err
-            .to_string()
-            .contains("expected a canonical .axi module, but input is a PathDBExportV1 snapshot"));
-    }
-
-    #[test]
     fn predictive_proposal_request_validation_rejects_missing_digest_anchor() {
         let canonical = "module Demo\nschema S:\n  object A\n";
         let req = PredictiveProposalRequestV1 {
@@ -2755,12 +2775,12 @@ instance I of S:
             trace_id: ProposalAdapterRunId::new("proposal::missing-digest"),
             generated_at_unix_secs: 1,
             input: PredictiveProposalInputV1 {
-                axi_digest_v1: None,
+                revision_digest_v2: None,
                 axi_module_text: Some(canonical.to_string()),
                 semantic_input: PredictiveProposalSemanticInputV1 {
                     kind: PREDICTIVE_PROPOSAL_SEMANTIC_INPUT_KIND_V1.to_string(),
                     module_name: Some("Demo".to_string()),
-                    pathdb_snapshot_id: None,
+                    materialization_id: None,
                     accepted_snapshot_id: None,
                     layers: Vec::new(),
                 },
@@ -2769,10 +2789,11 @@ instance I of S:
             options: PredictiveProposalOptionsV1::default(),
         };
 
-        let err = validate_predictive_proposal_request(&req).expect_err("missing digest anchor must fail");
+        let err = validate_predictive_proposal_request(&req)
+            .expect_err("missing digest anchor must fail");
         assert!(err
             .to_string()
-            .contains("requires `axi_digest_v1` anchored to the canonical `.axi` input"));
+            .contains("requires `revision_digest_v2` anchored to the canonical `.axi` input"));
     }
 
     #[test]
@@ -2856,7 +2877,8 @@ instance I of S:
     }
 
     #[test]
-    fn build_predictive_proposal_provenance_computes_typed_proposal_digest_and_keeps_run_id_distinct() {
+    fn build_predictive_proposal_provenance_computes_typed_proposal_digest_and_keeps_run_id_distinct(
+    ) {
         let base_response = PredictiveProposalResponseV1 {
             protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
             trace_id: ProposalAdapterRunId::new("proposal::digest"),
@@ -2893,8 +2915,12 @@ instance I of S:
             &base_response,
             "stub".to_string(),
             Some("model".to_string()),
-            Some(AxiDigest::new("fnv1a64:base")),
-            Some(PathdbSnapshotId::new("pathdb:1")),
+            Some(AxiDigest::new(
+                "axi:revision:v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            )),
+            Some(MaterializationIdV2::from_canonical_fields(&[
+                b"proposal-digest-materialization-1",
+            ])),
             Some(AcceptedSnapshotId::new("accepted:1")),
             Some(1.25),
             Some("fast".to_string()),
@@ -2908,7 +2934,7 @@ instance I of S:
             .proposals_digest
             .as_ref()
             .expect("proposal-set digest should be present");
-        assert!(digest.as_str().starts_with("fnv1a64:"));
+        assert!(digest.as_str().starts_with("axi:object-blob:v2:sha256:"));
 
         let mut changed = base_response.clone();
         if let ProposalV1::Entity { name, .. } = &mut changed.proposals.proposals[0] {
@@ -2918,8 +2944,12 @@ instance I of S:
             &changed,
             "stub".to_string(),
             Some("model".to_string()),
-            Some(AxiDigest::new("fnv1a64:base")),
-            Some(PathdbSnapshotId::new("pathdb:1")),
+            Some(AxiDigest::new(
+                "axi:revision:v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            )),
+            Some(MaterializationIdV2::from_canonical_fields(&[
+                b"proposal-digest-materialization-1",
+            ])),
             Some(AcceptedSnapshotId::new("accepted:1")),
             Some(1.25),
             Some("fast".to_string()),
@@ -2931,86 +2961,5 @@ instance I of S:
             provenance.proposals_digest, changed_provenance.proposals_digest,
             "proposal-set digest should change when the emitted proposals change"
         );
-    }
-
-    #[test]
-    fn build_proposal_adapter_run_record_carries_typed_anchor_lineage_and_commit_state() {
-        let response = PredictiveProposalResponseV1 {
-            protocol: PREDICTIVE_PROPOSAL_PROTOCOL_V1.to_string(),
-            trace_id: ProposalAdapterRunId::new("proposal::record"),
-            generated_at_unix_secs: 77,
-            proposals: ProposalsFileV1 {
-                version: axiograph_ingest_docs::PROPOSALS_VERSION_V1,
-                generated_at: "now".to_string(),
-                source: ProposalSourceV1 {
-                    source_type: "test".to_string(),
-                    locator: "unit".to_string(),
-                },
-                schema_hint: None,
-                proposals: vec![ProposalV1::Entity {
-                    meta: ProposalMetaV1 {
-                        proposal_id: "e1".to_string(),
-                        confidence: 0.7,
-                        evidence: Vec::new(),
-                        public_rationale: "r".to_string(),
-                        metadata: HashMap::new(),
-                        schema_hint: None,
-                    },
-                    entity_id: "e1".to_string(),
-                    entity_type: "Thing".to_string(),
-                    name: "thing".to_string(),
-                    attributes: HashMap::new(),
-                    description: None,
-                }],
-            },
-            notes: vec!["unit".to_string()],
-            error: None,
-        };
-        let provenance = build_predictive_proposal_provenance(
-            &response,
-            "plugin".to_string(),
-            Some("deterministic".to_string()),
-            Some(AxiDigest::new("fnv1a64:axi")),
-            Some(PathdbSnapshotId::new("pathdb:before")),
-            Some(AcceptedSnapshotId::new("accepted:before")),
-            Some(0.5),
-            Some("fast".to_string()),
-            Some("both".to_string()),
-        )
-        .expect("build provenance");
-
-        let record = build_proposal_adapter_run_record(
-            &provenance,
-            &response.proposals,
-            Some(PathdbSnapshotId::new("pathdb:after")),
-            Some(AcceptedSnapshotId::new("accepted:after")),
-            vec!["persisted".to_string()],
-        )
-        .expect("build run record");
-
-        assert_eq!(record.run_id.as_str(), "proposal::record");
-        assert_eq!(record.trace_id.as_str(), "proposal::record");
-        assert_eq!(
-            record.status,
-            crate::accepted_plane::ProposalAdapterRunStatusV1::CommittedToPathdb
-        );
-        assert_eq!(record.backend, "plugin");
-        assert_eq!(record.model.as_deref(), Some("deterministic"));
-        assert_eq!(
-            record
-                .input_pathdb_snapshot_id
-                .as_ref()
-                .map(|id| id.as_str()),
-            Some("pathdb:before")
-        );
-        assert_eq!(
-            record
-                .committed_pathdb_snapshot_id
-                .as_ref()
-                .map(|id| id.as_str()),
-            Some("pathdb:after")
-        );
-        assert_eq!(record.proposal_count, 1);
-        assert!(record.proposals_digest.as_str().starts_with("fnv1a64:"));
     }
 }

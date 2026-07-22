@@ -23,6 +23,16 @@ pub enum Accepted {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Certified {}
 
+/// A certificate was emitted by the untrusted Rust producer but has not yet
+/// been accepted by the approved Lean checker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CertificateEmitted {}
+
+/// The approved Lean checker accepted the exact certificate, prepared-query
+/// digest, and answer digest carried by the artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LeanVerified {}
+
 impl LifecycleState for Parsed {
     const NAME: &'static str = "parsed";
 }
@@ -43,6 +53,14 @@ impl LifecycleState for Certified {
     const NAME: &'static str = "certified";
 }
 
+impl LifecycleState for CertificateEmitted {
+    const NAME: &'static str = "certificate_emitted";
+}
+
+impl LifecycleState for LeanVerified {
+    const NAME: &'static str = "lean_verified";
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +72,7 @@ mod tests {
         assert_eq!(Reviewed::NAME, "reviewed");
         assert_eq!(Accepted::NAME, "accepted");
         assert_eq!(Certified::NAME, "certified");
+        assert_eq!(CertificateEmitted::NAME, "certificate_emitted");
+        assert_eq!(LeanVerified::NAME, "lean_verified");
     }
 }

@@ -37,8 +37,6 @@
 //! - **Fail-closed**: Rejects unresolved or untyped relation endpoints.
 #![allow(unused_variables)]
 
-pub mod persistence;
-
 #[cfg(test)]
 mod tests;
 
@@ -237,7 +235,7 @@ pub struct ApplyResult {
     pub change_id: ChangeId,
     /// Entity IDs created in PathDB
     pub pathdb_ids: Vec<u32>,
-    /// Lines added to .axi file
+    /// Proposed canonical `.axi` fragments retained for review.
     pub axi_lines: Vec<String>,
     /// Any warnings
     pub warnings: Vec<String>,
@@ -260,13 +258,10 @@ pub struct AxiSchemaIndex {
 
 /// Configuration for runtime evidence storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageConfig {
-    /// Directory for .axi files
+    /// Directory containing read-only schema inputs.
     pub axi_dir: PathBuf,
-    /// Path to PathDB binary file
-    pub pathdb_path: PathBuf,
-    /// Path to changelog
-    pub changelog_path: PathBuf,
     /// Auto-sync on file changes
     pub watch_files: bool,
     /// Require human review for certain changes
@@ -289,8 +284,6 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             axi_dir: PathBuf::from("./knowledge"),
-            pathdb_path: PathBuf::from("./knowledge.axpd"),
-            changelog_path: PathBuf::from("./changelog.json"),
             watch_files: true,
             require_review: ReviewPolicy {
                 constraints: true,
@@ -321,32 +314,17 @@ pub struct UnifiedStorage {
 }
 
 impl UnifiedStorage {
-    /// Create new storage manager
+    /// Create an in-memory evidence staging manager.
+    ///
+    /// This type deliberately performs no durable writes. Accepted history and
+    /// authenticated `.axpd` materializations belong to `axiograph_store::AxiStore`.
     pub fn new(config: StorageConfig) -> anyhow::Result<Self> {
-        // Load or create PathDB
-        let pathdb = if config.pathdb_path.exists() {
-            let bytes = std::fs::read(&config.pathdb_path)?;
-            PathDB::from_bytes(&bytes)?
-        } else {
-            PathDB::new()
-        };
-
-        // Load changelog if exists
-        let changelog = if config.changelog_path.exists() {
-            let contents = std::fs::read_to_string(&config.changelog_path)?;
-            serde_json::from_str(&contents)?
-        } else {
-            Vec::new()
-        };
-
-        // Load schema from .axi files
         let schema = Self::load_axi_files(&config.axi_dir)?;
-
         Ok(Self {
             config,
-            pathdb: Arc::new(RwLock::new(pathdb)),
+            pathdb: Arc::new(RwLock::new(PathDB::new())),
             pending: Arc::new(RwLock::new(Vec::new())),
-            changelog: Arc::new(RwLock::new(changelog)),
+            changelog: Arc::new(RwLock::new(Vec::new())),
             schema: Arc::new(RwLock::new(schema)),
         })
     }
@@ -450,21 +428,54 @@ impl UnifiedStorage {
         }
     }
 
-    /// Load all .axi files from directory
+    /// Load a finite set of bounded regular `.axi` files from one directory.
     fn load_axi_files(dir: &PathBuf) -> anyhow::Result<AxiSchemaIndex> {
+        const MAX_AXI_FILES: usize = 10_000;
+        const MAX_AXI_FILE_BYTES: usize = 4 * 1024 * 1024;
+        const MAX_AXI_TOTAL_BYTES: usize = 64 * 1024 * 1024;
         let mut entity_types: BTreeSet<String> = BTreeSet::new();
         let mut relation_types: BTreeSet<String> = BTreeSet::new();
         let mut constraints: BTreeSet<String> = BTreeSet::new();
+        let mut files = 0_usize;
+        let mut total_bytes = 0_usize;
 
         if dir.exists() {
+            let directory_metadata = std::fs::symlink_metadata(dir)?;
+            if directory_metadata.file_type().is_symlink()
+                || !directory_metadata.file_type().is_dir()
+            {
+                anyhow::bail!(".axi input root must be a real directory, not a symlink");
+            }
             for entry in std::fs::read_dir(dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if !path.extension().map_or(false, |e| e == "axi") {
+                if path.extension().is_none_or(|extension| extension != "axi") {
                     continue;
                 }
-
-                let contents = std::fs::read_to_string(&path)?;
+                files = files.saturating_add(1);
+                if files > MAX_AXI_FILES {
+                    anyhow::bail!(".axi input directory exceeds {MAX_AXI_FILES} files");
+                }
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                    anyhow::bail!(".axi input must be a regular file, not a symlink");
+                }
+                let length = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+                if length > MAX_AXI_FILE_BYTES {
+                    anyhow::bail!(".axi input exceeds {MAX_AXI_FILE_BYTES} bytes");
+                }
+                let bytes = axiograph_security::read_file_bounded(
+                    &path,
+                    MAX_AXI_FILE_BYTES,
+                    ".axi storage input",
+                )?;
+                total_bytes = total_bytes
+                    .checked_add(bytes.len())
+                    .ok_or_else(|| anyhow::anyhow!(".axi input byte count overflow"))?;
+                if total_bytes > MAX_AXI_TOTAL_BYTES {
+                    anyhow::bail!(".axi input closure exceeds {MAX_AXI_TOTAL_BYTES} bytes");
+                }
+                let contents = String::from_utf8(bytes)?;
                 match dsl::axi_v1::parse_axi_v1(&contents) {
                     Ok(module) => {
                         for schema in &module.schemas {
@@ -686,23 +697,43 @@ impl UnifiedStorage {
         Ok(change_id)
     }
 
-    /// Apply all pending changes
+    /// Apply all pending changes to the in-memory evidence view.
+    ///
+    /// The operation is atomic in memory. Callers must promote reviewed facts
+    /// through `AxiStore`; this manager never persists an unauthenticated cache.
     pub fn flush(&self) -> anyhow::Result<Vec<ApplyResult>> {
-        let pending: Vec<Change> = self.pending.write().drain(..).collect();
-        let mut results = Vec::new();
-
-        for change in pending {
-            let result = self.apply_change(&change)?;
-            results.push(result);
+        let pending = self.pending.read().clone();
+        if pending.is_empty() {
+            return Ok(Vec::new());
         }
+        let pathdb_before = self.pathdb.read().detached_clone()?;
+        let changelog_before = self.changelog.read().clone();
 
-        // Save changelog
-        self.save_changelog()?;
+        let attempt = (|| -> anyhow::Result<Vec<ApplyResult>> {
+            let mut results = Vec::with_capacity(pending.len());
+            for change in &pending {
+                results.push(self.apply_change(change)?);
+            }
+            Ok(results)
+        })();
 
-        // Save PathDB
-        self.save_pathdb()?;
-
-        Ok(results)
+        match attempt {
+            Ok(results) => {
+                let applied_ids = pending
+                    .iter()
+                    .map(|change| change.id)
+                    .collect::<BTreeSet<_>>();
+                self.pending
+                    .write()
+                    .retain(|change| !applied_ids.contains(&change.id));
+                Ok(results)
+            }
+            Err(error) => {
+                *self.pathdb.write() = pathdb_before;
+                *self.changelog.write() = changelog_before;
+                Err(error)
+            }
+        }
     }
 
     /// Apply a single change
@@ -784,7 +815,7 @@ impl UnifiedStorage {
                     axi_lines.push(axi);
 
                     if self.config.require_review.constraints {
-                        warnings.push(format!("Constraint '{}' added - requires review", name));
+                        warnings.push(format!("Constraint '{name}' added - requires review"));
                     }
                 }
 
@@ -854,10 +885,9 @@ impl UnifiedStorage {
             }
         }
 
-        // Write to .axi file
-        self.append_to_axi(&axi_lines, &change.source)?;
+        // Record in the in-memory review log. The generated `.axi` fragments
+        // remain proposals in `ApplyResult`; they are never appended to accepted files.
 
-        // Record in changelog
         let mut applied_change = change.clone();
         applied_change.status = ChangeStatus::Applied;
         self.changelog.write().push(applied_change);
@@ -875,9 +905,9 @@ impl UnifiedStorage {
     // ========================================================================
 
     fn entity_to_axi(&self, name: &str, entity_type: &str, attrs: &[(String, String)]) -> String {
-        let mut s = format!("{} : {} {{\n", name, entity_type);
+        let mut s = format!("{name} : {entity_type} {{\n");
         for (k, v) in attrs {
-            s.push_str(&format!("  {} = \"{}\"\n", k, v));
+            s.push_str(&format!("  {k} = \"{v}\"\n"));
         }
         s.push_str("}\n");
         s
@@ -892,15 +922,9 @@ impl UnifiedStorage {
         confidence: f32,
     ) -> String {
         if let Some(n) = name {
-            format!(
-                "{} : {}({}, {}) @confidence({})\n",
-                n, rel_type, source, target, confidence
-            )
+            format!("{n} : {rel_type}({source}, {target}) @confidence({confidence})\n")
         } else {
-            format!(
-                "{}({}, {}) @confidence({})\n",
-                rel_type, source, target, confidence
-            )
+            format!("{rel_type}({source}, {target}) @confidence({confidence})\n")
         }
     }
 
@@ -911,11 +935,11 @@ impl UnifiedStorage {
         severity: &str,
         message: Option<&str>,
     ) -> String {
-        let mut s = format!("constraint {} {{\n", name);
-        s.push_str(&format!("  severity = {}\n", severity));
-        s.push_str(&format!("  condition = \"{}\"\n", condition));
+        let mut s = format!("constraint {name} {{\n");
+        s.push_str(&format!("  severity = {severity}\n"));
+        s.push_str(&format!("  condition = \"{condition}\"\n"));
         if let Some(msg) = message {
-            s.push_str(&format!("  message = \"{}\"\n", msg));
+            s.push_str(&format!("  message = \"{msg}\"\n"));
         }
         s.push_str("}\n");
         s
@@ -930,8 +954,7 @@ impl UnifiedStorage {
         source: &str,
     ) -> String {
         format!(
-            "tacit \"{}\" {{\n  rule: {}\n  confidence: {}\n  domain: \"{}\"\n  source: \"{}\"\n}}\n",
-            name, rule, confidence, domain, source
+            "tacit \"{name}\" {{\n  rule: {rule}\n  confidence: {confidence}\n  domain: \"{domain}\"\n  source: \"{source}\"\n}}\n"
         )
     }
 
@@ -948,8 +971,7 @@ impl UnifiedStorage {
             format!("[{}]", prerequisites.join(", "))
         };
         format!(
-            "concept {} : Concept {{\n  description = \"\"\"{}\"\"\"\n  difficulty = {}\n  prerequisites = {}\n}}\n",
-            name, description, difficulty, prereqs
+            "concept {name} : Concept {{\n  description = \"\"\"{description}\"\"\"\n  difficulty = {difficulty}\n  prerequisites = {prereqs}\n}}\n"
         )
     }
 
@@ -961,85 +983,8 @@ impl UnifiedStorage {
         explanation: &str,
     ) -> String {
         format!(
-            "guideline {} : SafetyGuideline {{\n  title = \"{}\"\n  severity = {}\n  explanation = \"\"\"{}\"\"\"\n}}\n",
-            name, title, severity, explanation
+            "guideline {name} : SafetyGuideline {{\n  title = \"{title}\"\n  severity = {severity}\n  explanation = \"\"\"{explanation}\"\"\"\n}}\n"
         )
-    }
-
-    /// Append lines to the appropriate .axi file
-    fn append_to_axi(&self, lines: &[String], source: &ChangeSource) -> anyhow::Result<()> {
-        // Determine file name based on source
-        let filename = match source {
-            ChangeSource::LLMExtraction { .. } => "llm_extracted.axi",
-            ChangeSource::UserEdit { .. } => "user_edits.axi",
-            ChangeSource::FileImport { path } => {
-                return Ok(()); // Already in a file
-            }
-            ChangeSource::API { .. } => "api_additions.axi",
-            ChangeSource::System { .. } => "system_inferred.axi",
-        };
-
-        let path = self.config.axi_dir.join(filename);
-
-        // Create directory if needed
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Append to file
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-
-        // Add header comment for this batch
-        writeln!(file, "\n-- Added at {}", Utc::now().to_rfc3339())?;
-        match source {
-            ChangeSource::LLMExtraction {
-                session_id,
-                model,
-                confidence,
-            } => {
-                writeln!(
-                    file,
-                    "-- Source: LLM extraction (model: {}, confidence: {:.2})",
-                    model, confidence
-                )?;
-            }
-            ChangeSource::UserEdit { user_id } => {
-                writeln!(
-                    file,
-                    "-- Source: User edit ({})",
-                    user_id.as_deref().unwrap_or("anonymous")
-                )?;
-            }
-            _ => {}
-        }
-
-        for line in lines {
-            writeln!(file, "{}", line)?;
-        }
-
-        Ok(())
-    }
-
-    // ========================================================================
-    // Persistence
-    // ========================================================================
-
-    fn save_changelog(&self) -> anyhow::Result<()> {
-        let changelog = self.changelog.read();
-        let json = serde_json::to_string_pretty(&*changelog)?;
-        std::fs::write(&self.config.changelog_path, json)?;
-        Ok(())
-    }
-
-    fn save_pathdb(&self) -> anyhow::Result<()> {
-        let pathdb = self.pathdb.read();
-        let bytes = pathdb.to_bytes()?;
-        std::fs::write(&self.config.pathdb_path, bytes)?;
-        Ok(())
     }
 
     // ========================================================================
@@ -1077,21 +1022,20 @@ impl UnifiedStorage {
         let idx = changelog
             .iter()
             .position(|c| c.id == change_id)
-            .ok_or_else(|| anyhow::anyhow!("Change not found: {}", change_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Change not found: {change_id}"))?;
 
         // Mark subsequent changes as rolled back
         drop(changelog);
         let mut changelog = self.changelog.write();
         for change in changelog.iter_mut().skip(idx + 1) {
             change.status = ChangeStatus::Rolled {
-                reason: format!("Rolled back to {}", change_id),
+                reason: format!("Rolled back to {change_id}"),
             };
         }
 
         // Rebuild PathDB from changelog
         drop(changelog);
         self.rebuild_from_changelog()?;
-
         Ok(())
     }
 
@@ -1160,7 +1104,37 @@ impl UnifiedStorage {
                                 ],
                             );
                         }
-                        _ => {}
+                        StorableFact::Concept {
+                            name,
+                            description,
+                            difficulty,
+                            ..
+                        } => {
+                            pathdb.add_entity(
+                                "Concept",
+                                vec![
+                                    ("name", name.as_str()),
+                                    ("description", description.as_str()),
+                                    ("difficulty", difficulty.as_str()),
+                                ],
+                            );
+                        }
+                        StorableFact::SafetyGuideline {
+                            name,
+                            title,
+                            severity,
+                            ..
+                        } => {
+                            pathdb.add_entity(
+                                "SafetyGuideline",
+                                vec![
+                                    ("name", name.as_str()),
+                                    ("title", title.as_str()),
+                                    ("severity", severity.as_str()),
+                                ],
+                            );
+                        }
+                        StorableFact::Constraint { .. } => {}
                     }
                 }
             }
@@ -1196,9 +1170,7 @@ impl UnifiedStorage {
 pub fn open_storage(knowledge_dir: &str) -> anyhow::Result<UnifiedStorage> {
     let dir = PathBuf::from(knowledge_dir);
     let config = StorageConfig {
-        axi_dir: dir.clone(),
-        pathdb_path: dir.join("knowledge.axpd"),
-        changelog_path: dir.join("changelog.json"),
+        axi_dir: dir,
         ..Default::default()
     };
     UnifiedStorage::new(config)

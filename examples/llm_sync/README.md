@@ -15,18 +15,18 @@ authority for ontology meaning. Examples in this directory should be read-only
 planning or evidence-overlay flows unless they explicitly call the semantic VCS
 promotion commands.
 
-Start with a local evidence fixture:
+Start with a local evidence source document:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  ingest doc examples/ingest_fixtures/machining_conversation.txt \
+  ingest doc examples/ingest_sources/machining_conversation.txt \
   --out build/examples/llm_sync/machining_proposals.json \
   --machining \
   --chunks build/examples/llm_sync/machining_chunks.json \
   --facts build/examples/llm_sync/machining_facts.json
 ```
 
-Then ask a weak definition question against the current learning ontology:
+Then ask an advisory definition question against the current learning ontology:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
@@ -38,8 +38,11 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
 ```
 
 For embedding sidecars and evidence overlays, see
-`docs/reference/EMBEDDINGS_AND_EVIDENCE.md`. This directory also includes a
-minimal advisory manifest and vector-free evidence overlay:
+`docs/reference/EMBEDDINGS_AND_EVIDENCE.md`. This directory also includes
+vector-free advisory fixtures for the embedding/evidence schemas:
 
 - `embedding_sidecar_manifest_example.json`
 - `embedding_evidence_overlay_example.json`
+
+Those fixtures are documentation/test inputs. They are not accepted ontology
+state and do not satisfy promotion gates without normal typed review.

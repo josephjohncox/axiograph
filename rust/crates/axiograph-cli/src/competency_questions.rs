@@ -3,11 +3,10 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs;
 use std::path::Path;
 
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
-use axiograph_pathdb::kernel_ir::{CompiledSchemaIr, TheoryIr};
+use axiograph_pathdb::kernel_ir::{RuntimeSchemaIndex, TheoryIr};
 use axiograph_pathdb::PathDB;
 
 use crate::llm::{GeneratedQuery, LlmState};
@@ -140,12 +139,24 @@ pub fn generate_from_schema(
 pub fn load_question_prompts(path: &Path) -> Result<Vec<CompetencyQuestionPrompt>> {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     if ext.eq_ignore_ascii_case("json") {
-        let text = fs::read_to_string(path)?;
-        let value: Value = serde_json::from_str(&text)?;
+        let text = crate::security::read_utf8_file_bounded(
+            path,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
+        let value: Value = crate::security::parse_json_bounded(
+            text.as_bytes(),
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "competency question input",
+        )?;
         return prompts_from_json(value);
     }
 
-    let text = fs::read_to_string(path)?;
+    let text = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let mut out = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
@@ -373,7 +384,7 @@ pub fn apply_runtime_refinement_handle_to_competency_question_result(
         runtime_query_refinement_handle_for_competency_question(question, handle)?;
     let axql = crate::axql::parse_axql_query(&question.query)?;
     let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&axql);
-    let prepared = query_ir.prepare_with_meta(db, meta)?;
+    let prepared = query_ir.compile_with_meta(db, meta)?;
     let query_apply = prepared.apply_runtime_refinement_handle(db, meta, &runtime_query_handle)?;
     let mut refined_question = question.clone();
     refined_question.query = query_apply.refined_query_ir_v1.to_axql_text()?;
@@ -391,14 +402,14 @@ pub fn apply_runtime_refinement_handle_to_competency_question_result_with_theory
     meta: Option<&MetaPlaneIndex>,
     question: &CompetencyQuestionV1,
     handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
 ) -> Result<CompetencyQuestionRefinementApplyResultV1> {
     let runtime_query_handle =
         runtime_query_refinement_handle_for_competency_question(question, handle)?;
     let axql = crate::axql::parse_axql_query(&question.query)?;
     let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&axql);
-    let prepared = query_ir.prepare_with_meta(db, meta)?;
+    let prepared = query_ir.compile_with_meta(db, meta)?;
     let query_apply = prepared.apply_runtime_refinement_handle_with_theory_graph(
         db,
         meta,
@@ -501,14 +512,16 @@ pub fn evaluate_competency_questions(
         questions: eval
             .questions
             .into_iter()
-            .map(|q| crate::predictive_proposals::CompetencyQuestionResultV1 {
-                name: q.name,
-                rows: q.rows,
-                min_rows: q.min_rows,
-                satisfied: q.satisfied,
-                weight: q.weight,
-                cost: q.cost,
-            })
+            .map(
+                |q| crate::predictive_proposals::CompetencyQuestionResultV1 {
+                    name: q.name,
+                    rows: q.rows,
+                    min_rows: q.min_rows,
+                    satisfied: q.satisfied,
+                    weight: q.weight,
+                    cost: q.cost,
+                },
+            )
             .collect(),
     })
 }
@@ -535,7 +548,7 @@ pub fn evaluate_competency_questions_with_trust(
         }
         let (query, min_rows, weight) = normalized_competency_query(q)?;
         let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&query);
-        let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
+        let mut prepared = query_ir.compile_with_meta(db, meta.as_ref())?;
         let prepared_query = Some(prepared.metadata_with_meta(meta.as_ref())?);
         let refinement_candidates = prepared
             .exploration_view(None)
@@ -603,7 +616,7 @@ pub fn evaluate_competency_questions_with_trust(
 pub fn evaluate_competency_questions_with_trust_and_theory_graph(
     db: &PathDB,
     questions: &[CompetencyQuestionV1],
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
 ) -> Result<CompetencyCoverageWithTrustV1> {
     if questions.is_empty() {
@@ -624,7 +637,7 @@ pub fn evaluate_competency_questions_with_trust_and_theory_graph(
         }
         let (query, min_rows, weight) = normalized_competency_query(q)?;
         let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&query);
-        let mut prepared = query_ir.prepare_with_meta(db, meta.as_ref())?;
+        let mut prepared = query_ir.compile_with_meta(db, meta.as_ref())?;
         let prepared_query = Some(prepared.metadata_with_meta(meta.as_ref())?);
         let refinement_candidates = prepared
             .exploration_view_with_theory_graph(None, compiled_schema, theories)
@@ -714,8 +727,7 @@ fn prompts_from_json(value: Value) -> Result<Vec<CompetencyQuestionPrompt>> {
         }
         other => {
             return Err(anyhow!(
-                "unsupported competency question input (expected JSON array or object, got {})",
-                other
+                "unsupported competency question input (expected JSON array or object, got {other})"
             ));
         }
     }
@@ -775,8 +787,7 @@ fn prompt_from_value(value: &Value) -> Result<CompetencyQuestionPrompt> {
             })
         }
         other => Err(anyhow!(
-            "unsupported competency question item (expected string or object, got {})",
-            other
+            "unsupported competency question item (expected string or object, got {other})"
         )),
     }
 }
@@ -910,13 +921,15 @@ instance I of Demo:
         let question = CompetencyQuestionV1 {
             name: "shipment_rule".to_string(),
             question: Some("Which shipment rule applies?".to_string()),
-            authoring: Some(crate::predictive_proposals::CompetencyQuestionAuthoringHintsV1 {
-                ask: Some("Which shipment rule applies?".to_string()),
-                about: vec!["shipment release".to_string()],
-                given: vec!["ERP hold is active".to_string()],
-                expect: vec!["a typed release obligation exists".to_string()],
-                notes: Vec::new(),
-            }),
+            authoring: Some(
+                crate::predictive_proposals::CompetencyQuestionAuthoringHintsV1 {
+                    ask: Some("Which shipment rule applies?".to_string()),
+                    about: vec!["shipment release".to_string()],
+                    given: vec!["ERP hold is active".to_string()],
+                    expect: vec!["a typed release obligation exists".to_string()],
+                    notes: Vec::new(),
+                },
+            ),
             query: String::new(),
             min_rows: 1,
             weight: 2.0,
@@ -953,11 +966,14 @@ instance I of Demo:
   Parent = {(parent=Alice, child=Bob)}
 "#;
         let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
-        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&parsed.schemas[0]);
+        let compiled_schema =
+            axiograph_pathdb::kernel_ir::derive_runtime_schema_index(&parsed.schemas[0]);
         let theories = parsed
             .theories
             .iter()
-            .map(|theory| axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory))
+            .map(|theory| {
+                axiograph_pathdb::kernel_ir::derive_runtime_theory_index(&compiled_schema, theory)
+            })
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(anyhow::Error::msg)?;
 
@@ -1024,11 +1040,14 @@ instance I of Demo:
   Flow = {(from=a, to=b)}
 "#;
         let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
-        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&parsed.schemas[0]);
+        let compiled_schema =
+            axiograph_pathdb::kernel_ir::derive_runtime_schema_index(&parsed.schemas[0]);
         let theories = parsed
             .theories
             .iter()
-            .map(|theory| axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory))
+            .map(|theory| {
+                axiograph_pathdb::kernel_ir::derive_runtime_theory_index(&compiled_schema, theory)
+            })
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(anyhow::Error::msg)?;
 

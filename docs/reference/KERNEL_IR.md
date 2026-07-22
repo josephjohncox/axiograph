@@ -18,33 +18,235 @@ relationship suggestions are not kernel IR. They are evidence/index sidecars
 that may point at compiled IR ids and may emit typed proposals for review. See
 `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`.
 
-Current implemented slice (2026-04):
+## Implemented Canonical Compiler Contract
 
-- `axiograph_pathdb::kernel_ir` currently provides:
-  - `CompiledSchemaIr`
-  - `SchemaCategoryIr`
-  - `InstanceFunctorIr`
-  - `RelationSemanticsIr`
-  - `RoleIr`
-  - deterministic semantic ids for compiled schema objects
-    (`ObjectTypeId`, `RelationId`, `RoleId`)
-  - `RoleKind::{Data, Context, Temporal}`
-  - `CarrierSpecIr`
-  - `WitnessViewIr`
-- `SchemaCategoryIr` is now the first runtime category-shaped view over a
-  compiled schema:
-  - object types and relation objects are category objects,
-  - relation roles lower to projection arrows,
-  - subtype declarations lower to inclusion arrows,
-  - and binary graph edges remain derived traversal views rather than kernel
-    arrows.
-- `InstanceFunctorIr` is now the first runtime interpretation of an instance as
-  a functor out of that schema category:
-  - object types map to closed membership sets,
-  - relation objects map to stable fact-id sets,
-  - role projections map fact ids to typed role values,
-  - and subtype inclusions transport subtype members into supertype images by
-    identity.
+The authoritative compiler is `axiograph_kernel::CanonicalCompiler` in
+`rust/crates/axiograph-kernel/src/package.rs`. It accepts a
+`KernelCompilationRequest` containing:
+
+- exact source bytes wrapped by `CanonicalModuleSource`;
+- the root module name;
+- the complete import closure;
+- an explicit `RepositoryIdV2`; and
+- an immutable accepted `SnapshotIdV2`.
+
+The compiler rejects missing, duplicate, and conflicting modules. It computes
+module and package identities from length-framed exact bytes, so comments,
+whitespace, import order, and declaration order remain identity-significant.
+It does not normalize or reserialize source before hashing. The canonical
+package path uses full SHA-256 identities and canonical JSON manifests; it does not
+use bincode or FNV.
+
+A successful compilation returns one immutable `CompiledKernelSnapshot` with:
+
+1. `KernelSnapshotIr`: package/import-closure identity plus schema, theory, and
+   instance IR under the accepted snapshot handle;
+2. `SchemaPresentationIr`: objects, relation objects, ordered role-projection
+   generators, explicit aspects/functions, subtype inclusions, endpoint-indexed
+   paths, forward category equations, contextual congruence witnesses,
+   relation-span free-groupoid equations, and derived category-formation
+   evidence;
+3. `TypedTheoryIr`: constraints, equations, rewrites, and explicit non-claims
+   addressed to the presentation; and
+4. `InstanceModelIr`: finite carriers, relation facts, total generator
+   interpretations, checked equations, one dependent witness per ordered fact
+   role, context/world witnesses, and an explicit checked lifecycle state.
+
+`CompiledKernelSnapshot::payload_fingerprints()` emits one strictly sorted
+`KernelPayloadFingerprintV2` for every addressable `KernelRefV2`. The digest is
+domain-separated by payload kind and covers the complete serialized compiled
+payload at that typed, revision-scoped address. Parent containers and their
+addressable children are both committed: for example, a relation fingerprint
+covers its ordered role list, while each role also has its own fingerprint.
+The same applies to schemas/objects, theories/constraints/equations/rewrites,
+and instances/facts.
+
+Two different digests are intentionally not conflated:
+
+- `KernelSnapshotIr::ir_digest()` commits the compiler's canonical digest
+  payload and is used by in-process IR/projection reports;
+- `AcceptedBuildManifest.kernel_ir_digest` is the immutable AxiStore object id
+  of the serialized `KernelSnapshotIr` bytes.
+
+`AxpdBuildSpec::from_accepted_kernel` recomputes the second digest with the
+`KernelIr` object-kind framing before materialization. Comparing the manifest
+object id directly with the inner `ir_digest()` is wrong and previously made a
+real compiled snapshot impossible to materialize.
+
+AxiStore's merge checker uses this index instead of set inclusion over refs.
+Two refs that look structurally related are not a keep unless both the typed ref
+and payload fingerprint match exactly. Changed payloads require an explicit
+drop+introduce or typed transport decision. AxiStore recompiles candidate
+closures from stored exact `.axi` bytes and reproduces the fingerprint index
+before materialization. These hashes establish finite payload identity, not
+semantic equivalence between arbitrary categorical presentations or a Lean
+proof of transport.
+
+Relation objects are first-class schema objects. Every declared role becomes a
+projection generator, including relation-valued roles. Binary edges are not
+kernel primitives. Explicit aspects/functions and subtype inclusions use the
+same generator representation. Subtype closure is checked for cycles and
+coherence before IR construction.
+
+### Executable finite theory payloads
+
+`SchemaPresentationIr` is the sole compiled category presentation. It records
+the exact object order, typed object and relation-object identities, role
+projections in declared order, explicit generators, endpoint-indexed paths, and
+accepted parallel-path equations. Its `category_formation` field contains only
+derived evidence: one identity path per object, checked lifecycle state,
+explicit non-claims, and a deterministic finite reachability saturation
+certificate. `CategoryFormationIr::verify` checks the presentation and replays
+every saturation tree built from identity, generator, and typed composition
+nodes. It requires the entry set to equal the exact finite transitive closure and
+rejects wrong endpoints, missing seeds, duplicates, extra pairs, bad indexes,
+unknown algorithms, equation/congruence drift, and lifecycle/evidence drift.
+Presentations beyond 64 objects or 4,096 arrows remain compilable but carry a
+blocking `saturation_bound` residual instead of a false completeness claim.
+
+Forward `SchemaPathIr` uses an endpoint-checked flat generator sequence: the
+empty sequence is identity, concatenation is composition, and associativity and
+unit normalization are structural. `PathCongruenceCertificateIr` replays a
+presented equation inside a prefix/suffix context. `FormalGroupoidPathIr` adds
+signed generators; normalization cancels adjacent inverse pairs. A formal
+inverse is runtime-executable only when the generator is explicitly reversible.
+Canonical `step(from, Relation, to)` equations compile to two role projections
+(an inverse source projection followed by a target projection) in
+`formal_groupoid_equations`. Rust checks their endpoints but does not claim that
+formation proves rewrite termination, confluence, or model satisfaction.
+
+### Exact-byte Rust/Lean category boundary
+
+The trusted wire family is `category_kernel_v3`. Rust projects one
+`SchemaPresentationIr` to deterministic object and arrow indexes without
+changing declaration order or inventing a second presentation. The payload
+contains:
+
+- object-type and relation-object names in canonical presentation order;
+- role-projection, subtype, aspect, and function arrows with typed endpoints;
+- one explicit empty identity path per object;
+- forward parallel-path equations;
+- one contextual congruence replay witness per equation; and
+- complete bounded generator-reachability explanations.
+
+`VerifyMain` loads the anchored `.axi` bytes, Lean parses those exact bytes,
+`compileAxiSchemaPresentation` forms the same relation-as-object presentation,
+and `categoryKernelPresentationV3` exports Lean's deterministic name/index
+view. Verification requires literal equality with the Rust payload before it
+replays congruence and saturation. A changed object order, role order, arrow
+kind, endpoint, identity, equation side, congruence offset, lifecycle, or
+reachability explanation rejects.
+
+Run `make verify-lean-e2e-category-kernel-v3` for the regulated-shipment
+positive path plus formation, congruence, and saturation tamper rejections. The
+broader finite-theory regression suite remains `make verify-lean-theory`.
+
+Every `InstanceModelIr` reifies each tuple field as a
+`RoleIndexedWitnessIr`, including the role id, declared order, target type, role
+kind, and typed value. Context and world roles also appear as
+`ScopeWitnessIr`. The implemented transport fragment is identity transport,
+and issuing it revalidates the complete instance plus exact scope-witness
+membership. Non-identity transport without a declared rule returns a typed
+`UnsupportedTransport` error. Typed path holes bind schema, endpoints, and
+the typed-hole residual; they stay in `Residual` until a caller selects and
+rechecks a matching candidate.
+
+`CompiledKernelSnapshot::finite_theory_gate_receipt` is the shared untrusted
+runtime gate seam. Authoring validation stores an `Authoring` receipt,
+prepared-query metadata stores a `Query` receipt, and AxiStore canonical
+candidate recompilation requires a passing `Merge` receipt before payload
+comparison or protected-main materialization. The sole trusted category wire
+format is anchored `category_kernel_v3`: it carries the compiler's finite
+name/index projection, exact identities, parallel equations, contextual
+congruence witnesses, and bounded saturation explanations for independent Lean
+reconstruction and replay.
+
+Finite instance compilation rejects duplicate assignments and fact ids,
+missing or repeated role projections, relation-object references to undeclared
+fact labels, out-of-codomain values, partial or non-functional generator maps,
+non-injective subtype inclusions, violated equations, failed finite
+refinements, and unsupported constraint claims. Call
+`validate_instance_model_ir` after transporting or loading a finite model to
+repeat the executable checks. This Rust validation is a decision procedure,
+not a Lean proof.
+
+PathDB's `RuntimeModuleIndex`, `RuntimeSchemaIndex`, and
+`RuntimeSemanticIndex` are derived execution/query indexes. They are not an
+alternate meaning plane, cannot mint accepted handles, and must be derived only
+after `CanonicalCompiler` accepts the exact source bytes. An in-process
+`RuntimeModuleIndex` retains the immutable `CompiledKernelSnapshot` that
+licensed its derivation. Runtime-index serialization deliberately drops that
+handle; deserialization produces citations, not reconstructed authority.
+Callers must pass the retained snapshot or canonical-backed runtime index and
+must not reconstruct canonical IR from PathDB indexes or raw AST fragments.
+PathDB materializes explicit object-endpoint aspect/function interpretations as
+labeled execution edges so canonical composable arrows remain queryable. It
+rejects relation-object generator endpoints rather than fabricating fact
+objects; those interpretations remain available in `InstanceModelIr` until a
+typed derived adapter is implemented. Projection coverage counts only
+`TheoryEquationIr::schema_equation` values as `path_equations`; relation-span
+formal-groupoid equations are not double-counted as forward category equations.
+
+CLI path validation resolves named local imports deterministically, rejects
+missing or ambiguous module names, hashes exact module bytes in computed
+closure order, and compiles the package before reporting it valid. REPL imports
+retain every exact module source and immutable package snapshot; PathDB receives
+only a package-shaped derived adapter after canonical compilation succeeds.
+
+Rust and Lean share parser and formation-checker corpus cases under
+`fixtures/canonical/`, including the compiler corpus under
+`fixtures/canonical/w02/` and the category-presentation corpus under
+`fixtures/canonical/category_kernel/`. The latter requires equal accept/reject
+outcomes for category formation and, for accepted cases, sends the Rust-emitted
+`category_kernel_v3` payload through Lean's exact-byte reconstruction. This is
+not a claim that Lean checks the complete finite `InstanceModelIr` or every
+runtime theory predicate. The trusted boundary remains the import closure of
+`lean/Axiograph/VerifyMain.lean`.
+
+The primary concrete fixture is
+`examples/regulated_shipment/RegulatedShipment.axi`. Its compiled snapshot
+contains nine relation objects, explicit ordered role projections, one indexed
+relation-fact role, one finite reviewer refinement, three explicit functions,
+one forward generator-factorization equation, one relation-span equation, a
+rewrite, and finite instances. The baseline/candidate authoring report uses
+exact payload fingerprints for a finite evolution diff; AxiStore uses the same
+compiled candidate in reviewed merge accounting and SQLite materialization.
+
+Explicit current limitations:
+
+- cardinality is interpreted only for finite relation projections in the
+  compiled instance;
+- arbitrary named refinement predicates are rejected except for the supported
+  finite fragment; role-level `key(...)` refinements also reject because no
+  value-level witness semantics is implemented—use a checked theory
+  `constraint key Relation(...)` instead;
+- `InstanceModelIr` makes no topological sheaf, closure, completeness,
+  ontology-closure, dependent-product, or arbitrary Π-type claim;
+- PathDB's explicit-generator execution adapter currently supports object-type
+  endpoints only and rejects relation-object endpoints; and
+- derived PathDB indexes still exist for runtime tooling, but are outside the
+  canonical compiler's authority.
+
+## Derived Runtime-Index Inventory
+
+The inventory below records non-authoritative runtime/report surfaces. It does
+not define a second category presentation:
+
+- `axiograph_pathdb::kernel_ir` provides `RuntimeSchemaIndex`, `InstanceIr`,
+  `RelationSemanticsIr`, `RoleIr`, `CarrierSpecIr`, and `WitnessViewIr` for
+  execution and query planning after canonical compilation.
+- `RuntimeSemanticIndex` contains only sorted read-only
+  `RuntimeIrRef::Canonical` entries copied from `KernelSnapshotIr::refs`, with
+  their canonical labels. It does not synthesize runtime category objects,
+  arrows, object images, or arrow images.
+- `RuntimeModuleIndex::canonical_snapshot()` retains the accepted
+  `CompiledKernelSnapshot` only for in-process derived indexes. Serialization
+  preserves citations and deliberately drops that authority.
+- The removed `SchemaCategoryIr` and `InstanceFunctorIr` types must not be
+  reintroduced. They duplicated `SchemaPresentationIr` objects/generators and
+  misleadingly presented a partial closed-world instance projection as another
+  categorical semantics. Runtime code that needs category meaning must cite the
+  canonical presentation; runtime instance rows remain execution data.
 - the first runtime `TheoryIr` slice now exists in the compiled IR:
   - `ConstraintIr`
   - `PathEquationIr`
@@ -82,11 +284,30 @@ Current implemented slice (2026-04):
   - `axiograph check theory <module.axi> --json`
   - `axiograph discover theory-check <module.axi>`
   - `semantic_theory_check`
-  This checker makes scoped runtime claims about well-typedness,
-  admissibility, closure, and completeness under declared world/evidence/ref
-  assumptions. It is still outside the Lean trusted checker. See
-  `docs/reference/RUNTIME_THEORY_CHECKER.md`.
-- Lean now has a narrow operational semantic VCS scaffold in
+  This checker now makes scoped runtime claims only about typed admissibility,
+  review status, blockers, and residuals. It does not derive obligations,
+  saturate rewrites, prove termination, reach a theory fixpoint, or claim
+  completeness/ontology closure. It remains outside the Lean trusted checker.
+  See `docs/reference/RUNTIME_THEORY_CHECKER.md`.
+- Lean now has `Axiograph.Theory.Finite`, a narrow finite
+  category/dependent/groupoid semantics module:
+  - relations are objects with checked role-projection arrows,
+  - paths are endpoint-indexed,
+  - free-groupoid laws are proved by mathlib denotation,
+  - finite interpretations carry dependent role/refinement/context/transport
+    witnesses,
+  - typed path holes preserve expected endpoints, and
+  - finite generator reachability is saturated with replayable explanation
+    certificates.
+  `Certificate.Format` imports this module, and `VerifyMain` dispatches the
+  anchored `category_kernel_v3` family through it. That checked family covers
+  exact presentation reconstruction, identities, typed composition, parallel
+  equations, contextual congruence replay, and bounded generator reachability;
+  broader interpretation, refinement, and transport definitions remain theorem
+  support.
+  Neither slice makes a general rewrite, ontology-closure, univalence, HIT, or
+  topos claim.
+- Lean now has a narrow operational semantic VCS conformance slice in
   `lean/Axiograph/SemanticVCS.lean`, documented in
   `docs/reference/LEAN_THEORY_EVALUATION.md`. It formalizes finite
   `SemanticSlice` join/meet preservation, conservative merge materialization,
@@ -103,17 +324,14 @@ Current implemented slice (2026-04):
   handles. Transport items carry the same typed subject links as the source
   obligation, including touched roles from equations and rewrites. They are
   operational typed transport plans, not Lean certificates.
-- semantic slice manifests built by `axiograph sem slice build` now enrich
-  semantic-commit refs with compiled `KernelModuleIr` refs from accepted
-  canonical modules:
-  - schema/category object refs,
-  - relation-object refs,
-  - role projection arrow refs,
-  - subtype inclusion arrow refs,
-  - runtime-addressable theory obligations,
-  - and instance-functor refs.
-  This makes merge/rebase slice planning operate over the same category/theory
-  handles as migration and authoring instead of only over commit summaries.
+- semantic slice builders can enrich supplied semantic-commit refs with
+  canonical `KernelRefV2` citations retained by `RuntimeModuleIndex`:
+  - schema object, relation object, role, and generator refs;
+  - theory, constraint, equation, and rewrite refs; and
+  - instance and stable fact refs.
+  This makes merge/rebase planning cite the same canonical identities as
+  authoring and migration without defining instance-functor or runtime-category
+  handles.
 - `compile_theory_ir(...)` is now a checked projector rather than a blind
   format step:
   - structured constraints validate relation/field/param references,
@@ -130,35 +348,33 @@ Current implemented slice (2026-04):
 - `axiograph_cli::semantic_claim` now projects the indexed schema/theory surface
   into a first runtime business-rule catalog:
   `RuntimeRuleCatalogV1 -> RuntimeRuleV1 { rule_id, scope, class, runtime_support, trust_class }`.
-  This is a deterministic runtime report layer for agents/review/query tooling,
-  not yet the full canonical `TheoryIr`.
-- `axiograph_cli::backend_pushdown` now consumes `CompiledSchemaIr` plus
-  backend/projection capability profiles and emits typed pushdown plans for the
-  current first-class backends:
-  - `TypeDbPushdownPlanV1`
-  - `TerminusDbPushdownPlanV1`
-  These plans are explicit about preserved tuple/role/context structure, native
-  read-only query dialect, preserved lower-tier interfaces
-  (native query / RDF dataset / SHACL validation where applicable), lifting
-  contracts back into the higher typed/meta layer, carrier-edge convenience
-  projections, and the trust caveats where backend-native querying becomes a
-  reduced lens over Axiograph semantics.
-- `BackendPushdownPlanV1::operational_surface()` now exposes the bounded
-  agent-facing operational contract over those plans:
-  - relation transport summary,
-  - context transport strategy and preserved axis bindings,
-  - residual obligations that still require Axiograph-side anchor/context
-    rechecks or reindexing,
-  - and the explicit reconciliation boundary where semantic refs, CQ gates, and
-    persisted reconciliation previews remain authoritative.
+  This is a deterministic runtime review/query surface derived from canonical
+  theory data. It cites canonical theory objects without redefining semantic
+  authority or expanding the trusted kernel.
+- `axiograph-projections` consumes only the immutable
+  `CompiledKernelSnapshot`; it does not compile a second schema IR. It emits
+  `ProjectionManifestV1` for PathDB, TypeDB, TerminusDB, RDF/OWL, and portable
+  property graphs. Every manifest carries the repository/snapshot/IR anchor,
+  closed backend capability declarations, `KernelRefV2`-anchored records,
+  finite coverage, a semantic-loss report, one read-only native artifact, and
+  Axiograph-only mutation authority.
+- `check_readback_v1` compares `(record_id, payload_fingerprint)` pairs for one
+  manifest and emits `ReadbackReportV1`. An exact match proves only equality of
+  the declared finite transport records. The enclosed
+  `ExternalEvidenceEnvelopeV1` is statically `evidence_only`, cannot change
+  accepted state, and requires typed proposal review and promotion. It does not
+  establish categorical equivalence, completeness, ontology closure, a
+  constraint theorem, or a Lean certificate.
 - `axiograph_cli::query_ir::PreparedQueryMetadataV1` and
   `PreparedQueryExplorationV1` are the current typed compiled-query surfaces
   for reports/editors/agents:
   - stable prepared-query, input-IR, and elaborated-IR ids,
   - inferred types,
   - certifiability/trust metadata and explicit non-claims,
-  - optional `KernelRefV1` citations when metadata is built from canonical
-    compiled `KernelModuleIr`,
+  - optional derived `RuntimeIrRef` citations when metadata is built under a
+    canonical compiled-snapshot anchor,
+  - an optional canonical `Query` finite-theory gate receipt when query
+    preparation has the accepted `CompiledKernelSnapshot`,
   - typed holes,
   - refinement candidates,
   - semantic claims/coverage,
@@ -179,9 +395,10 @@ Current implemented slice (2026-04):
 - CQ evaluation now surfaces `PreparedQueryMetadataV1` plus shared runtime
   refinement candidates per competency question, rather than only raw query
   strings or trust/coverage strings.
-- The full `KernelModuleIr` / shared `InstanceIr` / richer canonical
-  `ConstraintIr` enum / broader equation language / certifiable theory proof
-  export remain future work.
+- The anchored `category_kernel_v3` family already exports and checks the
+  supported finite `SchemaPresentationIr` category slice in Lean. Certifiable
+  export of the complete `KernelSnapshotIr`, including all
+  `InstanceModelIr` semantics and every theory predicate, remains future work.
 
 ## Design Rules
 
@@ -240,10 +457,13 @@ current operational seam already has three concrete surfaces:
   `PreparedQueryMetadataV1`, `PreparedQueryExplorationV1`, and
   `build_compiled_ir_exploration_evolution_preview_v1(...)`
 - typed transport / projection review:
-  `BackendPushdownPlanV1` plus `BackendPushdownOperationalSurfaceV1`
-- typed reconciliation review:
-  `ReconciliationPreviewReportV1` plus
-  `build_reconciliation_evolution_preview_v1(...)`
+  `ProjectionManifestV1`, `SemanticLossReportV1`, and `ReadbackReportV1` from
+  `axiograph-projections`
+- untrusted reconciliation analysis:
+  `UntrustedReconciliationPreviewV2` plus
+  `build_reconciliation_evolution_preview_v1(...)`; accepted merges instead
+  use AxiStore `SemReconciliationV2` reviewed candidates and compiled payload
+  fingerprints
 
 Those surfaces are still first slices, not the finished kernel. But they are
 already the correct default direction for agents and tooling:
@@ -252,8 +472,8 @@ already the correct default direction for agents and tooling:
   heuristics,
 - cite prepared query handles and elaborated query ids in CQ/refinement reports
   rather than treating raw query text as the report identity,
-- inspect backend pushdown as typed transport plus residual obligations rather
-  than as opaque adapter behavior,
+- inspect backend projections as capability-declared finite transport plus
+  `KernelRefV2`-anchored semantic losses rather than as opaque adapter behavior,
 - and inspect merge/reconciliation through persisted preview objects rather than
   implicit backend history.
 
@@ -268,59 +488,54 @@ runtime service that preserves:
 - and trust/coverage deltas that can be carried forward into review, migration,
   and reconciliation workflows.
 
-### KernelSurfaceV1 and KernelRefV1
+### Derived Runtime Indexes And Citations
 
-`KernelSurfaceV1` is the intended shared runtime index/report surface over the
-compiled kernel slice. It should gather refs from:
+`RuntimeModuleIndex`, `RuntimeSchemaIndex`, and `RuntimeSemanticIndex` are
+non-authoritative PathDB/query projections produced only after exact-byte
+canonical compilation succeeds. The semantic surface uses
+`RuntimeIrRef::Canonical { citation }`, whose payload is the exact typed
+`KernelRefV2` plus its canonical label. Runtime-theory diagnostic reports may
+use the other `RuntimeIrRef` variants internally, but those variants are not
+entries in `RuntimeSemanticIndex` and do not define category objects or arrows.
 
-- `SchemaCategoryIr` objects, relation objects, projection arrows, subtype
-  inclusions, anchors, and carrier/witness-view metadata;
-- `TheoryIr` constraints, path equations, opaque equations, rewrite rules,
-  theory subjects, touched roles, and obligations;
-- `InstanceFunctorIr` object memberships, relation fact sets, projection images,
-  subtype transports, and stable fact refs; and
-- accepted module anchors plus trust, coverage, and non-claim summaries.
+A canonical runtime citation means only that a report points to an address in
+the accepted compiled IR. It is not an accepted snapshot handle, a Lean proof,
+or a substitute for `CompiledKernelSnapshot`. Strict reports validate citation
+membership, but promotion and certification must also bind the immutable
+compiled-snapshot anchor.
 
-`KernelRefV1` is the corresponding typed reference currency. Reports should use
-it when they need to point at a schema object, relation role, category arrow,
-theory obligation, theory subject, instance-functor image, stable fact, accepted
-anchor, or derived review handle.
-
-This surface is intentionally operational. It is not a Lean proof object, not a
-new semantic authority, and not a substitute for accepted `.axi` plus compiled
-IR. Its job is to make the same typed refs available to query preparation, CQ
-evaluation, migration and transport planning, semantic diff/reconciliation,
-backend projection plans, authoring previews, and agent-facing repair reports.
-When a report cites `KernelRefV1`, it is saying "this runtime result is indexed
-against this compiled semantic handle," not "this claim is certified by Lean."
-Strict semantic reports should validate their refs against `KernelSurfaceV1`
-before they can be used for promotion, certification, merge materialization, or
-strict coverage. User-facing names and labels are ergonomics; compiled
-`KernelRefV1` handles are the runtime authority.
-
-The inspection command is:
+The inspection command remains:
 
 ```bash
 axiograph discover kernel-surface path/to/module.axi --out kernel_surface.json
 ```
 
-The read-only MCP/tool-loop surface is `semantic_kernel_surface` with
-`{"axi_text": "..."}`. It returns the same `KernelSurfaceV1` report family and
-the same non-claims.
+The command name is a report/API label. Its output is a
+`RuntimeSemanticIndex`, not a second kernel compiler. The read-only tool-loop
+surface `semantic_kernel_surface` exposes the same derived report and explicit
+non-claims.
 
 ## Top-Level Shape
 
 ```rust
-pub struct KernelModuleIr {
-    pub module_digest: AxiDigest,
-    pub schemas: Vec<SchemaCoreIr>,
-    pub theories: Vec<TheoryIr>,
-    pub instances: Vec<InstanceIr>,
-}
+pub struct KernelSnapshotIr { /* private vectors; accessor-only */ }
+pub struct SchemaPresentationIr { /* relation objects + generators + theory */ }
+pub struct InstanceModelIr { /* finite carriers + total functions + facts */ }
+pub struct CompiledKernelSnapshot { /* immutable IR + manifest + handle */ }
 ```
 
-`KernelModuleIr` is deterministic with respect to canonical accepted `.axi`
-bytes. The same accepted module must lower to the same IR.
+`CompiledKernelSnapshot` is deterministic with respect to the complete ordered
+import closure, exact source bytes, repository id, and accepted snapshot id.
+Semantic merge must compile the base/left/right candidate packages through the
+same facade. A stale manifest, conflicting duplicate module, missing import,
+wrong module header, unsupported predicate, or source/AST mismatch rejects
+before accepted state moves.
+
+Addresses alone are insufficient for reviewed merged candidates because an id
+can remain in the same namespace while a typed payload changes. Candidate gates
+must compare canonical compiled payloads under their snapshot handles and
+require typed drop/introduce decisions; address inclusion is not semantic
+preservation.
 
 ## SchemaCoreIR
 
@@ -549,12 +764,10 @@ Operational intent:
   the runtime today (`quality_gate`, `query_planning`, `rewrite_helper`) from
   rules that are only advisory metadata or review-only declarations.
 
-This layer is deliberately modest:
-
-- it is a runtime projection over the live indexed ontology surface;
-- it is useful for agent tooling, semantic summaries, and business-rule review;
-- but it is not yet the canonical `TheoryIr`, and it does not by itself expand
-  the trusted Lean-checked kernel.
+This layer is deliberately modest: it is a runtime projection over the live
+indexed ontology surface, useful for agent tooling, semantic summaries, and
+business-rule review, but it does not by itself expand the trusted Lean-checked
+kernel.
 
 ## InstanceIR
 
@@ -636,7 +849,7 @@ That means the compiled IR should make role interfaces directly available for:
 
 - typed olog binding suggestions,
 - subtype-aware query elaboration,
-- backend pushdown plans,
+- capability-declared backend projection manifests,
 - and semantic evolution previews that explain when a role is being pushed down
   to or pulled up from a subtype.
 
@@ -662,25 +875,39 @@ Default heuristic target:
 
 ## Stable IDs
 
-All kernel objects must have deterministic ids derived from canonical module
-content, not storage-local integers.
+`axiograph_dsl::identity_v2` defines validated, domain-specific V2 wire types.
+Malformed values, uppercase or short hashes, unknown versions, and cross-kind
+deserialization fail. The canonical preimage contains:
 
-Required ids include:
+1. the 12-byte ASCII magic `AXIOGRAPH-ID`;
+2. version `2` as unsigned 16-bit big-endian;
+3. the lowercase ASCII domain and its unsigned 16-bit big-endian length;
+4. the unsigned 32-bit big-endian field count; and
+5. each ordered field with an unsigned 64-bit big-endian byte length.
 
-- `SchemaId`
-- `ObjectTypeId`
-- `RelationId`
-- `RoleId`
-- `ArrowId`
-- `ContextAxisId`
-- `TheoryId`
-- `ConstraintId`
-- `EquationId`
-- `RewriteRuleId`
-- `StableFactId`
+SHA-256 hashes that preimage. No code normalizes newlines or Unicode. Module
+identity uses the exact accepted UTF-8 bytes as its only framed field.
 
-These ids are the semantic handles that Rust typed APIs, certificates, and VCS
-history should prefer.
+`compile_kernel_identity_index_v2(...)` is the implemented additive index. It
+rechecks AST/source equality and module validation, then derives typed ids for:
+
+- schemas and object types;
+- relations and roles in declared order;
+- theories, constraints, equations, and rewrite rules;
+- instances; and
+- facts with module, schema, instance, relation, ordered role ids, and exact
+  role values in the preimage.
+
+Every module-local derivation includes `ModuleDigestV2` and its typed parent id.
+`KernelRefV2` also carries the module digest explicitly. Equal labels in two
+modules therefore remain distinct and cannot be deduplicated as one semantic
+object. Fact insertion rejects a repeated id with a different typed payload.
+
+The old alternate compiler/IR names are not public Rust surfaces. PathDB keeps
+only explicitly derived runtime indexes and citations. Their storage-local ids
+do not satisfy the canonical package identity contract; certificates and
+Semantic VCS must bind the immutable compiled-snapshot handle before claiming
+canonical identity.
 
 ## Backends
 
@@ -791,8 +1018,10 @@ The remaining convergence work for this spec is:
    - `instance_ir.rs`
 2. Preserve `@context` / `@temporal` in lowering.
 3. Replace endpoint heuristics with `TraversalView`.
-4. Rebase migration/category scaffolding on `SchemaCoreIr`.
-5. Keep PathDB storage layout stable while changing the semantic lowering path.
+4. Rebase migration/category lowering on `SchemaCoreIr`.
+5. Keep any explicitly supported `.axpd` byte-format contract isolated from
+   semantic lowering changes; storage stability is opt-in, not semantic
+   authority.
 6. Keep extending prepared-query and migration-preview forms so reports cite
    IR-level ids rather than raw surface names alone.
 7. Make certificate payloads and semantic diffs name the same stable IR objects

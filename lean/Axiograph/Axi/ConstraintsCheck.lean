@@ -112,7 +112,7 @@ private def relationTuples
         continue
       for it in a.value.items do
         match it with
-        | .tuple fields => out := out.push fields
+        | .tuple _ fields => out := out.push fields
         | _ => pure ()
     out
 

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axiograph_dsl::axi_v1::parse_axi_v1;
 use axiograph_ingest_docs::{
-    Chunk, EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1,
+    EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1,
 };
 use axiograph_pathdb::certificate::{CertificatePayloadV2, CertificateV2};
 use serde::Deserialize;
@@ -22,11 +22,55 @@ struct ExampleCatalogV1 {
 struct ExampleCatalogEntryV1 {
     id: String,
     path: String,
-    kind: String,
+    surface: String,
+    teaching_tier: String,
     #[serde(default)]
     feature_tags: Vec<String>,
     #[serde(default)]
     commands: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticVcsLeanRefSetV1 {
+    #[serde(default)]
+    refs: Vec<SemanticVcsLeanRefV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticVcsLeanRefV1 {
+    kind: String,
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticVcsLeanMergeCaseV1 {
+    version: String,
+    result: SemanticVcsLeanRefSetV1,
+    #[serde(default)]
+    blockers: Vec<String>,
+    #[serde(default)]
+    resolver_steps: Vec<SemanticVcsLeanResolverStepV1>,
+    #[serde(default)]
+    residual_obligations: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticVcsLeanRebaseCaseV1 {
+    version: String,
+    #[serde(default)]
+    blockers: Vec<String>,
+    #[serde(default)]
+    transport_items: Vec<SemanticVcsLeanTransportItemV1>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticVcsLeanResolverStepV1 {
+    required: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticVcsLeanTransportItemV1 {
+    required: bool,
 }
 
 fn repo_root() -> PathBuf {
@@ -54,12 +98,19 @@ fn unique_run_dir(repo_root: &Path, label: &str) -> PathBuf {
     dir
 }
 
+fn read_semantic_vcs_case<T: for<'de> Deserialize<'de>>(repo_root: &Path, name: &str) -> T {
+    let path = repo_root.join("examples/semantic_merge").join(name);
+    serde_json::from_str(&fs::read_to_string(&path).expect("read semantic-merge case"))
+        .unwrap_or_else(|err| panic!("parse semantic-merge case {}: {err}", path.display()))
+}
+
 #[test]
 fn example_catalog_paths_exist_and_stay_teaching_oriented() {
     let repo_root = repo_root();
     let catalog_path = repo_root.join("examples/catalog.json");
     let text = fs::read_to_string(&catalog_path).expect("read examples/catalog.json");
-    let catalog: ExampleCatalogV1 = serde_json::from_str(&text).expect("parse examples/catalog.json");
+    let catalog: ExampleCatalogV1 =
+        serde_json::from_str(&text).expect("parse examples/catalog.json");
     assert_eq!(catalog.version, 1);
 
     let examples = &catalog.examples;
@@ -85,7 +136,7 @@ fn example_catalog_paths_exist_and_stay_teaching_oriented() {
         for command in &example.commands {
             assert!(
                 !command.contains("export_axi build/"),
-                "catalog example `{}` should not foreground debug snapshot export scripts",
+                "catalog example `{}` should not foreground debug export scripts",
                 example.id
             );
             assert!(
@@ -96,6 +147,57 @@ fn example_catalog_paths_exist_and_stay_teaching_oriented() {
                 example.id
             );
         }
+    }
+}
+
+#[test]
+fn public_competency_question_fixtures_lower_to_typed_queries() {
+    let repo_root = repo_root();
+    let run_dir = unique_run_dir(&repo_root, "public_competency_question_fixtures");
+    let cases = [
+        (
+            "examples/Family.axi",
+            "examples/competency_questions/family_parent.cq",
+            "Fam.Parent(child=Carol, parent=?p, ctx=CensusData, time=T2020)",
+        ),
+        (
+            "examples/ontology/OntologyRewrites.axi",
+            "examples/competency_questions/bob_parent.cq",
+            "OrgFamily.Parent(parent=?p, child=Bob)",
+        ),
+        (
+            "examples/manufacturing/SupplyChainHoTT.axi",
+            "examples/competency_questions/supply_chain.cq",
+            "SupplyChain.Flow(from=RawMetal_A, to=?to, material=Steel_Billet, qty=?qty, time=?time)",
+        ),
+    ];
+
+    for (idx, (axi, cq, expected_lowering)) in cases.into_iter().enumerate() {
+        let out = run_dir.join("build").join(format!("cq_fixture_{idx}.json"));
+        let output = Command::new(axiograph_bin())
+            .current_dir(&repo_root)
+            .arg("discover")
+            .arg("competency-questions")
+            .arg(axi)
+            .arg("--from-cq")
+            .arg(cq)
+            .arg("--no-schema")
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .expect("run competency question fixture");
+        assert!(
+            output.status.success(),
+            "competency question fixture {cq} should lower successfully\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let report = fs::read_to_string(&out).expect("read competency-question report");
+        assert!(
+            report.contains(expected_lowering),
+            "competency question fixture {cq} should lower against current schema refs"
+        );
     }
 }
 
@@ -214,13 +316,31 @@ fn semantic_merge_example_keeps_ci_safe_contract() {
     );
     assert_eq!(
         theory["summary"]["ontology_closure_claim"],
-        serde_json::json!("claimed_under_finite_fragment")
+        serde_json::json!("not_claimed_runtime_admissibility_only")
     );
+    assert!(theory["reports"]
+        .as_array()
+        .expect("runtime theory reports array")
+        .iter()
+        .all(|report| {
+            report["admissibility_scan"]["residual_obligations"]
+                .as_array()
+                .is_none_or(|residuals| {
+                    residuals
+                        .iter()
+                        .all(|residual| residual != "closure_engine_not_implemented")
+                })
+                && report["non_claims"].as_array().is_some_and(|claims| {
+                    claims.iter().any(|claim| {
+                        claim["code"] == serde_json::json!("closure_engine_not_implemented")
+                    })
+                })
+        }));
     assert_eq!(theory["summary"]["blocking_errors"], serde_json::json!(0));
     assert!(
-        theory["summary"]["closure_tiers"]
+        theory["summary"]["admissibility_scopes"]
             .as_array()
-            .expect("closure_tiers array")
+            .expect("admissibility_scopes array")
             .iter()
             .any(|tier| tier == "finite_fragment"),
         "semantic-merge base should keep the finite runtime-theory check contract"
@@ -245,7 +365,8 @@ fn semantic_merge_example_keeps_ci_safe_contract() {
         .find(|example| example.id == "semantic-merge-plant-operations")
         .expect("semantic-merge example catalog entry");
     assert_eq!(semantic_merge.path, "examples/semantic_merge");
-    assert_eq!(semantic_merge.kind, "semantic_vcs_fixture");
+    assert_eq!(semantic_merge.surface, "semantic_vcs_flow");
+    assert_eq!(semantic_merge.teaching_tier, "teaching");
     for tag in ["semantic-vcs", "merge", "rebase", "runtime-theory"] {
         assert!(
             semantic_merge.feature_tags.iter().any(|value| value == tag),
@@ -256,98 +377,67 @@ fn semantic_merge_example_keeps_ci_safe_contract() {
         semantic_merge
             .commands
             .iter()
-            .any(|command| command == "./examples/semantic_merge/run_merge_flow.sh"),
-        "semantic-merge catalog entry should keep the runnable script"
+            .any(|command| command == "make verify-lean-semantic-vcs"),
+        "semantic-merge catalog entry should expose the focused Rust+Lean gate"
     );
     assert!(
-        semantic_merge
-            .commands
-            .iter()
-            .any(|command| command.contains("check theory examples/semantic_merge/PlantOperationsCore.axi")),
+        semantic_merge.commands.iter().any(|command| command
+            .contains("check theory examples/semantic_merge/PlantOperationsCore.axi")),
         "semantic-merge catalog entry should expose the lightweight runtime-theory check"
     );
 
-    let script_path = repo_root.join("examples/semantic_merge/run_merge_flow.sh");
-    let script = fs::read_to_string(&script_path).expect("read semantic-merge script");
     assert!(
-        script.contains("AXIOGRAPH_BIN"),
-        "semantic-merge script should allow tests/CI to inject the built axiograph binary"
-    );
-    assert!(
-        script.contains("merge_plan_lean.json")
-            && script.contains("rebase_plan_lean.json")
-            && script.contains("plant_conflict_merge_lean.json")
-            && script.contains("semantic_vcs_conformance_coverage.json"),
-        "semantic-merge script should keep generated Lean payloads, negative fixtures, and coverage report wired"
-    );
-    assert!(
-        script.contains("semantic_vcs_conformance_coverage_v1")
-            && script.contains("complete_for_claimed_surface"),
-        "semantic-merge script should emit the machine-readable conformance coverage report"
-    );
-    for forbidden in ["curl ", "git clone", "lake update"] {
-        assert!(
-            !script.contains(forbidden),
-            "semantic-merge script should not require network setup in the example flow"
-        );
-    }
-
-    let read_fixture = |name: &str| -> serde_json::Value {
-        let path = repo_root.join("examples/semantic_merge").join(name);
-        serde_json::from_str(&fs::read_to_string(&path).expect("read semantic-merge fixture"))
-            .unwrap_or_else(|err| panic!("parse semantic-merge fixture {}: {err}", path.display()))
-    };
-
-    let clean_merge = read_fixture("plant_clean_merge_lean.json");
-    assert_eq!(
-        clean_merge["version"],
-        serde_json::json!("semantic_vcs_lean_merge_plan_v1")
-    );
-    assert_eq!(clean_merge["blockers"], serde_json::json!([]));
-    assert_eq!(clean_merge["resolver_steps"], serde_json::json!([]));
-    assert_eq!(clean_merge["residual_obligations"], serde_json::json!([]));
-    assert!(
-        !clean_merge["result"]["refs"]
-            .as_array()
-            .expect("clean merge result refs")
-            .is_empty(),
-        "clean merge fixture should cite result refs"
+        !repo_root
+            .join("examples/semantic_merge/run_merge_flow.sh")
+            .exists(),
+        "removed filesystem semantic-VCS runner must not return"
     );
 
-    let clean_rebase = read_fixture("plant_clean_rebase_lean.json");
-    assert_eq!(
-        clean_rebase["version"],
-        serde_json::json!("semantic_vcs_lean_rebase_plan_v1")
-    );
-    assert_eq!(clean_rebase["blockers"], serde_json::json!([]));
+    let clean_merge: SemanticVcsLeanMergeCaseV1 =
+        read_semantic_vcs_case(&repo_root, "plant_clean_merge_lean.json");
+    assert_eq!(clean_merge.version, "semantic_vcs_lean_merge_plan_v1");
+    assert!(clean_merge.blockers.is_empty());
+    assert!(clean_merge.resolver_steps.is_empty());
+    assert!(clean_merge.residual_obligations.is_empty());
     assert!(
-        clean_rebase["transport_items"]
-            .as_array()
-            .expect("clean rebase transport items")
+        !clean_merge.result.refs.is_empty(),
+        "clean merge case should cite result refs"
+    );
+    assert!(
+        clean_merge
+            .result
+            .refs
             .iter()
-            .any(|item| item["required"] == serde_json::json!(true)),
-        "clean rebase fixture should keep a required transport item"
+            .any(|reference| reference.kind == "relation_object"
+                && reference.id == "PlantProcurement.ReleaseDocumentForLot"),
+        "clean merge case should cite typed result refs"
     );
 
-    let conflict_merge = read_fixture("plant_conflict_merge_lean.json");
-    assert_eq!(
-        conflict_merge["version"],
-        serde_json::json!("semantic_vcs_lean_merge_plan_v1")
-    );
+    let clean_rebase: SemanticVcsLeanRebaseCaseV1 =
+        read_semantic_vcs_case(&repo_root, "plant_clean_rebase_lean.json");
+    assert_eq!(clean_rebase.version, "semantic_vcs_lean_rebase_plan_v1");
+    assert!(clean_rebase.blockers.is_empty());
     assert!(
-        !conflict_merge["blockers"]
-            .as_array()
-            .expect("conflict merge blockers")
-            .is_empty(),
-        "conflict fixture should remain a negative merge case"
-    );
-    assert!(
-        conflict_merge["resolver_steps"]
-            .as_array()
-            .expect("conflict resolver steps")
+        clean_rebase
+            .transport_items
             .iter()
-            .any(|step| step["required"] == serde_json::json!(true)),
-        "conflict fixture should require a typed resolver step"
+            .any(|item| item.required),
+        "clean rebase case should keep a required transport item"
+    );
+
+    let conflict_merge: SemanticVcsLeanMergeCaseV1 =
+        read_semantic_vcs_case(&repo_root, "plant_conflict_merge_lean.json");
+    assert_eq!(conflict_merge.version, "semantic_vcs_lean_merge_plan_v1");
+    assert!(
+        !conflict_merge.blockers.is_empty(),
+        "conflict case should remain a negative merge case"
+    );
+    assert!(
+        conflict_merge
+            .resolver_steps
+            .iter()
+            .any(|step| step.required),
+        "conflict case should require a typed resolver step"
     );
 }
 
@@ -389,7 +479,7 @@ fn validate_all_examples_axi() {
 }
 
 #[test]
-fn behavior_case_example_fixture_runs() {
+fn behavior_case_example_runs() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
     let run_dir = unique_run_dir(&repo_root, "behavior_case_example");
@@ -407,11 +497,11 @@ fn behavior_case_example_fixture_runs() {
         .arg("--out")
         .arg(&out_path)
         .status()
-        .expect("run behavior-case example fixture");
+        .expect("run behavior-case example");
 
     assert!(
         status.success(),
-        "behavior-case example fixture failed (exit={})",
+        "behavior-case example failed (exit={})",
         status.code().unwrap_or(-1)
     );
 
@@ -455,7 +545,7 @@ fn software_authoring_behavior_case_emits_multi_language_skeletons() {
         .arg("--out")
         .arg(&out_path)
         .status()
-        .expect("run software-authoring behavior-case example fixture");
+        .expect("run software-authoring behavior-case example");
 
     assert!(
         status.success(),
@@ -795,6 +885,7 @@ fn software_authoring_codegen_suite_runs_new_examples() {
 
         let example_out = out_root.join(example_id);
         for file in [
+            "authoring_workspace_report.json",
             "theory_check.json",
             "overlay_validation.json",
             "coverage_query.json",
@@ -830,7 +921,7 @@ fn software_authoring_codegen_suite_runs_new_examples() {
 }
 
 #[test]
-fn software_authoring_cli_exposes_codegen_and_editor_contracts() {
+fn software_authoring_cli_exposes_unified_workspace_and_editor_contracts() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
     let run_dir = unique_run_dir(&repo_root, "software_authoring_cli_contracts");
@@ -838,6 +929,7 @@ fn software_authoring_cli_exposes_codegen_and_editor_contracts() {
     let tool_specs = run_dir.join("build/tool_specs.json");
     let lsp = run_dir.join("build/lsp_capabilities.json");
     let integration_manifest = run_dir.join("build/integration_manifest.json");
+    let authoring_report = run_dir.join("build/authoring_workspace_report.json");
 
     let codegen = Command::new(&bin)
         .current_dir(&repo_root)
@@ -861,6 +953,20 @@ fn software_authoring_cli_exposes_codegen_and_editor_contracts() {
         .expect("run authoring tool-specs");
     assert!(specs.success(), "authoring tool-specs failed");
 
+    let workspace_status = Command::new(&bin)
+        .current_dir(&repo_root)
+        .arg("authoring")
+        .arg("workspace")
+        .arg("--workspace")
+        .arg(".")
+        .arg("--request")
+        .arg("examples/software_authoring/authoring_workspace_request.json")
+        .arg("--out")
+        .arg(&authoring_report)
+        .status()
+        .expect("run unified authoring workspace");
+    assert!(workspace_status.success(), "authoring workspace failed");
+
     let lsp_status = Command::new(&bin)
         .current_dir(&repo_root)
         .arg("authoring")
@@ -875,6 +981,8 @@ fn software_authoring_cli_exposes_codegen_and_editor_contracts() {
         .current_dir(&repo_root)
         .arg("authoring")
         .arg("integration-manifest")
+        .arg("--workspace")
+        .arg(".")
         .arg("--out")
         .arg(&integration_manifest)
         .status()
@@ -905,12 +1013,26 @@ fn software_authoring_cli_exposes_codegen_and_editor_contracts() {
         serde_json::json!("axiograph_software_authoring_tool_specs_v1")
     );
 
+    let authoring_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&authoring_report).expect("read authoring workspace report"),
+    )
+    .expect("parse authoring workspace report");
+    assert_eq!(
+        authoring_json["version"],
+        serde_json::json!("authoring_workspace_report_v1")
+    );
+    assert!(authoring_json["query_explanation"].is_object());
+    assert_eq!(
+        authoring_json["competency_questions"]["promotion_gate"],
+        serde_json::json!("passed")
+    );
+
     let lsp_json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&lsp).expect("read lsp capabilities"))
             .expect("parse lsp capabilities");
     assert_eq!(
         lsp_json["version"],
-        serde_json::json!("axiograph_software_authoring_lsp_capabilities_v1")
+        serde_json::json!("authoring_workspace_capabilities_v1")
     );
 
     let manifest_json: serde_json::Value = serde_json::from_str(
@@ -919,21 +1041,24 @@ fn software_authoring_cli_exposes_codegen_and_editor_contracts() {
     .expect("parse integration manifest");
     assert_eq!(
         manifest_json["version"],
-        serde_json::json!("axiograph_software_authoring_integration_manifest_v1")
+        serde_json::json!("authoring_workspace_integration_manifest_v1")
     );
     assert_eq!(
         manifest_json["lsp"]["args"],
-        serde_json::json!(["authoring", "lsp"])
+        serde_json::json!(["authoring", "lsp", "--workspace", "."])
     );
     assert_eq!(
         manifest_json["mcp"]["args"],
-        serde_json::json!(["authoring", "mcp"])
+        serde_json::json!(["authoring", "mcp", "--workspace", "."])
     );
-    assert!(manifest_json["mcp"]["tools"]
-        .as_array()
-        .expect("mcp tools")
-        .iter()
-        .any(|tool| tool["name"] == serde_json::json!("axiograph_authoring_codegen_plan")));
+    assert_eq!(
+        manifest_json["request_contract"],
+        serde_json::json!("authoring_workspace_request_v1")
+    );
+    assert_eq!(
+        lsp_json["mcp"]["tool"],
+        serde_json::json!("axiograph_authoring_workspace")
+    );
 }
 
 #[test]
@@ -981,7 +1106,7 @@ fn embedded_tooling_behavior_case_fields_fail_clearly() {
 }
 
 #[test]
-fn software_authoring_runtime_theory_check_reports_closure_trace() {
+fn software_authoring_runtime_theory_check_reports_admissibility_trace() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -1008,11 +1133,11 @@ fn software_authoring_runtime_theory_check_reports_closure_trace() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("closure trace:"),
-        "expected human summary to expose closure trace, got: {stdout}"
+        stdout.contains("admissibility trace:"),
+        "expected human summary to expose admissibility trace, got: {stdout}"
     );
     assert!(
-        stdout.contains("anchor: module_digest=fnv1a64:"),
+        stdout.contains("anchor: revision_digest=axi:revision:v2:sha256:"),
         "expected human summary to expose canonical module digest, got: {stdout}"
     );
     assert!(
@@ -1024,13 +1149,17 @@ fn software_authoring_runtime_theory_check_reports_closure_trace() {
         "expected human summary to expose evidence threshold, got: {stdout}"
     );
     assert!(
-        stdout.contains("ontology_closed=true"),
-        "expected ontology closure claim under declared assumptions, got: {stdout}"
+        stdout.contains("saturation=not_run"),
+        "expected human summary to deny synthetic saturation, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("closure requires a separate replayable finite certificate"),
+        "expected next action to preserve the non-closure boundary, got: {stdout}"
     );
 }
 
 #[test]
-fn typecheck_cert_smoke() {
+fn typecheck_cert_regression() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -1060,9 +1189,12 @@ fn typecheck_cert_smoke() {
     assert_eq!(cert.version, 2);
     let anchor = cert.anchor.expect("expected anchor");
     assert!(
-        anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
+        anchor
+            .revision_digest_v2
+            .as_str()
+            .starts_with("axi:revision:v2:sha256:"),
         "unexpected digest format: {}",
-        anchor.axi_digest_v1
+        anchor.revision_digest_v2
     );
 
     match cert.payload {
@@ -1075,7 +1207,7 @@ fn typecheck_cert_smoke() {
 }
 
 #[test]
-fn constraints_cert_smoke() {
+fn constraints_cert_regression() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -1106,9 +1238,12 @@ fn constraints_cert_smoke() {
     assert_eq!(cert.version, 2);
     let anchor = cert.anchor.expect("expected anchor");
     assert!(
-        anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
+        anchor
+            .revision_digest_v2
+            .as_str()
+            .starts_with("axi:revision:v2:sha256:"),
         "unexpected digest format: {}",
-        anchor.axi_digest_v1
+        anchor.revision_digest_v2
     );
 
     match cert.payload {
@@ -1123,523 +1258,7 @@ fn constraints_cert_smoke() {
 }
 
 #[test]
-fn canonical_only_cert_commands_reject_pathdb_export_snapshots() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "canonical_only_certs_reject_snapshot");
-    let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
-    let axpd = run_dir.join("build/snapshot.axpd");
-    let export_axi = run_dir.join("build/snapshot_export.axi");
-
-    let import_status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("pathdb")
-        .arg("materialize-axi")
-        .arg(&input)
-        .arg("--out")
-        .arg(&axpd)
-        .status()
-        .expect("run axiograph db pathdb materialize-axi");
-    assert!(
-        import_status.success(),
-        "db pathdb materialize-axi failed (exit={})",
-        import_status.code().unwrap_or(-1)
-    );
-
-    let export_status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("pathdb")
-        .arg("export-axi")
-        .arg(&axpd)
-        .arg("--out")
-        .arg(&export_axi)
-        .status()
-        .expect("run axiograph db pathdb export-axi");
-    assert!(
-        export_status.success(),
-        "db pathdb export-axi failed (exit={})",
-        export_status.code().unwrap_or(-1)
-    );
-
-    let expected = "expected a canonical .axi module, but input is a PathDBExportV1 snapshot";
-
-    let typecheck = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("cert")
-        .arg("typecheck")
-        .arg(&export_axi)
-        .output()
-        .expect("run axiograph cert typecheck on snapshot export");
-    assert!(
-        !typecheck.status.success(),
-        "expected cert typecheck to reject PathDBExportV1 snapshot"
-    );
-    let typecheck_stderr = String::from_utf8_lossy(&typecheck.stderr);
-    assert!(
-        typecheck_stderr.contains(expected),
-        "expected typecheck stderr to mention canonical-only rejection, got: {typecheck_stderr}"
-    );
-
-    let constraints = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("cert")
-        .arg("constraints")
-        .arg(&export_axi)
-        .output()
-        .expect("run axiograph cert constraints on snapshot export");
-    assert!(
-        !constraints.status.success(),
-        "expected cert constraints to reject PathDBExportV1 snapshot"
-    );
-    let constraints_stderr = String::from_utf8_lossy(&constraints.stderr);
-    assert!(
-        constraints_stderr.contains(expected),
-        "expected constraints stderr to mention canonical-only rejection, got: {constraints_stderr}"
-    );
-
-    let query = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("cert")
-        .arg("query")
-        .arg(&export_axi)
-        .arg("--lang")
-        .arg("axql")
-        .arg("select ?x where ?x : Node limit 1")
-        .output()
-        .expect("run axiograph cert query on snapshot export");
-    assert!(
-        !query.status.success(),
-        "expected cert query to reject PathDBExportV1 snapshot"
-    );
-    let query_stderr = String::from_utf8_lossy(&query.stderr);
-    assert!(
-        query_stderr.contains(expected),
-        "expected query stderr to mention canonical-only rejection, got: {query_stderr}"
-    );
-
-    let viz = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("tools")
-        .arg("viz")
-        .arg(&export_axi)
-        .arg("--out")
-        .arg(run_dir.join("build/snapshot.dot"))
-        .output()
-        .expect("run axiograph tools viz on snapshot export");
-    assert!(
-        !viz.status.success(),
-        "expected generic tools viz loading to reject PathDBExportV1 snapshot"
-    );
-    let viz_stderr = String::from_utf8_lossy(&viz.stderr);
-    assert!(
-        viz_stderr
-            .contains("generic semantic/query/cert commands only accept canonical .axi modules"),
-        "expected viz stderr to mention generic canonical-only rejection, got: {viz_stderr}"
-    );
-
-    let fragment = run_dir.join("build/empty_olog_fragment.json");
-    fs::write(
-        &fragment,
-        serde_json::to_vec_pretty(&serde_json::json!({})).expect("serialize empty olog fragment"),
-    )
-    .expect("write empty olog fragment");
-    let check_olog = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("discover")
-        .arg("check-olog")
-        .arg(&export_axi)
-        .arg("--fragment")
-        .arg(&fragment)
-        .output()
-        .expect("run axiograph discover check-olog on snapshot export");
-    assert!(
-        !check_olog.status.success(),
-        "expected discover check-olog to reject PathDBExportV1 snapshot"
-    );
-    let check_olog_stderr = String::from_utf8_lossy(&check_olog.stderr);
-    assert!(
-        check_olog_stderr.contains(expected),
-        "expected check-olog stderr to mention canonical-only rejection, got: {check_olog_stderr}"
-    );
-}
-
-#[test]
-fn pathdb_import_axi_rejects_canonical_modules_with_materialize_guidance() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-    let run_dir = unique_run_dir(&repo_root, "pathdb_import_axi_rejects_canonical");
-    let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
-    let axpd = run_dir.join("build/snapshot.axpd");
-
-    let output = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("pathdb")
-        .arg("import-axi")
-        .arg(&input)
-        .arg("--out")
-        .arg(&axpd)
-        .output()
-        .expect("run axiograph db pathdb import-axi on canonical .axi");
-
-    assert!(
-        !output.status.success(),
-        "db pathdb import-axi should reject canonical modules"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("materialize-axi"),
-        "expected materialize-axi guidance, got: {stderr}"
-    );
-}
-
-#[test]
-fn accept_promote_rejects_pathdb_export_snapshot_without_mutating_store() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "accept_promote_rejects_snapshot");
-    let accepted_dir = run_dir.join("build/accepted_plane");
-    fs::create_dir_all(&accepted_dir).expect("create accepted dir");
-
-    let base_axi = run_dir.join("build/Base.axi");
-    fs::write(
-        &base_axi,
-        r#"module Base
-
-schema Base:
-  object Seed
-
-instance BaseInst of Base:
-  Seed = {seed0}
-"#,
-    )
-    .expect("write base module");
-
-    let base_promote = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("promote")
-        .arg(&base_axi)
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--message")
-        .arg("test: base snapshot")
-        .status()
-        .expect("run base accept promote");
-    assert!(
-        base_promote.success(),
-        "base accept promote failed (exit={})",
-        base_promote.code().unwrap_or(-1)
-    );
-
-    let head_before = fs::read_to_string(accepted_dir.join("HEAD")).expect("read HEAD before");
-    let log_before = fs::read_to_string(accepted_dir.join("accepted_plane.log.jsonl"))
-        .expect("read accepted plane log before");
-
-    let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
-    let axpd = run_dir.join("build/snapshot.axpd");
-    let export_axi = run_dir.join("build/snapshot_export.axi");
-
-    let import_status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("pathdb")
-        .arg("materialize-axi")
-        .arg(&input)
-        .arg("--out")
-        .arg(&axpd)
-        .status()
-        .expect("run axiograph db pathdb materialize-axi");
-    assert!(
-        import_status.success(),
-        "db pathdb materialize-axi failed (exit={})",
-        import_status.code().unwrap_or(-1)
-    );
-
-    let export_status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("pathdb")
-        .arg("export-axi")
-        .arg(&axpd)
-        .arg("--out")
-        .arg(&export_axi)
-        .status()
-        .expect("run axiograph db pathdb export-axi");
-    assert!(
-        export_status.success(),
-        "db pathdb export-axi failed (exit={})",
-        export_status.code().unwrap_or(-1)
-    );
-
-    let promote = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("promote")
-        .arg(&export_axi)
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--message")
-        .arg("test: should reject snapshot export")
-        .output()
-        .expect("run accept promote on snapshot export");
-    assert!(
-        !promote.status.success(),
-        "expected accept promote to reject PathDBExportV1 snapshot"
-    );
-    let stderr = String::from_utf8_lossy(&promote.stderr);
-    assert!(
-        stderr.contains("snapshot")
-            || stderr.contains("PathDBExportV1")
-            || stderr.contains("unsupported"),
-        "expected stderr to mention snapshot/canonical rejection, got: {stderr}"
-    );
-
-    let head_after = fs::read_to_string(accepted_dir.join("HEAD")).expect("read HEAD after");
-    assert_eq!(
-        head_after, head_before,
-        "HEAD should not advance when promote rejects a snapshot export"
-    );
-
-    let log_after = fs::read_to_string(accepted_dir.join("accepted_plane.log.jsonl"))
-        .expect("read accepted plane log after");
-    assert_eq!(
-        log_after, log_before,
-        "accepted_plane.log.jsonl should not gain a new event on rejected promote"
-    );
-}
-
-#[test]
-fn pathdb_wal_import_proposals_smoke() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "pathdb_wal_proposals");
-    let out_dir = run_dir.join("build");
-    let accepted_dir = out_dir.join("accepted_plane");
-    fs::create_dir_all(&accepted_dir).expect("create accepted dir");
-
-    // ---------------------------------------------------------------------
-    // A) Create a tiny accepted-plane base snapshot (canonical meaning plane).
-    // ---------------------------------------------------------------------
-    let base_axi = out_dir.join("WalBase.axi");
-    fs::write(
-        &base_axi,
-        r#"module WalBase
-
-schema rdfowl:
-  object Person
-  object Context
-  relation knows(subject: Person, object: Person) @context Context
-
-instance WalBaseInst of rdfowl:
-  Person = {SeedPerson}
-  Context = {SeedContext}
-"#,
-    )
-    .expect("write base module");
-
-    let promote = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("promote")
-        .arg(&base_axi)
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--message")
-        .arg("test: base snapshot")
-        .output()
-        .expect("run promote");
-    assert!(
-        promote.status.success(),
-        "promote failed: {}",
-        String::from_utf8_lossy(&promote.stderr)
-    );
-    let accepted_snapshot_id = String::from_utf8_lossy(&promote.stdout).trim().to_string();
-    assert!(
-        !accepted_snapshot_id.is_empty(),
-        "expected promote to print snapshot id"
-    );
-
-    // ---------------------------------------------------------------------
-    // B) Ingest RDF TriG fixture → proposals.json.
-    // ---------------------------------------------------------------------
-    let fixture_dir = repo_root.join("examples/rdfowl/named_graphs_minimal");
-    let ingest = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("ingest")
-        .arg("dir")
-        .arg(&fixture_dir)
-        .arg("--out-dir")
-        .arg(&out_dir)
-        .arg("--domain")
-        .arg("rdfowl")
-        .output()
-        .expect("run ingest dir");
-    assert!(
-        ingest.status.success(),
-        "ingest failed: {}",
-        String::from_utf8_lossy(&ingest.stderr)
-    );
-    let proposals_path = out_dir.join("proposals.json");
-    assert!(proposals_path.exists(), "expected proposals.json");
-
-    // ---------------------------------------------------------------------
-    // C) Commit proposals.json into the PathDB WAL and checkout .axpd.
-    // ---------------------------------------------------------------------
-    let commit = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("pathdb-commit")
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--accepted-snapshot")
-        .arg(&accepted_snapshot_id)
-        .arg("--proposals")
-        .arg(&proposals_path)
-        .arg("--message")
-        .arg("test: preserve proposals")
-        .output()
-        .expect("run pathdb-commit");
-    assert!(
-        commit.status.success(),
-        "pathdb-commit failed: {}",
-        String::from_utf8_lossy(&commit.stderr)
-    );
-    let wal_snapshot_id = String::from_utf8_lossy(&commit.stdout).trim().to_string();
-    assert!(!wal_snapshot_id.is_empty(), "expected WAL snapshot id");
-
-    let axpd = out_dir.join("evidence_plane.axpd");
-    let build = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("pathdb-build")
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--snapshot")
-        .arg(&wal_snapshot_id)
-        .arg("--out")
-        .arg(&axpd)
-        .output()
-        .expect("run pathdb-build");
-    assert!(
-        build.status.success(),
-        "pathdb-build failed: {}",
-        String::from_utf8_lossy(&build.stderr)
-    );
-
-    // ---------------------------------------------------------------------
-    // D) Validate that evidence-plane data was preserved in PathDB.
-    // ---------------------------------------------------------------------
-    let bytes = fs::read(&axpd).expect("read axpd");
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes).expect("parse axpd");
-
-    // Resolve resource entities by `name`.
-    let name_key = db.interner.id_of("name").expect("interned name key");
-    let a_name = db.interner.id_of("a").expect("interned a");
-    let b_name = db.interner.id_of("b").expect("interned b");
-    let c_name = db.interner.id_of("c").expect("interned c");
-    let g_plan_name = db.interner.id_of("g_plan").expect("interned g_plan");
-    let g_observed_name = db
-        .interner
-        .id_of("g_observed")
-        .expect("interned g_observed");
-
-    let a_id = db
-        .entities
-        .entities_with_attr_value(name_key, a_name)
-        .iter()
-        .next()
-        .expect("entity named a");
-    let b_id = db
-        .entities
-        .entities_with_attr_value(name_key, b_name)
-        .iter()
-        .next()
-        .expect("entity named b");
-    let c_id = db
-        .entities
-        .entities_with_attr_value(name_key, c_name)
-        .iter()
-        .next()
-        .expect("entity named c");
-
-    let g_plan_id = db
-        .entities
-        .entities_with_attr_value(name_key, g_plan_name)
-        .iter()
-        .next()
-        .expect("context named g_plan");
-    let g_observed_id = db
-        .entities
-        .entities_with_attr_value(name_key, g_observed_name)
-        .iter()
-        .next()
-        .expect("context named g_observed");
-
-    // Ensure `iri` attribute is preserved for `a`.
-    let iri_key = db.interner.id_of("iri").expect("interned iri key");
-    let iri_val = db
-        .interner
-        .id_of("http://example.org/a")
-        .expect("interned a iri");
-    assert_eq!(
-        db.entities.get_attr(a_id, iri_key),
-        Some(iri_val),
-        "expected entity `a` to preserve iri attribute"
-    );
-
-    // Find `knows` fact nodes and confirm they are correctly scoped per context.
-    let axi_relation_key = db
-        .interner
-        .id_of(axiograph_pathdb::axi_meta::ATTR_AXI_RELATION)
-        .expect("interned axi_relation key");
-    let knows_val = db.interner.id_of("knows").expect("interned knows");
-    let knows_facts = db
-        .entities
-        .entities_with_attr_value(axi_relation_key, knows_val);
-    assert!(!knows_facts.is_empty(), "expected knows fact nodes");
-
-    let subject_rel = db.interner.id_of("subject").expect("interned subject");
-    let object_rel = db.interner.id_of("object").expect("interned object");
-    let in_ctx_rel = db
-        .interner
-        .id_of(axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT)
-        .expect("interned axi_fact_in_context");
-
-    let mut saw_plan = false;
-    let mut saw_observed = false;
-    for f in knows_facts.iter() {
-        let has_subject_a = db.relations.has_edge(f, subject_rel, a_id);
-        if !has_subject_a {
-            continue;
-        }
-        let has_ctx_plan = db.relations.has_edge(f, in_ctx_rel, g_plan_id);
-        let has_ctx_observed = db.relations.has_edge(f, in_ctx_rel, g_observed_id);
-
-        if has_ctx_plan && db.relations.has_edge(f, object_rel, b_id) {
-            saw_plan = true;
-        }
-        if has_ctx_observed && db.relations.has_edge(f, object_rel, c_id) {
-            saw_observed = true;
-        }
-    }
-
-    assert!(saw_plan, "expected g_plan to assert knows(a,b)");
-    assert!(saw_observed, "expected g_observed to assert knows(a,c)");
-}
-
-#[test]
-fn analyze_network_and_quality_smoke() {
+fn analyze_network_and_quality_regression() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -1677,6 +1296,8 @@ fn analyze_network_and_quality_smoke() {
 
     let status = Command::new(&bin)
         .current_dir(&run_dir)
+        .arg("--cpu-profile")
+        .arg("off")
         .arg("check")
         .arg("quality")
         .arg(&input)
@@ -1703,255 +1324,40 @@ fn analyze_network_and_quality_smoke() {
 }
 
 #[test]
-fn accepted_plane_promote_and_build_pathdb_smoke() {
+fn removed_accepted_plane_cli_fails_closed_without_writing_state() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
-    let run_dir = unique_run_dir(&repo_root, "accepted_plane");
-    let accepted_dir = run_dir.join("build/accepted_plane");
-    let out_axpd = run_dir.join("build/accepted_plane.axpd");
-
-    let input = repo_root.join("examples/Family.axi");
-    let status = Command::new(&bin)
+    let run_dir = unique_run_dir(&repo_root, "removed_accepted_plane_cli");
+    let obsolete_dir = run_dir.join("build/accepted_plane");
+    let output = Command::new(&bin)
         .current_dir(&run_dir)
         .arg("db")
         .arg("accept")
         .arg("promote")
-        .arg(&input)
+        .arg(repo_root.join("examples/ontology/OntologyRewrites.axi"))
         .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--message")
-        .arg("e2e smoke: accept promote")
-        .status()
-        .expect("run axiograph db accept promote");
+        .arg(&obsolete_dir)
+        .output()
+        .expect("run removed accepted-plane command");
 
     assert!(
-        status.success(),
-        "accept promote failed for `{}` (exit={})",
-        input.display(),
-        status.code().unwrap_or(-1)
+        !output.status.success(),
+        "removed command unexpectedly succeeded"
     );
-
-    let snapshot_id = fs::read_to_string(accepted_dir.join("HEAD"))
-        .expect("read accepted plane HEAD")
-        .trim()
-        .to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !snapshot_id.is_empty(),
-        "expected accepted plane HEAD snapshot id"
+        stderr.contains("unrecognized subcommand 'accept'"),
+        "unexpected removed-command error: {stderr}"
     );
-
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("build-pathdb")
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--snapshot")
-        .arg("latest")
-        .arg("--out")
-        .arg(&out_axpd)
-        .status()
-        .expect("run axiograph db accept build-pathdb");
-
     assert!(
-        status.success(),
-        "accept build-pathdb failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    let bytes = fs::read(&out_axpd).expect("read rebuilt axpd");
-    assert!(bytes.len() > 64, "expected non-empty axpd output");
-
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes).expect("parse rebuilt axpd");
-    assert!(
-        !db.entities.is_empty(),
-        "expected non-empty PathDB entities after rebuild"
-    );
-
-    // Grounding always has evidence: accepted-plane builds embed `.axi` module
-    // source as DocChunks so LLM/UI flows can cite and open it.
-    let has_chunks = db
-        .find_by_type("DocChunk")
-        .map(|bm| !bm.is_empty())
-        .unwrap_or(false);
-    assert!(
-        has_chunks,
-        "expected at least one DocChunk in accepted build"
+        !obsolete_dir.exists(),
+        "removed command must not create legacy accepted-plane state"
     );
 }
 
 #[test]
-fn accepted_plane_pathdb_wal_commit_and_build_smoke() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "pathdb_wal");
-    let accepted_dir = run_dir.join("build/accepted_plane");
-    let out_axpd = run_dir.join("build/pathdb_wal.axpd");
-
-    // 1) Create an accepted-plane snapshot (canonical `.axi` is the anchor).
-    let input = repo_root.join("examples/Family.axi");
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("promote")
-        .arg(&input)
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--message")
-        .arg("e2e smoke: accept promote (pathdb wal)")
-        .status()
-        .expect("run axiograph db accept promote");
-    assert!(
-        status.success(),
-        "accept promote failed for `{}` (exit={})",
-        input.display(),
-        status.code().unwrap_or(-1)
-    );
-
-    // 2) Commit an extension-layer overlay (chunks.json) into the PathDB WAL.
-    let chunks_path = run_dir.join("build/chunks.json");
-    let chunks: Vec<Chunk> = vec![Chunk {
-        chunk_id: "chunk0".to_string(),
-        document_id: "doc0.txt".to_string(),
-        page: None,
-        span_id: "span0".to_string(),
-        text: "Family mentions Alice and Bob".to_string(),
-        bbox: None,
-        metadata: HashMap::new(),
-    }];
-    fs::write(
-        &chunks_path,
-        axiograph_ingest_docs::chunks_to_json_for_chunks("examples_e2e", "doc0.txt", chunks)
-            .expect("serialize chunks"),
-    )
-    .expect("write chunks.json");
-
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("pathdb-commit")
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--accepted-snapshot")
-        .arg("latest")
-        .arg("--chunks")
-        .arg(&chunks_path)
-        .arg("--message")
-        .arg("e2e smoke: pathdb wal commit")
-        .status()
-        .expect("run axiograph db accept pathdb-commit");
-    assert!(
-        status.success(),
-        "accept pathdb-commit failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    let pathdb_head = fs::read_to_string(accepted_dir.join("pathdb").join("HEAD"))
-        .expect("read pathdb wal HEAD")
-        .trim()
-        .to_string();
-    assert!(
-        !pathdb_head.is_empty(),
-        "expected non-empty pathdb wal HEAD"
-    );
-
-    // 3) Check out the `.axpd` from the WAL snapshot.
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("pathdb-build")
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--snapshot")
-        .arg("latest")
-        .arg("--out")
-        .arg(&out_axpd)
-        .status()
-        .expect("run axiograph db accept pathdb-build");
-    assert!(
-        status.success(),
-        "accept pathdb-build failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    let bytes = fs::read(&out_axpd).expect("read pathdb wal axpd");
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes).expect("parse pathdb wal axpd");
-
-    let chunk_id_key = db.interner.id_of("chunk_id").expect("chunk_id attr key id");
-    let want = db.interner.id_of("chunk0").expect("chunk0 value id");
-    let mut found = false;
-    if let Some(chunks) = db.find_by_type("DocChunk") {
-        for id in chunks.iter() {
-            if db.entities.get_attr(id, chunk_id_key) == Some(want) {
-                found = true;
-                break;
-            }
-        }
-    }
-    assert!(
-        found,
-        "expected committed DocChunk chunk_id=chunk0 after wal commit"
-    );
-}
-
-#[test]
-fn accepted_plane_promote_with_quality_report_smoke() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "accepted_plane_quality");
-    let accepted_dir = run_dir.join("build/accepted_plane");
-
-    let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("db")
-        .arg("accept")
-        .arg("promote")
-        .arg(&input)
-        .arg("--dir")
-        .arg(&accepted_dir)
-        .arg("--quality")
-        .arg("strict")
-        .arg("--message")
-        .arg("e2e smoke: accept promote (quality)")
-        .status()
-        .expect("run axiograph db accept promote --quality strict");
-
-    assert!(
-        status.success(),
-        "accept promote --quality strict failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    let log_path = accepted_dir.join("accepted_plane.log.jsonl");
-    let log = fs::read_to_string(&log_path).expect("read accepted plane log");
-    let last_line = log
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .last()
-        .expect("expected at least one log line");
-    let event: serde_json::Value = serde_json::from_str(last_line).expect("parse event json");
-
-    let rel = event["quality_report_path"]
-        .as_str()
-        .expect("expected quality_report_path on event");
-    let report_path = accepted_dir.join(rel);
-    assert!(
-        report_path.exists(),
-        "expected stored quality report at `{}`",
-        report_path.display()
-    );
-}
-
-#[test]
-fn repl_scripts_canonical_smoke() {
+fn repl_scripts_canonical_regression() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -2013,32 +1419,6 @@ fn repl_scripts_canonical_smoke() {
             script.display(),
             removed_debug_exports
         );
-
-        // If this REPL script imported a canonical `.axi` module (meta-plane),
-        // we should be able to export it back as a canonical module from the `.axpd`.
-        let mut module_exports: Vec<PathBuf> = fs::read_dir(&build_dir)
-            .expect("read build dir for module exports")
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension().map(|s| s == "axi").unwrap_or(false)
-                    && p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.contains("_module"))
-                        .unwrap_or(false)
-            })
-            .collect();
-        module_exports.sort();
-
-        for module_out in module_exports {
-            let text = fs::read_to_string(&module_out).expect("read exported module .axi");
-            let m = parse_axi_v1(&text).expect("parse exported module via axi_v1");
-            assert_eq!(
-                m.module_name.is_empty(),
-                false,
-                "expected non-empty module name in exported module"
-            );
-        }
     }
 }
 
@@ -2069,7 +1449,7 @@ fn repl_rejects_removed_export_axi_command() {
 }
 
 #[test]
-fn discover_augment_proposals_smoke() {
+fn discover_augment_proposals_regression() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -2088,7 +1468,7 @@ fn discover_augment_proposals_smoke() {
         generated_at: "0".to_string(),
         source: ProposalSourceV1 {
             source_type: "test".to_string(),
-            locator: "discover_augment_proposals_smoke".to_string(),
+            locator: "discover_augment_proposals_regression".to_string(),
         },
         schema_hint: None,
         proposals: vec![ProposalV1::Entity {
@@ -2168,7 +1548,7 @@ fn discover_augment_proposals_smoke() {
 }
 
 #[test]
-fn discover_draft_module_smoke() {
+fn discover_draft_module_regression() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -2181,7 +1561,7 @@ fn discover_draft_module_smoke() {
         generated_at: "0".to_string(),
         source: ProposalSourceV1 {
             source_type: "test".to_string(),
-            locator: "discover_draft_module_smoke".to_string(),
+            locator: "discover_draft_module_regression".to_string(),
         },
         schema_hint: Some("sql".to_string()),
         proposals: vec![
@@ -2317,7 +1697,7 @@ fn discover_draft_module_smoke() {
 }
 
 #[test]
-fn discover_transport_preview_smoke() {
+fn discover_transport_preview_regression() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
@@ -2440,241 +1820,14 @@ theory PlantTransport on Plant:
 }
 
 #[test]
-fn discover_route_preview_smoke() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "route_preview");
-    let axpd_path = run_dir.join("build/route_preview.axpd");
-    let request_path = run_dir.join("build/route_request.json");
-    let preview_path = run_dir.join("build/route_preview.json");
-
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("repl")
-        .arg("--cmd")
-        .arg("gen scenario social_network 3 3 1")
-        .arg("--cmd")
-        .arg(format!("save {}", axpd_path.display()))
-        .arg("--quiet")
-        .status()
-        .expect("run axiograph repl route setup");
-
-    assert!(
-        status.success(),
-        "route preview setup failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    fs::write(
-        &request_path,
-        serde_json::to_string_pretty(&serde_json::json!({
-            "route": {
-                "start_entity": 0,
-                "segments": []
-            },
-            "equivalent_to": {
-                "start_entity": 0,
-                "segments": []
-            }
-        }))
-        .expect("serialize route preview request"),
-    )
-    .expect("write route preview request");
-
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("discover")
-        .arg("route-preview")
-        .arg(&axpd_path)
-        .arg("--request")
-        .arg(&request_path)
-        .arg("--out")
-        .arg(&preview_path)
-        .status()
-        .expect("run axiograph discover route-preview");
-
-    assert!(
-        status.success(),
-        "route-preview failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    let preview: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&preview_path).expect("read route preview"))
-            .expect("parse route preview json");
-    assert_eq!(preview["version"], "axiograph_discover_route_preview_v1");
-    assert_eq!(preview["trust"]["trust_class"], "runtime_guarded");
-    assert_eq!(preview["equivalence"]["equivalent"], true);
-    assert!(
-        preview["route"]["normalized"].get("hops").is_none()
-            || preview["route"]["normalized"]["hops"]
-                .as_array()
-                .is_some_and(|hops| hops.is_empty())
-    );
-    assert!(preview.get("certificate_preview").is_none());
-}
-
-#[test]
-fn viz_dot_smoke() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "viz_dot");
-    let axpd_path = run_dir.join("build/viz.axpd");
-    let dot_path = run_dir.join("build/viz.dot");
-
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("repl")
-        .arg("--cmd")
-        .arg("gen scenario social_network 3 3 1")
-        .arg("--cmd")
-        .arg(format!("save {}", axpd_path.display()))
-        .arg("--quiet")
-        .status()
-        .expect("run axiograph repl --cmd ...");
-
-    assert!(
-        status.success(),
-        "repl gen/save failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("tools")
-        .arg("viz")
-        .arg(&axpd_path)
-        .arg("--out")
-        .arg(&dot_path)
-        .arg("--focus-name")
-        .arg("Alice_0")
-        .arg("--hops")
-        .arg("2")
-        .arg("--max-nodes")
-        .arg("120")
-        .status()
-        .expect("run axiograph tools viz");
-
-    assert!(
-        status.success(),
-        "viz failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    let dot = fs::read_to_string(&dot_path).expect("read dot");
-    assert!(
-        dot.contains("digraph axiograph"),
-        "expected dot output to contain graph header"
-    );
-    assert!(
-        dot.contains("Alice_0") || dot.contains("Person"),
-        "expected dot output to contain some node labels"
-    );
-}
-
-#[test]
-fn querycert_rejects_pathdb_export_snapshot_smoke() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "anchor_snapshot_export");
-
-    let input = repo_root.join("fixtures/verification/pathdb_export_anchor_v1.axi");
-    let cert_path = run_dir.join("build/anchor_query_cert.json");
-
-    let query = "select ?y where name(\"a\") -r1-> ?y limit 10";
-
-    let output = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("cert")
-        .arg("query")
-        .arg(&input)
-        .arg("--lang")
-        .arg("axql")
-        .arg(query)
-        .arg("--out")
-        .arg(&cert_path)
-        .output()
-        .expect("run axiograph cert query (anchor snapshot)");
-    assert!(
-        !output.status.success(),
-        "expected querycert to reject anchor snapshot export (exit={})",
-        output.status.code().unwrap_or(-1)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("expected a canonical .axi module"),
-        "expected canonical-only rejection, got: {stderr}"
-    );
-    assert!(
-        !cert_path.exists(),
-        "querycert should not write output on canonical-only rejection"
-    );
-}
-
-#[test]
-fn querycert_canonical_axi_v3_smoke() {
-    let repo_root = repo_root();
-    let bin = axiograph_bin();
-
-    let run_dir = unique_run_dir(&repo_root, "querycert_canonical_v3");
-
-    let input = repo_root.join("examples/manufacturing/SupplyChainHoTT.axi");
-    let cert_path = run_dir.join("build/canonical_query_cert_v3.json");
-
-    let query = "select ?to where name(\"RawMetal_A\") -Flow-> ?to limit 10";
-
-    let status = Command::new(&bin)
-        .current_dir(&run_dir)
-        .arg("cert")
-        .arg("query")
-        .arg(&input)
-        .arg("--lang")
-        .arg("axql")
-        .arg(query)
-        .arg("--out")
-        .arg(&cert_path)
-        .status()
-        .expect("run axiograph cert query (canonical .axi)");
-    assert!(
-        status.success(),
-        "querycert on canonical module failed (exit={})",
-        status.code().unwrap_or(-1)
-    );
-
-    let cert_text = fs::read_to_string(&cert_path).expect("read query cert json");
-    let cert: CertificateV2 = serde_json::from_str(&cert_text).expect("parse query cert json");
-
-    assert_eq!(cert.version, 2);
-    let anchor = cert.anchor.expect("expected anchor");
-    assert!(
-        anchor.axi_digest_v1.as_str().starts_with("fnv1a64:"),
-        "unexpected digest format: {}",
-        anchor.axi_digest_v1
-    );
-
-    match cert.payload {
-        CertificatePayloadV2::QueryResultV3 { proof } => {
-            assert!(
-                !proof.rows.is_empty(),
-                "expected non-empty rows for canonical module query"
-            );
-        }
-        other => panic!("expected query_result_v3 certificate, got {other:?}"),
-    }
-}
-
-#[test]
-fn doc_to_proposals_to_candidate_axi_smoke() {
+fn doc_to_proposals_to_candidate_axi_regression() {
     let repo_root = repo_root();
     let bin = axiograph_bin();
 
     let run_dir = unique_run_dir(&repo_root, "doc_to_candidates");
     let build_dir = run_dir.join("build");
 
-    let input = repo_root.join("examples/ingest_fixtures/machining_conversation.txt");
+    let input = repo_root.join("examples/ingest_sources/machining_conversation.txt");
     let proposals_path = build_dir.join("proposals.json");
     let chunks_path = build_dir.join("chunks.json");
     let facts_path = build_dir.join("facts.json");

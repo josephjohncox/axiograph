@@ -1,807 +1,427 @@
-# Semantic VCS
+# Semantic VCS and AxiStore
 
 **Diataxis:** Reference  
 **Audience:** contributors
 
-This document specifies the target git-style semantic workflow for Axiograph.
+Semantic VCS records accepted ontology evolution, review/evidence branches,
+reconciliations, immutable tags, and auditable lifecycle events. Git remains the
+source-control system for source files. AxiStore is the persistence authority
+for accepted meaning state and semantic lineage.
 
-The goal is not to replace Git for source code. The goal is to give ontology,
-semantic, evidence, and predictive-proposal evolution a first-class history model.
+## Authority
 
-This document is the storage contract seam: typed anchors already exist in the code;
-this doc defines how they must be persisted as semantic VCS objects.
+The authority has two layers:
 
-## Design Rules
+1. the exact ordered closure of accepted UTF-8 `.axi` module bytes; and
+2. one transactional `AxiStore` rooted at a cryptographically bound repository
+   descriptor.
 
-1. The accepted plane is not enough by itself; it needs refs and DAG history.
-2. Merges are semantic reconciliation, not text concatenation.
-3. World-model and LLM outputs stay in evidence/review branches until promoted.
-4. Artifact lifecycle changes are preserved as history, never hidden mutation.
-5. World-model runs must be persisted with explicit lineage and status.
-6. Anchor references are the source of truth for history, not inferred UI state.
-7. Review-critical runtime reports should be stored as machine-readable objects
-   and referenced from history, not left as transient console prose.
+`KernelSnapshotIr` is the immutable compiled semantic representation of the
+accepted closure; it is not a second persistence authority. Runtime indexes,
+PathDB, `.axpd`, evidence, embeddings, and backend projections are derived or
+advisory artifacts and cannot redefine accepted meaning. Projection manifests
+and evidence-only readback are specified in
+`docs/reference/BACKEND_PROJECTIONS.md`.
 
-Lean status: finite semantic-slice inclusion, join/meet candidates,
-conservative merge materialization predicates, and rebase transport
-preservation predicates are now encoded in `lean/Axiograph/SemanticVCS.lean`.
-`lean/Axiograph/SemanticVCS/Json.lean` defines the first strict Lean-readable
-JSON shape for future merge/rebase plan exports. These are theorem-support
-scaffolds, not the shipped verifier boundary and not a claim that arbitrary
-ontology states form a complete lattice. See
-`docs/reference/LEAN_THEORY_EVALUATION.md`.
+The implementation is `rust/crates/axiograph-store`. There is no accepted-state
+file pointer, JSONL authority, custom write-ahead log, compatibility reader,
+legacy import checkpoint, or second semantic store.
 
-## Relationship To Existing Stores
-
-Current stores remain useful:
-
-- accepted-plane module/snapshot store
-- PathDB WAL and checkpoints
-- certs/
-- quality/
-
-The semantic VCS sits above them and points at them.
-
-It should not duplicate large artifacts; it should reference them.
-
-## Review Artifacts
-
-`sem/validations/` should persist the review objects that actually explain
-semantic change.
-
-That includes, as the implementation matures:
-
-- evolution previews
-- CQ gate reports
-- business-rule applicability reports used in review
-- semantic coverage / drift reports
-- agent-facing semantic reports when they justify a merge or promotion decision
-
-Commits, reconciliations, and refs should point at these persisted artifacts
-rather than copying their full payloads inline.
-
-## Store Layout
-
-Target layout under the accepted-plane directory:
+## Persistence Layout
 
 ```text
-sem/
-  HEAD
-  refs/
-    heads/
-      main
-      review/
-      evidence/
-      evidence/proposals/
-    tags/
-  commits/
-  reconciliations/
-  projections/
-  evidence/
-    proposal_adapter_runs/
-  validations/
+<store>/
+  catalog.sqlite
+  catalog.sqlite-wal
+  catalog.sqlite-shm
+  objects/sha256/<64-lowercase-hex>
 ```
 
-`commits/`, `reconciliations`, `projections/`, and
-`evidence/proposal_adapter_runs/` are phase-1 persisted object locations. Only
-accepted refs and commits participate in semantic authority. `projections/` are
-derived read surfaces, and proposal-adapter runs are evidence-plane proposal
-records until typed review and promotion accept them.
+The catalog is opened with:
 
-## Refs
+- the `AXIS` SQLite application id, the greenfield V2 schema, and
+  4096-byte pages;
+- SQLite WAL mode and `synchronous=FULL`;
+- foreign keys and `trusted_schema=OFF`;
+- an exact all-STRICT authority-table set;
+- bounded SQLite parser/runtime limits and busy timeout; and
+- explicit catalog, sidecar, object, publication, module, ref, and closure caps.
 
-Required symbolic refs:
+Opening validates the SQLite prefix, application/schema/page identity, exact
+table set, `quick_check`, foreign keys, row counts, regular-file paths, and byte
+limits before object decoding. This prevents old or substituted SQLite files
+from becoming an accidental compatibility path.
 
-- `refs/heads/main`
-- `refs/heads/review/<topic>`
-- `refs/heads/evidence/<source>`
-- `refs/heads/evidence/proposals/<experiment>`
-- `refs/tags/<release>`
+The immutable object directory contains exact bytes for:
 
-`HEAD` points to the currently checked-out semantic ref, not directly to an
-accepted snapshot. The normalized on-disk representation is the git-style text
-form:
+- the repository descriptor;
+- accepted `.axi` revisions;
+- accepted trees and snapshots;
+- compiled kernel IR and canonical fact logs;
+- validation, competency-question, and runtime-theory reports;
+- certificates and trusted-checker receipts;
+- evidence referenced by a reviewed change;
+- accepted build manifests;
+- reconciliations; and
+- semantic commits.
 
-```text
-ref: heads/main
-```
+Existing same-id bytes must match exactly. A same-id/different-byte publication
+is corruption and fails closed.
 
-Direct commit-id `sem/HEAD` files are treated as detached runtime state. When a
-matching persisted semantic ref already exists, readers normalize the file to
-the symbolic `ref: ...` form while preserving the same resolved commit id. New
-writers must emit the symbolic form.
+## Primary Regulated-Shipment Fixture
 
-`refs/heads/evidence/proposals/*` must be reserved for proposal-generation branches. Branches
-must move by semantic commits only (no ad-hoc branch files), and every run
-observed through these branches must have a persisted `PredictiveProposalRun` object.
+`make verify-regulated-shipment` exercises the accepted-state path with real
+compiled canonical modules rather than synthetic empty images:
 
-Ref updates are validated centrally. The current normalized runtime names are
-`heads/main`, `heads/review/*`, `heads/evidence/*`, `heads/evidence/proposals/*`, and `tags/*`
-under `sem/refs/`.
+1. promote `RegulatedShipmentBaseline.axi`;
+2. publish `RegulatedShipment.axi` on `heads/review/regulated-shipment`;
+3. construct a reviewed `SemReconciliationV2` with exact typed payload
+   keep/drop/introduce accounting;
+4. materialize an exact `[current_main_tip, source_tip]` merge;
+5. derive `AxpdBuildSpec` directly from the accepted `KernelSnapshotIr`;
+6. publish immutable SQLite image and receipt; and
+7. reopen AxiStore and hydrate PathDB only after receipt/image verification.
 
-The Rust helper surface is the current first-class branch/checkout/tag API:
+The adversarial test appends bytes to the immutable image and requires restart
+verification to reject it. The merge claim remains finite payload accounting,
+not an arbitrary categorical pushout, general dependent transport, or Lean
+proof. The type/constraint receipts attached to the candidate are actual
+`VerifyMain` outputs. Exact query completeness is checked separately in the
+same gate through `query_result_v4`; AxiStore does not acquire proof authority
+by storing adjacent receipts.
 
-- `SemRefNameV1::main|review|evidence|predictive_proposal|tag|parse`
-- `persist_semantic_branch_ref(...)`
-- `persist_semantic_tag_ref(...)`
-- `checkout_semantic_ref(...)`
-- `read_semantic_head(...)`
+## Identity
 
-Required ref-family invariants:
+All persistent identities use the `AXIOGRAPH-ID` family from
+`axiograph-kernel`: a closed domain registry, versioned and length-framed
+fields, fixed-width counts/integers, and full lowercase SHA-256.
 
-- `heads/main` may point only at accepted promotion, reviewed merge, or
-  validation commits, and gate summaries must not contain materialization
-  blockers.
-- `heads/review/*` is the reconciliation/review landing area; predictive-proposal
-  commits may enter only when their compact gates are not blocked.
-- `heads/evidence/*` may point at evidence, predictive-proposal, or validation commits;
-  accepted promotion commits do not move evidence refs.
-- `heads/evidence/proposals/*` may point only at `PredictiveProposalRun` commits whose
-  `proposal_adapter_run_id` appears in provenance and delta refs and whose
-  `sem/evidence/proposal_adapter_runs/<run-id>.json` record exists.
-- `tags/*` are immutable release pointers over accepted/reviewed commits; tags
-  do not point at unreviewed evidence or predictive-proposal commits.
+The implementation uses strict newtypes for repository, module, revision,
+schema, object, relation, role, theory, obligation, fact, tree, snapshot,
+commit, reconciliation, object blob, materialization, query, answer,
+certificate, proposal, run, and checker identities. Parsing one identity kind
+as another is rejected.
+
+Repository identity is derived from the exact canonical repository descriptor.
+Repository name alone is not an authority anchor.
+
+## Accepted Tree
+
+`AcceptedTree` binds:
+
+- repository identity; and
+- a strictly sorted, duplicate-free sequence of module name, repository-scoped
+  module identity, and exact-byte revision digest.
+
+Files are never normalized or reconstructed from PathDB. Whitespace, comments,
+line endings, declaration order, and import order remain identity-significant
+when they change exact accepted bytes.
+
+## Accepted Snapshot
+
+`AcceptedSnapshot` binds:
+
+- repository identity;
+- accepted tree identity; and
+- zero, one, or two ordered parent snapshots.
+
+Normal history has zero or one parent. A merge has ordered
+`[target_snapshot, source_snapshot]` parents. Reversing parents changes the
+snapshot identity.
+
+## Accepted Build Manifest
+
+`AcceptedBuildManifest` binds:
+
+- repository, tree, and snapshot;
+- the ordered exact module closure;
+- compiler and IR versions;
+- compiled `KernelSnapshotIr` bytes, identified by the AxiStore `KernelIr`
+  object digest (distinct from the snapshot's inner compiler `ir_digest`);
+- canonical fact-log bytes;
+- validation, CQ, and runtime-theory reports;
+- a trusted-checker receipt; and
+- explicit non-claims.
+
+Required non-claims include that runtime validation is not a Lean proof, the
+closed finite fragment is not general dependent type theory, and the result is
+not open-world completeness or ontology closure.
 
 ## Semantic Commit
 
-```rust
-pub struct SemCommitV1 {
-    pub version: String,
-    pub commit_id: SemCommitId,
-    pub parent_commit_id: Option<SemCommitId>,
-    pub author: String,
-    pub created_at_unix_secs: u64,
-    pub message: Option<String>,
-    pub kind: SemCommitKind,
-    pub action: String,
-    pub gate_summary: Option<SemGateSummaryV1>,
-    pub policy: String,
-    pub provenance: SemCommitProvenanceV1,
-    pub state: SemStateRefV1,
-    pub delta: SemDeltaV1,
-    pub reconciliation_id: Option<ReconciliationId>,
-    pub accepted_snapshot_id: AcceptedSnapshotId,
-    pub accepted_parent_snapshot_id: Option<AcceptedSnapshotId>,
-    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
-    pub validation_report_path: Option<String>,
-    pub validation_ok: Option<bool>,
-}
+`SemCommitV2` binds every review-relevant field:
 
-pub struct SemCommitProvenanceV1 {
-    pub source: String,
-    pub command: Option<String>,
-    pub source_commit: Option<SemCommitId>,
-    pub proposal_adapter_run_id: Option<ProposalAdapterRunId>,
-}
-```
+- repository identity;
+- kind (`normal` or `merge`);
+- zero, one, or two ordered commit parents;
+- accepted tree, snapshot, and build-manifest identities;
+- exact reconciliation identity for a merge;
+- author, timestamp, message, action, policy, and provenance;
+- full typed semantic/reindex delta;
+- promotion gates and exact report digests;
+- typed attachments; and
+- lifecycle events.
 
-The current runtime stores a single `parent_commit_id` on `SemCommitV1`. Merge
-ancestry is still preserved, but it lives in the paired reconciliation object
-(`base_commit_id`, `left_commit_id`, `right_commit_id`) rather than in a
-materialized multi-parent commit DAG node.
+The typed delta uses explicit operations:
 
-### Commit kinds
+- preserve;
+- rename;
+- split;
+- merge;
+- drop;
+- add; and
+- replace.
 
-```rust
-pub enum SemCommitKind {
-    Promote,
-    EvidenceCommit,
-    ProjectionMaterialization,
-    Merge,
-    Validation,
-    PredictiveProposalRun,
-    TagMove,
-    Admin,
-}
-```
+Each operation has checked source/target cardinality and uses typed semantic
+identities rather than untyped names.
 
-### State ref
+Normal commits have zero or one parent. Merge commits have exactly ordered
+`[target_tip, source_tip]` parents and an immutable reconciliation.
 
-The commit points at existing materialized stores.
+## Protected Main Gates
 
-```rust
-pub struct SemStateRefV1 {
-    pub accepted_snapshot_id_before: Option<AcceptedSnapshotId>,
-    pub accepted_snapshot_id_after: Option<AcceptedSnapshotId>,
-    pub accepted_tree_digest: Option<AxiDigest>,
-    pub pathdb_snapshot_id_before: Option<PathdbSnapshotId>,
-    pub pathdb_snapshot_id_after: Option<PathdbSnapshotId>,
-    pub evidence_digests: Vec<ProposalDigest>,
-}
-```
+A commit eligible for protected main contains exactly these passed gates:
 
-Semantically meaningful ontology commits (`Promote`, `Merge` into main, `TagMove`)
-must provide before/after accepted anchors when changed state is expected.
+1. canonical validation;
+2. competency questions;
+3. trust; and
+4. runtime theory.
 
-### Delta
+Each gate must cite the exact corresponding digest in the accepted build
+manifest. The trust gate cites the configured trusted-checker receipt; changing
+that receipt without rebuilding the commit is rejected. Missing, duplicate,
+failed, or merely same-kind-but-different-report gates reject promotion. The
+receipt applies only to the fragment it actually checks. Runtime reports do not
+become Lean proofs by being stored in the same manifest.
 
-```rust
-pub struct SemDeltaV1 {
-    pub module_digests_added: Vec<AxiDigest>,
-    pub module_digests_removed: Vec<AxiDigest>,
-    pub gate_summary: Option<SemGateSummaryV1>,
-    pub semantic_delta: Option<EvolutionSemanticDeltaV1>,
-    pub trust_summary: Option<SemTrustSummaryV1>,
-    pub rule_summary: Option<SemRuleSummaryV1>,
-    pub coverage_summary: Option<EvolutionCoverageSummaryV1>,
-    pub runtime_theory_check: Option<RuntimeTheoryCheckSummaryV1>,
-    pub evidence_blobs_added: Vec<ProposalDigest>,
-    pub certificate_refs_added: Vec<String>,
-    pub quality_report_refs_added: Vec<String>,
-    pub validation_report_refs_added: Vec<String>,
-    pub projection_manifest_refs_added: Vec<AxiDigest>,
-    pub lifecycle_events: Vec<SemLifecycleEventV1>,
-    pub proposal_adapter_run_refs: Vec<ProposalAdapterRunId>,
-}
-```
+## SemReconciliationV2
 
-`semantic_delta`, `trust_summary`, `rule_summary`, `coverage_summary`, and
-`runtime_theory_check` are the compact typed sidecars copied from a stored
-`EvolutionPreviewV1` when a commit is derived from a proposal, promotion,
-migration, or reconciliation preview. They are intentionally small: enough for
-semantic history and diffing, not a duplicate of the full preview report.
+`SemReconciliationV2` is the only accepted merge record. It binds:
 
-```rust
-pub struct EvolutionSemanticDeltaV1 {
-    pub delta_kind: String,
-    pub subject_refs: Vec<String>,
-    pub primitives: Vec<EvolutionPrimitiveV1>,
-    pub changed_layers: Vec<String>,
-    pub schema: TypedChangeBucketV1,
-    pub theory: TypedChangeBucketV1,
-    pub instance: TypedChangeBucketV1,
-    pub context: TypedChangeBucketV1,
-    pub total_added: usize,
-    pub total_reused: usize,
-    pub total_removed: usize,
-    pub notes: Vec<String>,
-}
-```
+- repository identity and the unique maximal common ancestor;
+- exact left and right parent commits;
+- reviewed parent candidates, each binding its snapshot, tree, root module,
+  compiled kernel IR, canonical/CQ/trust/theory reports, reviewer, and review
+  time;
+- one reviewed merged candidate with the same typed anchors and gate family;
+- one canonical sequence of typed `keep`, `drop`, `introduce`, or `transport`
+  decisions;
+- a transport-witness digest on every transport decision;
+- the exact preview digest, outcome, and explicit scope non-claims.
 
-`primitives` is where semantic history stops pretending that ontology
-evolution is only bucket arithmetic. It carries explicit reviewable structural
-moves such as:
+Every addressable `KernelRefV2` receives a payload fingerprint over its complete
+compiled payload. Stable-looking ids therefore cannot conceal a changed role
+order, role kind, indexed/refined type, equation, rewrite, instance, or fact.
+For a materialized outcome, every payload occurrence from both parents must be
+covered exactly once and every merged payload must be produced exactly once.
+The checker caps each candidate at 131,072 payloads and the reconciliation at
+393,216 decisions. An exact keep requires both ref and fingerprint equality.
+Drops and introductions are explicit. A transport changes the typed payload and
+requires an immutable witness commitment.
 
-- `reify_relation_object`
-- `introduce_dependent_relation_family`
-- `introduce_subtype`
-- `generalize_to_supertype`
-- `specialize_to_subtype`
-- `push_relation_role_to_subtype`
-- `pull_relation_role_to_supertype`
-- `factor_common_structure_to_supertype`
-- `split_type_into_subtypes`
-- `merge_types_under_supertype`
-- `lift_relation_to_carrier`
-- `add_path_equation`
-- `add_rewrite_rule`
+Before writing accepted state, AxiStore recompiles all three candidates from
+the exact stored `.axi` closures through `CanonicalCompiler`, reproduces the
+exact kernel IR bytes and payload-fingerprint index, and compares every review
+anchor. This is a finite decidable operational check. It is not arbitrary
+categorical-colimit completeness, general dependent transport, univalence,
+higher-path equivalence, open-world completeness, or a Lean proof.
 
-These are intended to be the machine-readable currency for typed directed
-exploration, olog refinement, migration review, and semantic merge. The coarse
-`schema` / `theory` / `instance` / `context` buckets stay useful for compact
-history summaries, but they are no longer sufficient on their own to explain
-what kind of ontology move actually happened.
+## Authenticated Merge Materialization
 
-The intended rule is:
+Generic promotion rejects merge commits. Protected-main merges go only through
+`AxiStore::materialize_merge(expected_generation, source_ref,
+expected_source_tip, plan)`. In the same `IMMEDIATE` transaction, AxiStore
+requires:
 
-- keep full previews in `sem/validations/`
-- keep compact gate/delta/trust/rule/coverage/runtime-theory summaries in
-  commits, deltas, refs, and reconciliations
-- do not copy full quality/CQ/runtime-semantic payloads into commit history
+- the current accepted main commit and snapshot as the first ordered parents;
+- the exact current non-main `heads/*` source tip as the second ordered parent;
+- two distinct commit and snapshot parents;
+- a materialized `SemReconciliationV2` whose reviewed left/right tips equal
+  those parents in that order;
+- a reviewed merged candidate equal to the plan's tree, snapshot, kernel IR,
+  and four exact gate reports; and
+- a unique maximal common ancestor equal to the reconciliation base.
 
-`primitives` is the compact semantic summary that matters most for ontology
-review. Generic add/remove counts are not enough to explain whether a
-change:
+There is no single-parent merge writer and no generic promotion bypass. Reversed
+parents, stale source refs, unreviewed payload indexes, substituted gate reports,
+or a reconciliation for different tips reject before state advances.
 
-- introduced a new subtype rather than an unrelated object,
-- generalized two local concepts into a reusable supertype,
-- specialized a previously overloaded type,
-- pushed or pulled a role across a relation-object boundary,
-- factored common structure out of sibling relations,
-- split or merged concepts,
-- or lifted a binary edge into a first-class relation carrier.
+## Merge Bases
 
-Those distinctions are what reviewers, migration tooling, and exploration
-surfaces need to preserve across preview, commit history, merge, and promotion.
+Merge-base selection is order-theoretic, not distance-based:
 
-### Backend projection manifests
+1. compute the complete ancestor sets of the two independently named tips;
+2. intersect them;
+3. remove every common ancestor dominated by a newer common ancestor; and
+4. inspect the resulting maximal-common-ancestor antichain.
 
-Backend materialization is tracked explicitly rather than being inferred from a
-backend-local schema or dataset.
+One maximal common ancestor is the unique merge base. Zero means no base.
+Multiple maximal bases are a criss-cross ambiguity and fail closed. Distance,
+timestamp, or digest tie-breakers do not choose semantic authority.
 
-```rust
-pub struct ProjectionManifestV1 {
-    pub projection_id: AxiDigest,
-    pub accepted_snapshot_id: AcceptedSnapshotId,
-    pub source_sem_ref_name: Option<String>,
-    pub source_sem_commit_id: Option<SemCommitId>,
-    pub compiled_ir_digest: AxiDigest,
-    pub materialization_ref: String,
-    pub backend: BackendCapabilityProfileV1,
-    pub projection: ProjectionCapabilityProfileV1,
-    pub object_mappings: Vec<ProjectionObjectMappingV1>,
-    pub relation_mappings: Vec<ProjectionRelationMappingV1>,
-    pub context_mapping: ProjectionContextMappingV1,
-    pub trust_caveats: Vec<String>,
-    pub round_trip_limitations: Vec<String>,
-}
+## Singleton State
 
-pub struct ProjectionCapabilityProfileV1 {
-    pub preserves_relation_objects: bool,
-    pub preserves_context_world_axes: bool,
-    pub supports_anchor_scoped_query_pushdown: bool,
-    pub supports_context_scoped_query_pushdown: bool,
-    pub native_query_access: ProjectionNativeQueryAccessV1,
-    pub mutation_authority: ProjectionMutationAuthorityV1,
-}
+One `store_state` row binds:
 
-pub enum ProjectionNativeQueryAccessV1 {
-    None,
-    ReadOnlyPartial,
-    ReadOnlyAnchorScoped,
-}
+- repository;
+- generation;
+- accepted snapshot;
+- accepted semantic commit;
+- digest of the complete ref map;
+- accepted build-manifest digest; and
+- audit-event tail.
 
-pub enum ProjectionMutationAuthorityV1 {
-    AxiographOnly,
-    BackendWritableMirror,
-}
-```
+Before first promotion, accepted snapshot/commit/manifest are all null. Partial
+accepted tuples are forbidden.
 
-The current implementation now has a planner layer above this manifest model:
+Protected `heads/main` must equal the accepted semantic commit. It cannot move
+through the branch API. Review/evidence branches and immutable tags are stored
+in the same catalog and every ref mutation advances singleton generation,
+ref-map digest, and audit tail in one transaction.
 
-- `axiograph_cli::backend_pushdown::build_backend_pushdown_plan(...)`
-- `TypeDbPushdownPlanV1`
-- `TerminusDbPushdownPlanV1`
-- `BackendPushdownOperationalSurfaceV1`
+An authenticated `.axpd` receipt may cite only a build manifest whose commit
+appears as accepted main in that validated audit history. Merely existing in the
+same repository, review branch, evidence branch, or object catalog is not an
+accepted anchor.
 
-Those pushdown plans are generated directly from `CompiledSchemaIr` plus the
-backend/projection capability profiles. They are intentionally explicit about:
+## Promotion Transaction
 
-- the compiled-IR evidence the plan consumed: object/relation/role counts,
-  n-ary relation counts, context axes, relation-object names, and direct subtype
-  families, plus the `KernelRefV1` handles and stable labels for the compiled
-  schema/category refs used as the projection basis,
-- the backend and projection capability decisions used to accept or reduce a
-  projection,
-- tuple encoding (`relationship_entity` for `TypeDB`, `reified_fact` for
-  `TerminusDB`),
-- role preservation and context-axis handling,
-- whether carrier edges are materialized only as lossless convenience views,
-- the native read-only query dialect,
-- native-readable projection notes for TypeQL, RDF named graphs, schema
-  constraints, and TerminusDB branch/history mirrors,
-- generated native-readable artifacts: TypeDB TypeQL schema/read-query text and
-  TerminusDB Turtle/WOQL projection text, each carrying read contracts,
-  generated-from metadata, `KernelRefV1` citations, caveats, and explicit
-  mutation authority,
-- preserved lower-tier interfaces such as native query, RDF dataset, and SHACL
-  validation surfaces where the backend actually supports them,
-- the lifting contracts that carry those lower-tier surfaces back into
-  anchor-scoped Axiograph semantics,
-- and which semantics remain Axiograph-only even when backend-native querying is
-  allowed.
+Promotion is objects first, state second:
 
-`BackendPushdownOperationalSurfaceV1` is the compact operational summary over
-those plans. It is the current agent-facing transport/reindexing seam: the place
-where tooling can inspect relation transport, context-axis handling, residual
-obligations, and the explicit reconciliation boundary without parsing the full
-backend plan or confusing backend-native history with semantic merge state.
+1. validate all typed objects and exact module bytes;
+2. write each new immutable object to a unique temporary file;
+3. fsync the file;
+4. rename to its content-addressed path;
+5. fsync the object directory;
+6. begin one SQLite `IMMEDIATE` transaction;
+7. compare expected and actual singleton generations;
+8. insert object metadata and the complete reachable tree/snapshot/manifest/
+   reconciliation/commit closure;
+9. move protected main and requested review refs;
+10. recompute the complete ref-map digest;
+11. append the next audit hash-chain event;
+12. update the singleton state; and
+13. commit.
 
-The current implementation direction is:
+A crash before step 13 leaves the old complete state and possibly unreachable
+immutable objects. A crash after step 13 leaves the new complete state. SQLite
+serializes concurrent writers; after one expected-generation writer wins, the
+other receives typed `AxiStoreError::StaleState`.
 
-- `TypeDB` as the primary high-fidelity typed backend target,
-- `TerminusDB` as the strongest RDF/VCS-shaped secondary target,
-- and property-graph engines such as `Apache AGE`, `Neo4j`, and related
-  backends as experimental projection targets rather than first-class support.
+## Branches and Tags
 
-The capability profile is expected to distinguish at least:
+`publish_candidate` records a complete authenticated candidate commit on a
+review/evidence branch without moving accepted main. It still uses generation
+CAS and atomically updates ref-map digest and audit tail.
 
-- typed-schema / relation-role / n-ary support,
-- typed query validation and logic/function pushdown,
-- immutable history / branch / merge / diff support,
-- and schema-vs-instance separation.
+`update_branch` permits fast-forward moves only. `create_tag` creates an
+immutable tag. Recreating or moving a tag is rejected.
 
-That split matters because the recommended pushdown is intentionally asymmetric:
+Target branch families are:
 
-- `TypeDB` is where we should push the richest runtime type/constraint/query
-  surface: relation types, scoped roles, n-ary relation objects, subtype
-  hierarchy, schema constraints, and typed query validation.
-- `TerminusDB` is where we should exploit backend-native history/branch/diff
-  features for projected collaboration views, with schema/instance graph
-  separation and named graph mappings for context/world axes when the projection
-  preserves them.
-- property-graph engines are where we may eventually push execution/indexing
-  and hybrid SQL/openCypher workloads, but only after they clear the same
-  typed projection bar.
+- `heads/review/*`;
+- `heads/evidence/*`;
+- `heads/evidence/proposals/*`;
+- protected `heads/main`; and
+- `tags/*`.
 
-Projected backend usability still matters. The intended contract is:
+## Lineage Proofs
 
-- native backend interfaces should remain queryable so outside tools can read a
-  reduced, backend-shaped view of accepted semantic state,
-- those native interfaces are read-only projected lenses rather than the full
-  Axiograph query/type/certificate surface,
-- and mutation authority stays in Axiograph unless a future manifest
-  deliberately opts into some weaker mirror mode.
+A lineage proof contains the exact ordered commit path from subject to ancestor
+and validates every identity and parent edge. It requires one of:
 
-Even where a backend has native VCS-like features, semantic authority stays in
-Axiograph. TerminusDB is the clearest example: its git-for-data branch model is
-useful, but its own transport docs say schema operations are not pushed/pulled
-with ordinary branch synchronization. That means backend-native history can
-mirror semantic workspaces, but it cannot replace Axiograph's schema/theory
-review history.
+- the exact current `StoreState` digest, only when the subject is current
+  accepted main; or
+- an independently pinned subject commit.
 
-The operational surface exposes those caveats directly. TypeDB native reads are
-TypeQL lenses over the compiled typed projection, not write authority. TerminusDB
-native reads are WOQL/RDF/VCS-shaped lenses over named graph materializations,
-not promotion, supersession, retraction, or merge authority.
+Repository identity alone is not enough. The proof establishes runtime digest
+integrity and the claimed parent path under the pin. It does not establish
+signatures, author identity, non-repudiation, historical wall-clock existence,
+source truth, query completeness, or ontology closure.
 
-The generated artifacts are intentionally practical but not authoritative:
-TypeQL schema/read-query text, Turtle named-graph schema, and WOQL read snippets
-are reviewable handles for native tools. They must be regenerated from accepted
-`.axi` plus compiled IR and treated as lower-tier read surfaces; backend edits to
-those artifacts do not mutate accepted ontology state. Strict consumers should
-validate the artifact/report `KernelRefV1` citations against the compiled
-`KernelSurfaceV1` before using a projection report in promotion, reconciliation,
-or drift review.
+## Restart Validation
 
-## Lifecycle Events
+`AxiStore::open` validates before returning:
 
-```rust
-pub struct SemLifecycleEventV1 {
-    pub artifact: ArtifactRefV1,
-    pub from: Option<LifecycleStage>,
-    pub to: LifecycleStage,
-    pub reason: Option<String>,
-}
+- repository descriptor and identity;
+- every reachable immutable object's kind, path, byte length, and raw SHA-256;
+- tree identities, module ordering, module identities, and exact revision
+  bytes;
+- snapshot identities, parent rows, closure, and acyclicity;
+- commit identities, every payload field, parent rows, closure, and acyclicity;
+- build-manifest closure and every referenced object;
+- reconciliation identity, reviewed candidate anchors, recompiled payload fingerprints, transport witnesses, and preview;
+- protected main and every branch/tag target;
+- ref-map digest;
+- the complete audit hash chain; and
+- singleton state consistency.
 
-pub enum LifecycleStage {
-    Proposed,
-    Validated,
-    Reviewed,
-    Accepted,
-    Certified,
-    Superseded,
-    Retracted,
-}
-```
+Missing parents, cycles, changed ordering, partial closure, altered object
+bytes, and changed catalog fields reject the store.
 
-These events are the semantic audit trail for facts, modules, proposals,
-certificates, and predictive-proposal outputs.
+## Public API
 
-## Reconciliation Objects
+`AxiStore` exposes:
 
-Merges that require actual semantic choice should emit a first-class
-reconciliation object.
+- `init` / `open`;
+- `promote` / `promote_with_injector` for normal protected-main commits;
+- `materialize_merge` for authenticated exact-two-parent merges;
+- `publish_candidate`;
+- `status`;
+- `branches`;
+- `tags`;
+- `update_branch`;
+- `create_tag`;
+- `lineage_proof` / `verify_lineage_proof`;
+- `maximal_common_ancestors`; and
+- `merge_base`.
 
-```rust
-pub struct SemReconciliationV1 {
-    pub reconciliation_id: ReconciliationId,
-    pub base_commit_id: SemCommitId,
-    pub left_commit_id: SemCommitId,
-    pub right_commit_id: SemCommitId,
-    pub policy: String,
-    pub source_ref_name: Option<String>,
-    pub target_ref_name: Option<String>,
-    pub resolved_ref_name: Option<String>,
-    pub outcome_commit_id: Option<SemCommitId>,
-    pub conflicts: Vec<ConflictRecordV1>,
-    pub decisions: Vec<DecisionRecordV1>,
-    pub certificate_refs: Vec<String>,
-}
-```
+The failure injector exists to exercise crash boundaries. It is not a second
+persistence path.
 
-The reconciliation object is where “merge” becomes ontology review rather than
-filesystem merge.
+## Replication
 
-The current runtime also persists a paired `ReconciliationPreviewReportV1`
-under `sem/validations/`. That report stores the `EvolutionPreviewV1` used to
-fail closed on unresolved conflicts before a `SemCommitKindV1::Merge` commit is
-materialized.
+There is no direct-copy replication API and no mutable-pointer copying. A
+future replication protocol must authenticate immutable objects and advance
+catalog state with the same closure and generation checks as local promotion.
+Copying a live SQLite directory or selected pointer files is not a supported
+state transition.
 
-Merge materialization must fail closed when the preview reports quality, CQ,
-trust, coverage, runtime-theory, or residual-obligation blockers. Resolver
-decisions also have to be materializing decisions: placeholders such as
-`manual_review`, `review_required`, `unresolved`, `todo`, or `defer` keep the
-reconciliation in review state and must not move the resolved ref.
+## Trust Boundary and Non-Claims
 
-Merge and rebase plans also expose a reusable materialization validator. A plan
-is not materializable if any typed blocker, residual obligation, conflict,
-resolver step, preview non-ok state, or runtime-theory blocker remains, even if a
-caller incorrectly sets `can_materialize = true`.
+AxiStore enforces persistence integrity and finite operational lineage. Rust is
+still untrusted relative to the product's Lean checker. The trusted product
+boundary remains the import closure of `lean/Axiograph/VerifyMain.lean`.
 
-Current operator surface:
+AxiStore authenticates local content and finite lineage under its repository
+anchor. It does not provide remote signatures, author non-repudiation, encrypted
+storage, protection from a hostile process or kernel after validation, or a
+formal proof of SQLite/filesystem/Rust correctness.
+
+AxiStore also does not prove:
+
+- frontend source-to-lowering correctness;
+- general dependent type theory;
+- univalence or higher inductive types;
+- arbitrary higher paths;
+- open-world entailment;
+- backend completeness;
+- query completeness beyond a separately checked finite certificate;
+- ontology closure; or
+- correctness of Rust itself.
+
+## Verification Gate
 
 ```bash
-axiograph sem merge --dry-run \
-  --source heads/review/demo \
-  --target heads/main \
-  --json
-
-axiograph sem merge --dry-run \
-  --source heads/review/demo \
-  --target heads/main \
-  --lean-json
-
-axiograph db accept reconciliation-show \
-  --dir build/accepted_plane \
-  --reconciliation fnv1a64:...
-
-axiograph db accept reconciliation-apply \
-  --dir build/accepted_plane \
-  --reconciliation fnv1a64:... \
-  --handle-id typed_refine_v1:...
+make verify-axi-store
+# equivalent focused Rust gate:
+cd rust && cargo test -p axiograph-store
 ```
 
-`reconciliation-show` returns the stored typed preview, including any compiled-IR
-refinement handles. `reconciliation-apply` persists the selected decision back
-into the reconciliation object and returns the typed before/after apply result.
-`sem merge --lean-json` emits the reduced future-certificate payload accepted by
-`lean/Axiograph/SemanticVCS/Json.lean`; it is checked by
-`lean/Axiograph/SemanticVCS/CheckMain.lean` and is not the full runtime review
-report.
-
-Focused Rust+Lean conformance:
-
-```bash
-make verify-lean-semantic-vcs
-./examples/semantic_merge/run_merge_flow.sh
-```
-
-The plant-operations example validates canonical modules, builds review refs,
-emits a dry-run merge plan, checks the reduced Lean payload, and verifies that a
-blocked rebase fixture fails closed.
-
-## World-Model Run Objects
-
-## Proposal Adapter Run Objects
-
-Proposal-adapter lineage is persisted as first-class, branch-resolved objects,
-not as ephemeral server state.
-
-```rust
-pub struct ProposalAdapterRunRecordV1 {
-    pub run_id: ProposalAdapterRunId,
-    pub branch_ref: String,
-    pub status: ProposalAdapterRunStatusV1,
-    pub base_commit: Option<SemCommitId>,
-    pub start_accepted_snapshot_id: Option<AcceptedSnapshotId>,
-    pub start_pathdb_snapshot_id: Option<PathdbSnapshotId>,
-    pub end_accepted_snapshot_id: Option<AcceptedSnapshotId>,
-    pub end_pathdb_snapshot_id: Option<PathdbSnapshotId>,
-    pub model_backend: String,
-    pub model_version: Option<String>,
-    pub plugin_version: Option<String>,
-    pub config_digest: Option<String>,
-    pub cost_profile_digest: Option<String>,
-    pub started_utc: String,
-    pub finished_utc: Option<String>,
-    pub run_error: Option<String>,
-    pub proposal_digests: Vec<ProposalDigest>,
-    pub proposal_meta: Vec<ProposalAdapterProposalMetaV1>,
-    pub evaluation_refs: Vec<String>,
-    pub generated_by: String,
-    pub promotion_commit: Option<SemCommitId>,
-}
-
-pub enum ProposalAdapterRunStatusV1 {
-    Pending,
-    Running,
-    ProposalsReady,
-    Validated,
-    Reconciled,
-    Promoted,
-    Failed,
-    Aborted,
-}
-
-pub struct ProposalAdapterProposalMetaV1 {
-    pub proposal_digest: ProposalDigest,
-    pub source: String,
-    pub generated_utc: String,
-    pub quality_score: Option<f64>,
-    pub proposal_file_ref: Option<String>,
-}
-```
-
-Persistence invariants for predictive-proposal runs:
-
-1. Exactly one file exists under `sem/evidence/proposal_adapter_runs/<run_id>.json` for each
-   run.
-2. A run must include `branch_ref`, `model_backend`, `started_utc`, and at least
-   one `start_*` anchor (`start_accepted_snapshot_id` or
-   `start_pathdb_snapshot_id`) before it can be materialized.
-3. Proposal emission must append immutable `proposal_digests` and may append
-   optional metadata in `proposal_meta`.
-4. A run must be closed with `status = Promoted`, `Failed`, or `Aborted`, and
-   `finished_utc` set.
-
-## Branch Model
-
-Target branch model:
-
-- `evidence/proposals/<experiment>` for proposal streams
-- `review/<topic>` for reconciled candidate ontology changes
-- `main` for accepted ontology state
-
-`ProposalAdapterRunRecordV1` is expected to be recorded on `refs/heads/evidence/proposals/<experiment>` and
-any commit emitted in that branch that creates proposal commitments must include
-its `proposal_adapter_run_id` in commit provenance.
-
-## CLI Surface
-
-Target commands:
-
-```text
-axiograph sem init
-axiograph sem branch <name>
-axiograph sem checkout <ref>
-axiograph sem status
-axiograph sem show [<ref>]
-axiograph sem log
-axiograph sem diff <a> <b> --semantic
-axiograph sem merge <source> --into <target> --policy <policy>
-axiograph sem tag <name> [<ref>]
-axiograph sem promote ...
-axiograph sem supersede <artifact>
-axiograph sem retract <artifact>
-```
-
-CLI must expose persisted run objects as read-only records:
-
-- `sem show --object=predictive-proposal --run <id>` should render the run payload and linked commits.
-- `sem log --with-runs` should surface active and failed `ProposalAdapterRunRecordV1` entries.
-
-## Diff Semantics
-
-`sem diff` should report at least four layers:
-
-1. schema/module diff
-2. theory/rewrite/constraint diff
-3. instance/context diff by stable fact ids
-4. artifact diff:
-   - evidence blobs
-   - certificates
-   - lifecycle transitions
-   - predictive-proposal runs
-
-It should not be limited to raw text diff.
-
-## Merge Semantics
-
-`sem merge` means:
-
-1. find merge base,
-2. compute semantic diffs,
-3. auto-merge disjoint changes,
-4. create an explicit conflict set when both sides changed the same semantic
-   object incompatibly,
-5. write a reconciliation object when review is required,
-6. only then materialize a merge commit.
-
-This is the core semantic distinction from Git's file merge model.
-
-## Rebase Semantics
-
-`sem rebase` is typed transport, not a text replay. The explicit runtime object
-is `SemanticRebasePlanV1`.
-
-```rust
-pub struct SemanticRebasePlanV1 {
-    pub source_ref_name: String,
-    pub onto_ref_name: String,
-    pub base_commit_id: SemCommitId,
-    pub source_commit_id: SemCommitId,
-    pub onto_commit_id: SemCommitId,
-    pub policy: String,
-    pub source_slice: SemanticSliceManifestV1,
-    pub onto_slice: SemanticSliceManifestV1,
-    pub transport_basis: Vec<String>,
-    pub transported_refs: Vec<SemanticTransportRefV1>,
-    pub failed_transports: Vec<SemanticTransportRefV1>,
-    pub resolver_steps: Vec<RuntimeRefinementHandleV1>,
-    pub blockers: Vec<SemanticMergeBlockerV1>,
-    pub residual_obligations: Vec<String>,
-    pub can_materialize: bool,
-}
-```
-
-`transported_refs` records exact stable-ref preservation and conservative
-same-kind label transports. `failed_transports` records missing target images
-and carries residual obligations. Rebase materialization is fail-closed whenever
-failed transports, resolver handles, residual obligations, or runtime-theory
-transport blockers remain. The Lean conformance checker additionally rejects
-any required transport item whose reduced status is not `preserved` or
-`transported`.
-
-For Lean-facing checker work, emit the reduced JSON payload directly:
-
-```bash
-axiograph sem rebase \
-  --source heads/review/demo \
-  --onto heads/main \
-  --lean-json
-```
-
-Use `--json` instead when reviewing the complete runtime rebase plan.
-
-## Materialization Rules
-
-The semantic VCS should not replace current accepted/WAL storage immediately.
-
-Instead:
-
-- accepted-plane promotion can emit semantic commits,
-- PathDB WAL commits can emit evidence-branch semantic commits,
-- `sem checkout --materialize` can later synchronize existing `HEAD` views to the
-  selected semantic ref.
-
-## Validation and Persistence Rules
-
-- Every `SemCommitV1` that references a `ProposalAdapterRunId` must have a
-  corresponding file in `sem/evidence/proposal_adapter_runs/<run_id>.json`.
-- `ProposalAdapterRunRecordV1` must persist `proposal_digests` as proposal anchors, not inlined
-  proposals.
-- Branch commits for `refs/heads/evidence/proposals/*` must only carry commits of kind
-  `PredictiveProposalRun`, `EvidenceCommit`, `Merge`, or `Validation` so semantic history
-  stays auditable and machine-parseable.
-- `SemCommitV1` should include stable accepted/pathdb anchor pairs before/after whenever it changes state.
-- Reconciliations must be explicit `SemReconciliationV1` objects.
-- Slice manifests persisted under `sem/slices/` should be built from accepted
-  canonical modules compiled to `KernelModuleIr` whenever the accepted snapshot
-  is available. This keeps semantic VCS merge/rebase planning attached to
-  schema/category refs, theory obligations, and instance-functor refs instead
-  of commit-summary metadata alone.
-
-## Evolution Preview Sidecars
-
-`EvolutionPreviewV1` is the canonical review artifact currently shared by
-proposal validation and accepted-plane promotion. In addition to the full
-quality/CQ/runtime-semantic payloads, the object now carries compact sidecars
-meant for semantic-history use:
-
-- `semantic_delta`: compact schema/theory/instance/context change summary
-- `trust_summary`: compact trust/non-claim summary
-- `rule_summary`: compact runtime-visible/review-only rule inventory
-- `coverage_summary`: compact CQ/semantic-coverage surface summary
-- `runtime_theory_check`: compact closure/completeness summary for the supported Rust runtime theory fragment, including closure-trace counts and transport/resolver counts for merge/rebase gates
-- `exploration_next_actions`: directed follow-on review suggestions derived from structural evolution primitives
-
-The rule for semantic history is:
-
-- persist the full `EvolutionPreviewV1` under `sem/validations/`
-- copy the compact `semantic_delta` / `trust_summary` / `rule_summary` /
-  `coverage_summary` / `runtime_theory_check` sidecars into `SemDeltaV1`
-- copy only the compact gate summary into commits/refs
-- Review-critical reports should be stored under `sem/validations/` and cited by
-  path/ref from semantic commits or reconciliations rather than reconstructed
-  from logs.
-
-## First Implementation Slice
-
-The first shipping slice should minimize surface area and lock down persistence
-before full UX polish:
-
-1. Add `sem/` storage with refs and commit logs; make `sem/evidence/proposal_adapter_runs/` required.
-2. Add persisted schemas for:
-   - `SemCommitV1`
-   - `SemStateRefV1`
-   - `ProposalAdapterRunRecordV1`
-   - `ProposalAdapterProposalMetaV1`
-3. Auto-emit commits when:
-   - `db accept promote` succeeds,
-   - `db accept pathdb-commit` succeeds.
-4. Persist run manifests from predictive-proposal proposal/planning flows, including:
-   - `run_id`
-   - `branch_ref`
-   - anchors (`start_accepted_snapshot_id`, `start_pathdb_snapshot_id`)
-   - `proposal_digests`
-5. Implement run-linked validation checks:
-   - unknown `ProposalAdapterRunId` in commit references is an error,
-   - proposal branch commits require a valid `branch_ref`.
-6. Ship read-only first:
-   - `sem status`
-   - `sem log`
-   - `sem show`
-   - `sem diff`
-   - `sem branch`
-7. Add `sem merge --dry-run` before full merge materialization.
+The suite covers every object write/fsync/publication and catalog
+begin/event/state/commit failure point, concurrent generation-CAS writers,
+tampering, missing parents, cycles, dominated and criss-cross common ancestors,
+multiple maximal bases, authenticated exact-two-parent merge materialization,
+stale source refs, forged payload fingerprints, substituted trust reports,
+union-accounting failures, independent subject pins, branches, tags, and
+restart.

@@ -183,10 +183,69 @@ def parseSemanticRebasePlan (j : Lean.Json) : Except String SemanticRebasePlan :
       resolverSteps
       residualObligations }
 
+def refsSubsetBool (left right : List SemanticRef) : Bool :=
+  left.all fun ref => right.contains ref
+
+def refsSameSetBool (left right : List SemanticRef) : Bool :=
+  refsSubsetBool left right && refsSubsetBool right left
+
+def sameLineage (before after : SemanticAnchor) : Bool :=
+  before.acceptedRef == after.acceptedRef &&
+    before.contextId == after.contextId &&
+    before.worldId == after.worldId
+
+def transportTarget (item : TransportItem) : Option SemanticRef :=
+  match item.status with
+  | .preserved => some (item.targetRef.getD item.sourceRef)
+  | .transported => item.targetRef
+  | _ => none
+
+def successfulTransportTargets : List TransportItem → List SemanticRef
+  | [] => []
+  | item :: rest =>
+      match transportTarget item with
+      | some target => target :: successfulTransportTargets rest
+      | none => successfulTransportTargets rest
+
+def transportsWellScoped
+    (source result : SemanticSliceManifest)
+    (items : List TransportItem) : Bool :=
+  let everySourceCovered := source.refs.all fun ref =>
+    items.any fun item => item.sourceRef == ref
+  let everyItemValid := items.all fun item =>
+    source.refs.contains item.sourceRef &&
+      if item.status.successful then
+        match transportTarget item with
+        | some target => result.refs.contains target
+        | none => false
+      else
+        true
+  everySourceCovered && everyItemValid
+
 def checkMergePlanJson (j : Lean.Json) : Except String Unit := do
+  let base ← parseSemanticSliceManifest (← j.getObjVal? "base")
+  let left ← parseSemanticSliceManifest (← j.getObjVal? "left")
+  let right ← parseSemanticSliceManifest (← j.getObjVal? "right")
+  let result ← parseSemanticSliceManifest (← j.getObjVal? "result")
+  unless sameLineage base.anchor result.anchor do
+    throw "merge result is not anchored to the base branch lineage"
+  unless refsSameSetBool result.refs (left.refs ++ right.refs) do
+    throw "merge plan result is not the exact finite join of left and right refs"
   checkMergePlanMaterialization (← parseSemanticMergePlan j)
 
 def checkRebasePlanJson (j : Lean.Json) : Except String Unit := do
+  let source ← parseSemanticSliceManifest (← j.getObjVal? "source")
+  let onto ← parseSemanticSliceManifest (← j.getObjVal? "onto")
+  let result ← parseSemanticSliceManifest (← j.getObjVal? "result")
+  let items ← parseArray (← j.getObjVal? "transport_items") parseTransportItem
+  unless sameLineage source.anchor result.anchor do
+    throw "rebase result is not anchored to the source branch lineage"
+  unless refsSubsetBool onto.refs result.refs do
+    throw "rebase result does not preserve all onto refs"
+  unless transportsWellScoped source result items do
+    throw "rebase transport items do not cover source refs with targets in the result"
+  unless refsSameSetBool result.refs (onto.refs ++ successfulTransportTargets items) do
+    throw "rebase result contains refs outside the onto slice and successful transport targets"
   checkRebasePlanMaterialization (← parseSemanticRebasePlan j)
 
 end Json

@@ -25,8 +25,8 @@ It assumes the following framing:
 - The accepted plane should evolve into a **semantic VCS**, not just a snapshot store with `HEAD`.
 - Roadmap planning should assume a **greenfield target surface**:
   - do not preserve superseded runtime/API/format behavior by default,
-  - replace old defaults with one canonical semantic contract where possible,
-  - and keep compatibility only when it preserves trusted anchors, defended
+  - replace superseded defaults with one canonical semantic contract where possible,
+  - and keep carry-forward support only when it preserves trusted anchors, defended
     soundness claims, or an explicit migration window.
 
 ---
@@ -157,15 +157,16 @@ Make the ontology kernel explicit and independent of any one execution backend.
 
 ### Canonical model
 
-- [x] Land the first kernel-IR slice in `axiograph-pathdb`:
-  - `CompiledSchemaIr`,
-  - `RelationSemanticsIr`,
-  - `RoleKind::{Data, Context, Temporal}`,
+- [x] Land the canonical compiler in `axiograph-kernel` and keep PathDB's
+  `RuntimeSchemaIndex` / relation indexes derived:
+  - `CompiledKernelSnapshot`, `KernelSnapshotIr`, `SchemaPresentationIr`, and
+    validated finite `InstanceModelIr`,
+  - explicit data/context/world/temporal/parameter/evidence role kinds,
   - `CarrierSpecIr`,
   - `WitnessViewIr`,
   - with `.axi` import/meta-plane code consulting compiled relation semantics
     for carrier/witness selection.
-- [ ] Compile `.axi` schemas into a first-class schema/category IR with:
+- [x] Compile `.axi` schemas into canonical `SchemaPresentationIr` with:
   - object types,
   - subtype inclusions,
   - relation-objects,
@@ -175,7 +176,7 @@ Make the ontology kernel explicit and independent of any one execution backend.
   - path equations,
   - rewrite rules,
   - context/world annotations.
-- [ ] Keep **relation-as-object + projection arrows** canonical.
+- [x] Keep **relation-as-object + projection arrows** canonical.
 - [ ] Treat binary edges as a projection/optimization, not the semantic primitive.
 - [ ] Add an olog-oriented authoring surface that lowers into the same IR.
 - [ ] Define the canonical IR in three layers:
@@ -204,18 +205,14 @@ Make the ontology kernel explicit and independent of any one execution backend.
 - [ ] Represent equations in two classes:
   - `PathEquation` for equations the Lean/path kernel can interpret,
   - `OpaqueEquation` for reviewed but non-kernel semantic guidance.
-- [~] Introduce concrete runtime schema-category and instance-functor IR:
-  - current slice lives in `rust/crates/axiograph-pathdb/src/kernel_ir.rs`
-    rather than a separate DSL crate,
-  - `SchemaCategoryIr` exposes object types, relation objects, role projection
-    arrows, and subtype inclusion arrows,
-  - `InstanceFunctorIr` interprets object memberships, relation fact-id sets,
-    role projections, and subtype transport,
-  - next step: decide whether these stay in `axiograph-pathdb` or move to a
-    dedicated kernel-IR crate once Lean/export/query/migration reuse increases.
-- [ ] Consider promoting the kernel IR into a dedicated crate if reuse pressure increases:
-  - `rust/crates/axiograph-kernel-ir/`
-- [ ] Reuse / absorb the current migration-side category scaffold instead of inventing a second parallel IR:
+- [x] Keep one category presentation in `axiograph-kernel`:
+  - `SchemaPresentationIr` owns object types, relation objects, ordered role
+    projections, subtype/aspect/function generators, equations, congruence, and
+    derived formation evidence;
+  - `InstanceModelIr` owns the finite interpretation data;
+  - PathDB's duplicate `SchemaCategoryIr` and `InstanceFunctorIr` views were
+    removed, and its semantic index now exposes canonical citations only.
+- [ ] Reuse / absorb the current migration-side category slice instead of inventing a second parallel IR:
   - the new canonical IR should subsume the useful parts of `rust/crates/axiograph-pathdb/src/migration.rs`.
 - [ ] Make migrations and query elaboration consume the kernel IR first and only then lower to convenience projections.
 - [~] Make theory transport runtime-addressable:
@@ -275,14 +272,14 @@ Make the semantic state machine explicit in the Rust layer.
   - add stable anchors such as:
     - `AcceptedSnapshotId`
     - `AxiDigest`
-    - `PathdbSnapshotId`
+    - `MaterializationIdV2`
     - `ProposalDigest`
     - `ProposalAdapterRunId`
     - `SchemaId`
     - `TheoryId`
     - `ContextId`
-- [x] Implement anchor/lifecycle modules directly in `axiograph-pathdb`:
-  - `rust/crates/axiograph-pathdb/src/anchor.rs`
+- [x] Implement runtime-handle/lifecycle modules directly in `axiograph-pathdb`:
+  - `rust/crates/axiograph-pathdb/src/runtime_handle.rs`
   - `rust/crates/axiograph-pathdb/src/lifecycle.rs`
 
 ### First-class Rust artifact types
@@ -311,7 +308,9 @@ Make the semantic state machine explicit in the Rust layer.
   - persistent identity via stable anchor newtypes,
   - live identity via `DbBranded<u32>`,
   - and carry both where available.
-- [ ] Treat `PathdbSnapshotId` as an operational/storage anchor, not the semantic anchor; query and certificate APIs should be indexed by accepted-plane meaning anchors.
+- [x] Replace `PathdbSnapshotId` with authenticated `MaterializationIdV2` for
+  derived SQLite images; query and certificate APIs remain indexed by accepted
+  meaning anchors.
 
 ### Lifecycle discipline
 
@@ -325,11 +324,12 @@ Make the semantic state machine explicit in the Rust layer.
   - `promote -> Snapshot<Accepted, AcceptedSnapshotId>`
   - `emit_certificate -> Answer<Validated, AcceptedSnapshotId>`
   - `verify_certificate -> Answer<Certified, AcceptedSnapshotId>`
-- [ ] Treat lifecycle transitions as semantic-state discipline, not as a reason
-  to preserve old public entrypoints:
-  - once a typed constructor/handle exists, make it the default public path,
-  - keep stringly/raw adapters only as migration shims or edge adapters,
-  - and remove them when the migration window closes.
+- [ ] Treat lifecycle transitions as semantic-state discipline:
+  - once a typed constructor or handle exists, it becomes the default public
+    path,
+  - superseded JSON/report/API shapes remain adapter-only where trust or audited
+    migration requires them,
+  - otherwise they leave the default path.
 
 ### API shift
 
@@ -351,7 +351,7 @@ Make the semantic state machine explicit in the Rust layer.
   where relevant,
   - so editor, CLI, server, and agentic workflows stop speaking partially
     incompatible semantic languages.
-- [ ] Treat older JSON/report/API shapes as migration adapters once the shared
+- [ ] Treat superseded JSON/report/API shapes as adapter-only once the shared
   typed contract exists:
   - preserve only trust-relevant fields and import ability where needed,
   - prefer one canonical contract over permanent dual-surface support.
@@ -404,42 +404,28 @@ Align storage claims with actual runtime artifacts.
 
 ### Tasks
 
-- [ ] Resolve the `.axpd` story:
-  - choose one production `.axpd` format,
-  - scope all trust claims to that one format,
-  - and treat every other format as either a migration/import path or non-production design work.
-- [ ] Replace default compatibility language with explicit cutover policy:
-  - if sectioned verified v2 becomes production, ship a one-way audited import
-    path from superseded checkpoints and stop treating v1 as the default runtime
-    contract,
-  - if live runtime bytes remain the production contract, remove v2 from
-    production-facing claims and keep it only as design work until a real cutover
-    is scheduled.
-- [ ] Add tests and fixtures over the **actual** production checkpoint format.
-- [ ] Add production-format contract tests:
-  - golden `.axpd` fixtures produced by accepted-plane / WAL flows,
-  - migration/import tests only for explicitly supported superseded bytes,
-  - and a regression test proving the runtime rejects non-production bytes on
-    the default path.
+- [x] Resolve `.axpd` on deterministic SQLite under AxiStore; all other
+  PathDB byte formats and writers are deleted.
+- [x] Enforce a greenfield cutover: old bincode/sectioned/custom-WAL bytes fail
+  closed and are rebuilt from exact accepted inputs rather than migrated.
+- [x] Add production-format deterministic, bounded, corruption, substitution,
+  recovery, fault-injection, and arbitrary-byte tests.
 - [ ] Keep PathDB as a derived execution substrate; do not let its current shape define ontology semantics.
 - [ ] Keep accepted `.axi` + schema/category IR as the meaning plane.
-- [ ] Treat `axiograph-storage` as non-foundational until temporary storage shortcuts are removed.
-- [ ] Split storage identity into two layers:
-  - semantic anchor = accepted snapshot + canonical module digests + canonical fact ids,
-  - runtime materialization id = accepted snapshot + overlay digests + build parameters + checkpoint/sidecar digests.
-- [x] Treat `PathDBExportV1` as a debug/live-byte/parser-parity fixture, not an interchange or semantic anchor.
-  - Implemented: generic semantic/query/cert loading is canonical-only; `PathDBExportV1`
-    remains under explicit `db pathdb` debug/live-byte/parser-parity commands.
-  - Continued cleanup: REPL scripts no longer emit `*_export_v1.axi`, schema
-    discovery examples no longer teach synthetic `Entity` fallback, and PathDB
-    docs now frame `PathDBExportV1` as debug/live-byte/parser parity rather
-    than semantic/query/certificate authority.
-- [ ] Keep WAL overlays explicitly outside the semantic kernel:
+- [x] Remove persistence shortcuts from `axiograph-storage`; it now stages
+  evidence in memory only.
+- [x] Split logical identity from exact image identity and bind both, plus
+  accepted snapshot/tree/module/kernel/fact-log/configuration/overlay anchors,
+  into `MaterializationIdV2`.
+- [x] Delete derived PathDB snapshot export/import surfaces rather than treating
+  them as interchange, debug round trips, or semantic anchors.
+- [x] Keep evidence overlays explicitly outside the semantic kernel:
   - queries may use chunks/proposals/embeddings for retrieval and explanation,
-  - but they should not be “certified” unless the relevant facts were promoted into accepted `.axi`.
+  - but they are not certified unless the relevant facts were promoted into
+    accepted `.axi`.
 - [~] Add typed embedding sidecar manifests and evidence overlays:
-  - `EmbeddingSidecarManifestV1` anchored to accepted ref / PathDB snapshot /
-    compiled IR digest / model version / text digests,
+  - `EmbeddingSidecarManifestV1` anchored to accepted ref, optional
+    `MaterializationIdV2`, compiled IR digest, model version, and text digests,
   - `EmbeddingEvidenceOverlayV1` for similarity observations and candidate
     semantic relationships,
   - no vector payloads in canonical `.axi`,
@@ -450,11 +436,9 @@ Align storage claims with actual runtime artifacts.
     relationship overlays.
   - remaining: CLI/tool-loop generation, persisted overlay artifacts, and
     proposal/evolution-preview plumbing.
-- [ ] Change store-backed certification to prefer canonical accepted-plane anchors:
-  - for accepted-plane serving, certify from accepted module text / canonical anchor material,
-  - for pathdb-layer serving, fail closed when a requested certified answer depends on overlay-only facts,
-  - keep snapshot-export certification only as an explicit migration/debug path,
-    not as a default compatibility promise.
+- [ ] Complete store-backed certification from canonical accepted `.axi` anchor
+  material and fail closed when a requested certified answer depends on
+  overlay-only facts. No snapshot-export migration/debug path remains.
 - [ ] Start plumbing module digests into runtime metadata and canonical fact material alongside `axi_fact_id`.
 
 ---
@@ -463,29 +447,18 @@ Align storage claims with actual runtime artifacts.
 
 ### Goal
 
-Turn accepted-plane snapshots + WAL into a first-class semantic version control system.
+Use AxiStore as the first-class semantic version-control and accepted-state
+system. Evidence stays outside accepted state until typed review and promotion.
 
 ### Current implemented slice
 
-The roadmap should build on the semantic-history code that already exists in
-`axiograph-cli`, not invent a second object model in prose.
-
-- `accepted_plane.rs` already defines/persists:
-  - `SemCommitV1`
-  - `SemReconciliationV1`
-  - `ProposalAdapterRunRecordV1`
-  - `PromotionPreviewReportV1`
-  - semantic ref pointers under `sem/refs/*`
-- promotion and validation flows can already carry:
-  - `validation_report_path`
-  - `constraints_cert_path`
-  - `quality_report_path`
-  - `proposal_adapter_run_id`
-  - `reconciliation_id`
-- `sem/validations/` and `sem/evidence/proposal_adapter_runs/` already exist as real storage seams.
-
-The missing work is to make these the normal workflow currency and to define the
-branch/ref invariants around them.
+`axiograph-store` owns immutable objects, snapshots, trees, semantic commits,
+reconciliations, refs, tags, audit lineage, gate closures, and authenticated
+materialization receipts in one repository-bound family. Promotion and
+candidate publication use generation CAS. The CLI's `semantic_model.rs` holds
+filesystem-free review/projection DTOs only; it is not a second persistence
+implementation. The deleted `accepted_plane.rs`, `sem/HEAD`, and `sem/*` JSON
+layout are not compatibility paths.
 
 ### Branch and ref semantics
 
@@ -499,7 +472,7 @@ Semantic refs should define permitted workflow, not just naming convention.
 | `refs/heads/evidence/proposals/<experiment>` | proposal-adapter proposal stream | persisted `ProposalAdapterRunRecordV1` lifecycle | commit generation is illegal without `run_id` + `branch_ref` provenance |
 | `refs/tags/<release>` | immutable release pointer | semantic commit on `main` | tag move must not alter accepted state payload |
 
-- [ ] Treat `sem/HEAD` as a symbolic semantic-ref pointer, not a snapshot-id cache.
+- [x] Remove `sem/HEAD`; AxiStore catalog refs are the only mutable pointers.
 - [x] Reject direct `evidence/proposals/* -> main` transitions; proposal-adapter output must reconcile through `review/*`.
 - [x] Reserve tags for accepted/released states only; do not tag unreviewed evidence or proposal branches.
 - [x] Define ref-update validation centrally so branch invariants are enforced in one place rather than by CLI convention.
@@ -518,8 +491,8 @@ Required state payload:
 - `accepted_snapshot_id_before`
 - `accepted_snapshot_id_after`
 - `accepted_tree_digest`
-- `pathdb_snapshot_id_before`
-- `pathdb_snapshot_id_after`
+- `materialization_id_before`
+- `materialization_id_after`
 - `evidence_digests`
 
 Required delta payload:
@@ -571,16 +544,18 @@ Merge should remain semantic reconciliation, not text concatenation.
     `SemanticMergeLatticeV1`, `SemanticMergePlanV1`, MCP-visible resolver
     steps, and typed blocker summaries over existing semantic merge dry-runs
   - auto-merge stays conservative and materialization remains fail-closed
-- [~] Only materialize a merge commit after a persisted reconciliation object exists when there are semantic conflicts.
-  - current runtime persists the reconciliation and preview before a merge
-    commit and rejects missing or non-materializing decisions such as
-    `manual_review`
-- [ ] Require `SemReconciliationV1` to reference:
-  - base/left/right commit ids
-  - preview report refs
-  - chosen decisions
-  - lifecycle transitions
-  - optional certificate refs
+- [x] Materialize protected-main merges only after an immutable
+  `SemReconciliationV2` exists.
+  - `AxiStore::materialize_merge` authenticates the current main and named
+    source tips as exact ordered parents; generic promotion rejects merges.
+  - reviewed parent/result candidates bind exact snapshots, trees, root module,
+    compiled kernel IR, payload-fingerprint index, and canonical/CQ/trust/theory
+    reports.
+  - typed keep/drop/introduce/transport decisions account for every parent and
+    result payload; transport carries an immutable witness digest.
+  - AxiStore recompiles all candidates from exact stored `.axi` bytes before
+    advancing state. The check is finite payload-union preservation, not a
+    general categorical-colimit or dependent-transport theorem.
 
 ### Lifecycle states tracked in history
 
@@ -594,28 +569,23 @@ Merge should remain semantic reconciliation, not text concatenation.
   - `retracted`
 - [ ] Make lifecycle transitions part of commit/reconciliation payloads, not inferred from branch names alone.
 
-### First shipping CLI slice
+### Operational adapter slice
 
-- [ ] `axiograph sem init`
-- [ ] `axiograph sem status`
-- [ ] `axiograph sem log`
-- [ ] `axiograph sem show`
-- [ ] `axiograph sem branch <name>`
-- [ ] `axiograph sem diff <a> <b> --semantic`
-- [ ] `axiograph sem tag <name>`
-- [ ] `axiograph sem show --object=proposal-adapter --run <id>`
-- [ ] `axiograph sem merge --dry-run`
+The broad `axiograph sem` command family was removed. Add narrow adapters only
+for typed AxiStore operations that operators actually need: status, semantic
+diff, candidate publication, promotion, merge preview, and immutable tagging.
+Adapters must not reintroduce filesystem refs, `sem/*` JSON, or dual writes.
 
 ### Implementation-first actions
 
-- [ ] Wire auto-emit for `db accept promote` into `sem/commits`.
-- [ ] Wire auto-emit for `db accept pathdb-commit` into `sem/commits`.
+- [x] Remove `db accept promote` and `sem/commits`; typed
+  `AxiStore::promote` publishes the semantic commit and protected ref atomically.
+- [ ] Attach immutable `MaterializationIdV2` receipts to AxiStore semantic
+  commits without granting derived rows mutation authority.
 - [ ] Validate `ProposalAdapterRunId` resolution whenever reading proposal-annotated commits.
 - [ ] Add one semantic ref read/write path for `main`, `review/*`, `evidence/*`, `evidence/proposals/*`, and tags rather than branch-specific helpers.
-- [ ] Keep the first implementation centered in:
-  - `rust/crates/axiograph-cli/src/accepted_plane.rs`
-  - `rust/crates/axiograph-cli/src/main.rs`
-  before factoring to a dedicated semantic-VCS module.
+- [ ] Center persistence in `axiograph-store`; CLI semantic commands should be
+  typed adapters over AxiStore rather than a second filesystem authority.
 
 ---
 
@@ -631,7 +601,7 @@ migration preview, semantic merge, and accepted-plane promotion.
 The implementation is already ahead of the roadmap text:
 
 - `proposals_validate.rs` produces `ProposalsValidationV1`
-- `accepted_plane.rs` produces `PromotionPreviewReportV1`
+- `AxiStore::promote` consumes a typed `PromotionPlan` and immutable gate objects
 - `evolution_preview.rs` already defines `EvolutionPreviewV1` with:
   - `typed_change`
   - `semantic_delta`
@@ -660,7 +630,8 @@ invent a new preview vocabulary.
 
 - [ ] Make every ontology-changing workflow emit `EvolutionPreviewV1` directly or embed it as the canonical sub-object.
 - [ ] Treat `ProposalsValidationV1` and `PromotionPreviewReportV1` as adapters around `EvolutionPreviewV1`, not divergent peer schemas.
-- [ ] Persist all full preview reports under `sem/validations/`.
+- [ ] Persist all full preview reports as immutable AxiStore objects attached to
+  candidate or promotion plans.
 - [ ] Persist only compact gate summaries in commits, reconciliations, and refs.
 
 ### CQ-gated workflow policy
@@ -722,7 +693,7 @@ merge, and promotion paths.
 
 ### Current implemented slice
 
-- `query_ir_v1` and `PreparedQueryV1` already expose trust and certifiability;
+- `query_ir_v1` and `CompiledFiniteQuery` already expose trust and certifiability;
   `PreparedQueryMetadataV1` packages the prepared-query id, input/elaborated IR
   ids, inferred types, trust, explicit non-claims, and refinement handles for
   downstream reports.
@@ -736,9 +707,10 @@ merge, and promotion paths.
   - `certifiable`
   - `mixed`
   - `execution_only`
-- query trust already states:
-  - `claim_scope = returned_rows_within_snapshot_and_context`
-  - `completeness_claim = not_claimed`
+- query trust states:
+  - `claim_scope = finite_query_denotation_within_exact_accepted_module`
+  - `completeness_claim = exact_for_declared_finite_decidable_fragment` only
+    after an accepted bound Lean receipt; otherwise `not_claimed`
   - `ontology_closure_claim = not_claimed`
 - single-context typed queries are certifiable today; multi-context unions and approximate operators remain execution-only.
 - theory checking now has a separate runtime report family:
@@ -749,8 +721,8 @@ merge, and promotion paths.
   - `axiograph check theory`
   - `semantic_theory_check`
   These claims are scoped to compiled theory obligations and declared
-  world/evidence/ref assumptions. They do not upgrade query-result trust
-  contracts into answer-set completeness or full ontology closure.
+  world/evidence/ref assumptions. They do not extend V4's finite exact theorem
+  beyond its declared fragment or imply full ontology closure.
 
 ### Trust-contract unification
 
@@ -761,13 +733,14 @@ merge, and promotion paths.
   - reconciliation summaries
   - proposal-adapter validation summaries
   - semantic-commit gate summaries
-- [ ] Keep explicit non-claims present everywhere:
-  - no completeness claim
+- [ ] Keep explicit claim scope and non-claims present everywhere:
+  - finite completeness only with a bound V4 Lean receipt
   - no ontology-closure claim
   - no global semantic-equivalence claim unless explicitly checked
-  - Recent runtime-theory CLI output now surfaces module digest, closure tier,
-    declared world, evidence policy, closure trace, and next action in the
-    human summary; continue threading the same boundary into every report.
+  - Runtime-theory CLI output surfaces module digest, admissibility scope,
+    declared world, evidence policy, admissibility trace, the explicit
+    `closure_engine_not_implemented` residual, and next action; continue
+    threading the same boundary into every report.
 - [ ] Make semantic coverage and semantic claims available to preview/reporting paths, not only to query execution.
 - [ ] Attach runtime theory-check reports to semantic merge/rebase and
   reconciliation previews so merge gates can distinguish checked, review-only,
@@ -775,7 +748,7 @@ merge, and promotion paths.
 
 ### Typed query certifiability actions
 
-- [ ] Make `PreparedQueryV1` the common query execution currency across:
+- [x] Make `CompiledFiniteQuery` the sole query execution currency across:
   - REPL
   - server `/query`
   - CQ evaluation
@@ -858,17 +831,16 @@ Make RDF/OWL/SHACL/property-graph interoperability strong without making any of 
   - previews remain the rich working object,
   - and commit/ref payloads should preserve trust/CQ/rule/coverage state without
     copying float-heavy preview internals into long-lived semantic history.
-- [ ] Treat older semantic-history payloads as migratable objects, not
-  open-ended defaults:
-  - when `SemCommitV1` / `EvolutionPreviewV1` are superseded, add explicit
-    readers or migration tools only where historical audit requires them,
-  - do not keep obsolete commit/preview schemas on the default write path.
+- [x] Remove the old single-parent semantic-commit/reconciliation write model.
+  `SemCommitV2` and `SemReconciliationV2` are the only accepted AxiStore
+  formats; no default legacy reader or compatibility writer is retained.
+  CLI merge summaries are explicitly untrusted previews and cannot be supplied
+  to the accepted-state API.
 - [ ] Compile SPARQL fragments into the typed query IR instead of creating a second semantic core.
-- [ ] Treat property-graph compatibility as projection:
-  - binary relations may project to edges,
-  - n-ary relations project to fact nodes / relationship entities,
-  - canonical internal form remains olog/relation-object based.
-- [ ] Add an explicit **advanced graph backend compatibility profile** instead of
+- [x] Treat property-graph support as an experimental projection: canonical
+  relation objects and n-ary facts remain explicit nodes, role projections are
+  typed edges, and no generic binary-edge completeness claim is made.
+- [ ] Add an explicit **advanced graph backend projection profile** instead of
   a vague "generic graph DB" promise.
   - Tier-1 targets should be only graph engines that expose enough structure to
     preserve typed projections and scoped execution, for example:
@@ -885,30 +857,15 @@ Make RDF/OWL/SHACL/property-graph interoperability strong without making any of 
     - `Neo4j`, `Neptune`, `JanusGraph`, and `Memgraph` as lower-level
       projection/execution targets,
     - and `Apache AGE` as an experimental property-graph option rather than a
-      first-class compatibility target.
-- [ ] Define a `BackendCapabilityProfile` / `ProjectionCapabilityProfile`
-  contract in Rust for backend adapters:
-  - backend engine / support tier
-  - `named_graphs`
-  - `transactions`
-  - `constraints`
-  - `schema_management`
-  - `native_type_system`
-  - `native_nary_relations`
-  - `typed_query_validation`
-  - `logic_programming_or_functions`
-  - `cypher_like_queries`
-  - `gremlin_like_traversals`
-  - `sparql_dataset_queries`
-  - `relationship_entities`
-  - `procedures_or_triggers`
-  - `multi_database_or_namespace_support`
-  - `immutable_history`
-  - `branching_and_merge`
-  - `diff_and_patch`
-  - `schema_instance_separation`
-- [ ] Encode backend pushdown asymmetrically instead of pretending every engine
-  should host every semantic layer:
+      first-class projection target.
+- [x] Define a closed `BackendCapabilityDeclarationV1` contract for PathDB,
+  TypeDB, TerminusDB, RDF/OWL, and property graphs. Every profile classifies
+  relation objects, n-ary relations, typed roles, subtype inclusions,
+  dependent indexes, refinements, context/world axes, evidence/provenance,
+  constraints, path equations, rewrites, higher paths, finite instances, and
+  native readback as `Native | Encoded | Sidecar | Unsupported`.
+- [x] Encode backend projection asymmetrically instead of pretending every
+  engine should host every semantic layer:
   - `TypeDB` should be the primary pushdown target for schema typing, relation
     roles, n-ary structure, typed query validation, and safe runtime rule/query
     fragments.
@@ -918,7 +875,7 @@ Make RDF/OWL/SHACL/property-graph interoperability strong without making any of 
     the same long-term support and typed-projection bar.
   - No backend becomes the ontology kernel just because it can host one of
     these layers well.
-- [ ] Keep semantic authority above the backend:
+- [x] Keep semantic authority above the backend:
   - authoring, ologs, semantic VCS refs/commits, CQ gates, trust contracts,
     and lifecycle states remain Axiograph-native artifacts,
   - backends store **materialized projections** anchored to accepted snapshot /
@@ -933,15 +890,11 @@ Make RDF/OWL/SHACL/property-graph interoperability strong without making any of 
   - but keep schema/theory review and promotion in Axiograph,
   - especially where backend-native branch synchronization does not transport
     schema evolution together with instance data.
-- [ ] Add a typed projection manifest for every backend materialization:
-  - source `AcceptedSnapshotId` / semantic ref,
-  - compiled IR digest,
-  - backend capability profile,
-  - backend engine / support tier,
-  - projected object/relation/role mappings,
-  - context/world mapping strategy,
-  - trust caveats about what was preserved vs flattened.
-- [ ] Support backend-specific lowering without semantic surrender:
+- [x] Add `ProjectionManifestV1` for every backend projection, anchored by
+  repository id, accepted snapshot id, and compiled-IR digest, with finite
+  `KernelRefV2` records, native artifact, closed capability declaration,
+  coverage, semantic-loss report, and Axiograph-only mutation authority.
+- [x] Support output-side backend-specific lowering without semantic surrender:
   - RDF backends preserve relation-objects and context/world structure through
     named graphs / reified fact objects where needed,
   - property-graph backends project binary carrier relations to edges only when
@@ -950,17 +903,16 @@ Make RDF/OWL/SHACL/property-graph interoperability strong without making any of 
     relationship entities,
   - and query pushdown is limited to fragments whose semantics are understood by
     the adapter profile.
-- [ ] Make backend round-tripping explicit rather than implicit:
-  - imports from external graph engines lower through the canonical IR,
-  - exports/projected views are versioned and anchor-aware,
-  - and drift between a backend projection and the accepted semantic state is
-    reported as a typed coverage/drift artifact rather than silently repaired.
+- [~] Make backend round-tripping explicit rather than implicit. Output and
+  readback are now versioned, anchor-aware, and report missing/drifted/extra
+  records as evidence-only `ReadbackReportV1`; external backend imports still
+  need to lower through typed proposals and canonical IR.
 - [ ] Treat backend query pushdown as an optimization layer, not a second
   semantic core:
   - typed query elaboration still happens against the canonical IR,
   - pushdown plans must record which predicates/paths were executed remotely,
-  - and trust contracts must distinguish `accepted_semantic_result_with_backend_pushdown`
-    from plain backend retrieval.
+  - and trust contracts must distinguish anchored Axiograph results that used
+    remote execution from plain backend retrieval.
 - [ ] Rework RDF ingest to lower through IR rather than directly into `ProposalV1::Entity` / binary `ProposalV1::Relation`.
 - [ ] Rework RDF export/query support to preserve anchor-aware trust reporting:
   - accepted ontology-backed answers stay distinct from retrieval-only graph
@@ -984,7 +936,7 @@ Make RDF/OWL/SHACL/property-graph interoperability strong without making any of 
 
 ---
 
-## 10. Workstream I: World-Model and AI Lifecycle
+## 10. Workstream I: Predictive Proposal Adapter Lifecycle
 
 ### Goal
 
@@ -1010,10 +962,9 @@ The lifecycle should be explicit and branch-resolved:
 8. tag release if appropriate
 9. close the run with final status and resulting refs
 
-The run lifecycle should prefer one canonical write path. Older proposal-adapter
-entrypoints may survive as import/adaptation layers for a time, but the roadmap
-should not assume indefinite compatibility between multiple proposal/run
-surfaces once one branch-aware lifecycle path exists.
+The run lifecycle should prefer one canonical write path. Once a branch-aware
+lifecycle path exists, delete parallel proposal/run surfaces instead of keeping
+wrappers.
 
 ### Branch and status invariants
 

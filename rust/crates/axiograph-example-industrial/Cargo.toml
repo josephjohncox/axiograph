@@ -2,18 +2,23 @@
 name = "axiograph-example-industrial"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Industrial engineering example harness for Axiograph"
+description = "Industrial engineering example runtime for Axiograph"
 publish = false
 
 [[bin]]
 name = "axiograph-industrial-example"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow.workspace = true
 axiograph-pathdb = { path = "../axiograph-pathdb" }
+axiograph-security = { path = "../axiograph-security" }
 clap.workspace = true
 regex.workspace = true
 serde.workspace = true

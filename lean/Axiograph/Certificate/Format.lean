@@ -1,6 +1,7 @@
 import Lean
 import Axiograph.Prob.Verified
 import Axiograph.Axi.SchemaV1
+import Axiograph.Theory.Finite
 
 namespace Axiograph
 
@@ -549,46 +550,51 @@ def parseDeltaFMigrationProofV1 (j : Json) : Except String DeltaFMigrationProofV
 end Migration
 
 /-!
-### v3: name-based, `.axi`-anchored query certificates
+### Canonical finite query witness syntax
 
-`query_result_v3` is the supported query certificate family.
+`query_result_v4` is the only query certificate family. Its finite syntax is
+named V4 throughout Rust and Lean; there is no compatibility alias.
 
 Key differences:
 
 * entities are referenced by stable **names** (and fact ids) rather than numeric ids,
 * reachability witnesses are anchored to canonical tuple facts via `axi_fact_id`
-  (so the checker can validate without requiring a `PathDBExportV1` snapshot table).
+  so the checker never trusts a derived query image.
+
+For `query_result_v4`, witness replay establishes row soundness and the finite
+denotation checker establishes exact completeness for the declared bounded
+fragment. Truncation is rejected rather than treated as replay metadata.
 -/
 
-inductive QueryTermV3 where
+inductive FiniteQueryTermV4 where
   | var (name : String)
   | const (entity : String)
   deriving Repr
 
-inductive QueryRegexV3 where
+inductive FiniteQueryRegexV4 where
   | epsilon
   | rel (rel : String)
-  | seq (parts : Array QueryRegexV3)
-  | alt (parts : Array QueryRegexV3)
-  | star (inner : QueryRegexV3)
-  | plus (inner : QueryRegexV3)
-  | opt (inner : QueryRegexV3)
+  | seq (parts : Array FiniteQueryRegexV4)
+  | alt (parts : Array FiniteQueryRegexV4)
+  | star (inner : FiniteQueryRegexV4)
+  | plus (inner : FiniteQueryRegexV4)
+  | opt (inner : FiniteQueryRegexV4)
   deriving Repr
 
-inductive QueryAtomV3 where
-  | type (term : QueryTermV3) (typeName : String)
-  | attrEq (term : QueryTermV3) (key : String) (value : String)
-  | path (left : QueryTermV3) (regex : QueryRegexV3) (right : QueryTermV3)
+inductive FiniteQueryAtomV4 where
+  | type (term : FiniteQueryTermV4) (typeName : String)
+  | attrEq (term : FiniteQueryTermV4) (key : String) (value : String)
+  | path (left : FiniteQueryTermV4) (regex : FiniteQueryRegexV4) (right : FiniteQueryTermV4)
   deriving Repr
 
-structure QueryV3 where
+structure FiniteQueryV4 where
   selectVars : Array String
-  disjuncts : Array (Array QueryAtomV3)
+  disjuncts : Array (Array FiniteQueryAtomV4)
   maxHops? : Option Nat
   minConfidence? : Option Prob.VProb
   deriving Repr
 
-structure QueryBindingV3 where
+structure FiniteQueryBindingV4 where
   var : String
   entity : String
   deriving Repr
@@ -637,7 +643,7 @@ partial def parseReachabilityProofV3 (j : Json) : Except String ReachabilityProo
   | other =>
       throw s!"unknown reachability_v3 proof type: {other}"
 
-partial def parseQueryTermV3 (j : Json) : Except String QueryTermV3 := do
+partial def parseFiniteQueryTermV4 (j : Json) : Except String FiniteQueryTermV4 := do
   let ty ← (← j.getObjVal? "type").getStr?
   match ty with
   | "var" =>
@@ -647,9 +653,9 @@ partial def parseQueryTermV3 (j : Json) : Except String QueryTermV3 := do
       let entity ← (← j.getObjVal? "entity").getStr?
       pure (.const entity)
   | other =>
-      throw s!"unknown query term v3 type: {other}"
+      throw s!"unknown finite query term v4 type: {other}"
 
-partial def parseQueryRegexV3 (j : Json) : Except String QueryRegexV3 := do
+partial def parseFiniteQueryRegexV4 (j : Json) : Except String FiniteQueryRegexV4 := do
   let ty ← (← j.getObjVal? "type").getStr?
   match ty with
   | "epsilon" => pure .epsilon
@@ -658,61 +664,61 @@ partial def parseQueryRegexV3 (j : Json) : Except String QueryRegexV3 := do
       pure (.rel rel)
   | "seq" =>
       let partsJson ← (← j.getObjVal? "parts").getArr?
-      let mut parts : Array QueryRegexV3 := #[]
+      let mut parts : Array FiniteQueryRegexV4 := #[]
       for p in partsJson do
-        parts := parts.push (← parseQueryRegexV3 p)
+        parts := parts.push (← parseFiniteQueryRegexV4 p)
       pure (.seq parts)
   | "alt" =>
       let partsJson ← (← j.getObjVal? "parts").getArr?
-      let mut parts : Array QueryRegexV3 := #[]
+      let mut parts : Array FiniteQueryRegexV4 := #[]
       for p in partsJson do
-        parts := parts.push (← parseQueryRegexV3 p)
+        parts := parts.push (← parseFiniteQueryRegexV4 p)
       pure (.alt parts)
   | "star" =>
-      let inner ← parseQueryRegexV3 (← j.getObjVal? "inner")
+      let inner ← parseFiniteQueryRegexV4 (← j.getObjVal? "inner")
       pure (.star inner)
   | "plus" =>
-      let inner ← parseQueryRegexV3 (← j.getObjVal? "inner")
+      let inner ← parseFiniteQueryRegexV4 (← j.getObjVal? "inner")
       pure (.plus inner)
   | "opt" =>
-      let inner ← parseQueryRegexV3 (← j.getObjVal? "inner")
+      let inner ← parseFiniteQueryRegexV4 (← j.getObjVal? "inner")
       pure (.opt inner)
   | other =>
-      throw s!"unknown query regex v3 type: {other}"
+      throw s!"unknown finite query regex v4 type: {other}"
 
-partial def parseQueryAtomV3 (j : Json) : Except String QueryAtomV3 := do
+partial def parseFiniteQueryAtomV4 (j : Json) : Except String FiniteQueryAtomV4 := do
   let ty ← (← j.getObjVal? "type").getStr?
   match ty with
   | "type" =>
-      let term ← parseQueryTermV3 (← j.getObjVal? "term")
+      let term ← parseFiniteQueryTermV4 (← j.getObjVal? "term")
       let typeName ← (← j.getObjVal? "type_name").getStr?
       pure (.type term typeName)
   | "attr_eq" =>
-      let term ← parseQueryTermV3 (← j.getObjVal? "term")
+      let term ← parseFiniteQueryTermV4 (← j.getObjVal? "term")
       let key ← (← j.getObjVal? "key").getStr?
       let value ← (← j.getObjVal? "value").getStr?
       pure (.attrEq term key value)
   | "path" =>
-      let left ← parseQueryTermV3 (← j.getObjVal? "left")
-      let regex ← parseQueryRegexV3 (← j.getObjVal? "regex")
-      let right ← parseQueryTermV3 (← j.getObjVal? "right")
+      let left ← parseFiniteQueryTermV4 (← j.getObjVal? "left")
+      let regex ← parseFiniteQueryRegexV4 (← j.getObjVal? "regex")
+      let right ← parseFiniteQueryTermV4 (← j.getObjVal? "right")
       pure (.path left regex right)
   | other =>
-      throw s!"unknown query atom v3 type: {other}"
+      throw s!"unknown finite query atom v4 type: {other}"
 
-partial def parseQueryV3 (j : Json) : Except String QueryV3 := do
+partial def parseFiniteQueryV4 (j : Json) : Except String FiniteQueryV4 := do
   let selectVarsJson ← (← j.getObjVal? "select_vars").getArr?
   let mut selectVars : Array String := #[]
   for v in selectVarsJson do
     selectVars := selectVars.push (← v.getStr?)
 
   let disjunctsJson ← (← j.getObjVal? "disjuncts").getArr?
-  let mut disjuncts : Array (Array QueryAtomV3) := #[]
+  let mut disjuncts : Array (Array FiniteQueryAtomV4) := #[]
   for d in disjunctsJson do
     let atomsJson ← d.getArr?
-    let mut atoms : Array QueryAtomV3 := #[]
+    let mut atoms : Array FiniteQueryAtomV4 := #[]
     for a in atomsJson do
-      atoms := atoms.push (← parseQueryAtomV3 a)
+      atoms := atoms.push (← parseFiniteQueryAtomV4 a)
     disjuncts := disjuncts.push atoms
 
   let maxHops? : Option Nat ←
@@ -727,18 +733,18 @@ partial def parseQueryV3 (j : Json) : Except String QueryV3 := do
 
   pure { selectVars, disjuncts, maxHops?, minConfidence? }
 
-partial def parseQueryBindingV3 (j : Json) : Except String QueryBindingV3 := do
+partial def parseFiniteQueryBindingV4 (j : Json) : Except String FiniteQueryBindingV4 := do
   let var ← (← j.getObjVal? "var").getStr?
   let entity ← (← j.getObjVal? "entity").getStr?
   pure { var, entity }
 
-inductive QueryAtomWitnessV3 where
+inductive FiniteQueryAtomWitnessV4 where
   | type (entity : String) (typeName : String)
   | attrEq (entity : String) (key : String) (value : String)
   | path (proof : ReachabilityProofV3)
   deriving Repr
 
-partial def parseQueryAtomWitnessV3 (j : Json) : Except String QueryAtomWitnessV3 := do
+partial def parseFiniteQueryAtomWitnessV4 (j : Json) : Except String FiniteQueryAtomWitnessV4 := do
   let ty ← (← j.getObjVal? "type").getStr?
   match ty with
   | "type" =>
@@ -754,56 +760,170 @@ partial def parseQueryAtomWitnessV3 (j : Json) : Except String QueryAtomWitnessV
       let proof ← parseReachabilityProofV3 (← j.getObjVal? "proof")
       pure (.path proof)
   | other =>
-      throw s!"unknown query witness v3 type: {other}"
+      throw s!"unknown finite query witness v4 type: {other}"
 
-structure QueryRowV3 where
+structure FiniteQueryRowV4 where
   disjunct : Nat
-  bindings : Array QueryBindingV3
-  witnesses : Array QueryAtomWitnessV3
+  bindings : Array FiniteQueryBindingV4
+  witnesses : Array FiniteQueryAtomWitnessV4
   deriving Repr
 
-partial def parseQueryRowV3 (j : Json) : Except String QueryRowV3 := do
+partial def parseFiniteQueryRowV4 (j : Json) : Except String FiniteQueryRowV4 := do
   let disjunct ← (← j.getObjVal? "disjunct").getNat?
 
   let bindingsJson ← (← j.getObjVal? "bindings").getArr?
-  let mut bindings : Array QueryBindingV3 := #[]
+  let mut bindings : Array FiniteQueryBindingV4 := #[]
   for b in bindingsJson do
-    bindings := bindings.push (← parseQueryBindingV3 b)
+    bindings := bindings.push (← parseFiniteQueryBindingV4 b)
 
   let witnessesJson ← (← j.getObjVal? "witnesses").getArr?
-  let mut witnesses : Array QueryAtomWitnessV3 := #[]
+  let mut witnesses : Array FiniteQueryAtomWitnessV4 := #[]
   for w in witnessesJson do
-    witnesses := witnesses.push (← parseQueryAtomWitnessV3 w)
+    witnesses := witnesses.push (← parseFiniteQueryAtomWitnessV4 w)
 
   pure { disjunct, bindings, witnesses }
 
-structure QueryResultProofV3 where
-  query : QueryV3
-  rows : Array QueryRowV3
-  truncated : Bool
-  elaborationRewrites : Array RewriteDerivationProofV3 := #[]
+/-!
+### v4: prepared-query and returned-answer binding
+
+V4 is accepted only inside certificate envelope V3. It uses the canonical
+query/row witness syntax plus a cryptographic prepared binding, an explicit row
+limit, a finite-exact-completeness claim kind, and an answer digest. Unknown
+fields reject throughout the V4 payload so an older checker cannot silently
+accept an upgrade by ignoring new data.
+-/
+
+def requireExactFields (j : Json) (allowed required : List String) : Except String Unit := do
+  match j with
+  | .obj fields =>
+      for (field, _) in fields.toList do
+        if !allowed.contains field then
+          throw s!"unknown query_result_v4 field `{field}`"
+      for field in required do
+        if !(fields.contains field) then
+          throw s!"missing query_result_v4 field `{field}`"
+  | _ => throw "query_result_v4 value must be a JSON object"
+
+partial def requireStrictFiniteQueryTermV4Json (j : Json) : Except String Unit := do
+  let ty ← (← j.getObjVal? "type").getStr?
+  match ty with
+  | "var" => requireExactFields j ["type", "name"] ["type", "name"]
+  | "const" => requireExactFields j ["type", "entity"] ["type", "entity"]
+  | other => throw s!"unknown strict query term type: {other}"
+
+partial def requireStrictFiniteQueryRegexV4Json (j : Json) : Except String Unit := do
+  let ty ← (← j.getObjVal? "type").getStr?
+  match ty with
+  | "epsilon" => requireExactFields j ["type"] ["type"]
+  | "rel" => requireExactFields j ["type", "rel"] ["type", "rel"]
+  | "seq" | "alt" => do
+      requireExactFields j ["type", "parts"] ["type", "parts"]
+      for part in (← (← j.getObjVal? "parts").getArr?) do
+        requireStrictFiniteQueryRegexV4Json part
+  | "star" | "plus" | "opt" => do
+      requireExactFields j ["type", "inner"] ["type", "inner"]
+      requireStrictFiniteQueryRegexV4Json (← j.getObjVal? "inner")
+  | other => throw s!"unknown strict query regex type: {other}"
+
+partial def requireStrictFiniteQueryAtomV4Json (j : Json) : Except String Unit := do
+  let ty ← (← j.getObjVal? "type").getStr?
+  match ty with
+  | "type" => do
+      requireExactFields j ["type", "term", "type_name"] ["type", "term", "type_name"]
+      requireStrictFiniteQueryTermV4Json (← j.getObjVal? "term")
+  | "attr_eq" => do
+      requireExactFields j ["type", "term", "key", "value"] ["type", "term", "key", "value"]
+      requireStrictFiniteQueryTermV4Json (← j.getObjVal? "term")
+  | "path" => do
+      requireExactFields j ["type", "left", "regex", "right"] ["type", "left", "regex", "right"]
+      requireStrictFiniteQueryTermV4Json (← j.getObjVal? "left")
+      requireStrictFiniteQueryRegexV4Json (← j.getObjVal? "regex")
+      requireStrictFiniteQueryTermV4Json (← j.getObjVal? "right")
+  | other => throw s!"unknown strict query atom type: {other}"
+
+partial def requireStrictFiniteQueryV4Json (j : Json) : Except String Unit := do
+  requireExactFields j
+    ["select_vars", "disjuncts", "max_hops", "min_confidence_fp"]
+    ["select_vars", "disjuncts"]
+  for disjunct in (← (← j.getObjVal? "disjuncts").getArr?) do
+    for atom in (← disjunct.getArr?) do
+      requireStrictFiniteQueryAtomV4Json atom
+
+partial def requireStrictReachabilityProofV3Json (j : Json) : Except String Unit := do
+  let ty ← (← j.getObjVal? "type").getStr?
+  match ty with
+  | "reflexive" =>
+      requireExactFields j ["type", "entity"] ["type", "entity"]
+  | "step" => do
+      requireExactFields j
+        ["type", "from", "rel", "to", "rel_confidence_fp", "axi_fact_id", "rest"]
+        ["type", "from", "rel", "to", "rel_confidence_fp", "axi_fact_id", "rest"]
+      requireStrictReachabilityProofV3Json (← j.getObjVal? "rest")
+  | other => throw s!"unknown strict reachability proof type: {other}"
+
+partial def requireStrictFiniteQueryWitnessV4Json (j : Json) : Except String Unit := do
+  let ty ← (← j.getObjVal? "type").getStr?
+  match ty with
+  | "type" =>
+      requireExactFields j ["type", "entity", "type_name"] ["type", "entity", "type_name"]
+  | "attr_eq" =>
+      requireExactFields j ["type", "entity", "key", "value"] ["type", "entity", "key", "value"]
+  | "path" => do
+      requireExactFields j ["type", "proof"] ["type", "proof"]
+      requireStrictReachabilityProofV3Json (← j.getObjVal? "proof")
+  | other => throw s!"unknown strict query witness type: {other}"
+
+partial def requireStrictFiniteQueryRowV4Json (j : Json) : Except String Unit := do
+  requireExactFields j ["disjunct", "bindings", "witnesses"] ["disjunct", "bindings", "witnesses"]
+  for binding in (← (← j.getObjVal? "bindings").getArr?) do
+    requireExactFields binding ["var", "entity"] ["var", "entity"]
+  for witness in (← (← j.getObjVal? "witnesses").getArr?) do
+    requireStrictFiniteQueryWitnessV4Json witness
+
+structure PreparedQueryBindingV1 where
+  version : Nat
+  query : FiniteQueryV4
+  rowLimit : Nat
+  claimKind : String
   deriving Repr
 
-partial def parseQueryResultProofV3 (j : Json) : Except String QueryResultProofV3 := do
-  let query ← parseQueryV3 (← j.getObjVal? "query")
+partial def parsePreparedQueryBindingV1 (j : Json) : Except String PreparedQueryBindingV1 := do
+  requireExactFields j ["version", "query", "row_limit", "claim_kind"]
+    ["version", "query", "row_limit", "claim_kind"]
+  let version ← (← j.getObjVal? "version").getNat?
+  if version != 1 then
+    throw s!"unsupported prepared query binding version: {version}"
+  let queryJson ← j.getObjVal? "query"
+  requireStrictFiniteQueryV4Json queryJson
+  let query ← parseFiniteQueryV4 queryJson
+  let rowLimit ← (← j.getObjVal? "row_limit").getNat?
+  let claimKind ← (← j.getObjVal? "claim_kind").getStr?
+  if claimKind != "finite_exact_complete" then
+    throw s!"unsupported prepared query claim kind: {claimKind}"
+  pure { version, query, rowLimit, claimKind }
 
+structure QueryResultProofV4 where
+  binding : PreparedQueryBindingV1
+  preparedQueryDigest : String
+  rows : Array FiniteQueryRowV4
+  runtimeTruncated : Bool
+  answerDigest : String
+  deriving Repr
+
+partial def parseQueryResultProofV4 (j : Json) : Except String QueryResultProofV4 := do
+  requireExactFields j
+    ["binding", "prepared_query_digest_v1", "rows", "runtime_truncated", "answer_digest_v1"]
+    ["binding", "prepared_query_digest_v1", "rows", "runtime_truncated", "answer_digest_v1"]
+  let binding ← parsePreparedQueryBindingV1 (← j.getObjVal? "binding")
+  let preparedQueryDigest ← (← j.getObjVal? "prepared_query_digest_v1").getStr?
   let rowsJson ← (← j.getObjVal? "rows").getArr?
-  let mut rows : Array QueryRowV3 := #[]
-  for r in rowsJson do
-    rows := rows.push (← parseQueryRowV3 r)
-
-  let truncated : Bool ← fromJson? (← j.getObjVal? "truncated")
-
-  let elaborationRewritesJson? := (j.getObjVal? "elaboration_rewrites").toOption
-  let mut elaborationRewrites : Array RewriteDerivationProofV3 := #[]
-  match elaborationRewritesJson? with
-  | none => pure ()
-  | some arrJson =>
-      let arr ← arrJson.getArr?
-      for item in arr do
-        elaborationRewrites := elaborationRewrites.push (← parseRewriteDerivationProofV3 item)
-
-  pure { query, rows, truncated, elaborationRewrites }
+  let mut rows : Array FiniteQueryRowV4 := #[]
+  for rowJson in rowsJson do
+    requireStrictFiniteQueryRowV4Json rowJson
+    rows := rows.push (← parseFiniteQueryRowV4 rowJson)
+  let runtimeTruncated : Bool ← fromJson? (← j.getObjVal? "runtime_truncated")
+  let answerDigest ← (← j.getObjVal? "answer_digest_v1").getStr?
+  pure { binding, preparedQueryDigest, rows, runtimeTruncated, answerDigest }
 
 /-!
 ## v2: `.axi` well-typedness (AST-level)
@@ -864,12 +984,190 @@ partial def parseAxiConstraintsOkProofV1 (j : Json) : Except String AxiConstrain
   let checkCount ← (← j.getObjVal? "check_count").getNat?
   pure { moduleName, constraintCount, instanceCount, checkCount }
 
+/-- Exact-byte-anchored finite category-kernel proof. The checker
+independently reconstructs the complete supported presentation before replaying
+congruence and bounded reachability evidence. -/
+structure CategoryKernelProofV3 where
+  schemaName : String
+  presentation : Theory.Finite.CategoryKernelPresentationV3
+  congruenceCertificates : Array Theory.Finite.CategoryKernelCongruenceCertificateV3
+  certificate : Theory.Finite.SaturationCertificate
+  deriving Repr
+
+private def parseJsonBool (j : Json) : Except String Bool :=
+  match j with
+  | .bool value => pure value
+  | _ => throw "expected JSON boolean"
+
+private def parseCategoryKernelArrowKindV3 (value : String) :
+    Except String Theory.Finite.ArrowKind :=
+  match value with
+  | "role_projection" => pure .projection
+  | "subtype_inclusion" => pure .subtypeInclusion
+  | "aspect" => pure .aspect
+  | "function" => pure .function
+  | other => throw s!"unknown category-kernel arrow kind: {other}"
+
+private def parseCategoryKernelRoleKindV3 (value : String) :
+    Except String Theory.Finite.RoleKind :=
+  match value with
+  | "data" => pure .data
+  | "context" => pure .context
+  | "world" => pure .world
+  | "temporal" => pure .temporal
+  | "parameter" => pure .parameter
+  | "evidence" => pure .evidence
+  | other => throw s!"unknown category-kernel role kind: {other}"
+
+private def parseCategoryKernelDirectionV3 (value : String) :
+    Except String Theory.Finite.EquationDirection :=
+  match value with
+  | "forward" => pure .forward
+  | "reverse" => pure .reverse
+  | other => throw s!"unknown category-kernel equation direction: {other}"
+
+partial def parseCategoryKernelPathV3 (j : Json) :
+    Except String Theory.Finite.CategoryKernelPathV3 := do
+  requireExactFields j ["source", "target", "arrows"] ["source", "target", "arrows"]
+  let mut arrows : Array Nat := #[]
+  for arrow in (← (← j.getObjVal? "arrows").getArr?) do
+    arrows := arrows.push (← arrow.getNat?)
+  pure {
+    source := ← (← j.getObjVal? "source").getNat?
+    target := ← (← j.getObjVal? "target").getNat?
+    arrows
+  }
+
+partial def parseCategoryKernelPresentationV3 (j : Json) :
+    Except String Theory.Finite.CategoryKernelPresentationV3 := do
+  requireExactFields j
+    ["object_names", "arrows", "relations", "identity_objects", "equations"]
+    ["object_names", "arrows", "relations", "identity_objects", "equations"]
+  let mut objectNames : Array String := #[]
+  for name in (← (← j.getObjVal? "object_names").getArr?) do
+    objectNames := objectNames.push (← name.getStr?)
+  let mut arrows : Array Theory.Finite.CategoryKernelArrowV3 := #[]
+  for arrow in (← (← j.getObjVal? "arrows").getArr?) do
+    requireExactFields arrow ["name", "source", "target", "kind", "reversible"]
+      ["name", "source", "target", "kind", "reversible"]
+    arrows := arrows.push {
+      name := ← (← arrow.getObjVal? "name").getStr?
+      source := ← (← arrow.getObjVal? "source").getNat?
+      target := ← (← arrow.getObjVal? "target").getNat?
+      kind := ← parseCategoryKernelArrowKindV3 (← (← arrow.getObjVal? "kind").getStr?)
+      reversible := ← parseJsonBool (← arrow.getObjVal? "reversible")
+    }
+  let mut relations : Array Theory.Finite.CategoryKernelRelationV3 := #[]
+  for relation in (← (← j.getObjVal? "relations").getArr?) do
+    requireExactFields relation ["name", "object", "roles"] ["name", "object", "roles"]
+    let mut roles : Array Theory.Finite.CategoryKernelRoleV3 := #[]
+    for role in (← (← relation.getObjVal? "roles").getArr?) do
+      requireExactFields role ["name", "target", "projection", "declared_order", "kind"]
+        ["name", "target", "projection", "declared_order", "kind"]
+      roles := roles.push {
+        name := ← (← role.getObjVal? "name").getStr?
+        target := ← (← role.getObjVal? "target").getNat?
+        projection := ← (← role.getObjVal? "projection").getNat?
+        declaredOrder := ← (← role.getObjVal? "declared_order").getNat?
+        kind := ← parseCategoryKernelRoleKindV3 (← (← role.getObjVal? "kind").getStr?)
+      }
+    relations := relations.push {
+      name := ← (← relation.getObjVal? "name").getStr?
+      object := ← (← relation.getObjVal? "object").getNat?
+      roles
+    }
+  let mut identityObjects : Array Nat := #[]
+  for object in (← (← j.getObjVal? "identity_objects").getArr?) do
+    identityObjects := identityObjects.push (← object.getNat?)
+  let mut equations : Array Theory.Finite.CategoryKernelEquationV3 := #[]
+  for equation in (← (← j.getObjVal? "equations").getArr?) do
+    requireExactFields equation ["name", "lhs", "rhs"] ["name", "lhs", "rhs"]
+    equations := equations.push {
+      name := ← (← equation.getObjVal? "name").getStr?
+      lhs := ← parseCategoryKernelPathV3 (← equation.getObjVal? "lhs")
+      rhs := ← parseCategoryKernelPathV3 (← equation.getObjVal? "rhs")
+    }
+  pure { objectNames, arrows, relations, identityObjects, equations }
+
+partial def parseCategoryKernelCongruenceV3 (j : Json) :
+    Except String Theory.Finite.CategoryKernelCongruenceCertificateV3 := do
+  requireExactFields j ["input", "steps", "output"] ["input", "steps", "output"]
+  let mut steps : Array Theory.Finite.CategoryKernelCongruenceStepV3 := #[]
+  for step in (← (← j.getObjVal? "steps").getArr?) do
+    requireExactFields step ["equation", "direction", "offset"]
+      ["equation", "direction", "offset"]
+    steps := steps.push {
+      equation := ← (← step.getObjVal? "equation").getNat?
+      direction := ← parseCategoryKernelDirectionV3
+        (← (← step.getObjVal? "direction").getStr?)
+      offset := ← (← step.getObjVal? "offset").getNat?
+    }
+  pure {
+    input := ← parseCategoryKernelPathV3 (← j.getObjVal? "input")
+    steps
+    output := ← parseCategoryKernelPathV3 (← j.getObjVal? "output")
+  }
+
+partial def parseCategoryKernelExplanationV3 (j : Json) :
+    Except String Theory.Finite.Explanation := do
+  let ty ← (← j.getObjVal? "type").getStr?
+  match ty with
+  | "identity" =>
+      requireExactFields j ["type", "object"] ["type", "object"]
+      pure (.identity (← (← j.getObjVal? "object").getNat?))
+  | "generator" =>
+      requireExactFields j ["type", "arrow"] ["type", "arrow"]
+      pure (.generator (← (← j.getObjVal? "arrow").getNat?))
+  | "trans" =>
+      requireExactFields j ["type", "left", "right"] ["type", "left", "right"]
+      pure (.trans
+        (← parseCategoryKernelExplanationV3 (← j.getObjVal? "left"))
+        (← parseCategoryKernelExplanationV3 (← j.getObjVal? "right")))
+  | other => throw s!"unknown category-kernel explanation type: {other}"
+
+partial def parseCategoryKernelProofV3 (j : Json) : Except String CategoryKernelProofV3 := do
+  requireExactFields j ["schema_name", "presentation", "congruence_certificates", "certificate"]
+    ["schema_name", "presentation", "congruence_certificates", "certificate"]
+  let schemaName ← (← j.getObjVal? "schema_name").getStr?
+  let presentation ← parseCategoryKernelPresentationV3 (← j.getObjVal? "presentation")
+  let mut congruenceCertificates :
+      Array Theory.Finite.CategoryKernelCongruenceCertificateV3 := #[]
+  for certificate in (← (← j.getObjVal? "congruence_certificates").getArr?) do
+    congruenceCertificates := congruenceCertificates.push
+      (← parseCategoryKernelCongruenceV3 certificate)
+  let certificateJson ← j.getObjVal? "certificate"
+  requireExactFields certificateJson
+    ["presentation_object_count", "presentation_arrow_count", "entries", "algorithm"]
+    ["presentation_object_count", "presentation_arrow_count", "entries", "algorithm"]
+  let presentationObjectCount ←
+    (← certificateJson.getObjVal? "presentation_object_count").getNat?
+  let presentationArrowCount ←
+    (← certificateJson.getObjVal? "presentation_arrow_count").getNat?
+  let algorithm ← (← certificateJson.getObjVal? "algorithm").getStr?
+  let mut entries : Array Theory.Finite.ReachabilityEntry := #[]
+  for entryJson in (← (← certificateJson.getObjVal? "entries").getArr?) do
+    requireExactFields entryJson ["source", "target", "explanation"]
+      ["source", "target", "explanation"]
+    entries := entries.push {
+      source := ← (← entryJson.getObjVal? "source").getNat?
+      target := ← (← entryJson.getObjVal? "target").getNat?
+      explanation := ← parseCategoryKernelExplanationV3
+        (← entryJson.getObjVal? "explanation")
+    }
+  pure {
+    schemaName
+    presentation
+    congruenceCertificates
+    certificate := { presentationObjectCount, presentationArrowCount, entries, algorithm }
+  }
+
 inductive Certificate where
   | reachabilityV3 (proof : ReachabilityProofV3)
+  | categoryKernelV3 (proof : CategoryKernelProofV3)
   | resolutionV2 (proof : ResolutionProofV2)
   | axiWellTypedV1 (proof : AxiWellTypedProofV1)
   | axiConstraintsOkV1 (proof : AxiConstraintsOkProofV1)
-  | queryResultV3 (proof : QueryResultProofV3)
+  | queryResultV4 (proof : QueryResultProofV4)
   | normalizePathV2 (proof : NormalizePathProofV2)
   | rewriteDerivationV2 (proof : RewriteDerivationProofV2)
   | rewriteDerivationV3 (proof : RewriteDerivationProofV3)
@@ -893,16 +1191,32 @@ We keep this wrapper separate so:
 -/
 
 structure CertificateAnchorV1 where
-  /-- Stable digest for the `.axi` module this certificate is about. -/
-  axiDigestV1 : String
+  /-- Exact accepted-byte revision identity for the `.axi` module. -/
+  revisionDigestV2 : String
   deriving Repr, DecidableEq
 
 partial def parseCertificateAnchorV1 (j : Json) : Except String CertificateAnchorV1 := do
-  let digest ← (← j.getObjVal? "axi_digest_v1").getStr?
-  pure { axiDigestV1 := digest }
+  requireExactFields j ["revision_digest_v2"] ["revision_digest_v2"]
+  let digest ← (← j.getObjVal? "revision_digest_v2").getStr?
+  pure { revisionDigestV2 := digest }
+
+structure CertificateAnchorV2 where
+  /-- Exact accepted-byte revision identity recomputed by the checker. -/
+  revisionDigestV2 : String
+  deriving Repr, DecidableEq
+
+partial def parseCertificateAnchorV2 (j : Json) : Except String CertificateAnchorV2 := do
+  requireExactFields j ["revision_digest_v2"] ["revision_digest_v2"]
+  let digest ← (← j.getObjVal? "revision_digest_v2").getStr?
+  pure { revisionDigestV2 := digest }
+
+inductive CertificateAnchor where
+  | v1 (anchor : CertificateAnchorV1)
+  | v2 (anchor : CertificateAnchorV2)
+  deriving Repr
 
 structure CertificateEnvelope where
-  anchor? : Option CertificateAnchorV1
+  anchor? : Option CertificateAnchor
   certificate : Certificate
   deriving Repr
 
@@ -930,11 +1244,16 @@ def parseCertificate (j : Json) : Except String Certificate := do
         throw s!"unsupported axi_constraints_ok_v1 certificate version: {version}"
       let proof ← parseAxiConstraintsOkProofV1 (← j.getObjVal? "proof")
       pure (.axiConstraintsOkV1 proof)
-  | "query_result_v3" =>
-      if version != 2 then
-        throw s!"unsupported query_result_v3 certificate version: {version}"
-      let proof ← parseQueryResultProofV3 (← j.getObjVal? "proof")
-      pure (.queryResultV3 proof)
+  | "query_result_v4" =>
+      if version != 3 then
+        throw s!"unsupported query_result_v4 certificate version: {version}"
+      let proof ← parseQueryResultProofV4 (← j.getObjVal? "proof")
+      pure (.queryResultV4 proof)
+  | "category_kernel_v3" =>
+      if version != 3 then
+        throw s!"unsupported category_kernel_v3 certificate version: {version}"
+      let proof ← parseCategoryKernelProofV3 (← j.getObjVal? "proof")
+      pure (.categoryKernelV3 proof)
   | "normalize_path_v2" =>
       if version != 2 then
         throw s!"unsupported normalize_path_v2 certificate version: {version}"
@@ -964,11 +1283,26 @@ def parseCertificate (j : Json) : Except String Certificate := do
       throw s!"unknown certificate kind: {other}"
 
 def parseCertificateEnvelope (j : Json) : Except String CertificateEnvelope := do
-  let anchor? : Option CertificateAnchorV1 ←
+  let version ← (← j.getObjVal? "version").getNat?
+  let anchor? : Option CertificateAnchor ←
     match (j.getObjVal? "anchor").toOption with
     | none => pure none
-    | some a => pure (some (← parseCertificateAnchorV1 a))
+    | some anchorJson =>
+        if version == 3 then
+          pure (some (CertificateAnchor.v2 (← parseCertificateAnchorV2 anchorJson)))
+        else
+          pure (some (CertificateAnchor.v1 (← parseCertificateAnchorV1 anchorJson)))
+  if version == 3 then
+    requireExactFields j ["version", "kind", "anchor", "proof"]
+      ["version", "kind", "anchor", "proof"]
   let cert ← parseCertificate j
-  pure { anchor?, certificate := cert }
+  match version, cert, anchor? with
+  | 3, .queryResultV4 _, some (CertificateAnchor.v2 _) => pure ()
+  | 3, .categoryKernelV3 _, some (CertificateAnchor.v2 _) => pure ()
+  | 3, _, _ =>
+      throw "certificate envelope V3 requires an anchored query_result_v4 or category_kernel_v3"
+  | _, .queryResultV4 _, _ => throw "query_result_v4 requires certificate envelope V3"
+  | _, _, _ => pure ()
+  pure { anchor? := anchor?, certificate := cert }
 
 end Axiograph

@@ -1,0 +1,22 @@
+{
+  "version": "authoring_workspace_request_v1",
+  "operation": "promotion_review",
+  "axi_path": "examples/regulated_shipment/RegulatedShipmentBaseline.axi",
+  "cq_path": "examples/regulated_shipment/regulated_shipment.cq",
+  "schema": "RegulatedShipment",
+  "query_ir_v1": {
+    "version": 1,
+    "select_vars": ["?certificate"],
+    "where_atoms": [
+      {
+        "kind": "edge",
+        "left": "Shipment_RX_1007",
+        "path": "ShipmentContainsBatch/BatchHasCertificate",
+        "right": "?certificate"
+      }
+    ],
+    "max_hops": 2,
+    "limit": 10
+  },
+  "focus_variable": "?certificate"
+}

@@ -1,4 +1,4 @@
-//! Industrial engineering example harness.
+//! Industrial engineering example runtime.
 //!
 //! This crate is intentionally outside `axiograph-cli`: it demonstrates how a
 //! domain package can consume canonical `.axi`, import it through the shared
@@ -12,17 +12,19 @@ use anyhow::{anyhow, Context, Result};
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::{AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest, PathDB};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-pub const INDUSTRIAL_HARNESS_CAMPAIGN_VERSION_V1: &str = "industrial_harness_campaign_v1";
-pub const INDUSTRIAL_HARNESS_RUN_VERSION_V1: &str = "industrial_harness_run_v1";
-pub const INDUSTRIAL_HARNESS_CQ_RESULTS_VERSION_V1: &str = "industrial_harness_cq_results_v1";
-pub const INDUSTRIAL_HARNESS_COVERAGE_VERSION_V1: &str = "industrial_harness_coverage_v1";
-pub const INDUSTRIAL_HARNESS_AGENT_REPORT_VERSION_V1: &str = "industrial_harness_agent_report_v1";
-pub const INDUSTRIAL_HARNESS_DISTILL_VERSION_V1: &str = "industrial_harness_distill_v1";
+pub const INDUSTRIAL_EXAMPLE_CAMPAIGN_VERSION_V1: &str = "regulated_production_line_campaign_v1";
+pub const INDUSTRIAL_EXAMPLE_RUN_VERSION_V1: &str = "regulated_production_line_run_v1";
+pub const INDUSTRIAL_EXAMPLE_CQ_RESULTS_VERSION_V1: &str =
+    "regulated_production_line_cq_results_v1";
+pub const INDUSTRIAL_EXAMPLE_COVERAGE_VERSION_V1: &str = "regulated_production_line_coverage_v1";
+pub const INDUSTRIAL_EXAMPLE_AGENT_REPORT_VERSION_V1: &str =
+    "regulated_production_line_agent_report_v1";
+pub const INDUSTRIAL_EXAMPLE_DISTILL_VERSION_V1: &str = "regulated_production_line_distill_v1";
 pub const COMPETENCY_QUESTION_BUNDLE_VERSION_V1: &str = "competency_question_bundle_v1";
 
-pub const INDUSTRIAL_HARNESS_CACHE_DIR: &str = "_cache/industrial_harness";
+pub const INDUSTRIAL_EXAMPLE_CACHE_DIR: &str = "_cache/regulated_production_line";
 pub const REGULATED_PRODUCTION_LINE_CAMPAIGN_ID: &str = "regulated_production_line_seed";
 pub const REGULATED_PRODUCTION_LINE_MODULE_PATH: &str =
     "examples/industrial/RegulatedProductionLine.axi";
@@ -30,6 +32,25 @@ pub const REGULATED_PRODUCTION_LINE_CQ_PATH: &str =
     "examples/competency_questions/regulated_production_line.cq";
 pub const REGULATED_PRODUCTION_LINE_MODULE_NAME: &str = "RegulatedProductionLine";
 pub const REGULATED_PRODUCTION_LINE_SEED_NAME: &str = "RegulatedLineSeed";
+
+fn read_text_bounded(path: impl AsRef<Path>) -> Result<String> {
+    const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
+    axiograph_security::read_utf8_file_bounded(
+        path.as_ref(),
+        MAX_INPUT_BYTES,
+        "industrial example input",
+    )
+}
+
+fn read_json_bounded<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T> {
+    const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
+    let text = read_text_bounded(path)?;
+    axiograph_security::parse_json_bounded(
+        text.as_bytes(),
+        MAX_INPUT_BYTES,
+        "industrial example JSON",
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrustScopeV1 {
@@ -127,19 +148,19 @@ struct IndustrialSurfaceV1 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum IndustrialHarnessScenarioV1 {
+pub enum IndustrialExampleScenarioV1 {
     RegulatedProductionLineSeed,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum IndustrialHarnessRunStatusV1 {
+pub enum IndustrialExampleRunStatusV1 {
     Materialized,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum IndustrialHarnessCheckOutcomeV1 {
+pub enum IndustrialExampleCheckOutcomeV1 {
     Pass,
     Fail,
     NotRun,
@@ -147,37 +168,37 @@ pub enum IndustrialHarnessCheckOutcomeV1 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum IndustrialHarnessCoverageStatusV1 {
+pub enum IndustrialExampleCoverageStatusV1 {
     Covered,
     Partial,
     Gap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessSeedV1 {
+pub struct IndustrialExampleSeedV1 {
     pub module_name: String,
     pub module_path: String,
     pub instance_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessCampaignLayoutV1 {
+pub struct IndustrialExampleCampaignLayoutV1 {
     pub campaign_manifest_path: String,
     pub runs_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessCampaignV1 {
+pub struct IndustrialExampleCampaignV1 {
     pub version: String,
     pub campaign_id: String,
-    pub scenario: IndustrialHarnessScenarioV1,
+    pub scenario: IndustrialExampleScenarioV1,
     pub description: String,
-    pub seed: IndustrialHarnessSeedV1,
-    pub layout: IndustrialHarnessCampaignLayoutV1,
+    pub seed: IndustrialExampleSeedV1,
+    pub layout: IndustrialExampleCampaignLayoutV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessRunArtifactPathsV1 {
+pub struct IndustrialExampleRunArtifactPathsV1 {
     pub run: String,
     pub cq_results: String,
     pub coverage: String,
@@ -186,30 +207,30 @@ pub struct IndustrialHarnessRunArtifactPathsV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessRunV1 {
+pub struct IndustrialExampleRunV1 {
     pub version: String,
     pub campaign_id: String,
     pub run_id: String,
-    pub scenario: IndustrialHarnessScenarioV1,
+    pub scenario: IndustrialExampleScenarioV1,
     pub created_at_unix_secs: u64,
-    pub status: IndustrialHarnessRunStatusV1,
+    pub status: IndustrialExampleRunStatusV1,
     pub anchor: AcceptedAxiAnchor,
     pub trust: TrustContractV1,
-    pub artifacts: IndustrialHarnessRunArtifactPathsV1,
+    pub artifacts: IndustrialExampleRunArtifactPathsV1,
     #[serde(default)]
     pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessCqResultEntryV1 {
+pub struct IndustrialExampleCqResultEntryV1 {
     pub cq_id: String,
     pub title: String,
-    pub outcome: IndustrialHarnessCheckOutcomeV1,
+    pub outcome: IndustrialExampleCheckOutcomeV1,
     pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessCqResultsSummaryV1 {
+pub struct IndustrialExampleCqResultsSummaryV1 {
     pub total: usize,
     pub passed: usize,
     pub failed: usize,
@@ -217,25 +238,25 @@ pub struct IndustrialHarnessCqResultsSummaryV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessCqResultsV1 {
+pub struct IndustrialExampleCqResultsV1 {
     pub version: String,
     pub campaign_id: String,
     pub run_id: String,
     pub anchor: AcceptedAxiAnchor,
     pub trust: TrustContractV1,
-    pub summary: IndustrialHarnessCqResultsSummaryV1,
-    pub results: Vec<IndustrialHarnessCqResultEntryV1>,
+    pub summary: IndustrialExampleCqResultsSummaryV1,
+    pub results: Vec<IndustrialExampleCqResultEntryV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessCoverageSurfaceV1 {
+pub struct IndustrialExampleCoverageSurfaceV1 {
     pub surface: String,
-    pub status: IndustrialHarnessCoverageStatusV1,
+    pub status: IndustrialExampleCoverageStatusV1,
     pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessCoverageSummaryV1 {
+pub struct IndustrialExampleCoverageSummaryV1 {
     pub total_surfaces: usize,
     pub covered_surfaces: usize,
     pub partial_surfaces: usize,
@@ -243,38 +264,38 @@ pub struct IndustrialHarnessCoverageSummaryV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessCoverageV1 {
+pub struct IndustrialExampleCoverageV1 {
     pub version: String,
     pub campaign_id: String,
     pub run_id: String,
     pub anchor: AcceptedAxiAnchor,
     pub trust: TrustContractV1,
-    pub summary: IndustrialHarnessCoverageSummaryV1,
-    pub surfaces: Vec<IndustrialHarnessCoverageSurfaceV1>,
+    pub summary: IndustrialExampleCoverageSummaryV1,
+    pub surfaces: Vec<IndustrialExampleCoverageSurfaceV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessFindingV1 {
+pub struct IndustrialExampleFindingV1 {
     pub severity: String,
     pub subject: String,
     pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessAgentReportV1 {
+pub struct IndustrialExampleAgentReportV1 {
     pub version: String,
     pub campaign_id: String,
     pub run_id: String,
     pub anchor: AcceptedAxiAnchor,
     pub trust: TrustContractV1,
     pub summary: String,
-    pub findings: Vec<IndustrialHarnessFindingV1>,
+    pub findings: Vec<IndustrialExampleFindingV1>,
     #[serde(default)]
     pub next_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessDistillV1 {
+pub struct IndustrialExampleDistillV1 {
     pub version: String,
     pub campaign_id: String,
     pub run_id: String,
@@ -288,16 +309,16 @@ pub struct IndustrialHarnessDistillV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessRunBundleV1 {
-    pub run: IndustrialHarnessRunV1,
-    pub cq_results: IndustrialHarnessCqResultsV1,
-    pub coverage: IndustrialHarnessCoverageV1,
-    pub agent_report: IndustrialHarnessAgentReportV1,
-    pub distill: IndustrialHarnessDistillV1,
+pub struct IndustrialExampleRunBundleV1 {
+    pub run: IndustrialExampleRunV1,
+    pub cq_results: IndustrialExampleCqResultsV1,
+    pub coverage: IndustrialExampleCoverageV1,
+    pub agent_report: IndustrialExampleAgentReportV1,
+    pub distill: IndustrialExampleDistillV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndustrialHarnessPersistedRunPathsV1 {
+pub struct IndustrialExamplePersistedRunPathsV1 {
     pub campaign_manifest_path: PathBuf,
     pub run_path: PathBuf,
     pub cq_results_path: PathBuf,
@@ -307,7 +328,7 @@ pub struct IndustrialHarnessPersistedRunPathsV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessRunResponseV1 {
+pub struct IndustrialExampleRunResponseV1 {
     pub version: String,
     pub cache_root: String,
     pub campaign_id: String,
@@ -315,18 +336,18 @@ pub struct IndustrialHarnessRunResponseV1 {
     pub accepted_axi_anchor: AcceptedAxiAnchor,
     pub trust: TrustContractV1,
     pub campaign_manifest_path: String,
-    pub artifacts: IndustrialHarnessRunArtifactPathsV1,
+    pub artifacts: IndustrialExampleRunArtifactPathsV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessRunRequestV1 {
+pub struct IndustrialExampleRunRequestV1 {
     pub cache_root: String,
     pub run_id: String,
     pub created_at_unix_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessInspectionVerificationV1 {
+pub struct IndustrialExampleInspectionVerificationV1 {
     pub total: usize,
     pub failed: usize,
     #[serde(default)]
@@ -334,12 +355,12 @@ pub struct IndustrialHarnessInspectionVerificationV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IndustrialHarnessInspectionResultV1 {
-    pub bundle: IndustrialHarnessRunBundleV1,
-    pub verification: IndustrialHarnessInspectionVerificationV1,
+pub struct IndustrialExampleInspectionResultV1 {
+    pub bundle: IndustrialExampleRunBundleV1,
+    pub verification: IndustrialExampleInspectionVerificationV1,
 }
 
-pub fn sanitize_harness_path_component(raw: &str) -> String {
+pub fn sanitize_example_path_component(raw: &str) -> String {
     let mut out = String::new();
     for c in raw.chars() {
         if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
@@ -355,90 +376,90 @@ pub fn sanitize_harness_path_component(raw: &str) -> String {
     }
 }
 
-pub fn industrial_harness_root(cache_root: &Path) -> PathBuf {
-    cache_root.join(INDUSTRIAL_HARNESS_CACHE_DIR)
+pub fn industrial_example_root(cache_root: &Path) -> PathBuf {
+    cache_root.join(INDUSTRIAL_EXAMPLE_CACHE_DIR)
 }
 
-pub fn industrial_harness_campaign_dir(cache_root: &Path, campaign_id: &str) -> PathBuf {
-    industrial_harness_root(cache_root).join(sanitize_harness_path_component(campaign_id))
+pub fn industrial_example_campaign_dir(cache_root: &Path, campaign_id: &str) -> PathBuf {
+    industrial_example_root(cache_root).join(sanitize_example_path_component(campaign_id))
 }
 
-pub fn industrial_harness_runs_dir(cache_root: &Path, campaign_id: &str) -> PathBuf {
-    industrial_harness_campaign_dir(cache_root, campaign_id).join("runs")
+pub fn industrial_example_runs_dir(cache_root: &Path, campaign_id: &str) -> PathBuf {
+    industrial_example_campaign_dir(cache_root, campaign_id).join("runs")
 }
 
-pub fn industrial_harness_run_dir(cache_root: &Path, campaign_id: &str, run_id: &str) -> PathBuf {
-    industrial_harness_runs_dir(cache_root, campaign_id)
-        .join(sanitize_harness_path_component(run_id))
+pub fn industrial_example_run_dir(cache_root: &Path, campaign_id: &str, run_id: &str) -> PathBuf {
+    industrial_example_runs_dir(cache_root, campaign_id)
+        .join(sanitize_example_path_component(run_id))
 }
 
-pub fn industrial_harness_campaign_manifest_path(cache_root: &Path, campaign_id: &str) -> PathBuf {
-    industrial_harness_campaign_dir(cache_root, campaign_id).join("campaign.json")
+pub fn industrial_example_campaign_manifest_path(cache_root: &Path, campaign_id: &str) -> PathBuf {
+    industrial_example_campaign_dir(cache_root, campaign_id).join("campaign.json")
 }
 
-pub fn industrial_harness_run_manifest_path(
+pub fn industrial_example_run_manifest_path(
     cache_root: &Path,
     campaign_id: &str,
     run_id: &str,
 ) -> PathBuf {
-    industrial_harness_run_dir(cache_root, campaign_id, run_id).join("run.json")
+    industrial_example_run_dir(cache_root, campaign_id, run_id).join("run.json")
 }
 
-pub fn industrial_harness_cq_results_path(
+pub fn industrial_example_cq_results_path(
     cache_root: &Path,
     campaign_id: &str,
     run_id: &str,
 ) -> PathBuf {
-    industrial_harness_run_dir(cache_root, campaign_id, run_id).join("cq_results.json")
+    industrial_example_run_dir(cache_root, campaign_id, run_id).join("cq_results.json")
 }
 
-pub fn industrial_harness_coverage_path(
+pub fn industrial_example_coverage_path(
     cache_root: &Path,
     campaign_id: &str,
     run_id: &str,
 ) -> PathBuf {
-    industrial_harness_run_dir(cache_root, campaign_id, run_id).join("coverage.json")
+    industrial_example_run_dir(cache_root, campaign_id, run_id).join("coverage.json")
 }
 
-pub fn industrial_harness_agent_report_path(
+pub fn industrial_example_agent_report_path(
     cache_root: &Path,
     campaign_id: &str,
     run_id: &str,
 ) -> PathBuf {
-    industrial_harness_run_dir(cache_root, campaign_id, run_id).join("agent_report.json")
+    industrial_example_run_dir(cache_root, campaign_id, run_id).join("agent_report.json")
 }
 
-pub fn industrial_harness_distill_path(
+pub fn industrial_example_distill_path(
     cache_root: &Path,
     campaign_id: &str,
     run_id: &str,
 ) -> PathBuf {
-    industrial_harness_run_dir(cache_root, campaign_id, run_id).join("distill.json")
+    industrial_example_run_dir(cache_root, campaign_id, run_id).join("distill.json")
 }
 
-pub fn industrial_harness_persisted_run_paths(
+pub fn industrial_example_persisted_run_paths(
     cache_root: &Path,
     campaign_id: &str,
     run_id: &str,
-) -> IndustrialHarnessPersistedRunPathsV1 {
-    IndustrialHarnessPersistedRunPathsV1 {
-        campaign_manifest_path: industrial_harness_campaign_manifest_path(cache_root, campaign_id),
-        run_path: industrial_harness_run_manifest_path(cache_root, campaign_id, run_id),
-        cq_results_path: industrial_harness_cq_results_path(cache_root, campaign_id, run_id),
-        coverage_path: industrial_harness_coverage_path(cache_root, campaign_id, run_id),
-        agent_report_path: industrial_harness_agent_report_path(cache_root, campaign_id, run_id),
-        distill_path: industrial_harness_distill_path(cache_root, campaign_id, run_id),
+) -> IndustrialExamplePersistedRunPathsV1 {
+    IndustrialExamplePersistedRunPathsV1 {
+        campaign_manifest_path: industrial_example_campaign_manifest_path(cache_root, campaign_id),
+        run_path: industrial_example_run_manifest_path(cache_root, campaign_id, run_id),
+        cq_results_path: industrial_example_cq_results_path(cache_root, campaign_id, run_id),
+        coverage_path: industrial_example_coverage_path(cache_root, campaign_id, run_id),
+        agent_report_path: industrial_example_agent_report_path(cache_root, campaign_id, run_id),
+        distill_path: industrial_example_distill_path(cache_root, campaign_id, run_id),
     }
 }
 
-pub fn industrial_harness_artifact_paths(
+pub fn industrial_example_artifact_paths(
     campaign_id: &str,
     run_id: &str,
-) -> IndustrialHarnessRunArtifactPathsV1 {
-    let campaign = sanitize_harness_path_component(campaign_id);
-    let run = sanitize_harness_path_component(run_id);
-    let base = format!("{INDUSTRIAL_HARNESS_CACHE_DIR}/{campaign}/runs/{run}");
-    IndustrialHarnessRunArtifactPathsV1 {
+) -> IndustrialExampleRunArtifactPathsV1 {
+    let campaign = sanitize_example_path_component(campaign_id);
+    let run = sanitize_example_path_component(run_id);
+    let base = format!("{INDUSTRIAL_EXAMPLE_CACHE_DIR}/{campaign}/runs/{run}");
+    IndustrialExampleRunArtifactPathsV1 {
         run: format!("{base}/run.json"),
         cq_results: format!("{base}/cq_results.json"),
         coverage: format!("{base}/coverage.json"),
@@ -450,55 +471,53 @@ pub fn industrial_harness_artifact_paths(
 pub fn regulated_production_line_campaign(
     cache_root: &Path,
     campaign_id: &str,
-) -> IndustrialHarnessCampaignV1 {
-    let campaign_manifest_path = industrial_harness_campaign_manifest_path(cache_root, campaign_id)
+) -> IndustrialExampleCampaignV1 {
+    let campaign_manifest_path = industrial_example_campaign_manifest_path(cache_root, campaign_id)
         .to_string_lossy()
         .to_string();
-    let runs_dir = industrial_harness_runs_dir(cache_root, campaign_id)
+    let runs_dir = industrial_example_runs_dir(cache_root, campaign_id)
         .to_string_lossy()
         .to_string();
-    IndustrialHarnessCampaignV1 {
-        version: INDUSTRIAL_HARNESS_CAMPAIGN_VERSION_V1.to_string(),
+    IndustrialExampleCampaignV1 {
+        version: INDUSTRIAL_EXAMPLE_CAMPAIGN_VERSION_V1.to_string(),
         campaign_id: campaign_id.to_string(),
-        scenario: IndustrialHarnessScenarioV1::RegulatedProductionLineSeed,
-        description:
-            "Industrial shadow-harness seed artifacts for the regulated production line example"
-                .to_string(),
-        seed: IndustrialHarnessSeedV1 {
+        scenario: IndustrialExampleScenarioV1::RegulatedProductionLineSeed,
+        description: "Regulated production line seed artifacts".to_string(),
+        seed: IndustrialExampleSeedV1 {
             module_name: REGULATED_PRODUCTION_LINE_MODULE_NAME.to_string(),
             module_path: REGULATED_PRODUCTION_LINE_MODULE_PATH.to_string(),
             instance_name: REGULATED_PRODUCTION_LINE_SEED_NAME.to_string(),
         },
-        layout: IndustrialHarnessCampaignLayoutV1 {
+        layout: IndustrialExampleCampaignLayoutV1 {
             campaign_manifest_path,
             runs_dir,
         },
     }
 }
 
-pub fn persist_industrial_harness_run_bundle(
+pub fn persist_industrial_example_run_bundle(
     cache_root: &Path,
-    campaign: &IndustrialHarnessCampaignV1,
-    bundle: &IndustrialHarnessRunBundleV1,
-) -> Result<IndustrialHarnessPersistedRunPathsV1> {
+    campaign: &IndustrialExampleCampaignV1,
+    bundle: &IndustrialExampleRunBundleV1,
+) -> Result<IndustrialExamplePersistedRunPathsV1> {
     let campaign_manifest_path =
-        industrial_harness_campaign_manifest_path(cache_root, &campaign.campaign_id);
-    let run_path = industrial_harness_run_manifest_path(
+        industrial_example_campaign_manifest_path(cache_root, &campaign.campaign_id);
+    let run_path = industrial_example_run_manifest_path(
         cache_root,
         &bundle.run.campaign_id,
         &bundle.run.run_id,
     );
     let cq_results_path =
-        industrial_harness_cq_results_path(cache_root, &bundle.run.campaign_id, &bundle.run.run_id);
+        industrial_example_cq_results_path(cache_root, &bundle.run.campaign_id, &bundle.run.run_id);
     let coverage_path =
-        industrial_harness_coverage_path(cache_root, &bundle.run.campaign_id, &bundle.run.run_id);
-    let agent_report_path = industrial_harness_agent_report_path(
+        industrial_example_coverage_path(cache_root, &bundle.run.campaign_id, &bundle.run.run_id);
+    let agent_report_path = industrial_example_agent_report_path(
         cache_root,
         &bundle.run.campaign_id,
         &bundle.run.run_id,
     );
     let distill_path =
-        industrial_harness_distill_path(cache_root, &bundle.run.campaign_id, &bundle.run.run_id);
+        industrial_example_distill_path(cache_root, &bundle.run.campaign_id, &bundle.run.run_id);
 
     write_pretty_json(cache_root, &campaign_manifest_path, campaign)?;
     write_pretty_json(cache_root, &run_path, &bundle.run)?;
@@ -507,7 +526,7 @@ pub fn persist_industrial_harness_run_bundle(
     write_pretty_json(cache_root, &agent_report_path, &bundle.agent_report)?;
     write_pretty_json(cache_root, &distill_path, &bundle.distill)?;
 
-    Ok(IndustrialHarnessPersistedRunPathsV1 {
+    Ok(IndustrialExamplePersistedRunPathsV1 {
         campaign_manifest_path,
         run_path,
         cq_results_path,
@@ -526,14 +545,18 @@ fn repo_root() -> PathBuf {
 
 fn regulated_production_line_cq_questions() -> Result<Vec<CompetencyQuestionV1>> {
     let path = repo_root().join(REGULATED_PRODUCTION_LINE_CQ_PATH);
-    let text = fs::read_to_string(&path).with_context(|| {
+    let text = read_text_bounded(&path).with_context(|| {
         format!(
             "read regulated production line CQ file `{}`",
             path.display()
         )
     })?;
-    parse_competency_question_text(&text)
-        .with_context(|| format!("parse regulated production line CQ file `{}`", path.display()))
+    parse_competency_question_text(&text).with_context(|| {
+        format!(
+            "parse regulated production line CQ file `{}`",
+            path.display()
+        )
+    })
 }
 
 fn parse_competency_question_text(text: &str) -> Result<Vec<CompetencyQuestionV1>> {
@@ -551,8 +574,7 @@ fn parse_competency_question_text(text: &str) -> Result<Vec<CompetencyQuestionV1
         if let Some(version) = line.strip_prefix("version ").map(str::trim) {
             if version != COMPETENCY_QUESTION_BUNDLE_VERSION_V1 {
                 return Err(anyhow!(
-                    "line {line_no}: unsupported competency question bundle version `{version}` (expected `{}`)",
-                    COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+                    "line {line_no}: unsupported competency question bundle version `{version}` (expected `{COMPETENCY_QUESTION_BUNDLE_VERSION_V1})"
                 ));
             }
             version_seen = true;
@@ -619,12 +641,13 @@ fn parse_competency_question_text(text: &str) -> Result<Vec<CompetencyQuestionV1
     }
     if !version_seen {
         return Err(anyhow!(
-            "missing `version {}` header",
-            COMPETENCY_QUESTION_BUNDLE_VERSION_V1
+            "missing `version {COMPETENCY_QUESTION_BUNDLE_VERSION_V1}` header"
         ));
     }
     if questions.is_empty() {
-        return Err(anyhow!("competency question file must define at least one question"));
+        return Err(anyhow!(
+            "competency question file must define at least one question"
+        ));
     }
     Ok(questions)
 }
@@ -671,7 +694,7 @@ fn regulated_production_line_surfaces() -> Vec<IndustrialSurfaceV1> {
 fn regulated_production_line_run_trust(anchor: &AcceptedAxiAnchor) -> TrustContractV1 {
     TrustContractV1 {
         trust_class: "runtime_guarded".to_string(),
-        soundness: "accepted_anchor_scoped_shadow_harness_run".to_string(),
+        soundness: "accepted_anchor_scoped_example_run".to_string(),
         coverage: "regulated_line_seed_runtime_reports".to_string(),
         scope: TrustScopeV1 {
             anchor: format!("{}@{}", anchor.accepted_snapshot_id, anchor.axi_digest),
@@ -748,8 +771,8 @@ fn evaluate_competency_questions_with_trust(
                 trust_class: "runtime_guarded".to_string(),
                 coverage: Some("relation_presence_over_imported_axi_instance".to_string()),
                 reasons: vec![
-                    "example harness evaluates canonical .axi relation presence through PathDB fact metadata".to_string(),
-                    "this is a pedagogical smoke check, not a full AxQL completeness claim"
+                    "example runtime evaluates canonical .axi relation presence through PathDB fact metadata".to_string(),
+                    "this is a pedagogical scenario check, not a full AxQL completeness claim"
                         .to_string(),
                 ],
             },
@@ -773,7 +796,7 @@ fn lower_runtime_cq_results(
     trust: &TrustContractV1,
     coverage: CompetencyCoverageWithTrustV1,
     questions: &[CompetencyQuestionV1],
-) -> IndustrialHarnessCqResultsV1 {
+) -> IndustrialExampleCqResultsV1 {
     let results = coverage
         .questions
         .into_iter()
@@ -783,13 +806,13 @@ fn lower_runtime_cq_results(
                 .find(|q| q.name == result.name)
                 .and_then(|q| q.question.clone())
                 .unwrap_or_else(|| result.name.clone());
-            IndustrialHarnessCqResultEntryV1 {
+            IndustrialExampleCqResultEntryV1 {
                 cq_id: result.name,
                 title,
                 outcome: if result.satisfied {
-                    IndustrialHarnessCheckOutcomeV1::Pass
+                    IndustrialExampleCheckOutcomeV1::Pass
                 } else {
-                    IndustrialHarnessCheckOutcomeV1::Fail
+                    IndustrialExampleCheckOutcomeV1::Fail
                 },
                 detail: format!(
                     "rows={} min_rows={} trust_class={} coverage={:?}",
@@ -798,13 +821,13 @@ fn lower_runtime_cq_results(
             }
         })
         .collect::<Vec<_>>();
-    IndustrialHarnessCqResultsV1 {
-        version: INDUSTRIAL_HARNESS_CQ_RESULTS_VERSION_V1.to_string(),
+    IndustrialExampleCqResultsV1 {
+        version: INDUSTRIAL_EXAMPLE_CQ_RESULTS_VERSION_V1.to_string(),
         campaign_id: campaign_id.to_string(),
         run_id: run_id.to_string(),
         anchor: anchor.clone(),
         trust: trust.clone(),
-        summary: IndustrialHarnessCqResultsSummaryV1 {
+        summary: IndustrialExampleCqResultsSummaryV1 {
             total: coverage.total,
             passed: coverage.satisfied,
             failed: coverage.total.saturating_sub(coverage.satisfied),
@@ -821,7 +844,7 @@ fn lower_runtime_coverage(
     trust: &TrustContractV1,
     db: &PathDB,
     surfaces: Vec<IndustrialSurfaceV1>,
-) -> IndustrialHarnessCoverageV1 {
+) -> IndustrialExampleCoverageV1 {
     let surfaces = surfaces
         .into_iter()
         .map(|surface| {
@@ -831,11 +854,11 @@ fn lower_runtime_coverage(
                 .filter(|relation| fact_count_for_relation(db, "RegulatedLine", relation) > 0)
                 .count();
             let status = if present == 0 {
-                IndustrialHarnessCoverageStatusV1::Gap
+                IndustrialExampleCoverageStatusV1::Gap
             } else if present == surface.relation_names.len() {
-                IndustrialHarnessCoverageStatusV1::Covered
+                IndustrialExampleCoverageStatusV1::Covered
             } else {
-                IndustrialHarnessCoverageStatusV1::Partial
+                IndustrialExampleCoverageStatusV1::Partial
             };
             let hint = match surface.hint {
                 SurfaceCoverageHintV1::Tested => "tested",
@@ -849,30 +872,30 @@ fn lower_runtime_coverage(
                 present,
                 surface.relation_names.len()
             );
-            IndustrialHarnessCoverageSurfaceV1 {
+            IndustrialExampleCoverageSurfaceV1 {
                 surface: surface.label.to_string(),
                 status,
                 detail,
             }
         })
         .collect::<Vec<_>>();
-    let summary = IndustrialHarnessCoverageSummaryV1 {
+    let summary = IndustrialExampleCoverageSummaryV1 {
         total_surfaces: surfaces.len(),
         covered_surfaces: surfaces
             .iter()
-            .filter(|surface| surface.status == IndustrialHarnessCoverageStatusV1::Covered)
+            .filter(|surface| surface.status == IndustrialExampleCoverageStatusV1::Covered)
             .count(),
         partial_surfaces: surfaces
             .iter()
-            .filter(|surface| surface.status == IndustrialHarnessCoverageStatusV1::Partial)
+            .filter(|surface| surface.status == IndustrialExampleCoverageStatusV1::Partial)
             .count(),
         gap_surfaces: surfaces
             .iter()
-            .filter(|surface| surface.status == IndustrialHarnessCoverageStatusV1::Gap)
+            .filter(|surface| surface.status == IndustrialExampleCoverageStatusV1::Gap)
             .count(),
     };
-    IndustrialHarnessCoverageV1 {
-        version: INDUSTRIAL_HARNESS_COVERAGE_VERSION_V1.to_string(),
+    IndustrialExampleCoverageV1 {
+        version: INDUSTRIAL_EXAMPLE_COVERAGE_VERSION_V1.to_string(),
         campaign_id: campaign_id.to_string(),
         run_id: run_id.to_string(),
         anchor: anchor.clone(),
@@ -887,10 +910,10 @@ fn lower_runtime_agent_report(
     run_id: &str,
     anchor: &AcceptedAxiAnchor,
     trust: &TrustContractV1,
-    cq_results: &IndustrialHarnessCqResultsV1,
-    coverage: &IndustrialHarnessCoverageV1,
-) -> IndustrialHarnessAgentReportV1 {
-    let mut findings = vec![IndustrialHarnessFindingV1 {
+    cq_results: &IndustrialExampleCqResultsV1,
+    coverage: &IndustrialExampleCoverageV1,
+) -> IndustrialExampleAgentReportV1 {
+    let mut findings = vec![IndustrialExampleFindingV1 {
         severity: "info".to_string(),
         subject: "accepted_anchor".to_string(),
         detail: format!(
@@ -900,7 +923,7 @@ fn lower_runtime_agent_report(
     }];
 
     if cq_results.summary.failed > 0 {
-        findings.push(IndustrialHarnessFindingV1 {
+        findings.push(IndustrialExampleFindingV1 {
             severity: "warning".to_string(),
             subject: "competency_questions".to_string(),
             detail: format!(
@@ -910,7 +933,7 @@ fn lower_runtime_agent_report(
         });
     }
     if coverage.summary.gap_surfaces > 0 || coverage.summary.partial_surfaces > 0 {
-        findings.push(IndustrialHarnessFindingV1 {
+        findings.push(IndustrialExampleFindingV1 {
             severity: "warning".to_string(),
             subject: "implementation_surface_coverage".to_string(),
             detail: format!(
@@ -920,13 +943,13 @@ fn lower_runtime_agent_report(
         });
     }
     let next_actions = vec![
-        "open the canonical .axi module and inspect relation objects, roles, contexts, and instance facts".to_string(),
+        "open the reviewable .axi module and inspect relation objects, roles, contexts, and instance facts".to_string(),
         "add a new competency question when a domain behavior is missing from the model".to_string(),
         "promote successful example deltas through the core semantic VCS rather than mutating this cache".to_string(),
     ];
 
-    IndustrialHarnessAgentReportV1 {
-        version: INDUSTRIAL_HARNESS_AGENT_REPORT_VERSION_V1.to_string(),
+    IndustrialExampleAgentReportV1 {
+        version: INDUSTRIAL_EXAMPLE_AGENT_REPORT_VERSION_V1.to_string(),
         campaign_id: campaign_id.to_string(),
         run_id: run_id.to_string(),
         anchor: anchor.clone(),
@@ -949,18 +972,18 @@ fn lower_runtime_distill(
     run_id: &str,
     anchor: &AcceptedAxiAnchor,
     trust: &TrustContractV1,
-    cq_results: &IndustrialHarnessCqResultsV1,
-    coverage: &IndustrialHarnessCoverageV1,
-    agent_report: &IndustrialHarnessAgentReportV1,
-) -> IndustrialHarnessDistillV1 {
-    IndustrialHarnessDistillV1 {
-        version: INDUSTRIAL_HARNESS_DISTILL_VERSION_V1.to_string(),
+    cq_results: &IndustrialExampleCqResultsV1,
+    coverage: &IndustrialExampleCoverageV1,
+    agent_report: &IndustrialExampleAgentReportV1,
+) -> IndustrialExampleDistillV1 {
+    IndustrialExampleDistillV1 {
+        version: INDUSTRIAL_EXAMPLE_DISTILL_VERSION_V1.to_string(),
         campaign_id: campaign_id.to_string(),
         run_id: run_id.to_string(),
         anchor: anchor.clone(),
         trust: trust.clone(),
         summary: format!(
-            "regulated-line shadow harness: {} / {} CQs satisfied; {} covered, {} partial, {} gap surfaces",
+            "regulated-line example runtime: {} / {} CQs satisfied; {} covered, {} partial, {} gap surfaces",
             cq_results.summary.passed,
             cq_results.summary.total,
             coverage.summary.covered_surfaces,
@@ -968,7 +991,7 @@ fn lower_runtime_distill(
             coverage.summary.gap_surfaces
         ),
         retained_insights: vec![
-            "shipment/order/work-order lineage remains the primary industrial shadow-harness seam"
+            "shipment/order/work-order lineage remains the primary regulated production line seam"
                 .to_string(),
             format!(
                 "agent report emitted {} next action(s) under one accepted anchor",
@@ -986,7 +1009,7 @@ pub fn build_regulated_production_line_runtime_bundle(
     run_id: &str,
     created_at_unix_secs: u64,
     anchor: AcceptedAxiAnchor,
-) -> Result<IndustrialHarnessRunBundleV1> {
+) -> Result<IndustrialExampleRunBundleV1> {
     let trust = regulated_production_line_run_trust(&anchor);
     let questions = regulated_production_line_cq_questions()?;
     let cq_coverage = evaluate_competency_questions_with_trust(db, &questions);
@@ -1013,15 +1036,15 @@ pub fn build_regulated_production_line_runtime_bundle(
         &agent_report,
     );
 
-    let artifacts = industrial_harness_artifact_paths(campaign_id, run_id);
-    Ok(IndustrialHarnessRunBundleV1 {
-        run: IndustrialHarnessRunV1 {
-            version: INDUSTRIAL_HARNESS_RUN_VERSION_V1.to_string(),
+    let artifacts = industrial_example_artifact_paths(campaign_id, run_id);
+    Ok(IndustrialExampleRunBundleV1 {
+        run: IndustrialExampleRunV1 {
+            version: INDUSTRIAL_EXAMPLE_RUN_VERSION_V1.to_string(),
             campaign_id: campaign_id.to_string(),
             run_id: run_id.to_string(),
-            scenario: IndustrialHarnessScenarioV1::RegulatedProductionLineSeed,
+            scenario: IndustrialExampleScenarioV1::RegulatedProductionLineSeed,
             created_at_unix_secs,
-            status: IndustrialHarnessRunStatusV1::Materialized,
+            status: IndustrialExampleRunStatusV1::Materialized,
             anchor: anchor.clone(),
             trust: trust.clone(),
             artifacts,
@@ -1037,14 +1060,14 @@ pub fn build_regulated_production_line_runtime_bundle(
     })
 }
 
-pub fn run_regulated_production_line_seed_harness_from_runtime_parts(
+pub fn run_regulated_production_line_seed_example_from_runtime_parts(
     cache_root: &Path,
     db: &PathDB,
     meta: &MetaPlaneIndex,
     anchor: AcceptedAxiAnchor,
     run_id: &str,
     created_at_unix_secs: u64,
-) -> Result<IndustrialHarnessRunResponseV1> {
+) -> Result<IndustrialExampleRunResponseV1> {
     let campaign =
         regulated_production_line_campaign(cache_root, REGULATED_PRODUCTION_LINE_CAMPAIGN_ID);
     let bundle = build_regulated_production_line_runtime_bundle(
@@ -1055,9 +1078,9 @@ pub fn run_regulated_production_line_seed_harness_from_runtime_parts(
         created_at_unix_secs,
         anchor.clone(),
     )?;
-    let persisted = persist_industrial_harness_run_bundle(cache_root, &campaign, &bundle)?;
-    Ok(IndustrialHarnessRunResponseV1 {
-        version: "industrial_harness_run_response_v1".to_string(),
+    let persisted = persist_industrial_example_run_bundle(cache_root, &campaign, &bundle)?;
+    Ok(IndustrialExampleRunResponseV1 {
+        version: "regulated_production_line_run_response_v1".to_string(),
         cache_root: cache_root.to_string_lossy().to_string(),
         campaign_id: bundle.run.campaign_id.clone(),
         run_id: bundle.run.run_id.clone(),
@@ -1071,14 +1094,14 @@ pub fn run_regulated_production_line_seed_harness_from_runtime_parts(
     })
 }
 
-pub fn run_regulated_production_line_seed_harness_from_axi_module(
+pub fn run_regulated_production_line_seed_example_from_axi_module(
     cache_root: &Path,
     axi_path: &Path,
     accepted_snapshot_id: Option<AcceptedSnapshotId>,
     run_id: &str,
     created_at_unix_secs: u64,
-) -> Result<IndustrialHarnessRunResponseV1> {
-    let axi_text = fs::read_to_string(axi_path)
+) -> Result<IndustrialExampleRunResponseV1> {
+    let axi_text = read_text_bounded(axi_path)
         .with_context(|| format!("read industrial .axi module `{}`", axi_path.display()))?;
     let mut db = PathDB::new();
     axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, &axi_text)
@@ -1089,7 +1112,7 @@ pub fn run_regulated_production_line_seed_harness_from_axi_module(
     let snapshot_id =
         accepted_snapshot_id.unwrap_or_else(|| AcceptedSnapshotId::new(format!("axi:{digest}")));
     let anchor = AcceptedAxiAnchor::new(snapshot_id, digest);
-    run_regulated_production_line_seed_harness_from_runtime_parts(
+    run_regulated_production_line_seed_example_from_runtime_parts(
         cache_root,
         &db,
         &meta,
@@ -1099,32 +1122,36 @@ pub fn run_regulated_production_line_seed_harness_from_axi_module(
     )
 }
 
-pub fn inspect_industrial_harness_run(
+pub fn inspect_industrial_example_run(
     cache_root: &Path,
     campaign_id: &str,
     run_id: &str,
     expected_anchor: Option<&AcceptedAxiAnchor>,
-) -> Result<IndustrialHarnessInspectionResultV1> {
-    let campaign: IndustrialHarnessCampaignV1 = serde_json::from_str(&fs::read_to_string(
-        industrial_harness_campaign_manifest_path(cache_root, campaign_id),
-    )?)?;
-    let run: IndustrialHarnessRunV1 = serde_json::from_str(&fs::read_to_string(
-        industrial_harness_run_manifest_path(cache_root, campaign_id, run_id),
-    )?)?;
-    let cq_results: IndustrialHarnessCqResultsV1 = serde_json::from_str(&fs::read_to_string(
-        industrial_harness_cq_results_path(cache_root, campaign_id, run_id),
-    )?)?;
-    let coverage: IndustrialHarnessCoverageV1 = serde_json::from_str(&fs::read_to_string(
-        industrial_harness_coverage_path(cache_root, campaign_id, run_id),
-    )?)?;
-    let agent_report: IndustrialHarnessAgentReportV1 = serde_json::from_str(&fs::read_to_string(
-        industrial_harness_agent_report_path(cache_root, campaign_id, run_id),
-    )?)?;
-    let distill: IndustrialHarnessDistillV1 = serde_json::from_str(&fs::read_to_string(
-        industrial_harness_distill_path(cache_root, campaign_id, run_id),
-    )?)?;
+) -> Result<IndustrialExampleInspectionResultV1> {
+    let campaign: IndustrialExampleCampaignV1 = read_json_bounded(
+        industrial_example_campaign_manifest_path(cache_root, campaign_id),
+    )?;
+    let run: IndustrialExampleRunV1 = read_json_bounded(industrial_example_run_manifest_path(
+        cache_root,
+        campaign_id,
+        run_id,
+    ))?;
+    let cq_results: IndustrialExampleCqResultsV1 = read_json_bounded(
+        industrial_example_cq_results_path(cache_root, campaign_id, run_id),
+    )?;
+    let coverage: IndustrialExampleCoverageV1 = read_json_bounded(
+        industrial_example_coverage_path(cache_root, campaign_id, run_id),
+    )?;
+    let agent_report: IndustrialExampleAgentReportV1 = read_json_bounded(
+        industrial_example_agent_report_path(cache_root, campaign_id, run_id),
+    )?;
+    let distill: IndustrialExampleDistillV1 = read_json_bounded(industrial_example_distill_path(
+        cache_root,
+        campaign_id,
+        run_id,
+    ))?;
 
-    let bundle = IndustrialHarnessRunBundleV1 {
+    let bundle = IndustrialExampleRunBundleV1 {
         run,
         cq_results,
         coverage,
@@ -1153,21 +1180,21 @@ pub fn inspect_industrial_harness_run(
             && bundle.run.campaign_id == bundle.coverage.campaign_id
             && bundle.run.campaign_id == bundle.agent_report.campaign_id
             && bundle.run.campaign_id == bundle.distill.campaign_id,
-        "all harness artifacts share the same campaign id".to_string(),
+        "all example artifacts share the same campaign id".to_string(),
     );
     check(
         bundle.run.run_id == bundle.cq_results.run_id
             && bundle.run.run_id == bundle.coverage.run_id
             && bundle.run.run_id == bundle.agent_report.run_id
             && bundle.run.run_id == bundle.distill.run_id,
-        "all harness artifacts share the same run id".to_string(),
+        "all example artifacts share the same run id".to_string(),
     );
     check(
         bundle.run.anchor == bundle.cq_results.anchor
             && bundle.run.anchor == bundle.coverage.anchor
             && bundle.run.anchor == bundle.agent_report.anchor
             && bundle.run.anchor == bundle.distill.anchor,
-        "all harness artifacts share the same accepted anchor".to_string(),
+        "all example artifacts share the same accepted anchor".to_string(),
     );
     if let Some(expected_anchor) = expected_anchor {
         check(
@@ -1179,9 +1206,9 @@ pub fn inspect_industrial_harness_run(
         );
     }
 
-    Ok(IndustrialHarnessInspectionResultV1 {
+    Ok(IndustrialExampleInspectionResultV1 {
         bundle,
-        verification: IndustrialHarnessInspectionVerificationV1 {
+        verification: IndustrialExampleInspectionVerificationV1 {
             total: notes.len(),
             failed,
             notes,
@@ -1199,12 +1226,12 @@ where
         .unwrap_or_else(|| format!("{value:?}"))
 }
 
-pub fn render_industrial_harness_inspection(
+pub fn render_industrial_example_inspection(
     cache_root: &Path,
-    inspection: &IndustrialHarnessInspectionResultV1,
+    inspection: &IndustrialExampleInspectionResultV1,
 ) -> String {
     let bundle = &inspection.bundle;
-    let paths = industrial_harness_persisted_run_paths(
+    let paths = industrial_example_persisted_run_paths(
         cache_root,
         &bundle.run.campaign_id,
         &bundle.run.run_id,
@@ -1251,7 +1278,7 @@ fn write_pretty_json<T: Serialize>(cache_root: &Path, path: &Path, value: &T) ->
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
                 return Err(anyhow!(
-                    "refusing to overwrite symlinked harness artifact path `{}`",
+                    "refusing to overwrite symlinked example artifact path `{}`",
                     path.display()
                 ));
             }
@@ -1259,17 +1286,22 @@ fn write_pretty_json<T: Serialize>(cache_root: &Path, path: &Path, value: &T) ->
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
             return Err(err)
-                .with_context(|| format!("stat harness artifact path `{}`", path.display()));
+                .with_context(|| format!("stat example artifact path `{}`", path.display()));
         }
     }
-    fs::write(path, serde_json::to_string_pretty(value)?)?;
+    axiograph_security::write_file_atomic_bounded(
+        path,
+        serde_json::to_string_pretty(value)?,
+        8 * 1024 * 1024,
+        "industrial example artifact",
+    )?;
     Ok(())
 }
 
 fn create_dir_all_without_symlinks(cache_root: &Path, path: &Path) -> Result<()> {
     let relative = path.strip_prefix(cache_root).map_err(|_| {
         anyhow!(
-            "industrial harness artifact path `{}` escapes cache root `{}`",
+            "regulated production line artifact path `{}` escapes cache root `{}`",
             path.display(),
             cache_root.display()
         )
@@ -1280,20 +1312,20 @@ fn create_dir_all_without_symlinks(cache_root: &Path, path: &Path) -> Result<()>
             .with_context(|| format!("stat cache root `{}`", current.display()))?;
         if metadata.file_type().is_symlink() {
             return Err(anyhow!(
-                "refusing to write industrial harness artifacts through symlinked cache root `{}`",
+                "refusing to write regulated production line artifacts through symlinked cache root `{}`",
                 current.display()
             ));
         }
         if !metadata.is_dir() {
             return Err(anyhow!(
-                "industrial harness cache root `{}` exists but is not a directory",
+                "regulated production line cache root `{}` exists but is not a directory",
                 current.display()
             ));
         }
     } else {
         fs::create_dir_all(&current).with_context(|| {
             format!(
-                "create industrial harness cache root `{}`",
+                "create regulated production line cache root `{}`",
                 current.display()
             )
         })?;
@@ -1307,13 +1339,13 @@ fn create_dir_all_without_symlinks(cache_root: &Path, path: &Path) -> Result<()>
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() {
                     return Err(anyhow!(
-                        "refusing to write industrial harness artifacts through symlinked path component `{}`",
+                        "refusing to write regulated production line artifacts through symlinked path component `{}`",
                         current.display()
                     ));
                 }
                 if !metadata.is_dir() {
                     return Err(anyhow!(
-                        "industrial harness artifact parent `{}` exists but is not a directory",
+                        "regulated production line artifact parent `{}` exists but is not a directory",
                         current.display()
                     ));
                 }
@@ -1321,14 +1353,17 @@ fn create_dir_all_without_symlinks(cache_root: &Path, path: &Path) -> Result<()>
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 fs::create_dir(&current).with_context(|| {
                     format!(
-                        "create industrial harness artifact directory `{}`",
+                        "create regulated production line artifact directory `{}`",
                         current.display()
                     )
                 })?;
             }
             Err(err) => {
                 return Err(err).with_context(|| {
-                    format!("stat industrial harness path `{}`", current.display())
+                    format!(
+                        "stat regulated production line path `{}`",
+                        current.display()
+                    )
                 });
             }
         }
@@ -1348,7 +1383,7 @@ mod tests {
             .expect("time should be after unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "axiograph-industrial-harness-{name}-{}-{nanos}",
+            "axiograph-industrial-example-{name}-{}-{nanos}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp test dir");
@@ -1359,7 +1394,7 @@ mod tests {
         let axi_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
             .join(REGULATED_PRODUCTION_LINE_MODULE_PATH);
-        let axi_text = fs::read_to_string(&axi_path).expect("read regulated line axi");
+        let axi_text = read_text_bounded(&axi_path).expect("read regulated line axi");
         let mut db = PathDB::new();
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, &axi_text)
             .expect("import regulated line pathdb");
@@ -1372,7 +1407,7 @@ mod tests {
         (db, meta, anchor)
     }
 
-    fn regulated_line_runtime_bundle(run_id: &str) -> IndustrialHarnessRunBundleV1 {
+    fn regulated_line_runtime_bundle(run_id: &str) -> IndustrialExampleRunBundleV1 {
         let (db, meta, anchor) = regulated_line_runtime_parts();
         build_regulated_production_line_runtime_bundle(
             &db,
@@ -1387,29 +1422,29 @@ mod tests {
 
     #[test]
     fn artifact_paths_are_deterministic_and_sanitized() {
-        let paths = industrial_harness_artifact_paths(
+        let paths = industrial_example_artifact_paths(
             "regulated production/seed:v1",
             "run:2026-04-22T18:30:00Z",
         );
         assert_eq!(
             paths.run,
-            "_cache/industrial_harness/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/run.json"
+            "_cache/regulated_production_line/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/run.json"
         );
         assert_eq!(
             paths.cq_results,
-            "_cache/industrial_harness/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/cq_results.json"
+            "_cache/regulated_production_line/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/cq_results.json"
         );
         assert_eq!(
             paths.coverage,
-            "_cache/industrial_harness/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/coverage.json"
+            "_cache/regulated_production_line/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/coverage.json"
         );
         assert_eq!(
             paths.agent_report,
-            "_cache/industrial_harness/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/agent_report.json"
+            "_cache/regulated_production_line/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/agent_report.json"
         );
         assert_eq!(
             paths.distill,
-            "_cache/industrial_harness/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/distill.json"
+            "_cache/regulated_production_line/regulated_production_seed_v1/runs/run_2026-04-22T18_30_00Z/distill.json"
         );
     }
 
@@ -1417,7 +1452,7 @@ mod tests {
     fn run_bundle_json_shape_carries_anchor_and_trust() {
         let bundle = regulated_line_runtime_bundle("seed-run-001");
 
-        assert_eq!(bundle.run.version, INDUSTRIAL_HARNESS_RUN_VERSION_V1);
+        assert_eq!(bundle.run.version, INDUSTRIAL_EXAMPLE_RUN_VERSION_V1);
         assert_eq!(
             bundle.run.campaign_id,
             REGULATED_PRODUCTION_LINE_CAMPAIGN_ID
@@ -1425,17 +1460,20 @@ mod tests {
         assert_eq!(bundle.run.run_id, "seed-run-001");
         assert_eq!(
             bundle.run.scenario,
-            IndustrialHarnessScenarioV1::RegulatedProductionLineSeed
+            IndustrialExampleScenarioV1::RegulatedProductionLineSeed
         );
-        assert_eq!(bundle.run.status, IndustrialHarnessRunStatusV1::Materialized);
+        assert_eq!(
+            bundle.run.status,
+            IndustrialExampleRunStatusV1::Materialized
+        );
         assert_eq!(bundle.run.trust.trust_class, "runtime_guarded");
         assert_eq!(
             bundle.run.trust.soundness,
-            "accepted_anchor_scoped_shadow_harness_run"
+            "accepted_anchor_scoped_example_run"
         );
         assert_eq!(
             bundle.run.artifacts.run,
-            "_cache/industrial_harness/regulated_production_line_seed/runs/seed-run-001/run.json"
+            "_cache/regulated_production_line/regulated_production_line_seed/runs/seed-run-001/run.json"
         );
 
         assert_eq!(bundle.cq_results.summary.total, 6);
@@ -1448,8 +1486,8 @@ mod tests {
         let campaign =
             regulated_production_line_campaign(&cache_root, REGULATED_PRODUCTION_LINE_CAMPAIGN_ID);
         let bundle = regulated_line_runtime_bundle("run/seed:42");
-        let persisted = persist_industrial_harness_run_bundle(&cache_root, &campaign, &bundle)
-            .expect("materialize harness");
+        let persisted = persist_industrial_example_run_bundle(&cache_root, &campaign, &bundle)
+            .expect("materialize example");
 
         assert!(persisted.campaign_manifest_path.exists());
         assert!(persisted.run_path.exists());
@@ -1458,8 +1496,8 @@ mod tests {
         assert!(persisted.agent_report_path.exists());
         assert!(persisted.distill_path.exists());
 
-        let campaign: IndustrialHarnessCampaignV1 = serde_json::from_str(
-            &fs::read_to_string(&persisted.campaign_manifest_path).expect("read campaign"),
+        let campaign: IndustrialExampleCampaignV1 = serde_json::from_str(
+            &read_text_bounded(&persisted.campaign_manifest_path).expect("read campaign"),
         )
         .expect("deserialize campaign");
         assert_eq!(
@@ -1467,14 +1505,14 @@ mod tests {
             REGULATED_PRODUCTION_LINE_MODULE_PATH
         );
 
-        let run: IndustrialHarnessRunV1 =
-            serde_json::from_str(&fs::read_to_string(&persisted.run_path).expect("read run"))
+        let run: IndustrialExampleRunV1 =
+            serde_json::from_str(&read_text_bounded(&persisted.run_path).expect("read run"))
                 .expect("deserialize run");
         assert_eq!(run.run_id, "run/seed:42");
         assert_eq!(run.anchor, bundle.run.anchor);
         assert_eq!(run.trust, bundle.run.trust);
         assert!(persisted.run_path.ends_with(
-            "_cache/industrial_harness/regulated_production_line_seed/runs/run_seed_42/run.json"
+            "_cache/regulated_production_line/regulated_production_line_seed/runs/run_seed_42/run.json"
         ));
 
         fs::remove_dir_all(&cache_root).expect("cleanup temp dir");
@@ -1488,9 +1526,9 @@ mod tests {
 
             let cache_root = temp_test_dir("regulated-line-symlink-guard");
             let artifact_dir = cache_root.join(
-                "_cache/industrial_harness/regulated_production_line_seed/runs/run-symlinked",
+                "_cache/regulated_production_line/regulated_production_line_seed/runs/run-symlinked",
             );
-            fs::create_dir_all(&artifact_dir).expect("create harness artifact dir");
+            fs::create_dir_all(&artifact_dir).expect("create example artifact dir");
             let redirect_target = cache_root.join("outside.json");
             symlink(&redirect_target, artifact_dir.join("run.json"))
                 .expect("create symlinked run path");
@@ -1500,11 +1538,11 @@ mod tests {
                 REGULATED_PRODUCTION_LINE_CAMPAIGN_ID,
             );
             let bundle = regulated_line_runtime_bundle("run-symlinked");
-            let err = persist_industrial_harness_run_bundle(&cache_root, &campaign, &bundle)
+            let err = persist_industrial_example_run_bundle(&cache_root, &campaign, &bundle)
                 .expect_err("symlinked artifact path should be rejected");
             assert!(
                 err.to_string()
-                    .contains("refusing to overwrite symlinked harness artifact path"),
+                    .contains("refusing to overwrite symlinked example artifact path"),
                 "unexpected error: {err}"
             );
 
@@ -1534,7 +1572,7 @@ mod tests {
             bundle
                 .distill
                 .summary
-                .contains("regulated-line shadow harness"),
+                .contains("regulated-line example runtime"),
             "expected distill summary to be derived from runtime results"
         );
     }

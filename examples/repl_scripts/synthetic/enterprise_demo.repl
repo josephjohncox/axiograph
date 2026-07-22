@@ -39,6 +39,3 @@ ask find Service named svc_0
 # LLM mock backend (deterministic): proposes a query from the question.
 llm use mock
 llm ask find Service named svc_0
-
-# Save the runnable `.axpd` snapshot.
-save build/enterprise.axpd

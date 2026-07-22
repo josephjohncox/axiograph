@@ -1,7 +1,7 @@
-use std::{env, fs};
+use std::env;
 
-use axiograph_dsl::digest::axi_digest_v1;
 use axiograph_dsl::schema_v1::PathExprV3;
+use axiograph_kernel::revision_digest_v2;
 use axiograph_pathdb::certificate::PathRewriteStepV3;
 use axiograph_pathdb::{AxiAnchorV1, CertificateV2, RewriteDerivationProofV3};
 
@@ -16,8 +16,13 @@ fn main() {
         std::process::exit(2);
     }
 
-    let text = fs::read_to_string(&anchor_path).expect("read anchor .axi");
-    let digest = axi_digest_v1(&text);
+    let text = axiograph_security::read_utf8_file_bounded(
+        std::path::Path::new(&anchor_path),
+        4 * 1024 * 1024,
+        "rewrite certificate .axi anchor",
+    )
+    .expect("read bounded anchor .axi");
+    let digest = revision_digest_v2(&text);
 
     // A tiny replayable rewrite derivation using a *domain* `.axi` rule:
     //
@@ -48,12 +53,12 @@ fn main() {
         output,
         derivation: vec![PathRewriteStepV3 {
             pos: vec![],
-            rule_ref: format!("axi:{digest}:OrgFamilySemantics:grandparent_def"),
+            rule_ref: format!("axi-rule-v2|{digest}|OrgFamilySemantics|grandparent_def"),
         }],
     };
 
     let cert = CertificateV2::rewrite_derivation_v3(proof).with_anchor(AxiAnchorV1 {
-        axi_digest_v1: digest.into(),
+        revision_digest_v2: digest.into(),
     });
     println!(
         "{}",

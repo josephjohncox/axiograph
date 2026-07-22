@@ -5,11 +5,11 @@ ontology material. They are useful for ontology-driven development and coding
 agents that need to reason about API surfaces.
 
 `ProtoApiSemantics.axi` is the canonical module. Files under `large_api/` are
-input fixtures for ingestion/schema-discovery workflows.
+source inputs for ingestion/schema-discovery workflows.
 
 ## Teaching Flow
 
-Generate typed proposal material from the proto fixture:
+Generate typed proposal material from the proto source:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \

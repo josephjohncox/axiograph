@@ -1,6 +1,24 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn repo_index_rejects_unbounded_configuration() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("axiograph_repo_limit_test_{unique}"));
+    std::fs::create_dir_all(&root).unwrap();
+    let options = axiograph_ingest_docs::RepoIndexOptions {
+        max_files: usize::MAX,
+        ..Default::default()
+    };
+    let error = axiograph_ingest_docs::index_repo(&root, &options)
+        .expect_err("unbounded repository file count must reject");
+    assert!(error.to_string().contains("max_files"));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn repo_index_extracts_edges_and_suggests_links() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

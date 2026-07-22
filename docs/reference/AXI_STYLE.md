@@ -160,7 +160,7 @@ Instance data should be:
 If the real workload is large or literal-heavy:
 
 - keep a small accepted seed instance,
-- keep bulk evidence in WAL / overlays / backend projections,
+- keep bulk evidence in typed overlays or backend projections outside accepted state,
 - and preserve typed queryability through identifiers or typed bins where
   needed.
 

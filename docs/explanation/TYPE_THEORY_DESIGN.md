@@ -71,7 +71,8 @@ This gives the trusted checker:
 Runtime Rust builders should mirror these invariants with checked constructors,
 but the trusted claim is the Lean replay result.
 
-**Status:** Current direction for path, rewrite, and certificate kernels.
+**Status:** Implemented for the finite presentation fragment in
+`Axiograph.Theory.Finite.Path`; certificate dispatch remains narrower.
 
 ---
 
@@ -119,8 +120,11 @@ Certificates should name the equations or rewrite rules they use. The checker
 replays those steps against the accepted `.axi` module closure and compiled
 semantic IR.
 
-**Status:** Core semantic direction; keep Rust normalization outputs
-certificate-backed before treating them as trusted meaning.
+**Status:** `Axiograph.Theory.Finite.PathEquiv` now includes category laws and
+accepted parallel-path equations. `GroupoidPath` is endpoint-indexed and its
+identity, associativity, and inverse laws are proved by denotation into
+mathlib's free groupoid. General rewrite termination/confluence remains a
+non-claim.
 
 ---
 
@@ -200,8 +204,9 @@ The design target is Lean semantics for these modalities plus Rust certificate
 emitters for concrete operations. Runtime proposal-adapter or LLM output stays in
 the evidence plane until it passes typed validation, review, and promotion.
 
-**Status:** Planned Lean kernel expansion; do not treat runtime proposal-adapter
-output as trusted semantics.
+**Status:** Finite context-indexed values and proof-carrying context transports
+are implemented in `Axiograph.Theory.Finite`. Modal logic, arbitrary context
+categories, sheaf descent, and proposal-adapter trust remain unimplemented.
 
 ---
 
@@ -240,10 +245,10 @@ certificate checking.
 ## 11. Current Gaps
 
 | Feature | Importance | Current owner | Status |
-|---------|------------|---------------|--------|
-| Full path/groupoid certificate replay | High | Lean + Rust emitters | In progress |
+| --------- | ------------ | --------------- | -------- |
+| Finite indexed path/groupoid laws | High | Lean | Implemented as theorem support; not a `VerifyMain` certificate family |
 | `.axi` parser parity | High | Lean + Rust | In progress |
-| Compiled schema/category IR | High | Shared spec + Rust/Lean consumers | In progress |
+| Finite category presentation and relation projections | High | Rust canonical IR + Lean finite theory | Implemented finite Lean model; canonical IR serialization into `VerifyMain` remains open |
 | Reconciliation certificates | High | Lean + Rust emitters | Planned |
 | Modal/temporal semantics | Medium | Lean | Planned |
 | Semantic coverage reports | Medium | Rust, checked anchors | Planned |

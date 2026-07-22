@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use rmcp::model::{
@@ -20,16 +20,29 @@ const JSONRPC_VERSION: &str = "2.0";
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 pub(crate) fn cmd_mcp(args: crate::McpArgs) -> Result<()> {
-    let runtime = crate::db_server::load_read_only_semantic_runtime(
-        args.axpd.as_deref(),
-        args.dir.as_deref(),
-        &args.layer,
-        &args.snapshot,
-    )?;
+    if args.tool_max_rows == 0 || args.tool_max_rows > 200 {
+        return Err(anyhow!("--tool-max-rows must be in 1..=200"));
+    }
+    if args.verify_timeout_secs == 0
+        || args.verify_timeout_secs > crate::security::MAX_CHILD_RUNTIME.as_secs()
+    {
+        return Err(anyhow!(
+            "--verify-timeout-secs must be in 1..={}",
+            crate::security::MAX_CHILD_RUNTIME.as_secs()
+        ));
+    }
+    let runtime =
+        crate::db_server::load_read_only_semantic_runtime(&args.dir, &args.materialization)?;
 
     let server = SemanticMcpServer {
         runtime,
-        tool_max_rows: args.tool_max_rows.clamp(1, 200),
+        tool_max_rows: args.tool_max_rows,
+        cert_verify: crate::verifier_bridge::CertVerifyConfig {
+            verifier_bin: args.verify_bin,
+            timeout: Some(Duration::from_secs(args.verify_timeout_secs)),
+            approved_checker_sha256: args.verify_sha256,
+            approved_checker_build_id: args.verify_build_id,
+        },
     };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -40,10 +53,14 @@ pub(crate) fn cmd_mcp(args: crate::McpArgs) -> Result<()> {
 }
 
 async fn run_rmcp_mcp_stdio(server: SemanticMcpServer) -> Result<()> {
+    let transport = rmcp::transport::async_rw::AsyncRwTransport::<RoleServer, _, _>::new_server(
+        crate::authoring_workspace::BoundedJsonLineReader::new(tokio::io::stdin()),
+        crate::authoring_workspace::BoundedLineWriter::new(tokio::io::stdout()),
+    );
     let service = SemanticRmcpServer { server }
-        .serve(rmcp::transport::stdio())
+        .serve(transport)
         .await
-        .context("serve Axiograph semantic MCP server with rmcp stdio transport")?;
+        .context("serve bounded Axiograph semantic MCP stdio transport")?;
     service
         .waiting()
         .await
@@ -54,6 +71,7 @@ async fn run_rmcp_mcp_stdio(server: SemanticMcpServer) -> Result<()> {
 struct SemanticMcpServer {
     runtime: crate::db_server::ReadOnlySemanticRuntime,
     tool_max_rows: usize,
+    cert_verify: crate::verifier_bridge::CertVerifyConfig,
 }
 
 struct SemanticRmcpServer {
@@ -65,38 +83,34 @@ impl rmcp::handler::server::ServerHandler for SemanticRmcpServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("axiograph-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Read-only typed semantic MCP surface over Axiograph query elaboration, exploration, execution, and semantic rule reporting.",
+                "Read-only typed semantic MCP surface over Axiograph query preparation/typechecking, exploration, execution, and semantic rule reporting.",
             )
     }
 
-    fn list_tools(
+    async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = std::result::Result<ListToolsResult, ErrorData>> + Send + '_ {
-        async move {
-            let tools = self
-                .server
-                .tool_definitions()
-                .into_iter()
-                .map(rmcp_tool_from_spec_value)
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(ListToolsResult::with_all_items(tools))
-        }
+    ) -> std::result::Result<ListToolsResult, ErrorData> {
+        let tools = self
+            .server
+            .tool_definitions()
+            .into_iter()
+            .map(rmcp_tool_from_spec_value)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
-    fn call_tool(
+    async fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = std::result::Result<CallToolResult, ErrorData>> + Send + '_ {
-        async move {
-            let name = request.name.to_string();
-            let arguments = Value::Object(request.arguments.unwrap_or_default());
-            match self.server.call_tool(&name, arguments) {
-                Ok(structured) => Ok(rmcp_tool_result(structured, false)),
-                Err(err) => Ok(rmcp_tool_result(json!({ "error": err.to_string() }), true)),
-            }
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        let name = request.name.to_string();
+        let arguments = Value::Object(request.arguments.unwrap_or_default());
+        match self.server.call_tool(&name, arguments) {
+            Ok(structured) => Ok(rmcp_tool_result(structured, false)),
+            Err(err) => Ok(rmcp_tool_result(json!({ "error": err.to_string() }), true)),
         }
     }
 }
@@ -122,7 +136,7 @@ impl SemanticMcpServer {
                         "name": "axiograph-mcp",
                         "version": env!("CARGO_PKG_VERSION")
                     },
-                    "instructions": "Read-only typed semantic MCP surface over Axiograph query elaboration/exploration/execution and semantic rule reporting."
+                    "instructions": "Read-only typed semantic MCP surface over Axiograph query preparation/typechecking, exploration, execution, and semantic rule reporting."
                 }),
             )),
             "notifications/initialized" => None,
@@ -190,7 +204,7 @@ impl SemanticMcpServer {
         let mut tools = vec![
             json!({
                 "name": "axql_elaborate",
-                "description": "Typecheck/elaborate a structured `query_ir_v1` query using the meta-plane, returning the elaborated query, inferred types, typed holes, exploration suggestions, plan, and trust contract.",
+                "description": "Prepare and typecheck a structured `query_ir_v1` query, returning the executable query, inferred types, missing typed pieces, exploration suggestions, plan, and trust metadata.",
                 "inputSchema": {
                     "type": "object",
                     "required": ["query_ir_v1"],
@@ -203,7 +217,7 @@ impl SemanticMcpServer {
             }),
             json!({
                 "name": "axql_explore",
-                "description": "Ask the typed elaborator what can go here next for a structured `query_ir_v1` query, returning focused typed holes, refinement candidates, semantic claims, and trust gaps.",
+                "description": "Ask what can go here next for a structured `query_ir_v1` query, returning missing typed pieces, refinement candidates, semantic claims, and trust gaps.",
                 "inputSchema": {
                     "type": "object",
                     "required": ["query_ir_v1"],
@@ -216,13 +230,17 @@ impl SemanticMcpServer {
             }),
             json!({
                 "name": "axql_run",
-                "description": "Run a structured `query_ir_v1` query over the loaded snapshot, returning rows plus the same typed elaboration and trust metadata used by other semantic surfaces. Accepted-anchor runtimes also return an evidence support summary when the query stays inside the current certifiable subset.",
+                "description": "Compile and run structured `query_ir_v1` through `CompiledFiniteQuery`, returning rows and shared trust metadata. With exact accepted module bytes and approved verifier settings, `certificate_policy=require_verified` returns only a bound `query_result_v4` Lean receipt and authoritative verified rows.",
                 "inputSchema": {
                     "type": "object",
                     "required": ["query_ir_v1"],
                     "properties": {
                         "query_ir_v1": query_ir_v1_schema,
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                        "certificate_policy": {
+                            "type": "string",
+                            "enum": ["none", "emit", "verify", "require_verified"]
+                        }
                     }
                 },
                 "annotations": { "readOnlyHint": true }
@@ -346,6 +364,7 @@ impl SemanticMcpServer {
     fn call_axql_run(&self, arguments: Value) -> Result<Value> {
         let args: QueryToolArgs = serde_json::from_value(arguments)
             .map_err(|err| anyhow!("axql_run: invalid args: {err}"))?;
+        let certificate_policy = args.certificate_policy;
         let mut prepared = self.prepare_query(with_bounded_limit(
             args.query_ir_v1,
             args.limit,
@@ -354,23 +373,92 @@ impl SemanticMcpServer {
         let query = prepared.query_ir_v1().to_axql_text()?;
         let elaborated = prepared.elaborated_query_text();
         let report = prepared.elaboration_report().clone();
-        let trust = prepared.trust_contract_with_meta(self.runtime.meta.as_ref());
-        let mut support_summary = None;
-        let result = if let Some(accepted_axi_anchor) = self.runtime.accepted_axi_anchor.clone() {
-            let (result, summary) =
-                crate::evidence_support::execute_anchored_query_with_support_summary(
-                    &mut prepared,
-                    self.runtime.db.as_ref(),
-                    self.runtime.meta.as_ref(),
-                    accepted_axi_anchor,
-                )?;
-            support_summary = summary;
-            result
-        } else {
-            prepared.execute(self.runtime.db.as_ref(), self.runtime.meta.as_ref())?
-        };
+        let certifiability = prepared.certifiability();
+        certificate_policy.ensure_require_verified_preconditions(
+            &certifiability,
+            self.runtime.accepted_axi_anchor.as_ref(),
+            self.runtime.accepted_axi_text.as_deref(),
+        )?;
+        let prepared_query = certifiability
+            .is_certifiable()
+            .then(|| prepared.metadata_v2_with_meta(self.runtime.meta.as_ref()))
+            .transpose()?;
 
-        let mut out = json!({
+        let validated =
+            prepared.execute_answer(self.runtime.db.as_ref(), self.runtime.meta.as_ref())?;
+        let result = validated.result().clone();
+        let mut certificate = None;
+        let mut certificate_verified = None;
+        let mut verifier_receipt_v2 = None;
+        let mut verified_rows = None;
+        let mut answer_digest_v1 = None;
+
+        if certificate_policy.emits_certificate() {
+            let (_revision_digest_v2, axi_text) = match (
+                self.runtime.accepted_axi_anchor.as_ref(),
+                self.runtime.accepted_axi_text.as_deref(),
+            ) {
+                (Some(anchor), Some(text)) if !text.trim().is_empty() => {
+                    let recomputed = axiograph_pathdb::AxiDigest::from_axi_text(text);
+                    if recomputed != anchor.axi_digest {
+                        return Err(anyhow!(
+                            "accepted .axi source digest differs from MCP runtime anchor"
+                        ));
+                    }
+                    (anchor.axi_digest.clone(), text.to_string())
+                }
+                (Some(_), _) => {
+                    return Err(anyhow!(
+                        "MCP certificate emission requires exact accepted .axi source text"
+                    ))
+                }
+                (None, _) => {
+                    crate::db_server::export_canonical_module_axi(self.runtime.db.as_ref())?
+                }
+            };
+            let emitted = prepared.certify_answer_with_anchors(
+                validated,
+                self.runtime.db.as_ref(),
+                self.runtime.meta.as_ref(),
+                axiograph_pathdb::RevisionDigestV2::from_accepted_text(&axi_text),
+            )?;
+            let cert = emitted.certificate().clone();
+            answer_digest_v1 = Some(emitted.answer_digest_v1().clone());
+            certificate = Some(serde_json::to_value(&cert)?);
+
+            if certificate_policy.verifies_certificate() {
+                let receipt = crate::verifier_bridge::verify_certificate_with_lean(
+                    &self.cert_verify,
+                    &axi_text,
+                    emitted.certificate_text(),
+                    emitted
+                        .prepared_query_digest_v1()
+                        .ok_or_else(|| anyhow!("emitted MCP answer lost prepared digest"))?,
+                    emitted.answer_digest_v1(),
+                )?;
+                let accepted = receipt.accepted();
+                certificate_verified = Some(accepted);
+                if accepted {
+                    verified_rows = Some(
+                        emitted
+                            .into_lean_verified(receipt.clone())?
+                            .selected_rows_v1()
+                            .to_vec(),
+                    );
+                }
+                verifier_receipt_v2 = Some(receipt);
+                certificate_policy.ensure_verified_result(certificate_verified)?;
+            }
+        }
+
+        let trust = crate::trust_contract::query_user_visible_trust_contract_with_meta(
+            prepared.as_query(),
+            &certifiability,
+            certificate.is_some(),
+            certificate_verified,
+            self.runtime.meta.as_ref(),
+        );
+        let out = json!({
             "query": query,
             "elaborated": elaborated,
             "inferred_types": report.inferred_types,
@@ -379,25 +467,24 @@ impl SemanticMcpServer {
             "exploration_suggestions": report.exploration_suggestions,
             "plan": prepared.explain_plan_lines(),
             "trust": trust,
+            "prepared_query": prepared_query,
+            "certificate_policy": certificate_policy,
+            "certificate": certificate,
+            "certificate_verified": certificate_verified,
+            "verifier_receipt_v2": verifier_receipt_v2,
+            "verified_rows": verified_rows,
+            "answer_digest_v1": answer_digest_v1,
+            "entity_view_enrichment_claim": "unbound_runtime_entity_view_no_verified_row_claim",
             "results": ToolQueryResultsV1::from_axql_result(self.runtime.db.as_ref(), &result)
         });
-        if let Some(summary) = support_summary {
-            out.as_object_mut()
-                .expect("MCP axql_run output must be a structured ToolQueryResultsV1 envelope")
-                .insert(
-                    "support_summary".to_string(),
-                    serde_json::to_value(summary)?,
-                );
-        }
-
         Ok(out)
     }
 
     fn prepare_query(
         &self,
         query_ir_v1: crate::query_ir::QueryIrV1,
-    ) -> Result<crate::query_ir::PreparedQueryV1> {
-        query_ir_v1.prepare_with_meta(self.runtime.db.as_ref(), self.runtime.meta.as_ref())
+    ) -> Result<crate::query_ir::CompiledFiniteQuery> {
+        query_ir_v1.compile_with_meta(self.runtime.db.as_ref(), self.runtime.meta.as_ref())
     }
 }
 
@@ -456,6 +543,8 @@ struct QueryToolArgs {
     query_ir_v1: crate::query_ir::QueryIrV1,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    certificate_policy: crate::query_ir::QueryCertificatePolicyV1,
 }
 
 #[derive(Debug, Deserialize)]
@@ -560,16 +649,26 @@ mod tests {
 
     use axiograph_pathdb::{AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest};
 
+    fn disabled_verifier() -> crate::verifier_bridge::CertVerifyConfig {
+        crate::verifier_bridge::CertVerifyConfig {
+            verifier_bin: None,
+            timeout: None,
+            approved_checker_sha256: None,
+            approved_checker_build_id: None,
+        }
+    }
+
     fn test_server(accepted_axi_anchor: Option<AcceptedAxiAnchor>) -> SemanticMcpServer {
         SemanticMcpServer {
             runtime: crate::db_server::ReadOnlySemanticRuntime {
-                snapshot_key: "test-snapshot".to_string(),
                 accepted_snapshot_id: None,
                 accepted_axi_anchor,
+                accepted_axi_text: None,
                 db: Arc::new(PathDB::new()),
                 meta: None,
             },
             tool_max_rows: 25,
+            cert_verify: disabled_verifier(),
         }
     }
 
@@ -596,13 +695,14 @@ instance FamilyInst of Family:
             .expect("semantic family meta plane");
         SemanticMcpServer {
             runtime: crate::db_server::ReadOnlySemanticRuntime {
-                snapshot_key: "semantic-family-snapshot".to_string(),
                 accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:family")),
                 accepted_axi_anchor: None,
+                accepted_axi_text: Some(axi.to_string()),
                 db: Arc::new(db),
                 meta: Some(meta),
             },
             tool_max_rows: 25,
+            cert_verify: disabled_verifier(),
         }
     }
 
@@ -615,13 +715,14 @@ instance FamilyInst of Family:
         (
             SemanticMcpServer {
                 runtime: crate::db_server::ReadOnlySemanticRuntime {
-                    snapshot_key: "route-preview-snapshot".to_string(),
                     accepted_snapshot_id: None,
                     accepted_axi_anchor: None,
+                    accepted_axi_text: None,
                     db: Arc::new(db),
                     meta: None,
                 },
                 tool_max_rows: 25,
+                cert_verify: disabled_verifier(),
             },
             a,
             b,
@@ -935,96 +1036,71 @@ theory PlantTransport on Plant:
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn axql_run_returns_support_summary_for_anchored_queries() -> Result<()> {
-        let axi = r#"
-module Demo
-
+    fn axql_run_require_verified_returns_v4_receipt_and_authoritative_rows() -> Result<()> {
+        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let verifier = repo.join("lean/.lake/build/bin/axiograph_verify");
+        if !verifier.exists() {
+            return Ok(());
+        }
+        let axi = r#"module Demo
 schema S:
   object Person
-  object Context
-  relation Parent(child: Person, parent: Person) @context Context
-
 instance I of S:
   Person = {Alice, Bob}
-  Context = {CensusData}
-  Parent = {
-    (child=Alice, parent=Bob, ctx=CensusData)
-  }
 "#;
         let mut db = PathDB::new();
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
         db.build_indexes();
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
-        let anchor = AcceptedAxiAnchor::new(
-            AcceptedSnapshotId::new("accepted:test"),
-            AxiDigest::from_axi_text(axi),
-        );
-        let server = SemanticMcpServer {
+        let mut server = SemanticMcpServer {
             runtime: crate::db_server::ReadOnlySemanticRuntime {
-                snapshot_key: "support-summary-snapshot".to_string(),
-                accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:test")),
-                accepted_axi_anchor: Some(anchor),
+                accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:mcp")),
+                accepted_axi_anchor: Some(AcceptedAxiAnchor::new(
+                    AcceptedSnapshotId::new("accepted:mcp"),
+                    AxiDigest::from_axi_text(axi),
+                )),
+                accepted_axi_text: Some(axi.to_string()),
                 db: Arc::new(db),
                 meta: Some(meta),
             },
             tool_max_rows: 25,
+            cert_verify: disabled_verifier(),
         };
+        server.cert_verify.verifier_bin = Some(verifier.clone());
+        server.cert_verify.timeout = Some(Duration::from_secs(10));
+        server.cert_verify.approved_checker_sha256 =
+            Some(crate::verifier_bridge::sha256_file(&verifier)?);
+        server.cert_verify.approved_checker_build_id = Some("axiograph-verify-main-v3".to_string());
 
         let response = server.call_axql_run(json!({
             "query_ir_v1": {
                 "version": 1,
-                "select_vars": ["?p"],
+                "select_vars": ["?person"],
                 "where_atoms": [
-                    {
-                        "kind": "fact",
-                        "fact": "?f",
-                        "relation": "S.Parent",
-                        "fields": {
-                            "child": "Alice",
-                            "parent": "?p",
-                            "ctx": "CensusData"
-                        }
-                    }
+                    {"kind":"type","term":"?person","type":"Person"}
                 ],
                 "limit": 10
-            }
+            },
+            "certificate_policy": "require_verified"
         }))?;
-
+        assert_eq!(response["certificate"]["version"], 3);
+        assert_eq!(response["certificate"]["kind"], "query_result_v4");
+        assert_eq!(response["certificate_verified"], true);
         assert_eq!(
-            response["trust"]["soundness"].as_str(),
-            Some("certificate_available_but_not_emitted")
+            response["trust"]["soundness"],
+            "lean_verified_finite_exact_complete"
+        );
+        assert_eq!(response["verified_rows"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            response["trust"]["completeness_claim"],
+            "exact_for_declared_finite_decidable_fragment"
         );
         assert_eq!(
-            response["support_summary"]["accepted_axi_anchor"]["accepted_snapshot_id"].as_str(),
-            Some("accepted:test")
+            response["entity_view_enrichment_claim"],
+            "unbound_runtime_entity_view_no_verified_row_claim"
         );
-        assert_eq!(
-            response["support_summary"]["trust"]["soundness"].as_str(),
-            Some("certificate_available_but_not_emitted")
-        );
-        assert_eq!(
-            response["support_summary"]["basis"]["certificate_kind"].as_str(),
-            Some("query_result_v3")
-        );
-        assert_eq!(
-            response["support_summary"]["basis"]["certificate_emitted_to_client"].as_bool(),
-            Some(false)
-        );
-        assert_eq!(
-            response["support_summary"]["coverage"]["rows_total"].as_u64(),
-            Some(1)
-        );
-        assert!(response["support_summary"]["supported_facts"]
-            .as_array()
-            .is_some_and(|facts| !facts.is_empty()));
-        assert!(response["support_summary"]["supported_facts"]
-            .as_array()
-            .is_some_and(|facts| facts.iter().all(|fact| {
-                fact["witness_rows"]
-                    .as_array()
-                    .is_some_and(|rows| !rows.is_empty())
-            })));
         Ok(())
     }
 }

@@ -36,8 +36,8 @@ At the moment that means:
   typed relation/role/n-ary structure well.
 - `TerminusDB` is the strongest RDF/VCS-shaped secondary target.
 - property-graph backends remain experimental rather than first-class support
-  targets. `Apache AGE` is the main one still worth evaluating, but it is not
-  yet on the same compatibility tier.
+targets. `Apache AGE` is the main one still worth evaluating, but it is not
+  yet on the same support tier.
 
 That priority is not just a ranking; it is a pushdown split:
 
@@ -58,43 +58,37 @@ should be:
 - and backend mutation is not authoritative: semantic mutation, review,
   promotion, and lifecycle transitions still go through Axiograph.
 
-The current Rust implementation now reflects that split directly. The CLI layer
-contains a backend pushdown planner that consumes:
+The current Rust implementation reflects that split in
+`axiograph-projections`. It consumes only the immutable
+`CompiledKernelSnapshot`, so projection does not create a second schema or
+meaning model. `ProjectionManifestV1` covers PathDB, TypeDB, TerminusDB,
+RDF/OWL, and a portable property-graph shape. Each manifest carries:
 
-- `CompiledSchemaIr`,
-- `BackendCapabilityProfileV1`,
-- `ProjectionCapabilityProfileV1`,
+- repository, accepted-snapshot, and compiled-IR anchors;
+- a closed capability declaration;
+- finite `KernelRefV2`-anchored records and payload fingerprints;
+- one read-only native artifact;
+- exact address coverage and feature-derived semantic losses;
+- explicit Axiograph-only mutation authority and non-claims.
 
-and emits typed backend-specific plans for the first-class backends:
+The degradation boundary is executable rather than buried in adapter prose.
+Dependent indexes and refinement trees are retained structurally but marked
+not enforced. Constraints, path equations, and rewrite rules survive as
+sidecar obligations. Higher paths are unsupported rather than flattened into a
+false backend equality claim. `ReadbackReportV1` compares finite records and
+wraps every observation as evidence-only.
 
-- `TypeDbPushdownPlanV1`
-- `TerminusDbPushdownPlanV1`
+For `TypeDB`, the high-fidelity target uses native relation types, scoped roles,
+and n-ary relation objects. The current TypeQL artifact is schema-only;
+subtypes, constraints, dependent/refinement structure, instance loading, and
+readback remain explicit manifest or adapter work rather than claimed native
+preservation. Backend schema writes are not accepted ontology mutations.
 
-These plans make the degradation boundary explicit instead of burying it in
-adapter code. They say which tuple/role/context structure is preserved natively,
-which native read-only query surface is exposed, and which semantics still
-require Axiograph-side trust contracts and anchor checks.
-
-The plan now also carries a compact evidence trail:
-
-- a `CompiledSchemaIr` summary of object types, relation objects, roles,
-  n-ary relations, context axes, and direct subtype families,
-- capability decisions from `BackendCapabilityProfileV1` and
-  `ProjectionCapabilityProfileV1`,
-- and native-readable projection notes that describe what TypeQL, WOQL, RDF
-  named graphs, schema constraints, and backend history can safely expose.
-
-For `TypeDB`, the high-fidelity target is intentionally typed: relation types,
-scoped roles, n-ary relation objects, subtype hierarchy, schema constraints, and
-typed query validation are the features that justify using it as the primary
-backend projection target. Even there, TypeQL is a read-only projected lens.
-Backend schema writes are not accepted ontology mutations.
-
-For `TerminusDB`, the useful shape is RDF/VCS-oriented: schema and instance
-graphs stay readable, context/world axes can lower into named graph bindings,
-and branch/history/diff surfaces can help inspect projected materialization
-state. Those history features do not become semantic VCS. Axiograph still owns
-promotion, supersession, retraction, review, reconciliation, and trust contracts.
+For `TerminusDB`, the useful shape is RDF/VCS-oriented. The current artifact is
+an anchored JSON-LD record bundle; backend-specific schema loading,
+named-graph layout, branch mirroring, and readback belong to the adapter. Those
+features do not become semantic VCS. Axiograph still owns promotion,
+supersession, retraction, review, reconciliation, and trust contracts.
 
 The important refinement is that projected backends should not be described as
 "mere exports". They should preserve readable lower-tier interfaces all the way
@@ -102,8 +96,8 @@ through the projection:
 
 - native query interfaces remain usable as lower-tier read surfaces,
 - RDF-style datasets remain readable where the backend genuinely hosts them,
-- SHACL-style validation remains usable as a lower-tier closed-world interface
-  over the projected graph,
+- separate SHACL adapters may validate a declared lower-tier closed-world
+  fragment without becoming kernel semantics,
 - and Axiograph lifts those lower-tier surfaces back into higher typed semantic
   objects, anchors, lifecycle state, CQ gates, and trust contracts.
 
@@ -116,8 +110,8 @@ So the right model is:
 In other words, we should not ask one backend to do all jobs equally well.
 `TypeDB` is the best host for typed runtime elaboration fragments.
 `TerminusDB` is the best host for native graph-history collaboration.
-Property-graph engines may still become useful execution targets later, but
-they are not part of the current first-class support contract.
+Property-graph engines have an experimental portable node/edge bundle, but no
+engine-specific feature-equivalence or binary-edge completeness contract.
 
 ## Representation vs Tooling Overlays
 
@@ -194,8 +188,8 @@ So the Axiograph reading is:
 - a relation role defines a typed interface over the canonical IR,
 - subtype closure determines the admissible players of that interface,
 - CQ-gated evolution and semantic VCS own the mutation lifecycle,
-- and backend pushdown plans may preserve these interfaces natively without
-  becoming authoritative.
+- and capability-declared projection manifests may preserve these interfaces
+  natively or by explicit encoding without becoming authoritative.
 
 This is where TypeDB-like discipline helps Axiograph most:
 
@@ -853,11 +847,20 @@ at a common anchor:
 - attach CQ/trust/coverage consequences,
 - and carry unresolved conflicts forward as residual obligations.
 
-The current runtime slice is deliberately conservative. It can summarize typed
-reconciliation previews from explicit conflict/decision records, but it does
-not yet claim merge optimality, merge completeness, or ontology closure. That
-is still the right operational move because it makes semantic merge reviewable
-through the same preview contract as every other mutation seam.
+The current runtime slice is deliberately conservative. At the accepted-module
+boundary it performs a real base/left/right classification per module name after
+reloading and cryptographically identifying the exact canonical bytes. Safe
+one-sided edits and unilateral adds/deletes materialize; divergent add/add,
+edit/edit, and delete/edit cases become resolver blockers. Storage paths carry
+no semantic weight, and module renames are not guessed.
+
+This is not yet typed candidate synthesis. The V1 reconciliation format cannot
+authorize a replacement module, and the runtime does not concatenate or format
+branch source text. A reviewed merged candidate still needs a versioned typed
+result plus compiled-payload preservation, CQ/trust/coverage, and residual-
+obligation gates. The implemented classifier therefore improves useful merge
+behavior without claiming merge optimality, merge completeness, or ontology
+closure.
 
 ### 4.9 CQ-gated evolution
 
@@ -1022,7 +1025,7 @@ The most important existing patterns are:
   - `Certified`
 - stable anchor ids:
   - `AcceptedSnapshotId`
-  - `PathdbSnapshotId`
+  - `MaterializationIdV2`
   - `AxiDigest`
   - `SchemaId`
   - `TheoryId`
@@ -1287,7 +1290,7 @@ These services answer "what kind of thing is this?" and "how should it lower?".
 
 - canonical parsing of `.axi`,
 - conservative well-typedness checking,
-- classification of canonical modules versus derived snapshot exports,
+- classification of canonical modules versus derived debug export artifacts,
 - lowering into a stable kernel IR,
 - explicit derivation of relation-object roles, carrier structure, context axes,
   and temporal axes,
@@ -1819,7 +1822,7 @@ accurately.
 More concretely:
 
 - semantic VCS is still only a first slice: `sem/` exists, but mostly as
-  scaffolding plus persisted `proposal_adapter_runs`, not as the full semantic branch
+  persisted validation/proposal artifacts, not as the full semantic branch
   / review / merge / promotion history;
 - semantic commits are still evolving toward explicit state-plus-delta objects
   with ancestry, policy metadata, and semantic diff payloads, rather than being
@@ -2147,7 +2150,7 @@ The current repo already contains the beginnings of this story:
 - CQ-driven preview slices,
 - typed query/certifiability classification,
 - evidence-plane proposal flows,
-- and migration/category scaffolding.
+- and migration/category runtime slices.
 
 What it does **not** yet have is the full integrated agentic-engineering engine:
 

@@ -74,7 +74,7 @@ These are good candidates for certification because they are:
 - independent of “missing facts” being treated as false,
 - directly useful for query planning and indexing.
 
-### C) Closure-compatible constraints (derivation semantics, still checkable)
+### C) Closure-admissible constraints (derivation semantics, still checkable)
 
 Some constraints are “inference-like” but have a **deterministic closure** that
 does not require inventing new witness objects.
@@ -89,7 +89,7 @@ For `axi_constraints_ok_v1`, the certified semantics of:
 is **not** “the inverse tuple must exist”.
 
 Instead, we treat symmetry as an *admissible closure* on the relation’s first two
-fields (the “endpoints”), and we certify a compatibility property.
+fields (the “endpoints”), and we certify an admissibility property.
 
 Carrier fields:
 - By default, the carrier fields are the **first two** relation fields.
@@ -203,7 +203,7 @@ If you try to write:
 - `constraint transitive Accessible on (from,to)` and
 - `constraint key Accessible(ctx,time,from,to)`
 
-then `axi_constraints_ok_v1` must fail closed: a global closure-compatibility
+then `axi_constraints_ok_v1` must fail closed: the supported transitive-closure
 checker cannot invent `ctx/time` values for inferred `(from,to)` endpoint pairs.
 
 Adding:
@@ -219,8 +219,8 @@ assignment* of `(ctx,time)` (“fibered closure”), so keys/functionals that me
 End-to-end tutorial + demo scripts:
 
 - `docs/tutorials/FIBERED_CLOSURE_CONSTRAINTS.md`
-- `examples/demo_data/FiberedTransitivityNoParam.axi`
-- `examples/demo_data/FiberedTransitivityParam.axi`
+- `examples/runtime_theory/FiberedTransitivityNoParam.axi`
+- `examples/runtime_theory/FiberedTransitivityParam.axi`
 - `scripts/fibered_closure_constraints_demo.sh`
 
 ## 7) Proposal: negative constraints and richer guarded constraints

@@ -36,12 +36,12 @@ if [ ! -x "$AXIOGRAPH" ]; then
   exit 2
 fi
 
-INPUT_AXI="$ROOT_DIR/examples/demo_data/FiberedClosureConstraints.axi"
+INPUT_AXI="$ROOT_DIR/examples/runtime_theory/FiberedClosureConstraints.axi"
 
 echo ""
 echo "-- A) Validate canonical .axi"
-INPUT_BAD_AXI="$ROOT_DIR/examples/demo_data/FiberedTransitivityNoParam.axi"
-INPUT_PARAM_AXI="$ROOT_DIR/examples/demo_data/FiberedTransitivityParam.axi"
+INPUT_BAD_AXI="$ROOT_DIR/examples/runtime_theory/FiberedTransitivityNoParam.axi"
+INPUT_PARAM_AXI="$ROOT_DIR/examples/runtime_theory/FiberedTransitivityParam.axi"
 
 echo "Validating:"
 echo "  - $INPUT_BAD_AXI"

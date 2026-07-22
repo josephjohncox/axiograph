@@ -3,7 +3,7 @@
 //! Goal: provide a single entrypoint to ingest a repo’s:
 //! - code/document structure (repo chunks + repo edges),
 //! - protobuf/gRPC APIs (Buf descriptor sets → proto proposals),
-//! and merge them into one `proposals.json` + typed `EvidenceChunkBundleV1` bundle.
+//!   and merge them into one `proposals.json` + typed `EvidenceChunkBundleV1` bundle.
 //!
 //! Network access is optional:
 //! - If the `repo` argument is a local path, this command is fully offline.
@@ -14,9 +14,10 @@ use clap::Subcommand;
 use colored::Colorize;
 use std::collections::HashSet;
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Subcommand)]
 pub enum GithubCommands {
@@ -71,7 +72,7 @@ pub enum GithubCommands {
         max_file_bytes: u64,
 
         /// Max number of files to index during repo indexing.
-        #[arg(long, default_value_t = 50_000)]
+        #[arg(long, default_value_t = 10_000)]
         max_files: usize,
 
         /// Lines per code chunk (non-markdown) during repo indexing.
@@ -112,6 +113,7 @@ pub fn cmd_github(command: GithubCommands) -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_github_import(
     repo: &str,
     out_dir: &PathBuf,
@@ -151,19 +153,26 @@ fn cmd_github_import(
     if do_repo_index {
         let (chunks, edges, proposals_file) =
             index_repo_to_artifacts(&repo_path, max_file_bytes, max_files, lines_per_chunk)?;
+        axiograph_ingest_docs::validate_proposals_file_v1(&proposals_file)?;
 
-        fs::write(
+        crate::security::write_output_bounded(
             &repo_chunks_path,
             axiograph_ingest_docs::chunks_to_json_for_chunks(
                 "github_repo_index",
                 repo_path.display().to_string(),
                 chunks.clone(),
             )?,
+            "CLI output",
         )?;
-        fs::write(&repo_edges_path, serde_json::to_string_pretty(&edges)?)?;
-        fs::write(
+        crate::security::write_output_bounded(
+            &repo_edges_path,
+            serde_json::to_string_pretty(&edges)?,
+            "CLI output",
+        )?;
+        crate::security::write_output_bounded(
             &repo_proposals_path,
             serde_json::to_string_pretty(&proposals_file)?,
+            "CLI output",
         )?;
 
         merged_chunks.extend(chunks);
@@ -180,18 +189,21 @@ fn cmd_github_import(
     if do_proto {
         let (chunks, proposals_file) =
             ingest_proto_to_artifacts(&repo_path, proto_descriptor, buf_root)?;
+        axiograph_ingest_docs::validate_proposals_file_v1(&proposals_file)?;
 
-        fs::write(
+        crate::security::write_output_bounded(
             &proto_chunks_path,
             axiograph_ingest_docs::chunks_to_json_for_chunks(
                 "github_proto_ingest",
                 repo_path.display().to_string(),
                 chunks.clone(),
             )?,
+            "CLI output",
         )?;
-        fs::write(
+        crate::security::write_output_bounded(
             &proto_proposals_path,
             serde_json::to_string_pretty(&proposals_file)?,
+            "CLI output",
         )?;
 
         merged_chunks.extend(chunks);
@@ -208,13 +220,14 @@ fn cmd_github_import(
     let merged_chunks = dedup_chunks_by_id(merged_chunks);
     let merged_proposals = dedup_proposals_by_id(merged_proposals);
 
-    fs::write(
+    crate::security::write_output_bounded(
         &merged_chunks_path,
         axiograph_ingest_docs::chunks_to_json_for_chunks(
             "github_import",
             repo.to_string(),
             merged_chunks.clone(),
         )?,
+        "CLI output",
     )?;
 
     let generated_at = SystemTime::now()
@@ -232,9 +245,11 @@ fn cmd_github_import(
         schema_hint: Some("repo".to_string()),
         proposals: merged_proposals,
     };
-    fs::write(
+    axiograph_ingest_docs::validate_proposals_file_v1(&merged_file)?;
+    crate::security::write_output_bounded(
         &merged_proposals_path,
         serde_json::to_string_pretty(&merged_file)?,
+        "CLI output",
     )?;
 
     println!("  {} {}", "→".cyan(), merged_chunks_path.display());
@@ -252,31 +267,96 @@ fn prepare_repo_checkout(
 ) -> Result<PathBuf> {
     // Local path mode (fully offline).
     let as_path = PathBuf::from(repo);
-    if as_path.is_dir() {
-        return Ok(as_path);
+    if let Ok(metadata) = fs::symlink_metadata(&as_path) {
+        if metadata.file_type().is_symlink() {
+            return Err(anyhow!("local repository path must not be a symlink"));
+        }
+        if metadata.file_type().is_dir() {
+            return Ok(as_path);
+        }
     }
 
     let clone_dir = clone_dir.cloned().unwrap_or_else(|| out_dir.join("repo"));
+    if let Some(git_ref) = git_ref {
+        validate_git_ref(git_ref)?;
+    }
 
-    if clone_dir.exists() {
-        // If it already exists, assume it is a usable checkout.
+    if let Ok(metadata) = fs::symlink_metadata(&clone_dir) {
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+            return Err(anyhow!(
+                "existing clone path must be a real directory, not a symlink"
+            ));
+        }
+        let git_metadata = fs::symlink_metadata(clone_dir.join(".git"))
+            .context("existing clone path is not a complete Git checkout")?;
+        if git_metadata.file_type().is_symlink() || !git_metadata.file_type().is_dir() {
+            return Err(anyhow!(
+                "existing clone .git entry must be a real directory"
+            ));
+        }
+        if let Some(git_ref) = git_ref {
+            checkout_repository(&clone_dir, git_ref)?;
+        }
         return Ok(clone_dir);
     }
 
     let url = normalize_github_repo_spec(repo)?;
+    let parsed = url::Url::parse(&url)?;
+    let (_, addresses) = crate::web::resolve_public_addresses(&parsed, Duration::from_secs(5))?;
+    let mut ips = addresses
+        .iter()
+        .map(|address| address.ip())
+        .collect::<Vec<_>>();
+    ips.sort();
+    ips.dedup();
+    let pinned = ips
+        .into_iter()
+        .map(|ip| match ip {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
 
-    fs::create_dir_all(clone_dir.parent().unwrap_or(Path::new(".")))?;
+    let parent = clone_dir.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let parent_metadata = fs::symlink_metadata(parent)?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+        return Err(anyhow!("clone parent must be a real directory"));
+    }
+
+    fs::create_dir(&clone_dir)
+        .with_context(|| format!("reserve empty clone destination `{}`", clone_dir.display()))?;
+    let clone_metadata = fs::symlink_metadata(&clone_dir)?;
+    if clone_metadata.file_type().is_symlink() || !clone_metadata.file_type().is_dir() {
+        return Err(anyhow!("clone destination must be a real directory"));
+    }
 
     let mut cmd = Command::new("git");
-    cmd.arg("clone");
+    harden_git_command(&mut cmd);
+    cmd.arg("-c")
+        .arg("protocol.allow=never")
+        .arg("-c")
+        .arg("protocol.https.allow=always")
+        .arg("-c")
+        .arg("http.proxy=")
+        .arg("-c")
+        .arg("http.followRedirects=false")
+        .arg("-c")
+        .arg("credential.helper=")
+        .arg("-c")
+        .arg(format!("http.curloptResolve=github.com:443:{pinned}"))
+        .arg("clone")
+        .arg("--no-checkout")
+        .arg("--no-recurse-submodules");
     if shallow && git_ref.is_none() {
         cmd.arg("--depth").arg("1");
     }
     cmd.arg(&url).arg(&clone_dir);
 
-    let out = cmd
-        .output()
-        .with_context(|| format!("failed to run `git clone` for {url}"))?;
+    let limits = crate::security::ProcessLimits::plugin(std::time::Duration::from_secs(600))?;
+    let out =
+        crate::security::run_command_bounded(cmd, b"", limits, &format!("git clone for {url}"))?;
     if !out.status.success() {
         return Err(anyhow!(
             "git clone failed:\n{}",
@@ -284,42 +364,169 @@ fn prepare_repo_checkout(
         ));
     }
 
-    if let Some(r#ref) = git_ref {
-        let mut checkout = Command::new("git");
-        checkout
-            .arg("-C")
-            .arg(&clone_dir)
-            .arg("checkout")
-            .arg(r#ref);
-        let out = checkout
-            .output()
-            .with_context(|| format!("failed to run `git checkout {ref}`"))?;
-        if !out.status.success() {
-            return Err(anyhow!(
-                "git checkout failed:\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-    }
+    checkout_repository(&clone_dir, git_ref.unwrap_or("HEAD"))?;
 
+    let clone_metadata = fs::symlink_metadata(&clone_dir)?;
+    if clone_metadata.file_type().is_symlink() || !clone_metadata.file_type().is_dir() {
+        return Err(anyhow!("clone destination changed during checkout"));
+    }
+    let git_metadata = fs::symlink_metadata(clone_dir.join(".git"))?;
+    if git_metadata.file_type().is_symlink() || !git_metadata.file_type().is_dir() {
+        return Err(anyhow!("cloned .git entry must be a real directory"));
+    }
     Ok(clone_dir)
 }
 
+fn checkout_repository(clone_dir: &Path, git_ref: &str) -> Result<()> {
+    validate_git_ref(git_ref)?;
+    let parent = clone_dir.parent().unwrap_or(Path::new("."));
+    let hooks = tempfile::Builder::new()
+        .prefix(".axiograph-empty-hooks-")
+        .tempdir_in(parent)?;
+    let mut checkout = Command::new("git");
+    harden_git_command(&mut checkout);
+    checkout
+        .arg("-c")
+        .arg(format!("core.hooksPath={}", hooks.path().display()))
+        .arg("-c")
+        .arg("protocol.allow=never")
+        .arg("-C")
+        .arg(clone_dir)
+        .arg("checkout")
+        .arg("--detach")
+        .arg(git_ref);
+    let limits = crate::security::ProcessLimits::plugin(Duration::from_secs(600))?;
+    let output = crate::security::run_command_bounded(
+        checkout,
+        b"",
+        limits,
+        &format!("git checkout {git_ref}"),
+    )?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git checkout failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn harden_git_command(command: &mut Command) {
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ] {
+        command.env_remove(name);
+    }
+    command
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_EXEC_PATH")
+        .env_remove("GIT_TEMPLATE_DIR")
+        .env_remove("GIT_SSH")
+        .env_remove("GIT_SSH_COMMAND")
+        .env_remove("GIT_ASKPASS")
+        .env_remove("SSH_ASKPASS")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG")
+        .env_remove("GIT_SSL_NO_VERIFY")
+        .env_remove("GIT_SSL_CAINFO")
+        .env_remove("GIT_SSL_CAPATH")
+        .env_remove("GIT_PROXY_COMMAND")
+        .env("GIT_CONFIG_COUNT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ALLOW_PROTOCOL", "https")
+        .env("GIT_PROTOCOL_FROM_USER", "0")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        );
+}
+
 fn normalize_github_repo_spec(repo: &str) -> Result<String> {
-    let s = repo.trim();
-    if s.starts_with("http://") || s.starts_with("https://") {
-        if s.ends_with(".git") {
-            return Ok(s.to_string());
+    let input = repo.trim();
+    let candidate = if input.contains("://") {
+        input.to_string()
+    } else {
+        format!("https://github.com/{input}")
+    };
+    let parsed = url::Url::parse(&candidate)
+        .with_context(|| format!("invalid GitHub repository URL `{input}`"))?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("github.com")
+        || parsed.port_or_known_default() != Some(443)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(anyhow!(
+            "GitHub imports require an exact credential-free https://github.com/owner/repository URL"
+        ));
+    }
+    let parts = parsed
+        .path_segments()
+        .ok_or_else(|| anyhow!("GitHub repository URL has no path"))?
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return Err(anyhow!(
+            "GitHub repository path must be exactly owner/repository"
+        ));
+    }
+    let owner = parts[0];
+    let repository = parts[1].strip_suffix(".git").unwrap_or(parts[1]);
+    for (label, value) in [("owner", owner), ("repository", repository)] {
+        if value.is_empty()
+            || value.len() > 100
+            || matches!(value, "." | "..")
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+        {
+            return Err(anyhow!("GitHub {label} is not canonical ASCII"));
         }
-        return Ok(format!("{s}.git"));
     }
-    // owner/name → https://github.com/owner/name.git
-    if s.split('/').count() == 2 {
-        return Ok(format!("https://github.com/{s}.git"));
+    let canonical_path = format!("/{owner}/{repository}");
+    if parsed.path() != canonical_path && parsed.path() != format!("{canonical_path}.git") {
+        return Err(anyhow!("GitHub repository URL path is not canonical"));
     }
-    Err(anyhow!(
-        "unsupported repo spec `{s}` (expected a local dir, URL, or owner/name)"
-    ))
+    Ok(format!("https://github.com/{owner}/{repository}.git"))
+}
+
+fn validate_git_ref(git_ref: &str) -> Result<()> {
+    if git_ref.is_empty()
+        || git_ref.len() > 256
+        || git_ref.starts_with('-')
+        || git_ref.starts_with('/')
+        || git_ref.ends_with('/')
+        || git_ref.contains("..")
+        || git_ref.contains("@{")
+        || git_ref.contains("//")
+        || git_ref
+            .split('/')
+            .any(|part| part.is_empty() || matches!(part, "." | ".."))
+        || !git_ref
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/'))
+    {
+        return Err(anyhow!(
+            "Git ref is not a canonical option-safe ref or object id"
+        ));
+    }
+    Ok(())
 }
 
 fn index_repo_to_artifacts(
@@ -400,12 +607,11 @@ fn ingest_proto_to_artifacts(
         out
     };
 
-    let descriptor_bytes = fs::read(&descriptor_path).with_context(|| {
-        format!(
-            "proto ingest: failed to read binary descriptor set: {}",
-            descriptor_path.display()
-        )
-    })?;
+    let descriptor_bytes = crate::security::read_file_bounded(
+        &descriptor_path,
+        crate::security::MAX_BINARY_INPUT_BYTES,
+        "protobuf descriptor set",
+    )?;
 
     let ingest = axiograph_ingest_proto::ingest_descriptor_set_bytes(
         &descriptor_bytes,
@@ -467,4 +673,70 @@ fn dedup_chunks_by_id(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_repo_spec_is_exact_and_credential_free() {
+        assert_eq!(
+            normalize_github_repo_spec("axiograph/example").unwrap(),
+            "https://github.com/axiograph/example.git"
+        );
+        assert_eq!(
+            normalize_github_repo_spec("https://github.com/axiograph/example.git").unwrap(),
+            "https://github.com/axiograph/example.git"
+        );
+        for invalid in [
+            "http://github.com/axiograph/example",
+            "https://user@github.com/axiograph/example",
+            "https://github.com/axiograph/example/",
+            "https://github.com/axiograph//example",
+            "https://github.com/axiograph/example?ref=main",
+            "https://evil.example/axiograph/example",
+            "axiograph/example/extra",
+        ] {
+            assert!(
+                normalize_github_repo_spec(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_ref_rejects_option_and_revision_expression_injection() {
+        for valid in ["main", "release/v1.2.3", "0123456789abcdef"] {
+            assert!(validate_git_ref(valid).is_ok(), "rejected {valid}");
+        }
+        for invalid in [
+            "--orphan",
+            "main^{tree}",
+            "main~1",
+            "main@{1}",
+            "refs//heads/main",
+            "../main",
+            "main:evil",
+            "main\n--help",
+        ] {
+            assert!(validate_git_ref(invalid).is_err(), "accepted {invalid}");
+        }
+    }
+
+    #[test]
+    fn incomplete_existing_clone_is_rejected_without_network() {
+        let temp = tempfile::tempdir().unwrap();
+        let clone_dir = temp.path().join("repo");
+        fs::create_dir(&clone_dir).unwrap();
+        let error = prepare_repo_checkout(
+            "axiograph/example",
+            temp.path(),
+            Some(&clone_dir),
+            true,
+            None,
+        )
+        .expect_err("empty directory is not a completed clone");
+        assert!(error.to_string().contains("complete Git checkout"));
+    }
 }

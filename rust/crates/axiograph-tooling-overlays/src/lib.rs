@@ -3,17 +3,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use axiograph_pathdb::kernel_ir::{
-    CompiledSchemaIr, KernelModuleIr, KernelRefV1, RelationSemanticsIr, SchemaCategoryObjectRefIr,
-    TheoryObligationRefIr,
+    RelationSemanticsIr, RuntimeIrRef, RuntimeModuleIndex, RuntimeSchemaIndex,
 };
+use axiograph_pathdb::KernelRefV2;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const TOOLING_OVERLAY_BUNDLE_VERSION_V1: &str = "tooling_overlay_bundle_v1";
 pub const OVERLAY_VALIDATION_REPORT_VERSION_V1: &str = "overlay_validation_report_v1";
-pub const OVERLAY_SOFTWARE_COVERAGE_REPORT_VERSION_V1: &str =
-    "overlay_software_coverage_report_v1";
+pub const OVERLAY_SOFTWARE_COVERAGE_REPORT_VERSION_V1: &str = "overlay_software_coverage_report_v1";
 pub const COVERAGE_QUERY_REPORT_VERSION_V1: &str = "coverage_query_report_v1";
 pub const COVERAGE_QUERY_VERSION_V1: &str = "coverage_query_v1";
 pub const DEFINITION_QUERY_BUNDLE_VERSION_V1: &str = "definition_query_bundle_v1";
@@ -21,23 +20,23 @@ pub const DEFINITION_QUERY_REPORT_VERSION_V1: &str = "definition_query_report_v1
 pub const DEFINITION_QUERY_VERSION_V1: &str = "definition_query_v1";
 pub const CODEGEN_PLAN_REPORT_VERSION_V1: &str = "codegen_plan_report_v1";
 pub const AUTHORING_FLOW_REPORT_VERSION_V1: &str = "authoring_flow_report_v1";
+pub const MAX_QUERY_ITEMS_V1: usize = 1_024;
+pub const MAX_QUERY_STRING_BYTES_V1: usize = 16 * 1024;
+pub const MAX_QUERY_TOTAL_BYTES_V1: usize = 1024 * 1024;
+pub const MAX_QUERY_MATCHES_V1: usize = 1_024;
 
 #[derive(
     Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
 )]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CoverageModeV1 {
     Enforced,
+    #[default]
     Advisory,
     Exploratory,
     DefinitionQuery,
     InsufficientlyGrounded,
-}
-
-impl Default for CoverageModeV1 {
-    fn default() -> Self {
-        Self::Advisory
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -354,7 +353,7 @@ pub struct NormalizedOverlayRefV1 {
     pub normalized_id: String,
     pub label: String,
     pub kernel_ref_label: String,
-    pub kernel_ref: KernelRefV1,
+    pub kernel_ref: RuntimeIrRef,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -634,8 +633,43 @@ pub struct OverlaySoftwareCoverageReportV1 {
 }
 
 pub fn parse_overlay_bundle(json_text: &str) -> Result<ToolingOverlayBundleV1> {
-    let bundle: ToolingOverlayBundleV1 = serde_json::from_str(json_text)
-        .map_err(|err| anyhow!("failed to parse ToolingOverlayBundleV1 JSON: {err}"))?;
+    const MAX_OVERLAY_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_OVERLAY_ITEMS: usize = 100_000;
+    let bundle: ToolingOverlayBundleV1 = axiograph_security::parse_json_bounded(
+        json_text.as_bytes(),
+        MAX_OVERLAY_BYTES,
+        "ToolingOverlayBundleV1",
+    )?;
+    let mut item_count = bundle
+        .implementation_surfaces
+        .surfaces
+        .len()
+        .checked_add(bundle.implementation_surfaces.coverage_edges.len())
+        .and_then(|count| count.checked_add(bundle.coverage_policy.require_codegen_languages.len()))
+        .and_then(|count| count.checked_add(bundle.codegen_plan.languages.len()))
+        .and_then(|count| count.checked_add(bundle.codegen_plan.notes.len()))
+        .and_then(|count| count.checked_add(bundle.notes.len()))
+        .ok_or_else(|| anyhow!("tooling overlay item count overflow"))?;
+    if let Some(context) = &bundle.fddd_context_map {
+        for count in [
+            context.scopes.len(),
+            context.bounded_contexts.len(),
+            context.aggregates.len(),
+            context.functions.len(),
+            context.processes.len(),
+            context.business_rules.len(),
+            context.notes.len(),
+        ] {
+            item_count = item_count
+                .checked_add(count)
+                .ok_or_else(|| anyhow!("tooling overlay item count overflow"))?;
+        }
+    }
+    if item_count > MAX_OVERLAY_ITEMS {
+        return Err(anyhow!(
+            "tooling overlay item count {item_count} exceeds {MAX_OVERLAY_ITEMS}"
+        ));
+    }
     if bundle.version != TOOLING_OVERLAY_BUNDLE_VERSION_V1 {
         return Err(anyhow!(
             "expected `{}`, got `{}`",
@@ -671,15 +705,15 @@ fn schema_value<T: JsonSchema>() -> Value {
         .expect("schemars schema should serialize to JSON")
 }
 
-pub fn compile_kernel_from_axi_text(axi_text: &str) -> Result<KernelModuleIr> {
+pub fn derive_runtime_index_from_axi_text(axi_text: &str) -> Result<RuntimeModuleIndex> {
     let module = axiograph_dsl::axi_v1::parse_axi_v1(axi_text)
         .map_err(|err| anyhow!("failed to parse canonical .axi: {err}"))?;
-    axiograph_pathdb::compile_kernel_module_ir(&module, axi_text)
-        .map_err(|err| anyhow!("failed to compile KernelModuleIr: {err}"))
+    axiograph_pathdb::derive_runtime_module_index(&module, axi_text)
+        .map_err(|err| anyhow!("failed to derive RuntimeModuleIndex: {err}"))
 }
 
 pub fn validate_overlay_bundle(
-    kernel: &KernelModuleIr,
+    kernel: &RuntimeModuleIndex,
     bundle: &ToolingOverlayBundleV1,
 ) -> OverlayValidationReportV1 {
     let index = KernelRefIndex::new(kernel);
@@ -693,8 +727,8 @@ pub fn validate_overlay_bundle(
                 normalized_refs.push(NormalizedOverlayRefV1 {
                     source: (*overlay_ref).clone(),
                     normalized_id,
+                    kernel_ref_label: label.clone(),
                     label,
-                    kernel_ref_label: kernel_ref.stable_label(),
                     kernel_ref,
                 })
             }
@@ -778,11 +812,119 @@ pub fn validate_overlay_bundle(
     }
 }
 
+pub fn validate_definition_query_v1(query: &DefinitionQueryV1) -> Result<()> {
+    if query
+        .version
+        .as_deref()
+        .is_some_and(|version| version != DEFINITION_QUERY_VERSION_V1)
+    {
+        return Err(anyhow!("unsupported definition query version"));
+    }
+    if query.prompt.trim().is_empty() || query.prompt.len() > MAX_QUERY_STRING_BYTES_V1 {
+        return Err(anyhow!("definition query prompt has invalid length"));
+    }
+    if query
+        .context_hint
+        .as_ref()
+        .is_some_and(|hint| hint.len() > MAX_QUERY_STRING_BYTES_V1)
+    {
+        return Err(anyhow!("definition query context hint exceeds byte limit"));
+    }
+    if query.candidate_refs.len() > MAX_QUERY_ITEMS_V1 {
+        return Err(anyhow!(
+            "definition query candidate count exceeds hard limit"
+        ));
+    }
+    if query
+        .max_matches
+        .is_some_and(|matches| matches == 0 || matches > MAX_QUERY_MATCHES_V1)
+    {
+        return Err(anyhow!(
+            "definition query max_matches is outside 1..={MAX_QUERY_MATCHES_V1}"
+        ));
+    }
+    let mut total = query.prompt.len() + query.context_hint.as_ref().map_or(0, String::len);
+    for candidate in &query.candidate_refs {
+        for value in [
+            candidate.schema.as_ref(),
+            candidate.name.as_ref(),
+            candidate.stable_id.as_ref(),
+            candidate.role.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if value.len() > MAX_QUERY_STRING_BYTES_V1 {
+                return Err(anyhow!(
+                    "definition query candidate field exceeds byte limit"
+                ));
+            }
+            total = total
+                .checked_add(value.len())
+                .ok_or_else(|| anyhow!("definition query size overflow"))?;
+        }
+    }
+    if total > MAX_QUERY_TOTAL_BYTES_V1 {
+        return Err(anyhow!("definition query exceeds aggregate byte limit"));
+    }
+    Ok(())
+}
+
+pub fn validate_coverage_query_v1(query: &CoverageQueryV1) -> Result<()> {
+    if query
+        .version
+        .as_deref()
+        .is_some_and(|version| version != COVERAGE_QUERY_VERSION_V1)
+    {
+        return Err(anyhow!("unsupported coverage query version"));
+    }
+    if query
+        .max_matches
+        .is_some_and(|matches| matches == 0 || matches > MAX_QUERY_MATCHES_V1)
+    {
+        return Err(anyhow!(
+            "coverage query max_matches is outside 1..={MAX_QUERY_MATCHES_V1}"
+        ));
+    }
+    let groups = [
+        &query.terms,
+        &query.relation_names,
+        &query.cq_names,
+        &query.code_refs,
+        &query.surface_hints,
+    ];
+    let item_count = groups.iter().try_fold(0_usize, |total, group| {
+        total
+            .checked_add(group.len())
+            .ok_or_else(|| anyhow!("coverage query item count overflow"))
+    })?;
+    if item_count > MAX_QUERY_ITEMS_V1 {
+        return Err(anyhow!("coverage query item count exceeds hard limit"));
+    }
+    let mut total = query.axql.as_ref().map_or(0, String::len);
+    if total > MAX_QUERY_STRING_BYTES_V1 {
+        return Err(anyhow!("coverage query AxQL exceeds byte limit"));
+    }
+    for value in groups.into_iter().flat_map(|group| group.iter()) {
+        if value.len() > MAX_QUERY_STRING_BYTES_V1 {
+            return Err(anyhow!("coverage query field exceeds byte limit"));
+        }
+        total = total
+            .checked_add(value.len())
+            .ok_or_else(|| anyhow!("coverage query size overflow"))?;
+    }
+    if total > MAX_QUERY_TOTAL_BYTES_V1 {
+        return Err(anyhow!("coverage query exceeds aggregate byte limit"));
+    }
+    Ok(())
+}
+
 pub fn definition_query_report(
-    kernel: &KernelModuleIr,
+    kernel: &RuntimeModuleIndex,
     bundle: Option<&ToolingOverlayBundleV1>,
     query: &DefinitionQueryV1,
-) -> DefinitionQueryReportV1 {
+) -> Result<DefinitionQueryReportV1> {
+    validate_definition_query_v1(query)?;
     let classified_kind = query
         .kind_hint
         .unwrap_or_else(|| classify_prompt(&query.prompt));
@@ -824,7 +966,7 @@ pub fn definition_query_report(
                 .to_string(),
         );
     }
-    DefinitionQueryReportV1 {
+    Ok(DefinitionQueryReportV1 {
         version: DEFINITION_QUERY_REPORT_VERSION_V1.to_string(),
         coverage_mode: CoverageModeV1::DefinitionQuery,
         classified_kind,
@@ -840,14 +982,15 @@ pub fn definition_query_report(
             "turn accepted candidate refs into a ToolingOverlayBundleV1 mapping".to_string(),
             "run overlay-check before relying on the mapping for coverage".to_string(),
         ],
-    }
+    })
 }
 
 pub fn coverage_query_report(
-    kernel: &KernelModuleIr,
+    kernel: &RuntimeModuleIndex,
     bundle: Option<&ToolingOverlayBundleV1>,
     query: &CoverageQueryV1,
-) -> CoverageQueryReportV1 {
+) -> Result<CoverageQueryReportV1> {
+    validate_coverage_query_v1(query)?;
     let mode = if matches!(query.coverage_mode, CoverageModeV1::Enforced) {
         CoverageModeV1::Exploratory
     } else {
@@ -867,7 +1010,7 @@ pub fn coverage_query_report(
         max_matches: query.max_matches,
         include_queries: true,
     };
-    let def_report = definition_query_report(kernel, bundle, &def_query);
+    let def_report = definition_query_report(kernel, bundle, &def_query)?;
     let matched_surfaces = bundle
         .map(|bundle| {
             bundle
@@ -898,7 +1041,7 @@ pub fn coverage_query_report(
         .filter(|term| !matched_terms.contains(&normalized(term)))
         .cloned()
         .collect::<Vec<_>>();
-    CoverageQueryReportV1 {
+    Ok(CoverageQueryReportV1 {
         version: COVERAGE_QUERY_REPORT_VERSION_V1.to_string(),
         coverage_mode: mode,
         matched_refs: def_report.candidates,
@@ -912,7 +1055,7 @@ pub fn coverage_query_report(
             "convert useful matches into structured overlay refs".to_string(),
             "attach explicit coverage policy before using results in CI".to_string(),
         ],
-    }
+    })
 }
 
 pub fn codegen_plan_report(bundle: &ToolingOverlayBundleV1) -> CodegenPlanReportV1 {
@@ -1019,6 +1162,24 @@ pub fn continuous_coverage_report_from_behavior_report(
     bundle: &ToolingOverlayBundleV1,
     repo_root: &Path,
 ) -> OverlaySoftwareCoverageReportV1 {
+    continuous_coverage_report_impl(behavior_report, bundle, repo_root, None)
+}
+
+pub fn continuous_coverage_report_from_behavior_report_with_validation(
+    behavior_report: &BehaviorCaseCoverageViewV1,
+    bundle: &ToolingOverlayBundleV1,
+    repo_root: &Path,
+    overlay_validation: &OverlayValidationReportV1,
+) -> OverlaySoftwareCoverageReportV1 {
+    continuous_coverage_report_impl(behavior_report, bundle, repo_root, Some(overlay_validation))
+}
+
+fn continuous_coverage_report_impl(
+    behavior_report: &BehaviorCaseCoverageViewV1,
+    bundle: &ToolingOverlayBundleV1,
+    repo_root: &Path,
+    overlay_validation: Option<&OverlayValidationReportV1>,
+) -> OverlaySoftwareCoverageReportV1 {
     let policy = &bundle.coverage_policy;
     let coverage_policy = coverage_policy_summary(policy);
     let required_codegen_languages = if policy.require_codegen_languages.is_empty() {
@@ -1063,19 +1224,39 @@ pub fn continuous_coverage_report_from_behavior_report(
             summary
         })
         .unwrap_or_default();
-    let typed_refs = continuous_typed_refs(bundle);
+    let typed_refs = continuous_typed_refs(bundle, overlay_validation);
 
     let mut failures = Vec::new();
     let mut warnings = Vec::new();
+    let unresolved_overlay_refs = typed_refs.ontology_refs.unresolved_refs;
+    let enforced = matches!(policy.coverage_mode, CoverageModeV1::Enforced);
+    if unresolved_overlay_refs > 0 {
+        let message = format!(
+            "{unresolved_overlay_refs} overlay ontology refs were not validated against compiled kernel IR"
+        );
+        if enforced || policy.strict_coverage {
+            failures.push(message);
+        } else {
+            warnings.push(message);
+        }
+    }
+    if overlay_validation.is_some_and(|validation| !validation.valid) {
+        let message = "overlay validation contains blocking diagnostics".to_string();
+        if enforced || policy.strict_coverage {
+            failures.push(message);
+        } else {
+            warnings.push(message);
+        }
+    }
     if !missing_codegen.is_empty() {
         failures.push(format!(
             "missing required codegen languages: {}",
             missing_codegen.join(", ")
         ));
     }
-    let fail_on_missing_code_refs = policy.require_code_refs || policy.strict_coverage;
+    let fail_on_missing_code_refs = enforced || policy.require_code_refs || policy.strict_coverage;
     let fail_on_unresolved_obligations =
-        policy.fail_on_unresolved_obligations || policy.strict_coverage;
+        enforced || policy.fail_on_unresolved_obligations || policy.strict_coverage;
     if fail_on_missing_code_refs && !missing_code_refs.is_empty() {
         failures.push(format!("{} code refs are missing", missing_code_refs.len()));
     } else if !missing_code_refs.is_empty() {
@@ -1240,7 +1421,8 @@ pub fn authoring_coverage_profile_summary_v1(
         || require_code_refs
         || require_runtime_theory
         || fail_on_unresolved_obligations;
-    let ci_ready = strict_coverage
+    let ci_ready = matches!(coverage_mode, CoverageModeV1::Enforced)
+        && strict_coverage
         && require_code_refs
         && require_runtime_theory
         && fail_on_unresolved_obligations;
@@ -1264,6 +1446,7 @@ pub fn authoring_coverage_profile_summary_v1(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_authoring_flow_report_v1(
     source: AuthoringFlowSourceV1,
     case_id: Option<String>,
@@ -1387,10 +1570,17 @@ fn coverage_policy_summary(policy: &CoveragePolicyV1) -> CoveragePolicySummaryV1
     }
 }
 
-fn continuous_typed_refs(bundle: &ToolingOverlayBundleV1) -> ContinuousCoverageTypedRefsV1 {
+fn continuous_typed_refs(
+    bundle: &ToolingOverlayBundleV1,
+    overlay_validation: Option<&OverlayValidationReportV1>,
+) -> ContinuousCoverageTypedRefsV1 {
     let refs = all_overlay_refs(bundle);
-    let mut ontology_refs = overlay_ref_resolution_summary(&refs, refs.len(), 0);
-    ontology_refs.unresolved_refs = 0;
+    let ontology_refs = overlay_validation
+        .map(|validation| validation.ref_summary.clone())
+        .unwrap_or_else(|| {
+            // Without compiled kernel input, every ontology ref stays unresolved.
+            overlay_ref_resolution_summary(&refs, 0, refs.len())
+        });
     let surface_ids = bundle
         .implementation_surfaces
         .surfaces
@@ -1416,7 +1606,7 @@ fn continuous_typed_refs(bundle: &ToolingOverlayBundleV1) -> ContinuousCoverageT
 struct KernelRefIndexEntry {
     kind: OverlayRefKindV1,
     label: String,
-    kernel_ref: KernelRefV1,
+    kernel_ref: RuntimeIrRef,
 }
 
 struct KernelRefIndex {
@@ -1433,145 +1623,197 @@ struct RelationForQuery {
 }
 
 impl KernelRefIndex {
-    fn new(kernel: &KernelModuleIr) -> Self {
+    fn new(kernel: &RuntimeModuleIndex) -> Self {
         let mut by_id = BTreeMap::new();
         let mut by_name = BTreeMap::new();
         let mut relations = BTreeMap::new();
-        let surface = kernel.kernel_surface_v1();
-        let schema_names = kernel
-            .schemas
+        let surface = kernel.runtime_semantic_index();
+        let schema_names = surface
+            .refs
             .iter()
-            .map(|schema| (schema.schema_id.to_string(), schema_name(schema)))
+            .filter_map(|surface_ref| match surface_ref {
+                RuntimeIrRef::Canonical { citation } => match &citation.reference {
+                    KernelRefV2::Schema { schema_id, .. } => {
+                        Some((schema_id.to_string(), citation.label.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
             .collect::<BTreeMap<_, _>>();
-        let theory_schema_names = kernel
-            .theories
+        let theory_schema_names = surface
+            .refs
             .iter()
-            .map(|theory| {
-                (
-                    theory.theory_id.to_string(),
-                    schema_names.get(theory.schema_id.as_str()).cloned(),
-                )
+            .filter_map(|surface_ref| match surface_ref {
+                RuntimeIrRef::Canonical { citation } => match &citation.reference {
+                    KernelRefV2::Theory {
+                        theory_id,
+                        schema_id,
+                        ..
+                    } => Some((
+                        theory_id.to_string(),
+                        schema_names.get(&schema_id.to_string()).cloned(),
+                    )),
+                    _ => None,
+                },
+                _ => None,
             })
             .collect::<BTreeMap<_, _>>();
         for surface_ref in &surface.refs {
             match surface_ref {
-                KernelRefV1::Module { .. } => {}
-                KernelRefV1::Schema { schema_id } => insert_ref(
-                    &mut by_id,
-                    &mut by_name,
-                    OverlayRefKindV1::Schema,
-                    None,
-                    schema_id.to_string(),
-                    local_ref_name(schema_id.as_str()),
-                    surface_ref.clone(),
-                ),
-                KernelRefV1::SchemaObject {
-                    schema_id,
-                    object:
-                        SchemaCategoryObjectRefIr::ObjectType {
-                            object_type_id,
-                            name,
-                        },
-                } => insert_ref(
-                    &mut by_id,
-                    &mut by_name,
-                    OverlayRefKindV1::Object,
-                    schema_names.get(schema_id.as_str()).cloned(),
-                    object_type_id.to_string(),
-                    name.clone(),
-                    surface_ref.clone(),
-                ),
-                KernelRefV1::SchemaObject {
-                    schema_id,
-                    object: SchemaCategoryObjectRefIr::RelationObject { relation_id, name },
-                } => insert_ref(
-                    &mut by_id,
-                    &mut by_name,
-                    OverlayRefKindV1::Relation,
-                    schema_names.get(schema_id.as_str()).cloned(),
-                    relation_id.to_string(),
-                    name.clone(),
-                    surface_ref.clone(),
-                ),
-                KernelRefV1::SchemaArrow { .. } => {}
-                KernelRefV1::Theory {
-                    theory_id,
-                    schema_id,
-                } => insert_ref(
-                    &mut by_id,
-                    &mut by_name,
-                    OverlayRefKindV1::Theory,
-                    schema_names.get(schema_id.as_str()).cloned(),
-                    theory_id.to_string(),
-                    local_ref_name(theory_id.as_str()),
-                    surface_ref.clone(),
-                ),
-                KernelRefV1::TheoryObligation { obligation } => {
-                    let (kind, id, label, theory_id) =
-                        overlay_ref_from_theory_obligation(obligation);
-                    insert_ref(
+                RuntimeIrRef::Canonical { citation } => match &citation.reference {
+                    KernelRefV2::Module { .. }
+                    | KernelRefV2::Role { .. }
+                    | KernelRefV2::Generator { .. } => {}
+                    KernelRefV2::Schema { schema_id, .. } => insert_ref(
                         &mut by_id,
                         &mut by_name,
-                        kind,
+                        OverlayRefKindV1::Schema,
+                        None,
+                        schema_id.to_string(),
+                        citation.label.clone(),
+                        surface_ref.clone(),
+                    ),
+                    KernelRefV2::ObjectType {
+                        schema_id,
+                        object_type_id,
+                        ..
+                    } => insert_ref(
+                        &mut by_id,
+                        &mut by_name,
+                        OverlayRefKindV1::Object,
+                        schema_names.get(&schema_id.to_string()).cloned(),
+                        object_type_id.to_string(),
+                        citation.label.clone(),
+                        surface_ref.clone(),
+                    ),
+                    KernelRefV2::Relation {
+                        schema_id,
+                        relation_id,
+                        ..
+                    } => {
+                        let schema_label = schema_names.get(&schema_id.to_string()).cloned();
+                        insert_ref(
+                            &mut by_id,
+                            &mut by_name,
+                            OverlayRefKindV1::Relation,
+                            schema_label.clone(),
+                            relation_id.to_string(),
+                            citation.label.clone(),
+                            surface_ref.clone(),
+                        );
+                        if let Some((schema, relation)) = kernel.schemas.iter().find_map(|schema| {
+                            (schema_label.as_deref() == Some(schema_name(schema).as_str()))
+                                .then(|| {
+                                    schema
+                                        .relations
+                                        .values()
+                                        .find(|relation| relation.name == citation.label)
+                                        .map(|relation| (schema, relation))
+                                })
+                                .flatten()
+                        }) {
+                            relations.insert(
+                                relation_id.to_string(),
+                                RelationForQuery {
+                                    schema: schema_name(schema),
+                                    name: relation.name.clone(),
+                                    roles: relation_roles(relation),
+                                },
+                            );
+                        }
+                    }
+                    KernelRefV2::Theory {
+                        schema_id,
+                        theory_id,
+                        ..
+                    } => insert_ref(
+                        &mut by_id,
+                        &mut by_name,
+                        OverlayRefKindV1::Theory,
+                        schema_names.get(&schema_id.to_string()).cloned(),
+                        theory_id.to_string(),
+                        citation.label.clone(),
+                        surface_ref.clone(),
+                    ),
+                    KernelRefV2::Instance {
+                        schema_id,
+                        instance_id,
+                        ..
+                    } => insert_ref(
+                        &mut by_id,
+                        &mut by_name,
+                        OverlayRefKindV1::Instance,
+                        schema_names.get(&schema_id.to_string()).cloned(),
+                        instance_id.to_string(),
+                        citation.label.clone(),
+                        surface_ref.clone(),
+                    ),
+                    KernelRefV2::Constraint {
+                        theory_id,
+                        constraint_id,
+                        ..
+                    } => insert_ref(
+                        &mut by_id,
+                        &mut by_name,
+                        OverlayRefKindV1::Constraint,
                         theory_schema_names
-                            .get(theory_id.as_str())
+                            .get(&theory_id.to_string())
                             .cloned()
                             .flatten(),
-                        id,
-                        label,
+                        constraint_id.to_string(),
+                        citation.label.clone(),
                         surface_ref.clone(),
-                    );
-                }
-                KernelRefV1::TheorySubject { .. } => {}
-                KernelRefV1::Instance {
-                    instance_id,
-                    schema_id,
-                } => insert_ref(
-                    &mut by_id,
-                    &mut by_name,
-                    OverlayRefKindV1::Instance,
-                    schema_names.get(schema_id.as_str()).cloned(),
-                    instance_id.to_string(),
-                    local_ref_name(instance_id.as_str()),
-                    surface_ref.clone(),
-                ),
-                KernelRefV1::InstanceObjectImage { .. }
-                | KernelRefV1::InstanceArrowImage { .. } => {}
-                KernelRefV1::StableFact {
-                    fact_id,
-                    relation_id,
-                    ..
-                } => {
-                    let label = kernel
-                        .schemas
-                        .iter()
-                        .flat_map(|schema| schema.relations.values())
-                        .find(|relation| relation.relation_id == *relation_id)
-                        .map(|relation| relation.name.clone())
-                        .unwrap_or_else(|| relation_id.to_string());
-                    insert_ref(
+                    ),
+                    KernelRefV2::Equation {
+                        theory_id,
+                        equation_id,
+                        ..
+                    } => insert_ref(
+                        &mut by_id,
+                        &mut by_name,
+                        OverlayRefKindV1::Equation,
+                        theory_schema_names
+                            .get(&theory_id.to_string())
+                            .cloned()
+                            .flatten(),
+                        equation_id.to_string(),
+                        citation.label.clone(),
+                        surface_ref.clone(),
+                    ),
+                    KernelRefV2::RewriteRule {
+                        theory_id,
+                        rewrite_rule_id,
+                        ..
+                    } => insert_ref(
+                        &mut by_id,
+                        &mut by_name,
+                        OverlayRefKindV1::Rewrite,
+                        theory_schema_names
+                            .get(&theory_id.to_string())
+                            .cloned()
+                            .flatten(),
+                        rewrite_rule_id.to_string(),
+                        citation.label.clone(),
+                        surface_ref.clone(),
+                    ),
+                    KernelRefV2::Fact {
+                        schema_id, fact_id, ..
+                    } => insert_ref(
                         &mut by_id,
                         &mut by_name,
                         OverlayRefKindV1::Fact,
-                        None,
+                        schema_names.get(&schema_id.to_string()).cloned(),
                         fact_id.to_string(),
-                        label,
+                        citation.label.clone(),
                         surface_ref.clone(),
-                    );
-                }
-            }
-        }
-        for schema in &kernel.schemas {
-            for relation in schema.relations.values() {
-                let stable_id = relation.relation_id.to_string();
-                relations.insert(
-                    stable_id.clone(),
-                    RelationForQuery {
-                        schema: schema_name(schema),
-                        name: relation.name.clone(),
-                        roles: relation_roles(relation),
-                    },
-                );
+                    ),
+                },
+                RuntimeIrRef::Theory { .. }
+                | RuntimeIrRef::TheoryObligation { .. }
+                | RuntimeIrRef::TheorySubject { .. }
+                | RuntimeIrRef::Instance { .. }
+                | RuntimeIrRef::StableFact { .. } => {}
             }
         }
         Self {
@@ -1581,7 +1823,7 @@ impl KernelRefIndex {
         }
     }
 
-    fn resolve(&self, reference: &OverlayRefV1) -> Option<(String, String, KernelRefV1)> {
+    fn resolve(&self, reference: &OverlayRefV1) -> Option<(String, String, RuntimeIrRef)> {
         if let Some(stable_id) = reference.stable_id.as_ref() {
             if let Some(entry) = self.by_id.get(stable_id) {
                 return Some((
@@ -1670,7 +1912,7 @@ fn insert_ref(
     schema: Option<String>,
     id: String,
     label: String,
-    kernel_ref: KernelRefV1,
+    kernel_ref: RuntimeIrRef,
 ) {
     by_id.insert(
         id.clone(),
@@ -1684,56 +1926,7 @@ fn insert_ref(
     by_name.insert((kind, None, normalized(&label)), id);
 }
 
-fn overlay_ref_from_theory_obligation(
-    obligation: &TheoryObligationRefIr,
-) -> (OverlayRefKindV1, String, String, String) {
-    match obligation {
-        TheoryObligationRefIr::Constraint {
-            theory_id,
-            constraint_id,
-            summary,
-            ..
-        } => (
-            OverlayRefKindV1::Constraint,
-            constraint_id.to_string(),
-            summary.clone(),
-            theory_id.to_string(),
-        ),
-        TheoryObligationRefIr::PathEquation {
-            theory_id,
-            equation_id,
-            name,
-        }
-        | TheoryObligationRefIr::OpaqueEquation {
-            theory_id,
-            equation_id,
-            name,
-        } => (
-            OverlayRefKindV1::Equation,
-            equation_id.to_string(),
-            name.clone(),
-            theory_id.to_string(),
-        ),
-        TheoryObligationRefIr::RewriteRule {
-            theory_id,
-            rule_id,
-            name,
-        } => (
-            OverlayRefKindV1::Rewrite,
-            rule_id.to_string(),
-            name.clone(),
-            theory_id.to_string(),
-        ),
-    }
-}
-
-fn local_ref_name(id: &str) -> String {
-    id.rsplit_once(':')
-        .map(|(_, local)| local.to_string())
-        .unwrap_or_else(|| id.to_string())
-}
-
-fn schema_name(schema: &CompiledSchemaIr) -> String {
+fn schema_name(schema: &RuntimeSchemaIndex) -> String {
     schema
         .schema_id
         .as_str()
@@ -1953,7 +2146,7 @@ fn collect_codegen_languages(report: &BehaviorCaseCoverageViewV1) -> Vec<String>
 mod tests {
     use super::*;
 
-    fn sample_kernel() -> KernelModuleIr {
+    fn sample_kernel() -> RuntimeModuleIndex {
         let axi = r#"
 module OrderFulfillmentDomain
 
@@ -1974,7 +2167,7 @@ instance Seed of OrderFulfillment:
   OrderHasPayment = {(order=Order_1, payment=Payment_1)}
   ShipmentFulfillsOrder = {(shipment=Shipment_1, order=Order_1)}
 "#;
-        compile_kernel_from_axi_text(axi).expect("compile kernel")
+        derive_runtime_index_from_axi_text(axi).expect("compile kernel")
     }
 
     fn sample_behavior_coverage_view(
@@ -2036,11 +2229,30 @@ instance Seed of OrderFulfillment:
         assert!(report
             .normalized_refs
             .iter()
-            .any(|r| r.normalized_id.contains("OrderHasPayment")));
-        assert!(report.normalized_refs.iter().any(|r| {
-            r.kernel_ref_label.contains("OrderHasPayment")
-                && matches!(r.kernel_ref, KernelRefV1::SchemaObject { .. })
+            .any(|reference| reference.kernel_ref_label == "OrderHasPayment"));
+        assert!(report.normalized_refs.iter().any(|reference| {
+            reference.kernel_ref_label == "OrderHasPayment"
+                && matches!(
+                    &reference.kernel_ref,
+                    RuntimeIrRef::Canonical { citation }
+                        if matches!(&citation.reference, KernelRefV2::Relation { .. })
+                )
         }));
+
+        let behavior = sample_behavior_coverage_view(Vec::new(), None);
+        let unvalidated =
+            continuous_coverage_report_from_behavior_report(&behavior, &bundle, Path::new("."));
+        assert_eq!(unvalidated.typed_refs.ontology_refs.resolved_refs, 0);
+        assert_eq!(unvalidated.typed_refs.ontology_refs.unresolved_refs, 1);
+
+        let validated = continuous_coverage_report_from_behavior_report_with_validation(
+            &behavior,
+            &bundle,
+            Path::new("."),
+            &report,
+        );
+        assert_eq!(validated.typed_refs.ontology_refs.resolved_refs, 1);
+        assert_eq!(validated.typed_refs.ontology_refs.unresolved_refs, 0);
     }
 
     #[test]
@@ -2120,7 +2332,7 @@ instance Seed of OrderFulfillment:
             include_queries: true,
         };
 
-        let report = definition_query_report(&kernel, None, &query);
+        let report = definition_query_report(&kernel, None, &query).unwrap();
         assert_eq!(report.coverage_mode, CoverageModeV1::DefinitionQuery);
         assert_eq!(report.classified_kind, DefinitionQueryKindV1::BusinessRule);
         assert!(report
@@ -2148,13 +2360,41 @@ instance Seed of OrderFulfillment:
             max_matches: Some(3),
         };
 
-        let report = coverage_query_report(&kernel, None, &query);
+        let report = coverage_query_report(&kernel, None, &query).unwrap();
         assert_eq!(report.coverage_mode, CoverageModeV1::Exploratory);
         assert!(!report.matched_refs.is_empty());
         assert!(report
             .caveats
             .iter()
             .any(|caveat| caveat.contains("cannot satisfy promotion gates")));
+    }
+
+    #[test]
+    fn query_reports_reject_oversized_structures_and_invalid_limits() {
+        let kernel = sample_kernel();
+        let definition = DefinitionQueryV1 {
+            version: Some(DEFINITION_QUERY_VERSION_V1.to_string()),
+            prompt: "x".repeat(MAX_QUERY_STRING_BYTES_V1 + 1),
+            kind_hint: None,
+            context_hint: None,
+            candidate_refs: Vec::new(),
+            max_matches: Some(1),
+            include_queries: false,
+        };
+        assert!(definition_query_report(&kernel, None, &definition).is_err());
+
+        let coverage = CoverageQueryV1 {
+            version: Some(COVERAGE_QUERY_VERSION_V1.to_string()),
+            coverage_mode: CoverageModeV1::Exploratory,
+            terms: vec!["x".to_string(); MAX_QUERY_ITEMS_V1 + 1],
+            relation_names: Vec::new(),
+            cq_names: Vec::new(),
+            code_refs: Vec::new(),
+            surface_hints: Vec::new(),
+            axql: None,
+            max_matches: Some(0),
+        };
+        assert!(coverage_query_report(&kernel, None, &coverage).is_err());
     }
 
     #[test]

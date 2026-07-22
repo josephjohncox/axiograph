@@ -1,5 +1,5 @@
 use axiograph_pathdb::axi_semantics::{AxiTypeCheckError, MetaPlaneIndex};
-use axiograph_pathdb::kernel_ir::{compile_schema_ir, CarrierSource, WitnessViewIr};
+use axiograph_pathdb::kernel_ir::{derive_runtime_schema_index, CarrierSource, WitnessViewIr};
 use axiograph_pathdb::PathDB;
 use std::fs;
 use std::path::PathBuf;
@@ -117,7 +117,7 @@ instance I of S:
         .iter()
         .find(|schema| schema.name == "S")
         .expect("schema S");
-    let expected_ir = compile_schema_ir(schema_ast);
+    let expected_ir = derive_runtime_schema_index(schema_ast);
 
     let mut db = PathDB::new();
     axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, text)
@@ -187,7 +187,7 @@ fn canonical_examples_compiled_ir_match_meta_plane_ir() {
 
         let meta = MetaPlaneIndex::from_db(&db).expect("build meta index");
         for schema_ast in &module.schemas {
-            let expected_ir = compile_schema_ir(schema_ast);
+            let expected_ir = derive_runtime_schema_index(schema_ast);
             let reconstructed_ir = meta
                 .compiled_schema_ir(&schema_ast.name)
                 .expect("compiled schema ir");

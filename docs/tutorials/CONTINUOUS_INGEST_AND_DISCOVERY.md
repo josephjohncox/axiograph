@@ -248,22 +248,7 @@ This is the local form of the production loop: ingestion mutates the evidence
 plane, while promotion into canonical `.axi` and certificate checking remains
 explicit.
 
-### 5.5 Hands-on demos: continuous ingest from SQL / Proto (CLI-only)
-
-If you want to keep everything in the “CLI command” surface (no interactive REPL),
-use the demo scripts:
-
-- SQL: `scripts/ops/continuous_ingest_sql_cli_demo.sh`
-- Proto: `scripts/ops/continuous_ingest_proto_cli_demo.sh` (requires `buf`)
-
-Both demos run two “ticks”:
-
-1) ingest structured sources into `proposals.json` (evidence plane)
-2) draft a readable candidate `.axi` module (schema discovery)
-3) import to a PathDB snapshot (`.axpd`)
-4) render HTML visualizations (meta/data neighborhood views)
-
-### 5.6 Higher-level discovery loop: augment → promote
+### 5.5 Higher-level discovery loop: augment → promote
 
 Once you have a `proposals.json`, you can run a deterministic augmentation pass
 that derives additional structure (and optionally uses an LLM for semantic

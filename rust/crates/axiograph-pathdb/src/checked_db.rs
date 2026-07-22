@@ -69,7 +69,7 @@ pub fn stable_fact_id_v1_for_declared_fields(
         .iter()
         .map(|(field, value)| (field.as_str(), value.as_str()))
         .collect();
-    Ok(StableFactId::new(axiograph_dsl::digest::axi_fact_id_v1(
+    Ok(StableFactId::new(axiograph_kernel::runtime_fact_id_v2(
         module_name,
         schema_name,
         instance_name,
@@ -588,7 +588,7 @@ fn check_modal_invariants(db: &PathDB) -> ModalInvariantReport {
     let mut entities_with_conf: std::collections::HashSet<u32> = std::collections::HashSet::new();
     if let Some(key_id) = proposal_conf_key {
         if let Some(col) = db.entities.attrs.get(&key_id) {
-            for (&id, _) in col {
+            for &id in col.keys() {
                 entities_with_conf.insert(id);
             }
         }
@@ -626,7 +626,7 @@ fn check_modal_invariants(db: &PathDB) -> ModalInvariantReport {
         }
     }
     for entity_id in &entities_with_conf {
-        if !entities_with_proposal_id.binary_search(entity_id).is_ok() {
+        if entities_with_proposal_id.binary_search(entity_id).is_err() {
             report.errors.push(format!(
                 "entity {entity_id}: has proposal_confidence but missing proposal_id"
             ));
@@ -753,9 +753,7 @@ impl<'db> CheckedDbMut<'db> {
 
         if !schema.object_types.contains(type_name) {
             return Err(anyhow!(
-                "unknown object type `{}` in schema `{}`",
-                type_name,
-                schema_name
+                "unknown object type `{type_name}` in schema `{schema_name}`"
             ));
         }
 
@@ -1111,7 +1109,7 @@ impl<'db> TypedFactBuilder<'db> {
                 self.relation,
                 fact_id
                     .as_str()
-                    .strip_prefix(axiograph_dsl::digest::AXI_FACT_ID_V1_PREFIX)
+                    .strip_prefix(axiograph_kernel::FACT_ID_V2_PREFIX)
                     .unwrap_or(fact_id.as_str())
             )
         } else {
@@ -1131,7 +1129,7 @@ impl<'db> TypedFactBuilder<'db> {
                 bytes.extend_from_slice(id.to_string().as_bytes());
                 bytes.push(0);
             }
-            let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes);
+            let digest = axiograph_kernel::object_blob_digest_v2(&bytes);
             format!("{}_fact_{}", self.relation, digest)
         };
 
@@ -1143,7 +1141,7 @@ impl<'db> TypedFactBuilder<'db> {
             crate::axi_meta::ATTR_AXI_RELATION.to_string(),
             self.relation.clone(),
         ));
-        attrs.extend(self.fact_attrs.drain(..));
+        attrs.append(&mut self.fact_attrs);
         let attrs_ref: Vec<(&str, &str)> = attrs
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -1493,7 +1491,7 @@ instance I of S:
         let fact_id = builder
             .preview_stable_fact_id_v1()?
             .ok_or_else(|| anyhow!("expected stable fact id preview"))?;
-        assert!(fact_id.has_v1_prefix());
+        assert!(fact_id.is_fact_id_v2());
         let fact_id_text = fact_id.to_string();
 
         let fact = builder.commit_certified_only()?;
@@ -1508,7 +1506,7 @@ instance I of S:
         let expected_name = format!(
             "Parent_fact_{}",
             fact_id_text
-                .strip_prefix(axiograph_dsl::digest::AXI_FACT_ID_V1_PREFIX)
+                .strip_prefix(axiograph_kernel::FACT_ID_V2_PREFIX)
                 .unwrap_or(&fact_id_text)
         );
         assert_eq!(

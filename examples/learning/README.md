@@ -11,11 +11,10 @@ the ontology representation.
 Example flow:
 
 ```bash
-axiograph check validate examples/learning/MachinistLearning.axi
-axiograph authoring competency-questions \
-  --axi examples/learning/MachinistLearning.axi \
-  --cq examples/learning/machinist_learning.cq \
-  --out build/examples/learning/machinist_learning_cq.json
+axiograph authoring workspace \
+  --workspace . \
+  --request examples/learning/machinist_learning_authoring_workspace_request.json \
+  --out build/examples/learning/machinist_learning_authoring_report.json
 ```
 
 Treat LLM- or training-derived material as evidence/review-plane input unless a

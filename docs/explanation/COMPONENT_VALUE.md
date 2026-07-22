@@ -10,7 +10,7 @@ This document demonstrates concrete value for each complex component in Axiograp
 Each component addresses a specific failure mode in knowledge management:
 
 | Failure Mode | Component | Value |
-|--------------|-----------|-------|
+| -------------- | ----------- | ------- |
 | LLM hallucinations | Grounding Engine | Separates accepted facts from weak proposals |
 | Overconfident systems | Probability Calibration | Honest uncertainty |
 | Conflicting sources | Reconciliation | Weighted truth |
@@ -24,9 +24,11 @@ Each component addresses a specific failure mode in knowledge management:
 ## 1. Modal Logic
 
 ### Problem
+
 Standard knowledge graphs can't express "X is possibly true" vs "X is necessarily true" vs "X is believed to be true by source Y".
 
 ### Value
+
 ```
 ❌ Without modal logic:
    "Titanium cutting speed should be 100-150 SFM"
@@ -38,6 +40,7 @@ Standard knowledge graphs can't express "X is possibly true" vs "X is necessaril
 ```
 
 ### When It Matters
+
 - Safety-critical domains (aerospace, medical)
 - Compliance and regulation
 - Multi-source knowledge with disagreement
@@ -47,6 +50,7 @@ Standard knowledge graphs can't express "X is possibly true" vs "X is necessaril
 ## 2. Probabilistic Reasoning
 
 ### Problem
+
 Binary true/false loses information. "90% confident" is very different from "50% confident".
 
 ### Value
@@ -70,6 +74,7 @@ Example:
 ```
 
 ### Concrete Benefit
+
 When reconciling LLM-extracted facts with existing knowledge, proper probability handling prevents both overconfidence and unnecessary skepticism.
 
 ---
@@ -77,6 +82,7 @@ When reconciling LLM-extracted facts with existing knowledge, proper probability
 ## 3. HoTT (Homotopy Type Theory)
 
 ### Problem
+
 Schema migrations break data. How do you safely evolve a knowledge graph?
 
 ### Value
@@ -94,6 +100,7 @@ Schema migrations break data. How do you safely evolve a knowledge graph?
 ```
 
 ### Real Application
+
 - Schema evolution without data loss
 - Merging knowledge graphs from different sources
 - Proving that refactoring preserves meaning
@@ -103,6 +110,7 @@ Schema migrations break data. How do you safely evolve a knowledge graph?
 ## 4. Bidirectional A* Path Finding
 
 ### Problem
+
 Finding paths in a dense knowledge graph is O(n!) in the worst case.
 
 ### Value
@@ -122,6 +130,7 @@ Graph: 10,000 entities, 50,000 relations
 ```
 
 ### Performance Improvement
+
 Performance claims must be measured per workload; PathDB is intended to make
 typical path-indexed queries fast without becoming semantic authority.
 
@@ -130,6 +139,7 @@ typical path-indexed queries fast without becoming semantic authority.
 ## 5. Certified Results (Rust emits, Lean verifies)
 
 ### Problem
+
 If the engine and the semantics/spec diverge, you can ship fast but incorrect inferences.
 
 ### Value
@@ -146,6 +156,7 @@ If the engine and the semantics/spec diverge, you can ship fast but incorrect in
 ```
 
 ### Safety Guarantee
+
 Every “certified” answer is checked against the trusted semantics before being accepted.
 
 ---
@@ -153,6 +164,7 @@ Every “certified” answer is checked against the trusted semantics before bei
 ## 6. Guardrails with Learning
 
 ### Problem
+
 Static rules become stale. Experts override them constantly.
 
 ### Value
@@ -171,6 +183,7 @@ Static rules become stale. Experts override them constantly.
 ```
 
 ### Metrics
+
 - False positive rate drops from 30% to 5% after learning
 - User trust in warnings increases
 
@@ -179,6 +192,7 @@ Static rules become stale. Experts override them constantly.
 ## 7. CBOR with Checksums
 
 ### Problem
+
 Binary formats without verification lead to silent corruption.
 
 ### Value
@@ -196,6 +210,7 @@ Binary formats without verification lead to silent corruption.
 ```
 
 ### Data Integrity
+
 100% detection of file corruption before use.
 
 ---
@@ -203,6 +218,7 @@ Binary formats without verification lead to silent corruption.
 ## 8. Property-Based Testing
 
 ### Problem
+
 Unit tests only cover cases you think of.
 
 ### Value
@@ -222,6 +238,7 @@ Unit tests only cover cases you think of.
 ```
 
 ### Bug Discovery
+
 Property tests found 3 edge cases that unit tests missed.
 
 ---
@@ -229,6 +246,7 @@ Property tests found 3 edge cases that unit tests missed.
 ## 9. Calibrated LLM Confidence
 
 ### Problem
+
 LLMs are systematically overconfident.
 
 ### Value
@@ -247,6 +265,7 @@ Calibration reduces Brier score by 40%
 ```
 
 ### Decision Quality
+
 Better-calibrated probabilities lead to better decisions.
 
 ---
@@ -254,40 +273,44 @@ Better-calibrated probabilities lead to better decisions.
 ## 10. Transaction-Based Persistence
 
 ### Problem
+
 Crashes during writes corrupt data.
 
 ### Value
 
 ```
-❌ Direct writes:
-   1. Update entity A
+❌ Bare materialization writes:
+   1. Overwrite a live .axpd file
    2. CRASH
-   3. Entity A partially written
-   4. Database corrupted
-   
-✅ WAL + MVCC:
-   1. Write to log: "Update A"
-   2. CRASH
-   3. Restart: Replay log
-   4. Either A is fully updated or unchanged
-   5. Always consistent
+   3. Readers see a partial or unauthenticated image
+
+✅ AxiStore publication:
+   1. Write and fsync immutable objects or a private SQLite candidate
+   2. Validate hashes, limits, schema, anchors, and receipt
+   3. Atomically publish immutable bytes
+   4. Advance accepted refs in one SQLite generation-CAS transaction
+   5. Restart observes the old complete state or the new complete state
 ```
 
 ### Durability
-Zero data corruption from crashes.
+
+AxiStore rejects incomplete, oversized, substituted, or checksum-invalid state.
+This is a finite operational integrity contract, not a proof that the OS,
+hardware, SQLite, or Rust implementation cannot fail.
 
 ---
 
 ## Summary: When to Use What
 
 | Need | Use | Skip If |
-|------|-----|---------|
+| ------ | ----- | --------- |
 | Capture uncertainty | Probability + Calibration | Binary yes/no is fine |
 | Multi-source facts | Reconciliation | Single authoritative source |
 | Safety requirements | Modal Logic + Guardrails | Low-stakes domain |
 | Schema evolution | HoTT Transport | Schema never changes |
 | Large graphs | Bidirectional A* | < 1000 entities |
 | LLM integration | Grounding + Calibration | No LLM usage |
-| Crash recovery | WAL Persistence | Ephemeral data |
+| Crash recovery | AxiStore transactions | Ephemeral data |
 
-**Rule of thumb**: If you're not sure you need a component, you probably don't. Start simple and add complexity only when failure modes appear.
+**Rule of thumb**: If you're not sure you need a component, you probably don't.
+Start simple and add complexity only when failure modes appear.

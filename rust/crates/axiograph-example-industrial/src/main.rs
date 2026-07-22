@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use axiograph_example_industrial::{
-    inspect_industrial_harness_run, render_industrial_harness_inspection,
-    run_regulated_production_line_seed_harness_from_axi_module,
+    inspect_industrial_example_run, render_industrial_example_inspection,
+    run_regulated_production_line_seed_example_from_axi_module,
     REGULATED_PRODUCTION_LINE_CAMPAIGN_ID, REGULATED_PRODUCTION_LINE_MODULE_PATH,
 };
 use axiograph_pathdb::{AcceptedAxiAnchor, AcceptedSnapshotId, AxiDigest};
@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "axiograph-industrial-example")]
-#[command(about = "Industrial engineering teaching harness over canonical Axiograph .axi")]
+#[command(about = "Regulated production line teaching example over Axiograph .axi")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -27,7 +27,7 @@ enum Commands {
         /// Optional semantic snapshot id to use in the emitted anchor.
         #[arg(long)]
         accepted_snapshot_id: Option<String>,
-        /// Root directory under which `_cache/industrial_harness/...` will be written.
+        /// Root directory under which `_cache/regulated_production_line/...` will be written.
         #[arg(long, default_value = ".")]
         cache_root: PathBuf,
         /// Deterministic run id for this materialization.
@@ -36,19 +36,19 @@ enum Commands {
         /// Deterministic timestamp for this run.
         #[arg(long)]
         created_at_unix_secs: u64,
-        /// Emit the typed `industrial_harness_run_response_v1` report as JSON.
+        /// Emit the typed `regulated_production_line_run_response_v1` report as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Inspect one persisted industrial example run without mutating ontology state.
+    /// Inspect one persisted regulated production line run without mutating ontology state.
     Inspect {
-        /// Root directory under which `_cache/industrial_harness/...` is stored.
+        /// Root directory under which `_cache/regulated_production_line/...` is stored.
         #[arg(long, default_value = ".")]
         cache_root: PathBuf,
-        /// Harness campaign id.
+        /// Regulated production line campaign id.
         #[arg(long, default_value = REGULATED_PRODUCTION_LINE_CAMPAIGN_ID)]
         campaign_id: String,
-        /// Harness run id.
+        /// Regulated production line run id.
         #[arg(long)]
         run_id: String,
         /// Optional expected snapshot id for anchor verification.
@@ -57,7 +57,7 @@ enum Commands {
         /// Optional expected .axi digest for anchor verification.
         #[arg(long)]
         expected_axi_digest: Option<String>,
-        /// Emit the typed `industrial_harness_inspection_result_v1` report as JSON.
+        /// Emit the typed `regulated_production_line_inspection_result_v1` report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -89,7 +89,7 @@ fn main() -> Result<()> {
             created_at_unix_secs,
             json,
         } => {
-            let response = run_regulated_production_line_seed_harness_from_axi_module(
+            let response = run_regulated_production_line_seed_example_from_axi_module(
                 &cache_root,
                 &axi,
                 accepted_snapshot_id.map(AcceptedSnapshotId::new),
@@ -99,7 +99,7 @@ fn main() -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&response)?);
             } else {
-                println!("industrial example harness");
+                println!("regulated production line run");
                 println!("  campaign: {}", response.campaign_id);
                 println!("  run: {}", response.run_id);
                 println!(
@@ -125,7 +125,7 @@ fn main() -> Result<()> {
             json,
         } => {
             let expected = expected_anchor(expected_snapshot_id, expected_axi_digest)?;
-            let inspection = inspect_industrial_harness_run(
+            let inspection = inspect_industrial_example_run(
                 &cache_root,
                 &campaign_id,
                 &run_id,
@@ -136,7 +136,7 @@ fn main() -> Result<()> {
             } else {
                 println!(
                     "{}",
-                    render_industrial_harness_inspection(&cache_root, &inspection)
+                    render_industrial_example_inspection(&cache_root, &inspection)
                 );
             }
         }

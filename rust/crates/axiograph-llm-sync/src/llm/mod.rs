@@ -14,6 +14,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+const MAX_EXTRACTION_INPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EXTRACTION_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_EXTRACTION_ITEMS: usize = 10_000;
+const MAX_EXTRACTION_ATTRIBUTES: usize = 100_000;
+
 // ============================================================================
 // LLM Provider Interface
 // ============================================================================
@@ -268,6 +273,11 @@ Only extract facts that are clearly stated, not implied.
 
     /// Extract facts from text
     pub async fn extract(&self, text: &str, domain: &str) -> Result<ExtractionSchema, LLMError> {
+        if text.len() > MAX_EXTRACTION_INPUT_BYTES || domain.len() > 1024 {
+            return Err(LLMError::InvalidResponse(
+                "extraction input exceeds byte limits".to_string(),
+            ));
+        }
         let system_prompt = self
             .domain_prompts
             .get(domain)
@@ -328,7 +338,7 @@ Only extract facts that are clearly stated, not implied.
                 },
                 Message {
                     role: Role::User,
-                    content: format!("Extract facts from:\n\n{}", text),
+                    content: format!("Extract facts from:\n\n{text}"),
                 },
             ],
             max_tokens: Some(4096),
@@ -338,8 +348,58 @@ Only extract facts that are clearly stated, not implied.
         };
 
         let response = self.provider.complete(request).await?;
-        let mut result: ExtractionSchema = serde_json::from_str(&response.content)
-            .map_err(|e| LLMError::ParseError(e.to_string()))?;
+        let mut result: ExtractionSchema = axiograph_security::parse_json_bounded(
+            response.content.as_bytes(),
+            MAX_EXTRACTION_RESPONSE_BYTES,
+            "LLM extraction response",
+        )
+        .map_err(|error| LLMError::ParseError(error.to_string()))?;
+        let item_count = result
+            .entities
+            .len()
+            .checked_add(result.relations.len())
+            .and_then(|count| count.checked_add(result.tacit_rules.len()))
+            .ok_or_else(|| LLMError::InvalidResponse("item count overflow".to_string()))?;
+        if item_count > MAX_EXTRACTION_ITEMS {
+            return Err(LLMError::InvalidResponse(format!(
+                "extraction item count {item_count} exceeds {MAX_EXTRACTION_ITEMS}"
+            )));
+        }
+        let attribute_count = result.entities.iter().try_fold(0_usize, |count, entity| {
+            count.checked_add(entity.attributes.len())
+        });
+        if attribute_count.is_none_or(|count| count > MAX_EXTRACTION_ATTRIBUTES) {
+            return Err(LLMError::InvalidResponse(
+                "extraction attribute count exceeds limit".to_string(),
+            ));
+        }
+        let confidences = result
+            .entities
+            .iter()
+            .map(|entity| entity.confidence)
+            .chain(result.relations.iter().map(|relation| relation.confidence))
+            .chain(result.tacit_rules.iter().map(|rule| rule.confidence));
+        if confidences
+            .into_iter()
+            .any(|confidence| !confidence.is_finite() || !(0.0..=1.0).contains(&confidence))
+        {
+            return Err(LLMError::InvalidResponse(
+                "extraction confidence must be finite and in [0, 1]".to_string(),
+            ));
+        }
+        if result.entities.iter().any(|entity| {
+            entity
+                .source_span
+                .is_some_and(|(start, end)| start > end || end > text.len())
+        }) || result.relations.iter().any(|relation| {
+            relation
+                .source_span
+                .is_some_and(|(start, end)| start > end || end > text.len())
+        }) {
+            return Err(LLMError::InvalidResponse(
+                "extraction source span is outside input".to_string(),
+            ));
+        }
 
         // Calibrate confidences
         self.calibrate_extraction(&mut result);
@@ -377,6 +437,12 @@ struct CalibrationBin {
     center: f64,
     total: usize,
     correct: usize,
+}
+
+impl Default for ConfidenceCalibrator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ConfidenceCalibrator {
@@ -497,7 +563,7 @@ impl HallucinationDetector {
             );
             let grounding = self.compute_grounding_score(&relation_str);
             results.push(GroundingResult {
-                item: format!("Relation: {}", relation_str),
+                item: format!("Relation: {relation_str}"),
                 grounding_score: grounding,
                 is_grounded: grounding >= self.min_grounding,
                 evidence: self.find_evidence(&relation_str),

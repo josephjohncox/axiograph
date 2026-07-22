@@ -17,10 +17,10 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
-use crate::axql::PreparedQueryHandle;
+use crate::axql::CompiledFiniteQueryPlan;
 use crate::axql::{
-    parse_axql_path_expr, parse_axql_query, AxqlAtom, AxqlContextSpec, AxqlElaborationReport,
-    AxqlQuery, AxqlRefinementApplicationScopeV1, AxqlRefinementHandleV1, AxqlRefinementOpV1,
+    parse_axql_path_expr, AxqlAtom, AxqlContextSpec, AxqlElaborationReport, AxqlQuery,
+    AxqlRefinementApplicationScopeV1, AxqlRefinementHandleV1, AxqlRefinementOpV1,
     AxqlRefinementTermV1, AxqlResult, AxqlTerm, PreparedQueryIntrospection, QueryCertifiability,
 };
 use crate::trust_contract::{
@@ -28,15 +28,19 @@ use crate::trust_contract::{
     QueryTrustContractV1,
 };
 
-use axiograph_pathdb::certificate::CertificateV2;
-use axiograph_pathdb::kernel_ir::{
-    CompiledSchemaIr, KernelModuleIr, KernelRefV1, SchemaCategoryArrowRefIr,
-    SchemaCategoryObjectRefIr, TheoryIr, TheoryObligationRefIr, TheorySubjectRefIr,
+use axiograph_pathdb::certificate::{
+    CertificateV3, FiniteQueryAtomV4, FiniteQueryRegexV4, FiniteQueryTermV4,
+    PreparedQueryBindingV1, StableSelectedRowV1,
 };
-use axiograph_pathdb::{AcceptedAxiAnchor, AxiDigest, Certified, LifecycleState, Validated};
+use axiograph_pathdb::kernel_ir::{RuntimeIrRef, RuntimeModuleIndex, RuntimeSchemaIndex, TheoryIr};
+use axiograph_pathdb::{
+    AcceptedAxiAnchor, AnswerIdV2, AxiDigest, CertificateEmitted, CertificateIdV2, DbToken,
+    KernelRefV2, LeanVerified, LifecycleState, QueryIdV2, RevisionDigestV2, Validated,
+};
 
 pub const QUERY_IR_V1_VERSION: u32 = 1;
 pub const PREPARED_QUERY_METADATA_V1_VERSION: u32 = 1;
+pub const PREPARED_QUERY_METADATA_V2_VERSION: u32 = 2;
 
 pub type QueryTrustContract = QueryTrustContractV1;
 
@@ -91,21 +95,23 @@ impl QueryCertificatePolicyV1 {
             }
         }
         if accepted_axi_anchor.is_none() {
-            failures.push("missing accepted `.axi` anchor".to_string());
+            failures.push("missing accepted module binding".to_string());
         }
         if canonical_axi_text
             .map(str::trim)
             .filter(|text| !text.is_empty())
             .is_none()
         {
-            failures.push("missing canonical `.axi` text for accepted anchor".to_string());
+            failures.push(
+                "missing reviewable `.axi` source text for accepted module binding".to_string(),
+            );
         }
 
         if failures.is_empty() {
             Ok(())
         } else {
             Err(anyhow!(
-                "query certificate policy `require_verified` cannot be satisfied: {}",
+                "verified query mode requires a store-backed snapshot bound to an accepted .axi module and its source text; missing: {}",
                 failures.join("; ")
             ))
         }
@@ -118,10 +124,10 @@ impl QueryCertificatePolicyV1 {
         match certificate_verified {
             Some(true) => Ok(()),
             Some(false) => Err(anyhow!(
-                "query certificate policy `require_verified` cannot be satisfied: certificate verification failed"
+                "verified query mode failed: certificate verification failed"
             )),
             None => Err(anyhow!(
-                "query certificate policy `require_verified` cannot be satisfied: certificate verification status missing"
+                "verified query mode failed: certificate verification status missing"
             )),
         }
     }
@@ -155,7 +161,7 @@ impl QueryNonClaimsV1 {
 /// Stable, serializable handle metadata for a prepared `query_ir_v1` query.
 ///
 /// This is the small report envelope that CQ, refinement, agent, and review
-/// surfaces can cite instead of passing only raw AxQL strings around.
+/// surfaces can cite instead of passing only lowered AxQL strings around.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreparedQueryMetadataV1 {
     pub version: u32,
@@ -170,7 +176,21 @@ pub struct PreparedQueryMetadataV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refinement_handles: Vec<crate::typed_refinement::RuntimeRefinementHandleV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kernel_refs: Vec<KernelRefV1>,
+    pub kernel_refs: Vec<RuntimeIrRef>,
+    /// Canonical finite-theory evidence required by query preparation paths
+    /// that have an accepted `KernelSnapshotIr` available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finite_theory_gate: Option<axiograph_kernel::FiniteTheoryGateReceiptIr>,
+}
+
+/// Additive metadata family for query-bound certification. The runtime V1 ids
+/// remain diagnostic handles; only `certified_prepared_query_digest_v1` is the
+/// cryptographic digest independently recomputed by Lean.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreparedQueryMetadataV2 {
+    pub version: u32,
+    pub certified_prepared_query_digest_v1: QueryIdV2,
+    pub runtime_metadata_v1: PreparedQueryMetadataV1,
 }
 
 /// Focused exploration payload for editor/agent workflows.
@@ -235,16 +255,41 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
         "additionalProperties": false,
         "properties": {
             "version": { "type": "integer", "const": QUERY_IR_V1_VERSION },
-            "select_vars": { "type": "array", "items": { "type": "string" } },
-            "where_atoms": { "type": "array", "items": { "$ref": "#/$defs/query_atom" } },
+            "select_vars": {
+                "type": "array",
+                "maxItems": crate::axql::MAX_QUERY_SELECT_VARS,
+                "items": { "type": "string" }
+            },
+            "where_atoms": {
+                "type": "array",
+                "maxItems": crate::axql::MAX_QUERY_ATOMS,
+                "items": { "$ref": "#/$defs/query_atom" }
+            },
             "disjuncts": {
                 "type": "array",
-                "items": { "type": "array", "items": { "$ref": "#/$defs/query_atom" } }
+                "maxItems": crate::axql::MAX_QUERY_DISJUNCTS,
+                "items": {
+                    "type": "array",
+                    "maxItems": crate::axql::MAX_QUERY_ATOMS,
+                    "items": { "$ref": "#/$defs/query_atom" }
+                }
             },
-            "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
-            "max_hops": { "type": "integer", "minimum": 0, "maximum": 1000 },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": crate::axql::MAX_QUERY_RESULT_ROWS
+            },
+            "max_hops": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": crate::axql::MAX_QUERY_HOPS
+            },
             "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-            "contexts": { "type": "array", "items": { "$ref": "#/$defs/query_context" } }
+            "contexts": {
+                "type": "array",
+                "maxItems": crate::axql::MAX_QUERY_CONTEXTS,
+                "items": { "$ref": "#/$defs/query_context" }
+            }
         },
         "required": ["version"],
         "oneOf": [
@@ -491,11 +536,11 @@ impl QueryIrV1 {
     /// The returned value is a typed execution handle for this exact IR instance:
     /// it owns both the parsed `AxqlQuery` and the prepared execution plan.
     #[allow(dead_code)]
-    pub fn prepare_with_meta(
+    pub fn compile_with_meta(
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-    ) -> Result<PreparedQueryV1> {
+    ) -> Result<CompiledFiniteQuery> {
         let query = self.to_axql_query()?;
         let handle = crate::axql::prepare_axql_query_with_meta(db, &query, meta)?;
         let trust = query_user_visible_trust_contract_with_meta(
@@ -505,7 +550,7 @@ impl QueryIrV1 {
             None,
             meta,
         );
-        Ok(PreparedQueryV1 {
+        Ok(CompiledFiniteQuery {
             query_ir: QueryIrV1::from_axql_query(&query),
             query,
             handle,
@@ -515,16 +560,16 @@ impl QueryIrV1 {
 
     /// Compile, typecheck, and prepare this query with prepared-handle reuse.
     ///
-    /// This keeps the typed `PreparedQueryV1` boundary while allowing callers
+    /// This keeps the single `CompiledFiniteQuery` boundary while allowing callers
     /// that already maintain an AxQL prepared-query cache to preserve reuse.
     #[allow(dead_code)]
-    pub fn prepare_with_meta_cached(
+    pub fn compile_with_meta_cached(
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
         snapshot_key: &str,
         cache: &mut crate::axql::AxqlPreparedQueryCache,
-    ) -> Result<PreparedQueryV1> {
+    ) -> Result<CompiledFiniteQuery> {
         let query = self.to_axql_query()?;
         let handle = crate::axql::get_or_prepare_axql_query_handle_mut(
             db,
@@ -541,7 +586,7 @@ impl QueryIrV1 {
             None,
             meta,
         );
-        Ok(PreparedQueryV1 {
+        Ok(CompiledFiniteQuery {
             query_ir: QueryIrV1::from_axql_query(&query),
             query,
             handle,
@@ -562,9 +607,9 @@ impl QueryIrV1 {
     /// Return a structured trust contract for the current IR without touching the
     /// execution engine.
     ///
-    /// This makes the soundness boundary explicit: the contract is about returned
-    /// rows within the current snapshot/context scope and does not claim complete
-    /// answers or full ontology closure.
+    /// This makes the boundary explicit: unverified execution has no completeness
+    /// claim; only a bound Lean receipt upgrades the declared finite denotation to
+    /// exact completeness. Full ontology closure is never claimed here.
     #[allow(dead_code)]
     pub fn trust_contract(&self) -> Result<QueryTrustContract> {
         Ok(query_user_visible_trust_contract(
@@ -602,7 +647,10 @@ impl QueryIrV1 {
     /// Current conservative scope: the refinement protocol only applies to a
     /// single conjunctive query body. Disjunctive IR is left unchanged unless a
     /// future protocol version carries explicit disjunct targeting.
-    pub fn apply_refinement_handle(&self, handle: &AxqlRefinementHandleV1) -> Result<QueryIrV1> {
+    pub(crate) fn apply_refinement_handle(
+        &self,
+        handle: &AxqlRefinementHandleV1,
+    ) -> Result<QueryIrV1> {
         handle.validate()?;
         match handle.scope {
             AxqlRefinementApplicationScopeV1::SingleConjunction => {}
@@ -660,25 +708,25 @@ impl QueryIrV1 {
 /// A prepared query wrapper that keeps IR-level provenance with a concrete prepared plan.
 ///
 /// This is the intended typed execution currency for typed flows (`query_ir_v1` ->
-/// prepared -> execute/certify), while keeping the internal `PreparedQueryHandle`
-/// as an implementation detail.
+/// compile -> execute/certify). The lower-level plan remains an implementation
+/// detail and is not an executable public query family.
 #[allow(dead_code)]
-pub struct PreparedQueryV1 {
+pub struct CompiledFiniteQuery {
     query_ir: QueryIrV1,
     query: AxqlQuery,
-    handle: PreparedQueryHandle,
+    handle: CompiledFiniteQueryPlan,
     trust: QueryTrustContract,
 }
 
 /// A temporary anchor-bound view over a prepared query.
 ///
-/// This keeps the existing `PreparedQueryV1` caches and ownership model intact
+/// This keeps the compiled-query caches and ownership model intact
 /// while allowing callers that already know an accepted module anchor to run the
 /// query workflow in an anchor-aware lifecycle path.
 #[allow(dead_code)]
-pub struct AcceptedAnchoredPreparedQueryV1<'a> {
+pub struct AcceptedCompiledFiniteQuery<'a> {
     accepted_axi_anchor: AcceptedAxiAnchor,
-    prepared: &'a mut PreparedQueryV1,
+    prepared: &'a mut CompiledFiniteQuery,
 }
 
 /// A typed query answer artifact that preserves the workflow state of a query
@@ -692,9 +740,18 @@ pub struct AcceptedAnchoredPreparedQueryV1<'a> {
 pub struct QueryAnswer<S> {
     result: AxqlResult,
     trust: QueryTrustContract,
-    query_fingerprint: String,
-    anchor_digest: Option<AxiDigest>,
-    certificate: Option<CertificateV2>,
+    db_token: DbToken,
+    meta_present: bool,
+    prepared_query_digest_v1: Option<QueryIdV2>,
+    selected_rows_v1: Vec<StableSelectedRowV1>,
+    row_limit: u64,
+    runtime_truncated: bool,
+    module_digest_v2: Option<RevisionDigestV2>,
+    answer_digest_v1: Option<AnswerIdV2>,
+    certificate: Option<CertificateV3>,
+    certificate_text: Option<String>,
+    certificate_digest_v2: Option<CertificateIdV2>,
+    verifier_receipt: Option<crate::verifier_bridge::VerifierReceiptV2>,
     _state: PhantomData<S>,
 }
 
@@ -717,10 +774,89 @@ fn query_ir_id_for_axql_query(query: &AxqlQuery) -> String {
 fn prepared_query_id_for_ir_ids(query_ir_id: &str, elaborated_query_ir_id: &str) -> String {
     format!(
         "prepared_query_v1:{}",
-        axiograph_dsl::digest::axi_digest_v1(&format!(
+        axiograph_kernel::revision_digest_v2(&format!(
             "query_ir_id={query_ir_id};elaborated_query_ir_id={elaborated_query_ir_id}"
         ))
     )
+}
+
+fn query_ir_v1_from_prepared_binding(binding: &PreparedQueryBindingV1) -> QueryIrV1 {
+    fn term(term: &FiniteQueryTermV4) -> QueryTermIrV1 {
+        match term {
+            FiniteQueryTermV4::Var { name } => QueryTermIrV1::Simple(name.clone()),
+            FiniteQueryTermV4::Const { entity } => QueryTermIrV1::Simple(entity.clone()),
+        }
+    }
+
+    fn regex(expression: &FiniteQueryRegexV4) -> String {
+        match expression {
+            FiniteQueryRegexV4::Epsilon => "ε".to_string(),
+            FiniteQueryRegexV4::Rel { rel } => rel.clone(),
+            FiniteQueryRegexV4::Seq { parts } => {
+                parts.iter().map(regex).collect::<Vec<_>>().join("/")
+            }
+            FiniteQueryRegexV4::Alt { parts } => {
+                format!(
+                    "({})",
+                    parts.iter().map(regex).collect::<Vec<_>>().join("|")
+                )
+            }
+            FiniteQueryRegexV4::Star { inner } => format!("({})*", regex(inner)),
+            FiniteQueryRegexV4::Plus { inner } => format!("({})+", regex(inner)),
+            FiniteQueryRegexV4::Opt { inner } => format!("({})?", regex(inner)),
+        }
+    }
+
+    fn atom(atom: &FiniteQueryAtomV4) -> QueryAtomIrV1 {
+        match atom {
+            FiniteQueryAtomV4::Type {
+                term: value,
+                type_name,
+            } => QueryAtomIrV1::Type {
+                term: term(value),
+                type_name: type_name.clone(),
+            },
+            FiniteQueryAtomV4::AttrEq {
+                term: value,
+                key,
+                value: expected,
+            } => QueryAtomIrV1::AttrEq {
+                term: term(value),
+                key: key.clone(),
+                value: expected.clone(),
+            },
+            FiniteQueryAtomV4::Path {
+                left,
+                regex: path,
+                right,
+            } => QueryAtomIrV1::Edge {
+                left: term(left),
+                path: regex(path),
+                right: term(right),
+            },
+        }
+    }
+
+    QueryIrV1 {
+        version: QUERY_IR_V1_VERSION,
+        select_vars: binding.query.select_vars.clone(),
+        where_atoms: None,
+        disjuncts: Some(
+            binding
+                .query
+                .disjuncts
+                .iter()
+                .map(|disjunct| disjunct.iter().map(atom).collect())
+                .collect(),
+        ),
+        limit: usize::try_from(binding.row_limit).ok(),
+        max_hops: binding.query.max_hops,
+        min_confidence: binding
+            .query
+            .min_confidence_fp
+            .map(|probability| probability.to_f32()),
+        contexts: Vec::new(),
+    }
 }
 
 fn runtime_refinement_handles_from_report(
@@ -746,104 +882,112 @@ fn runtime_refinement_handles_from_report(
 fn kernel_refs_for_prepared_query(
     query: &AxqlQuery,
     elaboration: &AxqlElaborationReport,
-    kernel: &KernelModuleIr,
-) -> Vec<KernelRefV1> {
+    kernel: &RuntimeModuleIndex,
+) -> Vec<RuntimeIrRef> {
     let selectors = QueryKernelRefSelectors::from_query(query, elaboration);
+    let surface = kernel.runtime_semantic_index();
+    let mut touched_schema_ids = BTreeSet::new();
     let mut object_type_ids = BTreeSet::new();
     let mut relation_ids = BTreeSet::new();
     let mut role_ids = BTreeSet::new();
 
-    for schema in &kernel.schemas {
-        for (name, object_type_id) in &schema.object_type_ids {
-            if selectors.matches_type(name) {
+    for surface_ref in &surface.refs {
+        let RuntimeIrRef::Canonical { citation } = surface_ref else {
+            continue;
+        };
+        match &citation.reference {
+            KernelRefV2::ObjectType {
+                schema_id,
+                object_type_id,
+                ..
+            } if selectors.matches_type(&citation.label) => {
+                touched_schema_ids.insert(schema_id.to_string());
                 object_type_ids.insert(object_type_id.to_string());
             }
-        }
-        for relation in schema.relations.values() {
-            let relation_matches = selectors.matches_relation(&relation.name)
-                || selectors.matches_relation(&relation.tuple_type_name);
-            if relation_matches {
-                relation_ids.insert(relation.relation_id.to_string());
-            }
-            for role in &relation.roles {
-                if relation_matches || selectors.matches_role(&role.name) {
-                    role_ids.insert(role.role_id.to_string());
-                }
-            }
-        }
-    }
-
-    let mut theory_ids = BTreeSet::new();
-    let mut refs = BTreeSet::new();
-    for surface_ref in kernel.kernel_surface_v1().refs {
-        match &surface_ref {
-            KernelRefV1::Module { .. } => {
-                refs.insert(surface_ref.clone());
-            }
-            KernelRefV1::SchemaObject {
-                object: SchemaCategoryObjectRefIr::ObjectType { object_type_id, .. },
+            KernelRefV2::Relation {
+                schema_id,
+                relation_id,
                 ..
-            } if object_type_ids.contains(object_type_id.as_str()) => {
-                refs.insert(surface_ref.clone());
+            } if selectors.matches_relation(&citation.label) => {
+                touched_schema_ids.insert(schema_id.to_string());
+                relation_ids.insert(relation_id.to_string());
             }
-            KernelRefV1::SchemaObject {
-                object: SchemaCategoryObjectRefIr::RelationObject { relation_id, .. },
+            KernelRefV2::Role {
+                schema_id,
+                relation_id,
+                role_id,
                 ..
-            } if relation_ids.contains(relation_id.as_str()) => {
-                refs.insert(surface_ref.clone());
-            }
-            KernelRefV1::SchemaArrow {
-                arrow:
-                    SchemaCategoryArrowRefIr::RoleProjection {
-                        role_id,
-                        relation_id,
-                        ..
-                    },
-                ..
-            } if role_ids.contains(role_id.as_str())
-                || relation_ids.contains(relation_id.as_str()) =>
-            {
-                refs.insert(surface_ref.clone());
-            }
-            KernelRefV1::TheoryObligation { obligation } => {
-                if theory_obligation_touches_query_refs(
-                    kernel,
-                    obligation,
-                    &relation_ids,
-                    &role_ids,
-                ) {
-                    theory_ids.insert(theory_id_for_obligation(obligation));
-                    refs.insert(surface_ref.clone());
-                }
-            }
-            KernelRefV1::TheorySubject {
-                theory_id,
-                subject: TheorySubjectRefIr::Relation { relation_id, .. },
-            } if relation_ids.contains(relation_id.as_str()) => {
-                theory_ids.insert(theory_id.to_string());
-                refs.insert(surface_ref.clone());
-            }
-            KernelRefV1::TheorySubject {
-                theory_id,
-                subject: TheorySubjectRefIr::Role { role_id, .. },
-            } if role_ids.contains(role_id.as_str()) => {
-                theory_ids.insert(theory_id.to_string());
-                refs.insert(surface_ref.clone());
+            } if selectors.matches_role(&citation.label) => {
+                touched_schema_ids.insert(schema_id.to_string());
+                relation_ids.insert(relation_id.to_string());
+                role_ids.insert(role_id.to_string());
             }
             _ => {}
         }
     }
 
-    for surface_ref in kernel.kernel_surface_v1().refs {
-        if matches!(
-            &surface_ref,
-            KernelRefV1::Theory { theory_id, .. } if theory_ids.contains(theory_id.as_str())
-        ) {
-            refs.insert(surface_ref);
-        }
-    }
+    let theory_ids = surface
+        .refs
+        .iter()
+        .filter_map(|surface_ref| match surface_ref {
+            RuntimeIrRef::Canonical { citation } => match &citation.reference {
+                KernelRefV2::Theory {
+                    schema_id,
+                    theory_id,
+                    ..
+                } if touched_schema_ids.contains(&schema_id.to_string()) => {
+                    Some(theory_id.to_string())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
 
-    refs.into_iter().collect()
+    surface
+        .refs
+        .into_iter()
+        .filter(|surface_ref| {
+            let RuntimeIrRef::Canonical { citation } = surface_ref else {
+                return false;
+            };
+            match &citation.reference {
+                KernelRefV2::Module { .. } => true,
+                KernelRefV2::Schema { schema_id, .. }
+                | KernelRefV2::Generator { schema_id, .. } => {
+                    touched_schema_ids.contains(&schema_id.to_string())
+                }
+                KernelRefV2::ObjectType { object_type_id, .. } => {
+                    object_type_ids.contains(&object_type_id.to_string())
+                }
+                KernelRefV2::Relation { relation_id, .. } => {
+                    relation_ids.contains(&relation_id.to_string())
+                }
+                KernelRefV2::Role {
+                    relation_id,
+                    role_id,
+                    ..
+                } => {
+                    relation_ids.contains(&relation_id.to_string())
+                        || role_ids.contains(&role_id.to_string())
+                }
+                KernelRefV2::Theory { theory_id, .. } => {
+                    theory_ids.contains(&theory_id.to_string())
+                }
+                KernelRefV2::Constraint { theory_id, .. }
+                | KernelRefV2::Equation { theory_id, .. }
+                | KernelRefV2::RewriteRule { theory_id, .. } => {
+                    theory_ids.contains(&theory_id.to_string())
+                }
+                KernelRefV2::Instance { schema_id, .. } => {
+                    touched_schema_ids.contains(&schema_id.to_string())
+                }
+                KernelRefV2::Fact { relation_id, .. } => {
+                    relation_ids.contains(&relation_id.to_string())
+                }
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -950,39 +1094,6 @@ impl QueryKernelRefSelectors {
     }
 }
 
-fn theory_obligation_touches_query_refs(
-    kernel: &KernelModuleIr,
-    obligation: &TheoryObligationRefIr,
-    relation_ids: &BTreeSet<String>,
-    role_ids: &BTreeSet<String>,
-) -> bool {
-    kernel
-        .theories
-        .iter()
-        .find(|theory| theory.theory_id.as_str() == theory_id_for_obligation(obligation))
-        .is_some_and(|theory| {
-            theory
-                .subject_refs_for_obligation(obligation)
-                .into_iter()
-                .any(|subject| match subject {
-                    TheorySubjectRefIr::Relation { relation_id, .. } => {
-                        relation_ids.contains(relation_id.as_str())
-                    }
-                    TheorySubjectRefIr::Role { role_id, .. } => role_ids.contains(role_id.as_str()),
-                    TheorySubjectRefIr::Theory { .. } => false,
-                })
-        })
-}
-
-fn theory_id_for_obligation(obligation: &TheoryObligationRefIr) -> String {
-    match obligation {
-        TheoryObligationRefIr::Constraint { theory_id, .. }
-        | TheoryObligationRefIr::PathEquation { theory_id, .. }
-        | TheoryObligationRefIr::OpaqueEquation { theory_id, .. }
-        | TheoryObligationRefIr::RewriteRule { theory_id, .. } => theory_id.to_string(),
-    }
-}
-
 fn insert_name_variants(target: &mut BTreeSet<String>, name: &str) {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -1012,23 +1123,107 @@ impl<S: LifecycleState> QueryAnswer<S> {
         &self.trust
     }
 
+    pub fn prepared_query_digest_v1(&self) -> Option<&QueryIdV2> {
+        self.prepared_query_digest_v1.as_ref()
+    }
+
+    pub fn selected_rows_v1(&self) -> &[StableSelectedRowV1] {
+        &self.selected_rows_v1
+    }
+
+    pub fn row_limit(&self) -> u64 {
+        self.row_limit
+    }
+
+    pub fn runtime_truncated(&self) -> bool {
+        self.runtime_truncated
+    }
+
     pub fn lifecycle_state_name(&self) -> &'static str {
         S::NAME
     }
 }
 
 #[allow(dead_code)]
-impl QueryAnswer<Certified> {
-    pub fn anchor_digest(&self) -> &AxiDigest {
-        self.anchor_digest
+impl QueryAnswer<CertificateEmitted> {
+    pub fn module_digest_v2(&self) -> &RevisionDigestV2 {
+        self.module_digest_v2
             .as_ref()
-            .expect("certified query answers always carry an anchor digest")
+            .expect("certificate-emitted query answers carry the cryptographic module anchor")
     }
 
-    pub fn certificate(&self) -> &CertificateV2 {
+    pub fn answer_digest_v1(&self) -> &AnswerIdV2 {
+        self.answer_digest_v1
+            .as_ref()
+            .expect("certificate-emitted query answers carry an answer digest")
+    }
+
+    pub fn certificate(&self) -> &CertificateV3 {
         self.certificate
             .as_ref()
-            .expect("certified query answers always carry a certificate")
+            .expect("certificate-emitted query answers always carry a V3 certificate")
+    }
+
+    pub fn certificate_text(&self) -> &str {
+        self.certificate_text
+            .as_deref()
+            .expect("certificate-emitted query answers always carry exact certificate bytes")
+    }
+
+    pub fn certificate_digest_v2(&self) -> &CertificateIdV2 {
+        self.certificate_digest_v2
+            .as_ref()
+            .expect("certificate-emitted query answers always carry a certificate digest")
+    }
+
+    pub(crate) fn into_lean_verified(
+        mut self,
+        receipt: crate::verifier_bridge::VerifierReceiptV2,
+    ) -> Result<QueryAnswer<LeanVerified>> {
+        if !receipt.accepted()
+            || receipt.revision_digest_v2() != self.module_digest_v2()
+            || Some(receipt.prepared_query_digest_v1()) != self.prepared_query_digest_v1.as_ref()
+            || receipt.answer_digest_v1() != self.answer_digest_v1()
+            || receipt.certificate_digest_v2() != self.certificate_digest_v2()
+        {
+            return Err(anyhow!(
+                "Lean receipt does not bind this prepared query answer"
+            ));
+        }
+        self.trust.soundness = "lean_verified_finite_exact_complete".to_string();
+        self.verifier_receipt = Some(receipt);
+        Ok(QueryAnswer {
+            result: self.result,
+            trust: self.trust,
+            db_token: self.db_token,
+            meta_present: self.meta_present,
+            prepared_query_digest_v1: self.prepared_query_digest_v1,
+            selected_rows_v1: self.selected_rows_v1,
+            row_limit: self.row_limit,
+            runtime_truncated: self.runtime_truncated,
+            module_digest_v2: self.module_digest_v2,
+            answer_digest_v1: self.answer_digest_v1,
+            certificate: self.certificate,
+            certificate_text: self.certificate_text,
+            certificate_digest_v2: self.certificate_digest_v2,
+            verifier_receipt: self.verifier_receipt,
+            _state: PhantomData,
+        })
+    }
+}
+
+#[allow(dead_code)]
+impl QueryAnswer<LeanVerified> {
+    pub fn receipt(&self) -> &crate::verifier_bridge::VerifierReceiptV2 {
+        self.verifier_receipt
+            .as_ref()
+            .expect("Lean-verified answers always carry the validated full receipt")
+    }
+
+    pub fn certificate(&self) -> &CertificateV3 {
+        self.certificate
+            .as_ref()
+            .expect("Lean-verified answers always carry a V3 certificate")
     }
 }
 
@@ -1060,25 +1255,29 @@ impl<S: LifecycleState> AcceptedAnchoredQueryAnswer<S> {
 }
 
 #[allow(dead_code)]
-impl AcceptedAnchoredQueryAnswer<Certified> {
-    pub fn anchor_digest(&self) -> &AxiDigest {
-        self.answer.anchor_digest()
+impl AcceptedAnchoredQueryAnswer<CertificateEmitted> {
+    pub fn module_digest_v2(&self) -> &RevisionDigestV2 {
+        self.answer.module_digest_v2()
     }
 
-    pub fn certificate(&self) -> &CertificateV2 {
+    pub fn answer_digest_v1(&self) -> &AnswerIdV2 {
+        self.answer.answer_digest_v1()
+    }
+
+    pub fn certificate(&self) -> &CertificateV3 {
         self.answer.certificate()
     }
 }
 
 #[allow(dead_code)]
-impl PreparedQueryV1 {
+impl CompiledFiniteQuery {
     /// Bind this prepared query to an accepted module anchor for an
     /// anchor-aware validated/certified answer workflow.
     pub fn bind_accepted_axi_anchor<'a>(
         &'a mut self,
         accepted_axi_anchor: AcceptedAxiAnchor,
-    ) -> AcceptedAnchoredPreparedQueryV1<'a> {
-        AcceptedAnchoredPreparedQueryV1 {
+    ) -> AcceptedCompiledFiniteQuery<'a> {
+        AcceptedCompiledFiniteQuery {
             accepted_axi_anchor,
             prepared: self,
         }
@@ -1089,10 +1288,29 @@ impl PreparedQueryV1 {
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
         handle: &AxqlRefinementHandleV1,
-        theory_graph: Option<(&CompiledSchemaIr, &[TheoryIr])>,
+        theory_graph: Option<(&RuntimeSchemaIndex, &[TheoryIr])>,
     ) -> Result<QueryRefinementApplyResultV1> {
+        let current = self
+            .elaboration_report()
+            .exploration_suggestions
+            .iter()
+            .flat_map(|suggestion| suggestion.refinement_candidates.iter())
+            .find(|candidate| candidate.handle.id == handle.id)
+            .map(|candidate| &candidate.handle)
+            .ok_or_else(|| {
+                anyhow!(
+                    "refinement handle `{}` was not emitted for this prepared query",
+                    handle.id
+                )
+            })?;
+        if current != handle {
+            return Err(anyhow!(
+                "refinement handle `{}` payload differs from the current prepared-query candidate",
+                handle.id
+            ));
+        }
         let refined_query_ir_v1 = self.query_ir.apply_refinement_handle(handle)?;
-        let refined_prepared = refined_query_ir_v1.prepare_with_meta(db, meta)?;
+        let refined_prepared = refined_query_ir_v1.compile_with_meta(db, meta)?;
         let refined_exploration = match theory_graph {
             Some((compiled_schema, theories)) => {
                 refined_prepared.exploration_view_with_theory_graph(None, compiled_schema, theories)
@@ -1126,8 +1344,13 @@ impl PreparedQueryV1 {
 
     /// Stable id for the elaborated `query_ir_v1` body the runtime actually prepared.
     pub fn elaborated_query_ir_id(&self) -> Result<String> {
-        let elaborated = parse_axql_query(&self.handle.elaborated_query_text())?;
-        Ok(query_ir_id_for_axql_query(&elaborated))
+        if let Some(binding) = self.handle.prepared_binding_v1() {
+            let elaborated = query_ir_v1_from_prepared_binding(binding).to_axql_query()?;
+            return Ok(query_ir_id_for_axql_query(&elaborated));
+        }
+        // Execution-only queries have no certifiable prepared binding. Preserve
+        // their original structured IR rather than reparsing diagnostic text.
+        Ok(query_ir_id_for_axql_query(&self.query))
     }
 
     /// Stable prepared-query handle id derived from input and elaborated IR ids.
@@ -1166,29 +1389,75 @@ impl PreparedQueryV1 {
             trust,
             refinement_handles: runtime_refinement_handles_from_report(self.elaboration_report()),
             kernel_refs: Vec::new(),
+            finite_theory_gate: None,
         })
+    }
+
+    pub fn metadata_v2_with_meta(
+        &self,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    ) -> Result<PreparedQueryMetadataV2> {
+        Ok(PreparedQueryMetadataV2 {
+            version: PREPARED_QUERY_METADATA_V2_VERSION,
+            certified_prepared_query_digest_v1: self
+                .handle
+                .prepared_query_digest_v1()
+                .cloned()
+                .ok_or_else(|| anyhow!("query has no certifiable prepared binding"))?,
+            runtime_metadata_v1: self.metadata_with_meta(meta)?,
+        })
+    }
+
+    pub fn metadata_v2_with_meta_and_kernel(
+        &self,
+        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+        kernel: &RuntimeModuleIndex,
+    ) -> Result<PreparedQueryMetadataV2> {
+        Ok(PreparedQueryMetadataV2 {
+            version: PREPARED_QUERY_METADATA_V2_VERSION,
+            certified_prepared_query_digest_v1: self
+                .handle
+                .prepared_query_digest_v1()
+                .cloned()
+                .ok_or_else(|| anyhow!("query has no certifiable prepared binding"))?,
+            runtime_metadata_v1: self.metadata_with_meta_and_kernel(meta, kernel)?,
+        })
+    }
+
+    pub fn certified_prepared_query_digest_v1(&self) -> Option<&QueryIdV2> {
+        self.handle.prepared_query_digest_v1()
     }
 
     /// Return prepared-query metadata enriched with compiled kernel refs.
     ///
-    /// This is intentionally additive: query preparation still only needs the
-    /// PathDB/meta-plane boundary, while callers that already compiled the
-    /// canonical module can attach the shared `KernelRefV1` currency.
+    /// This path requires the in-process canonical snapshot retained by the
+    /// runtime adapter. A deserialized citation-only index cannot mint a query
+    /// gate receipt.
     pub fn metadata_with_meta_and_kernel(
         &self,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-        kernel: &KernelModuleIr,
+        kernel: &RuntimeModuleIndex,
     ) -> Result<PreparedQueryMetadataV1> {
         let mut metadata = self.metadata_with_meta(meta)?;
         metadata.kernel_refs = self.kernel_refs(kernel);
         kernel
-            .kernel_surface_v1()
+            .runtime_semantic_index()
             .validate_refs(&metadata.kernel_refs)
             .map_err(|err| anyhow::anyhow!(err))?;
+        let snapshot = kernel.canonical_snapshot().ok_or_else(|| {
+            anyhow!(
+                "prepared-query canonical metadata requires the retained CompiledKernelSnapshot"
+            )
+        })?;
+        metadata.finite_theory_gate = Some(
+            snapshot
+                .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Query)
+                .map_err(|error| anyhow!(error))?,
+        );
         Ok(metadata)
     }
 
-    pub fn kernel_refs(&self, kernel: &KernelModuleIr) -> Vec<KernelRefV1> {
+    pub fn kernel_refs(&self, kernel: &RuntimeModuleIndex) -> Vec<RuntimeIrRef> {
         kernel_refs_for_prepared_query(&self.query, self.elaboration_report(), kernel)
     }
 
@@ -1206,49 +1475,109 @@ impl PreparedQueryV1 {
         self.handle.execute(db, meta)
     }
 
-    /// Execute the prepared query and package the result as a lifecycle-typed
-    /// workflow artifact.
+    /// Execute the prepared query and package the exact runtime answer together
+    /// with its prepared binding, process-local DB/meta state, ordered stable
+    /// selected projections, limit, and truncation observation.
     pub fn execute_answer(
         &mut self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
     ) -> Result<QueryAnswer<Validated>> {
+        let result = self.handle.execute(db, meta)?;
+        let selected_rows_v1 = crate::axql::stable_selected_rows_from_result_v1(db, &result)?;
+        let row_limit = u64::try_from(self.query.limit)
+            .map_err(|_| anyhow!("query row limit does not fit u64"))?;
         Ok(QueryAnswer {
-            result: self.handle.execute(db, meta)?,
+            runtime_truncated: result.truncated,
+            result,
             trust: self.trust_contract_with_meta(meta),
-            query_fingerprint: crate::axql::axql_query_ir_digest_v1(&self.query),
-            anchor_digest: None,
+            db_token: self.handle.db_token(),
+            meta_present: self.handle.meta_present(),
+            prepared_query_digest_v1: self.handle.prepared_query_digest_v1().cloned(),
+            selected_rows_v1,
+            row_limit,
+            module_digest_v2: None,
+            answer_digest_v1: None,
             certificate: None,
+            certificate_text: None,
+            certificate_digest_v2: None,
+            verifier_receipt: None,
             _state: PhantomData,
         })
     }
 
-    /// Certify a previously executed validated answer for this exact prepared
-    /// query.
-    pub fn certify_answer_with_anchor(
+    /// Emit query_result_v4 for a previously executed answer. The transition
+    /// fails closed on DB/meta drift, prepared-binding drift, execution drift,
+    /// selected-row drift, limit drift, or truncation drift.
+    pub fn certify_answer_with_anchors(
         &mut self,
         answer: QueryAnswer<Validated>,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-        axi_digest: AxiDigest,
-    ) -> Result<QueryAnswer<Certified>> {
-        let expected_fingerprint = crate::axql::axql_query_ir_digest_v1(&self.query);
-        if answer.query_fingerprint != expected_fingerprint {
+        module_digest_v2: RevisionDigestV2,
+    ) -> Result<QueryAnswer<CertificateEmitted>> {
+        if answer.db_token != db.db_token() || answer.db_token != self.handle.db_token() {
             return Err(anyhow!(
-                "validated query answer does not belong to this prepared query"
+                "validated query answer DB token differs from certification state"
             ));
+        }
+        if answer.meta_present != meta.is_some()
+            || answer.meta_present != self.handle.meta_present()
+        {
+            return Err(anyhow!(
+                "validated query answer meta-plane state differs from certification state"
+            ));
+        }
+        let expected_prepared = self
+            .handle
+            .prepared_query_digest_v1()
+            .cloned()
+            .ok_or_else(|| anyhow!("query has no certifiable prepared binding"))?;
+        if answer.prepared_query_digest_v1.as_ref() != Some(&expected_prepared) {
+            return Err(anyhow!(
+                "validated query answer does not belong to this prepared binding"
+            ));
+        }
+        let expected_limit = self
+            .handle
+            .prepared_binding_v1()
+            .ok_or_else(|| anyhow!("query has no certifiable prepared binding"))?
+            .row_limit;
+        if answer.row_limit != expected_limit {
+            return Err(anyhow!("validated query answer row limit drifted"));
         }
 
         let rerun_result = self.handle.execute(db, meta)?;
-        if rerun_result != answer.result {
+        let rerun_selected = crate::axql::stable_selected_rows_from_result_v1(db, &rerun_result)?;
+        if rerun_result != answer.result
+            || rerun_selected != answer.selected_rows_v1
+            || rerun_result.truncated != answer.runtime_truncated
+        {
             return Err(anyhow!(
-                "validated query answer no longer matches the prepared query result for this runtime"
+                "validated query answer no longer matches the stored prepared execution"
             ));
         }
 
         let certificate =
             self.handle
-                .certify_typed_with_anchor(db, &self.query, meta, axi_digest.as_str())?;
+                .certify_typed_v4_with_anchor(db, meta, module_digest_v2.clone())?;
+        let certificate_rows = certificate
+            .proof
+            .selected_rows_v1()
+            .map_err(anyhow::Error::msg)?;
+        if certificate.proof.prepared_query_digest_v1 != expected_prepared
+            || certificate.proof.binding.row_limit != answer.row_limit
+            || certificate.proof.runtime_truncated != answer.runtime_truncated
+            || certificate_rows != answer.selected_rows_v1
+        {
+            return Err(anyhow!(
+                "certificate rows, binding, limit, or truncation differ from validated answer"
+            ));
+        }
+        let answer_digest_v1 = certificate.proof.answer_digest_v1.clone();
+        let certificate_text = serde_json::to_string_pretty(&certificate)?;
+        let certificate_digest_v2 =
+            CertificateIdV2::from_canonical_fields(&[certificate_text.as_bytes()]);
         let trust = query_user_visible_trust_contract_with_meta(
             &self.query,
             &self.certifiability(),
@@ -1259,9 +1588,18 @@ impl PreparedQueryV1 {
         Ok(QueryAnswer {
             result: answer.result,
             trust,
-            query_fingerprint: expected_fingerprint,
-            anchor_digest: Some(axi_digest),
+            db_token: answer.db_token,
+            meta_present: answer.meta_present,
+            prepared_query_digest_v1: answer.prepared_query_digest_v1,
+            selected_rows_v1: answer.selected_rows_v1,
+            row_limit: answer.row_limit,
+            runtime_truncated: answer.runtime_truncated,
+            module_digest_v2: Some(module_digest_v2),
+            answer_digest_v1: Some(answer_digest_v1),
             certificate: Some(certificate),
+            certificate_text: Some(certificate_text),
+            certificate_digest_v2: Some(certificate_digest_v2),
+            verifier_receipt: None,
             _state: PhantomData,
         })
     }
@@ -1389,7 +1727,7 @@ impl PreparedQueryV1 {
     pub fn exploration_view_with_theory_graph(
         &self,
         focus_variable: Option<&str>,
-        compiled_schema: &CompiledSchemaIr,
+        compiled_schema: &RuntimeSchemaIndex,
         theories: &[TheoryIr],
     ) -> PreparedQueryExplorationV1 {
         let report = self.elaboration_report();
@@ -1461,7 +1799,7 @@ impl PreparedQueryV1 {
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
         handle: &AxqlRefinementHandleV1,
-        compiled_schema: &CompiledSchemaIr,
+        compiled_schema: &RuntimeSchemaIndex,
         theories: &[TheoryIr],
     ) -> Result<QueryRefinementApplyResultV1> {
         self.apply_refinement_handle_internal(db, meta, handle, Some((compiled_schema, theories)))
@@ -1493,7 +1831,7 @@ impl PreparedQueryV1 {
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
         handle_id: &str,
-        compiled_schema: &CompiledSchemaIr,
+        compiled_schema: &RuntimeSchemaIndex,
         theories: &[TheoryIr],
     ) -> Result<QueryRefinementApplyResultV1> {
         let handle = self
@@ -1536,7 +1874,7 @@ impl PreparedQueryV1 {
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
         handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
-        compiled_schema: &CompiledSchemaIr,
+        compiled_schema: &RuntimeSchemaIndex,
         theories: &[TheoryIr],
     ) -> Result<QueryRefinementApplyResultV1> {
         handle.validate()?;
@@ -1575,7 +1913,7 @@ impl PreparedQueryV1 {
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
         handle_id: &str,
-        compiled_schema: &CompiledSchemaIr,
+        compiled_schema: &RuntimeSchemaIndex,
         theories: &[TheoryIr],
     ) -> Result<QueryRefinementApplyResultV1> {
         let handle = self
@@ -1596,29 +1934,21 @@ impl PreparedQueryV1 {
 
     /// Return the elaborated query IR that the runtime actually prepared.
     pub fn elaborated_query_ir_v1(&self) -> Result<QueryIrV1> {
-        let elaborated = parse_axql_query(&self.handle.elaborated_query_text())?;
-        Ok(QueryIrV1::from_axql_query(&elaborated))
+        Ok(self
+            .handle
+            .prepared_binding_v1()
+            .map(query_ir_v1_from_prepared_binding)
+            .unwrap_or_else(|| self.query_ir.clone()))
     }
 
     /// Classification of what this prepared query can be certified under.
     pub fn certifiability(&self) -> QueryCertifiability {
         self.handle.certifiability()
     }
-
-    /// Emit the canonical `.axi`-anchored typed query witness for this prepared query.
-    pub fn certify_typed_with_anchor(
-        &self,
-        db: &axiograph_pathdb::PathDB,
-        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-        axi_digest_v1: &str,
-    ) -> Result<CertificateV2> {
-        self.handle
-            .certify_typed_with_anchor(db, &self.query, meta, axi_digest_v1)
-    }
 }
 
 #[allow(dead_code)]
-impl<'a> AcceptedAnchoredPreparedQueryV1<'a> {
+impl<'a> AcceptedCompiledFiniteQuery<'a> {
     pub fn accepted_axi_anchor(&self) -> &AcceptedAxiAnchor {
         &self.accepted_axi_anchor
     }
@@ -1681,24 +2011,13 @@ impl<'a> AcceptedAnchoredPreparedQueryV1<'a> {
         })
     }
 
-    pub fn certify_typed(
-        &self,
-        db: &axiograph_pathdb::PathDB,
-        meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-    ) -> Result<CertificateV2> {
-        self.prepared.certify_typed_with_anchor(
-            db,
-            meta,
-            self.accepted_axi_anchor.axi_digest.as_str(),
-        )
-    }
-
     pub fn certify_answer(
         &mut self,
         answer: AcceptedAnchoredQueryAnswer<Validated>,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-    ) -> Result<AcceptedAnchoredQueryAnswer<Certified>> {
+        module_digest_v2: RevisionDigestV2,
+    ) -> Result<AcceptedAnchoredQueryAnswer<CertificateEmitted>> {
         if answer.accepted_axi_anchor != self.accepted_axi_anchor {
             return Err(anyhow!(
                 "validated query answer is bound to a different accepted anchor"
@@ -1707,11 +2026,11 @@ impl<'a> AcceptedAnchoredPreparedQueryV1<'a> {
 
         Ok(AcceptedAnchoredQueryAnswer {
             accepted_axi_anchor: self.accepted_axi_anchor.clone(),
-            answer: self.prepared.certify_answer_with_anchor(
+            answer: self.prepared.certify_answer_with_anchors(
                 answer.answer,
                 db,
                 meta,
-                self.accepted_axi_anchor.axi_digest.clone(),
+                module_digest_v2,
             )?,
         })
     }
@@ -2128,7 +2447,7 @@ fn render_axql_query(q: &AxqlQuery) -> String {
             out.push_str(
                 &q.contexts
                     .iter()
-                    .map(|c| render_ctx(c))
+                    .map(render_ctx)
                     .collect::<Vec<_>>()
                     .join(", "),
             );
@@ -2542,14 +2861,14 @@ mod tests {
             .ensure_require_verified_preconditions(&unsupported, None, None)
             .expect_err("require_verified should reject unsupported, unanchored queries");
         let err = err.to_string();
-        assert!(err.contains("query certificate policy `require_verified`"));
+        assert!(err.contains("verified query mode requires a store-backed snapshot"));
         assert!(err.contains("query is not fully certifiable"));
-        assert!(err.contains("missing accepted `.axi` anchor"));
-        assert!(err.contains("missing canonical `.axi` text"));
+        assert!(err.contains("missing accepted module binding"));
+        assert!(err.contains("missing reviewable `.axi` source text"));
 
         let anchor = AcceptedAxiAnchor::new(
             axiograph_pathdb::AcceptedSnapshotId::new("accepted:test"),
-            AxiDigest::new("fnv1a64:abc"),
+            AxiDigest::from_axi_text("module Demo\n"),
         );
         policy.ensure_require_verified_preconditions(
             &QueryCertifiability::Certifiable,
@@ -2646,7 +2965,7 @@ mod tests {
     }
 
     #[test]
-    fn query_ir_v1_prepare_with_meta_builds_prepared_handle() -> Result<()> {
+    fn query_ir_v1_compile_with_meta_builds_compiled_query() -> Result<()> {
         let axi = r#"
 module Demo
 
@@ -2672,7 +2991,7 @@ instance I of S:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         assert_eq!(prepared.certifiability(), QueryCertifiability::Certifiable);
         let introspection = prepared.introspection();
         assert_eq!(introspection.disjunct_count, 1);
@@ -2734,7 +3053,7 @@ instance I of Demo:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let report = prepared.elaboration_report();
         assert!(report
             .inferred_types
@@ -2799,7 +3118,7 @@ instance I of Demo:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let full = prepared.exploration_view(None);
         assert!(full
             .exploration_suggestions
@@ -2846,8 +3165,8 @@ instance I of Demo:
   Flow = {(from=a, to=b)}
 "#;
         let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
-        let kernel =
-            axiograph_pathdb::compile_kernel_module_ir(&parsed, axi).map_err(anyhow::Error::msg)?;
+        let kernel = axiograph_pathdb::derive_runtime_module_index(&parsed, axi)
+            .map_err(anyhow::Error::msg)?;
         let mut db = axiograph_pathdb::PathDB::new();
         axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
         db.build_indexes();
@@ -2872,7 +3191,7 @@ instance I of Demo:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let metadata = prepared.metadata_with_meta(Some(&meta))?;
         assert_eq!(metadata.version, PREPARED_QUERY_METADATA_V1_VERSION);
         assert_eq!(metadata.query_ir_id, prepared.query_ir_id());
@@ -2887,7 +3206,7 @@ instance I of Demo:
         assert_eq!(metadata.trust.trust_class, "certifiable");
         assert_eq!(
             metadata.non_claims.claim_scope,
-            "returned_rows_within_snapshot_and_context"
+            "finite_query_denotation_within_exact_accepted_module"
         );
         assert_eq!(metadata.non_claims.completeness_claim, "not_claimed");
         assert_eq!(metadata.non_claims.ontology_closure_claim, "not_claimed");
@@ -2907,46 +3226,69 @@ instance I of Demo:
 
         let metadata_with_kernel = prepared.metadata_with_meta_and_kernel(Some(&meta), &kernel)?;
         kernel
-            .kernel_surface_v1()
+            .runtime_semantic_index()
             .validate_refs(&metadata_with_kernel.kernel_refs)
             .expect("prepared-query metadata only cites declared kernel refs");
         assert!(metadata_with_kernel
-            .kernel_refs
-            .iter()
-            .any(|reference| { matches!(reference, KernelRefV1::Module { .. }) }));
+            .finite_theory_gate
+            .as_ref()
+            .is_some_and(|receipt| {
+                receipt.passed
+                    && receipt.consumer == axiograph_kernel::FiniteTheoryGateConsumerIr::Query
+            }));
+        let citation_kernel: RuntimeModuleIndex =
+            serde_json::from_str(&serde_json::to_string(&kernel)?)?;
+        assert!(citation_kernel.canonical_snapshot().is_none());
+        let error = prepared
+            .metadata_with_meta_and_kernel(Some(&meta), &citation_kernel)
+            .expect_err("citation-only runtime index must not mint a query gate receipt");
+        assert!(error
+            .to_string()
+            .contains("retained CompiledKernelSnapshot"));
         assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
             matches!(
                 reference,
-                KernelRefV1::SchemaObject {
-                    object: SchemaCategoryObjectRefIr::ObjectType { name, .. },
-                    ..
-                } if name == "Supplier"
+                RuntimeIrRef::Canonical { citation }
+                    if matches!(&citation.reference, KernelRefV2::Module { .. })
             )
         }));
         assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
             matches!(
                 reference,
-                KernelRefV1::SchemaObject {
-                    object: SchemaCategoryObjectRefIr::RelationObject { name, .. },
-                    ..
-                } if name == "Flow"
+                RuntimeIrRef::Canonical { citation }
+                    if citation.label == "Supplier"
+                        && matches!(&citation.reference, KernelRefV2::ObjectType { .. })
             )
         }));
         assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
             matches!(
                 reference,
-                KernelRefV1::SchemaArrow {
-                    arrow: SchemaCategoryArrowRefIr::RoleProjection { role_name, .. },
-                    ..
-                } if role_name == "to"
+                RuntimeIrRef::Canonical { citation }
+                    if citation.label == "Flow"
+                        && matches!(&citation.reference, KernelRefV2::Relation { .. })
             )
         }));
         assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
             matches!(
                 reference,
-                KernelRefV1::TheoryObligation {
-                    obligation: TheoryObligationRefIr::Constraint { summary, .. }
-                } if summary == "key Flow(from, to)"
+                RuntimeIrRef::Canonical { citation }
+                    if citation.label == "Flow.to"
+                        && matches!(&citation.reference, KernelRefV2::Role { .. })
+            )
+        }));
+        assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
+            matches!(
+                reference,
+                RuntimeIrRef::Canonical { citation }
+                    if citation.label == "Flow.to"
+                        && matches!(&citation.reference, KernelRefV2::Generator { .. })
+            )
+        }));
+        assert!(metadata_with_kernel.kernel_refs.iter().any(|reference| {
+            matches!(
+                reference,
+                RuntimeIrRef::Canonical { citation }
+                    if matches!(&citation.reference, KernelRefV2::Constraint { .. })
             )
         }));
 
@@ -2975,6 +3317,39 @@ instance I of Demo:
     }
 
     #[test]
+    fn disjunction_metadata_and_digest_do_not_parse_diagnostic_text() -> Result<()> {
+        let axi = r#"module Demo
+schema S:
+  object Node
+instance I of S:
+  Node = {a, b}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let query: QueryIrV1 = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "select_vars": ["x"],
+            "disjuncts": [
+                [{"kind":"attr_eq","term":"?x","key":"name","value":"a"}],
+                [{"kind":"attr_eq","term":"?x","key":"name","value":"b"}]
+            ],
+            "limit": 2
+        }))?;
+        let prepared = query.compile_with_meta(&db, Some(&meta))?;
+        assert!(prepared.elaborated_query_text().starts_with("disjunction:"));
+        let metadata = prepared.metadata_v2_with_meta(Some(&meta))?;
+        assert!(metadata
+            .certified_prepared_query_digest_v1
+            .as_str()
+            .starts_with("axi:query:v2:sha256:"));
+        let elaborated = prepared.elaborated_query_ir_v1()?;
+        assert_eq!(elaborated.disjuncts.as_ref().map(Vec::len), Some(2));
+        Ok(())
+    }
+
+    #[test]
     fn query_ir_v1_exploration_view_can_attach_compiled_theory_handles() -> Result<()> {
         let axi = r#"
 module Demo
@@ -2991,11 +3366,14 @@ instance I of Demo:
   Parent = {(parent=Alice, child=Bob)}
 "#;
         let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
-        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&parsed.schemas[0]);
+        let compiled_schema =
+            axiograph_pathdb::kernel_ir::derive_runtime_schema_index(&parsed.schemas[0]);
         let theories = parsed
             .theories
             .iter()
-            .map(|theory| axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory))
+            .map(|theory| {
+                axiograph_pathdb::kernel_ir::derive_runtime_theory_index(&compiled_schema, theory)
+            })
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(anyhow::Error::msg)?;
 
@@ -3023,7 +3401,7 @@ instance I of Demo:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let exploration =
             prepared.exploration_view_with_theory_graph(None, &compiled_schema, &theories);
         assert!(exploration.refinement_candidates.iter().any(|candidate| {
@@ -3065,11 +3443,14 @@ instance I of Demo:
   Flow = {(from=a, to=b)}
 "#;
         let parsed = axiograph_dsl::axi_v1::parse_axi_v1(axi)?;
-        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&parsed.schemas[0]);
+        let compiled_schema =
+            axiograph_pathdb::kernel_ir::derive_runtime_schema_index(&parsed.schemas[0]);
         let theories = parsed
             .theories
             .iter()
-            .map(|theory| axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory))
+            .map(|theory| {
+                axiograph_pathdb::kernel_ir::derive_runtime_theory_index(&compiled_schema, theory)
+            })
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(anyhow::Error::msg)?;
 
@@ -3097,7 +3478,7 @@ instance I of Demo:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let handle_id = prepared
             .exploration_view_with_theory_graph(Some("?dst"), &compiled_schema, &theories)
             .refinement_candidates
@@ -3180,7 +3561,7 @@ instance I of Demo:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let candidate = prepared
             .exploration_view(Some("?dst"))
             .exploration_suggestions
@@ -3294,7 +3675,7 @@ instance I of Demo:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let handle_id = prepared
             .exploration_view(Some("?dst"))
             .exploration_suggestions
@@ -3362,7 +3743,7 @@ instance I of Demo:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let handle_id = prepared
             .exploration_view(Some("?dst"))
             .refinement_candidates
@@ -3379,6 +3760,22 @@ instance I of Demo:
         let applied = prepared.apply_runtime_refinement_by_id(&db, Some(&meta), &handle_id)?;
         assert_eq!(applied.handle.id, handle_id);
         assert!(!applied.refined_exploration.refinement_candidates.is_empty());
+
+        let forged_but_internally_valid = AxqlRefinementHandleV1::new(
+            AxqlRefinementApplicationScopeV1::SingleConjunction,
+            AxqlRefinementOpV1::AddTypeGuard {
+                term: AxqlRefinementTermV1::ExistingVariable {
+                    name: "?not_in_this_query".to_string(),
+                },
+                type_name: "Demo.Supplier".to_string(),
+            },
+        );
+        let err = prepared
+            .apply_refinement_handle(&db, Some(&meta), &forged_but_internally_valid)
+            .expect_err("direct handle application must regenerate the current candidate");
+        assert!(err
+            .to_string()
+            .contains("was not emitted for this prepared query"));
         Ok(())
     }
 
@@ -3412,7 +3809,7 @@ instance I of Demo:
     }
 
     #[test]
-    fn query_ir_v1_prepare_with_meta_marks_execution_only() -> Result<()> {
+    fn query_ir_v1_compile_with_meta_marks_execution_only() -> Result<()> {
         let axi = r#"
 module Demo
 
@@ -3439,7 +3836,7 @@ instance I of S:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let prepared = q.compile_with_meta(&db, Some(&meta))?;
         let cert = prepared.certifiability();
         assert!(
             matches!(cert, QueryCertifiability::ExecutionOnly { .. }),
@@ -3487,7 +3884,7 @@ instance I of S:
             }"#,
         )?;
 
-        let prepared = q.prepare_with_meta(&db, None)?;
+        let prepared = q.compile_with_meta(&db, None)?;
         assert!(prepared.semantic_coverage().is_none());
         assert!(prepared.semantic_claims().is_empty());
 
@@ -3518,7 +3915,7 @@ instance I of S:
         assert_eq!(contract.soundness, "certificate_available_but_not_emitted");
         assert_eq!(
             contract.claim_scope,
-            "returned_rows_within_snapshot_and_context"
+            "finite_query_denotation_within_exact_accepted_module"
         );
         assert_eq!(contract.completeness_claim, "not_claimed");
         assert_eq!(contract.ontology_closure_claim, "not_claimed");
@@ -3529,7 +3926,7 @@ instance I of S:
         assert!(contract
             .notes
             .iter()
-            .any(|note| note.contains("not a claim that all satisfying rows were returned")));
+            .any(|note| note.contains("no exact-completeness claim")));
         Ok(())
     }
 
@@ -3612,7 +4009,7 @@ instance I of S:
     }
 
     #[test]
-    fn query_ir_v1_prepare_with_meta_marks_mixed_certifiability() -> Result<()> {
+    fn query_ir_v1_compile_with_meta_marks_mixed_certifiability() -> Result<()> {
         let q: QueryIrV1 = serde_json::from_str(
             r#"{
               "version": 1,
@@ -3642,53 +4039,7 @@ instance I of S:
     }
 
     #[test]
-    fn prepared_query_v1_certify_typed_with_anchor_emits_query_result_v3() -> Result<()> {
-        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .canonicalize()
-            .unwrap_or_else(|_| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
-            });
-        let axi_path = repo_root.join("examples/Family.axi");
-        let axi_text = std::fs::read_to_string(&axi_path)?;
-        let db = crate::load_pathdb_for_cli(&axi_path)?;
-        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
-        let digest = axiograph_dsl::digest::axi_digest_v1(&axi_text);
-
-        let q: QueryIrV1 = serde_json::from_str(
-            r#"{
-              "version": 1,
-              "select_vars": ["p"],
-              "where_atoms": [
-                {
-                  "kind": "fact",
-                  "fact": "?f",
-                  "relation": "Fam.Parent",
-                  "fields": {
-                    "child": "Carol",
-                    "parent": "?p",
-                    "ctx": "CensusData",
-                    "time": "T2020"
-                  }
-                }
-              ],
-              "limit": 10
-            }"#,
-        )?;
-
-        let prepared = q.prepare_with_meta(&db, Some(&meta))?;
-        let cert = prepared.certify_typed_with_anchor(&db, Some(&meta), &digest)?;
-        match cert.payload {
-            axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } => {
-                assert!(!proof.rows.is_empty());
-            }
-            other => panic!("expected query_result_v3 typed witness, got {other:?}"),
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn prepared_query_v1_execute_answer_returns_validated_artifact() -> Result<()> {
+    fn compiled_finite_query_execute_answer_returns_validated_artifact() -> Result<()> {
         let axi = r#"
 module Demo
 
@@ -3714,17 +4065,21 @@ instance I of S:
             }"#,
         )?;
 
-        let mut prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let mut prepared = q.compile_with_meta(&db, Some(&meta))?;
         let answer = prepared.execute_answer(&db, Some(&meta))?;
         assert_eq!(answer.lifecycle_state_name(), "validated");
         assert_eq!(answer.trust_contract().trust_class, "certifiable");
         assert_eq!(answer.result().selected_vars, vec!["?x"]);
         assert_eq!(answer.result().rows.len(), 1);
+        assert!(answer
+            .prepared_query_digest_v1()
+            .is_some_and(|digest| digest.as_str().starts_with("axi:query:v2:sha256:")));
+        assert_eq!(answer.selected_rows_v1().len(), 1);
         Ok(())
     }
 
     #[test]
-    fn validated_query_answer_can_transition_to_certified() -> Result<()> {
+    fn validated_query_answer_can_transition_to_certificate_emitted_v4() -> Result<()> {
         let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
             .canonicalize()
@@ -3732,8 +4087,11 @@ instance I of S:
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
             });
         let axi_path = repo_root.join("examples/Family.axi");
-        let axi_text = std::fs::read_to_string(&axi_path)?;
-        let digest = AxiDigest::from_axi_text(&axi_text);
+        let axi_text = crate::security::read_utf8_file_bounded(
+            &axi_path,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
         let db = crate::load_pathdb_for_cli(&axi_path)?;
         let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
 
@@ -3758,23 +4116,29 @@ instance I of S:
             }"#,
         )?;
 
-        let mut prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let mut prepared = q.compile_with_meta(&db, Some(&meta))?;
         let answer = prepared.execute_answer(&db, Some(&meta))?;
-        let certified =
-            prepared.certify_answer_with_anchor(answer, &db, Some(&meta), digest.clone())?;
+        let emitted = prepared.certify_answer_with_anchors(
+            answer,
+            &db,
+            Some(&meta),
+            RevisionDigestV2::from_accepted_text(&axi_text),
+        )?;
 
-        assert_eq!(certified.lifecycle_state_name(), "certified");
-        assert_eq!(certified.anchor_digest(), &digest);
+        assert_eq!(emitted.lifecycle_state_name(), "certificate_emitted");
         assert_eq!(
-            certified.trust_contract().soundness,
-            "certificate_emitted_row_soundness_unverified"
+            emitted.trust_contract().soundness,
+            "finite_exact_certificate_emitted_unverified"
         );
-        match &certified.certificate().payload {
-            axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } => {
-                assert!(!proof.rows.is_empty());
-            }
-            other => panic!("expected query_result_v3 typed witness, got {other:?}"),
-        }
+        assert!(!emitted.certificate().proof.rows.is_empty());
+        assert_eq!(
+            emitted.certificate().proof.prepared_query_digest_v1,
+            *emitted.prepared_query_digest_v1().expect("prepared digest")
+        );
+        assert_eq!(
+            emitted.certificate().proof.answer_digest_v1,
+            *emitted.answer_digest_v1()
+        );
         Ok(())
     }
 
@@ -3787,7 +4151,11 @@ instance I of S:
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
             });
         let axi_path = repo_root.join("examples/Family.axi");
-        let axi_text = std::fs::read_to_string(&axi_path)?;
+        let axi_text = crate::security::read_utf8_file_bounded(
+            &axi_path,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
         let digest = AxiDigest::from_axi_text(&axi_text);
         let accepted_axi_anchor = AcceptedAxiAnchor::new(
             axiograph_pathdb::AcceptedSnapshotId::new("accepted:test-family"),
@@ -3817,7 +4185,7 @@ instance I of S:
             }"#,
         )?;
 
-        let mut prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let mut prepared = q.compile_with_meta(&db, Some(&meta))?;
         let validated = prepared
             .bind_accepted_axi_anchor(accepted_axi_anchor.clone())
             .execute_answer(&db, Some(&meta))?;
@@ -3832,17 +4200,16 @@ instance I of S:
 
         let certified = prepared
             .bind_accepted_axi_anchor(accepted_axi_anchor.clone())
-            .certify_answer(validated, &db, Some(&meta))?;
+            .certify_answer(
+                validated,
+                &db,
+                Some(&meta),
+                RevisionDigestV2::from_accepted_text(&axi_text),
+            )?;
 
-        assert_eq!(certified.lifecycle_state_name(), "certified");
+        assert_eq!(certified.lifecycle_state_name(), "certificate_emitted");
         assert_eq!(certified.accepted_axi_anchor(), &accepted_axi_anchor);
-        assert_eq!(certified.anchor_digest(), &digest);
-        match &certified.certificate().payload {
-            axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } => {
-                assert!(!proof.rows.is_empty());
-            }
-            other => panic!("expected query_result_v3 typed witness, got {other:?}"),
-        }
+        assert!(!certified.certificate().proof.rows.is_empty());
         Ok(())
     }
 
@@ -3873,20 +4240,25 @@ instance I of Demo:
             }"#,
         )?;
 
-        let mut prepared = q.prepare_with_meta(&db, Some(&meta))?;
+        let mut prepared = q.compile_with_meta(&db, Some(&meta))?;
         let answer = prepared
             .bind_accepted_axi_anchor(AcceptedAxiAnchor::new(
                 axiograph_pathdb::AcceptedSnapshotId::new("accepted:a"),
-                AxiDigest::new("fnv1a64:anchor-a"),
+                AxiDigest::from_axi_text("module AnchorA\n"),
             ))
             .execute_answer(&db, Some(&meta))?;
 
         let err = prepared
             .bind_accepted_axi_anchor(AcceptedAxiAnchor::new(
                 axiograph_pathdb::AcceptedSnapshotId::new("accepted:b"),
-                AxiDigest::new("fnv1a64:anchor-b"),
+                AxiDigest::from_axi_text("module AnchorB\n"),
             ))
-            .certify_answer(answer, &db, Some(&meta))
+            .certify_answer(
+                answer,
+                &db,
+                Some(&meta),
+                RevisionDigestV2::from_accepted_text(axi),
+            )
             .expect_err("mismatched accepted anchor should be rejected");
         assert!(err
             .to_string()
@@ -3895,7 +4267,7 @@ instance I of Demo:
     }
 
     #[test]
-    fn prepared_query_v1_certify_answer_rejects_mismatched_query_answer() -> Result<()> {
+    fn compiled_finite_query_rejects_mismatched_query_answer() -> Result<()> {
         let axi = r#"
 module Demo
 
@@ -3931,20 +4303,225 @@ instance I of Demo:
             }"#,
         )?;
 
-        let mut prepared_one = q1.prepare_with_meta(&db, Some(&meta))?;
-        let mut prepared_two = q2.prepare_with_meta(&db, Some(&meta))?;
+        let mut prepared_one = q1.compile_with_meta(&db, Some(&meta))?;
+        let mut prepared_two = q2.compile_with_meta(&db, Some(&meta))?;
         let answer_one = prepared_one.execute_answer(&db, Some(&meta))?;
         let err = prepared_two
-            .certify_answer_with_anchor(
+            .certify_answer_with_anchors(
                 answer_one,
                 &db,
                 Some(&meta),
-                AxiDigest::new("fnv1a64:test"),
+                RevisionDigestV2::from_accepted_text(axi),
             )
             .expect_err("mismatched prepared query should be rejected");
         assert!(err
             .to_string()
-            .contains("does not belong to this prepared query"));
+            .contains("does not belong to this prepared binding"));
+        Ok(())
+    }
+
+    #[test]
+    fn certificate_transition_rejects_answer_tamper_reorder_drop_duplicate_and_truncation(
+    ) -> Result<()> {
+        let axi = r#"module Demo
+
+schema S:
+  object Node
+
+instance I of S:
+  Node = {a, b}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let query: QueryIrV1 = serde_json::from_str(
+            r#"{
+              "version": 1,
+              "select_vars": ["x"],
+              "where_atoms": [{"kind":"type","term":"?x","type":"Node"}],
+              "limit": 2
+            }"#,
+        )?;
+        let mut prepared = query.compile_with_meta(&db, Some(&meta))?;
+        let digest_v2 = RevisionDigestV2::from_accepted_text(axi);
+
+        let mut tampered = prepared.execute_answer(&db, Some(&meta))?;
+        tampered.selected_rows_v1[0].projections[0].entity = "Mallory".to_string();
+        assert!(prepared
+            .certify_answer_with_anchors(tampered, &db, Some(&meta), digest_v2.clone())
+            .is_err());
+
+        let mut reordered = prepared.execute_answer(&db, Some(&meta))?;
+        reordered.selected_rows_v1.swap(0, 1);
+        assert!(prepared
+            .certify_answer_with_anchors(reordered, &db, Some(&meta), digest_v2.clone())
+            .is_err());
+
+        let mut dropped = prepared.execute_answer(&db, Some(&meta))?;
+        dropped.selected_rows_v1.pop();
+        assert!(prepared
+            .certify_answer_with_anchors(dropped, &db, Some(&meta), digest_v2.clone())
+            .is_err());
+
+        let mut duplicated = prepared.execute_answer(&db, Some(&meta))?;
+        duplicated.selected_rows_v1[1] = duplicated.selected_rows_v1[0].clone();
+        assert!(prepared
+            .certify_answer_with_anchors(duplicated, &db, Some(&meta), digest_v2.clone())
+            .is_err());
+
+        let mut truncation = prepared.execute_answer(&db, Some(&meta))?;
+        truncation.runtime_truncated = !truncation.runtime_truncated;
+        assert!(prepared
+            .certify_answer_with_anchors(truncation, &db, Some(&meta), digest_v2)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_truncation_never_upgrades_completeness_claim() -> Result<()> {
+        let axi = r#"module Demo
+schema S:
+  object Node
+instance I of S:
+  Node = {a, b}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        for (limit, expected_truncated, expected_rows) in [(1, true, 1), (3, false, 2)] {
+            let query: QueryIrV1 = serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "select_vars": ["x"],
+                "where_atoms": [{"kind":"type","term":"?x","type":"Node"}],
+                "limit": limit
+            }))?;
+            let mut prepared = query.compile_with_meta(&db, Some(&meta))?;
+            let metadata = prepared.metadata_v2_with_meta(Some(&meta))?;
+            assert_eq!(
+                metadata.runtime_metadata_v1.non_claims.completeness_claim,
+                "not_claimed"
+            );
+            assert_eq!(
+                metadata
+                    .runtime_metadata_v1
+                    .non_claims
+                    .ontology_closure_claim,
+                "not_claimed"
+            );
+            let answer = prepared.execute_answer(&db, Some(&meta))?;
+            assert_eq!(answer.runtime_truncated(), expected_truncated);
+            assert_eq!(answer.selected_rows_v1().len(), expected_rows);
+            let emitted = prepared.certify_answer_with_anchors(
+                answer,
+                &db,
+                Some(&meta),
+                RevisionDigestV2::from_accepted_text(axi),
+            );
+            if expected_truncated {
+                assert!(emitted
+                    .expect_err("truncated answers must never enter query_result_v4")
+                    .to_string()
+                    .contains("untruncated answer"));
+            } else {
+                let emitted = emitted?;
+                assert!(!emitted.certificate().proof.runtime_truncated);
+                assert_eq!(emitted.trust_contract().completeness_claim, "not_claimed");
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lean_transition_rejects_receipt_for_other_certificate_bytes() -> Result<()> {
+        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let verifier = repo.join("lean/.lake/build/bin/axiograph_verify");
+        if !verifier.exists() {
+            return Ok(());
+        }
+        let axi = r#"module Demo
+schema S:
+  object Node
+instance I of S:
+  Node = {a}
+"#;
+        let mut db = axiograph_pathdb::PathDB::new();
+        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+        db.build_indexes();
+        let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
+        let query: QueryIrV1 = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "select_vars": ["x"],
+            "where_atoms": [{"kind":"type","term":"?x","type":"Node"}],
+            "limit": 1
+        }))?;
+        let mut prepared = query.compile_with_meta(&db, Some(&meta))?;
+        let answer = prepared.execute_answer(&db, Some(&meta))?;
+        let mut emitted = prepared.certify_answer_with_anchors(
+            answer,
+            &db,
+            Some(&meta),
+            RevisionDigestV2::from_accepted_text(axi),
+        )?;
+        let config = crate::verifier_bridge::CertVerifyConfig {
+            verifier_bin: Some(verifier.clone()),
+            timeout: Some(std::time::Duration::from_secs(10)),
+            approved_checker_sha256: Some(crate::verifier_bridge::sha256_file(&verifier)?),
+            approved_checker_build_id: Some("axiograph-verify-main-v3".to_string()),
+        };
+        let receipt = crate::verifier_bridge::verify_certificate_with_lean(
+            &config,
+            axi,
+            emitted.certificate_text(),
+            emitted.prepared_query_digest_v1().expect("prepared digest"),
+            emitted.answer_digest_v1(),
+        )?;
+        emitted
+            .certificate_text
+            .as_mut()
+            .expect("certificate text")
+            .push('\n');
+        emitted.certificate_digest_v2 = Some(CertificateIdV2::from_canonical_fields(&[emitted
+            .certificate_text()
+            .as_bytes()]));
+        assert!(emitted.into_lean_verified(receipt).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn certificate_transition_rejects_prepared_db_state_drift() -> Result<()> {
+        let axi = r#"module Demo
+schema S:
+  object Node
+instance I of S:
+  Node = {a}
+"#;
+        let make_db = || -> Result<axiograph_pathdb::PathDB> {
+            let mut db = axiograph_pathdb::PathDB::new();
+            axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, axi)?;
+            db.build_indexes();
+            Ok(db)
+        };
+        let db_a = make_db()?;
+        let db_b = make_db()?;
+        let meta_a = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db_a)?;
+        let meta_b = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db_b)?;
+        let query: QueryIrV1 = serde_json::from_str(
+            r#"{"version":1,"select_vars":["x"],"where_atoms":[{"kind":"type","term":"?x","type":"Node"}],"limit":1}"#,
+        )?;
+        let mut prepared = query.compile_with_meta(&db_a, Some(&meta_a))?;
+        let answer = prepared.execute_answer(&db_a, Some(&meta_a))?;
+        let err = prepared
+            .certify_answer_with_anchors(
+                answer,
+                &db_b,
+                Some(&meta_b),
+                RevisionDigestV2::from_accepted_text(axi),
+            )
+            .expect_err("DB drift must reject before certificate emission");
+        assert!(err.to_string().contains("DB token"));
         Ok(())
     }
 

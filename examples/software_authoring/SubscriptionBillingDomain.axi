@@ -18,13 +18,13 @@ schema SubscriptionBilling:
   object BillingPolicy
   object BusinessInvariant
 
-  relation AccountHasSubscription(account: Account, subscription: Subscription, ctx: Context, time: Time)
-  relation SubscriptionUsesPlan(subscription: Subscription, plan: Plan, ctx: Context, time: Time)
-  relation SubscriptionGeneratesInvoice(subscription: Subscription, invoice: Invoice, ctx: Context, time: Time)
-  relation InvoicePaidBy(invoice: Invoice, payment: Payment, ctx: Context, time: Time)
-  relation PaidInvoiceGrantsEntitlement(invoice: Invoice, entitlement: Entitlement, ctx: Context, time: Time)
-  relation SubscriptionHasEntitlement(subscription: Subscription, entitlement: Entitlement, ctx: Context, time: Time)
-  relation AccountGrantedEntitlement(account: Account, entitlement: Entitlement, ctx: Context, time: Time)
+  relation AccountHasSubscription(account: Account, subscription: Subscription, ctx: Context @context, time: Time @temporal)
+  relation SubscriptionUsesPlan(subscription: Subscription, plan: Plan, ctx: Context @context, time: Time @temporal)
+  relation SubscriptionGeneratesInvoice(subscription: Subscription, invoice: Invoice, ctx: Context @context, time: Time @temporal)
+  relation InvoicePaidBy(invoice: Invoice, payment: Payment, ctx: Context @context, time: Time @temporal)
+  relation PaidInvoiceGrantsEntitlement(invoice: Invoice, entitlement: Entitlement, ctx: Context @context, time: Time @temporal)
+  relation SubscriptionHasEntitlement(subscription: Subscription, entitlement: Entitlement, ctx: Context @context, time: Time @temporal)
+  relation AccountGrantedEntitlement(account: Account, entitlement: Entitlement, ctx: Context @context, time: Time @temporal)
   relation ProcessRequiresInvariant(process: BillingProcess, invariant: BusinessInvariant)
   relation PolicyRequiresInvariant(policy: BillingPolicy, invariant: BusinessInvariant)
 

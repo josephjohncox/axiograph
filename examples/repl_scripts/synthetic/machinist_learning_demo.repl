@@ -21,5 +21,3 @@ q select ?p where ?p is PathWitness, ?p -from-> name("op_0") limit 10
 
 llm use mock
 llm ask find Material named mat_0_Titanium6Al4V
-
-save build/machinist_learning.axpd

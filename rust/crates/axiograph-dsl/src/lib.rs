@@ -8,5 +8,4 @@
 //! authoring surface.
 
 pub mod axi_v1;
-pub mod digest;
 pub mod schema_v1;

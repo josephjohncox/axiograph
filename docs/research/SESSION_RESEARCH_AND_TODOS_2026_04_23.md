@@ -22,12 +22,12 @@ It is intended as a continuity artifact so future turns do not lose the reasonin
 - **First runtime schema-category / instance-functor IR slice** was implemented and verified.
 - The repo’s current **DDD / fDDD / bounded-context / ontology-engineering** overlaps were researched and synthesized.
 - The repo’s current **query/spec convergence seams** were researched and synthesized.
-- The earlier research backlog around **path primitives**, **support/evidence**, **industrial harness**, **DDD**, and **applied semantics** has been consolidated into a single implementation ordering.
+- The earlier research backlog around **path primitives**, **support/evidence**, **regulated production line examples**, **DDD**, and **applied semantics** has been consolidated into a single implementation ordering.
 
 ### Still in progress
 
 - Continue the **unified query + spec language** design lane with implementation-grounded constraints.
-- Continue the **industrial harness parity/relocation** tranche.
+- Continue the **regulated production line example parity/relocation** tranche.
 - Extend the DDD/context wrapper layer beyond `BehaviorCaseV1` into context
   bridges, outcome matching, aggregate/invariant boundaries, and promotion-gated
   case receipts.
@@ -108,7 +108,7 @@ Implemented behavior:
 - Added a new HTTP endpoint:
   - `POST /semantic/context-report`
 - Added a new CLI surface:
-  - `axiograph discover context-report <input.axpd|input.axi> --request <context.json> [--out <report.json>]`
+  - `axiograph discover context-report <input.axi> --request <context.json> [--out <report.json>]`
 - Added MCP and tool-loop exposure for the same report shape.
 
 ### Verification completed for bounded-context reporting
@@ -142,7 +142,8 @@ Implemented files:
 
 Implemented behavior:
 
-- Added JSON-only `BehaviorCaseV1` plus `BehaviorCaseCheckRequestV1`.
+- Added typed `BehaviorCaseV1` plus `BehaviorCaseCheckRequestV1` payloads;
+  JSON is the current file/wire encoding, not the authoring concept.
 - Added `CaseReceiptV1` as the runtime receipt for anchors, trust class,
   claim strength, matched rules/scopes/surfaces, CQ status, residual
   obligations, and next actions.
@@ -152,9 +153,9 @@ Implemented behavior:
 - Added a new HTTP endpoint:
   - `POST /semantic/behavior-case`
 - Added a new CLI surface:
-  - `axiograph discover behavior-case <input.axpd|input.axi> --request <behavior-case.json> [--out <report.json>]`
+  - `axiograph discover behavior-case <module.axi> --request <behavior-case.json> --overlay <overlay.json> [--cq-file <questions.cq>] [--out <report.json>]`
 - Kept Gherkin/BDD syntax out of the runtime contract for now; it should become
-  an import/export view over the same JSON payload later.
+  an import/export view over the same typed payload later.
 
 Verification completed:
 
@@ -192,42 +193,23 @@ Verification completed:
 - Focused pathdb kernel test for relation objects, role projections, subtype
   inclusions, and instance-functor transport passed.
 
-### Proof-native runtime support summary tranche
+### Superseded runtime support-summary experiment
 
-The next core report-layer tranche that landed was the support primitive upgrade behind the existing `support_summary` wire field.
+A report-layer support primitive was tried here and later removed by the W06
+single-query-family cutover.
 
 Implemented files:
 
-- `rust/crates/axiograph-cli/src/evidence_support.rs`
 - `rust/crates/axiograph-cli/src/db_server.rs`
 - `rust/crates/axiograph-cli/tests/db_server_e2e.rs`
 - `docs/reference/QUERY_LANG.md`
 - `docs/howto/DB_SERVER.md`
 - `docs/research/SESSION_RESEARCH_AND_TODOS_2026_04_23.md`
 
-Implemented behavior:
-
-- Kept the wire field name `support_summary` stable.
-- Strengthened the contract behind that field so support is now proof-native over `query_result_v3` witness rows.
-- Added additive metadata centered on:
-  - `basis`
-  - `coverage`
-  - `support_kind`
-  - `witness_rows`
-- Kept `contexts` and `evidence` as attachment-layer enrichments instead of the support basis itself.
-- Historical note, now expressed through `QueryCertificatePolicyV1`: accepted-anchor certifiable queries can return `support_summary` even when `certificate_policy` is `none`.
-- Made internal support-only certificate construction best-effort when the client did not request a certificate, so support enrichment cannot regress normal query execution.
-
-### Verification completed for support summaries
-
-- Focused `evidence_support` tests passed.
-- Focused support-related `/query`, MCP, and tool-loop tests passed.
-- Full `cargo test -p axiograph-cli -- --nocapture` passed after one regression fix.
-- Manual store-backed `/query` QA passed, showing:
-  - `support_present=True`
-  - `basis_kind=query_result_v3`
-  - `basis_emitted=False`
-  - `supported_facts=1`
+Superseded by the W06 query cutover: the internal support-only certificate and
+`support_summary` compatibility path were deleted. Query execution now compiles
+through `CompiledFiniteQuery`; `query_result_v4` is the sole query certificate,
+and only a bound Lean receipt can carry the exact finite claim.
 
 ## 3. Stable architecture conclusions
 
@@ -246,19 +228,20 @@ Keep in the **core runtime** now:
 - run / inspect parity for artifacts.
 
 Keep **out of core for now**:
+
 - broad rewrite-engine expansion,
 - Kan / codensity optimization work,
 - linear/resource typing as a primary user vocabulary,
 - UI/viz-first work,
-- DigitalTwin harness orchestration,
+- DigitalTwin example orchestration,
 - MCP-specific semantics as kernel-defining concepts,
 - and broad DDD / bounded-context vocabulary unless it stabilizes as a real shared shared contract over multiple runtime surfaces.
 
 ### 3.2 Current ranked implementation order
 
 1. **Path / route certification** — now implemented.
-2. **Support primitive contract** — now implemented behind the stable `support_summary` field.
-3. **Run / inspect parity + harness boundary cleanup** — now the next most immediate open implementation tranche.
+2. **Support primitive contract** — superseded; support is not a second query-certificate path.
+3. **Run / inspect parity + example boundary cleanup** — now the next most immediate open implementation tranche.
 
 ## 4. DDD / fDDD / bounded-context synthesis
 
@@ -322,7 +305,8 @@ The final repo-backed mapping from the later DDD implementation seam audit was:
   - `PreparedQueryExplorationV1`
   - `TrustContractV1` / query trust
   - semantic claim summaries
-  - persisted through `accepted_plane.rs` / `sem/validations`
+  - persisted as immutable AxiStore review attachments (the former
+    `accepted_plane.rs` / `sem/validations` design was removed)
 - `BehaviorCase` → build over:
   - `CompetencyQuestionV1`
   - `CompetencyQuestionEvaluationV1`
@@ -436,22 +420,21 @@ Main conclusion from the earlier audit:
 
 This slice is now implemented in runtime/tooling form behind the existing `support_summary` wire field.
 
-Runtime tranche outcome (implemented after this note was written):
+Runtime tranche outcome (later superseded): the compatibility
+`support_summary` path and its separate query-certificate basis were removed in
+favor of one compiled query family and one V4 certificate boundary. Context and
+evidence enrichment remain untrusted report concerns rather than a second proof
+path.
 
-- `support_summary` stays on the same wire field across `/query`, MCP `axql_run`, and tool-loop `axql_run`,
-- its runtime basis is now proof-native over `query_result_v3` witness rows,
-- `supported_facts[*].witness_rows` record the supporting row/disjunct references,
-- and `contexts` / `evidence` are now framed explicitly as attachment-layer enrichments rather than the support basis itself.
-
-## 8. Industrial harness synthesis
+## 8. Industrial example synthesis
 
 The earlier audit concluded:
 
 - current run / inspect parity exists in MCP/tool-loop,
 - CLI is still the outlier,
-- and the smallest next harness slice is a shared read-only status/report/readback surface, likely built over `inspect_industrial_harness_run`, while avoiding a premature multi-run/list API.
+- and the smallest next example slice is a shared read-only status/report/readback surface, likely built over `inspect_industrial_example_run`, while avoiding a premature multi-run/list API.
 
-There is still also an open architectural question about relocating harness-specific orchestration toward examples/binaries once the shared contracts are clean enough.
+There is still also an open architectural question about relocating example-specific orchestration toward examples/binaries once the shared contracts are clean enough.
 
 ## 9. Research dump and external references
 
@@ -547,59 +530,59 @@ Main conclusions:
 
 #### Category / transport / typed semantics
 
-- https://github.com/leanprover-community/mathlib4/blob/6643e97efe48371dd1fe90b936ab305f528a4384/Mathlib/CategoryTheory/Groupoid/FreeGroupoid.lean
-- https://github.com/leanprover-community/mathlib4/blob/6643e97efe48371dd1fe90b936ab305f528a4384/Mathlib/Tactic/DepRewrite.lean
-- https://github.com/leanprover-community/mathlib4/blob/6643e97efe48371dd1fe90b936ab305f528a4384/Mathlib/CategoryTheory/Monoidal/Transport.lean
-- https://github.com/CategoricalData/CQL/blob/6b4d0f7d7f0a3759738e7bd0a2a908beb4c8b92e/README.md
-- https://github.com/CategoricalData/CQL/blob/6b4d0f7d7f0a3759738e7bd0a2a908beb4c8b92e/resources/open/docs/QueryExpRawSimple.md
-- https://github.com/CategoricalData/CQL/blob/6b4d0f7d7f0a3759738e7bd0a2a908beb4c8b92e/resources/open/docs/QueryExpFront.md
-- https://github.com/CategoricalData/CQL/blob/6b4d0f7d7f0a3759738e7bd0a2a908beb4c8b92e/resources/open/docs/PragmaExpCheck.md
-- https://categoricaldata.net/papers.html
-- https://github.com/AlgebraicJulia/Catlab.jl
-- https://github.com/egraphs-good/egglog
-- https://agda.readthedocs.io/en/stable/getting-started/a-taste-of-agda.html
-- https://github.com/ekmett/kan-extensions/blob/f455d0d6bec741be8243b4ce73cbe830b1eb4704/src/Control/Monad/Codensity.hs
+- <https://github.com/leanprover-community/mathlib4/blob/6643e97efe48371dd1fe90b936ab305f528a4384/Mathlib/CategoryTheory/Groupoid/FreeGroupoid.lean>
+- <https://github.com/leanprover-community/mathlib4/blob/6643e97efe48371dd1fe90b936ab305f528a4384/Mathlib/Tactic/DepRewrite.lean>
+- <https://github.com/leanprover-community/mathlib4/blob/6643e97efe48371dd1fe90b936ab305f528a4384/Mathlib/CategoryTheory/Monoidal/Transport.lean>
+- <https://github.com/CategoricalData/CQL/blob/6b4d0f7d7f0a3759738e7bd0a2a908beb4c8b92e/README.md>
+- <https://github.com/CategoricalData/CQL/blob/6b4d0f7d7f0a3759738e7bd0a2a908beb4c8b92e/resources/open/docs/QueryExpRawSimple.md>
+- <https://github.com/CategoricalData/CQL/blob/6b4d0f7d7f0a3759738e7bd0a2a908beb4c8b92e/resources/open/docs/QueryExpFront.md>
+- <https://github.com/CategoricalData/CQL/blob/6b4d0f7d7f0a3759738e7bd0a2a908beb4c8b92e/resources/open/docs/PragmaExpCheck.md>
+- <https://categoricaldata.net/papers.html>
+- <https://github.com/AlgebraicJulia/Catlab.jl>
+- <https://github.com/egraphs-good/egglog>
+- <https://agda.readthedocs.io/en/stable/getting-started/a-taste-of-agda.html>
+- <https://github.com/ekmett/kan-extensions/blob/f455d0d6bec741be8243b4ce73cbe830b1eb4704/src/Control/Monad/Codensity.hs>
 
 #### Effects / functional programming / average-programmer-friendly semantics
 
-- https://github.com/typelevel/cats/blob/be4a99d885dbac0d99ef64aa896103956ffd6272/core/src/main/scala/cats/arrow/Category.scala
-- https://github.com/typelevel/cats/blob/be4a99d885dbac0d99ef64aa896103956ffd6272/core/src/main/scala/cats/arrow/Arrow.scala
-- https://github.com/typelevel/cats/blob/be4a99d885dbac0d99ef64aa896103956ffd6272/core/src/main/scala/cats/data/Kleisli.scala
-- https://github.com/gcanti/fp-ts/blob/c0a6472121c67a2b083e62fcff13e7d022e39d8f/src/ReaderTaskEither.ts
-- https://effect.website/
-- https://github.com/tweag/linear-base/blob/e7412cfdaefb322e7f46d71cd9b75b1df7fc87e2/README.md
+- <https://github.com/typelevel/cats/blob/be4a99d885dbac0d99ef64aa896103956ffd6272/core/src/main/scala/cats/arrow/Category.scala>
+- <https://github.com/typelevel/cats/blob/be4a99d885dbac0d99ef64aa896103956ffd6272/core/src/main/scala/cats/arrow/Arrow.scala>
+- <https://github.com/typelevel/cats/blob/be4a99d885dbac0d99ef64aa896103956ffd6272/core/src/main/scala/cats/data/Kleisli.scala>
+- <https://github.com/gcanti/fp-ts/blob/c0a6472121c67a2b083e62fcff13e7d022e39d8f/src/ReaderTaskEither.ts>
+- <https://effect.website/>
+- <https://github.com/tweag/linear-base/blob/e7412cfdaefb322e7f46d71cd9b75b1df7fc87e2/README.md>
 
 #### Bounded contexts / DDD / fDDD / executable specs
 
-- https://martinfowler.com/bliki/BoundedContext.html
-- https://martinfowler.com/bliki/CQRS.html
-- https://learn.microsoft.com/en-us/azure/architecture/microservices/model/domain-analysis
-- https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-domain-driven-design
-- https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
-- https://contextmapper.org/docs/bounded-context/
-- https://contextmapper.org/docs/context-map/
-- https://github.com/ddd-crew/bounded-context-canvas/blob/cdbd86eb19f75f797424543b11fc0b18f72bbe36/README.md
-- https://docs.cucumber.io/bdd/
-- https://docs.cucumber.io/bdd/example-mapping/
-- https://cucumber.io/docs/gherkin/
-- https://github.com/cucumber/cucumber-ruby/blob/afe3b553685f084a108bbb1629e564c9a9dde2e5/features/docs/gherkin/background.feature#L1-L13
-- https://github.com/dotnet/eShop/blob/9b4f9434f46fdc5c1a6e9e936af2868340cdbc48/src/Ordering.API/Application/Commands/CreateOrderCommand.cs#L3-L84
-- https://github.com/dotnet/eShop/blob/9b4f9434f46fdc5c1a6e9e936af2868340cdbc48/src/Ordering.API/Application/IntegrationEvents/Events/OrderStartedIntegrationEvent.cs#L3-L12
-- https://github.com/eventflow/EventFlow/blob/4c070a03846ef8ecda4166a12d1165e157d766da/README.md#L240-L339
-- https://github.com/eventflow/EventFlow/blob/4c070a03846ef8ecda4166a12d1165e157d766da/Source/EventFlow.Examples.Shipping/Domain/Model/CargoModel/CargoAggregate.cs#L30-L55
-- https://github.com/eventflow/EventFlow/blob/4c070a03846ef8ecda4166a12d1165e157d766da/Source/EventFlow.Examples.Shipping/Domain/Model/CargoModel/Commands/CargoBookCommand.cs#L30-L49
-- https://github.com/swlaschin/DomainModelingMadeFunctional/blob/8153616b1dc0d5a0bb9e965cbe14a46b0dd4f3cf/src/OrderTaking/PlaceOrder.PublicTypes.fs#L7-L123
-- https://github.com/swlaschin/DomainModelingMadeFunctional/blob/8153616b1dc0d5a0bb9e965cbe14a46b0dd4f3cf/src/OrderTaking/PlaceOrder.Dto.fs#L8-L364
-- https://github.com/swlaschin/DomainModelingMadeFunctional/blob/8153616b1dc0d5a0bb9e965cbe14a46b0dd4f3cf/src/OrderTaking/PlaceOrder.Api.fs#L4-L130
-- https://github.com/swlaschin/DomainModelingMadeFunctional/blob/8153616b1dc0d5a0bb9e965cbe14a46b0dd4f3cf/src/OrderTaking/PlaceOrder.Implementation.fs#L18-L120
-- https://github.com/tonyx/Sharpino/blob/df4c90897ff1f71597a16026f89cc09525745327/README.md#L18-L45
+- <https://martinfowler.com/bliki/BoundedContext.html>
+- <https://martinfowler.com/bliki/CQRS.html>
+- <https://learn.microsoft.com/en-us/azure/architecture/microservices/model/domain-analysis>
+- <https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-domain-driven-design>
+- <https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation>
+- <https://contextmapper.org/docs/bounded-context/>
+- <https://contextmapper.org/docs/context-map/>
+- <https://github.com/ddd-crew/bounded-context-canvas/blob/cdbd86eb19f75f797424543b11fc0b18f72bbe36/README.md>
+- <https://docs.cucumber.io/bdd/>
+- <https://docs.cucumber.io/bdd/example-mapping/>
+- <https://cucumber.io/docs/gherkin/>
+- <https://github.com/cucumber/cucumber-ruby/blob/afe3b553685f084a108bbb1629e564c9a9dde2e5/features/docs/gherkin/background.feature#L1-L13>
+- <https://github.com/dotnet/eShop/blob/9b4f9434f46fdc5c1a6e9e936af2868340cdbc48/src/Ordering.API/Application/Commands/CreateOrderCommand.cs#L3-L84>
+- <https://github.com/dotnet/eShop/blob/9b4f9434f46fdc5c1a6e9e936af2868340cdbc48/src/Ordering.API/Application/IntegrationEvents/Events/OrderStartedIntegrationEvent.cs#L3-L12>
+- <https://github.com/eventflow/EventFlow/blob/4c070a03846ef8ecda4166a12d1165e157d766da/README.md#L240-L339>
+- <https://github.com/eventflow/EventFlow/blob/4c070a03846ef8ecda4166a12d1165e157d766da/Source/EventFlow.Examples.Shipping/Domain/Model/CargoModel/CargoAggregate.cs#L30-L55>
+- <https://github.com/eventflow/EventFlow/blob/4c070a03846ef8ecda4166a12d1165e157d766da/Source/EventFlow.Examples.Shipping/Domain/Model/CargoModel/Commands/CargoBookCommand.cs#L30-L49>
+- <https://github.com/swlaschin/DomainModelingMadeFunctional/blob/8153616b1dc0d5a0bb9e965cbe14a46b0dd4f3cf/src/OrderTaking/PlaceOrder.PublicTypes.fs#L7-L123>
+- <https://github.com/swlaschin/DomainModelingMadeFunctional/blob/8153616b1dc0d5a0bb9e965cbe14a46b0dd4f3cf/src/OrderTaking/PlaceOrder.Dto.fs#L8-L364>
+- <https://github.com/swlaschin/DomainModelingMadeFunctional/blob/8153616b1dc0d5a0bb9e965cbe14a46b0dd4f3cf/src/OrderTaking/PlaceOrder.Api.fs#L4-L130>
+- <https://github.com/swlaschin/DomainModelingMadeFunctional/blob/8153616b1dc0d5a0bb9e965cbe14a46b0dd4f3cf/src/OrderTaking/PlaceOrder.Implementation.fs#L18-L120>
+- <https://github.com/tonyx/Sharpino/blob/df4c90897ff1f71597a16026f89cc09525745327/README.md#L18-L45>
 
 #### Ontology engineering / competency questions / design patterns
 
-- https://github.com/OpenEnergyPlatform/ontology/wiki/writing-competency-questions
-- https://ceur-ws.org/Vol-4176/caos-9.pdf
-- http://ontologydesignpatterns.org/index.php?title=Main_Page
-- https://github.com/odpa/patterns-repository
+- <https://github.com/OpenEnergyPlatform/ontology/wiki/writing-competency-questions>
+- <https://ceur-ws.org/Vol-4176/caos-9.pdf>
+- <http://ontologydesignpatterns.org/index.php?title=Main_Page>
+- <https://github.com/odpa/patterns-repository>
 
 ## 10. Outstanding work
 
@@ -618,7 +601,7 @@ Main conclusions:
      - `CaseReceiptV1`
    - all should still be built on top of existing CQ / semantic-claim / evolution-preview / trust surfaces.
 
-3. **Industrial harness parity tranche**
+3. **Industrial example parity tranche**
    - status/report/readback in CLI,
    - likely thin projection over existing inspect bundle.
 
@@ -650,7 +633,7 @@ Pending / in progress:
 
 - unified query + spec language research/design lane,
 - next wrapper-layer tranche after bounded-context reporting,
-- industrial harness parity/relocation tranche,
+- regulated production line example parity/relocation tranche,
 - docs/readings updates beyond this session artifact.
 
 ## 12. Retired path-cert tranche follow-up
@@ -670,7 +653,7 @@ These are not blockers for the tranche itself — the code passed focused tests,
 
 - `ses_248d14647ffej2SH7rEQx24ts1` — path primitive seam audit
 - `ses_248d14644ffe080zq65r1kFdnY` — evidence/support seam audit
-- `ses_248d14641ffcpa0YF6l9yv5pWB` — industrial harness seam audit
+- `ses_248d14641ffcpa0YF6l9yv5pWB` — regulated production line example seam audit
 - `ses_2448e7b83ffeVjjGFKrnp9tzCZ` — core-vs-extension oracle ranking
 - `ses_2448fd537ffelGl4Z8kxNU0YW6` — bounded context / BDD / ontology research
 - `ses_2448fd536ffeG74YNHdioMLX2m` — operational behavior-compiler / `ContextCell` framing
@@ -690,7 +673,7 @@ This session also inherits the earlier subagent inventory captured in the compac
 
 - path primitive work,
 - evidence parity work,
-- industrial harness work,
+- regulated production line example work,
 - semantic VCS hardening,
 - homotopy/user-facing cleanup,
 - MCP pattern research,
@@ -704,9 +687,9 @@ Those prior session ids should still be treated as part of the active working co
 The next clean execution order remains:
 
 1. implement the **support primitive** tranche,
-2. implement the **industrial harness parity/readback** tranche,
+2. implement the **regulated production line example parity/readback** tranche,
 3. then either:
-   - finish **industrial harness parity**, or
+   - finish **regulated production line example parity**, or
    - extend the DDD wrapper layer with **BehaviorCaseV1**,
 4. continue the **query + spec language** convergence work from the existing IR family,
 5. then revisit richer context bridges / outcome matches / receipts.

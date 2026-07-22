@@ -131,7 +131,7 @@ Current operational seam:
 - This lets a behavior case become a typed merge/rebase slice for review
   branches, implementation work, and CQ-gated ontology evolution.
 - See `examples/software_authoring/` for the concrete authoring loop: a pure
-  domain `.axi` module, a typed tooling overlay, weak definition/coverage
+  domain `.axi` module, a typed tooling overlay, advisory definition/coverage
   queries, a JSON behavior case, runtime theory closure checks, continuous
   software coverage gates, and multi-language test skeleton previews for Go,
   Python, Rust, and TypeScript.
@@ -185,7 +185,7 @@ compose anchors, trust, matched rules, residual obligations, and next actions.
 The wrapper layer should be built on top of existing contracts such as:
 
 - `QueryIrV1`
-- `PreparedQueryV1`
+- `CompiledFiniteQuery`
 - `TrustContractV1`
 - `BusinessRuleApplicabilityReportV1`
 - `CoverageReportV1`
@@ -206,11 +206,11 @@ The wrapper layer should be built on top of existing contracts such as:
 
 ## External references
 
-- Martin Fowler — Bounded Context: https://martinfowler.com/bliki/BoundedContext.html
-- Microsoft Learn — domain analysis: https://learn.microsoft.com/en-us/azure/architecture/microservices/model/domain-analysis
-- Microsoft Learn — tactical DDD: https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-domain-driven-design
-- Context Mapper docs — bounded contexts: https://contextmapper.org/docs/bounded-context/
-- Context Mapper docs — context maps: https://contextmapper.org/docs/context-map/
-- Bounded Context Canvas: https://github.com/ddd-crew/bounded-context-canvas/blob/cdbd86eb19f75f797424543b11fc0b18f72bbe36/README.md
-- Domain Modeling Made Functional: https://github.com/swlaschin/DomainModelingMadeFunctional
-- EventFlow: https://github.com/eventflow/EventFlow
+- Martin Fowler — Bounded Context: <https://martinfowler.com/bliki/BoundedContext.html>
+- Microsoft Learn — domain analysis: <https://learn.microsoft.com/en-us/azure/architecture/microservices/model/domain-analysis>
+- Microsoft Learn — tactical DDD: <https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-domain-driven-design>
+- Context Mapper docs — bounded contexts: <https://contextmapper.org/docs/bounded-context/>
+- Context Mapper docs — context maps: <https://contextmapper.org/docs/context-map/>
+- Bounded Context Canvas: <https://github.com/ddd-crew/bounded-context-canvas/blob/cdbd86eb19f75f797424543b11fc0b18f72bbe36/README.md>
+- Domain Modeling Made Functional: <https://github.com/swlaschin/DomainModelingMadeFunctional>
+- EventFlow: <https://github.com/eventflow/EventFlow>

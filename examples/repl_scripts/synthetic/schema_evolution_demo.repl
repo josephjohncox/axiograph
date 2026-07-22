@@ -20,5 +20,3 @@ q select ?inv where name("Normalize") -inverseOf-> ?inv limit 10
 
 # Proof-relevant structure: inspect the explicit path witnesses for migration composition.
 q select ?p where ?p is PathWitness, ?p -from-> name("ProductV1_0") limit 10
-
-save build/schema_evolution.axpd

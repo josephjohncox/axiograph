@@ -1,4 +1,4 @@
-//! A small interactive shell for PathDB and `.axi` snapshots.
+//! A small interactive shell with process-local PathDB query state.
 //!
 //! By default we use `rustyline` for line editing and tab completion.
 //! A minimal stdin-based fallback exists behind `--no-default-features`.
@@ -10,47 +10,45 @@ use colored::Colorize;
 use roaring::RoaringBitmap;
 #[cfg(feature = "repl-rustyline")]
 use std::collections::BTreeSet;
-use std::fs;
 use std::io;
-use std::io::Read;
 #[cfg(not(feature = "repl-rustyline"))]
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-pub fn cmd_repl(initial_axpd: Option<&PathBuf>) -> Result<()> {
+pub fn cmd_repl() -> Result<()> {
     #[cfg(feature = "repl-rustyline")]
     {
-        return cmd_repl_rustyline(initial_axpd);
+        cmd_repl_rustyline()
     }
     #[cfg(not(feature = "repl-rustyline"))]
     {
-        return cmd_repl_simple(initial_axpd);
+        return cmd_repl_simple();
     }
 }
 
 pub fn cmd_repl_script(
-    initial_axpd: Option<&PathBuf>,
     script: Option<&PathBuf>,
     commands: &[String],
     continue_on_error: bool,
     quiet: bool,
 ) -> Result<()> {
     let mut state = ReplState::default();
-
-    if let Some(path) = initial_axpd {
-        cmd_load_axpd(&mut state, path)?;
-    }
-
     let mut lines: Vec<String> = Vec::new();
 
     if let Some(script_path) = script {
         let text = if script_path.as_os_str() == "-" {
-            let mut buf = String::new();
-            io::stdin().read_to_string(&mut buf)?;
-            buf
+            crate::security::read_utf8_stream_bounded(
+                io::stdin(),
+                crate::security::MAX_TEXT_INPUT_BYTES,
+                "REPL script stdin",
+            )?
         } else {
-            fs::read_to_string(script_path)?
+            crate::security::read_utf8_file_bounded(
+                script_path,
+                crate::security::MAX_TEXT_INPUT_BYTES,
+                "CLI input",
+            )?
         };
         for line in text.lines() {
             lines.push(line.to_string());
@@ -92,21 +90,11 @@ pub fn cmd_repl_script(
 }
 
 #[cfg(not(feature = "repl-rustyline"))]
-fn cmd_repl_simple(initial_axpd: Option<&PathBuf>) -> Result<()> {
+fn cmd_repl_simple() -> Result<()> {
     let mut state = ReplState::default();
 
     println!("{}", "Axiograph REPL".green().bold());
     println!("Type `help` for commands. Type `exit` to quit.\n");
-
-    if let Some(path) = initial_axpd {
-        if let Err(e) = cmd_load_axpd(&mut state, path) {
-            eprintln!(
-                "{} failed to load {}: {e}",
-                "error:".red().bold(),
-                path.display()
-            );
-        }
-    }
 
     let stdin = io::stdin();
     loop {
@@ -135,7 +123,7 @@ fn cmd_repl_simple(initial_axpd: Option<&PathBuf>) -> Result<()> {
 }
 
 #[cfg(feature = "repl-rustyline")]
-fn cmd_repl_rustyline(initial_axpd: Option<&PathBuf>) -> Result<()> {
+fn cmd_repl_rustyline() -> Result<()> {
     use rustyline::error::ReadlineError;
     use rustyline::Editor;
 
@@ -143,16 +131,6 @@ fn cmd_repl_rustyline(initial_axpd: Option<&PathBuf>) -> Result<()> {
 
     println!("{}", "Axiograph REPL".green().bold());
     println!("Tab-completion enabled. Type `help` for commands. Type `exit` to quit.\n");
-
-    if let Some(path) = initial_axpd {
-        if let Err(e) = cmd_load_axpd(&mut state, path) {
-            eprintln!(
-                "{} failed to load {}: {e}",
-                "error:".red().bold(),
-                path.display()
-            );
-        }
-    }
 
     let completions = std::sync::Arc::new(std::sync::RwLock::new(CompletionData::default()));
     refresh_completion_data(&completions, &state);
@@ -223,16 +201,6 @@ fn dispatch_repl_line_result(state: &mut ReplState, tokens: &[String]) -> Result
             cmd_quality(state, args)?;
             Ok(ReplControl::Continue)
         }
-        "load" => {
-            let p = one_path_arg("load", args)?;
-            cmd_load_axpd(state, &p)?;
-            Ok(ReplControl::Continue)
-        }
-        "save" => {
-            let p = one_path_arg("save", args)?;
-            cmd_save_axpd(state, &p)?;
-            Ok(ReplControl::Continue)
-        }
         "import_axi" => {
             let p = one_path_arg("import_axi", args)?;
             cmd_import_axi(state, &p)?;
@@ -240,10 +208,6 @@ fn dispatch_repl_line_result(state: &mut ReplState, tokens: &[String]) -> Result
         }
         "import_proto" => {
             cmd_import_proto(state, args)?;
-            Ok(ReplControl::Continue)
-        }
-        "export_axi_module" => {
-            cmd_export_axi_module(state, args)?;
             Ok(ReplControl::Continue)
         }
         "build_indexes" => {
@@ -362,6 +326,9 @@ fn dispatch_repl_line_result(state: &mut ReplState, tokens: &[String]) -> Result
 struct ReplState {
     db: Option<axiograph_pathdb::PathDB>,
     meta: Option<axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
+    canonical_sources: std::collections::BTreeMap<String, axiograph_kernel::CanonicalModuleSource>,
+    compiled_snapshots:
+        std::collections::BTreeMap<String, axiograph_kernel::CompiledKernelSnapshot>,
     llm: crate::llm::LlmState,
     predictive_proposal: crate::predictive_proposals::ProposalAdapterState,
     snapshot_key: String,
@@ -371,8 +338,10 @@ struct ReplState {
 }
 
 struct ReplPreparedQueryCache {
-    entries:
-        std::collections::HashMap<crate::axql::AxqlQueryCacheKey, crate::query_ir::PreparedQueryV1>,
+    entries: std::collections::HashMap<
+        crate::axql::AxqlQueryCacheKey,
+        crate::query_ir::CompiledFiniteQuery,
+    >,
     lru: std::collections::VecDeque<crate::axql::AxqlQueryCacheKey>,
     max_entries: usize,
 }
@@ -407,7 +376,7 @@ impl ReplPreparedQueryCache {
     fn get_mut(
         &mut self,
         key: &crate::axql::AxqlQueryCacheKey,
-    ) -> Option<&mut crate::query_ir::PreparedQueryV1> {
+    ) -> Option<&mut crate::query_ir::CompiledFiniteQuery> {
         if self.entries.contains_key(key) {
             self.touch(key);
             return self.entries.get_mut(key);
@@ -418,7 +387,7 @@ impl ReplPreparedQueryCache {
     fn insert(
         &mut self,
         key: crate::axql::AxqlQueryCacheKey,
-        value: crate::query_ir::PreparedQueryV1,
+        value: crate::query_ir::CompiledFiniteQuery,
     ) {
         self.entries.insert(key.clone(), value);
         self.touch(&key);
@@ -527,11 +496,8 @@ fn refresh_completion_data(
         "stats".to_string(),
         "analyze".to_string(),
         "quality".to_string(),
-        "load".to_string(),
-        "save".to_string(),
         "import_axi".to_string(),
         "import_proto".to_string(),
-        "export_axi_module".to_string(),
         "build_indexes".to_string(),
         "add_entity".to_string(),
         "add_fact".to_string(),
@@ -667,10 +633,7 @@ impl rustyline::completion::Completer for ReplLineHelper {
         let cmd = tokens[0];
 
         // File-path-ish commands.
-        if matches!(
-            cmd,
-            "load" | "save" | "import_axi" | "import_proto" | "export_axi_module" | "viz"
-        ) {
+        if matches!(cmd, "import_axi" | "import_proto" | "viz") {
             return self.files.complete(line, pos, ctx);
         }
 
@@ -762,15 +725,11 @@ fn print_help() {
   help | ?                       Show this help
   exit | quit                    Exit the REPL
 
-  load <file.axpd>               Load a PathDB snapshot
-  save <file.axpd>               Save the current PathDB snapshot
 
   import_axi <file.axi>          Import a canonical `axi_v1` module into the current DB
   import_proto <descriptor.binpb> [schema_hint]
                                  Import a binary Buf descriptor set into the current DB
                                  (adds Proto* entities + relations; use `match_proto_enterprise` to link to `enterprise*` scenarios)
-  export_axi_module <file.axi> [module_name]
-                                 Export a canonical `axi_v1` module from the meta-plane (if imported)
   ctx [show|list|use|add|clear]   Manage optional context/world scoping for queries
   schema [name]                  Inspect imported `.axi` schema/theory metadata (meta-plane)
   constraints <schema> [relation]
@@ -899,12 +858,12 @@ fn get_or_prepare_repl_prepared_query_mut<'a>(
     meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
     snapshot_key: &str,
     cache: &'a mut ReplPreparedQueryCache,
-) -> Result<(bool, &'a mut crate::query_ir::PreparedQueryV1)> {
+) -> Result<(bool, &'a mut crate::query_ir::CompiledFiniteQuery)> {
     let query = query_ir_v1.to_axql_query()?;
     let key = crate::axql::axql_query_cache_key(snapshot_key, &query);
     let cache_hit = cache.contains_key(&key);
     if !cache_hit {
-        let prepared = query_ir_v1.prepare_with_meta(db, meta)?;
+        let prepared = query_ir_v1.compile_with_meta(db, meta)?;
         cache.insert(key.clone(), prepared);
     }
     let prepared = cache
@@ -920,7 +879,7 @@ fn chain_snapshot_key(prev: &str, op: &str, extra: &str) -> String {
     bytes.extend_from_slice(op.as_bytes());
     bytes.extend_from_slice(b"|");
     bytes.extend_from_slice(extra.as_bytes());
-    axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes)
+    axiograph_kernel::object_blob_digest_v2(&bytes)
 }
 
 fn cmd_stats(state: &ReplState) {
@@ -953,7 +912,7 @@ fn cmd_ctx(state: &mut ReplState, args: &[String]) -> Result<()> {
                 }
                 crate::axql::AxqlContextSpec::Name(name) => match resolve_entity_ref(db, name) {
                     Ok(id) => println!("  - {} (name={})", describe_entity(db, id), name),
-                    Err(_) => println!("  - (unresolved) name={}", name),
+                    Err(_) => println!("  - (unresolved) name={name}"),
                 },
             }
         }
@@ -1042,41 +1001,105 @@ fn cmd_ctx(state: &mut ReplState, args: &[String]) -> Result<()> {
     }
 }
 
-fn cmd_load_axpd(state: &mut ReplState, path: &PathBuf) -> Result<()> {
-    let bytes = fs::read(path)?;
-    let snapshot_key = axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes);
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-    state.db = Some(db);
-    set_snapshot_key(state, snapshot_key);
-    refresh_meta_plane_index(state)?;
-    println!("loaded {}", path.display());
-    Ok(())
-}
-
-fn cmd_save_axpd(state: &mut ReplState, path: &PathBuf) -> Result<()> {
-    let db = require_db(state)?;
-    let bytes = db.to_bytes()?;
-    fs::write(path, bytes)?;
-    println!("wrote {}", path.display());
-    Ok(())
-}
-
 fn cmd_import_axi(state: &mut ReplState, path: &PathBuf) -> Result<()> {
     let path = resolve_path_with_repo_fallback(path)?;
-    let text = fs::read_to_string(&path)?;
-    let module_digest = axiograph_dsl::digest::axi_digest_v1(&text);
-    let module = crate::axi_input::require_canonical_axi_text(&text).map_err(|err| {
+    let bytes = crate::security::read_file_bounded(
+        &path,
+        crate::security::MAX_AXI_MODULE_BYTES,
+        "canonical .axi module",
+    )?;
+    let source = axiograph_kernel::CanonicalModuleSource::parse(bytes).map_err(|err| {
         anyhow!(
-            "{err}; REPL `import_axi` is canonical-only. Use `axiograph db pathdb import-axi` \
-             for PathDBExportV1 debug/live-byte parity."
+            "{err}; REPL `import_axi` accepts reviewable canonical `.axi` module text only; \
+             derived PathDB snapshot imports were removed and must be rebuilt from accepted inputs."
         )
     })?;
-    let summary = {
+    crate::axi_input::reject_obsolete_pathdb_snapshot_module(source.parsed())?;
+
+    let root_module = source.parsed().module_name.clone();
+    let module_digest = source.revision().as_str().to_string();
+    let mut candidate_sources = state.canonical_sources.clone();
+    candidate_sources.insert(root_module.clone(), source);
+    let mut required_modules = std::collections::BTreeSet::new();
+    let mut pending_modules = vec![root_module.clone()];
+    while let Some(module_name) = pending_modules.pop() {
+        if !required_modules.insert(module_name.clone()) {
+            continue;
+        }
+        if let Some(module_source) = candidate_sources.get(&module_name) {
+            pending_modules.extend(module_source.parsed().imports.iter().cloned());
+        }
+    }
+    let compilation_sources: Vec<axiograph_kernel::CanonicalModuleSource> = required_modules
+        .iter()
+        .filter_map(|name| candidate_sources.get(name).cloned())
+        .collect();
+    let repository_id =
+        axiograph_kernel::RepositoryIdV2::from_descriptor_bytes(b"axiograph:repl-session");
+    let preliminary =
+        axiograph_kernel::CanonicalCompiler::compile(axiograph_kernel::KernelCompilationRequest {
+            repository_id: repository_id.clone(),
+            accepted_snapshot_id: axiograph_kernel::SnapshotIdV2::from_canonical_fields(&[
+                b"closure-order-probe",
+            ]),
+            root_module: root_module.clone(),
+            modules: compilation_sources.clone(),
+        })
+        .map_err(|err| anyhow!("canonical package compilation failed: {err}"))?;
+    let accepted_fields = preliminary
+        .ir()
+        .ordered_module_closure()
+        .iter()
+        .map(|module| {
+            candidate_sources[&module.module_name]
+                .exact_text()
+                .as_bytes()
+        })
+        .collect::<Vec<_>>();
+    let compiled_snapshot =
+        axiograph_kernel::CanonicalCompiler::compile(axiograph_kernel::KernelCompilationRequest {
+            repository_id,
+            accepted_snapshot_id: axiograph_kernel::SnapshotIdV2::from_canonical_fields(
+                &accepted_fields,
+            ),
+            root_module: root_module.clone(),
+            modules: compilation_sources,
+        })
+        .map_err(|err| anyhow!("canonical package compilation failed: {err}"))?;
+
+    // PathDB is a derived execution substrate. Build its package-shaped adapter
+    // only through the exact-source snapshot validation boundary.
+    let package_sources = compiled_snapshot
+        .ir()
+        .ordered_module_closure()
+        .iter()
+        .map(|module| {
+            candidate_sources
+                .get(&module.module_name)
+                .cloned()
+                .ok_or_else(|| anyhow!("compiled closure source disappeared"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let package_module =
+        axiograph_pathdb::validate_runtime_package_adapter(&compiled_snapshot, &package_sources)
+            .map_err(|err| anyhow!("derived package adapter failed validation: {err}"))?;
+
+    let summary = if package_module.module().instances.is_empty() {
+        axiograph_pathdb::axi_module_import::AxiSchemaV1ImportSummary::default()
+    } else {
         let db = state.db.get_or_insert_with(axiograph_pathdb::PathDB::new);
-        let summary = module.import_into_pathdb(db)?;
+        let summary = axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
+            db,
+            &package_module,
+        )?;
         db.build_indexes();
         summary
     };
+    state.canonical_sources = candidate_sources;
+    state.compiled_snapshots.insert(
+        package_module.module().module_name.clone(),
+        compiled_snapshot,
+    );
     let next_key = if state.snapshot_key.is_empty() {
         module_digest
     } else {
@@ -1085,7 +1108,7 @@ fn cmd_import_axi(state: &mut ReplState, path: &PathBuf) -> Result<()> {
     set_snapshot_key(state, next_key);
     refresh_meta_plane_index(state)?;
     println!(
-        "imported axi_v1 module {} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
+        "imported axi_v1 package {} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
         path.display(),
         summary.meta_entities_added,
         summary.meta_relations_added,
@@ -1159,8 +1182,12 @@ fn cmd_import_proto(state: &mut ReplState, args: &[String]) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| "proto_api".to_string());
 
-    let bytes = fs::read(&path)?;
-    let ingest_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes);
+    let bytes = crate::security::read_file_bounded(
+        &path,
+        crate::security::MAX_BINARY_INPUT_BYTES,
+        "protobuf descriptor set",
+    )?;
+    let ingest_digest = axiograph_kernel::object_blob_digest_v2(&bytes);
     let ingest = axiograph_ingest_proto::ingest_descriptor_set_bytes(
         &bytes,
         Some(path.display().to_string()),
@@ -1380,8 +1407,7 @@ fn cmd_match_proto_enterprise(state: &mut ReplState, args: &[String]) -> Result<
     db.build_indexes();
 
     println!(
-        "matched {} Service nodes; added {} mapping edges (`{}` + `{}`)",
-        matched, added, rel_service_to_proto, rel_proto_to_service
+        "matched {matched} Service nodes; added {added} mapping edges (`{rel_service_to_proto}` + `{rel_proto_to_service}`)"
     );
     Ok(())
 }
@@ -1551,7 +1577,7 @@ fn cmd_viz(state: &ReplState, args: &[String]) -> Result<()> {
     if matches!(format, crate::viz::VizFormat::Html) {
         let json = crate::viz::render_json(&g)?;
         let out_dir = crate::viz::write_html_bundle(&out, &rendered, Some(&json))?;
-        fs::write(out_dir.join("graph.json"), json)?;
+        crate::security::write_output_bounded(out_dir.join("graph.json"), json, "CLI output")?;
         println!(
             "wrote {} (nodes={} edges={} truncated={})",
             out_dir.display(),
@@ -1560,7 +1586,7 @@ fn cmd_viz(state: &ReplState, args: &[String]) -> Result<()> {
             g.truncated
         );
     } else {
-        fs::write(&out, rendered)?;
+        crate::security::write_output_bounded(&out, rendered, "CLI output")?;
         println!(
             "wrote {} (nodes={} edges={} truncated={})",
             out.display(),
@@ -1745,7 +1771,7 @@ fn cmd_analyze_network(state: &ReplState, args: &[String]) -> Result<()> {
 
     match out {
         Some(path) => {
-            fs::write(&path, rendered)?;
+            crate::security::write_output_bounded(&path, rendered, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => println!("{rendered}"),
@@ -1829,7 +1855,7 @@ fn cmd_quality(state: &ReplState, args: &[String]) -> Result<()> {
 
     match out {
         Some(path) => {
-            fs::write(&path, rendered)?;
+            crate::security::write_output_bounded(&path, rendered, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => println!("{rendered}"),
@@ -1843,62 +1869,6 @@ fn cmd_quality(state: &ReplState, args: &[String]) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn cmd_export_axi_module(state: &ReplState, args: &[String]) -> Result<()> {
-    if !(1..=2).contains(&args.len()) {
-        return Err(anyhow!("usage: export_axi_module <file.axi> [module_name]"));
-    }
-
-    let out = PathBuf::from(&args[0]);
-    let db = require_db(state)?;
-
-    let module_name = if args.len() == 2 {
-        args[1].clone()
-    } else {
-        infer_single_meta_module_name(db)?
-    };
-
-    let axi = axiograph_pathdb::axi_module_export::export_axi_schema_v1_module_from_pathdb(
-        db,
-        &module_name,
-    )?;
-    fs::write(&out, axi)?;
-    println!("wrote {}", out.display());
-    Ok(())
-}
-
-fn infer_single_meta_module_name(db: &axiograph_pathdb::PathDB) -> Result<String> {
-    let Some(mods) = db.find_by_type(axiograph_pathdb::axi_meta::META_TYPE_MODULE) else {
-        return Err(anyhow!(
-            "no `.axi` meta-plane module found (import a canonical `.axi` module first, or pass an explicit module_name)"
-        ));
-    };
-
-    let mut names: Vec<String> = Vec::new();
-    for id in mods.iter() {
-        let Some(view) = db.get_entity(id) else {
-            continue;
-        };
-        if let Some(name) = view.attrs.get("name") {
-            names.push(name.clone());
-        }
-    }
-    names.sort();
-    names.dedup();
-
-    if names.is_empty() {
-        return Err(anyhow!(
-            "no `.axi` meta-plane modules have a `name` attribute"
-        ));
-    }
-    if names.len() != 1 {
-        return Err(anyhow!(
-            "multiple `.axi` modules imported: {:?} (pass an explicit module_name)",
-            names
-        ));
-    }
-    Ok(names[0].clone())
 }
 
 fn cmd_build_indexes(state: &mut ReplState) -> Result<()> {
@@ -2012,9 +1982,7 @@ fn cmd_add_entity(state: &mut ReplState, args: &[String]) -> Result<()> {
             1 => Some(schemas[0].clone()),
             _ => {
                 return Err(anyhow!(
-                    "add_entity: object type `{}` exists in multiple schemas: {:?} (use `Schema.Type` or pass `axi_schema=...`)",
-                    type_name,
-                    schemas
+                    "add_entity: object type `{type_name}` exists in multiple schemas: {schemas:?} (use `Schema.Type` or pass `axi_schema=...`)"
                 ));
             }
         }
@@ -2037,9 +2005,7 @@ fn cmd_add_entity(state: &mut ReplState, args: &[String]) -> Result<()> {
             if let Some(explicit) = explicit_schema_attr.as_ref() {
                 if explicit != schema_name {
                     return Err(anyhow!(
-                        "add_entity: schema mismatch (type resolves to schema `{}`, but attr axi_schema=`{}` was provided)",
-                        schema_name,
-                        explicit
+                        "add_entity: schema mismatch (type resolves to schema `{schema_name}`, but attr axi_schema=`{explicit}` was provided)"
                     ));
                 }
             }
@@ -2056,14 +2022,14 @@ fn cmd_add_entity(state: &mut ReplState, args: &[String]) -> Result<()> {
 
     let op_spec = format!("type={type_name}|name={name}|id={id}");
     let next_key = if state.snapshot_key.is_empty() {
-        axiograph_dsl::digest::axi_digest_v1(&op_spec)
+        axiograph_kernel::revision_digest_v2(&op_spec)
     } else {
         chain_snapshot_key(&state.snapshot_key, "add_entity", &op_spec)
     };
     set_snapshot_key(state, next_key);
     refresh_meta_plane_index(state)?;
 
-    println!("added entity {} ({type_name}, name={name})", id);
+    println!("added entity {id} ({type_name}, name={name})");
     Ok(())
 }
 
@@ -2162,7 +2128,7 @@ fn cmd_add_fact(state: &mut ReplState, args: &[String]) -> Result<()> {
         "schema={schema_name}|relation={relation_name}|fact_id={fact_id}|confidence={confidence:.3}"
     );
     let next_key = if state.snapshot_key.is_empty() {
-        axiograph_dsl::digest::axi_digest_v1(&op_spec)
+        axiograph_kernel::revision_digest_v2(&op_spec)
     } else {
         chain_snapshot_key(&state.snapshot_key, "add_fact", &op_spec)
     };
@@ -2260,7 +2226,7 @@ fn cmd_add_edge(state: &mut ReplState, args: &[String]) -> Result<()> {
 
     let op_spec = format!("rel={rel_type}|src={src}|dst={dst}|confidence={confidence:.3}");
     let next_key = if state.snapshot_key.is_empty() {
-        axiograph_dsl::digest::axi_digest_v1(&op_spec)
+        axiograph_kernel::revision_digest_v2(&op_spec)
     } else {
         chain_snapshot_key(&state.snapshot_key, "add_edge", &op_spec)
     };
@@ -2293,7 +2259,7 @@ fn cmd_add_equiv(state: &mut ReplState, args: &[String]) -> Result<()> {
 
     let op_spec = format!("left={left}|right={right}|type={equiv_type}");
     let next_key = if state.snapshot_key.is_empty() {
-        axiograph_dsl::digest::axi_digest_v1(&op_spec)
+        axiograph_kernel::revision_digest_v2(&op_spec)
     } else {
         chain_snapshot_key(&state.snapshot_key, "add_equiv", &op_spec)
     };
@@ -2520,7 +2486,7 @@ fn cmd_learning_graph(state: &ReplState, args: &[String]) -> Result<()> {
 
     let limit = 20usize;
     if !g.requires.is_empty() {
-        println!("requires (first {}):", limit);
+        println!("requires (first {limit}):");
         for e in g.requires.iter().take(limit) {
             let from_id = e
                 .from
@@ -2767,7 +2733,6 @@ fn cmd_describe(state: &ReplState, args: &[String]) -> Result<()> {
         dir: &'static str,
         max_rels: usize,
         per_rel: usize,
-        entity_id: u32,
     ) {
         use std::collections::HashMap;
 
@@ -2801,19 +2766,8 @@ fn cmd_describe(state: &ReplState, args: &[String]) -> Result<()> {
                 continue;
             }
             println!();
-            for (j, (id, conf)) in edges.iter().take(per_rel).enumerate() {
-                let prefix = if j == 0 { "    " } else { "    " };
-                if *id == entity_id {
-                    println!(
-                        "{prefix}{} (confidence={conf:.3})",
-                        describe_entity(db, *id)
-                    );
-                } else {
-                    println!(
-                        "{prefix}{} (confidence={conf:.3})",
-                        describe_entity(db, *id)
-                    );
-                }
+            for (id, conf) in edges.iter().take(per_rel) {
+                println!("    {} (confidence={conf:.3})", describe_entity(db, *id));
             }
             if edges.len() > per_rel {
                 println!("    …");
@@ -2823,11 +2777,11 @@ fn cmd_describe(state: &ReplState, args: &[String]) -> Result<()> {
 
     let outgoing = db.relations.outgoing_any(entity_id);
     if !outgoing.is_empty() {
-        group_edges(db, outgoing, "out", max_rels, out_limit, entity_id);
+        group_edges(db, outgoing, "out", max_rels, out_limit);
     }
     let incoming = db.relations.incoming_any(entity_id);
     if !incoming.is_empty() {
-        group_edges(db, incoming, "in", max_rels, in_limit, entity_id);
+        group_edges(db, incoming, "in", max_rels, in_limit);
     }
 
     Ok(())
@@ -2982,10 +2936,10 @@ fn cmd_neigh(state: &ReplState, args: &[String]) -> Result<()> {
         if matches!(format, crate::viz::VizFormat::Html) {
             let json = crate::viz::render_json(&g)?;
             let out_dir = crate::viz::write_html_bundle(out, &rendered, Some(&json))?;
-            fs::write(out_dir.join("graph.json"), json)?;
+            crate::security::write_output_bounded(out_dir.join("graph.json"), json, "CLI output")?;
             println!("wrote {}", out_dir.display());
         } else {
-            fs::write(out, rendered)?;
+            crate::security::write_output_bounded(out, rendered, "CLI output")?;
             println!("wrote {}", out.display());
         }
     }
@@ -3415,7 +3369,7 @@ fn cmd_gen(state: &mut ReplState, args: &[String]) -> Result<()> {
         let gen_spec = format!(
             "synthetic:entities={entities}|edges_per_entity={edges_per_entity}|rel_types={rel_types}|index_depth={index_depth}|seed={seed}"
         );
-        let gen_key = axiograph_dsl::digest::axi_digest_v1(&gen_spec);
+        let gen_key = axiograph_kernel::revision_digest_v2(&gen_spec);
         state.db = Some(db);
         set_snapshot_key(state, gen_key);
         refresh_meta_plane_index(state)?;
@@ -3483,7 +3437,7 @@ fn cmd_gen(state: &mut ReplState, args: &[String]) -> Result<()> {
         "scenario:{}:scale={scale}|index_depth={index_depth}|seed={seed}",
         ingest.scenario_name
     );
-    let gen_key = axiograph_dsl::digest::axi_digest_v1(&gen_spec);
+    let gen_key = axiograph_kernel::revision_digest_v2(&gen_spec);
     state.db = Some(db);
     set_snapshot_key(state, gen_key);
     refresh_meta_plane_index(state)?;
@@ -3544,7 +3498,7 @@ fn cmd_axql(state: &mut ReplState, args: &[String]) -> Result<()> {
     let mut query_ir_v1 = crate::query_ir::QueryIrV1::from_axql_query(&query);
     let mut applied_refinement: Option<crate::query_ir::QueryRefinementApplyResultV1> = None;
     if let Some(handle_id) = apply_refinement.as_deref() {
-        let prepared_for_apply = query_ir_v1.prepare_with_meta(db, meta)?;
+        let prepared_for_apply = query_ir_v1.compile_with_meta(db, meta)?;
         let applied = prepared_for_apply.apply_refinement_by_id(db, meta, handle_id)?;
         query_ir_v1 = applied.refined_query_ir_v1.clone();
         applied_refinement = Some(applied);
@@ -4364,7 +4318,6 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                 None,
                 None,
                 None,
-                None,
                 &mut state.query_cache,
                 &question,
                 opts,
@@ -4455,7 +4408,6 @@ fn cmd_llm(state: &mut ReplState, args: &[String]) -> Result<()> {
                 state.meta.as_ref(),
                 &contexts,
                 &snapshot_key,
-                None,
                 None,
                 None,
                 None,
@@ -4778,7 +4730,7 @@ fn cmd_predictive_proposals_repl(state: &mut ReplState, args: &[String]) -> Resu
                 };
                 max_new = v
                     .parse::<usize>()
-                    .map_err(|_| anyhow!("invalid --max value `{}` (expected integer)", v))?;
+                    .map_err(|_| anyhow!("invalid --max value `{v}` (expected integer)"))?;
             }
             "--guardrail" => {
                 i += 1;
@@ -4837,7 +4789,7 @@ fn cmd_predictive_proposals_repl(state: &mut ReplState, args: &[String]) -> Resu
                 };
                 seed = Some(
                     v.parse::<u64>()
-                        .map_err(|_| anyhow!("invalid --seed value `{}` (expected integer)", v))?,
+                        .map_err(|_| anyhow!("invalid --seed value `{v}` (expected integer)"))?,
                 );
             }
             "--guardrail-weight" => {
@@ -4861,14 +4813,14 @@ fn cmd_predictive_proposals_repl(state: &mut ReplState, args: &[String]) -> Resu
                 };
                 horizon_steps = Some(
                     v.parse::<usize>()
-                        .map_err(|_| anyhow!("invalid --horizon-steps value `{}`", v))?,
+                        .map_err(|_| anyhow!("invalid --horizon-steps value `{v}`"))?,
                 );
             }
             _ => {
                 if out.is_none() {
                     out = Some(PathBuf::from(tok));
                 } else {
-                    return Err(anyhow!("unknown argument `{}`", tok));
+                    return Err(anyhow!("unknown argument `{tok}`"));
                 }
             }
         }
@@ -4900,51 +4852,47 @@ fn cmd_predictive_proposals_repl(state: &mut ReplState, args: &[String]) -> Resu
 
     let mut input = if let Some(axi) = axi_path.as_ref() {
         let axi = resolve_path_with_repo_fallback(axi)?;
-        let text = fs::read_to_string(axi)?;
+        let text = crate::security::read_utf8_file_bounded(
+            &axi,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
         crate::predictive_proposal_input::build_predictive_proposal_input_from_axi_text(
             &text,
             None,
             None,
             None,
-            Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
-                instance_filter: None,
-                max_items: 0,
-                mask_fields: 1,
-                seed: 1,
-                exclude_relations: Vec::new(),
-            }),
-        )?
-    } else {
-        crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
-            db,
-            &crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
-                module_name: None,
-                pathdb_snapshot_id: None,
-                accepted_snapshot_id: None,
-                training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
+            Some(
+                crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                     instance_filter: None,
                     max_items: 0,
                     mask_fields: 1,
                     seed: 1,
                     exclude_relations: Vec::new(),
-                }),
-            },
+                },
+            ),
         )?
+    } else {
+        Err(anyhow!("exact canonical `.axi` bytes are required; PathDB cannot be reverse-exported into accepted meaning"))?
     };
     if guardrail.is_some() {
         input.set_guardrail_layer(guardrail.clone().expect("guardrail already checked"));
     }
-    input.notes.push("source=repl_predictive_proposals".to_string());
+    input
+        .notes
+        .push("source=repl_predictive_proposals".to_string());
 
-    let mut options = crate::predictive_proposals::PredictiveProposalOptionsV1::default();
-    options.max_new_proposals = max_new;
-    options.seed = seed;
-    options.goals = goals;
-    options.task_costs = task_costs.clone();
-    options.horizon_steps = horizon_steps;
+    let options = crate::predictive_proposals::PredictiveProposalOptionsV1 {
+        max_new_proposals: max_new,
+        seed,
+        goals,
+        task_costs: task_costs.clone(),
+        horizon_steps,
+        ..Default::default()
+    };
 
-    let input_axi_digest = input.axi_digest_v1.clone();
-    let input_pathdb_snapshot_id = input.pathdb_snapshot_id();
+    let input_axi_digest = input.revision_digest_v2.clone();
+    let input_materialization_id = input.materialization_id();
     let input_accepted_snapshot_id = input.accepted_snapshot_id();
     let req = crate::predictive_proposals::make_predictive_proposal_request(input, options);
     let mut response = state.predictive_proposal.propose(&req)?;
@@ -4968,22 +4916,24 @@ fn cmd_predictive_proposals_repl(state: &mut ReplState, args: &[String]) -> Resu
         state.predictive_proposal.backend_label(),
         state.predictive_proposal.model.clone(),
         input_axi_digest,
-        input_pathdb_snapshot_id,
+        input_materialization_id,
         input_accepted_snapshot_id,
         guardrail.as_ref().map(|g| g.summary.total_cost),
         guardrail_profile_label,
         guardrail_plane_label,
     )?;
 
-    let mut proposals =
-        crate::predictive_proposals::apply_predictive_proposal_provenance(response.proposals, &provenance);
+    let mut proposals = crate::predictive_proposals::apply_predictive_proposal_provenance(
+        response.proposals,
+        &provenance,
+    );
 
     if max_new > 0 && proposals.proposals.len() > max_new {
         proposals.proposals.truncate(max_new);
     }
 
     let json = serde_json::to_string_pretty(&proposals)?;
-    fs::write(&out, json)?;
+    crate::security::write_output_bounded(&out, json, "CLI output")?;
     println!("wrote {}", out.display());
 
     if let Some(dir) = commit_dir.as_ref() {
@@ -5009,27 +4959,10 @@ fn cmd_predictive_proposals_repl(state: &mut ReplState, args: &[String]) -> Resu
             }
         }
 
-        let res = if let Some(accepted_snapshot_id) = accepted_snapshot.as_ref() {
-            crate::pathdb_wal::commit_pathdb_snapshot_on_accepted_snapshot_with_overlays(
-                dir,
-                accepted_snapshot_id,
-                &[],
-                &[out.clone()],
-                commit_message.as_deref(),
-            )?
-        } else {
-            crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
-                dir,
-                "head",
-                &[],
-                &[out.clone()],
-                commit_message.as_deref(),
-            )?
-        };
-        println!(
-            "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
-            res.ops_added, res.accepted_snapshot_id, res.snapshot_id
-        );
+        let _ = (dir, accepted_snapshot, commit_message);
+        return Err(anyhow!(
+            "proposal WAL commits were removed; submit the proposal through AxiStore review and promotion"
+        ));
     }
 
     Ok(())
@@ -5083,7 +5016,7 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
                 };
                 max_new = v
                     .parse::<usize>()
-                    .map_err(|_| anyhow!("invalid --max value `{}` (expected integer)", v))?;
+                    .map_err(|_| anyhow!("invalid --max value `{v}` (expected integer)"))?;
             }
             "--guardrail" => {
                 i += 1;
@@ -5142,7 +5075,7 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
                 };
                 seed = Some(
                     v.parse::<u64>()
-                        .map_err(|_| anyhow!("invalid --seed value `{}` (expected integer)", v))?,
+                        .map_err(|_| anyhow!("invalid --seed value `{v}` (expected integer)"))?,
                 );
             }
             "--guardrail-weight" => {
@@ -5166,7 +5099,7 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
                 };
                 steps = v
                     .parse::<usize>()
-                    .map_err(|_| anyhow!("invalid --steps value `{}`", v))?;
+                    .map_err(|_| anyhow!("invalid --steps value `{v}`"))?;
             }
             "--rollouts" => {
                 i += 1;
@@ -5175,7 +5108,7 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
                 };
                 rollouts = v
                     .parse::<usize>()
-                    .map_err(|_| anyhow!("invalid --rollouts value `{}`", v))?;
+                    .map_err(|_| anyhow!("invalid --rollouts value `{v}`"))?;
             }
             "--quality" => {
                 i += 1;
@@ -5209,7 +5142,7 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
                 if out.is_none() {
                     out = Some(PathBuf::from(tok));
                 } else {
-                    return Err(anyhow!("unknown argument `{}`", tok));
+                    return Err(anyhow!("unknown argument `{tok}`"));
                 }
             }
         }
@@ -5226,7 +5159,8 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
         crate::predictive_proposals::parse_guardrail_weights(&guardrail_weight_pairs)?
     };
     let task_costs = crate::predictive_proposals::parse_task_costs(&task_cost_pairs)?;
-    let mut competency_questions = crate::predictive_proposals::parse_competency_questions(&cq_pairs)?;
+    let mut competency_questions =
+        crate::predictive_proposals::parse_competency_questions(&cq_pairs)?;
     for path in &cq_files {
         let path = resolve_path_with_repo_fallback(path)?;
         let mut loaded = crate::predictive_proposals::load_competency_questions(&path)?;
@@ -5235,36 +5169,28 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
 
     let mut base_input = if let Some(axi) = axi_path.as_ref() {
         let axi = resolve_path_with_repo_fallback(axi)?;
-        let text = fs::read_to_string(axi)?;
+        let text = crate::security::read_utf8_file_bounded(
+            &axi,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
         crate::predictive_proposal_input::build_predictive_proposal_input_from_axi_text(
             &text,
             None,
             None,
             None,
-            Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
-                instance_filter: None,
-                max_items: 0,
-                mask_fields: 1,
-                seed: 1,
-                exclude_relations: Vec::new(),
-            }),
-        )?
-    } else {
-        crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
-            db,
-            &crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
-                module_name: None,
-                pathdb_snapshot_id: None,
-                accepted_snapshot_id: None,
-                training_export: Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
+            Some(
+                crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
                     instance_filter: None,
                     max_items: 0,
                     mask_fields: 1,
                     seed: 1,
                     exclude_relations: Vec::new(),
-                }),
-            },
+                },
+            ),
         )?
+    } else {
+        Err(anyhow!("exact canonical `.axi` bytes are required; PathDB cannot be reverse-exported into accepted meaning"))?
     };
     base_input
         .notes
@@ -5286,11 +5212,15 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
         validation_plane: quality_plane.clone(),
     };
 
-    let report =
-        crate::predictive_proposals::run_proposal_rollout_plan(db, &state.predictive_proposal, &base_input, &plan_opts)?;
+    let report = crate::predictive_proposals::run_proposal_rollout_plan(
+        db,
+        &state.predictive_proposal,
+        &base_input,
+        &plan_opts,
+    )?;
 
     let json = serde_json::to_string_pretty(&report)?;
-    fs::write(&out, json)?;
+    crate::security::write_output_bounded(&out, json, "CLI output")?;
     println!("wrote {}", out.display());
 
     if let Some(dir) = commit_dir.as_ref() {
@@ -5313,53 +5243,26 @@ fn cmd_proposal_rollout_plan_repl(state: &mut ReplState, args: &[String]) -> Res
             merged.proposals.extend(step.proposals.proposals.clone());
         }
 
-        if validate {
-            if quality != "off" {
-                let validation = crate::proposals_validate::validate_proposals_v1(
-                    db,
-                    &merged,
-                    &quality,
-                    &quality_plane,
-                )?;
-                if !validation.ok {
-                    return Err(anyhow!(
-                        "refusing to commit: proposals validation failed (errors={}, warnings={})",
-                        validation.quality_delta.summary.error_count,
-                        validation.quality_delta.summary.warning_count
-                    ));
-                }
+        if validate && quality != "off" {
+            let validation = crate::proposals_validate::validate_proposals_v1(
+                db,
+                &merged,
+                &quality,
+                &quality_plane,
+            )?;
+            if !validation.ok {
+                return Err(anyhow!(
+                    "refusing to commit: proposals validation failed (errors={}, warnings={})",
+                    validation.quality_delta.summary.error_count,
+                    validation.quality_delta.summary.warning_count
+                ));
             }
         }
 
-        let tmp_path = std::env::temp_dir().join(format!(
-            "axiograph_proposal_rollout_plan_{}.json",
-            report.trace_id.as_str().replace(':', "_")
+        let _ = (dir, accepted_snapshot, commit_message, merged);
+        return Err(anyhow!(
+            "proposal WAL commits were removed; submit the rollout through AxiStore review and promotion"
         ));
-        let json = serde_json::to_string_pretty(&merged)?;
-        fs::write(&tmp_path, json)?;
-
-        let res = if let Some(accepted_snapshot_id) = accepted_snapshot.as_ref() {
-            crate::pathdb_wal::commit_pathdb_snapshot_on_accepted_snapshot_with_overlays(
-                dir,
-                accepted_snapshot_id,
-                &[],
-                &[tmp_path.clone()],
-                commit_message.as_deref(),
-            )?
-        } else {
-            crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
-                dir,
-                "head",
-                &[],
-                &[tmp_path.clone()],
-                commit_message.as_deref(),
-            )?
-        };
-        let _ = std::fs::remove_file(&tmp_path);
-        println!(
-            "ok committed {} WAL op(s) on accepted snapshot {} -> pathdb snapshot {}",
-            res.ops_added, res.accepted_snapshot_id, res.snapshot_id
-        );
     }
 
     Ok(())
@@ -5399,17 +5302,62 @@ mod repl_tokenize_tests {
     #[test]
     fn tokenize_repl_line_preserves_axql_with_refinement_handle_option() {
         let tokens = tokenize_repl_line(
-            r#"q --typecheck --apply-refinement axql_refine_v1:fnv1a64:abc123 select ?x where name("Alice") -Parent-> ?x limit 3"#,
+            r#"q --typecheck --apply-refinement axql_refine_v1:sha256:abc123 select ?x where name("Alice") -Parent-> ?x limit 3"#,
         );
         assert_eq!(tokens.len(), 5);
         assert_eq!(tokens[0], "q");
         assert_eq!(tokens[1], "--typecheck");
         assert_eq!(tokens[2], "--apply-refinement");
-        assert_eq!(tokens[3], "axql_refine_v1:fnv1a64:abc123");
+        assert_eq!(tokens[3], "axql_refine_v1:sha256:abc123");
         assert_eq!(
             tokens[4],
             r#"select ?x where name("Alice") -Parent-> ?x limit 3"#
         );
+    }
+
+    #[test]
+    fn import_axi_compiles_ordered_import_closure_before_pathdb_derivation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("Base.axi");
+        let extension = temp.path().join("Extension.axi");
+        crate::security::write_output_bounded(
+            &base,
+            r#"module Base
+
+        schema Shared:
+          object Person
+          relation Parent(child: Person, parent: Person)
+        "#,
+            "CLI output",
+        )
+        .expect("write base module");
+        crate::security::write_output_bounded(
+            &extension,
+            r#"module Extension
+        import Base
+
+        instance Family of Shared:
+          Person = {Alice, Bob}
+          Parent = {(child=Alice, parent=Bob)}
+        "#,
+            "CLI output",
+        )
+        .expect("write importing module");
+
+        let mut state = ReplState::default();
+        cmd_import_axi(&mut state, &base).expect("import schema-only dependency");
+        cmd_import_axi(&mut state, &extension).expect("import package root");
+
+        let snapshot = state
+            .compiled_snapshots
+            .get("Extension")
+            .expect("retain immutable package snapshot");
+        let closure = snapshot.ir().ordered_module_closure();
+        assert_eq!(closure.len(), 2);
+        assert_eq!(closure[0].module_name, "Base");
+        assert_eq!(closure[1].module_name, "Extension");
+        let db = state.db.as_ref().expect("derived PathDB exists");
+        assert_eq!(db.find_by_type("Person").expect("Person carrier").len(), 2);
     }
 
     #[test]
@@ -5432,7 +5380,7 @@ mod repl_tokenize_tests {
         assert!(lines.iter().any(|line| line.contains("notes:")));
         assert!(lines
             .iter()
-            .any(|line| line.contains("not a claim that all satisfying rows were returned")));
+            .any(|line| line.contains("no exact-completeness claim")));
         Ok(())
     }
 }

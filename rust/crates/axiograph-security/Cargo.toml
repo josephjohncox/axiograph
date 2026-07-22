@@ -1,0 +1,28 @@
+[package]
+name = "axiograph-security"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Bounded untrusted I/O and child-process primitives for Axiograph"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+process-wrap = { workspace = true, features = [
+  "std",
+  "process-group",
+  "job-object",
+] }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "std"] }
+
+[dev-dependencies]
+tempfile.workspace = true

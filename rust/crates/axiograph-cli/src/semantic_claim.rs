@@ -82,7 +82,7 @@ impl RuntimeRuleScopeV1 {
             schema: schema.to_string(),
             scope_class: RuntimeRuleScopeClassV1::Relation,
             scope_ref: Some(TheorySubjectRefIr::Relation {
-                relation_id: RelationId::new(format!("relation:{}:{}", schema, relation)),
+                relation_id: RelationId::new(format!("relation:{schema}:{relation}")),
                 relation_name: relation.to_string(),
             }),
             relation: Some(relation.to_string()),
@@ -96,7 +96,7 @@ impl RuntimeRuleScopeV1 {
             schema: schema.to_string(),
             scope_class: RuntimeRuleScopeClassV1::Theory,
             scope_ref: Some(TheorySubjectRefIr::Theory {
-                theory_id: TheoryId::new(format!("theory:{}:{}", schema, theory)),
+                theory_id: TheoryId::new(format!("theory:{schema}:{theory}")),
             }),
             relation: None,
             theory: Some(theory.to_string()),
@@ -1009,8 +1009,7 @@ fn applicability_from_rule_report(
     }
     if lifecycle_state != "accepted" && lifecycle_state != "certified" {
         missing_obligations.push(format!(
-            "scope is in lifecycle state `{}` so claims remain weaker than accepted/certified semantics",
-            lifecycle_state
+            "scope is in lifecycle state `{lifecycle_state}` so claims remain weaker than accepted/certified semantics"
         ));
         next_actions.push(
             "review and promote this scope before treating obligations as strong engineering claims"
@@ -1103,14 +1102,12 @@ pub fn business_rule_applicability_for_theory_with_runtime_fragment(
     theory: &str,
     runtime_theory_fragment_summary: RuntimeTheoryFragmentSummaryV1,
 ) -> Result<BusinessRuleApplicabilityReportV1> {
-    let expected_theory_id = TheoryId::new(format!("theory:{}:{}", schema, theory));
+    let expected_theory_id = TheoryId::new(format!("theory:{schema}:{theory}"));
     match &runtime_theory_fragment_summary.theory_ref {
         TheorySubjectRefIr::Theory { theory_id } if theory_id == &expected_theory_id => {}
         TheorySubjectRefIr::Theory { theory_id } => {
             return Err(anyhow!(
-                "runtime theory fragment summary references `{}` but theory applicability requested `{}`",
-                theory_id,
-                expected_theory_id
+                "runtime theory fragment summary references `{theory_id}` but theory applicability requested `{expected_theory_id}`"
             ));
         }
         other => {
@@ -1821,8 +1818,7 @@ pub fn runtime_semantic_summary_for_preview(
 
     if quality_error_count > 0 {
         gaps.push(format!(
-            "preview still has {} quality error(s) requiring operator or author intervention",
-            quality_error_count
+            "preview still has {quality_error_count} quality error(s) requiring operator or author intervention"
         ));
     }
 
@@ -1894,8 +1890,8 @@ mod tests {
             blocked_obligations: 0,
             excluded_by_evidence: 0,
             blocking_errors: 0,
-            closure_tiers: vec!["finite_fragment".to_string()],
-            closure_trace: Default::default(),
+            admissibility_scopes: vec!["finite_fragment".to_string()],
+            admissibility_trace: Default::default(),
             transport_summary: Default::default(),
             completeness_claim: "not_claimed_for_all_obligations".to_string(),
             ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),

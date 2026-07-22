@@ -19,5 +19,3 @@ add_entity DocChunk doc_chunk_demo text="capture payment now" document_id=doc0 s
 
 # Token-based search (AND semantics): matches because both tokens appear.
 q select ?c where ?c : DocChunk, fts(?c, 'text', 'capture payment') limit 10
-
-save build/fts_demo.axpd

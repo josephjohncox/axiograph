@@ -166,7 +166,7 @@ pub struct VizNode {
     /// Values:
     /// - `meta`     (schema/theory layer imported into PathDB)
     /// - `accepted` (canonical meaning plane imported from reviewed `.axi`)
-    /// - `evidence` (WAL overlays: proposals/chunks/provenance)
+    /// - `evidence` (staged proposals/chunks/provenance)
     /// - `data`     (generic runtime data not tagged as accepted/evidence)
     #[serde(default)]
     pub plane: String,
@@ -584,7 +584,7 @@ pub fn extract_viz_graph_with_meta(
             // Fallback: show the first few entity ids deterministically.
             for id in 0..(db.entities.len() as u32) {
                 queue.push_back((id, 0));
-                if queue.len() >= 1 {
+                if !queue.is_empty() {
                     break;
                 }
             }
@@ -1340,7 +1340,7 @@ pub fn render_dot(db: &PathDB, g: &VizGraph) -> String {
         let mut attrs: Vec<String> = Vec::new();
         let mut label = e.label.clone();
         if let Some(c) = e.confidence {
-            label = format!("{label} ({:.3})", c);
+            label = format!("{label} ({c:.3})");
         }
         attrs.push(format!("label=\"{}\"", dot_escape(&label)));
         match e.kind.as_str() {
@@ -1450,10 +1450,11 @@ pub fn write_html_bundle(
     }
     let dist_root = viz_dist_dir();
     html_out = inline_viz_script(&html_out, &dist_root).unwrap_or(html_out);
-    std::fs::write(out_dir.join("index.html"), html_out)?;
-    std::fs::write(
+    crate::security::write_output_bounded(out_dir.join("index.html"), html_out, "CLI output")?;
+    crate::security::write_output_bounded(
         out_dir.join("README.txt"),
         "Open index.html (offline). Optional: index.html?data=graph.json\n",
+        "CLI output",
     )?;
     Ok(out_dir)
 }
@@ -1476,7 +1477,12 @@ fn inline_viz_script(html: &str, dist_root: &std::path::Path) -> Result<String> 
                         let end_tag = start + end_tag_rel + "</script>".len();
                         let src_trim = src.trim_start_matches("./").trim_start_matches('/');
                         let js_path = dist_root.join(src_trim);
-                        let js = std::fs::read_to_string(&js_path).with_context(|| {
+                        let js = crate::security::read_utf8_file_bounded(
+                            &js_path,
+                            crate::security::MAX_TEXT_INPUT_BYTES,
+                            "CLI input",
+                        )
+                        .with_context(|| {
                             format!("missing viz asset script at {}", js_path.display())
                         })?;
                         let inline = format!("<script>\n{js}\n</script>");
@@ -1491,15 +1497,65 @@ fn inline_viz_script(html: &str, dist_root: &std::path::Path) -> Result<String> 
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    let mut files = 0_usize;
+    let mut bytes = 0_usize;
+    copy_dir_recursive_bounded(src, dst, 0, &mut files, &mut bytes)
+}
+
+fn copy_dir_recursive_bounded(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    depth: usize,
+    files: &mut usize,
+    total_bytes: &mut usize,
+) -> Result<()> {
+    const MAX_VIZ_COPY_DEPTH: usize = 16;
+    const MAX_VIZ_COPY_FILES: usize = 1_024;
+    if depth > MAX_VIZ_COPY_DEPTH {
+        return Err(anyhow!(
+            "viz asset directory depth exceeds {MAX_VIZ_COPY_DEPTH}"
+        ));
+    }
+    let source = std::fs::symlink_metadata(src)?;
+    if source.file_type().is_symlink() || !source.file_type().is_dir() {
+        return Err(anyhow!("viz asset source must be a real directory"));
+    }
     std::fs::create_dir_all(dst)?;
+    let destination = std::fs::symlink_metadata(dst)?;
+    if destination.file_type().is_symlink() || !destination.file_type().is_dir() {
+        return Err(anyhow!("viz asset destination must be a real directory"));
+    }
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let path = entry.path();
         let target = dst.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir_recursive(&path, &target)?;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(anyhow!("viz asset source must not contain symlinks"));
+        }
+        if metadata.file_type().is_dir() {
+            copy_dir_recursive_bounded(&path, &target, depth + 1, files, total_bytes)?;
+        } else if metadata.file_type().is_file() {
+            *files = files
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("viz asset file count overflow"))?;
+            if *files > MAX_VIZ_COPY_FILES {
+                return Err(anyhow!("viz asset file count exceeds {MAX_VIZ_COPY_FILES}"));
+            }
+            let data = crate::security::read_file_bounded(
+                &path,
+                crate::security::MAX_OUTPUT_BYTES,
+                "viz asset",
+            )?;
+            *total_bytes = total_bytes
+                .checked_add(data.len())
+                .ok_or_else(|| anyhow!("viz asset byte count overflow"))?;
+            if *total_bytes > crate::security::MAX_OUTPUT_BYTES {
+                return Err(anyhow!("viz asset total bytes exceed output limit"));
+            }
+            crate::security::write_output_bounded(&target, data, "viz asset")?;
         } else {
-            std::fs::copy(&path, &target)?;
+            return Err(anyhow!("viz asset source contains a special file"));
         }
     }
     Ok(())
@@ -1513,8 +1569,12 @@ pub fn render_html(db: &PathDB, g: &VizGraph) -> Result<String> {
     let json = serde_json::to_string(g)?.replace("</", "<\\/");
 
     let index_path = viz_index_path();
-    let template = std::fs::read_to_string(&index_path)
-        .with_context(|| format!("missing viz frontend at {}", index_path.display()))?;
+    let template = crate::security::read_utf8_file_bounded(
+        &index_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )
+    .with_context(|| format!("missing viz frontend at {}", index_path.display()))?;
     let mut html = template;
     html = html.replace("{{GRAPH_JSON}}", &json);
     html = html.replace("{{NODES_COUNT}}", &g.nodes.len().to_string());
@@ -1627,8 +1687,12 @@ instance DemoInst of Demo:
         let dist = root.join("frontend").join("viz").join("dist");
         std::fs::create_dir_all(&manifest_dir).expect("create fake manifest dir");
         std::fs::create_dir_all(&dist).expect("create fake viz dist dir");
-        std::fs::write(dist.join("index.html"), "<!doctype html><html></html>")
-            .expect("write fake viz index");
+        crate::security::write_output_bounded(
+            dist.join("index.html"),
+            "<!doctype html><html></html>",
+            "CLI output",
+        )
+        .expect("write fake viz index");
 
         let resolved = find_viz_dist_from(&manifest_dir)
             .expect("fake repo checkout should contain frontend/viz/dist/index.html");

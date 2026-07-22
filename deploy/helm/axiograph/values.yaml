@@ -13,10 +13,14 @@ statefulset:
     - db
     - serve
     - --dir
-    - /data/accepted
+    - /data/store
+    - --materialization
+    - $(AXIOGRAPH_MATERIALIZATION_ID)
     - --listen
     - 0.0.0.0:7878
-  env: []
+  env:
+    - name: AXIOGRAPH_MATERIALIZATION_ID
+      value: "REPLACE_WITH_MATERIALIZATION_ID_V2"
   resources: {}
   persistence:
     enabled: true

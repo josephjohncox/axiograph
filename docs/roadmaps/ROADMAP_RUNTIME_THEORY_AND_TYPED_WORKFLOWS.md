@@ -3,10 +3,11 @@
 This roadmap is the current execution plan for turning Axiograph's first-pass
 typed surfaces into one operational ontology-engineering runtime. It is not a
 new semantic source of truth. The source of truth remains accepted canonical
-`.axi` plus compiled `SchemaCategoryIr`, `TheoryIr`, and `InstanceFunctorIr`.
+`.axi` plus canonical `KernelSnapshotIr`, `SchemaPresentationIr`,
+`TypedTheoryIr`, and `InstanceModelIr`.
 
-Greenfield rule: do not preserve stale query, export, report, or compatibility
-surfaces unless they protect accepted anchors, live-byte/debug parity, Lean
+Greenfield rule: do not preserve stale query, export, report, or carry-forward
+surfaces unless they protect accepted anchors, byte-format/debug parity, Lean
 verifier continuity, or a documented operational contract.
 
 ## Target State
@@ -26,10 +27,10 @@ A useful typed ontology engine should let users and agents ask:
 The implementation target is one shared spine:
 
 ```text
-canonical .axi
-  -> KernelModuleIr
-  -> SchemaCategoryIr + TheoryIr + InstanceFunctorIr
-  -> typed authoring/query/CQ/migration/reconciliation/backend/codegen reports
+exact canonical .axi bytes + import closure + accepted snapshot handle
+  -> CanonicalCompiler
+  -> CompiledKernelSnapshot
+  -> derived authoring/query/CQ/migration/reconciliation/backend/codegen reports
   -> optional Lean certificate for the supported fragment
 ```
 
@@ -66,14 +67,16 @@ Acceptance gates:
 
 ### 2. Compiled IR As Universal Surface
 
-Make `SchemaCategoryIr`, `TheoryIr`, and `InstanceFunctorIr` the shared currency
-for all semantics-bearing runtime features.
+Make `SchemaPresentationIr`, `TypedTheoryIr`, `InstanceModelIr`, and canonical
+`KernelRefV2` citations the shared currency for semantics-bearing runtime
+features.
 
 Required capabilities:
 
-- `KernelSurfaceV1` and `KernelRefV1` expose one runtime index/report surface
-  over schema/category refs, theory obligations, anchors, instance-functor
-  images, and stable facts without claiming Lean proof authority;
+- `RuntimeSemanticIndex` exposes one read-only citation surface under
+  `CompiledKernelSnapshot`, covering canonical schema objects, relation objects,
+  roles, generators, theory obligations, instances, and facts without defining
+  alternate category or instance-functor images;
 - prepared typed queries cite compiled IR ids and inferred types;
 - CQ reports cite prepared-query metadata instead of raw query strings only;
 - typed authoring and olog review emit IR-level refs and refinement handles;
@@ -86,7 +89,7 @@ Required capabilities:
 Acceptance gates:
 
 - query, CQ, migration, reconciliation, backend, and authoring reports can cite
-  the same `KernelRefV1` handles where the compiled slice has stable refs;
+  the same derived `RuntimeIrRef` handles under one compiled-snapshot anchor;
 - one prepared-query/report family is usable from CLI, REPL, server, MCP, and CQ
   paths;
 - query/cert paths reject non-canonical semantic inputs;
@@ -102,7 +105,7 @@ lifecycle backbone.
 Required capabilities:
 
 - central validation for `main`, `review/*`, `evidence/*`, `evidence/proposals/*`, and tags;
-- symbolic `sem/HEAD` and typed ref pointers;
+- typed AxiStore catalog refs with no filesystem `HEAD`;
 - state/delta commits with compact CQ/trust/coverage/theory summaries;
 - dry-run merge/rebase plans that materialize resolver steps and blockers;
 - reconciliation objects with explicit decisions and residual obligations;
@@ -124,7 +127,7 @@ Unify prepared typed query handles across user and agent surfaces.
 
 Required capabilities:
 
-- `PreparedQueryV1` is the execution/certifiability currency;
+- `CompiledFiniteQuery` is the sole execution/certifiability currency;
 - typed answers preserve accepted anchors through validation and certification;
 - CQs and behavior cases can carry prepared-query trust summaries;
 - Lean-facing witnesses cite canonical `.axi` anchors and IR ids; and
@@ -136,7 +139,7 @@ Acceptance gates:
 - certified answers cannot lose their accepted anchor;
 - CQ regressions distinguish unsupported query fragments from semantic failures;
 - certifiability metadata is persisted where review needs it; and
-- PathDBExport remains debug/parser parity only.
+- PathDB snapshot export/import surfaces remain deleted.
 
 ### 5. Software Authoring Tooling
 
@@ -148,7 +151,7 @@ Required capabilities:
 - pure domain `.axi` examples;
 - `ToolingOverlayBundleV1` for fDDD maps, implementation surfaces, coverage
   policy, and codegen plans;
-- advisory definition and weak coverage queries;
+- advisory definition and coverage queries;
 - enforced continuous software coverage gates;
 - codegen previews for Rust, TypeScript, Python, Go, and other configured
   languages when the overlay requests them; and
@@ -158,7 +161,7 @@ Required capabilities:
 Acceptance gates:
 
 - examples run through validate, theory check, definition query, overlay check,
-  weak coverage query, behavior-case report, enforced coverage, codegen plan,
+  advisory coverage query, behavior-case report, enforced coverage, codegen plan,
   and continuous check;
 - enforced coverage cannot be satisfied by weak/advisory probes;
 - missing code/test refs are reported as implementation obligations; and
@@ -207,7 +210,7 @@ Acceptance gates:
 - projection plans list preserved interfaces, semantic losses, native query
   caveats, and reconciliation boundaries;
 - TypeDB/TerminusDB plan tests cover relation-object and context mapping;
-- container smoke tests remain optional but documented; and
+- container readback tests remain optional but documented; and
 - backend query pushdown is framed as optimization, not semantic authority.
 
 ### 8. Production Hardening
@@ -216,7 +219,7 @@ Turn proof/workbench behavior into durable operational guarantees.
 
 Required capabilities:
 
-- actual production `.axpd` bytes and verified-section story converge;
+- production `.axpd` is authenticated SQLite under AxiStore;
 - canonical fact logs and deterministic digests are testable;
 - stable semantic ids are used across accepted modules, facts, queries, and
   certificates;
@@ -227,9 +230,10 @@ Required capabilities:
 Acceptance gates:
 
 - deterministic golden tests for digests and canonical reports;
-- PathDBExport public semantic rejection stays covered;
+- obsolete PathDB export/import and binary formats remain deleted;
 - canonical `.axi` remains the public semantic input path;
-- production-format contract tests cover real `.axpd` checkpoints; and
+- production-format tests cover deterministic SQLite images, receipts, and
+  verified hydration; and
 - docs distinguish runtime soundness, completeness under assumptions, and
   non-claims.
 

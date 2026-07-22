@@ -54,7 +54,7 @@ fn infer_type(value: &Value, name: &str, schema: &mut JsonSchema) -> String {
             if arr.is_empty() {
                 "EmptyArray".to_string()
             } else {
-                let elem_name = format!("{}Item", name);
+                let elem_name = format!("{name}Item");
                 let elem_type = infer_type(&arr[0], &elem_name, schema);
                 schema.types.insert(
                     name.to_string(),
@@ -68,7 +68,7 @@ fn infer_type(value: &Value, name: &str, schema: &mut JsonSchema) -> String {
         Value::Object(obj) => {
             let mut fields = HashMap::new();
             for (key, val) in obj {
-                let field_type_name = format!("{}_{}", name, key);
+                let field_type_name = format!("{name}_{key}");
                 let field_type = infer_type(val, &field_type_name, schema);
                 fields.insert(key.clone(), JsonFieldType::Required(field_type));
             }

@@ -12,11 +12,16 @@
 //! proposal shapes without knowing the domain schema.
 
 use crate::{EvidencePointer, ExtractedFact, FactType, RepoEdgeV1};
+use anyhow::{anyhow, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 pub const PROPOSALS_VERSION_V1: u32 = 1;
+pub const MAX_PROPOSALS_V1: usize = 100_000;
+const MAX_PROPOSAL_NESTED_ITEMS: usize = 1_000_000;
+const MAX_PROPOSAL_EVIDENCE: usize = 1_024;
+const MAX_PROPOSAL_MAP_ENTRIES: usize = 4_096;
 
 /// Top-level proposals file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +82,64 @@ pub enum ProposalV1 {
         #[serde(default)]
         attributes: HashMap<String, String>,
     },
+}
+
+pub fn validate_proposals_file_v1(file: &ProposalsFileV1) -> Result<()> {
+    if file.version != PROPOSALS_VERSION_V1 {
+        return Err(anyhow!(
+            "unsupported proposals version {} (expected {PROPOSALS_VERSION_V1})",
+            file.version
+        ));
+    }
+    if file.proposals.len() > MAX_PROPOSALS_V1 {
+        return Err(anyhow!(
+            "proposal count {} exceeds {MAX_PROPOSALS_V1}",
+            file.proposals.len()
+        ));
+    }
+    if file.generated_at.len() > 1024
+        || file.source.source_type.len() > 1024
+        || file.source.locator.len() > 1024 * 1024
+    {
+        return Err(anyhow!("proposal source metadata exceeds byte limits"));
+    }
+
+    let mut nested_items = 0_usize;
+    for proposal in &file.proposals {
+        let (meta, attributes) = match proposal {
+            ProposalV1::Entity {
+                meta, attributes, ..
+            }
+            | ProposalV1::Relation {
+                meta, attributes, ..
+            } => (meta, attributes),
+        };
+        if meta.proposal_id.is_empty()
+            || !meta.confidence.is_finite()
+            || !(0.0..=1.0).contains(&meta.confidence)
+        {
+            return Err(anyhow!(
+                "proposal id must be non-empty and confidence finite in [0, 1]"
+            ));
+        }
+        if meta.evidence.len() > MAX_PROPOSAL_EVIDENCE
+            || meta.metadata.len() > MAX_PROPOSAL_MAP_ENTRIES
+            || attributes.len() > MAX_PROPOSAL_MAP_ENTRIES
+        {
+            return Err(anyhow!("proposal nested collection exceeds hard limit"));
+        }
+        nested_items = nested_items
+            .checked_add(meta.evidence.len())
+            .and_then(|count| count.checked_add(meta.metadata.len()))
+            .and_then(|count| count.checked_add(attributes.len()))
+            .ok_or_else(|| anyhow!("proposal nested item count overflow"))?;
+    }
+    if nested_items > MAX_PROPOSAL_NESTED_ITEMS {
+        return Err(anyhow!(
+            "proposal nested item count {nested_items} exceeds {MAX_PROPOSAL_NESTED_ITEMS}"
+        ));
+    }
+    Ok(())
 }
 
 /// Convert document-extracted facts into generic proposals.
@@ -156,7 +219,7 @@ pub fn proposals_from_extracted_facts_v1(
                     proposal_id: mention_id.clone(),
                     confidence: fact.confidence * 0.95,
                     evidence: evidence.clone(),
-                    public_rationale: format!("Extracted field `{}` = `{}`.", k, v),
+                    public_rationale: format!("Extracted field `{k}` = `{v}`."),
                     metadata: HashMap::new(),
                     schema_hint: schema_hint.clone(),
                 },
@@ -180,7 +243,7 @@ pub fn proposals_from_extracted_facts_v1(
                     proposal_id: rel_id.clone(),
                     confidence: fact.confidence * 0.95,
                     evidence: evidence.clone(),
-                    public_rationale: format!("Claim mentions `{}`.", v),
+                    public_rationale: format!("Claim mentions `{v}`."),
                     metadata: HashMap::new(),
                     schema_hint: schema_hint.clone(),
                 },
@@ -511,6 +574,6 @@ fn truncate_for_name(s: &str, max: usize) -> String {
     }
 
     let mut out = s.chars().take(max).collect::<String>();
-    out.push_str("…");
+    out.push('…');
     out
 }

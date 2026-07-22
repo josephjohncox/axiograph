@@ -69,8 +69,6 @@ fn test_storage_pathdb_sync() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -112,7 +110,7 @@ fn test_storage_pathdb_sync() {
     storage
         .add_facts(facts, ChangeSource::UserEdit { user_id: None })
         .unwrap();
-    storage.flush().unwrap();
+    let applied = storage.flush().unwrap();
 
     // Verify in PathDB
     let pathdb = storage.pathdb();
@@ -122,13 +120,17 @@ fn test_storage_pathdb_sync() {
     assert!(db.find_by_type("Tool").is_some());
     assert!(db.find_by_type("TacitKnowledge").is_some());
 
-    // Verify .axi file
-    let axi_path = dir.path().join("user_edits.axi");
-    assert!(axi_path.exists());
-    let content = std::fs::read_to_string(axi_path).unwrap();
-    assert!(content.contains("Ti6Al4V"));
-    assert!(content.contains("CarbideEndMill"));
-    assert!(content.contains("usedWith"));
+    // Generated `.axi` remains a review proposal; staging does not persist it.
+    let proposed_axi = applied
+        .iter()
+        .flat_map(|result| result.axi_lines.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(proposed_axi.contains("Ti6Al4V"));
+    assert!(proposed_axi.contains("CarbideEndMill"));
+    assert!(proposed_axi.contains("usedWith"));
+    assert!(!dir.path().join("user_edits.axi").exists());
 
     // Verify changelog
     let changelog = storage.changelog();
@@ -183,8 +185,6 @@ async fn test_llm_sync_storage_integration() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -233,7 +233,7 @@ async fn test_llm_sync_storage_integration() {
 
     // Stats
     let stats = sync.stats();
-    println!("Integration test stats: {:?}", stats);
+    println!("Integration test stats: {stats:?}");
 }
 
 // ============================================================================
@@ -267,8 +267,6 @@ async fn test_complete_pipeline() {
     // Step 2: Create storage
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("machining.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -335,67 +333,6 @@ async fn test_complete_pipeline() {
 }
 
 // ============================================================================
-// Persistence Tests
-// ============================================================================
-
-#[tokio::test]
-async fn test_persistence_across_restarts() {
-    use axiograph_storage::{ChangeSource, StorableFact, StorageConfig, UnifiedStorage};
-
-    let dir = tempdir().unwrap();
-    let pathdb_path = dir.path().join("persistent.axpd");
-    let changelog_path = dir.path().join("changelog.json");
-
-    // First session: add data
-    {
-        let config = StorageConfig {
-            axi_dir: dir.path().to_path_buf(),
-            pathdb_path: pathdb_path.clone(),
-            changelog_path: changelog_path.clone(),
-            watch_files: false,
-            ..Default::default()
-        };
-
-        let storage = UnifiedStorage::new(config).unwrap();
-
-        storage
-            .add_facts(
-                vec![StorableFact::Entity {
-                    name: "PersistentEntity".to_string(),
-                    entity_type: "Test".to_string(),
-                    attributes: vec![("key".to_string(), "value".to_string())],
-                }],
-                ChangeSource::UserEdit { user_id: None },
-            )
-            .unwrap();
-        storage.flush().unwrap();
-    }
-
-    // Second session: verify data persisted
-    {
-        let config = StorageConfig {
-            axi_dir: dir.path().to_path_buf(),
-            pathdb_path: pathdb_path.clone(),
-            changelog_path: changelog_path.clone(),
-            watch_files: false,
-            ..Default::default()
-        };
-
-        let storage = UnifiedStorage::new(config).unwrap();
-
-        // PathDB should have the entity
-        let pathdb = storage.pathdb();
-        let db = pathdb.read();
-        let entities = db.find_by_type("Test");
-        assert!(entities.is_some(), "Entity should persist");
-
-        // Changelog should exist
-        let changelog = storage.changelog();
-        assert!(!changelog.is_empty(), "Changelog should persist");
-    }
-}
-
-// ============================================================================
 // Concurrent Access Tests
 // ============================================================================
 
@@ -407,8 +344,6 @@ async fn test_concurrent_writes() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("concurrent.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };
@@ -424,12 +359,12 @@ async fn test_concurrent_writes() {
             storage_clone
                 .add_facts(
                     vec![StorableFact::Entity {
-                        name: format!("ConcurrentEntity{}", i),
+                        name: format!("ConcurrentEntity{i}"),
                         entity_type: "Test".to_string(),
                         attributes: vec![],
                     }],
                     ChangeSource::System {
-                        reason: format!("task {}", i),
+                        reason: format!("task {i}"),
                     },
                 )
                 .unwrap();
@@ -475,8 +410,6 @@ async fn test_empty_sync() {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         ..Default::default()
     };

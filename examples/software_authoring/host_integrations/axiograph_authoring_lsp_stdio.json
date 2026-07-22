@@ -1,10 +1,14 @@
 {
-  "description": "Generic editor/LSP config for launching the Rust lsp-server/lsp-types-backed Axiograph authoring diagnostics and code actions.",
+  "description": "Generic editor config for the unified workspace-aware lsp-server/lsp-types authoring adapter.",
   "language_id": "axiograph",
   "command": "axiograph",
   "args": [
     "authoring",
-    "lsp"
+    "lsp",
+    "--workspace",
+    ".",
+    "--axi",
+    "examples/software_authoring/OrderFulfillmentDomain.axi"
   ],
   "document_selector": [
     {
@@ -12,18 +16,14 @@
       "pattern": "**/*.axi"
     },
     {
-      "language": "json",
-      "pattern": "**/*tooling_overlay*.json"
-    },
-    {
-      "language": "json",
-      "pattern": "**/*behavior_case*.json"
+      "language": "axiograph-cq",
+      "pattern": "**/*.cq"
     }
   ],
   "notes": [
-    "Use the built axiograph binary on PATH, or replace command with an absolute path.",
-    "The canonical generated contract is `axiograph authoring integration-manifest`.",
-    "The LSP server is for diagnostics and read-only command execution; it does not mutate accepted ontology state.",
-    "LSP framing and capability types are handled by lsp-server/lsp-types, not by Axiograph-specific JSON-RPC code."
+    "Replace `.` with the workspace root and `--axi` with the default canonical root for `.cq` diagnostics.",
+    "The canonical generated contract is `axiograph authoring integration-manifest --workspace <root>`.",
+    "LSP diagnostics and executeCommand results are projections of authoring_workspace_report_v1.",
+    "The adapter is read-only and cannot mutate accepted ontology state."
   ]
 }

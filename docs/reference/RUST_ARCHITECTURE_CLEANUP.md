@@ -11,12 +11,12 @@ without dropping active functionality.
 The public semantic spine is:
 
 ```text
-canonical .axi
-  -> KernelModuleIr
-  -> SchemaCategoryIr + TheoryIr + InstanceFunctorIr
-  -> KernelSurfaceV1 refs
-  -> typed runtime reports
-  -> optional Lean verifier
+exact-byte canonical .axi import closure + accepted snapshot handle
+  -> axiograph_kernel::CanonicalCompiler
+  -> CompiledKernelSnapshot
+  -> KernelSnapshotIr + SchemaPresentationIr + InstanceModelIr
+  -> derived RuntimeModuleIndex / RuntimeSemanticIndex / RuntimeIrRef
+  -> typed runtime reports and optional Lean verifier
 ```
 
 Rust should make this spine easy to use. Rust should not create parallel
@@ -56,10 +56,14 @@ Fixed in the current cleanup tranche:
   The bundle is explicitly evidence-plane and cannot be confused with canonical
   `.axi` truth. Its Rust type also has a generated JSON Schema so tool/server
   boundaries can advertise the actual contract.
-- Overlay validation reports now carry typed `KernelRefV1` handles instead of
-  opaque JSON values for normalized refs.
+- Overlay validation reports carry typed derived `RuntimeIrRef` handles instead
+  of opaque JSON values. Those refs cite runtime indexes; they do not replace
+  the canonical compiled-snapshot handle.
 - Overlay software coverage consumes a typed `BehaviorCaseCoverageViewV1`
   boundary view instead of walking arbitrary behavior-report JSON pointers.
+  Continuous coverage no longer fabricates resolved ontology-ref counts when it
+  has no compiled kernel input; enforced mode fails closed on those unresolved
+  refs.
 - Software-authoring continuous coverage now parses
   `BehaviorCaseAuthoringReportV1` once at the file/MCP/LSP boundary and derives
   codegen, code-ref, competency, typed-ref, and runtime-theory checks from that
@@ -71,10 +75,14 @@ Fixed in the current cleanup tranche:
   (`ToolingOverlayBundleV1`, `DefinitionQueryV1`, `CoverageQueryV1`) at the
   protocol boundary instead of accepting generic `Value` blobs for those
   fields. Text convenience remains only as `overlay_text`.
-- Example JSON fixtures now prefer explicit top-level contract versions
+- Example JSON artifacts now prefer explicit top-level contract versions
   (`behavior_case_check_request_v1`, `coverage_query_v1`,
   `definition_query_bundle_v1`, backend/embedding plan versions) rather than
   anonymous untyped wire snippets.
+- `axiograph-storage` has no persistence authority. It stages typed evidence in
+  process memory; accepted promotion and authenticated `.axpd` publication go
+  through `axiograph-store`, and process-local PathDB indexes are rebuilt after
+  receipt and anchor verification.
 
 The remaining architectural debt is concentrated in a few places:
 
@@ -94,28 +102,31 @@ The remaining architectural debt is concentrated in a few places:
   adapters.
 - Evidence, ingest, and LLM DTOs still duplicate fact/provenance concepts. The
   target is one evidence-overlay vocabulary with typed refinement handles.
-- Storage needs a clear line between deterministic semantic artifacts and cache
-  or evidence materialization. Generic persistence should use maintained storage
-  libraries where ACID/durability is required.
+- Storage now has a hard line between deterministic semantic artifacts and
+  evidence/cache state. AxiStore owns accepted state and derived `.axpd`
+  receipts; generic evidence staging remains non-authoritative and process-local.
 
 ## Crate Roles
 
 | Crate | Role | Cleanup Direction |
 | --- | --- | --- |
 | `axiograph-dsl` | Canonical `.axi` parsing and ASTs. | Keep as syntax boundary; do not add runtime storage or query semantics here. |
-| `axiograph-pathdb` | Runtime graph engine, compiled IR, query, theory, certificates. | Keep semantic reports and typed refs here until a smaller kernel crate is worth extracting. |
+| `axiograph-kernel` | Exact-byte canonical compiler, immutable accepted snapshot handle, canonical schema and finite-instance IR. | This is the only meaning compiler. Keep constructors and validation centralized here. |
+| `axiograph-store` | SQLite accepted-state, immutable-object, audit, ref/tag, reconciliation, and semantic-lineage authority. | Keep one generation-CAS transaction and objects-first publication path; do not add file-pointer or direct-copy authorities. |
+| `axiograph-pathdb` | Derived runtime graph/index engine, query, runtime theory, certificates. | Consume compiled snapshots; never reconstruct canonical meaning or mint accepted handles. |
 | `axiograph-cli` | CLI/server/MCP/LSP orchestration. | Keep orchestration thin; move reusable logic into libraries. |
 | `axiograph-tooling-overlays` | DDD/fDDD overlays, weak queries, coverage inputs. | Keep `.axi` pure by putting tooling metadata here. |
 | `axiograph-software-authoring` | Shared authoring/codegen/coverage engine. | Prefer this over CLI-only implementations. |
-| `axiograph-storage` | Runtime evidence store and PathDB cache materialization. | Treat as evidence/cache infrastructure, not ontology authority. |
+| `axiograph-storage` | Process-local runtime evidence staging. | Keep it non-durable and non-authoritative; publication belongs to AxiStore. |
 | `axiograph-llm-sync` | LLM extraction, grounding, evidence/reconciliation inputs. | Keep outputs evidence-plane until review/promotion. |
 | ingest crates | Boundary importers. | Lower into canonical proposals or overlays; avoid direct accepted-state mutation. Do not keep non-compiling importer crates in the active workspace. |
-| example crates | Pedagogical application harnesses. | Consume public library surfaces only; do not become private kernels. |
+| example crates | Pedagogical application packages. | Consume public library surfaces only; do not become private kernels. |
 
 ## Simplification Rules
 
-- String lookup belongs at boundary selectors. Internal reports should use
-  `KernelRefV1` or specific typed handles.
+- String lookup belongs at boundary selectors. Canonical consumers should use
+  `CompiledKernelSnapshot` and its typed ids; derived reports may use
+  `RuntimeIrRef` without claiming semantic authority.
 - JSON is a wire format, not an internal model. Parse JSON once at CLI, MCP,
   server, or file boundaries into typed DTOs; keep report builders typed.
 - Query, CQ, behavior, MCP, LSP, and server paths should share prepared-query
@@ -160,9 +171,10 @@ ontology typing, admissibility, anchors, and trust contracts in Axiograph code.
 
 ## Dependency Governance
 
-- `bincode = 1.3` is a format boundary, not an ordinary dependency. Freeze it
-  behind an internal codec boundary or migrate deliberately to a maintained
-  deterministic format. Do not blindly upgrade binary storage.
+- There is no first-party PathDB persistence codec. `.axpd` is one authenticated,
+  bounded SQLite format under AxiStore. Old bincode/sectioned readers, custom WAL,
+  checkpoint fallback, and their dependencies are deleted; old bytes are
+  intentionally unsupported and must be rebuilt from accepted inputs.
 - Keep `rmcp`, `lsp-server`, and `lsp-types`; the cleanup target is duplicated
   protocol glue, not those crates.
 - Upgrade parser/client crates only behind focused regression tests. `sqlparser`
@@ -188,18 +200,19 @@ ontology typing, admissibility, anchors, and trust contracts in Axiograph code.
    `EvolutionPreviewV1`, authoring reports, coverage reports, and semantic VCS
    reports should share refs, anchors, trust classes, and diagnostics.
 6. Promote importers such as STEP/IGES only when they compile against current
-   DSL/IR types and have focused tests. Do not carry stale non-workspace Cargo
-   manifests as compatibility ballast.
-7. Extract shared report validation for `KernelRefV1` resolution so strict
-   reports cannot be promoted with unresolved internal refs.
+   DSL/IR types and have focused tests. Delete stale non-workspace Cargo
+   manifests instead of carrying them as adapters.
+7. Keep shared validation for `RuntimeIrRef` resolution so strict derived
+   reports cannot be promoted with unresolved internal refs, while retaining
+   the canonical `CompiledKernelSnapshot` anchor.
 8. Centralize query certificate policy across CLI, REPL, server, MCP, CQ, and
    behavior-case paths.
 9. Split `axiograph-cli` orchestration from reusable authoring/coverage/query
    library functions where command handlers are doing domain work.
 10. Make `TheoryIr` items fully addressable: equations, rewrites, obligations,
    subjects, variables, dependent contexts, transports, residuals.
-11. Keep reducing `PathDBExportV1` to explicit debug/parser/live-byte parity
-   code paths only.
+11. Keep derived PathDB snapshot export/import deleted; exact canonical `.axi`
+    bytes are the only accepted semantic input.
 12. Convert remaining evidence-storage language from “unified source of truth”
    to “runtime evidence/cache materialization.”
 13. Keep examples in `examples/catalog.json`; any non-catalog example should

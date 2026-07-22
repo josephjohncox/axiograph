@@ -1,9 +1,9 @@
 error[E0308]: mismatched types
-  --> tests/ui/review_rejects_already_reviewed_module.rs:23:9
+  --> tests/ui/review_rejects_already_reviewed_module.rs:24:9
    |
-22 |     let _ = review_axi_v1_module(
+23 |     let _ = review_axi_v1_module(
    |             -------------------- arguments to this function are incorrect
-23 |         reviewed,
+24 |         reviewed,
    |         ^^^^^^^^ expected `Module<Validated>`, found `Module<Reviewed>`
    |
    = note: expected struct `axiograph_pathdb::Module<Validated>`

@@ -52,6 +52,78 @@ instance I of S:
 }
 
 #[test]
+fn typecheck_rejects_relation_fields_with_undeclared_object_types() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Known
+  relation Broken(value: Missing)
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    let err = validate_axi_v1_module(module).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("field `value` references unknown value type `Missing`"));
+}
+
+#[test]
+fn typecheck_accepts_relation_objects_as_declared_field_types() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Node
+  relation Flow(from: Node, to: Node)
+  relation FlowCompose(first: relation(Flow), second: relation(Flow))
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    validate_axi_v1_module(module).expect("relation objects are valid role targets");
+}
+
+#[test]
+fn typecheck_rejects_duplicate_instances() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object X
+
+instance I of S:
+  X = {a}
+
+instance I of S:
+  X = {b}
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    let err = validate_axi_v1_module(module).unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("duplicate instance `I` on schema `S`"));
+}
+
+#[test]
+fn typecheck_rejects_repeated_assignments() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object X
+
+instance I of S:
+  X = {a}
+  X = {b}
+"#;
+
+    let module = parse_axi_v1(axi).expect("parse");
+    let error = validate_axi_v1_module(module).expect_err("repeated assignments are ambiguous");
+    assert!(error.to_string().contains("repeats assignment `X`"));
+}
+
+#[test]
 fn typecheck_rejects_unknown_schema_reference() {
     let axi = r#"
 module Demo

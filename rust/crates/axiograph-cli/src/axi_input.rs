@@ -1,8 +1,25 @@
-use anyhow::{anyhow, Result};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{anyhow, Context, Result};
+use walkdir::{DirEntry, WalkDir};
 
 use axiograph_dsl::schema_v1::SchemaV1Module;
+use axiograph_kernel::{
+    CanonicalCompiler, CanonicalModuleSource, CompiledKernelSnapshot, KernelCompilationRequest,
+    RepositoryIdV2, SnapshotIdV2,
+};
 use axiograph_pathdb::axi_module_import::AxiSchemaV1ImportSummary;
 use axiograph_pathdb::{AxiDigest, Module, Validated};
+
+const MAX_AXI_IMPORT_MODULES: usize = 1024;
+const MAX_AXI_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_AXI_SEARCH_ROOTS: usize = 32;
+const MAX_AXI_SEARCH_ENTRIES: usize = 50_000;
+const MAX_AXI_SEARCH_DEPTH: usize = 32;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CanonicalAxiModule {
@@ -23,10 +40,6 @@ impl CanonicalAxiModule {
         &self.module
     }
 
-    pub(crate) fn into_parts(self) -> (AxiDigest, Module<Validated>) {
-        (self.digest, self.module)
-    }
-
     pub(crate) fn import_into_pathdb(
         &self,
         db: &mut axiograph_pathdb::PathDB,
@@ -39,68 +52,267 @@ impl CanonicalAxiModule {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PathdbExportAxiModule {
-    module: SchemaV1Module,
+pub(crate) struct CanonicalAxiPackage {
+    root_module: String,
+    sources: BTreeMap<String, CanonicalModuleSource>,
+    snapshot: CompiledKernelSnapshot,
 }
 
-impl PathdbExportAxiModule {
-    pub(crate) fn new(module: SchemaV1Module) -> Self {
-        Self { module }
+impl CanonicalAxiPackage {
+    pub(crate) fn root_source(&self) -> &CanonicalModuleSource {
+        &self.sources[&self.root_module]
     }
 
-    pub(crate) fn import_pathdb(&self) -> Result<axiograph_pathdb::PathDB> {
-        axiograph_pathdb::axi_export::import_pathdb_from_axi_v1_module(&self.module)
+    pub(crate) fn snapshot(&self) -> &CompiledKernelSnapshot {
+        &self.snapshot
+    }
+
+    pub(crate) fn ordered_sources(&self) -> Vec<CanonicalModuleSource> {
+        self.snapshot
+            .ir()
+            .ordered_module_closure()
+            .iter()
+            .map(|module| self.sources[&module.module_name].clone())
+            .collect()
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum ClassifiedAxiModule {
-    PathdbExport(PathdbExportAxiModule),
-    Canonical(CanonicalAxiModule),
+pub(crate) fn compile_canonical_axi_path(
+    input: &Path,
+    search_roots: &[PathBuf],
+) -> Result<CanonicalAxiPackage> {
+    let input = fs::canonicalize(input)?;
+    let exact_bytes = crate::security::read_file_bounded(
+        &input,
+        crate::security::MAX_AXI_MODULE_BYTES,
+        "canonical .axi module",
+    )?;
+    compile_canonical_axi_path_with_root_bytes(&input, exact_bytes, search_roots)
 }
 
-pub(crate) fn is_pathdb_export_v1_module(m: &axiograph_dsl::schema_v1::SchemaV1Module) -> bool {
-    m.schemas
+/// Compile a workspace package while replacing only the root module bytes.
+///
+/// Editor adapters use this for unsaved root buffers. Imports are still loaded
+/// from the workspace search roots and the same `CanonicalCompiler` remains the
+/// sole compiler. The override is never written to disk.
+pub(crate) fn compile_canonical_axi_path_with_root_bytes(
+    input: &Path,
+    exact_bytes: Vec<u8>,
+    search_roots: &[PathBuf],
+) -> Result<CanonicalAxiPackage> {
+    if exact_bytes.len() > crate::security::MAX_AXI_MODULE_BYTES {
+        return Err(anyhow!(
+            "canonical .axi root exceeds {} bytes",
+            crate::security::MAX_AXI_MODULE_BYTES
+        ));
+    }
+    if search_roots.len() > MAX_AXI_SEARCH_ROOTS {
+        return Err(anyhow!(
+            "canonical .axi search roots exceed {MAX_AXI_SEARCH_ROOTS}"
+        ));
+    }
+    let input = fs::canonicalize(input)?;
+    let root_source = CanonicalModuleSource::parse(exact_bytes)?;
+    reject_obsolete_pathdb_snapshot_module(root_source.parsed())?;
+    let root_module = root_source.parsed().module_name.clone();
+    let mut package_bytes = root_source.exact_text().len();
+    let mut sources = BTreeMap::from([(root_module.clone(), root_source)]);
+    let mut pending = sources[&root_module].parsed().imports.clone();
+    while let Some(import) = pending.pop() {
+        if sources.contains_key(&import) {
+            continue;
+        }
+        if sources.len() >= MAX_AXI_IMPORT_MODULES {
+            return Err(anyhow!(
+                "canonical .axi import closure exceeds {MAX_AXI_IMPORT_MODULES} modules"
+            ));
+        }
+        let source = resolve_import_source(&input, &import, search_roots)?;
+        package_bytes = package_bytes
+            .checked_add(source.exact_text().len())
+            .ok_or_else(|| anyhow!("canonical .axi package byte count overflow"))?;
+        if package_bytes > MAX_AXI_PACKAGE_BYTES {
+            return Err(anyhow!(
+                "canonical .axi import closure exceeds {MAX_AXI_PACKAGE_BYTES} bytes"
+            ));
+        }
+        reject_obsolete_pathdb_snapshot_module(source.parsed())?;
+        pending.extend(source.parsed().imports.iter().cloned());
+        if pending.len() > MAX_AXI_IMPORT_MODULES * MAX_AXI_IMPORT_MODULES {
+            return Err(anyhow!(
+                "canonical .axi import worklist exceeds finite bound"
+            ));
+        }
+        sources.insert(import, source);
+    }
+
+    let repository_descriptor = search_roots
+        .first()
+        .and_then(|root| fs::canonicalize(root).ok())
+        .or_else(|| input.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| input.clone());
+    let repository_id =
+        RepositoryIdV2::from_descriptor_bytes(repository_descriptor.to_string_lossy().as_bytes());
+    let preliminary = CanonicalCompiler::compile(KernelCompilationRequest {
+        repository_id: repository_id.clone(),
+        accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[b"closure-order-probe"]),
+        root_module: root_module.clone(),
+        modules: sources.values().cloned().collect(),
+    })?;
+    let accepted_fields = preliminary
+        .ir()
+        .ordered_module_closure()
         .iter()
-        .any(|s| s.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1)
-        && m.instances.iter().any(|i| {
-            i.schema == axiograph_pathdb::axi_export::PATHDB_EXPORT_SCHEMA_NAME_V1
-                && i.name == axiograph_pathdb::axi_export::PATHDB_EXPORT_INSTANCE_NAME_V1
-        })
+        .map(|module| sources[&module.module_name].exact_text().as_bytes())
+        .collect::<Vec<_>>();
+    let snapshot = CanonicalCompiler::compile(KernelCompilationRequest {
+        repository_id,
+        accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&accepted_fields),
+        root_module: root_module.clone(),
+        modules: sources.values().cloned().collect(),
+    })?;
+    Ok(CanonicalAxiPackage {
+        root_module,
+        sources,
+        snapshot,
+    })
 }
 
-pub(crate) fn classify_axi_text(text: &str) -> Result<ClassifiedAxiModule> {
-    let digest = AxiDigest::from_axi_text(text);
-    let module = axiograph_dsl::axi_v1::parse_axi_v1(text)?;
-    if is_pathdb_export_v1_module(&module) {
-        Ok(ClassifiedAxiModule::PathdbExport(
-            PathdbExportAxiModule::new(module),
+fn resolve_import_source(
+    root_input: &Path,
+    import: &str,
+    search_roots: &[PathBuf],
+) -> Result<CanonicalModuleSource> {
+    if import.is_empty()
+        || import.len() > 256
+        || import.contains('/')
+        || import.contains('\\')
+        || import == "."
+        || import == ".."
+    {
+        return Err(anyhow!("invalid canonical .axi import name `{import}`"));
+    }
+
+    let mut allowed_roots = BTreeSet::new();
+    if let Some(parent) = root_input.parent() {
+        allowed_roots.insert(fs::canonicalize(parent)?);
+    }
+    for root in search_roots {
+        allowed_roots.insert(
+            fs::canonicalize(root).with_context(|| {
+                format!("invalid canonical .axi search root `{}`", root.display())
+            })?,
+        );
+    }
+
+    let mut candidate_paths = BTreeSet::new();
+    let mut search_entries = 0_usize;
+    for root in &allowed_roots {
+        candidate_paths.insert(root.join(format!("{import}.axi")));
+        for result in WalkDir::new(root)
+            .follow_links(false)
+            .max_depth(MAX_AXI_SEARCH_DEPTH)
+            .into_iter()
+            .filter_entry(is_import_search_entry)
+        {
+            let entry = result.with_context(|| {
+                format!(
+                    "failed while searching .axi imports under `{}`",
+                    root.display()
+                )
+            })?;
+            search_entries = search_entries.saturating_add(1);
+            if search_entries > MAX_AXI_SEARCH_ENTRIES {
+                return Err(anyhow!(
+                    "canonical .axi import search exceeds {MAX_AXI_SEARCH_ENTRIES} filesystem entries"
+                ));
+            }
+            if entry.file_type().is_file()
+                && entry.path().extension().is_some_and(|ext| ext == "axi")
+            {
+                candidate_paths.insert(entry.into_path());
+            }
+        }
+    }
+
+    let mut matches = Vec::new();
+    for candidate in candidate_paths {
+        let metadata = match fs::symlink_metadata(&candidate) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            continue;
+        }
+        let path = fs::canonicalize(&candidate)?;
+        if !allowed_roots.iter().any(|root| path.starts_with(root)) {
+            return Err(anyhow!(
+                "canonical .axi import `{}` escapes configured search roots",
+                path.display()
+            ));
+        }
+        let bytes = crate::security::read_file_bounded(
+            &path,
+            crate::security::MAX_AXI_MODULE_BYTES,
+            "imported canonical .axi module",
+        )?;
+        let Ok(source) = CanonicalModuleSource::parse(bytes) else {
+            continue;
+        };
+        if source.parsed().module_name == import {
+            matches.push((path, source));
+        }
+    }
+    match matches.len() {
+        0 => Err(anyhow!(
+            "cannot resolve imported module `{import}` from `{}`",
+            root_input.display()
+        )),
+        1 => Ok(matches.pop().expect("one import match").1),
+        _ => Err(anyhow!(
+            "imported module `{import}` is ambiguous: {}",
+            matches
+                .iter()
+                .map(|(path, _)| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+fn is_import_search_entry(entry: &DirEntry) -> bool {
+    !entry.file_type().is_dir()
+        || !matches!(
+            entry.file_name().to_string_lossy().as_ref(),
+            ".git" | "target" | "build" | "node_modules"
+        )
+}
+
+pub(crate) fn reject_obsolete_pathdb_snapshot_module(module: &SchemaV1Module) -> Result<()> {
+    let obsolete = module
+        .schemas
+        .iter()
+        .any(|schema| schema.name == "PathDBExportV1")
+        || module
+            .instances
+            .iter()
+            .any(|instance| instance.schema == "PathDBExportV1");
+    if obsolete {
+        Err(anyhow!(
+            "obsolete PathDBExportV1 `.axi` snapshots are unsupported; rebuild `.axpd` from exact accepted modules and KernelSnapshotIr"
         ))
     } else {
-        let module = axiograph_pathdb::validate_axi_v1_module(module)?;
-        Ok(ClassifiedAxiModule::Canonical(CanonicalAxiModule::new(
-            digest, module,
-        )))
+        Ok(())
     }
 }
 
 pub(crate) fn require_canonical_axi_text(text: &str) -> Result<CanonicalAxiModule> {
-    match classify_axi_text(text)? {
-        ClassifiedAxiModule::Canonical(module) => Ok(module),
-        ClassifiedAxiModule::PathdbExport(_) => Err(anyhow!(
-            "expected a canonical .axi module, but input is a PathDBExportV1 snapshot"
-        )),
-    }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn require_pathdb_export_axi_text(text: &str) -> Result<PathdbExportAxiModule> {
-    match classify_axi_text(text)? {
-        ClassifiedAxiModule::PathdbExport(module) => Ok(module),
-        ClassifiedAxiModule::Canonical(_) => Err(anyhow!(
-            "expected a PathDBExportV1 .axi snapshot, but input is a canonical .axi module"
-        )),
-    }
+    let digest = AxiDigest::from_axi_text(text);
+    let module = axiograph_dsl::axi_v1::parse_axi_v1(text)?;
+    reject_obsolete_pathdb_snapshot_module(&module)?;
+    let module = axiograph_pathdb::validate_axi_v1_module(module)?;
+    Ok(CanonicalAxiModule::new(digest, module))
 }
 
 #[cfg(test)]
@@ -108,7 +320,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_axi_text_marks_canonical_modules_as_validated() {
+    fn canonical_axi_text_is_validated() {
         let text = r#"
 module Demo
 
@@ -121,66 +333,119 @@ instance I of S:
   R = {(from=x, to=y)}
 "#;
 
-        match classify_axi_text(text).expect("classify canonical module") {
-            ClassifiedAxiModule::Canonical(module) => {
-                assert!(module.digest().has_v1_prefix());
-                assert_eq!(module.module().module().module_name, "Demo");
-                assert_eq!(module.module().proof().schema_count, 1);
-                assert_eq!(module.module().proof().instance_count, 1);
-            }
-            ClassifiedAxiModule::PathdbExport(_) => {
-                panic!("expected canonical module classification")
-            }
-        }
+        let module = require_canonical_axi_text(text).expect("canonical module");
+        assert!(module.digest().is_revision_id_v2());
+        assert_eq!(module.module().module().module_name, "Demo");
+        assert_eq!(module.module().proof().schema_count, 1);
+        assert_eq!(module.module().proof().instance_count, 1);
     }
 
     #[test]
-    fn classify_axi_text_marks_pathdb_export_snapshots() {
-        let text = r#"
-module Demo
-
-schema S:
-  object A
-  relation R(from: A, to: A)
-
-instance I of S:
-  A = {x, y}
-  R = {(from=x, to=y)}
+    fn obsolete_pathdb_export_modules_reject_without_a_reader() {
+        let obsolete = r#"
+module PathDBExport
+schema PathDBExportV1:
+  object Entity
+instance SnapshotV1 of PathDBExportV1:
+  Entity = {Entity_0}
 "#;
-
-        let mut db = axiograph_pathdb::PathDB::new();
-        axiograph_pathdb::axi_module_import::import_axi_schema_v1_into_pathdb(&mut db, text)
-            .expect("import canonical module");
-        db.build_indexes();
-        let export = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)
-            .expect("export pathdb snapshot");
-
-        match classify_axi_text(&export).expect("classify snapshot export") {
-            ClassifiedAxiModule::PathdbExport(module) => {
-                assert_eq!(module.module.module_name, "PathDBExport");
-                assert!(module.import_pathdb().is_ok());
-            }
-            ClassifiedAxiModule::Canonical(_) => {
-                panic!("expected snapshot export classification")
-            }
-        }
+        let err = require_canonical_axi_text(obsolete).expect_err("obsolete snapshot must reject");
+        assert!(err.to_string().contains("PathDBExportV1"));
+        assert!(err.to_string().contains("unsupported"));
     }
 
     #[test]
-    fn require_pathdb_export_axi_text_rejects_canonical_modules() {
-        let text = r#"
-module Demo
-
+    fn canonical_boundary_rejects_missing_or_multiple_module_headers() {
+        let missing = r#"
 schema S:
   object A
 "#;
+        let err = require_canonical_axi_text(missing)
+            .expect_err("accepted candidate without a module header must reject");
+        assert!(err.to_string().contains("exactly one explicit"));
 
-        let err = require_pathdb_export_axi_text(text).expect_err("canonical module must fail");
-        assert!(
-            err.to_string()
-                .contains("expected a PathDBExportV1 .axi snapshot"),
-            "unexpected error: {err:#}"
+        let multiple = r#"
+module Left
+schema L:
+  object A
+module Right
+schema R:
+  object B
+"#;
+        let err = require_canonical_axi_text(multiple)
+            .expect_err("concatenated modules must reject before typechecking");
+        assert!(err.to_string().contains("exactly one module header"));
+    }
+
+    #[test]
+    fn compile_path_resolves_imports_and_hashes_exact_bytes_in_closure_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base_path = temp.path().join("Base.axi");
+        let root_path = temp.path().join("Root.axi");
+        let base = b"module Base\n\nschema Shared:\n  object Person\n";
+        let root = b"module Root\nimport Base\n\ninstance I of Shared:\n  Person = {Alice}\n";
+        crate::security::write_output_bounded(&base_path, base, "CLI output").expect("write base");
+        crate::security::write_output_bounded(&root_path, root, "CLI output").expect("write root");
+
+        let package = compile_canonical_axi_path(&root_path, &[temp.path().to_path_buf()])
+            .expect("compile package path");
+        assert_eq!(package.root_source().parsed().module_name, "Root");
+        let closure = package.snapshot().ir().ordered_module_closure();
+        assert_eq!(closure[0].module_name, "Base");
+        assert_eq!(closure[1].module_name, "Root");
+        assert_eq!(
+            package.snapshot().ir().accepted_snapshot_id(),
+            &SnapshotIdV2::from_canonical_fields(&[base, root])
         );
+    }
+
+    #[test]
+    fn canonical_package_rejects_oversized_root_and_search_root_fanout() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root_path = temp.path().join("Root.axi");
+        crate::security::write_output_bounded(&root_path, b"module Root\n", "CLI output")
+            .expect("write root");
+
+        let oversized = vec![b'x'; crate::security::MAX_AXI_MODULE_BYTES + 1];
+        let error = compile_canonical_axi_path_with_root_bytes(&root_path, oversized, &[])
+            .expect_err("oversized canonical root must reject");
+        assert!(error.to_string().contains("root exceeds"));
+
+        let roots = vec![temp.path().to_path_buf(); MAX_AXI_SEARCH_ROOTS + 1];
+        let error = compile_canonical_axi_path_with_root_bytes(
+            &root_path,
+            b"module Root\n".to_vec(),
+            &roots,
+        )
+        .expect_err("search-root fanout must reject");
+        assert!(error.to_string().contains("search roots exceed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_import_resolution_does_not_follow_symlink_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let root_path = temp.path().join("Root.axi");
+        let outside_base = outside.path().join("Base.axi");
+        crate::security::write_output_bounded(
+            &root_path,
+            b"module Root\nimport Base\n",
+            "CLI output",
+        )
+        .expect("write root");
+        crate::security::write_output_bounded(
+            &outside_base,
+            b"module Base\nschema S:\n  object A\n",
+            "CLI output",
+        )
+        .expect("write outside import");
+        std::os::unix::fs::symlink(&outside_base, temp.path().join("Base.axi"))
+            .expect("create import symlink");
+
+        let error = compile_canonical_axi_path(&root_path, &[temp.path().to_path_buf()])
+            .expect_err("symlink import must reject");
+        assert!(error.to_string().contains("cannot resolve imported module"));
     }
 
     #[test]
@@ -193,7 +458,7 @@ schema S:
 "#;
 
         let module = require_canonical_axi_text(text).expect("canonical module");
-        assert!(module.digest().has_v1_prefix());
+        assert!(module.digest().is_revision_id_v2());
         assert_eq!(module.module().module().module_name, "Demo");
     }
 }

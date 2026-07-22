@@ -3,14 +3,13 @@ use std::collections::BTreeSet;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use axiograph_kernel::SchemaGeneratorKindIr;
 use axiograph_pathdb::{
-    kernel_ir::{
-        compile_instance_functor_ir, compile_schema_category_ir, InstanceIr, KernelModuleIr,
-        KernelRefV1, SchemaCategoryArrowRefIr, SchemaCategoryObjectRefIr, TheoryIr,
-        TheorySubjectRefIr,
-    },
-    AcceptedSnapshotId, AxiDigest, ProposalDigest, ProposalAdapterRunId,
+    kernel_ir::RuntimeIrRef, AcceptedSnapshotId, AxiDigest, ProposalAdapterRunId, ProposalDigest,
 };
+#[cfg(test)]
+use axiograph_pathdb::{KernelRefV2, RuntimeModuleIndex};
 
 pub const SEMANTIC_SLICE_MANIFEST_VERSION_V1: &str = "semantic_slice_manifest_v1";
 pub const SEMANTIC_MERGE_LATTICE_VERSION_V1: &str = "semantic_merge_lattice_v1";
@@ -45,7 +44,7 @@ pub enum SemanticSliceRefKindV1 {
     RoleProjection,
     SubtypeInclusion,
     TheoryObligation,
-    InstanceFunctor,
+    InstanceModel,
     ContextWorld,
     CompetencyQuestion,
     BehaviorCase,
@@ -119,7 +118,7 @@ pub struct SemanticSliceManifestV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selected_refs: Vec<SemanticSliceRefV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kernel_refs: Vec<KernelRefV1>,
+    pub kernel_refs: Vec<RuntimeIrRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proposal_digests: Vec<ProposalDigest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -320,7 +319,7 @@ pub struct SemanticResolverStepsReportV1 {
 }
 
 pub fn semantic_slice_from_ref_view(
-    view: &crate::accepted_plane::SemRefViewV1,
+    view: &crate::semantic_model::SemRefViewV1,
     selector: SemanticSliceSelectorV1,
 ) -> SemanticSliceManifestV1 {
     let refs = semantic_refs_from_commit(&view.commit);
@@ -364,19 +363,20 @@ pub fn semantic_slice_from_ref_view(
         proposal_adapter_run_ids,
         notes: vec![
             "semantic slice is a finite runtime restriction over accepted typed ontology refs; it is not a completeness claim".to_string(),
-            "relation objects, role projections, subtype inclusions, theory obligations, and instance functor refs are preserved when present in the commit delta or compiled kernel IR".to_string(),
+            "canonical relation, role, generator, theory-obligation, instance-model, and fact refs are preserved when present in the compiled kernel IR".to_string(),
         ],
     }
 }
 
+#[cfg(test)]
 pub fn enrich_semantic_slice_with_kernel_module_ir(
     mut manifest: SemanticSliceManifestV1,
-    kernel: &KernelModuleIr,
+    kernel: &RuntimeModuleIndex,
 ) -> SemanticSliceManifestV1 {
     let mut refs = manifest.selected_refs;
     refs.extend(semantic_refs_from_kernel_module_ir(kernel));
     let refs = selected_refs_for_selector(&manifest.selector, refs);
-    let surface = kernel.kernel_surface_v1();
+    let surface = kernel.runtime_semantic_index();
     manifest.kernel_refs = surface.refs;
     manifest.kernel_ir_digest = manifest
         .kernel_ir_digest
@@ -391,7 +391,7 @@ pub fn enrich_semantic_slice_with_kernel_module_ir(
     );
     manifest.selected_refs = refs;
     manifest.notes.push(
-        "slice refs were enriched from compiled KernelModuleIr; schema/category, theory, and instance-functor ids are runtime-addressable handles, not proof certificates"
+        "slice refs were enriched from the derived RuntimeModuleIndex; its ids are runtime-addressable citations, not canonical handles or proof certificates"
             .to_string(),
     );
     manifest.notes.sort();
@@ -399,364 +399,94 @@ pub fn enrich_semantic_slice_with_kernel_module_ir(
     manifest
 }
 
-pub fn semantic_refs_from_kernel_module_ir(kernel: &KernelModuleIr) -> Vec<SemanticSliceRefV1> {
-    let mut refs = semantic_refs_from_kernel_surface_v1(kernel);
-    refs.push(SemanticSliceRefV1 {
-        kind: SemanticSliceRefKindV1::Module,
-        id: kernel.module_digest.to_string(),
-        label: Some("kernel_module".to_string()),
-        source: "kernel_ir.module_digest".to_string(),
-    });
-
-    for schema in &kernel.schemas {
-        refs.push(SemanticSliceRefV1 {
-            kind: SemanticSliceRefKindV1::ExplicitIrRef,
-            id: format!("schema_category:{}", schema.schema_id),
-            label: Some(schema.schema_id.to_string()),
-            source: "kernel_ir.schema_category".to_string(),
-        });
-        let category = compile_schema_category_ir(schema);
-        for object in category.objects {
-            match object.object {
-                SchemaCategoryObjectRefIr::ObjectType {
-                    object_type_id,
-                    name,
-                } => refs.push(SemanticSliceRefV1 {
-                    kind: SemanticSliceRefKindV1::SchemaObject,
-                    id: object_type_id.to_string(),
-                    label: Some(name),
-                    source: "kernel_ir.schema_category.object".to_string(),
-                }),
-                SchemaCategoryObjectRefIr::RelationObject { relation_id, name } => {
-                    refs.push(SemanticSliceRefV1 {
-                        kind: SemanticSliceRefKindV1::RelationObject,
-                        id: relation_id.to_string(),
-                        label: Some(name),
-                        source: "kernel_ir.schema_category.object".to_string(),
+#[cfg(test)]
+pub fn semantic_refs_from_kernel_module_ir(kernel: &RuntimeModuleIndex) -> Vec<SemanticSliceRefV1> {
+    let mut refs = Vec::new();
+    for surface_ref in kernel.runtime_semantic_index().refs {
+        let RuntimeIrRef::Canonical { citation } = &surface_ref else {
+            continue;
+        };
+        let (kind, id) = match &citation.reference {
+            KernelRefV2::Module { module_id, .. } => {
+                (SemanticSliceRefKindV1::Module, module_id.to_string())
+            }
+            KernelRefV2::Schema { schema_id, .. } => {
+                (SemanticSliceRefKindV1::ExplicitIrRef, schema_id.to_string())
+            }
+            KernelRefV2::ObjectType { object_type_id, .. } => (
+                SemanticSliceRefKindV1::SchemaObject,
+                object_type_id.to_string(),
+            ),
+            KernelRefV2::Relation { relation_id, .. } => (
+                SemanticSliceRefKindV1::RelationObject,
+                relation_id.to_string(),
+            ),
+            KernelRefV2::Role { role_id, .. } => {
+                (SemanticSliceRefKindV1::RoleProjection, role_id.to_string())
+            }
+            KernelRefV2::Generator {
+                schema_id,
+                semantic_key,
+                ..
+            } => {
+                let kind = kernel
+                    .canonical_snapshot()
+                    .and_then(|snapshot| {
+                        snapshot
+                            .ir()
+                            .schemas()
+                            .iter()
+                            .find(|schema| &schema.schema_id == schema_id)
                     })
-                }
+                    .and_then(|schema| {
+                        schema
+                            .generators
+                            .iter()
+                            .find(|generator| &generator.semantic_key == semantic_key)
+                    })
+                    .map_or(SemanticSliceRefKindV1::ExplicitIrRef, |generator| {
+                        if generator.kind == SchemaGeneratorKindIr::SubtypeInclusion {
+                            SemanticSliceRefKindV1::SubtypeInclusion
+                        } else {
+                            SemanticSliceRefKindV1::ExplicitIrRef
+                        }
+                    });
+                (kind, semantic_key.to_string())
             }
-        }
-        for arrow in category.arrows {
-            match arrow.arrow_ref {
-                SchemaCategoryArrowRefIr::RoleProjection {
-                    role_id,
-                    role_name: _,
-                    ..
-                } => refs.push(SemanticSliceRefV1 {
-                    kind: SemanticSliceRefKindV1::RoleProjection,
-                    id: role_id.to_string(),
-                    label: Some(arrow.name),
-                    source: "kernel_ir.schema_category.arrow.role_projection".to_string(),
-                }),
-                SchemaCategoryArrowRefIr::SubtypeInclusion {
-                    schema_id,
-                    subtype,
-                    supertype,
-                } => refs.push(SemanticSliceRefV1 {
-                    kind: SemanticSliceRefKindV1::SubtypeInclusion,
-                    id: subtype_inclusion_id(&schema_id.to_string(), &subtype, &supertype),
-                    label: Some(format!("{subtype} <: {supertype}")),
-                    source: format!(
-                        "kernel_ir.schema_category.arrow.subtype_inclusion:{role_name}",
-                        role_name = arrow.name
-                    ),
-                }),
+            KernelRefV2::Theory { theory_id, .. } => {
+                (SemanticSliceRefKindV1::ExplicitIrRef, theory_id.to_string())
             }
-        }
+            KernelRefV2::Instance { instance_id, .. } => (
+                SemanticSliceRefKindV1::InstanceModel,
+                instance_id.to_string(),
+            ),
+            KernelRefV2::Constraint { constraint_id, .. } => (
+                SemanticSliceRefKindV1::TheoryObligation,
+                constraint_id.to_string(),
+            ),
+            KernelRefV2::Equation { equation_id, .. } => (
+                SemanticSliceRefKindV1::TheoryObligation,
+                equation_id.to_string(),
+            ),
+            KernelRefV2::RewriteRule {
+                rewrite_rule_id, ..
+            } => (
+                SemanticSliceRefKindV1::TheoryObligation,
+                rewrite_rule_id.to_string(),
+            ),
+            KernelRefV2::Fact { fact_id, .. } => {
+                (SemanticSliceRefKindV1::ExplicitIrRef, fact_id.to_string())
+            }
+        };
+        refs.push(SemanticSliceRefV1 {
+            kind,
+            id,
+            label: Some(citation.label.clone()),
+            source: "kernel_snapshot.canonical_ref".to_string(),
+        });
     }
-
-    for theory in &kernel.theories {
-        refs.extend(semantic_refs_from_theory_ir(theory));
-    }
-
-    for instance in &kernel.instances {
-        refs.extend(semantic_refs_from_instance_ir(kernel, instance));
-    }
-
     normalize_refs(&mut refs);
     refs
-}
-
-fn semantic_refs_from_kernel_surface_v1(kernel: &KernelModuleIr) -> Vec<SemanticSliceRefV1> {
-    let surface = kernel.kernel_surface_v1();
-    let mut refs = Vec::new();
-    let arrow_labels = surface
-        .schema_categories
-        .iter()
-        .flat_map(|category| {
-            category.arrows.iter().map(|arrow| {
-                (
-                    category.schema_id.to_string(),
-                    arrow.arrow_ref.clone(),
-                    arrow.name.clone(),
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    for surface_ref in surface.refs {
-        match surface_ref {
-            KernelRefV1::Module { module_digest } => refs.push(SemanticSliceRefV1 {
-                kind: SemanticSliceRefKindV1::Module,
-                id: module_digest.to_string(),
-                label: Some("kernel_module".to_string()),
-                source: "kernel_surface.module_digest".to_string(),
-            }),
-            KernelRefV1::Schema { schema_id } => refs.push(SemanticSliceRefV1 {
-                kind: SemanticSliceRefKindV1::ExplicitIrRef,
-                id: format!("schema_category:{schema_id}"),
-                label: Some(schema_id.to_string()),
-                source: "kernel_surface.schema_category".to_string(),
-            }),
-            KernelRefV1::SchemaObject { object, .. }
-            | KernelRefV1::InstanceObjectImage { object, .. } => match object {
-                SchemaCategoryObjectRefIr::ObjectType {
-                    object_type_id,
-                    name,
-                } => refs.push(SemanticSliceRefV1 {
-                    kind: SemanticSliceRefKindV1::SchemaObject,
-                    id: object_type_id.to_string(),
-                    label: Some(name),
-                    source: "kernel_surface.schema_category.object".to_string(),
-                }),
-                SchemaCategoryObjectRefIr::RelationObject { relation_id, name } => {
-                    refs.push(SemanticSliceRefV1 {
-                        kind: SemanticSliceRefKindV1::RelationObject,
-                        id: relation_id.to_string(),
-                        label: Some(name),
-                        source: "kernel_surface.schema_category.object".to_string(),
-                    })
-                }
-            },
-            KernelRefV1::SchemaArrow { schema_id, arrow } => match arrow {
-                SchemaCategoryArrowRefIr::RoleProjection {
-                    role_id, role_name, ..
-                } => {
-                    let label = arrow_labels
-                        .iter()
-                        .find(|(candidate_schema, candidate_arrow, _)| {
-                            candidate_schema.as_str() == schema_id.as_str()
-                                && matches!(
-                                    candidate_arrow,
-                                    SchemaCategoryArrowRefIr::RoleProjection {
-                                        role_id: candidate_role_id,
-                                        ..
-                                    } if candidate_role_id == &role_id
-                                )
-                        })
-                        .map(|(_, _, label)| label.clone())
-                        .unwrap_or(role_name);
-                    refs.push(SemanticSliceRefV1 {
-                        kind: SemanticSliceRefKindV1::RoleProjection,
-                        id: role_id.to_string(),
-                        label: Some(label),
-                        source: "kernel_surface.schema_category.arrow.role_projection".to_string(),
-                    });
-                }
-                SchemaCategoryArrowRefIr::SubtypeInclusion {
-                    schema_id,
-                    subtype,
-                    supertype,
-                } => refs.push(SemanticSliceRefV1 {
-                    kind: SemanticSliceRefKindV1::SubtypeInclusion,
-                    id: subtype_inclusion_id(&schema_id.to_string(), &subtype, &supertype),
-                    label: Some(format!("{subtype} <: {supertype}")),
-                    source: "kernel_surface.schema_category.arrow.subtype_inclusion".to_string(),
-                }),
-            },
-            KernelRefV1::InstanceArrowImage { arrow, .. } => match arrow {
-                SchemaCategoryArrowRefIr::RoleProjection {
-                    role_id, role_name, ..
-                } => {
-                    let label = arrow_labels
-                        .iter()
-                        .find(|(_, candidate_arrow, _)| {
-                            matches!(
-                                candidate_arrow,
-                                SchemaCategoryArrowRefIr::RoleProjection {
-                                    role_id: candidate_role_id,
-                                    ..
-                                } if candidate_role_id == &role_id
-                            )
-                        })
-                        .map(|(_, _, label)| label.clone())
-                        .unwrap_or(role_name);
-                    refs.push(SemanticSliceRefV1 {
-                        kind: SemanticSliceRefKindV1::RoleProjection,
-                        id: role_id.to_string(),
-                        label: Some(label),
-                        source: "kernel_surface.instance_functor.arrow_image".to_string(),
-                    });
-                }
-                SchemaCategoryArrowRefIr::SubtypeInclusion {
-                    schema_id,
-                    subtype,
-                    supertype,
-                } => refs.push(SemanticSliceRefV1 {
-                    kind: SemanticSliceRefKindV1::SubtypeInclusion,
-                    id: subtype_inclusion_id(&schema_id.to_string(), &subtype, &supertype),
-                    label: Some(format!("{subtype} <: {supertype}")),
-                    source: "kernel_surface.instance_functor.arrow_image".to_string(),
-                }),
-            },
-            KernelRefV1::Theory { theory_id, .. } => refs.push(SemanticSliceRefV1 {
-                kind: SemanticSliceRefKindV1::ExplicitIrRef,
-                id: theory_id.to_string(),
-                label: Some(theory_id.to_string()),
-                source: "kernel_surface.theory".to_string(),
-            }),
-            KernelRefV1::TheoryObligation { obligation } => refs.push(SemanticSliceRefV1 {
-                kind: SemanticSliceRefKindV1::TheoryObligation,
-                id: obligation.stable_id(),
-                label: Some(obligation.display_name()),
-                source: "kernel_surface.theory_obligation".to_string(),
-            }),
-            KernelRefV1::TheorySubject { subject, .. } => refs.push(ref_from_theory_subject(
-                &subject,
-                "kernel_surface.theory_subject",
-            )),
-            KernelRefV1::Instance { instance_id, .. } => refs.push(SemanticSliceRefV1 {
-                kind: SemanticSliceRefKindV1::InstanceFunctor,
-                id: instance_id.to_string(),
-                label: Some(instance_id.to_string()),
-                source: "kernel_surface.instance_functor".to_string(),
-            }),
-            KernelRefV1::StableFact {
-                instance_id,
-                fact_id,
-                relation_id,
-            } => refs.push(SemanticSliceRefV1 {
-                kind: SemanticSliceRefKindV1::ExplicitIrRef,
-                id: fact_id.to_string(),
-                label: Some(format!("{instance_id}:{relation_id}")),
-                source: "kernel_surface.stable_fact".to_string(),
-            }),
-        }
-    }
-    refs
-}
-
-fn semantic_refs_from_theory_ir(theory: &TheoryIr) -> Vec<SemanticSliceRefV1> {
-    let mut refs = vec![SemanticSliceRefV1 {
-        kind: SemanticSliceRefKindV1::ExplicitIrRef,
-        id: theory.theory_id.to_string(),
-        label: Some(theory.theory_id.to_string()),
-        source: "kernel_ir.theory".to_string(),
-    }];
-    for subject in theory.subject_refs() {
-        refs.push(ref_from_theory_subject(
-            &subject,
-            "kernel_ir.theory_subject",
-        ));
-    }
-    for obligation in theory.obligation_refs() {
-        refs.push(SemanticSliceRefV1 {
-            kind: SemanticSliceRefKindV1::TheoryObligation,
-            id: obligation.stable_id(),
-            label: Some(obligation.display_name()),
-            source: "kernel_ir.theory_obligation".to_string(),
-        });
-    }
-    refs
-}
-
-fn semantic_refs_from_instance_ir(
-    kernel: &KernelModuleIr,
-    instance: &InstanceIr,
-) -> Vec<SemanticSliceRefV1> {
-    let mut refs = vec![SemanticSliceRefV1 {
-        kind: SemanticSliceRefKindV1::InstanceFunctor,
-        id: instance.instance_id.to_string(),
-        label: Some(instance.schema_id.to_string()),
-        source: "kernel_ir.instance_functor".to_string(),
-    }];
-    if let Some(schema) = kernel
-        .schemas
-        .iter()
-        .find(|schema| schema.schema_id == instance.schema_id)
-    {
-        if let Ok(functor) = compile_instance_functor_ir(schema, instance) {
-            for object_image in functor.object_images {
-                refs.push(match object_image.object {
-                    SchemaCategoryObjectRefIr::ObjectType {
-                        object_type_id,
-                        name,
-                    } => SemanticSliceRefV1 {
-                        kind: SemanticSliceRefKindV1::SchemaObject,
-                        id: object_type_id.to_string(),
-                        label: Some(name),
-                        source: "kernel_ir.instance_functor.object_image".to_string(),
-                    },
-                    SchemaCategoryObjectRefIr::RelationObject { relation_id, name } => {
-                        SemanticSliceRefV1 {
-                            kind: SemanticSliceRefKindV1::RelationObject,
-                            id: relation_id.to_string(),
-                            label: Some(name),
-                            source: "kernel_ir.instance_functor.object_image".to_string(),
-                        }
-                    }
-                });
-            }
-            for arrow_image in functor.arrow_images {
-                refs.push(match arrow_image.arrow_ref {
-                    SchemaCategoryArrowRefIr::RoleProjection {
-                        role_id, role_name, ..
-                    } => SemanticSliceRefV1 {
-                        kind: SemanticSliceRefKindV1::RoleProjection,
-                        id: role_id.to_string(),
-                        label: Some(role_name),
-                        source: "kernel_ir.instance_functor.arrow_image".to_string(),
-                    },
-                    SchemaCategoryArrowRefIr::SubtypeInclusion {
-                        schema_id,
-                        subtype,
-                        supertype,
-                    } => SemanticSliceRefV1 {
-                        kind: SemanticSliceRefKindV1::SubtypeInclusion,
-                        id: subtype_inclusion_id(&schema_id.to_string(), &subtype, &supertype),
-                        label: Some(format!("{subtype} <: {supertype}")),
-                        source: "kernel_ir.instance_functor.arrow_image".to_string(),
-                    },
-                });
-            }
-        }
-    }
-    refs
-}
-
-fn ref_from_theory_subject(subject: &TheorySubjectRefIr, source: &str) -> SemanticSliceRefV1 {
-    match subject {
-        TheorySubjectRefIr::Theory { theory_id } => SemanticSliceRefV1 {
-            kind: SemanticSliceRefKindV1::ExplicitIrRef,
-            id: theory_id.to_string(),
-            label: Some(theory_id.to_string()),
-            source: source.to_string(),
-        },
-        TheorySubjectRefIr::Relation {
-            relation_id,
-            relation_name,
-        } => SemanticSliceRefV1 {
-            kind: SemanticSliceRefKindV1::RelationObject,
-            id: relation_id.to_string(),
-            label: Some(relation_name.clone()),
-            source: source.to_string(),
-        },
-        TheorySubjectRefIr::Role {
-            role_id,
-            relation_name,
-            role_name,
-            ..
-        } => SemanticSliceRefV1 {
-            kind: SemanticSliceRefKindV1::RoleProjection,
-            id: role_id.to_string(),
-            label: Some(format!("{relation_name}.{role_name}")),
-            source: source.to_string(),
-        },
-    }
-}
-
-fn subtype_inclusion_id(schema_id: &str, subtype: &str, supertype: &str) -> String {
-    format!("subtype_inclusion:{schema_id}:{subtype}:{supertype}")
 }
 
 fn selected_refs_for_selector(
@@ -788,7 +518,7 @@ fn ref_source_priority(source: &str) -> u8 {
         1
     } else if source.contains("sem_delta") || source.contains("sem_commit") {
         2
-    } else if source.contains("instance_functor") {
+    } else if source.contains("instance_model") {
         3
     } else {
         4
@@ -861,13 +591,13 @@ pub fn build_semantic_merge_lattice_v1(
         edges,
         notes: vec![
             "operational lattice is finite and runtime-scoped; arbitrary ontology merge completeness is not claimed".to_string(),
-            "category/functor semantics inform the selected refs and conflict-sensitive overlap checks".to_string(),
+            "canonical category and finite-model refs inform selected refs and conflict-sensitive overlap checks".to_string(),
         ],
     }
 }
 
 pub fn semantic_merge_plan_from_dry_run(
-    dry_run: &crate::accepted_plane::SemMergeDryRunResultV1,
+    dry_run: &crate::semantic_model::SemanticMergeDryRunV2,
     operation: SemanticMergeOperationKindV1,
     source_selector: SemanticSliceSelectorV1,
     target_selector: SemanticSliceSelectorV1,
@@ -1018,7 +748,7 @@ pub fn semantic_merge_plan_from_dry_run(
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn semantic_rebase_plan_from_dry_run(
-    dry_run: &crate::accepted_plane::SemMergeDryRunResultV1,
+    dry_run: &crate::semantic_model::SemanticMergeDryRunV2,
     source_selector: SemanticSliceSelectorV1,
     onto_selector: SemanticSliceSelectorV1,
 ) -> SemanticRebasePlanV1 {
@@ -1171,8 +901,8 @@ pub fn semantic_merge_plan_lean_json_v1(plan: &SemanticMergePlanV1) -> serde_jso
             plan.target_slice.trust_class,
         )),
         "non_claims": [
-            "Lean JSON export checks fail-closed materialization shape only until a full certificate family consumes runtime plans",
-            "result slice is the finite union of selected source and target refs, not a complete ontology closure"
+            "Lean checks finite ref-join preservation and fail-closed gates, not a complete ontology closure",
+            "slice anchors assert branch lineage but do not prove repository ancestry"
         ],
     })
 }
@@ -1195,7 +925,7 @@ pub fn semantic_rebase_plan_lean_json_v1(plan: &SemanticRebasePlanV1) -> serde_j
         "version": "semantic_vcs_lean_rebase_plan_v1",
         "source": lean_slice_manifest_json(&plan.source_slice, &plan.source_slice.selected_refs),
         "onto": lean_slice_manifest_json(&plan.onto_slice, &plan.onto_slice.selected_refs),
-        "result": lean_slice_manifest_json(&plan.onto_slice, &result_refs),
+        "result": lean_slice_manifest_json(&plan.source_slice, &result_refs),
         "transport_items": transport_items,
         "blockers": plan.blockers.iter().map(|blocker| lean_blocker_kind(blocker.kind)).collect::<Vec<_>>(),
         "resolver_steps": plan.resolver_steps.iter().map(lean_resolver_step_json).collect::<Vec<_>>(),
@@ -1203,8 +933,8 @@ pub fn semantic_rebase_plan_lean_json_v1(plan: &SemanticRebasePlanV1) -> serde_j
             lean_ref_json("theory_obligation", obligation)
         }).collect::<Vec<_>>(),
         "non_claims": [
-            "Lean JSON export checks fail-closed materialization shape only until a full certificate family consumes runtime plans",
-            "semantic rebase transport is finite and selected-ref scoped, not global ontology equivalence"
+            "Lean checks finite transport coverage, result membership, and fail-closed gates",
+            "semantic rebase transport is selected-ref scoped, not global ontology equivalence"
         ],
     })
 }
@@ -1280,7 +1010,7 @@ fn lean_ref_kind(kind: SemanticSliceRefKindV1) -> &'static str {
         SemanticSliceRefKindV1::RoleProjection => "role_projection",
         SemanticSliceRefKindV1::SubtypeInclusion => "subtype_inclusion",
         SemanticSliceRefKindV1::TheoryObligation => "theory_obligation",
-        SemanticSliceRefKindV1::InstanceFunctor => "instance_functor",
+        SemanticSliceRefKindV1::InstanceModel => "instance_model",
         SemanticSliceRefKindV1::ContextWorld => "context_world",
         SemanticSliceRefKindV1::CompetencyQuestion => "competency_question",
         SemanticSliceRefKindV1::BehaviorCase => "behavior_case",
@@ -1617,7 +1347,7 @@ fn ref_requires_transport(reference: &SemanticSliceRefV1) -> bool {
             | SemanticSliceRefKindV1::RoleProjection
             | SemanticSliceRefKindV1::SubtypeInclusion
             | SemanticSliceRefKindV1::TheoryObligation
-            | SemanticSliceRefKindV1::InstanceFunctor
+            | SemanticSliceRefKindV1::InstanceModel
             | SemanticSliceRefKindV1::ContextWorld
             | SemanticSliceRefKindV1::CompetencyQuestion
             | SemanticSliceRefKindV1::BehaviorCase
@@ -1828,7 +1558,7 @@ fn semantic_merge_blockers_from_preview(
 }
 
 fn semantic_refs_from_commit(
-    commit: &crate::accepted_plane::SemCommitV1,
+    commit: &crate::semantic_model::UntrustedCommitSummaryV2,
 ) -> Vec<SemanticSliceRefV1> {
     let mut refs = vec![
         SemanticSliceRefV1 {
@@ -1847,8 +1577,8 @@ fn semantic_refs_from_commit(
     if let Some(delta) = commit.delta.semantic_delta.as_ref() {
         refs.extend(delta.subject_refs.iter().map(|subject| SemanticSliceRefV1 {
             kind: classify_ref_kind(subject),
-            id: subject.clone(),
-            label: Some(subject.clone()),
+            id: (*subject).to_string(),
+            label: Some((*subject).to_string()),
             source: "sem_delta.subject_refs".to_string(),
         }));
         refs.extend(delta.primitives.iter().map(|primitive| {
@@ -1856,7 +1586,7 @@ fn semantic_refs_from_commit(
                 serde_json::to_string(primitive).unwrap_or_else(|_| format!("{primitive:?}"));
             SemanticSliceRefV1 {
                 kind: SemanticSliceRefKindV1::ExplicitIrRef,
-                id: format!("primitive:{}", axiograph_dsl::digest::axi_digest_v1(&json)),
+                id: format!("primitive:{}", axiograph_kernel::revision_digest_v2(&json)),
                 label: Some(primitive_kind_label(primitive)),
                 source: "sem_delta.primitives".to_string(),
             }
@@ -1925,7 +1655,7 @@ fn classify_ref_kind(value: &str) -> SemanticSliceRefKindV1 {
     } else if lower.contains("schema") || lower.contains("object") {
         SemanticSliceRefKindV1::SchemaObject
     } else if lower.contains("instance") || lower.contains("fact") {
-        SemanticSliceRefKindV1::InstanceFunctor
+        SemanticSliceRefKindV1::InstanceModel
     } else {
         SemanticSliceRefKindV1::ExplicitIrRef
     }
@@ -1975,7 +1705,7 @@ fn selector_matches_ref(
         }
         SemanticSliceRefKindV1::Commit
         | SemanticSliceRefKindV1::Module
-        | SemanticSliceRefKindV1::InstanceFunctor
+        | SemanticSliceRefKindV1::InstanceModel
         | SemanticSliceRefKindV1::ExplicitIrRef => {
             contains_ref(&selector.explicit_ir_refs, &reference.id)
         }
@@ -1989,24 +1719,26 @@ fn contains_ref(candidates: &[String], value: &str) -> bool {
 }
 
 fn trust_class_for_commit(
-    commit: &crate::accepted_plane::SemCommitV1,
+    commit: &crate::semantic_model::UntrustedCommitSummaryV2,
 ) -> SemanticSliceTrustClassV1 {
     if commit.validation_ok == Some(false) {
         return SemanticSliceTrustClassV1::ReviewOnly;
     }
     match commit.kind {
-        crate::accepted_plane::SemCommitKindV1::Promote
-        | crate::accepted_plane::SemCommitKindV1::Merge
-        | crate::accepted_plane::SemCommitKindV1::Validation => {
+        crate::semantic_model::UntrustedCommitKindV2::Promote
+        | crate::semantic_model::UntrustedCommitKindV2::Merge
+        | crate::semantic_model::UntrustedCommitKindV2::Validation => {
             SemanticSliceTrustClassV1::RuntimeChecked
         }
-        crate::accepted_plane::SemCommitKindV1::EvidenceCommit
-        | crate::accepted_plane::SemCommitKindV1::PredictiveProposalRun => {
+        crate::semantic_model::UntrustedCommitKindV2::EvidenceCommit
+        | crate::semantic_model::UntrustedCommitKindV2::PredictiveProposalRun => {
             SemanticSliceTrustClassV1::EvidenceBacked
         }
-        crate::accepted_plane::SemCommitKindV1::ProjectionMaterialization
-        | crate::accepted_plane::SemCommitKindV1::TagMove
-        | crate::accepted_plane::SemCommitKindV1::Admin => SemanticSliceTrustClassV1::ReviewOnly,
+        crate::semantic_model::UntrustedCommitKindV2::ProjectionMaterialization
+        | crate::semantic_model::UntrustedCommitKindV2::TagMove
+        | crate::semantic_model::UntrustedCommitKindV2::Admin => {
+            SemanticSliceTrustClassV1::ReviewOnly
+        }
     }
 }
 
@@ -2063,12 +1795,19 @@ fn conflicts_from_lattice(lattice: &SemanticMergeLatticeV1) -> Vec<SemanticMerge
 }
 
 fn conflicts_from_reconciliation(
-    reconciliation: &crate::accepted_plane::SemReconciliationV1,
+    reconciliation: &crate::semantic_model::UntrustedMergeReviewV2,
 ) -> Vec<SemanticMergeConflictV1> {
     reconciliation
         .conflicts
         .iter()
         .filter_map(|conflict| {
+            // Preview decisions are untrusted explanatory strings. They can
+            // never authorize replacing a divergent canonical module slot;
+            // accepted materialization requires SemReconciliationV2 typed
+            // payload decisions and exact candidate anchors.
+            if conflict.artifact.artifact_kind == "module_slot" {
+                return Some((conflict, None));
+            }
             let decision = reconciliation.decisions.iter().find(|decision| {
                 decision.artifact.artifact_kind == conflict.artifact.artifact_kind
                     && decision.artifact.artifact_id == conflict.artifact.artifact_id
@@ -2092,8 +1831,8 @@ fn conflicts_from_reconciliation(
                 .unwrap_or_else(|| conflict.detail.clone());
             SemanticMergeConflictV1 {
                 conflict_id: format!(
-                    "semantic_conflict_v1:{}",
-                    axiograph_dsl::digest::axi_digest_v1(&format!(
+                    "semantic_conflict_v2:{}",
+                    axiograph_kernel::revision_digest_v2(&format!(
                         "{}:{}:{}",
                         reconciliation.reconciliation_id,
                         conflict.artifact.artifact_kind,
@@ -2104,7 +1843,11 @@ fn conflicts_from_reconciliation(
                 artifact_id: conflict.artifact.artifact_id.clone(),
                 detail,
                 shared_refs: vec![SemanticSliceRefV1 {
-                    kind: classify_ref_kind(&conflict.artifact.artifact_id),
+                    kind: if conflict.artifact.artifact_kind == "module_slot" {
+                        SemanticSliceRefKindV1::Module
+                    } else {
+                        classify_ref_kind(&conflict.artifact.artifact_id)
+                    },
                     id: conflict.artifact.artifact_id.clone(),
                     label: Some(conflict.artifact.artifact_kind.clone()),
                     source: "sem_reconciliation.conflicts".to_string(),
@@ -2148,7 +1891,7 @@ fn auto_join_decisions(
     vec![SemanticAutoJoinDecisionV1 {
         decision_id: format!(
             "auto_join_v1:{}",
-            axiograph_dsl::digest::axi_digest_v1(&format!(
+            axiograph_kernel::revision_digest_v2(&format!(
                 "{}:{}:{}",
                 decision, source.slice_id, target.slice_id
             ))
@@ -2176,7 +1919,7 @@ fn operation_label(operation: SemanticMergeOperationKindV1) -> &'static str {
 
 fn digest_json(value: &serde_json::Value) -> AxiDigest {
     let text = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
-    AxiDigest::new(axiograph_dsl::digest::axi_digest_v1(&text))
+    AxiDigest::new(axiograph_kernel::revision_digest_v2(&text))
 }
 
 #[cfg(test)]
@@ -2186,12 +1929,14 @@ mod tests {
     fn slice_with_refs(id: &str, refs: Vec<SemanticSliceRefV1>) -> SemanticSliceManifestV1 {
         SemanticSliceManifestV1 {
             version: SEMANTIC_SLICE_MANIFEST_VERSION_V1.to_string(),
-            slice_id: AxiDigest::new(format!("fnv1a64:{id}")),
+            slice_id: digest_json(&serde_json::json!({"slice": id})),
             label: id.to_string(),
             base_ref_name: format!("heads/review/{id}"),
-            commit_id: AxiDigest::new(format!("fnv1a64:commit-{id}")),
-            accepted_snapshot_id: AcceptedSnapshotId::new(format!("accepted:{id}")),
-            kernel_ir_digest: Some(AxiDigest::new(format!("fnv1a64:kernel-{id}"))),
+            commit_id: digest_json(&serde_json::json!({"commit": id})),
+            accepted_snapshot_id: AcceptedSnapshotId::new(
+                digest_json(&serde_json::json!({"snapshot": id})).to_string(),
+            ),
+            kernel_ir_digest: Some(digest_json(&serde_json::json!({"kernel": id}))),
             trust_class: SemanticSliceTrustClassV1::RuntimeChecked,
             selector: SemanticSliceSelectorV1::default(),
             selected_refs: refs,
@@ -2213,8 +1958,10 @@ mod tests {
 
     #[test]
     fn selector_matching_uses_exact_ref_or_exact_component_not_substring() {
-        let mut selector = SemanticSliceSelectorV1::default();
-        selector.relation_object_ids = vec!["relation:S:Parent".to_string()];
+        let mut selector = SemanticSliceSelectorV1 {
+            relation_object_ids: vec!["relation:S:Parent".to_string()],
+            ..Default::default()
+        };
         assert!(selector_matches_ref(
             &selector,
             &relation_ref("relation:S:Parent")
@@ -2235,31 +1982,33 @@ mod tests {
         ));
     }
 
-    fn commit_for_plan(id: &str) -> crate::accepted_plane::SemCommitV1 {
-        crate::accepted_plane::SemCommitV1 {
-            version: "accepted_plane_semantic_commit_v1".to_string(),
-            commit_id: AxiDigest::new(format!("fnv1a64:{id}")),
-            parent_commit_id: None,
-            kind: crate::accepted_plane::SemCommitKindV1::Promote,
+    fn commit_for_plan(id: &str) -> crate::semantic_model::UntrustedCommitSummaryV2 {
+        crate::semantic_model::UntrustedCommitSummaryV2 {
+            version: "untrusted_commit_summary_v2".to_string(),
+            commit_id: digest_json(&serde_json::json!({"commit": id})),
+            ordered_parent_commit_ids: Vec::new(),
+            kind: crate::semantic_model::UntrustedCommitKindV2::Promote,
             created_at_unix_secs: 1,
             author: "test".to_string(),
             message: Some(id.to_string()),
             action: "promote".to_string(),
-            provenance: crate::accepted_plane::SemCommitProvenanceV1::default(),
-            state: crate::accepted_plane::SemStateRefV1::default(),
-            delta: crate::accepted_plane::SemDeltaV1::default(),
+            provenance: crate::semantic_model::SemCommitProvenanceV1::default(),
+            state: crate::semantic_model::SemStateRefV1::default(),
+            delta: crate::semantic_model::SemDeltaV1::default(),
             gate_summary: None,
             reconciliation_id: None,
-            accepted_snapshot_id: AcceptedSnapshotId::new(format!("fnv1a64:snap-{id}")),
+            accepted_snapshot_id: AcceptedSnapshotId::new(
+                digest_json(&serde_json::json!({"snapshot": id})).to_string(),
+            ),
             accepted_parent_snapshot_id: None,
-            pathdb_snapshot_id: None,
+            materialization_id: None,
             proposal_digests: Vec::new(),
             policy: "test".to_string(),
             module_name: format!("Module{id}"),
-            module_digest: AxiDigest::new(format!("fnv1a64:module-{id}")),
-            quality_report_path: None,
-            constraints_cert_path: None,
-            validation_report_path: None,
+            module_digest: digest_json(&serde_json::json!({"module": id})),
+            quality_report_id: None,
+            constraints_certificate_id: None,
+            validation_report_id: None,
             validation_ok: Some(true),
             proposal_adapter_run_id: None,
         }
@@ -2267,11 +2016,11 @@ mod tests {
 
     fn ref_view(
         ref_name: &str,
-        commit: crate::accepted_plane::SemCommitV1,
-    ) -> crate::accepted_plane::SemRefViewV1 {
-        crate::accepted_plane::SemRefViewV1 {
-            pointer: crate::accepted_plane::SemRefPointerV1 {
-                version: "accepted_plane_sem_ref_pointer_v1".to_string(),
+        commit: crate::semantic_model::UntrustedCommitSummaryV2,
+    ) -> crate::semantic_model::SemRefViewV1 {
+        crate::semantic_model::SemRefViewV1 {
+            pointer: crate::semantic_model::SemRefPointerV1 {
+                version: "semantic_ref_pointer_v1".to_string(),
                 ref_name: ref_name.to_string(),
                 commit_id: commit.commit_id.clone(),
                 updated_at_unix_secs: 1,
@@ -2286,7 +2035,7 @@ mod tests {
         crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1 {
             version: "runtime_theory_check_summary_v1".to_string(),
             report_version: "runtime_theory_check_report_v1".to_string(),
-            module_digest: "fnv1a64:module-source".to_string(),
+            module_digest: digest_json(&serde_json::json!({"module": "source"})).to_string(),
             theory_count: 1,
             checked_obligations: 1,
             review_only_obligations: 0,
@@ -2294,8 +2043,8 @@ mod tests {
             blocked_obligations: 1,
             excluded_by_evidence: 0,
             blocking_errors: 1,
-            closure_tiers: vec!["finite_fragment".to_string()],
-            closure_trace: Default::default(),
+            admissibility_scopes: vec!["finite_fragment".to_string()],
+            admissibility_trace: Default::default(),
             transport_summary: Default::default(),
             completeness_claim: "not_claimed_for_all_obligations".to_string(),
             ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
@@ -2307,17 +2056,17 @@ mod tests {
     fn dry_run_for_reconciliation(
         source_ref_name: &str,
         target_ref_name: &str,
-        source: crate::accepted_plane::SemCommitV1,
-        target: crate::accepted_plane::SemCommitV1,
-        reconciliation: crate::accepted_plane::SemReconciliationV1,
+        source: crate::semantic_model::UntrustedCommitSummaryV2,
+        target: crate::semantic_model::UntrustedCommitSummaryV2,
+        reconciliation: crate::semantic_model::UntrustedMergeReviewV2,
         preview: crate::evolution_preview::EvolutionPreviewV1,
-    ) -> crate::accepted_plane::SemMergeDryRunResultV1 {
-        crate::accepted_plane::SemMergeDryRunResultV1 {
+    ) -> crate::semantic_model::SemanticMergeDryRunV2 {
+        crate::semantic_model::SemanticMergeDryRunV2 {
             source: ref_view(source_ref_name, source),
             target: ref_view(target_ref_name, target),
-            reconciliation: crate::accepted_plane::SemReconciliationViewV1 {
-                preview: crate::accepted_plane::ReconciliationPreviewReportV1 {
-                    version: "accepted_plane_reconciliation_preview_v1".to_string(),
+            reconciliation: crate::semantic_model::UntrustedMergeReviewViewV2 {
+                preview: crate::semantic_model::UntrustedReconciliationPreviewV2 {
+                    version: "untrusted_reconciliation_preview_v2".to_string(),
                     reconciliation_id: reconciliation.reconciliation_id.clone(),
                     base_commit_id: reconciliation.base_commit_id.clone(),
                     left_commit_id: reconciliation.left_commit_id.clone(),
@@ -2328,24 +2077,24 @@ mod tests {
                     resolved_ref_name: Some(target_ref_name.to_string()),
                     ok: preview.ok,
                     evolution_preview: preview,
-                    stored_report_path: None,
+                    report_object_id: None,
                 },
                 reconciliation,
-                stored_reconciliation_path: "sem/reconciliations/test.json".to_string(),
+                reconciliation_object_id: None,
             },
         }
     }
 
     fn empty_reconciliation(
         id: &str,
-        source: &crate::accepted_plane::SemCommitV1,
-        target: &crate::accepted_plane::SemCommitV1,
-    ) -> crate::accepted_plane::SemReconciliationV1 {
-        crate::accepted_plane::SemReconciliationV1 {
-            version: "accepted_plane_sem_reconciliation_v1".to_string(),
-            reconciliation_id: AxiDigest::new(format!("fnv1a64:{id}")),
+        source: &crate::semantic_model::UntrustedCommitSummaryV2,
+        target: &crate::semantic_model::UntrustedCommitSummaryV2,
+    ) -> crate::semantic_model::UntrustedMergeReviewV2 {
+        crate::semantic_model::UntrustedMergeReviewV2 {
+            version: "untrusted_merge_review_v2".to_string(),
+            reconciliation_id: digest_json(&serde_json::json!({"reconciliation": id})),
             created_at_unix_secs: 1,
-            base_commit_id: AxiDigest::new("fnv1a64:base"),
+            base_commit_id: digest_json(&serde_json::json!({"commit": "base"})),
             left_commit_id: source.commit_id.clone(),
             right_commit_id: target.commit_id.clone(),
             policy: "test_policy".to_string(),
@@ -2401,7 +2150,7 @@ instance I of S:
 "#;
         let module = axiograph_dsl::axi_v1::parse_axi_v1(axi).expect("parse fixture");
         let kernel =
-            axiograph_pathdb::compile_kernel_module_ir(&module, axi).expect("compile fixture");
+            axiograph_pathdb::derive_runtime_module_index(&module, axi).expect("compile fixture");
         let slice = slice_with_refs("demo", Vec::new());
 
         let enriched = enrich_semantic_slice_with_kernel_module_ir(slice, &kernel);
@@ -2409,13 +2158,20 @@ instance I of S:
         assert!(!enriched.selected_refs.is_empty());
         assert!(!enriched.kernel_refs.is_empty());
         kernel
-            .kernel_surface_v1()
+            .runtime_semantic_index()
             .validate_refs(&enriched.kernel_refs)
             .expect("enriched slice kernel refs are declared by the compiled surface");
-        assert!(enriched
-            .kernel_refs
-            .iter()
-            .any(|reference| matches!(reference, KernelRefV1::TheoryObligation { .. })));
+        assert!(enriched.kernel_refs.iter().any(|reference| {
+            matches!(
+                reference,
+                RuntimeIrRef::Canonical {
+                    citation: axiograph_pathdb::CanonicalKernelCitationIr {
+                        reference: KernelRefV2::Constraint { .. },
+                        ..
+                    }
+                }
+            )
+        }));
     }
 
     #[test]
@@ -2445,10 +2201,10 @@ instance I of S:
     fn dry_run_plan_surfaces_gate_conflict_and_runtime_theory_blockers() {
         let source = commit_for_plan("source");
         let target = commit_for_plan("target");
-        let base_commit_id = AxiDigest::new("fnv1a64:base");
-        let reconciliation = crate::accepted_plane::SemReconciliationV1 {
-            version: "accepted_plane_sem_reconciliation_v1".to_string(),
-            reconciliation_id: AxiDigest::new("fnv1a64:blocker-reconciliation"),
+        let base_commit_id = digest_json(&serde_json::json!({"commit": "base"}));
+        let reconciliation = crate::semantic_model::UntrustedMergeReviewV2 {
+            version: "untrusted_merge_review_v2".to_string(),
+            reconciliation_id: digest_json(&serde_json::json!({"reconciliation": "blocker"})),
             created_at_unix_secs: 1,
             base_commit_id: base_commit_id.clone(),
             left_commit_id: source.commit_id.clone(),
@@ -2458,8 +2214,8 @@ instance I of S:
             target_ref_name: Some("heads/main".to_string()),
             resolved_ref_name: Some("heads/main".to_string()),
             outcome_commit_id: None,
-            conflicts: vec![crate::accepted_plane::SemConflictRecordV1 {
-                artifact: crate::accepted_plane::ArtifactRefV1 {
+            conflicts: vec![crate::semantic_model::MergePreviewConflictV2 {
+                artifact: crate::semantic_model::ArtifactRefV1 {
                     artifact_kind: "schema_relation".to_string(),
                     artifact_id: "RefundApproval".to_string(),
                     theory_obligation_ref: None,
@@ -2512,26 +2268,28 @@ instance I of S:
         preview.coverage_summary.regressions = 1;
         preview.runtime_theory_check = Some(runtime_theory_summary_with_blockers());
         preview.ok = false;
-        let dry_run = crate::accepted_plane::SemMergeDryRunResultV1 {
+        let dry_run = crate::semantic_model::SemanticMergeDryRunV2 {
             source: ref_view("heads/review/source", source),
             target: ref_view("heads/main", target),
-            reconciliation: crate::accepted_plane::SemReconciliationViewV1 {
+            reconciliation: crate::semantic_model::UntrustedMergeReviewViewV2 {
                 reconciliation,
-                preview: crate::accepted_plane::ReconciliationPreviewReportV1 {
-                    version: "accepted_plane_reconciliation_preview_v1".to_string(),
-                    reconciliation_id: AxiDigest::new("fnv1a64:blocker-reconciliation"),
+                preview: crate::semantic_model::UntrustedReconciliationPreviewV2 {
+                    version: "untrusted_reconciliation_preview_v2".to_string(),
+                    reconciliation_id: digest_json(
+                        &serde_json::json!({"reconciliation": "blocker"}),
+                    ),
                     base_commit_id,
-                    left_commit_id: AxiDigest::new("fnv1a64:source"),
-                    right_commit_id: AxiDigest::new("fnv1a64:target"),
+                    left_commit_id: digest_json(&serde_json::json!({"commit": "source"})),
+                    right_commit_id: digest_json(&serde_json::json!({"commit": "target"})),
                     policy: "cq_gate".to_string(),
                     source_ref_name: Some("heads/review/source".to_string()),
                     target_ref_name: Some("heads/main".to_string()),
                     resolved_ref_name: Some("heads/main".to_string()),
                     evolution_preview: preview,
                     ok: false,
-                    stored_report_path: None,
+                    report_object_id: None,
                 },
-                stored_reconciliation_path: "sem/reconciliations/blocker.json".to_string(),
+                reconciliation_object_id: None,
             },
         };
 
@@ -2542,7 +2300,7 @@ instance I of S:
             SemanticSliceSelectorV1::default(),
         );
         assert!(!plan.can_materialize);
-        assert!(plan.resolver_steps.len() >= 1);
+        assert!(!plan.resolver_steps.is_empty());
         for kind in [
             SemanticMergeBlockerKindV1::Conflict,
             SemanticMergeBlockerKindV1::ResolverStep,
@@ -2640,6 +2398,76 @@ instance I of S:
             err.to_string().contains("late residual"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn untrusted_string_preview_cannot_suppress_typed_module_slot_conflict() {
+        let source = commit_for_plan("source-module-slot-conflict");
+        let target = commit_for_plan("target-module-slot-conflict");
+        let mut reconciliation = empty_reconciliation("module-slot-conflict", &source, &target);
+        let artifact = crate::semantic_model::ArtifactRefV1 {
+            artifact_kind: "module_slot".to_string(),
+            artifact_id: "SharedModule".to_string(),
+            theory_obligation_ref: None,
+            theory_subject_ref: None,
+            theory_subject_refs: Vec::new(),
+        };
+        reconciliation
+            .conflicts
+            .push(crate::semantic_model::MergePreviewConflictV2 {
+                artifact: artifact.clone(),
+                detail: "divergent edit/edit module slot".to_string(),
+            });
+        reconciliation
+            .decisions
+            .push(crate::semantic_model::MergePreviewDecisionV2 {
+                artifact,
+                resolution: "use_left".to_string(),
+            });
+        let preview = crate::evolution_preview::build_reconciliation_evolution_preview_v1(
+            None,
+            &reconciliation,
+        );
+        let dry_run = dry_run_for_reconciliation(
+            "heads/review/source",
+            "heads/main",
+            source,
+            target,
+            reconciliation,
+            preview,
+        );
+        let mut plan = semantic_merge_plan_from_dry_run(
+            &dry_run,
+            SemanticMergeOperationKindV1::Merge,
+            SemanticSliceSelectorV1::default(),
+            SemanticSliceSelectorV1::default(),
+        );
+
+        assert!(!plan.can_materialize);
+        assert!(plan.conflicts.iter().any(|conflict| {
+            conflict.artifact_kind == "module_slot" && conflict.artifact_id == "SharedModule"
+        }));
+        assert!(!plan.resolver_steps.is_empty());
+        assert!(plan
+            .blockers
+            .iter()
+            .any(|blocker| { blocker.kind == SemanticMergeBlockerKindV1::Conflict }));
+
+        plan.can_materialize = true;
+        let err = validate_semantic_merge_plan_for_materialization(&plan)
+            .expect_err("forcing can_materialize must not bypass a module-slot conflict");
+        assert!(err.to_string().contains("module_slot"));
+
+        let lean_json = semantic_merge_plan_lean_json_v1(&plan);
+        assert!(lean_json["blockers"]
+            .as_array()
+            .expect("Lean blocker array")
+            .iter()
+            .any(|blocker| blocker == "conflict"));
+        assert!(!lean_json["resolver_steps"]
+            .as_array()
+            .expect("Lean resolver step array")
+            .is_empty());
     }
 
     #[test]
@@ -2770,7 +2598,7 @@ instance I of S:
     }
 
     #[test]
-    fn kernel_module_ir_refs_expose_category_theory_and_instance_functor_handles() {
+    fn kernel_module_ir_refs_expose_canonical_category_theory_and_instance_model_handles() {
         let text = r#"
 module SliceDemo
 
@@ -2791,8 +2619,8 @@ instance TinyOrg of Org:
   WorksAt = {(worker=Alice, dept=Ops)}
 "#;
         let module = axiograph_dsl::axi_v1::parse_axi_v1(text).expect("parse axi");
-        let kernel =
-            axiograph_pathdb::compile_kernel_module_ir(&module, text).expect("compile kernel ir");
+        let kernel = axiograph_pathdb::derive_runtime_module_index(&module, text)
+            .expect("compile kernel ir");
 
         let refs = semantic_refs_from_kernel_module_ir(&kernel);
 
@@ -2813,19 +2641,21 @@ instance TinyOrg of Org:
         }));
         assert!(refs.iter().any(|reference| {
             reference.kind == SemanticSliceRefKindV1::SubtypeInclusion
-                && reference.id.contains("Employee")
-                && reference.id.contains("Person")
+                && reference
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains("Employee") && label.contains("Person"))
         }));
         assert!(refs.iter().any(|reference| {
             reference.kind == SemanticSliceRefKindV1::TheoryObligation
                 && reference
                     .label
                     .as_deref()
-                    .is_some_and(|label| label.contains("WorksAt"))
+                    .is_some_and(|label| !label.is_empty())
         }));
         assert!(refs.iter().any(|reference| {
-            reference.kind == SemanticSliceRefKindV1::InstanceFunctor
-                && reference.id.contains("TinyOrg")
+            reference.kind == SemanticSliceRefKindV1::InstanceModel
+                && reference.label.as_deref() == Some("TinyOrg")
         }));
     }
 }

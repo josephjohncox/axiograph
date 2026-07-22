@@ -19,12 +19,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Mutex, RwLock, Weak};
 
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
-use crate::{IndexSidecarWriter, PathDB, StrId};
+use crate::{PathDB, StrId};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct InvertedIndex {
@@ -38,7 +38,6 @@ pub(crate) struct TextIndexCache {
     indexes: RwLock<HashMap<StrId, (u64, InvertedIndex)>>,
     building: Mutex<HashSet<StrId>>,
     async_source: Mutex<Option<Weak<PathDB>>>,
-    sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
 }
 
 impl Default for TextIndexCache {
@@ -48,26 +47,17 @@ impl Default for TextIndexCache {
             indexes: RwLock::new(HashMap::new()),
             building: Mutex::new(HashSet::new()),
             async_source: Mutex::new(None),
-            sidecar: Mutex::new(None),
         }
     }
 }
 
 impl TextIndexCache {
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
-    }
     pub(crate) fn attach_async_source(&self, source: Weak<PathDB>) {
         let mut guard = self
             .async_source
             .lock()
             .expect("text index source poisoned");
         *guard = Some(source);
-    }
-
-    pub(crate) fn attach_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
-        let mut guard = self.sidecar.lock().expect("text index sidecar poisoned");
-        *guard = Some(writer);
     }
 
     pub(crate) fn invalidate(&self) {
@@ -144,20 +134,6 @@ impl TextIndexCache {
         }
     }
 
-    pub(crate) fn snapshot(&self, generation: u64) -> HashMap<StrId, InvertedIndex> {
-        let guard = self.indexes.read().expect("text index lock poisoned");
-        guard
-            .iter()
-            .filter_map(|(k, (built, idx))| {
-                if *built == generation {
-                    Some((*k, idx.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     fn schedule_build_async(&self, db: &PathDB, attr_key_id: StrId, gen: u64) -> bool {
         {
             let guard = self.indexes.read().expect("text index lock poisoned");
@@ -196,14 +172,6 @@ impl TextIndexCache {
                 let cache = &db.text_index;
                 if cache.generation.load(Ordering::SeqCst) == gen {
                     cache.load_indexes(gen, [(attr_key_id, new_index)].into());
-                    if let Some(writer) = cache
-                        .sidecar
-                        .lock()
-                        .expect("text index sidecar poisoned")
-                        .as_ref()
-                    {
-                        writer.mark_dirty();
-                    }
                 }
                 let mut building = cache.building.lock().expect("text index build poisoned");
                 building.remove(&attr_key_id);

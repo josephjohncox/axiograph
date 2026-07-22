@@ -64,6 +64,15 @@ def associativity {n : Nat} {kg : KnowledgeGraph.{u} n} {a b c d : EntityId n} (
 -- Confidence as Indexed Type
 -- -----------------------------------------------------------------------------
 
+/-!
+`PathConf` evaluates the concrete `KGPath` syntax tree from left to right.
+`vMult` rounds after every composition and is not associative, so this section
+deliberately proves no claim that `KGPathEquiv` preserves confidence. In
+particular, `KGPEAssoc` may change the fixed-point result. A future
+path-equivalence-invariant confidence semantics must use exact or delayed
+rounding arithmetic.
+-/
+
 inductive PathConf {n : Nat} {kg : KnowledgeGraph.{u} n}
     (getConf : {a b : EntityId n} → kg.Rel a b → VProb) :
     {a b : EntityId n} → KGPath kg a b → VProb → Type u where

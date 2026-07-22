@@ -42,5 +42,3 @@ q select ?ev ?conf where ?f = EvidenceSupports(ev=?ev, prop=HighSpeedOk, conf=?c
 
 # "Paths between paths": compare alternative justifications for the same obligation.
 q select ?p2 where ?j = JustificationEquiv(path1=Path_Policy, path2=?p2, witness=?w) limit 10
-
-save build/modalities_axi.axpd

@@ -6,12 +6,15 @@
 //! - Structured content (tables, lists, code blocks)
 //! - Page hierarchy and links
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::{Chunk, DocumentExtraction};
+
+const MAX_CONFLUENCE_HTML_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONFLUENCE_ITEMS: usize = 100_000;
 
 /// A Confluence page structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +67,16 @@ pub struct PageLink {
 
 /// Parse Confluence HTML export
 pub fn parse_confluence_html(html: &str, page_id: &str, space: &str) -> Result<ConfluencePage> {
+    if html.len() > MAX_CONFLUENCE_HTML_BYTES {
+        return Err(anyhow!(
+            "Confluence HTML exceeds {MAX_CONFLUENCE_HTML_BYTES} bytes"
+        ));
+    }
+    if page_id.is_empty() || page_id.len() > 1024 || space.len() > 1024 {
+        return Err(anyhow!(
+            "Confluence page id/space exceeds identifier limits"
+        ));
+    }
     // Extract title from <title> or <h1>
     let title_re = Regex::new(r"<title>([^<]+)</title>").unwrap();
     let h1_re = Regex::new(r"<h1[^>]*>([^<]+)</h1>").unwrap();
@@ -79,6 +92,11 @@ pub fn parse_confluence_html(html: &str, page_id: &str, space: &str) -> Result<C
     let mut sections = Vec::new();
 
     for caps in section_re.captures_iter(html) {
+        if sections.len() >= MAX_CONFLUENCE_ITEMS {
+            return Err(anyhow!(
+                "Confluence section count exceeds {MAX_CONFLUENCE_ITEMS}"
+            ));
+        }
         let level: u8 = caps[1].parse().unwrap_or(2);
         let heading = caps[2].to_string();
         // Extract text between this heading and the next
@@ -111,8 +129,29 @@ pub fn parse_confluence_html(html: &str, page_id: &str, space: &str) -> Result<C
     let labels_re = Regex::new(r#"data-label="([^"]+)""#).unwrap();
     let labels: Vec<String> = labels_re
         .captures_iter(html)
+        .take(MAX_CONFLUENCE_ITEMS + 1)
         .map(|c| c[1].to_string())
         .collect();
+
+    let table_items = tables.iter().try_fold(0_usize, |total, table| {
+        table
+            .rows
+            .iter()
+            .try_fold(total.saturating_add(table.headers.len()), |total, row| {
+                total.checked_add(row.len())
+            })
+    });
+    let total_items = table_items
+        .and_then(|count| count.checked_add(sections.len()))
+        .and_then(|count| count.checked_add(code_blocks.len()))
+        .and_then(|count| count.checked_add(links.len()))
+        .and_then(|count| count.checked_add(labels.len()))
+        .ok_or_else(|| anyhow!("Confluence item count overflow"))?;
+    if total_items > MAX_CONFLUENCE_ITEMS {
+        return Err(anyhow!(
+            "Confluence item count {total_items} exceeds {MAX_CONFLUENCE_ITEMS}"
+        ));
+    }
 
     Ok(ConfluencePage {
         page_id: page_id.to_string(),
@@ -235,14 +274,14 @@ pub fn confluence_to_extraction(page: &ConfluencePage) -> DocumentExtraction {
         metadata.insert("source_type".to_string(), "confluence".to_string());
         metadata.insert("space".to_string(), page.space.clone());
         for label in &page.labels {
-            metadata.insert(format!("label_{}", label), "true".to_string());
+            metadata.insert(format!("label_{label}"), "true".to_string());
         }
 
         chunks.push(Chunk {
             chunk_id: format!("{}_section_{}", page.page_id, i),
             document_id: page.page_id.clone(),
             page: None,
-            span_id: format!("section_{}", i),
+            span_id: format!("section_{i}"),
             text: section.text.clone(),
             bbox: None,
             metadata,
@@ -272,7 +311,7 @@ pub fn confluence_to_extraction(page: &ConfluencePage) -> DocumentExtraction {
             chunk_id: format!("{}_table_{}", page.page_id, i),
             document_id: page.page_id.clone(),
             page: None,
-            span_id: format!("table_{}", i),
+            span_id: format!("table_{i}"),
             text,
             bbox: None,
             metadata,
@@ -292,7 +331,7 @@ pub fn confluence_to_extraction(page: &ConfluencePage) -> DocumentExtraction {
             chunk_id: format!("{}_code_{}", page.page_id, i),
             document_id: page.page_id.clone(),
             page: None,
-            span_id: format!("code_{}", i),
+            span_id: format!("code_{i}"),
             text: block.code.clone(),
             bbox: None,
             metadata,

@@ -24,7 +24,7 @@ module Demo
 schema S:
   object Person
   object Context
-  relation Parent(parent: Person, child: Person, ctx: Context)
+  relation Parent(parent: Person, child: Person, ctx: Context @context)
 
 instance I of S:
   Person = {Alice, Bob}
@@ -46,6 +46,39 @@ instance I of S:
         !db.relations.has_edge(alice, parent_rel, bob),
         "endpoint choice should not be silently reordered by name-based child/parent heuristics"
     );
+}
+
+#[test]
+fn importer_materializes_composable_explicit_generator_arrows() {
+    let mut db = PathDB::new();
+    let axi = r#"
+module GeneratorDemo
+
+schema S:
+  object A
+  object B
+  object C
+  function f: A -> B
+  function g: B -> C
+
+instance I of S:
+  A = {a}
+  B = {b}
+  C = {c}
+  f = {(source=a, target=b)}
+  g = {(source=b, target=c)}
+"#;
+
+    let summary = import_axi_schema_v1_into_pathdb(&mut db, axi).expect("import module");
+    let a = find_named_entity(&db, "A", "a");
+    let b = find_named_entity(&db, "B", "b");
+    let c = find_named_entity(&db, "C", "c");
+    let f = db.interner.id_of("f").expect("f edge label");
+    let g = db.interner.id_of("g").expect("g edge label");
+
+    assert!(db.relations.has_edge(a, f, b));
+    assert!(db.relations.has_edge(b, g, c));
+    assert_eq!(summary.derived_edges_added, 2);
 }
 
 #[test]
@@ -129,4 +162,111 @@ instance I of S:
     let parent_facts = db.find_by_type("Parent").expect("fact tuples exist");
     let fact = parent_facts.iter().next().expect("parent fact exists");
     assert!(db.relations.has_edge(fact, scope_rel, w0));
+}
+
+#[test]
+fn derived_runtime_index_retains_canonical_snapshot_only_in_process() {
+    let axi = r#"
+module Demo
+
+schema S:
+  object Person
+  relation Parent(child: Person, parent: Person)
+  relation Review(parent_fact: relation(Parent))
+  function manager: Person -> Person
+
+instance I of S:
+  Person = {Alice, Bob}
+  Parent = {parent_1: (child=Alice, parent=Bob)}
+  Review = {(parent_fact=parent_1)}
+  manager = {(source=Alice, target=Bob), (source=Bob, target=Bob)}
+"#;
+    let module = axiograph_dsl::axi_v1::parse_axi_v1(axi).expect("parse fixture");
+    let index = axiograph_pathdb::derive_runtime_module_index(&module, axi)
+        .expect("derive canonical-backed runtime index");
+
+    let snapshot = index
+        .canonical_snapshot()
+        .expect("in-process runtime index must retain canonical authority");
+    assert_eq!(snapshot.ir().version(), "kernel_snapshot_ir_v2");
+    assert_eq!(snapshot.ir().ordered_module_closure().len(), 1);
+    let surface = index.runtime_semantic_index();
+    assert_eq!(surface.refs.len(), snapshot.ir().refs().len());
+    assert!(surface
+        .refs
+        .iter()
+        .all(|reference| matches!(reference, axiograph_pathdb::RuntimeIrRef::Canonical { .. })));
+    assert!(surface.refs.iter().any(|reference| matches!(
+        reference,
+        axiograph_pathdb::RuntimeIrRef::Canonical { citation }
+            if citation.label == "manager"
+                && matches!(&citation.reference, axiograph_pathdb::KernelRefV2::Generator { .. })
+    )));
+    assert!(surface.refs.iter().any(|reference| matches!(
+        reference,
+        axiograph_pathdb::RuntimeIrRef::Canonical { citation }
+            if citation.label == "Review.parent_fact"
+                && matches!(&citation.reference, axiograph_pathdb::KernelRefV2::Role { .. })
+    )));
+    let schema = &snapshot.ir().schemas()[0];
+    let review = schema
+        .relations
+        .iter()
+        .find(|relation| relation.label == "Review")
+        .expect("Review relation object");
+    assert_eq!(review.roles[0].declared_order, 0);
+    assert!(matches!(
+        &review.roles[0].type_expr,
+        axiograph_kernel::TypeExprIr::RelationObject { .. }
+    ));
+
+    let serialized = serde_json::to_string(&index).expect("serialize derived runtime index");
+    let restored: axiograph_pathdb::RuntimeModuleIndex =
+        serde_json::from_str(&serialized).expect("deserialize runtime citation");
+    assert!(
+        restored.canonical_snapshot().is_none(),
+        "serialized runtime citations must not recreate canonical authority"
+    );
+    assert_eq!(restored.runtime_semantic_index().refs, surface.refs);
+}
+
+#[test]
+fn runtime_package_index_uses_imported_schema_and_retains_package_snapshot() {
+    let base = axiograph_kernel::CanonicalModuleSource::parse(
+        b"module Base\n\nschema Shared:\n  object Person\n  relation Parent(child: Person, parent: Person)\n"
+            .to_vec(),
+    )
+    .expect("parse base");
+    let root = axiograph_kernel::CanonicalModuleSource::parse(
+        b"module Root\nimport Base\n\ntheory Rules on Shared:\n  constraint key Parent(child)\n\ninstance I of Shared:\n  Person = {Alice, Bob}\n  Parent = {(child=Alice, parent=Bob)}\n"
+            .to_vec(),
+    )
+    .expect("parse root");
+    let snapshot =
+        axiograph_kernel::CanonicalCompiler::compile(axiograph_kernel::KernelCompilationRequest {
+            repository_id: axiograph_kernel::RepositoryIdV2::from_descriptor_bytes(
+                b"runtime-package-test",
+            ),
+            accepted_snapshot_id: axiograph_kernel::SnapshotIdV2::from_canonical_fields(&[
+                base.exact_text().as_bytes(),
+                root.exact_text().as_bytes(),
+            ]),
+            root_module: "Root".to_string(),
+            modules: vec![root.clone(), base.clone()],
+        })
+        .expect("compile package");
+
+    let index = axiograph_pathdb::derive_runtime_package_index(&snapshot, &[base, root])
+        .expect("derive package runtime index");
+    assert_eq!(index.schemas.len(), 1);
+    assert_eq!(index.theories.len(), 1);
+    assert_eq!(index.instances.len(), 1);
+    assert_eq!(
+        index
+            .canonical_snapshot()
+            .expect("retained package snapshot")
+            .ir()
+            .ir_digest(),
+        snapshot.ir().ir_digest()
+    );
 }

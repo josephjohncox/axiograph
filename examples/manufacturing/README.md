@@ -6,12 +6,12 @@ HoTT-flavored witnesses.
 - `SupplyChainHoTT.axi` is useful for certified query and path examples.
 - `SupplyChainModalitiesHoTT.axi` adds observed/evidence/modal distinctions.
 
-Useful command:
+Useful question-first command:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  cert query examples/manufacturing/SupplyChainHoTT.axi \
-  --lang axql \
-  'select ?to where name("RawMetal_A") -Flow-> ?to limit 10' \
-  --out build/examples/supply_chain_query_cert.json
+  discover competency-questions examples/manufacturing/SupplyChainHoTT.axi \
+  --from-cq examples/competency_questions/supply_chain.cq \
+  --no-schema \
+  --out build/examples/supply_chain_competency_questions.json
 ```

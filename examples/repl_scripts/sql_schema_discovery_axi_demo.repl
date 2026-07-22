@@ -1,15 +1,14 @@
-# Axiograph REPL script: schema discovery demo (drafted `.axi` module)
+# Axiograph REPL script: review-plane schema discovery inspection (drafted `.axi` module)
 #
-# This demo imports a *candidate* canonical `.axi` module that was generated from
+# This review-plane script imports a *candidate* canonical `.axi` module generated from
 # evidence-plane `proposals.json` (e.g. SQL DDL ingestion).
 #
-# Goal: show how "automated ontology engineering" bootstraps a schema so that:
-# - PathDB gets a meta-plane (schema/theory graph),
-# - AxQL planning can add implied type constraints and use keys/functionals as hints,
-# - Fact atoms benefit from FactIndex and (optionally) key-based pruning.
+# Goal: show how automated ontology engineering drafts a schema candidate so
+# reviewers can inspect the meta-plane, typed planning hints, and FactIndex use
+# before promotion into the accepted plane.
 #
 # Source proposals:
-#   examples/schema_discovery/fixtures/sql_schema_proposals.json
+#   examples/schema_discovery/inputs/sql_schema_proposals.json
 #
 # Run (from repo root):
 #   make binaries
@@ -51,5 +50,3 @@ q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10
 
 # Repeat to demonstrate the REPL's compiled query cache (same query IR + snapshot key).
 q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10
-
-save build/sql_schema_discovery.axpd

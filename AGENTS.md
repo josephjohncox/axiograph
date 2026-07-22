@@ -13,7 +13,7 @@ this file back into a backlog or session transcript.
   tests, typed reports, refinement handles, or docs.
 - Prefer small, typed, reviewable changes with explicit semantic previews.
 - Backward compatibility is not a default goal. Keep it only for an explicit
-  trust, live-byte, accepted-plane, or operational contract.
+  trust, byte-format, accepted-plane, or operational contract.
 - Avoid preserving stale protocol versions, fallback paths, historical exports,
   or old examples when a cleaner typed surface exists.
 - Prefer maintained, widely used Rust crates for protocol/core infrastructure
@@ -44,16 +44,19 @@ this file back into a backlog or session transcript.
   the canonical IR.
 - AI, LLM, and world-model outputs stay in the evidence plane until typed
   validation, review, CQ gates, reconciliation, and promotion accept them.
-- The live `.axpd` format and the sectioned verified `.axpd` story are still not
-  fully converged; keep verification claims pinned to the actual checked path.
+- SQLite is the only durable `.axpd` format. Public publication, opening, and
+  recovery go through repository-bound AxiStore receipts; legacy sectioned
+  formats, bare-file loading, custom WAL, and reverse export are unsupported.
 
 ### Source Of Truth
 
 - Trust boundary: `docs/reference/TRUSTED_KERNEL.md`
+- Untrusted I/O and resource bounds: `docs/reference/SECURITY_BOUNDARIES.md`
 - Compiled semantic IR: `docs/reference/KERNEL_IR.md`
 - Runtime theory checker: `docs/reference/RUNTIME_THEORY_CHECKER.md`
 - Lean theory status: `docs/reference/LEAN_THEORY_EVALUATION.md`
 - Embeddings/evidence sidecars: `docs/reference/EMBEDDINGS_AND_EVIDENCE.md`
+- Backend projections/readback: `docs/reference/BACKEND_PROJECTIONS.md`
 - Software authoring/codegen tools: `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`
 - Rust lifecycle and anchor types: `docs/reference/RUST_LIFECYCLE_TYPES.md`
 - Rust crate factoring cleanup: `docs/reference/RUST_ARCHITECTURE_CLEANUP.md`
@@ -73,10 +76,12 @@ this file back into a backlog or session transcript.
 | Task | Start Here |
 | --- | --- |
 | Understand current trust claims | `docs/reference/TRUSTED_KERNEL.md` |
+| Audit I/O, limits, or privileged mutation | `docs/reference/SECURITY_BOUNDARIES.md` |
 | Work on schema/category IR | `docs/reference/KERNEL_IR.md` |
 | Work on runtime theory checking | `docs/reference/RUNTIME_THEORY_CHECKER.md` |
 | Work on Lean theory status | `docs/reference/LEAN_THEORY_EVALUATION.md` |
 | Work on embeddings/RAG evidence | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
+| Work on backend projections/readback | `docs/reference/BACKEND_PROJECTIONS.md` |
 | Work on software authoring/codegen | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` |
 | Work on Rust type/lifecycle surfaces | `docs/reference/RUST_LIFECYCLE_TYPES.md` |
 | Simplify Rust crate architecture | `docs/reference/RUST_ARCHITECTURE_CLEANUP.md` |

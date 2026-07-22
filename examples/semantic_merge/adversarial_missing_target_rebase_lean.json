@@ -1,0 +1,37 @@
+{
+  "version": "semantic_vcs_lean_rebase_plan_v1",
+  "source": {
+    "anchor": {
+      "accepted_ref": "heads/review/source",
+      "accepted_snapshot_id": "snapshot-source",
+      "kernel_ir_digest": "kernel-source"
+    },
+    "refs": [{"kind": "relation_object", "id": "Source.Relation"}]
+  },
+  "onto": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "snapshot-onto",
+      "kernel_ir_digest": "kernel-onto"
+    },
+    "refs": []
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/review/source",
+      "accepted_snapshot_id": "snapshot-result",
+      "kernel_ir_digest": "kernel-result"
+    },
+    "refs": [{"kind": "relation_object", "id": "Source.Relation"}]
+  },
+  "transport_items": [
+    {
+      "source_ref": {"kind": "relation_object", "id": "Source.Relation"},
+      "status": "transported",
+      "required": true
+    }
+  ],
+  "blockers": [],
+  "resolver_steps": [],
+  "residual_obligations": []
+}

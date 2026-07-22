@@ -8,8 +8,6 @@ fn test_storage() -> (UnifiedStorage, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
-        pathdb_path: dir.path().join("test.axpd"),
-        changelog_path: dir.path().join("changelog.json"),
         watch_files: false,
         require_review: ReviewPolicy {
             constraints: false,
@@ -24,7 +22,7 @@ fn test_storage() -> (UnifiedStorage, tempfile::TempDir) {
 
 #[test]
 fn test_entity_materializes_to_evidence_record_and_pathdb_cache() {
-    let (storage, dir) = test_storage();
+    let (storage, _dir) = test_storage();
 
     // Add entity
     let facts = vec![StorableFact::Entity {
@@ -44,12 +42,10 @@ fn test_entity_materializes_to_evidence_record_and_pathdb_cache() {
             },
         )
         .unwrap();
-    storage.flush().unwrap();
+    let results = storage.flush().unwrap();
 
-    // Verify .axi file
-    let axi_path = dir.path().join("user_edits.axi");
-    assert!(axi_path.exists(), ".axi file should exist");
-    let axi_content = std::fs::read_to_string(&axi_path).unwrap();
+    // Generated `.axi` is an in-memory proposal, never an accepted-file append.
+    let axi_content = results[0].axi_lines.join("\n");
     assert!(
         axi_content.contains("Titanium"),
         "Should contain entity name"
@@ -72,8 +68,8 @@ fn test_entity_materializes_to_evidence_record_and_pathdb_cache() {
 }
 
 #[test]
-fn test_relation_lands_in_both_formats() {
-    let (storage, dir) = test_storage();
+fn test_relation_lands_in_query_cache_and_review_proposal() {
+    let (storage, _dir) = test_storage();
 
     let facts = vec![
         StorableFact::Entity {
@@ -104,11 +100,9 @@ fn test_relation_lands_in_both_formats() {
             },
         )
         .unwrap();
-    storage.flush().unwrap();
+    let results = storage.flush().unwrap();
 
-    // Verify .axi
-    let axi_path = dir.path().join("api_additions.axi");
-    let content = std::fs::read_to_string(&axi_path).unwrap();
+    let content = results[0].axi_lines.join("\n");
     assert!(content.contains("usedWith"), "Should contain relation type");
     assert!(content.contains("EndMill"), "Should contain source");
     assert!(content.contains("Ti6Al4V"), "Should contain target");
@@ -189,6 +183,11 @@ fn test_relation_with_unresolved_endpoint_fails_closed() {
         storage.changelog().is_empty(),
         "failed relation should not be recorded as applied"
     );
+    assert_eq!(
+        storage.pending().len(),
+        1,
+        "failed changes must remain pending for inspection or retry"
+    );
     assert!(
         !dir.path().join("api_additions.axi").exists(),
         "failed relation should not append .axi output"
@@ -228,7 +227,7 @@ fn test_tacit_knowledge_storage() {
 
 #[test]
 fn test_constraint_storage() {
-    let (storage, dir) = test_storage();
+    let (storage, _dir) = test_storage();
 
     let facts = vec![StorableFact::Constraint {
         name: "SpeedLimit".to_string(),
@@ -240,111 +239,37 @@ fn test_constraint_storage() {
     storage
         .add_facts(facts, ChangeSource::UserEdit { user_id: None })
         .unwrap();
-    storage.flush().unwrap();
+    let results = storage.flush().unwrap();
 
-    // Constraints go to .axi only
-    let axi_path = dir.path().join("user_edits.axi");
-    let content = std::fs::read_to_string(&axi_path).unwrap();
+    let content = results[0].axi_lines.join("\n");
     assert!(content.contains("constraint"));
     assert!(content.contains("SpeedLimit"));
     assert!(content.contains("speed <= 60"));
 }
 
 #[test]
-fn test_changelog_persistence() {
-    let (storage, dir) = test_storage();
-
-    // Add multiple batches
+fn test_in_memory_changelog_tracks_applied_changes() {
+    let (storage, _dir) = test_storage();
     for i in 0..3 {
         storage
             .add_facts(
                 vec![StorableFact::Entity {
-                    name: format!("Entity{}", i),
+                    name: format!("Entity{i}"),
                     entity_type: "Test".to_string(),
                     attributes: vec![],
                 }],
                 ChangeSource::System {
-                    reason: format!("test batch {}", i),
+                    reason: format!("test batch {i}"),
                 },
             )
             .unwrap();
         storage.flush().unwrap();
     }
-
-    // Verify changelog
-    let changelog_path = dir.path().join("changelog.json");
-    assert!(changelog_path.exists());
-    let changelog_content = std::fs::read_to_string(&changelog_path).unwrap();
-    let changelog: Vec<Change> = serde_json::from_str(&changelog_content).unwrap();
-    assert_eq!(changelog.len(), 3, "Should have 3 changes");
-
-    // Verify all marked as Applied
-    for change in &changelog {
-        assert!(matches!(change.status, ChangeStatus::Applied));
-    }
-}
-
-#[test]
-fn test_source_segregation() {
-    let (storage, dir) = test_storage();
-
-    // Add from different sources
-    storage
-        .add_facts(
-            vec![StorableFact::Entity {
-                name: "LLMEntity".to_string(),
-                entity_type: "Test".to_string(),
-                attributes: vec![],
-            }],
-            ChangeSource::LLMExtraction {
-                session_id: uuid::Uuid::new_v4(),
-                model: "test".to_string(),
-                confidence: 0.9,
-            },
-        )
-        .unwrap();
-
-    storage
-        .add_facts(
-            vec![StorableFact::Entity {
-                name: "UserEntity".to_string(),
-                entity_type: "Test".to_string(),
-                attributes: vec![],
-            }],
-            ChangeSource::UserEdit {
-                user_id: Some("user1".to_string()),
-            },
-        )
-        .unwrap();
-
-    storage
-        .add_facts(
-            vec![StorableFact::Entity {
-                name: "APIEntity".to_string(),
-                entity_type: "Test".to_string(),
-                attributes: vec![],
-            }],
-            ChangeSource::API {
-                client_id: "api-client".to_string(),
-            },
-        )
-        .unwrap();
-
-    storage.flush().unwrap();
-
-    // Verify separate .axi files
-    assert!(dir.path().join("llm_extracted.axi").exists());
-    assert!(dir.path().join("user_edits.axi").exists());
-    assert!(dir.path().join("api_additions.axi").exists());
-
-    // Verify content separation
-    let llm_content = std::fs::read_to_string(dir.path().join("llm_extracted.axi")).unwrap();
-    assert!(llm_content.contains("LLMEntity"));
-    assert!(!llm_content.contains("UserEntity"));
-
-    let user_content = std::fs::read_to_string(dir.path().join("user_edits.axi")).unwrap();
-    assert!(user_content.contains("UserEntity"));
-    assert!(!user_content.contains("LLMEntity"));
+    assert_eq!(storage.changelog().len(), 3);
+    assert!(storage
+        .changelog()
+        .iter()
+        .all(|change| matches!(change.status, ChangeStatus::Applied)));
 }
 
 #[test]
@@ -354,7 +279,7 @@ fn test_batch_operations() {
     // Add many facts in batch
     let facts: Vec<StorableFact> = (0..50)
         .map(|i| StorableFact::Entity {
-            name: format!("BatchEntity{}", i),
+            name: format!("BatchEntity{i}"),
             entity_type: "BatchTest".to_string(),
             attributes: vec![("index".to_string(), i.to_string())],
         })
@@ -410,59 +335,50 @@ fn test_pending_and_flush() {
 }
 
 #[test]
-fn test_pathdb_persistence() {
-    let dir = tempdir().unwrap();
-    let pathdb_path = dir.path().join("persistent.axpd");
+fn rollback_updates_log_and_rebuilds_in_memory_pathdb() {
+    let (storage, _dir) = test_storage();
+    let first_change = storage
+        .add_facts(
+            vec![StorableFact::Entity {
+                name: "Keep".to_string(),
+                entity_type: "Test".to_string(),
+                attributes: vec![],
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+    storage.flush().unwrap();
+    storage
+        .add_facts(
+            vec![StorableFact::Concept {
+                name: "RemoveAfterRollback".to_string(),
+                description: "temporary".to_string(),
+                difficulty: "easy".to_string(),
+                prerequisites: vec![],
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+    storage.flush().unwrap();
 
-    // Create and populate
-    {
-        let config = StorageConfig {
-            axi_dir: dir.path().to_path_buf(),
-            pathdb_path: pathdb_path.clone(),
-            changelog_path: dir.path().join("changelog.json"),
-            watch_files: false,
-            ..Default::default()
-        };
-        let storage = UnifiedStorage::new(config).unwrap();
+    storage.rollback_to(first_change).unwrap();
 
-        storage
-            .add_facts(
-                vec![StorableFact::Entity {
-                    name: "Persistent".to_string(),
-                    entity_type: "Test".to_string(),
-                    attributes: vec![],
-                }],
-                ChangeSource::UserEdit { user_id: None },
-            )
-            .unwrap();
-        storage.flush().unwrap();
-    }
-
-    // Verify file exists
-    assert!(pathdb_path.exists());
-
-    // Reload and verify
-    {
-        let config = StorageConfig {
-            axi_dir: dir.path().to_path_buf(),
-            pathdb_path: pathdb_path.clone(),
-            changelog_path: dir.path().join("changelog.json"),
-            watch_files: false,
-            ..Default::default()
-        };
-        let storage = UnifiedStorage::new(config).unwrap();
-
-        let pathdb = storage.pathdb();
-        let db = pathdb.read();
-        let entities = db.find_by_type("Test");
-        assert!(entities.is_some());
-        assert!(!entities.unwrap().is_empty());
-    }
+    let changelog = storage.changelog();
+    assert_eq!(changelog.len(), 2);
+    assert!(matches!(changelog[0].status, ChangeStatus::Applied));
+    assert!(matches!(changelog[1].status, ChangeStatus::Rolled { .. }));
+    let pathdb = storage.pathdb();
+    let db = pathdb.read();
+    assert_eq!(
+        UnifiedStorage::entity_ids_by_storage_name(&db, "Keep").len(),
+        1
+    );
+    assert!(UnifiedStorage::entity_ids_by_storage_name(&db, "RemoveAfterRollback").is_empty());
 }
 
 #[test]
 fn test_concept_and_guideline_storage() {
-    let (storage, dir) = test_storage();
+    let (storage, _dir) = test_storage();
 
     let facts = vec![
         StorableFact::Concept {
@@ -482,7 +398,7 @@ fn test_concept_and_guideline_storage() {
     storage
         .add_facts(facts, ChangeSource::UserEdit { user_id: None })
         .unwrap();
-    storage.flush().unwrap();
+    let results = storage.flush().unwrap();
 
     // Verify in PathDB
     let pathdb = storage.pathdb();
@@ -490,8 +406,7 @@ fn test_concept_and_guideline_storage() {
     assert!(db.find_by_type("Concept").is_some());
     assert!(db.find_by_type("SafetyGuideline").is_some());
 
-    // Verify in .axi
-    let content = std::fs::read_to_string(dir.path().join("user_edits.axi")).unwrap();
+    let content = results[0].axi_lines.join("\n");
     assert!(content.contains("concept ChipFormation"));
     assert!(content.contains("guideline CoolantRequired"));
 }

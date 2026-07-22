@@ -1,80 +1,66 @@
 # Performance profiling
 
-This repo includes a few built-in ways to profile "where the time went". Phase timings are dependency-free; deeper CPU profiling is available behind an optional feature flag.
+Axiograph has in-memory PathDB/AxQL performance runners and an optional CLI CPU
+profiler. Authenticated `.axpd` materialization currently has focused correctness
+tests rather than a public benchmark command.
 
-## Profile PathDB WAL checkout vs rebuild
+## In-memory PathDB and AxQL runners
 
-`axiograph db accept pathdb-build` has two important modes:
-
-- **Checkpoint fast path (default):** if a snapshot checkpoint exists, it "checks out" the `.axpd` by hardlink/copy.
-- **Rebuild slow path (`--rebuild`):** rebuilds from accepted `.axi` + replays WAL ops + rebuilds indexes.
-
-Use phase timings (human-readable):
+Build and run in release mode from `rust/`:
 
 ```bash
-axiograph db accept pathdb-build \
-  --dir build/accepted_plane \
-  --snapshot head \
-  --out build/head.axpd \
-  --timings
+cargo run -p axiograph-cli --release -- \
+  tools perf pathdb \
+  --entities 200000 \
+  --edges-per-entity 8 \
+  --rel-types 8 \
+  --queries 50000
+
+cargo run -p axiograph-cli --release -- \
+  tools perf axql \
+  --entities 200000 \
+  --edges-per-entity 8 \
+  --rel-types 8 \
+  --mode star \
+  --queries 2000 \
+  --limit 200
+
+cargo run -p axiograph-cli --release -- \
+  tools perf scenario \
+  --scenario proto_api \
+  --scale 10000 \
+  --index-depth 3
 ```
 
-Or write timings to JSON:
+These runners construct process-local query state. They do not publish or open
+`.axpd` files.
+
+## Authenticated materialization measurements
+
+Use release-mode focused tests when profiling deterministic SQLite construction,
+verification, and hydration:
 
 ```bash
-axiograph db accept pathdb-build \
-  --dir build/accepted_plane \
-  --snapshot head \
-  --out build/head.axpd \
-  --timings-json build/pathdb_build_timings.json
+cargo test --release -p axiograph-store --test materialization -- --nocapture
+cargo test --release -p axiograph-pathdb --test materialization_tests -- --nocapture
 ```
 
-Force the rebuild hot path (useful for profiling):
+A valid production benchmark must measure these phases separately:
 
-```bash
-axiograph db accept pathdb-build \
-  --dir build/accepted_plane \
-  --snapshot head \
-  --out build/head_rebuild.axpd \
-  --rebuild \
-  --timings
-```
+1. canonical row validation and sorting;
+2. in-memory SQLite population;
+3. deterministic backup and fsync;
+4. exact-image hashing;
+5. read-only schema/anchor/digest verification;
+6. PathDB hydration and process-local index rebuild.
 
-### One-command demo script
+Do not benchmark removed bincode, sectioned-binary, WAL checkout, hardlink/copy,
+or sidecar-index paths. They are not supported formats.
 
-The easiest way to get both "checkout" and "rebuild" timings:
+## Predictive proposal rollout/eval runner
 
-```bash
-./scripts/profile_pathdb_wal_build.sh
-```
-
-This will:
-
-- generate a large demo snapshot store if needed (via `scripts/graph_explorer_deep_knowledge_demo.sh`),
-- run `pathdb-build` once using the checkpoint fast path,
-- run `pathdb-build --rebuild` to profile the slow path,
-- write `timings_*.json` into `build/profile_pathdb_wal_build/`.
-
-## Built-in sampling profiles (feature-gated)
-
-For deeper detail than phase timings, you can enable the optional CPU profiler
-in the CLI and emit flamegraphs / pprof data / folded callstack dumps.
-
-Build with the profiling feature:
-
-```bash
-cd rust
-cargo build -p axiograph-cli --release --features profiling
-```
-
----
-
-## Predictive proposal rollout/eval harness
-
-The perf harness can exercise bounded predictive proposal rollouts and report
-guardrail deltas plus basic precision/recall (when running against `.axi` with
-holdouts). This is an evidence-plane evaluation harness, not an
-autonomous-execution claim.
+The runner exercises bounded evidence-plane proposal rollouts and reports
+basic precision/recall when holdouts are available:
 
 ```bash
 axiograph tools perf proposal-rollout \
@@ -88,71 +74,46 @@ axiograph tools perf proposal-rollout \
   --out-json build/predictive_proposal_perf.json
 ```
 
-Then run any command with `--profile`:
+Proposal inputs must be exact canonical `.axi` bytes. A derived PathDB image is
+not a source-recovery or adapter-input format.
+
+## Built-in sampling profiles
+
+Build the CLI with profiling enabled:
 
 ```bash
-./target/release/axiograph \
-  --profile flamegraph \
-  --profile-out ../build/profiles/pathdb_build \
-  db accept pathdb-build --dir ../build/accepted_plane --snapshot head --out ../build/head.axpd --rebuild
+cargo build -p axiograph-cli --release --features profiling
 ```
 
-Formats:
-
-- `--profile flamegraph` -> `<out>.svg`
-- `--profile pprof` -> `<out>.pb` (use `go tool pprof -top` for callstack time dumps)
-- `--profile folded` -> `<out>.folded` (collapsed stacks)
-- `--profile all` -> all of the above
-
-`--profile` with no value defaults to `flamegraph`.
-
-Live snapshots while running:
-
-- `--profile-interval <secs>` emits periodic snapshots.
-- `--profile-signal` emits a snapshot on `SIGUSR2` (Unix only).
-- `--profile-live-format <fmt>` sets snapshot format (default: `pprof`).
-
-Example (periodic snapshots every 10s):
+Prefix any supported long-running CLI command with profiling flags:
 
 ```bash
 ./target/release/axiograph \
   --profile all \
   --profile-interval 10 \
-  --profile-out ../build/profiles/pathdb_build \
-  db accept pathdb-build --dir ../build/accepted_plane --snapshot head --out ../build/head.axpd --rebuild
+  --profile-out ../build/profiles/axql \
+  tools perf axql --entities 200000 --edges-per-entity 8 --rel-types 8 \
+  --mode star --queries 2000 --limit 200
 ```
 
-Example (signal-triggered):
+Formats:
+
+- `--profile flamegraph` writes `<out>.svg`;
+- `--profile pprof` writes `<out>.pb`;
+- `--profile folded` writes `<out>.folded`;
+- `--profile all` writes all formats.
+
+`--profile-signal` additionally emits a live snapshot on `SIGUSR2` on Unix.
+
+## External profilers
+
+On Linux, `cargo-flamegraph` can wrap a supported perf runner:
 
 ```bash
-./target/release/axiograph \
-  --profile all \
-  --profile-signal \
-  --profile-out ../build/profiles/pathdb_build \
-  db accept pathdb-build --dir ../build/accepted_plane --snapshot head --out ../build/head.axpd --rebuild
-```
-
-Then from another terminal:
-
-```bash
-kill -USR2 <pid>
-```
-
-## Flamegraphs (optional, external tools)
-
-For deeper detail than phase timings, you can also use an external sampling profiler.
-
-### Linux
-
-`cargo-flamegraph` (requires `perf`):
-
-```bash
-cd rust
 cargo flamegraph -p axiograph-cli --bin axiograph --release -- \
-  db accept pathdb-build --dir ../build/accepted_plane --snapshot head --out ../build/head.axpd --rebuild
+  tools perf pathdb --entities 200000 --edges-per-entity 8 \
+  --rel-types 8 --queries 50000
 ```
 
-### macOS
-
-`cargo-flamegraph` may require additional privileges (sampling restrictions vary by macOS version).
-If it doesn't work for you, use Instruments (Time Profiler) to attach to the `axiograph` process.
+On macOS, use Instruments Time Profiler if system sampling restrictions prevent
+`cargo-flamegraph` from attaching.

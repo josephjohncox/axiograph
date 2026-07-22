@@ -165,13 +165,13 @@ impl PatternExtractor {
                 attributes,
             } => {
                 if attributes.is_empty() {
-                    format!("{} is a {}", name, entity_type)
+                    format!("{name} is a {entity_type}")
                 } else {
                     let attrs: Vec<String> = attributes
                         .iter()
-                        .map(|(k, v)| format!("{}: {}", k, v))
+                        .map(|(k, v)| format!("{k}: {v}"))
                         .collect();
-                    format!("{} is a {} with {}", name, entity_type, attrs.join(", "))
+                    format!("{name} is a {entity_type} with {}", attrs.join(", "))
                 }
             }
             StructuredFact::Relation {
@@ -180,15 +180,15 @@ impl PatternExtractor {
                 target,
                 ..
             } => {
-                format!("{} {} {}", source, rel_type, target)
+                format!("{source} {rel_type} {target}")
             }
             StructuredFact::Constraint {
                 name, condition, ..
             } => {
-                format!("Constraint {}: {}", name, condition)
+                format!("Constraint {name}: {condition}")
             }
             StructuredFact::TacitKnowledge { rule, .. } => {
-                format!("Rule: {}", rule)
+                format!("Rule: {rule}")
             }
         }
     }

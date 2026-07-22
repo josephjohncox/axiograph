@@ -25,6 +25,17 @@ def _load_onnx(model_path: str):
     return ort.InferenceSession(model_path, providers=providers)
 
 
+def _training_export(req: Dict[str, Any]) -> Dict[str, Any]:
+    semantic_input = (req.get("input") or {}).get("semantic_input") or {}
+    layers = semantic_input.get("layers")
+    if not isinstance(layers, list):
+        return {}
+    for layer in layers:
+        if layer.get("kind") == "training_export" and isinstance(layer.get("export"), dict):
+            return layer["export"]
+    return {}
+
+
 def _stable_hash(text: str) -> int:
     h = 2166136261
     for b in text.encode("utf-8"):
@@ -79,7 +90,7 @@ def _normalize_proposals(trace_id: str, proposals: List[Dict[str, Any]]) -> Dict
 def main() -> None:
     req = _read_stdin_json()
     trace_id = req.get("trace_id", "proposal::onnx")
-    export = (req.get("input") or {}).get("export") or {}
+    export = _training_export(req)
     items = export.get("items", []) or []
 
     # Prefer env var for deterministic local model.

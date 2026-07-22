@@ -17,9 +17,9 @@ It is intentionally scoped to three questions:
 The runtime already has a real first slice for typed ontology work:
 
 - `rust/crates/axiograph-cli/src/query_ir.rs`
-  - `QueryIrV1::prepare_with_meta`
-  - `PreparedQueryV1`
-  - `PreparedQueryV1::exploration_view`
+  - `QueryIrV1::compile_with_meta`
+  - `CompiledFiniteQuery`
+  - `CompiledFiniteQuery::exploration_view`
 - `rust/crates/axiograph-cli/src/axql.rs`
   - `AxqlElaborationReport`
   - `AxqlTypedHoleV1`
@@ -80,24 +80,13 @@ for ontology engineering beyond schema-aware querying.
 
 ### 2. The live kernel IR is still too schema-heavy and too stringly
 
-`rust/crates/axiograph-pathdb/src/kernel_ir.rs` currently exposes:
-
-- `CompiledSchemaIr`,
-- `RelationSemanticsIr`,
-- `RoleIr`,
-- `CarrierSpecIr`,
-- `WitnessViewIr`,
-- and a first theory-shaped slice (`ConstraintIr`, `PathEquationIr`,
-  `RewriteRuleIr`, `TheoryIr`) around compiled schema semantics.
-
-It still does not expose the fuller semantic spine described in
-`docs/reference/KERNEL_IR.md`:
-
-- `KernelModuleIr`,
-- `TheoryIr`,
-- `InstanceIr`,
-- deterministic ids for relation/rule/object/role/equation handles,
-- or first-class theory/path-equation/rewrite objects.
+This April audit predates W02. `axiograph-kernel` now exposes the canonical
+`CompiledKernelSnapshot` containing `KernelSnapshotIr`,
+`SchemaPresentationIr`, and validated finite `InstanceModelIr`, with typed
+identities for schemas, objects, relations, roles, generators, theories,
+equations, constraints, rewrites, instances, and facts. PathDB's
+`RuntimeSchemaIndex`, relation/theory indexes, carrier specifications, and
+witness views are explicitly derived runtime projections.
 
 The live IR also still uses string names for most semantic references
 (`name`, `target_type`, relation lookup by `&str`) rather than a stable typed id
@@ -130,7 +119,7 @@ the live `query_ir_v1`/hole model is still narrow:
   - a stable typed handle (`handle.id`, `handle.op`, `handle.scope`),
   - a human preview fragment,
   - and optional relation/schema/role metadata.
-- `PreparedQueryV1` now exposes typed apply helpers over those handles and
+- `CompiledFiniteQuery` now exposes typed apply helpers over those handles and
   returns refined `query_ir_v1` plus trust/introspection deltas.
 
 Missing consequences:
@@ -235,8 +224,8 @@ pieces should be:
    - rewrite-rule admissibility,
    - theory object indexing,
    - explicit runtime non-claims where the fragment stops.
-2. Promote the live kernel IR from `CompiledSchemaIr` to a shared module/theory
-   IR with deterministic per-object ids.
+2. Migrate every remaining runtime consumer from independently derived indexes
+   to the shared immutable `CompiledKernelSnapshot` and its deterministic ids.
 3. Replace string suggestions in query/authoring exploration with
    machine-applicable refinement objects plus an apply/refine API.
 4. Unify query holes and authoring holes into one anchor-scoped repair model.

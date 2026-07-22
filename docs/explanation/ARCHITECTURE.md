@@ -19,9 +19,10 @@ For a more “guided tour”, start with `./SYSTEM_OVERVIEW.md`.
 ## Design principles
 
 1. **Small trusted core**: Lean checks certificates against semantics, not “the same algorithm again”.
-2. **Canonical spine**: accepted `.axi` compiles to `KernelModuleIr`,
-   `SchemaCategoryIr`, `TheoryIr`, `InstanceFunctorIr`, and `KernelSurfaceV1`
-   refs before it feeds query, CQ, coverage, merge, backend, or authoring tools.
+2. **Canonical spine**: exact accepted `.axi` bytes and their import closure
+   compile once to immutable `CompiledKernelSnapshot` containing
+   `KernelSnapshotIr`, `SchemaPresentationIr`, and `InstanceModelIr` before
+   feeding query, CQ, coverage, merge, backend, or authoring tools.
 3. **Evidence is not truth**: ingestion emits evidence/proposals with provenance; promotion into canonical `.axi` is explicit.
 4. **Deterministic checking**: no floats in the trusted checker; certificates use fixed-point probabilities (`VProb`).
 5. **Open world by default**: missing facts are usually **unknown**, not **false**.
@@ -42,6 +43,7 @@ each with a different trust level.
 These compile into the IR surfaces that all strict runtime reports should cite.
 
 Practical tooling:
+
 - validate: `axiograph check validate file.axi`
 - certificate gates: `axiograph cert typecheck file.axi` and `axiograph cert constraints file.axi`
 
@@ -54,6 +56,7 @@ Ingestion outputs evidence artifacts (provenance-first):
 - optional `facts.json` (raw extractor output, not canonical)
 
 Evidence artifacts are designed to support:
+
 - “show me the source” (chunk ids and provenance pointers)
 - offline review + promotion into `.axi`
 - hybrid retrieval (BM25-ish / embeddings / graph neighborhoods)
@@ -64,15 +67,16 @@ How-to: `../howto/KNOWLEDGE_INGESTION.md`.
 
 The compiled IR is the hinge between authoring and execution:
 
-- `KernelModuleIr` is the compiled module boundary.
-- `SchemaCategoryIr` represents object types, relation objects, role
-  projections, subtype arrows, and path structure.
-- `TheoryIr` represents constraints, equations, rewrites, obligations,
-  transports, and residuals.
-- `InstanceFunctorIr` interprets schema objects/arrows as finite runtime facts.
-- `KernelSurfaceV1` gives strict reports stable refs.
+- `CompiledKernelSnapshot` is the immutable accepted package boundary.
+- `SchemaPresentationIr` represents object types, relation objects, role
+  projections, subtype arrows, paths, equations, and typed theory obligations.
+- `InstanceModelIr` interprets schema objects and generators as validated finite
+  carriers, total functions, and relation facts.
+- `RuntimeModuleIndex` and `RuntimeSemanticIndex` are derived execution/report
+  projections with resolvable `RuntimeIrRef` citations.
 
-User labels are ergonomics. Compiled refs are authority.
+User labels are ergonomics. The compiled-snapshot handle is the Rust anchor;
+derived refs are not a second semantic authority.
 
 ### 4) Derived runtime plane (PathDB)
 
@@ -102,7 +106,7 @@ sources
   → ingest (untrusted) → EvidenceChunkBundleV1 + proposals/evidence overlays
   → discover/promote (explicit) → candidate .axi modules
   → accept (semantic VCS) → accepted .axi snapshot/ref
-  → compile → KernelModuleIr + SchemaCategoryIr + TheoryIr + InstanceFunctorIr
+  → canonical compile → CompiledKernelSnapshot
   → typed runtime reports → query/CQ/theory/coverage/merge/backend/authoring
   → optional certificate → Lean accepts/rejects supported claims
   → derived PathDB/backend projections for execution and native reads
@@ -119,6 +123,7 @@ Axiograph uses a reified representation of n‑ary relations:
   outgoing edges for each field (e.g. `Parent(child=Dan,parent=Alice,ctx=CensusData,time=T2020)`).
 
 This matters because it makes it possible to:
+
 - attach provenance, context, and confidence to a specific fact,
 - index facts by schema/relation/keys for efficient query planning,
 - treat constraints as metadata about typed records (meta-plane as a type layer).
@@ -129,10 +134,11 @@ PathDB imports schema/theory declarations into a meta-plane that supports:
 
 - relation signatures (field names + object types)
 - subtyping closure
-- constraints (key/functionals, and certified closure-compatibility checks)
+- constraints (key/functionals, and certified transitive-closure checks)
 - rewrite rules (first-class rules declared in `.axi` theory blocks)
 
 The meta-plane is used for:
+
 - query elaboration (type/field checking + inferred constraints + good errors),
 - planning (schema-directed joins, key/FD-driven indexing),
 - visualization overlays (relation signatures, constraints, inferred supertypes).
@@ -156,6 +162,7 @@ Contexts are **optional but strongly suggested**. Some examples/demos intentiona
 use contexts to make “time travel” and provenance exploration explicit.
 
 Related docs:
+
 - `./TOPOS_THEORY.md` (explanation-level roadmap for sheaf/topos semantics over contexts)
 - `./VERIFICATION_AND_GUARDRAILS.md` (failure modes + guardrails)
 
@@ -188,6 +195,7 @@ Key idea: **rewrite rules are part of the ontology’s semantics**.
 - Certificates reference rule applications by a stable rule reference (anchored to module digest).
 
 Related docs:
+
 - `./PATH_VERIFICATION.md`
 - `./HOTT_FOR_KNOWLEDGE_GRAPHS.md`
 - `../reference/CERTIFICATES.md` (rewrite derivations)
@@ -228,6 +236,7 @@ The planner uses PathDB’s derived indexes and meta-plane constraints:
 - RPQ compilation/caching for regular-path expressions
 
 Related docs:
+
 - `./PATHDB_DESIGN.md`
 - `../howto/PERFORMANCE_PROFILING.md`
 
@@ -252,40 +261,35 @@ Only a subset is appropriate to certify as a global “module OK” gate under o
 `axi_constraints_ok_v1` is intentionally conservative and **fail-closed**:
 
 - unknown constraint kinds are rejected for canonical modules (promotion hazard)
-- certified subset focuses on high-ROI integrity and closure-compatibility checks
+- certified subset focuses on high-ROI integrity and supported transitive-closure checks
 - closure constraints support `param (...)` to interpret closure “within each fixed assignment”
   (fibered closure), which is the common case for context/time-scoped relations
 
 Explanation: `./CONSTRAINT_SEMANTICS.md`
 
-## Snapshot store + WAL workflow (construction loop)
+## AxiStore and derived materializations
 
-Accepted knowledge is managed as an append-only log (“accepted plane”):
+Accepted knowledge is owned by AxiStore as immutable objects, snapshots, trees,
+semantic commits, refs, audit records, and content-addressed receipts. Promotion
+advances repository-bound refs with generation checks after validating the full
+reachable object closure.
 
-- promotion adds reviewed `.axi` modules to the accepted plane
-- accepted-plane snapshots are identified by digest and can be rebuilt deterministically
-- PathDB snapshots and overlays are derived artifacts, and can be committed as a WAL
-  for fast iteration and server workflows
+PathDB is derived state. A crate-private materializer constructs a deterministic
+SQLite image from explicit accepted snapshot/tree, ordered module closure,
+kernel, fact-log, configuration, and overlay anchors. Public publication,
+opening, recovery, and path lookup go only through `AxiStore`, which owns the
+immutable image/receipt pair under
+`materializations/<MaterializationIdV2>.*`.
 
-CLI entrypoints (high level):
-
-- initialize: `axiograph db accept init --dir <accepted_dir>`
-- promote: `axiograph db accept promote --dir <accepted_dir> --axi <file.axi>`
-- rebuild `.axpd`: `axiograph db accept build-pathdb --dir <accepted_dir> --snapshot <id> --out <file.axpd>`
-- commit WAL snapshot: `axiograph db accept pathdb-commit ...`
-- build from WAL snapshot: `axiograph db accept pathdb-build ...`
-- compute embeddings: `axiograph db accept pathdb-embed ...`
-
-How-to: `../howto/SNAPSHOT_STORE.md`
+There is no custom PathDB WAL, binary checkpoint, index sidecar, or accepted
+meaning reconstructed from `.axpd` rows.
 
 ## Server + visualization
 
-The DB server loads a snapshot and exposes:
-
-- query endpoints (AxQL/QueryIR)
-- exploration endpoints (entity lookup/describe, context lists)
-- optional LLM-assisted querying (tool loop)
-- visualization rendering (HTML export and server-hosted views)
+The read-only DB server requires an AxiStore root and `MaterializationIdV2`.
+Startup recomputes and validates the receipt, exact image, logical rows, and
+anchors before binding the listener. The minimal HTTP surface exposes health,
+status, and authenticated query endpoints; MCP uses the same verified runtime.
 
 How-to: `../howto/DB_SERVER.md`  
 Tutorial: `../tutorials/VIZ_EXPLORER.md`
@@ -311,8 +315,9 @@ Key directories:
 Rust is where performance and operational complexity live:
 
 - ingestion adapters (`axiograph ingest ...`) producing evidence artifacts
-- PathDB storage/indexing and query execution (`.axpd`)
-- proposal promotion and accepted-plane snapshot tooling
+- PathDB in-memory indexing/query execution plus authenticated SQLite `.axpd`
+  materialization through AxiStore
+- typed AxiStore promotion plans and accepted-state lineage
 - certificate emission for high-value operations (untrusted, checked in Lean)
 
 Workspace: `rust/`  

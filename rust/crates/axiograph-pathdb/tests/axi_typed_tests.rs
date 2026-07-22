@@ -14,7 +14,7 @@ fn entity_by_name(db: &PathDB, name: &str) -> u32 {
         .unwrap_or_else(|| panic!("interner missing `{name}`"));
     let ids = db.entities.entities_with_attr_value(name_key, name_value);
     assert_eq!(ids.len(), 1, "expected exactly one entity named `{name}`");
-    ids.iter().next().expect("non-empty").into()
+    ids.iter().next().expect("non-empty")
 }
 
 #[test]

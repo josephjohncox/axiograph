@@ -10,8 +10,9 @@ technical reality changes.
 - Rust is the runtime, compiler, ingestion, query, storage, and tool surface.
 - Lean is the trusted checker for the currently supported certificate fragment.
 - Canonical accepted `.axi` modules are the meaning plane.
-- PathDB and `.axpd` snapshots are derived execution/query substrates.
-- Accepted-plane snapshots plus PathDB WAL are the live storage backbone.
+- PathDB and authenticated SQLite `.axpd` materializations are derived execution/query substrates.
+- AxiStore is the sole accepted-state, semantic-lineage, receipt, and `.axpd`
+  publication authority; there is no custom PathDB WAL.
 - The TypeScript viz frontend lives in `frontend/viz/`; server/tooling expects
   built assets from `frontend/viz/dist`.
 
@@ -25,7 +26,7 @@ ontology/workbench layer rather than by generic protocol plumbing.
 Current protocol choices:
 
 - MCP stdio servers use `rmcp` for host lifecycle, transport, framing, tool
-  listing, and tool calls. Local JSON-RPC helpers are test harnesses, not the
+  listing, and tool calls. Local JSON-RPC helpers are test helpers, not the
   production server contract.
 - LSP/editor surfaces use `lsp-server` for stdio transport/framing and
   `lsp-types` for protocol capability and request/response types. Axiograph
@@ -33,6 +34,23 @@ Current protocol choices:
 - The DB HTTP server uses `hyper` with `http-body-util` for HTTP serving and
   body handling. Axiograph-specific code should stay at route dispatch,
   request validation, typed reports, and snapshot/query semantics.
+
+## Runtime Security Boundary
+
+`axiograph-security` owns the shared no-follow bounded file reader, atomic
+bounded publisher, JSON-depth guard, and descendant-aware bounded process
+runner. Public HTTP adapters disable proxies and redirects, pin validated
+public DNS answers, and verify the connected peer. Ollama is the separate
+loopback-only HTTP class. GitHub imports use exact HTTPS repository syntax,
+DNS pinning, disabled hooks/submodules, neutralized ambient Git configuration,
+and option-safe refs.
+
+Incoming HTTP, MCP, and LSP surfaces have hard connection, worker, queue,
+frame, document, and response limits. Immutable `.axpd` verification hashes and
+SQLite-deserializes one byte image. These are runtime safety controls, not
+semantic authority. Parent-directory confinement remains a caller policy; an
+operator must not place mutation-authorized roots under an attacker-writable
+parent. See `docs/reference/SECURITY_BOUNDARIES.md`.
 
 ## Trust Boundary
 
@@ -48,7 +66,11 @@ The trusted boundary is the import closure of
 - certificate format and checking,
 - fixed-point probability witnesses,
 - anchored replay against canonical `.axi` contexts,
-- conservative `.axi` parsing and checking gates used by the verifier.
+- conservative `.axi` parsing and checking gates used by the verifier, and
+- `category_kernel_v3`: anchored reconstruction of the finite relation-object
+  category presentation, including ordered projections, identities, typed
+  composition, parallel equations, contextual congruence, and exact bounded
+  generator-saturation explanation replay.
 
 HoTT, topos, presheaf, sheaf, and univalence-related material outside that
 verifier boundary is design/spec support until wired into the checker. Keep
@@ -62,16 +84,24 @@ dependently typed kernel.
 Current useful Rust surfaces include:
 
 - stable semantic anchor newtypes such as `AxiDigest`, `AcceptedSnapshotId`,
-  `PathdbSnapshotId`, `ProposalDigest`, `ProposalAdapterRunId`, `SchemaId`,
+  `MaterializationIdV2`, `ProposalDigest`, `ProposalAdapterRunId`, `SchemaId`,
   `TheoryId`, `ContextId`, and `StableFactId`;
 - lifecycle wrappers such as `Module<Validated>` and `Module<Reviewed>`;
 - checked builders and importer entrypoints that require typed lifecycle state;
-- compiled IR support in `kernel_ir.rs`, including the first
-  `SchemaCategoryIr` and `InstanceFunctorIr` runtime category/functor slice;
+- canonical `SchemaPresentationIr` plus its derived `category_formation`
+  evidence, including typed and relation objects, ordered role projections,
+  identities, explicit generators, parallel equations, contextual congruence,
+  bounded saturation, and replayable explanations;
+- canonical `InstanceModelIr` role-indexed and context/world witnesses with
+  checked lifecycle/residual state;
+- derived `kernel_ir.rs` execution indexes whose `RuntimeSemanticIndex`
+  contains read-only canonical `KernelRefV2` citations; the former duplicate
+  `SchemaCategoryIr` and `InstanceFunctorIr` representations have been removed;
 - runtime theory checking through `RuntimeTheoryCheckReportV1` with explicit
-  finite/evidence/global-indexed closure tiers and scoped completeness/non-claim
-  reporting;
-- typed query elaboration, trust contracts, typed holes, and refinement handles;
+  finite/evidence/global-indexed admissibility scopes and scoped
+  completeness/closure non-claims;
+- typed query elaboration, trust contracts, typed holes, refinement handles,
+  and canonical `Authoring`/`Query`/`Merge` finite-theory gate receipts;
 - typed olog checks and shared refinement handles across query/authoring,
   migration preview, reconciliation review, and CQ repair.
 
@@ -87,7 +117,19 @@ The remaining Rust goal is to make these surfaces universal:
 ## Storage And Backend Framing
 
 PathDB is a strong graph/query substrate, but it is not the ontology kernel. The
-intended kernel is accepted `.axi` plus one compiled schema/category IR.
+implemented Rust semantic package is exact accepted `.axi` bytes plus the
+immutable `CompiledKernelSnapshot` produced by `CanonicalCompiler`. Derived
+in-process `RuntimeModuleIndex` values retain that snapshot; serialization
+strips the handle and cannot recreate authority. Lean still trusts only the
+narrower verifier import closure.
+
+`axiograph-store::AxiStore` is the sole accepted-state and semantic-lineage
+persistence authority: application-identified and size-bounded SQLite
+WAL/FULL/foreign-key/strict catalog, bounded immutable SHA-256 objects, one
+generation-CAS `store_state`, and one contiguous checksum-linked audit/ref
+transaction. File HEADs, JSONL accepted logs, separate semantic state files,
+legacy imports, symlinked authority files, and direct-copy replication are not
+authority paths.
 
 Keep relation-as-object plus projection arrows canonical. Binary edges are a
 projection, not the primary semantic object.
@@ -103,28 +145,33 @@ Backend priority:
 - Property-graph backends remain experimental unless capability profiles show
   enough semantic preservation.
 
-Backend adapters should consume capability profiles and emit typed pushdown
-plans from `CompiledSchemaIr`. Pushdown is an optimization and interoperability
-surface, not semantic authority.
+`axiograph-projections` now consumes only `CompiledKernelSnapshot` and emits
+capability-declared PathDB, TypeDB, TerminusDB, RDF/OWL, and property-graph
+manifests with finite `KernelRefV2` records, semantic-loss reports, read-only
+artifacts, and evidence-only readback. It does not accept `RuntimeSchemaIndex`
+as a second projection authority. Remote query pushdown remains future adapter
+optimization, not semantic authority. See
+`docs/reference/BACKEND_PROJECTIONS.md`.
 
 ## Semantic VCS And Lifecycle
 
-The accepted-plane code already has first slices of:
+AxiStore already provides immutable semantic commits, catalog refs and tags,
+audit lineage, accepted objects/trees/snapshots, reconciliation records, gate
+attachments, and authenticated materialization receipts. Review/projection DTOs
+in the CLI are filesystem-free and carry no persistence authority.
 
-- `sem/commits`,
-- `sem/refs`,
-- `sem/validations`,
-- `sem/evidence/proposal_adapter_runs`,
-- persisted reconciliation previews,
-- compact gate/trust/rule/coverage summaries.
-
-The remaining direction is to make semantic VCS the default lifecycle backbone:
+The remaining direction is to make AxiStore semantic VCS the default lifecycle backbone:
 refs, branches, tags, ancestry, typed semantic diffs, reconciliation decisions,
 CQ-gated review, predictive-proposal lineage, supersession, and retraction.
 
 ## Runtime Usefulness Bar
 
 The Rust runtime checker should be useful before Lean certification is available.
+`make verify-regulated-shipment` is the executable bar: one canonical scenario
+must cross finite typed theory, exact query checking, explanation, evolution,
+reviewed merge, restart, projection, and generated-test surfaces without
+blurring their trust classes.
+
 It should answer operational questions under explicit anchors:
 
 - what applies here,
@@ -165,18 +212,19 @@ surfaces. It does not mean free-form authority over accepted ontology state.
 ## Greenfield Compatibility Policy
 
 Backward compatibility is not a default goal. Keep compatibility only when it
-serves a concrete trust, verifier, live-byte, accepted-plane, or operational
+serves a concrete trust, verifier, byte-format, accepted-plane, or operational
 contract.
 
 Current cleanup pressure:
 
-- keep `query_result_v3` as the active query certificate family,
-- keep derived snapshot exports out of semantic anchoring, query/certificate
+- keep the accepted-anchor certified query path as the only default query
+  certificate path,
+- keep derived debug export artifacts out of semantic anchoring, query/certificate
   authority, promotion, teaching, and interchange,
 - collapse workflow-specific review wrappers into shared preview/trust/report
   families,
 - remove outdated examples and docs when stronger typed surfaces replace them,
-- keep domain harnesses, such as the industrial engineering example, outside
+- keep domain example crates, such as the industrial engineering example, outside
   `axiograph-cli` unless they become reusable ontology-engineering
   infrastructure.
 

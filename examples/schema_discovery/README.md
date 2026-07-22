@@ -6,8 +6,8 @@ promotion accept them.
 
 - `ProtoApi.proposals.axi` is a proto/API proposal module.
 - `SqlSchema.proposals.axi` is a SQL-schema proposal module.
-- `fixtures/*.json` are `ProposalsFileV1` proposal inputs for discovery
-  workflows. They are checked-in tool fixtures, not the preferred human
+- `inputs/*.json` are `ProposalsFileV1` proposal inputs for discovery
+  workflows. They are checked-in tool inputs, not the preferred human
   authoring surface.
 
 ## Proto/API Review Flow
@@ -28,6 +28,6 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   check validate build/examples/schema_discovery/ProtoApi.proposals.axi
 ```
 
-For checked-in fixtures, use `examples/repl_scripts/proto_schema_discovery_axi_demo.repl`
-to inspect the drafted module interactively. Promotion remains a separate
-semantic review step.
+For checked-in tool inputs, use
+`examples/repl_scripts/proto_schema_discovery_axi_demo.repl` as a review-plane
+candidate inspection script. Promotion remains a separate semantic review step.

@@ -1,0 +1,63 @@
+{
+  "version": "behavior_case_check_request_v1",
+  "behavior_case": {
+    "case_id": "regulated_shipment.release_dispatch",
+    "title": "Release a pharmaceutical shipment only with typed batch, certificate, release, temperature, customs, and dispatch review evidence",
+    "summary": "The reviewed shipment is dispatchable only inside the finite accepted scenario; the blocked shipment remains visibly incomplete.",
+    "given": {
+      "snapshot_label": "regulated shipment candidate",
+      "world": "released",
+      "facts": [
+        "ShipmentContainsBatch(shipment=Shipment_RX_1007, batch=Batch_RX_42, ctx=Released, time=T1)",
+        "BatchHasCertificate(batch=Batch_RX_42, certificate=CoA_RX_42, ctx=Reviewed, time=T1)",
+        "ShipmentHasTemperatureRecord(shipment=Shipment_RX_1007, record=TempLog_RX_1007, band=ColdChain_2C_8C, ctx=Evidence, time=T2)",
+        "ShipmentDeclaredIn(shipment=Shipment_RX_1007, declaration=Declaration_CA_RX_1007, jurisdiction=Canada, ctx=Reviewed, time=T1)",
+        "DispatchReview(ctx=Released, contained_batch=contains_rx42, reviewer=QA_Lee, decision=ApprovedForDispatch)"
+      ],
+      "notes": [
+        "The dispatch review cites a context-indexed ShipmentContainsBatch relation fact and a reviewer constrained to a finite refinement."
+      ]
+    },
+    "when": {
+      "kind": "query",
+      "label": "Trace the released shipment through its contained batch to the reviewed certificate of analysis"
+    },
+    "then": {
+      "expected_outcomes": [
+        "The bounded path query returns exactly CoA_RX_42 for Shipment_RX_1007.",
+        "Shipment_RX_1008 is not silently treated as certified or released.",
+        "The generated receipt cites the regulated-shipment rules and implementation surface."
+      ],
+      "rule_scopes": [
+        {
+          "schema": "RegulatedShipment",
+          "scope_class": "relation",
+          "relation": "ShipmentContainsBatch"
+        },
+        {
+          "schema": "RegulatedShipment",
+          "scope_class": "relation",
+          "relation": "BatchHasCertificate"
+        },
+        {
+          "schema": "RegulatedShipment",
+          "scope_class": "relation",
+          "relation": "ShipmentDeclaredIn"
+        },
+        {
+          "schema": "RegulatedShipment",
+          "scope_class": "relation",
+          "relation": "DispatchReview"
+        }
+      ],
+      "trust_target": "strong",
+      "notes": [
+        "Strong means exact finite query completeness only after VerifyMain accepts query_result_v4; it does not mean regulatory or open-world completeness."
+      ]
+    },
+    "notes": [
+      "Implementation mapping and code generation stay in the tooling overlay."
+    ]
+  },
+  "lifecycle_state": "accepted"
+}

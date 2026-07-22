@@ -15,7 +15,7 @@
 #   make binaries
 #   ./bin/axiograph repl --script examples/repl_scripts/fibered_closure_constraints_demo.repl
 
-import_axi examples/demo_data/FiberedClosureConstraints.axi
+import_axi examples/runtime_theory/FiberedClosureConstraints.axi
 
 schema Fibered
 constraints Fibered
@@ -32,5 +32,3 @@ q select ?to where name("Alice") -Knows-> ?to limit 10
 
 # Render a small neighborhood showing both planes with the meta-plane as a type layer.
 viz build/fibered_closure_constraints.json format json plane both focus_name Alice hops 3 max_nodes 220 typed_overlay
-
-save build/fibered_closure_constraints.axpd

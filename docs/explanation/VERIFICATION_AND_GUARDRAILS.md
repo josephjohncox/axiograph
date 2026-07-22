@@ -48,6 +48,7 @@ Certificates prove **derivability from the accepted inputs under the formal sema
 They do *not* prove that the accepted inputs are correct, complete, or grounded in reality.
 
 Guardrails:
+
 - We keep **provenance** and **confidence** on facts, and we maintain separate planes:
   **evidence/proposals** (untrusted) vs **accepted/canonical** (reviewed).
 - Any “certified answer” is always **snapshot-scoped** (“true in snapshot S”), which keeps the
@@ -59,10 +60,12 @@ If the “checker” is basically “run the same optimizer/query again and comp
 accidentally moved the trust problem instead of solving it.
 
 Guardrails:
+
 - Certificate formats are designed to be **replayable** and **small-step checkable**
   (e.g. rewrite derivations are rule+position traces, not opaque claims).
-- “Recompute-and-compare” is allowed only as a **migration scaffold** (useful early, unsafe as a terminal state).
-  The long-term target is: prove rule soundness once (Lean/mathlib), then replay derivations cheaply.
+- “Recompute-and-compare” is allowed only as a bounded migration-only parity
+  check; it is not a terminal proof story. The long-term target is: prove rule
+  soundness once (Lean/mathlib), then replay derivations cheaply.
 
 ### 3) Not making “unknown vs false” explicit
 
@@ -70,6 +73,7 @@ In an open-world knowledge setting, missing facts are usually **unknown**, not *
 Silent closed-world assumptions can cause inconsistency blowups and brittle “negation by failure”.
 
 Guardrails:
+
 - Query results are treated as **witness-based**: “we found a derivation” vs “we did not find one”.
   Absence of a result is not automatically a negative claim.
 - Any negative information should be represented explicitly (as policy, constraints, or signed evidence),
@@ -82,6 +86,7 @@ The **free-groupoid** semantics gives us formal inverses of *paths as expression
 That does not mean the underlying real-world relation is invertible (“every edge has an inverse in reality”).
 
 Guardrails:
+
 - We distinguish **formal inverse** (in the path expression algebra) from **domain invertibility**
   (which requires explicit axioms or evidence such as an `Inverse` relation).
 - Certificates about normalization/equivalence manipulate only the **expression layer**
@@ -93,6 +98,7 @@ Our “confidence” is a **bounded, algebraic weight** used for ranking and pol
 It should not be interpreted as a calibrated probability of truth unless we have a calibration story.
 
 Guardrails:
+
 - Certificates ensure the **invariants** of confidence combination (bounds, monotonicity where intended),
   not “truth of the world”.
 - Any product decisions that require calibrated uncertainty should treat these values as inputs to
@@ -111,55 +117,25 @@ See:
 - `docs/howto/FORMAL_VERIFICATION.md` (how to run checks)
 - `docs/explanation/BOOK.md` Part IV (certificate design and threat model)
 
-## Derived Binary Format
+## Derived SQLite Format
 
-`.axpd` is an untrusted derived storage/checkpoint format. Modal/world semantics
-live in canonical `.axi`, compiled IR, and typed anchors; Lean’s trusted core
-focuses on certificate checking and `.axi` anchors, not parsing live PathDB
-bytes. Sectioned byte-format work is storage hardening until the live reader and
-writer use it as the single format.
+`.axpd` is an untrusted, derived SQLite image. Modal/world semantics live in
+canonical `.axi`, compiled IR, and typed anchors; Lean checks certificates and
+accepted anchors rather than database pages.
 
-```rust
-/// Magic number: "AXPD" in ASCII
-pub const MAGIC_NUMBER: u32 = 0x41585044;
-
-/// Feature flags
-pub mod feature_flags {
-    pub const MODAL_LOGIC: u64 = 1 << 0;
-    pub const PROBABILISTIC: u64 = 1 << 1;
-    pub const TEMPORAL_LOGIC: u64 = 1 << 2;
-    // ...
-}
-
-/// Binary header (64 bytes)
-#[repr(C, packed)]
-pub struct BinaryHeader {
-    pub magic: u32,
-    pub version: u32,
-    pub flags: u64,
-    pub string_offset: u64,
-    pub entity_offset: u64,
-    pub relation_offset: u64,
-    pub path_index_offset: u64,
-    pub total_size: u64,
-    pub checksum: u64,
-}
-```
-
-### Format Boundary Proofs
-
-In Verus, we verify header parsing:
-
-```rust
-#[requires(bytes.len() >= Self::SIZE)]
-pub fn from_bytes(bytes: &[u8]) -> Option<Self>
-```
+Rust performs the storage-boundary checks: SQLite application/schema versions,
+exact table set, file/page/string/count/fanout limits, foreign-key and cross-row
+integrity, canonical logical digest, exact-image digest, semantic anchors, and
+`MaterializationIdV2`. Only `VerifiedAxpd` rows may hydrate PathDB. These checks
+are operational validation, not a Lean proof.
 
 ## Modal and Probabilistic Logic Support
 
-### Modal Logic (PathDB v2)
+### Modal Logic (Derived Runtime Payload)
 
-PathDB v2 supports storing and querying modal frames:
+Modal/world semantics belong to canonical `.axi` plus compiled IR. PathDB can
+store derived modal runtime payloads, but those bytes are not the semantic
+authority and do not by themselves create certificate claims.
 
 ```rust
 // Create a Kripke frame

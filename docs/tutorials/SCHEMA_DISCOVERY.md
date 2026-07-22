@@ -18,13 +18,14 @@ The guiding architecture remains:
 
 ## Why schema discovery exists
 
-AxQL and PathDB become much more useful when a derived PathDB snapshot contains
-the `.axi` **meta-plane** (schema + theory metadata):
+Typed query/report tooling and REPL exploration become more useful after a
+reviewed `.axi` module is materialized into a derived PathDB snapshot with the
+canonical **meta-plane** (schema + theory metadata):
 
 - AxQL planning can auto-add **implied type constraints** from relation field types.
 - Keys/functionals can be used as **join planning hints** and (for fact atoms) candidate pruning.
 - Fact atoms benefit from PathDB’s **FactIndex** for fast `axi_relation` filtering.
-- Machine/report flows can prepare `query_ir_v1` as `PreparedQueryV1` and carry
+- Machine/report flows compile `query_ir_v1` as `CompiledFiniteQuery` and carry
   typed metadata, trust contracts, and refinement handles.
 
 But many ingestion sources start in the evidence plane:
@@ -38,11 +39,11 @@ They produce `proposals.json` first, because that’s our generic, reviewable ev
 
 Schema discovery is the bridge that drafts a canonical `.axi` module so you can:
 
-1) import it into PathDB,
-2) query it with schema-directed AxQL or `PreparedQueryV1`-backed tooling,
-3) inspect typed reports and apply refinement handles,
-4) iterate/refine it (possibly with LLM assistance),
-5) promote reviewed changes into your accepted `.axi` modules through semantic VCS.
+1) validate and inspect it with typed reports,
+2) query it with `CompiledFiniteQuery`-backed tooling or schema-directed AxQL,
+3) apply refinement handles and iterate on the candidate,
+4) promote reviewed changes into accepted `.axi` modules through semantic VCS,
+5) materialize derived PathDB/query/viz artifacts from the accepted plane.
 
 ## CLI: draft a module from proposals
 
@@ -217,87 +218,41 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
 make verify-lean-cert AXI=build/Discovered.proposals.axi CERT=build/Discovered.typecheck_cert.json
 ```
 
-If the gate succeeds, you can promote the module into your **accepted plane**.
-This creates an append-only audit log, a content-derived snapshot id, a typed
-promotion preview (`EvolutionPreviewV1`), and semantic VCS history for the
-accepted delta.
+If the gate succeeds, build a typed `PromotionPlan` from the exact reviewed
+module bytes and complete gate closure, then call `AxiStore::promote` with the
+current generation. Promotion appends authenticated audit lineage and advances
+the protected accepted ref atomically. The removed `db accept` command and
+filesystem `HEAD` are not compatibility paths; follow
+`docs/howto/SNAPSHOT_STORE.md`.
 
-```bash
-# Promote a reviewed module into the accepted plane (append-only).
-# Prints the new snapshot id to stdout.
-snapshot_id="$(cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  db accept promote build/Discovered.proposals.axi \
-  --dir build/accepted_plane \
-  --message \"reviewed: initial discovered schema\")"
+The accepted `.axi` closure and AxiStore semantic ref remain the meaning plane.
+Derived query state is built from explicit accepted snapshot/tree, ordered
+module closure, kernel, fact-log, configuration, and overlay anchors. The result
+is an immutable SQLite image and receipt under AxiStore, addressed by
+`MaterializationIdV2`.
 
-echo "accepted snapshot: $snapshot_id"
-```
+Do not append discovery chunks to a PathDB WAL or reverse-export a materialized
+image. Keep chunks as typed evidence until review promotes canonical changes.
 
-Then build derived artifacts (PathDB snapshot + viz). These are execution and
-inspection surfaces; the accepted `.axi` plus semantic VCS ref remains the
-meaning plane.
+For query-facing tooling, compile to `query_ir_v1`, prepare
+`CompiledFiniteQuery`, inspect the typed metadata/report envelope, and use envelope
+V3 / `query_result_v4` witnesses when a certified result is required.
 
-```bash
-# Rebuild a `.axpd` snapshot from the accepted-plane snapshot id.
-cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  db accept build-pathdb \
-  --dir build/accepted_plane \
-  --snapshot "$snapshot_id" \
-  --out build/Discovered.accepted.axpd
+## Materialization Checks
 
-# Optional: commit doc/code chunks as an extension-layer overlay (append-only PathDB WAL).
-# This enables `fts(...)` / evidence navigation in the REPL without changing the canonical `.axi`.
-#
-# Note: this overlay is *not* part of the certified core unless you explicitly promote it
-# into canonical `.axi` and re-run the acceptance gate.
-cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  db accept pathdb-commit \
-  --dir build/accepted_plane \
-  --accepted-snapshot "$snapshot_id" \
-  --chunks build/ingest_chunks.json \
-  --message "discovery overlay: import chunks"
-
-cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  db accept pathdb-build \
-  --dir build/accepted_plane \
-  --snapshot latest \
-  --out build/Discovered.accepted_with_chunks.axpd
-
-# Meta-plane visualization (schema/theory)
-cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  tools viz build/Discovered.accepted.axpd \
-  --out build/Discovered.meta.json \
-  --format json --plane meta --focus-name Discovered --hops 3
-
-# Data-plane visualization (instances)
-cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  tools viz build/Discovered.accepted.axpd \
-  --out build/Discovered.data.json \
-  --format json --plane data --hops 2
-```
-
-For query-facing tooling, the canonical contract is: compile to `query_ir_v1`,
-prepare `PreparedQueryV1`, inspect the typed metadata/report envelope, and use
-`.axi`-anchored `query_result_v3` witnesses when a certified result is required.
-Raw AxQL in the REPL is the human-facing teaching/debug surface over the same
-typed planning boundary.
-
-## Storage Round-Trip Checks
-
-If you are testing storage byte round-trips, use the debug-only commands
-documented in `docs/howto/TESTING.md` and `docs/explanation/PATHDB_DESIGN.md`.
+Use the deterministic/authenticated SQLite gates documented in
+`docs/howto/TESTING.md` and `docs/explanation/PATHDB_DESIGN.md`.
 Do not teach this as the promotion, query, certificate, or semantic interchange
 path. It is a reversible storage/debug format only.
 
 ## Included demo assets
 
-- Example proposals: `examples/schema_discovery/fixtures/sql_schema_proposals.json`
+- Example proposals: `examples/schema_discovery/inputs/sql_schema_proposals.json`
 - Drafted module: `examples/schema_discovery/SqlSchema.proposals.axi`
 - REPL script: `examples/repl_scripts/sql_schema_discovery_axi_demo.repl`
-- Fixture proposals (proto toy evidence adapter): `examples/schema_discovery/fixtures/proto_api_proposals.json`
+- Example proposal inputs (proto/API evidence adapter): `examples/schema_discovery/inputs/proto_api_proposals.json`
 - Drafted module from proto evidence: `examples/schema_discovery/ProtoApi.proposals.axi`
-- REPL smoke script for proto evidence: `examples/repl_scripts/proto_schema_discovery_axi_demo.repl`
+- Guided REPL review script for proto evidence: `examples/repl_scripts/proto_schema_discovery_axi_demo.repl`
 - Shell demo: `scripts/schema_discovery_sql_demo.sh`
 - Shell demo (LLM semantic + structural discovery via Ollama): `scripts/ontology_engineering_ollama_discovery_demo.sh`
 - Ops/reference shell demo (proto evidence evolution over time, LLM augmentation via Ollama): `scripts/ops/ontology_engineering_proto_evolution_ollama_demo.sh`
-- Shell demo (Physics, LLM grounded expansion via Ollama): `scripts/physics_discovery_ollama_grounded_demo.sh`

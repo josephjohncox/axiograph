@@ -5,59 +5,317 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      inject_verify_failure:
+        description: >-
+          Negative rehearsal: fail verification before any build or publish job
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: 1.88.0
+  AXIOGRAPH_CLI_VERSION: 0.6.0
+  AXIOGRAPH_CHECKER_PROTOCOL: axiograph-verifier-stdio-v2
+  AXIOGRAPH_CHECKER_BUILD_ID: axiograph-verify-main-v3
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
 
 jobs:
+  verify:
+    name: Exact clean-checkout release gate
+    runs-on: ubuntu-24.04
+    steps:
+      # actions/checkout pinned to an immutable commit.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Validate immutable release inputs
+        shell: bash
+        env:
+          REHEARSAL_FAILURE: ${{ inputs.inject_verify_failure || false }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            expected="v${AXIOGRAPH_CLI_VERSION}"
+            if [ "$REHEARSAL_FAILURE" = true ]; then
+              case "$GITHUB_REF_NAME" in
+                "$expected"-rehearsal-fail-*) ;;
+                *)
+                  rehearsal_ref="$expected-rehearsal-fail-*"
+                  echo "failure rehearsal requires $rehearsal_ref" >&2
+                  exit 1
+                  ;;
+              esac
+            else
+              test "$GITHUB_REF_NAME" = "$expected"
+            fi
+            test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
+          fi
+          configured="$(${PYTHON:-python3} - <<'PY'
+          import tomllib
+          with open("rust-toolchain.toml", "rb") as source:
+              print(tomllib.load(source)["toolchain"]["channel"])
+          PY
+          )"
+          test "$configured" = "$RUST_TOOLCHAIN"
+          python3 scripts/validate_release_archive.py --help >/dev/null
+      - name: Inject requested negative rehearsal failure
+        if: >-
+          ${{ github.event_name == 'workflow_dispatch' &&
+          inputs.inject_verify_failure }}
+        shell: bash
+        run: |
+          echo "intentional release-gate failure injection" >&2
+          echo "build and publish jobs must remain skipped" >&2
+          exit 1
+      # dtolnay/rust-toolchain pinned to an immutable commit.
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # leanprover/lean-action pinned to an immutable commit.
+      - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
+        with:
+          auto-config: false
+          build: false
+          test: false
+          lint: false
+          use-github-cache: false
+          use-mathlib-cache: false
+      - name: Fetch pinned Lean dependencies
+        working-directory: lean
+        run: lake exe cache get
+      - name: Run exact release decision
+        run: make release-gate
+
   build:
-    name: Build binaries (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Build, reproduce, and audit ${{ matrix.host }} bundle
+    needs: verify
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - runner: ubuntu-24.04
+            host: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - runner: macos-15
+            host: aarch64-apple-darwin
+            archive: tar.gz
+          - runner: windows-2025
+            host: x86_64-pc-windows-msvc
+            archive: zip
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build release binary
-        working-directory: rust
-        run: cargo build -p axiograph-cli --release
-      - name: Package artifact
+      # actions/checkout pinned to an immutable commit.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      # dtolnay/rust-toolchain pinned to an immutable commit.
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # leanprover/lean-action pinned to an immutable commit.
+      - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
+        with:
+          auto-config: false
+          build: false
+          test: false
+          lint: false
+          use-github-cache: false
+          use-mathlib-cache: false
+      - name: Assert exact native host and Rust toolchain
         shell: bash
         run: |
           set -euo pipefail
-          OS_RAW="${{ runner.os }}"
-          OS="$(echo "$OS_RAW" | tr '[:upper:]' '[:lower:]')"
-          ARCH="$(uname -m)"
-          EXT=""
-          if [ "$OS_RAW" = "Windows" ]; then
-            EXT=".exe"
+          python=python3
+          command -v "$python" >/dev/null 2>&1 || python=python
+          actual_host="$(rustc -vV | awk '/^host:/ { print $2 }')"
+          actual_release="$(rustc -vV | awk '/^release:/ { print $2 }')"
+          cargo_release="$(cargo --version | awk '{ print $2 }')"
+          test "$actual_host" = "${{ matrix.host }}"
+          test "$actual_release" = "$RUST_TOOLCHAIN"
+          test "$cargo_release" = "$RUST_TOOLCHAIN"
+          "$python" scripts/generate_release_source_manifest.py \
+            --check-only >/dev/null
+      - name: Fetch pinned Lean dependencies
+        working-directory: lean
+        run: lake exe cache get
+      - name: Build trusted checker
+        working-directory: lean
+        run: lake build axiograph_verify
+      - name: Build untrusted Rust runtime
+        working-directory: rust
+        run: cargo build -p axiograph-cli --release --locked
+      - name: Build the same deterministic bundle twice
+        id: package
+        shell: bash
+        env:
+          EXPECTED_HOST: ${{ matrix.host }}
+          ARCHIVE_FORMAT: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          python=python3
+          command -v "$python" >/dev/null 2>&1 || python=python
+          ext=""
+          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
+          runtime="rust/target/release/axiograph${ext}"
+          checker="lean/.lake/build/bin/axiograph_verify${ext}"
+          source_manifest="build/release-source-manifest.json"
+          rm -rf build/release-source-manifest.json dist dist-first dist-second
+          "$python" scripts/generate_release_source_manifest.py \
+            --output "$source_manifest"
+          "$python" scripts/build_release_bundle.py \
+            --runtime "$runtime" \
+            --checker "$checker" \
+            --source-manifest "$source_manifest" \
+            --fixture-manifest release/fixtures.json \
+            --host "$EXPECTED_HOST" \
+            --output-dir dist-first
+          "$python" scripts/build_release_bundle.py \
+            --runtime "$runtime" \
+            --checker "$checker" \
+            --source-manifest "$source_manifest" \
+            --fixture-manifest release/fixtures.json \
+            --host "$EXPECTED_HOST" \
+            --output-dir dist-second
+          archive="axiograph-${EXPECTED_HOST}.${ARCHIVE_FORMAT}"
+          cmp "dist-first/$archive" "dist-second/$archive"
+          cmp "dist-first/$archive.sha256" "dist-second/$archive.sha256"
+          mkdir dist
+          mv "dist-first/$archive" "dist-first/$archive.sha256" dist/
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+      - name: Audit packaged runtime, source manifest, and checker corpus
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          EXPECTED_HOST: ${{ matrix.host }}
+        run: |
+          set -euo pipefail
+          python=python3
+          command -v "$python" >/dev/null 2>&1 || python=python
+          fixture_sha="$("$python" - <<'PY'
+          import hashlib
+          from pathlib import Path
+          print(hashlib.sha256(Path("release/fixtures.json").read_bytes()).hexdigest())
+          PY
+          )"
+          "$python" - "dist/$ARCHIVE" "dist/$ARCHIVE.sha256" <<'PY'
+          import hashlib
+          import re
+          import sys
+          from pathlib import Path
+          archive = Path(sys.argv[1])
+          checksum = Path(sys.argv[2]).read_text(encoding="ascii")
+          match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9_.-]+)\n", checksum)
+          if match is None or match.group(2) != archive.name:
+              raise SystemExit("outer checksum grammar or filename mismatch")
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != match.group(1):
+              raise SystemExit("outer archive SHA-256 mismatch")
+          PY
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          "$python" scripts/validate_release_archive.py \
+            "dist/$ARCHIVE" \
+            --extract-to "$verify_dir" \
+            --expected-host "$EXPECTED_HOST" \
+            --expected-version "$AXIOGRAPH_CLI_VERSION" \
+            --expected-source-commit "$GITHUB_SHA" \
+            --expected-fixture-manifest-sha256 "$fixture_sha" \
+            --expected-rust-toolchain "$RUST_TOOLCHAIN"
+          runtime="$verify_dir/axiograph"
+          checker="$verify_dir/axiograph_verify"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            runtime="${runtime}.exe"
+            checker="${checker}.exe"
           fi
-          mkdir -p dist
-          cp "rust/target/release/axiograph${EXT}" "dist/axiograph${EXT}"
-          if [ "$OS_RAW" = "Windows" ]; then
-            7z a "dist/axiograph-${OS}-${ARCH}.zip" "./dist/axiograph${EXT}"
-          else
-            tar -czf "dist/axiograph-${OS}-${ARCH}.tar.gz" -C dist "axiograph${EXT}"
-          fi
-          if command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 dist/* > dist/sha256.txt
-          elif command -v sha256sum >/dev/null 2>&1; then
-            sha256sum dist/* > dist/sha256.txt
-          elif command -v certutil >/dev/null 2>&1; then
-            rm -f dist/sha256.txt
-            for f in dist/*; do
-              certutil -hashfile "$f" SHA256 >> dist/sha256.txt
-            done
-          fi
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+          "$runtime" --version | grep -Fx "axiograph ${AXIOGRAPH_CLI_VERSION}"
+          "$python" scripts/run_release_fixture_suite.py \
+            --checker "$checker" \
+            --manifest release/fixtures.json \
+            --repo-root "$PWD"
+      - name: Upload audited build artifacts
+        # actions/upload-artifact pinned to an immutable commit.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: axiograph-${{ runner.os }}
-          path: dist/*
+          name: axiograph-${{ matrix.host }}
+          path: |
+            dist/${{ steps.package.outputs.archive }}
+            dist/${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+
+  container:
+    name: Publish release-gated container
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      publish_tag: true
+
+  publish:
+    name: Publish audited bundles
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, container]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # Pinned checkout is required for the local composite action.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      # actions/download-artifact pinned to an immutable commit.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Re-verify exact downloaded release assets
+        run: |
+          set -euo pipefail
+          expected=(
+            axiograph-aarch64-apple-darwin.tar.gz
+            axiograph-x86_64-pc-windows-msvc.zip
+            axiograph-x86_64-unknown-linux-gnu.tar.gz
+          )
+          expected_files=()
+          for archive in "${expected[@]}"; do
+            expected_files+=("$archive" "$archive.sha256")
+          done
+          mapfile -t expected_files < <(
+            printf '%s\n' "${expected_files[@]}" |
+              sort
+          )
+          mapfile -t actual < <(
+            find dist -maxdepth 1 -type f -printf '%f\n' |
+              sort
+          )
+          test "${actual[*]}" = "${expected_files[*]}"
+          fixture_sha="$(sha256sum release/fixtures.json | awk '{ print $1 }')"
+          for archive in "${expected[@]}"; do
+            read -r digest declared extra < "dist/$archive.sha256"
+            test -z "${extra:-}"
+            test "$declared" = "$archive"
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            test "$(sha256sum "dist/$archive" | awk '{ print $1 }')" = "$digest"
+            python3 scripts/validate_release_archive.py \
+              "dist/$archive" \
+              --expected-version "$AXIOGRAPH_CLI_VERSION" \
+              --expected-source-commit "$GITHUB_SHA" \
+              --expected-fixture-manifest-sha256 "$fixture_sha" \
+              --expected-rust-toolchain "$RUST_TOOLCHAIN"
+          done
       - name: Publish release assets
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: ./.github/actions/publish-release
         with:
-          files: dist/*
+          files: |
+            dist/axiograph-aarch64-apple-darwin.tar.gz
+            dist/axiograph-aarch64-apple-darwin.tar.gz.sha256
+            dist/axiograph-x86_64-pc-windows-msvc.zip
+            dist/axiograph-x86_64-pc-windows-msvc.zip.sha256
+            dist/axiograph-x86_64-unknown-linux-gnu.tar.gz
+            dist/axiograph-x86_64-unknown-linux-gnu.tar.gz.sha256

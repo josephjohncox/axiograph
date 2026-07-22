@@ -106,8 +106,6 @@ pub struct ProposalsValidationV1 {
     pub import_summary: crate::proposals_import::ImportProposalsSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evolution_preview: Option<crate::evolution_preview::EvolutionPreviewV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stored_report_path: Option<String>,
     pub axi_typecheck: ProposalAxiTypecheckReportV1,
     pub quality_delta: crate::quality::QualityReportV1,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,13 +118,12 @@ fn proposals_digest(file: &ProposalsFileV1) -> Result<ProposalDigest> {
     let bytes = serde_json::to_vec(file)
         .map_err(|e| anyhow!("failed to serialize proposals for digest: {e}"))?;
     Ok(ProposalDigest::new(
-        axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes),
+        axiograph_kernel::object_blob_digest_v2(&bytes),
     ))
 }
 
 fn clone_db(db: &PathDB) -> Result<PathDB> {
-    let bytes = db.to_bytes()?;
-    PathDB::from_bytes(&bytes)
+    db.detached_clone()
 }
 
 fn typecheck_preview(db: &PathDB, meta: &MetaPlaneIndex) -> ProposalAxiTypecheckReportV1 {
@@ -380,10 +377,8 @@ pub fn validate_proposals_with_options_v1(
         )?)
     };
 
-    let ok = (!axi_typecheck.skipped
-        && axi_typecheck.errors.is_empty()
-        && quality_delta.summary.error_count == 0)
-        || (axi_typecheck.skipped && quality_delta.summary.error_count == 0);
+    let ok = quality_delta.summary.error_count == 0
+        && (axi_typecheck.skipped || axi_typecheck.errors.is_empty());
     let ok = ok
         && competency_gate
             .as_ref()
@@ -417,7 +412,6 @@ pub fn validate_proposals_with_options_v1(
         version: "proposals_validation_v1".to_string(),
         import_summary,
         evolution_preview: Some(evolution_preview),
-        stored_report_path: None,
         axi_typecheck,
         quality_delta,
         competency_gate: competency_gate.clone(),
@@ -506,10 +500,9 @@ mod tests {
         )?;
 
         // Import the overlay into a clone and assert the derived traversal edge direction.
-        let bytes = base.to_bytes()?;
-        let mut preview = PathDB::from_bytes(&bytes)?;
+        let mut preview = base.detached_clone()?;
         let digest_bytes = serde_json::to_vec(&out.proposals)?;
-        let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(&digest_bytes);
+        let digest = axiograph_kernel::object_blob_digest_v2(&digest_bytes);
         crate::proposals_import::import_proposals_file_into_pathdb(
             &mut preview,
             &out.proposals,
@@ -518,12 +511,8 @@ mod tests {
 
         fn find_named_entity(db: &PathDB, type_name: &str, name: &str) -> Option<u32> {
             let name = name.trim();
-            let Some(name_key) = db.interner.id_of("name") else {
-                return None;
-            };
-            let Some(val_id) = db.interner.id_of(name) else {
-                return None;
-            };
+            let name_key = db.interner.id_of("name")?;
+            let val_id = db.interner.id_of(name)?;
             let ids = db.entities.entities_with_attr_value(name_key, val_id);
             for id in ids.iter() {
                 if let Some(v) = db.get_entity(id) {

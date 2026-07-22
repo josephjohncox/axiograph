@@ -1,9 +1,8 @@
 //! Import canonical `.axi` modules into PathDB (for REPL/querying).
 //!
-//! PathDB snapshots (`PathDBExportV1`) already round-trip via `axi_export`.
-//! This module handles the *other* common case: a canonical `axi_schema_v1`
-//! module (schema/theory/instance) that users want to load into PathDB so they
-//! can explore/query it interactively.
+//! This module derives an in-memory query index from a canonical
+//! `axi_schema_v1` module. Durable PathDB state uses authenticated SQLite
+//! `.axpd` materializations; PathDB never exports accepted `.axi` authority.
 //!
 //! ## Mapping (schema_v1 → PathDB)
 //!
@@ -14,6 +13,9 @@
 //! - For each tuple field `f = v`, we add an edge: `tuple -f-> v`.
 //! - We also add a **derived binary edge** for convenient traversal when a
 //!   relation has clear endpoints (e.g. exactly 2 fields, or `from/to`).
+//! - Explicit aspect/function interpretations with object-type endpoints become
+//!   labeled execution edges. Relation-object generator endpoints remain in the
+//!   canonical kernel model and reject at this derived PathDB boundary.
 //!
 //! This supports “higher-kind”/HoTT-ish encodings where proofs, equivalences,
 //! and homotopies are themselves first-class objects referenced by relation
@@ -26,16 +28,27 @@ use std::collections::{HashMap, HashSet};
 use ahash::AHashMap;
 use anyhow::{anyhow, Result};
 
-use axiograph_dsl::digest::axi_fact_id_v1;
 use axiograph_dsl::schema_v1::{
-    parse_schema_v1, ConstraintV1, RelationDeclV1, RewriteOrientationV1, SchemaV1Instance,
-    SchemaV1Module, SchemaV1Schema, SetItemV1,
+    parse_schema_v1, ConstraintV1, GeneratorDeclV1, RelationDeclV1, RewriteOrientationV1,
+    RoleKindV1, SchemaV1Instance, SchemaV1Module, SchemaV1Schema, SetItemV1,
 };
+use axiograph_kernel::runtime_fact_id_v2;
 
 use crate::axi_meta::*;
 use crate::axi_module_typecheck::{validate_axi_v1_module, Module, WellTypedModuleState};
-use crate::kernel_ir::{compile_schema_ir, CompiledSchemaIr};
+use crate::kernel_ir::{derive_runtime_schema_index, RuntimeSchemaIndex};
 use crate::PathDB;
+
+fn role_kind_wire(kind: RoleKindV1) -> &'static str {
+    match kind {
+        RoleKindV1::Data => "data",
+        RoleKindV1::Context => "context",
+        RoleKindV1::World => "world",
+        RoleKindV1::Temporal => "temporal",
+        RoleKindV1::Parameter => "parameter",
+        RoleKindV1::Evidence => "evidence",
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AxiSchemaV1ImportSummary {
@@ -114,18 +127,25 @@ fn import_axi_schema_v1_module_into_pathdb_impl(
     summary.meta_relations_added += meta.summary.meta_relations_added;
 
     // Derived traversal edges are a runtime convenience. To avoid collisions when
-    // multiple schemas define the same relation name (e.g. `Fam.Parent` and
-    // `Census.Parent`), we choose a stable label per relation name:
+    // multiple schemas define the same relation or explicit generator name, choose
+    // a stable label across the shared edge namespace:
     //
-    // - emit unqualified `Parent` only when the name is unique across schemas
-    // - otherwise emit schema-qualified `<Schema>.Parent`
+    // - emit an unqualified name only when it is unique across schemas and arrow kinds;
+    // - otherwise emit schema-qualified `<Schema>.<Arrow>`.
     //
-    // AxQL elaboration desugars `Schema.Rel` accordingly.
+    // AxQL elaboration desugars qualified relation names accordingly.
     let meta_plane = crate::axi_semantics::MetaPlaneIndex::from_db(db)?;
     let mut relation_name_counts: HashMap<String, usize> = HashMap::new();
     for schema in meta_plane.schemas.values() {
         for rel in schema.relation_decls.keys() {
             *relation_name_counts.entry(rel.clone()).or_insert(0) += 1;
+        }
+    }
+    for schema in &module.schemas {
+        for generator in &schema.generators {
+            *relation_name_counts
+                .entry(generator.name.clone())
+                .or_insert(0) += 1;
         }
     }
 
@@ -330,7 +350,11 @@ impl<'a> MetaImportContext<'a> {
                             (ATTR_AXI_MODULE.to_string(), module_name.to_string()),
                             (ATTR_AXI_SCHEMA.to_string(), schema.name.clone()),
                             (ATTR_FIELD_NAME.to_string(), field.field.clone()),
-                            (ATTR_FIELD_TYPE.to_string(), field.ty.clone()),
+                            (ATTR_FIELD_TYPE.to_string(), field.ty.to_string()),
+                            (
+                                ATTR_FIELD_KIND.to_string(),
+                                role_kind_wire(field.kind).to_string(),
+                            ),
                             (ATTR_FIELD_INDEX.to_string(), field_index.to_string()),
                         ],
                     )?;
@@ -340,24 +364,8 @@ impl<'a> MetaImportContext<'a> {
                         field_entity,
                     )?;
 
-                    // Ensure the field type exists as an object decl when possible.
-                    if !object_type_ids.contains_key(&field.ty) {
-                        let ty_entity = self.get_or_create_meta_entity(
-                            META_TYPE_OBJECT_TYPE,
-                            &meta_id_object_type(module_name, &schema.name, &field.ty),
-                            vec![
-                                (META_ATTR_NAME.to_string(), field.ty.clone()),
-                                (ATTR_AXI_MODULE.to_string(), module_name.to_string()),
-                                (ATTR_AXI_SCHEMA.to_string(), schema.name.clone()),
-                            ],
-                        )?;
-                        self.add_meta_edge_if_missing(
-                            META_REL_SCHEMA_HAS_OBJECT,
-                            schema_entity,
-                            ty_entity,
-                        )?;
-                        object_type_ids.insert(field.ty.clone(), ty_entity);
-                    }
+                    // Object and relation-object targets are declared explicitly.
+                    // The importer never synthesizes shadow object types from roles.
                 }
 
                 relation_ids.insert(rel.name.clone(), rel_entity);
@@ -686,7 +694,7 @@ fn extract_relation_from_unknown_constraint(text: &str) -> Option<String> {
     //   - `functional Rel(...)` (handled by the parser when it matches the canonical form)
     //
     // We treat the *second token* as the relation name, stripping punctuation like `:` or `(`.
-    let mut it = text.trim().split_whitespace();
+    let mut it = text.split_whitespace();
     let _kind = it.next()?;
     let raw_rel = it.next()?;
 
@@ -704,9 +712,7 @@ fn extract_relation_from_unknown_constraint(text: &str) -> Option<String> {
     // Defensive: only accept identifiers that look like relation labels in the
     // canonical surface (ASCII letters/digits/underscores, not starting with digit).
     let mut chars = rel.chars();
-    let Some(first) = chars.next() else {
-        return None;
-    };
+    let first = chars.next()?;
     if !(first.is_ascii_alphabetic() || first == '_') {
         return None;
     }
@@ -725,7 +731,7 @@ fn extract_relation_from_unknown_constraint(text: &str) -> Option<String> {
 struct SchemaIndex {
     objects: HashSet<String>,
     relations: AHashMap<String, RelationDeclV1>,
-    compiled_ir: CompiledSchemaIr,
+    compiled_ir: RuntimeSchemaIndex,
     supertypes_of: AHashMap<String, HashSet<String>>,
     subtypes_of: AHashMap<String, HashSet<String>>,
 }
@@ -794,7 +800,7 @@ impl SchemaIndex {
         Self {
             objects,
             relations,
-            compiled_ir: compile_schema_ir(schema),
+            compiled_ir: derive_runtime_schema_index(schema),
             supertypes_of,
             subtypes_of,
         }
@@ -937,6 +943,14 @@ impl<'a> InstanceImportContext<'a> {
             if all_idents {
                 // Prefer treating ident-sets as object assignments.
                 self.import_object_assignment(&assignment.name, &assignment.value.items)?;
+            } else if let Some(generator) = self
+                .schema
+                .generators
+                .iter()
+                .find(|generator| generator.name == assignment.name)
+                .cloned()
+            {
+                self.import_generator_assignment(&generator, &assignment.value.items)?;
             } else {
                 self.import_relation_assignment(&assignment.name, &assignment.value.items)?;
             }
@@ -993,9 +1007,7 @@ impl<'a> InstanceImportContext<'a> {
 
         if candidate_ids.len() > 1 {
             return Err(anyhow!(
-                "ambiguous element `{}`: multiple entities exist across related types for `{}`",
-                element_name,
-                object_type
+                "ambiguous element `{element_name}`: multiple entities exist across related types for `{object_type}`"
             ));
         }
 
@@ -1046,7 +1058,7 @@ impl<'a> InstanceImportContext<'a> {
             .entities
             .type_index
             .entry(preferred_type_id)
-            .or_insert_with(roaring::RoaringBitmap::new)
+            .or_default()
             .insert(entity_id);
 
         self.ensure_entity_in_supertypes(entity_id, preferred_type);
@@ -1061,7 +1073,7 @@ impl<'a> InstanceImportContext<'a> {
                 .entities
                 .type_index
                 .entry(sup_id)
-                .or_insert_with(roaring::RoaringBitmap::new)
+                .or_default()
                 .insert(entity_id);
         }
     }
@@ -1090,6 +1102,82 @@ impl<'a> InstanceImportContext<'a> {
         Ok(())
     }
 
+    fn import_generator_assignment(
+        &mut self,
+        generator: &GeneratorDeclV1,
+        items: &[SetItemV1],
+    ) -> Result<()> {
+        if !self.schema_index.is_object_type(&generator.source)
+            || !self.schema_index.is_object_type(&generator.target)
+        {
+            return Err(anyhow!(
+                "PathDB execution currently requires object-type endpoints for generator `{}`; canonical relation-object generator interpretations remain in KernelSnapshotIr",
+                generator.name
+            ));
+        }
+        let edge_label = if self
+            .relation_name_counts
+            .get(&generator.name)
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
+            format!("{}.{}", self.schema.name, generator.name)
+        } else {
+            generator.name.clone()
+        };
+
+        for item in items {
+            let SetItemV1::Tuple { label, fields } = item else {
+                continue;
+            };
+            if label.is_some() {
+                return Err(anyhow!(
+                    "instance `{}` generator `{}` mappings may not have fact labels",
+                    self.inst.name,
+                    generator.name
+                ));
+            }
+            let mut mapping = HashMap::new();
+            for (field, value) in fields {
+                if mapping.insert(field.as_str(), value.as_str()).is_some() {
+                    return Err(anyhow!(
+                        "instance `{}` generator `{}` repeats field `{field}`",
+                        self.inst.name,
+                        generator.name
+                    ));
+                }
+            }
+            if mapping.len() != 2
+                || !mapping.contains_key("source")
+                || !mapping.contains_key("target")
+            {
+                return Err(anyhow!(
+                    "instance `{}` generator `{}` expects exactly source/target fields",
+                    self.inst.name,
+                    generator.name
+                ));
+            }
+            let source = self.get_or_create_object_entity(&generator.source, mapping["source"])?;
+            let target = self.get_or_create_object_entity(&generator.target, mapping["target"])?;
+            let relation_id = self.db.interner.intern(&edge_label);
+            let existed = self.db.relations.has_edge(source, relation_id, target);
+            self.add_edge_if_missing_with_attrs(
+                &edge_label,
+                source,
+                target,
+                vec![
+                    (ATTR_AXI_SCHEMA, self.schema.name.as_str()),
+                    (ATTR_AXI_INSTANCE, self.inst.name.as_str()),
+                ],
+            )?;
+            if !existed {
+                self.summary.derived_edges_added += 1;
+            }
+        }
+        Ok(())
+    }
+
     fn import_relation_assignment(
         &mut self,
         relation_name: &str,
@@ -1111,7 +1199,7 @@ impl<'a> InstanceImportContext<'a> {
             .ok_or_else(|| anyhow!("missing compiled semantics for relation `{relation_name}`"))?;
 
         for it in items {
-            let SetItemV1::Tuple { fields } = it else {
+            let SetItemV1::Tuple { fields, .. } = it else {
                 continue;
             };
 
@@ -1159,7 +1247,7 @@ impl<'a> InstanceImportContext<'a> {
                     .expect("field presence checked above");
                 ordered_fields.push((f.field.as_str(), v.as_str()));
             }
-            let fact_id = axi_fact_id_v1(
+            let fact_id = runtime_fact_id_v2(
                 self.module.module_name.as_str(),
                 self.schema.name.as_str(),
                 self.inst.name.as_str(),
@@ -1171,7 +1259,7 @@ impl<'a> InstanceImportContext<'a> {
             let tuple_name = format!(
                 "{relation_name}_fact_{}",
                 fact_id
-                    .strip_prefix(axiograph_dsl::digest::AXI_FACT_ID_V1_PREFIX)
+                    .strip_prefix(axiograph_kernel::FACT_ID_V2_PREFIX)
                     .unwrap_or(&fact_id)
             );
 
@@ -1218,7 +1306,8 @@ impl<'a> InstanceImportContext<'a> {
                     .get(&f.field)
                     .expect("field presence checked above")
                     .as_str();
-                let value_entity_id = self.get_or_create_object_entity(&f.ty, value_name)?;
+                let value_entity_id =
+                    self.get_or_create_object_entity(f.ty.referenced_name(), value_name)?;
                 values_by_field.insert(f.field.clone(), value_entity_id);
 
                 // Field edge: tuple -field-> value
@@ -1338,7 +1427,7 @@ impl<'a> InstanceImportContext<'a> {
             .entities
             .type_index
             .entry(type_id)
-            .or_insert_with(roaring::RoaringBitmap::new)
+            .or_default()
             .insert(entity_id);
     }
 

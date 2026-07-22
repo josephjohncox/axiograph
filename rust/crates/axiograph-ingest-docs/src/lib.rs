@@ -52,6 +52,11 @@ pub use repo::*;
 // ============================================================================
 
 pub const EVIDENCE_CHUNK_BUNDLE_VERSION_V1: &str = "evidence_chunk_bundle_v1";
+const MAX_DOCUMENT_TEXT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_DOCUMENT_CHUNKS: usize = 100_000;
+const MAX_DOCUMENT_METADATA_ENTRIES: usize = 1_024;
+const MAX_DOCUMENT_CAVEATS: usize = 128;
+const MAX_EVIDENCE_BUNDLE_JSON_BYTES: usize = 64 * 1024 * 1024;
 
 /// A document chunk with source pointer
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -100,40 +105,44 @@ pub struct EvidenceChunkBundleV1 {
 // Text extraction
 // ============================================================================
 
-/// Extract chunks from plain text
-pub fn extract_text(text: &str, doc_id: &str) -> DocumentExtraction {
+/// Extract chunks from plain text.
+pub fn extract_text(text: &str, doc_id: &str) -> Result<DocumentExtraction> {
+    validate_document_input(text, doc_id)?;
     let mut chunks = Vec::new();
-
-    // Split into paragraphs
-    let paragraphs: Vec<&str> = text
+    for para in text
         .split("\n\n")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    for (i, para) in paragraphs.iter().enumerate() {
+        .map(str::trim)
+        .filter(|paragraph| !paragraph.is_empty())
+    {
+        if chunks.len() >= MAX_DOCUMENT_CHUNKS {
+            return Err(anyhow!(
+                "document chunk count exceeds {MAX_DOCUMENT_CHUNKS}"
+            ));
+        }
+        let index = chunks.len();
         chunks.push(Chunk {
-            chunk_id: format!("{}_{}", doc_id, i),
+            chunk_id: format!("{doc_id}_{index}"),
             document_id: doc_id.to_string(),
             page: None,
-            span_id: format!("para_{}", i),
+            span_id: format!("para_{index}"),
             text: para.to_string(),
             bbox: None,
             metadata: HashMap::new(),
         });
     }
 
-    DocumentExtraction {
-        source_path: "".to_string(),
+    Ok(DocumentExtraction {
+        source_path: String::new(),
         document_id: doc_id.to_string(),
         title: None,
         chunks,
         metadata: HashMap::new(),
-    }
+    })
 }
 
-/// Extract chunks from markdown
-pub fn extract_markdown(text: &str, doc_id: &str) -> DocumentExtraction {
+/// Extract chunks from markdown.
+pub fn extract_markdown(text: &str, doc_id: &str) -> Result<DocumentExtraction> {
+    validate_document_input(text, doc_id)?;
     let mut chunks = Vec::new();
     let mut current_section = String::new();
     let mut current_text = String::new();
@@ -143,11 +152,16 @@ pub fn extract_markdown(text: &str, doc_id: &str) -> DocumentExtraction {
         if line.starts_with('#') {
             // Save previous section
             if !current_text.trim().is_empty() {
+                if chunks.len() >= MAX_DOCUMENT_CHUNKS {
+                    return Err(anyhow!(
+                        "document chunk count exceeds {MAX_DOCUMENT_CHUNKS}"
+                    ));
+                }
                 chunks.push(Chunk {
-                    chunk_id: format!("{}_{}", doc_id, chunk_idx),
+                    chunk_id: format!("{doc_id}_{chunk_idx}"),
                     document_id: doc_id.to_string(),
                     page: None,
-                    span_id: format!("section_{}", chunk_idx),
+                    span_id: format!("section_{chunk_idx}"),
                     text: current_text.trim().to_string(),
                     bbox: None,
                     metadata: {
@@ -170,11 +184,16 @@ pub fn extract_markdown(text: &str, doc_id: &str) -> DocumentExtraction {
 
     // Save last section
     if !current_text.trim().is_empty() {
+        if chunks.len() >= MAX_DOCUMENT_CHUNKS {
+            return Err(anyhow!(
+                "document chunk count exceeds {MAX_DOCUMENT_CHUNKS}"
+            ));
+        }
         chunks.push(Chunk {
-            chunk_id: format!("{}_{}", doc_id, chunk_idx),
+            chunk_id: format!("{doc_id}_{chunk_idx}"),
             document_id: doc_id.to_string(),
             page: None,
-            span_id: format!("section_{}", chunk_idx),
+            span_id: format!("section_{chunk_idx}"),
             text: current_text.trim().to_string(),
             bbox: None,
             metadata: {
@@ -185,13 +204,25 @@ pub fn extract_markdown(text: &str, doc_id: &str) -> DocumentExtraction {
         });
     }
 
-    DocumentExtraction {
-        source_path: "".to_string(),
+    Ok(DocumentExtraction {
+        source_path: String::new(),
         document_id: doc_id.to_string(),
         title: None,
         chunks,
         metadata: HashMap::new(),
+    })
+}
+
+fn validate_document_input(text: &str, doc_id: &str) -> Result<()> {
+    if text.len() > MAX_DOCUMENT_TEXT_BYTES {
+        return Err(anyhow!(
+            "document text exceeds {MAX_DOCUMENT_TEXT_BYTES} bytes"
+        ));
     }
+    if doc_id.is_empty() || doc_id.len() > 1024 {
+        return Err(anyhow!("document id must be in 1..=1024 bytes"));
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -202,15 +233,22 @@ pub fn extract_markdown(text: &str, doc_id: &str) -> DocumentExtraction {
 pub fn extract_pdf(path: &Path) -> Result<DocumentExtraction> {
     use pdf_extract::extract_text_from_mem;
 
-    let bytes = std::fs::read(path)?;
+    const MAX_PDF_INPUT_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_PDF_TEXT_BYTES: usize = 32 * 1024 * 1024;
+    let bytes = axiograph_security::read_file_bounded(path, MAX_PDF_INPUT_BYTES, "PDF input")?;
     let text = extract_text_from_mem(&bytes)?;
+    if text.len() > MAX_PDF_TEXT_BYTES {
+        return Err(anyhow!(
+            "PDF extracted text exceeds {MAX_PDF_TEXT_BYTES} bytes"
+        ));
+    }
 
     let doc_id = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "doc".to_string());
 
-    let mut extraction = extract_text(&text, &doc_id);
+    let mut extraction = extract_text(&text, &doc_id)?;
     extraction.source_path = path.to_string_lossy().to_string();
 
     Ok(extraction)
@@ -275,9 +313,7 @@ pub fn evidence_chunk_bundle_from_chunks(
 
 /// Output chunks as typed evidence-bundle JSON.
 pub fn chunks_to_json(extraction: &DocumentExtraction) -> Result<String> {
-    Ok(serde_json::to_string_pretty(
-        &evidence_chunk_bundle_from_extraction(extraction),
-    )?)
+    encode_chunk_bundle(&evidence_chunk_bundle_from_extraction(extraction))
 }
 
 pub fn chunks_to_json_for_chunks(
@@ -285,15 +321,15 @@ pub fn chunks_to_json_for_chunks(
     locator: impl Into<String>,
     chunks: Vec<Chunk>,
 ) -> Result<String> {
-    Ok(serde_json::to_string_pretty(
-        &evidence_chunk_bundle_from_chunks(source_type, locator, chunks),
-    )?)
+    encode_chunk_bundle(&evidence_chunk_bundle_from_chunks(
+        source_type,
+        locator,
+        chunks,
+    ))
 }
 
 pub fn chunk_bundle_from_json_str(text: &str) -> Result<EvidenceChunkBundleV1> {
-    let bundle: EvidenceChunkBundleV1 = serde_json::from_str(text)?;
-    validate_chunk_bundle(&bundle)?;
-    Ok(bundle)
+    decode_chunk_bundle(text.as_bytes())
 }
 
 pub fn chunks_from_json_str(text: &str) -> Result<Vec<Chunk>> {
@@ -301,9 +337,28 @@ pub fn chunks_from_json_str(text: &str) -> Result<Vec<Chunk>> {
 }
 
 pub fn chunks_from_json_slice(bytes: &[u8]) -> Result<Vec<Chunk>> {
-    let bundle: EvidenceChunkBundleV1 = serde_json::from_slice(bytes)?;
+    Ok(decode_chunk_bundle(bytes)?.chunks)
+}
+
+fn encode_chunk_bundle(bundle: &EvidenceChunkBundleV1) -> Result<String> {
+    validate_chunk_bundle(bundle)?;
+    let json = serde_json::to_string_pretty(bundle)?;
+    if json.len() > MAX_EVIDENCE_BUNDLE_JSON_BYTES {
+        return Err(anyhow!(
+            "evidence chunk bundle JSON exceeds {MAX_EVIDENCE_BUNDLE_JSON_BYTES} bytes"
+        ));
+    }
+    Ok(json)
+}
+
+fn decode_chunk_bundle(bytes: &[u8]) -> Result<EvidenceChunkBundleV1> {
+    let bundle: EvidenceChunkBundleV1 = axiograph_security::parse_json_bounded(
+        bytes,
+        MAX_EVIDENCE_BUNDLE_JSON_BYTES,
+        "evidence chunk bundle",
+    )?;
     validate_chunk_bundle(&bundle)?;
-    Ok(bundle.chunks)
+    Ok(bundle)
 }
 
 fn validate_chunk_bundle(bundle: &EvidenceChunkBundleV1) -> Result<()> {
@@ -320,6 +375,32 @@ fn validate_chunk_bundle(bundle: &EvidenceChunkBundleV1) -> Result<()> {
             bundle.evidence_plane
         ));
     }
+    if bundle.chunks.len() > MAX_DOCUMENT_CHUNKS {
+        return Err(anyhow!(
+            "evidence chunk count exceeds {MAX_DOCUMENT_CHUNKS}"
+        ));
+    }
+    if bundle.metadata.len() > MAX_DOCUMENT_METADATA_ENTRIES
+        || bundle.caveats.len() > MAX_DOCUMENT_CAVEATS
+    {
+        return Err(anyhow!(
+            "evidence bundle metadata/caveat count exceeds limit"
+        ));
+    }
+    let mut total_text = 0_usize;
+    for chunk in &bundle.chunks {
+        total_text = total_text
+            .checked_add(chunk.text.len())
+            .ok_or_else(|| anyhow!("evidence chunk text byte count overflow"))?;
+        if chunk.metadata.len() > MAX_DOCUMENT_METADATA_ENTRIES {
+            return Err(anyhow!("evidence chunk metadata count exceeds limit"));
+        }
+    }
+    if total_text > MAX_DOCUMENT_TEXT_BYTES {
+        return Err(anyhow!(
+            "evidence chunk text bytes {total_text} exceed {MAX_DOCUMENT_TEXT_BYTES}"
+        ));
+    }
     Ok(())
 }
 
@@ -329,8 +410,8 @@ fn validate_chunk_bundle(bundle: &EvidenceChunkBundleV1) -> Result<()> {
 
 /// Extract machining-relevant knowledge from text
 /// Looks for: materials, tools, parameters, observations
-pub fn extract_machining_knowledge(text: &str, doc_id: &str) -> DocumentExtraction {
-    let mut extraction = extract_text(text, doc_id);
+pub fn extract_machining_knowledge(text: &str, doc_id: &str) -> Result<DocumentExtraction> {
+    let mut extraction = extract_text(text, doc_id)?;
 
     // Tag chunks with machining-relevant metadata
     let material_patterns = [
@@ -384,7 +465,7 @@ pub fn extract_machining_knowledge(text: &str, doc_id: &str) -> DocumentExtracti
         }
     }
 
-    extraction
+    Ok(extraction)
 }
 
 // ============================================================================
@@ -400,11 +481,15 @@ pub struct KnowledgeExtractionResult {
 }
 
 /// Extract knowledge from text with probabilistic fact extraction
-pub fn extract_knowledge_full(text: &str, doc_id: &str, domain: &str) -> KnowledgeExtractionResult {
+pub fn extract_knowledge_full(
+    text: &str,
+    doc_id: &str,
+    domain: &str,
+) -> Result<KnowledgeExtractionResult> {
     let extraction = if domain == "machining" {
-        extract_machining_knowledge(text, doc_id)
+        extract_machining_knowledge(text, doc_id)?
     } else {
-        extract_text(text, doc_id)
+        extract_text(text, doc_id)?
     };
 
     // Extract facts from chunks
@@ -419,11 +504,11 @@ pub fn extract_knowledge_full(text: &str, doc_id: &str, domain: &str) -> Knowled
     // Aggregate and deduplicate
     let facts = aggregate_facts(all_facts);
 
-    KnowledgeExtractionResult {
+    Ok(KnowledgeExtractionResult {
         extraction,
         facts,
         domain: domain.to_string(),
-    }
+    })
 }
 
 /// Extract knowledge from a conversation
@@ -431,11 +516,11 @@ pub fn extract_knowledge_from_conversation(
     text: &str,
     conv_id: &str,
     format: &str,
-) -> KnowledgeExtractionResult {
+) -> Result<KnowledgeExtractionResult> {
     let conv = match format {
-        "slack" => parse_slack_transcript(text, conv_id),
-        "meeting" => parse_meeting_transcript(text, conv_id),
-        _ => parse_slack_transcript(text, conv_id), // default
+        "slack" => parse_slack_transcript(text, conv_id)?,
+        "meeting" => parse_meeting_transcript(text, conv_id)?,
+        _ => parse_slack_transcript(text, conv_id)?, // default
     };
 
     let extraction = conversation_to_extraction(&conv);
@@ -449,11 +534,11 @@ pub fn extract_knowledge_from_conversation(
         all_facts.extend(facts);
     }
 
-    KnowledgeExtractionResult {
+    Ok(KnowledgeExtractionResult {
         extraction,
         facts: aggregate_facts(all_facts),
         domain: "conversation".to_string(),
-    }
+    })
 }
 
 /// Extract knowledge from Confluence HTML
@@ -486,7 +571,7 @@ mod typed_chunk_bundle_tests {
 
     #[test]
     fn chunks_json_is_typed_evidence_bundle() {
-        let extraction = extract_text("alpha\n\nbeta", "doc1");
+        let extraction = extract_text("alpha\n\nbeta", "doc1").expect("extract text");
         let json = chunks_to_json(&extraction).expect("serialize chunk bundle");
         let bundle = chunk_bundle_from_json_str(&json).expect("parse typed chunk bundle");
         assert_eq!(bundle.version, EVIDENCE_CHUNK_BUNDLE_VERSION_V1);

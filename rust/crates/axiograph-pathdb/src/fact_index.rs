@@ -21,14 +21,14 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Mutex, RwLock, Weak};
 
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
 use crate::axi_meta::{ATTR_AXI_RELATION, ATTR_AXI_SCHEMA, REL_AXI_FACT_IN_CONTEXT};
 use crate::axi_semantics::{ConstraintDecl, MetaPlaneIndex};
-use crate::{IndexSidecarWriter, PathDB, StrId};
+use crate::{PathDB, StrId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FactKeySignature {
@@ -254,7 +254,6 @@ pub(crate) struct FactIndexCache {
     building_generation: AtomicU64,
     index: RwLock<FactIndex>,
     async_source: Mutex<Option<Weak<PathDB>>>,
-    sidecar: Mutex<Option<Arc<IndexSidecarWriter>>>,
 }
 
 impl Default for FactIndexCache {
@@ -265,26 +264,17 @@ impl Default for FactIndexCache {
             building_generation: AtomicU64::new(u64::MAX),
             index: RwLock::new(FactIndex::default()),
             async_source: Mutex::new(None),
-            sidecar: Mutex::new(None),
         }
     }
 }
 
 impl FactIndexCache {
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
-    }
     pub(crate) fn attach_async_source(&self, source: Weak<PathDB>) {
         let mut guard = self
             .async_source
             .lock()
             .expect("fact index source poisoned");
         *guard = Some(source);
-    }
-
-    pub(crate) fn attach_sidecar_writer(&self, writer: Arc<IndexSidecarWriter>) {
-        let mut guard = self.sidecar.lock().expect("fact index sidecar poisoned");
-        *guard = Some(writer);
     }
 
     pub(crate) fn invalidate(&self) {
@@ -295,14 +285,6 @@ impl FactIndexCache {
         let mut guard = self.index.write().expect("fact index lock poisoned");
         *guard = index;
         self.built_generation.store(generation, Ordering::SeqCst);
-    }
-
-    pub(crate) fn snapshot(&self, generation: u64) -> Option<FactIndex> {
-        if self.built_generation.load(Ordering::SeqCst) != generation {
-            return None;
-        }
-        let guard = self.index.read().expect("fact index lock poisoned");
-        Some(guard.clone())
     }
 
     fn schedule_build_async(&self, gen: u64) -> bool {
@@ -332,14 +314,6 @@ impl FactIndexCache {
                 let cache = &db.fact_index;
                 if cache.generation.load(Ordering::SeqCst) == gen {
                     cache.load_index(new_index, gen);
-                    if let Some(writer) = cache
-                        .sidecar
-                        .lock()
-                        .expect("fact index sidecar poisoned")
-                        .as_ref()
-                    {
-                        writer.mark_dirty();
-                    }
                 }
                 cache.building_generation.store(u64::MAX, Ordering::SeqCst);
             })

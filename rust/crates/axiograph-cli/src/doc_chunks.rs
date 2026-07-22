@@ -1,8 +1,8 @@
-//! Import chunks (RAG-style evidence snippets) into a PathDB snapshot.
+//! Import chunks (RAG-style evidence snippets) into process-local PathDB state.
 //!
 //! Why this exists:
-//! - `chunks.json` is a great untrusted artifact for LLM grounding and discovery.
-//! - A `.axpd` snapshot is the REPL/query substrate.
+//! - `chunks.json` is an untrusted artifact for LLM grounding and discovery.
+//! - verified PathDB hydration provides a temporary query substrate.
 //! - Importing chunks as graph nodes enables:
 //!   - full-text-ish search over chunk text (`fts` / `contains`)
 //!   - linking chunk evidence to typed entities (ProtoRpc, ProtoField, ...)
@@ -18,12 +18,10 @@ use anyhow::Result;
 
 use axiograph_ingest_docs::Chunk;
 use axiograph_pathdb::axi_meta::META_ATTR_NAME;
-use axiograph_pathdb::axi_meta::META_TYPE_MODULE;
 use axiograph_pathdb::PathDB;
 
 #[derive(Debug, Default, Clone)]
 pub struct ImportChunksSummary {
-    pub chunks_total: usize,
     pub chunks_added: usize,
     pub documents_added: usize,
     pub links_added: usize,
@@ -32,7 +30,6 @@ pub struct ImportChunksSummary {
 
 pub fn import_chunks_into_pathdb(db: &mut PathDB, chunks: &[Chunk]) -> Result<ImportChunksSummary> {
     let mut summary = ImportChunksSummary::default();
-    summary.chunks_total = chunks.len();
 
     // Dedup already-imported chunks (by chunk_id attribute).
     let chunk_id_key_id = db.interner.intern("chunk_id");
@@ -61,12 +58,13 @@ pub fn import_chunks_into_pathdb(db: &mut PathDB, chunks: &[Chunk]) -> Result<Im
             id
         } else {
             let document_name = crate::schema_discovery::sanitize_axi_ident(&chunk.document_id);
-            let mut doc_attrs: Vec<(String, String)> = Vec::new();
-            doc_attrs.push((META_ATTR_NAME.to_string(), document_name));
-            doc_attrs.push(("document_id".to_string(), chunk.document_id.clone()));
-            // Extension-layer: index document IDs in a single `search_text` field so
-            // `fts(...)` can find documents by path / filename / etc.
-            doc_attrs.push(("search_text".to_string(), chunk.document_id.clone()));
+            let doc_attrs: Vec<(String, String)> = vec![
+                (META_ATTR_NAME.to_string(), document_name),
+                ("document_id".to_string(), chunk.document_id.clone()),
+                // Extension-layer: index document IDs in a single `search_text` field so
+                // `fts(...)` can find documents by path / filename / etc.
+                ("search_text".to_string(), chunk.document_id.clone()),
+            ];
 
             let attrs_ref: Vec<(&str, &str)> = doc_attrs
                 .iter()
@@ -84,12 +82,13 @@ pub fn import_chunks_into_pathdb(db: &mut PathDB, chunks: &[Chunk]) -> Result<Im
         // -----------------------------------------------------------------
         let chunk_name = crate::schema_discovery::sanitize_axi_ident(&chunk.chunk_id);
 
-        let mut attrs: Vec<(String, String)> = Vec::new();
-        attrs.push((META_ATTR_NAME.to_string(), chunk_name));
-        attrs.push(("chunk_id".to_string(), chunk.chunk_id.clone()));
-        attrs.push(("document_id".to_string(), chunk.document_id.clone()));
-        attrs.push(("span_id".to_string(), chunk.span_id.clone()));
-        attrs.push(("text".to_string(), chunk.text.clone()));
+        let mut attrs: Vec<(String, String)> = vec![
+            (META_ATTR_NAME.to_string(), chunk_name),
+            ("chunk_id".to_string(), chunk.chunk_id.clone()),
+            ("document_id".to_string(), chunk.document_id.clone()),
+            ("span_id".to_string(), chunk.span_id.clone()),
+            ("text".to_string(), chunk.text.clone()),
+        ];
         // Extension-layer: aggregate semantic metadata + identifiers into one
         // search field, so `fts`/LLM grounding can match on:
         // - doc IDs / span IDs / chunk IDs
@@ -153,42 +152,6 @@ pub fn import_chunks_into_pathdb(db: &mut PathDB, chunks: &[Chunk]) -> Result<Im
     }
 
     Ok(summary)
-}
-
-/// Build a DocChunk that embeds the canonical `.axi` module text as untrusted evidence.
-///
-/// Motivation:
-/// - "Grounding always has evidence": even when the only available source is the
-///   canonical `.axi` itself, the snapshot should contain at least one DocChunk
-///   so the LLM/UI can cite and open it.
-/// - We link the chunk to the meta-plane `AxiMetaModule` node (when present) so
-///   the viz UI can navigate between "meaning plane" and "evidence plane".
-pub fn chunk_from_axi_module_text(module_name: &str, module_digest: &str, text: &str) -> Chunk {
-    let module_name = module_name.trim();
-    let module_digest = module_digest.trim();
-
-    // Keep identifiers stable and reasonably URL-friendly.
-    let module_id = crate::schema_discovery::sanitize_axi_ident(module_name);
-    let digest_id = module_digest.replace(':', "_");
-
-    let mut metadata: HashMap<String, String> = HashMap::new();
-    metadata.insert("kind".to_string(), "axi_module".to_string());
-    metadata.insert("axi_module".to_string(), module_name.to_string());
-    if !module_digest.is_empty() {
-        metadata.insert("axi_digest_v1".to_string(), module_digest.to_string());
-    }
-    metadata.insert("about_type".to_string(), META_TYPE_MODULE.to_string());
-    metadata.insert("about_name".to_string(), module_name.to_string());
-
-    Chunk {
-        chunk_id: format!("axi_module_{module_id}_{digest_id}"),
-        document_id: format!("axi_module:{module_id}"),
-        page: None,
-        span_id: "axi_module_text".to_string(),
-        text: text.to_string(),
-        bbox: None,
-        metadata,
-    }
 }
 
 fn build_chunk_search_text(chunk: &Chunk) -> String {
@@ -288,12 +251,9 @@ fn find_entity_by_name_and_type(db: &PathDB, name: &str, type_name: &str) -> Opt
     let candidates = db
         .entities
         .entities_with_attr_value(name_key_id, name_value_id);
-    for entity_id in candidates.iter() {
-        if db.entities.get_type(entity_id) == Some(expected_type_id) {
-            return Some(entity_id);
-        }
-    }
-    None
+    candidates
+        .iter()
+        .find(|&entity_id| db.entities.get_type(entity_id) == Some(expected_type_id))
 }
 
 #[cfg(test)]

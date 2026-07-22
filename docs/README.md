@@ -3,12 +3,12 @@
 Axiograph docs are organized around the current canonical semantic spine:
 
 ```text
-canonical .axi
-  -> KernelModuleIr
-  -> SchemaCategoryIr + TheoryIr + InstanceFunctorIr
-  -> KernelSurfaceV1 refs
-  -> typed runtime reports
-  -> optional Lean verifier
+exact canonical .axi bytes + import closure + accepted snapshot handle
+  -> CanonicalCompiler
+  -> CompiledKernelSnapshot
+  -> KernelSnapshotIr + SchemaPresentationIr + InstanceModelIr
+  -> derived runtime indexes/reports
+  -> optional Lean verifier for the supported fragment
 ```
 
 Use these docs as the source of truth for current behavior. Pages should
@@ -17,11 +17,12 @@ git history, not in the active docs path.
 
 ## Start Here
 
-1. `README.md` — project intent, trust boundary, and quick commands.
-2. `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — the current end-to-end workflow.
-3. `examples/README.md` — runnable teaching catalog.
-4. `docs/explanation/SYSTEM_OVERVIEW.md` — conceptual architecture.
-5. `docs/howto/TESTING.md` — verification and CI-style gates.
+1. `examples/regulated_shipment/README.md` — the primary executable usefulness workflow and its scoped claims.
+2. `README.md` — project intent, trust boundary, and quick commands.
+3. `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — the current end-to-end workflow.
+4. `examples/README.md` — runnable teaching catalog.
+5. `docs/explanation/SYSTEM_OVERVIEW.md` — conceptual architecture.
+6. `docs/howto/TESTING.md` — verification and CI-style gates.
 
 ## Current Navigation Spine
 
@@ -29,18 +30,20 @@ git history, not in the active docs path.
 | --- | --- |
 | Canonical semantic input and compiled IR | `docs/reference/KERNEL_IR.md` |
 | Trusted verification boundary | `docs/reference/TRUSTED_KERNEL.md` |
+| Untrusted I/O and resource-security boundary | `docs/reference/SECURITY_BOUNDARIES.md` |
 | Certificate/report formats | `docs/reference/CERTIFICATES.md` |
-| Runtime theory judgments and closure tiers | `docs/reference/RUNTIME_THEORY_CHECKER.md` |
+| Runtime theory admissibility and finite-saturation scope | `docs/reference/RUNTIME_THEORY_CHECKER.md`, `docs/reference/LEAN_THEORY_EVALUATION.md` |
 | Software authoring, DDD/fDDD, codegen, coverage | `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` |
 | Semantic VCS, reconciliation, merge/rebase | `docs/reference/SEMANTIC_VCS.md` |
 | Embeddings, RAG, and evidence overlays | `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` |
-| Backend projection and pushdown contracts | `docs/reference/KERNEL_IR.md`, `docs/reference/SEMANTIC_VCS.md` |
+| Backend projection, semantic loss, and evidence-only readback | `docs/reference/BACKEND_PROJECTIONS.md`, `docs/reference/KERNEL_IR.md` |
 | Agent working context and backlog | `docs/reference/AGENT_CONTEXT.md`, `docs/roadmaps/ROADMAP_AGENT_BACKLOG.md` |
 
 Repo-wide language rule:
 
 - User labels are ergonomics.
-- Compiled IR ids and `KernelSurfaceV1` refs are authority.
+- The immutable `CompiledKernelSnapshot` anchor is Rust's canonical semantic
+  package; derived `RuntimeSemanticIndex` refs are citations, not authority.
 - LLM/MCP/tool-loop output is evidence or proposal material until accepted by
   typed review.
 - JEPA/MPC/world-model/control language describes external adapters or research
@@ -59,7 +62,7 @@ Repo-wide language rule:
 - `docs/tutorials/SCHEMA_DISCOVERY.md` — automated ontology discovery loop.
 - `docs/tutorials/CONTINUOUS_INGEST_AND_DISCOVERY.md` — continuous ingest/discovery loop.
 - `docs/tutorials/BOUNDED_PROPOSAL_ROLLOUT.md` — bounded proposal rollout with guardrails.
-- `docs/tutorials/INDUSTRIAL_ENGINEERING_EXAMPLE.md` — industrial/business/process example harness.
+- `docs/tutorials/INDUSTRIAL_ENGINEERING_EXAMPLE.md` — industrial/business/process example crate.
 - `examples/software_authoring/README.md` — pure-domain DDD/fDDD authoring flow.
 
 ## How-To Guides
@@ -68,7 +71,7 @@ Repo-wide language rule:
 - `docs/howto/CANONICAL_SEMANTIC_SPINE.md` — one current workflow across validation, theory checks, typed queries, overlays, semantic VCS, embeddings, and backend projections.
 - `docs/howto/FORMAL_VERIFICATION.md` — Lean checks and certificate gates.
 - `docs/howto/DB_SERVER.md` — HTTP query/viz server.
-- `docs/howto/SNAPSHOT_STORE.md` — accepted-plane and WAL workflow.
+- `docs/howto/SNAPSHOT_STORE.md` — AxiStore accepted-state and materialization workflow.
 - `docs/howto/KNOWLEDGE_INGESTION.md` — ingest to proposals to review.
 - `docs/howto/INGEST_PROTO.md` — proto/gRPC evidence adapter to proposals/chunks.
 - `docs/howto/LLM_QUERY_INTEGRATION.md` — typed tool-loop query integration.
@@ -78,8 +81,10 @@ Repo-wide language rule:
 
 - `docs/reference/CERTIFICATES.md` — current certificate families and Lean validation.
 - `docs/reference/TRUSTED_KERNEL.md` — exact trusted boundary and non-claims.
-- `docs/reference/KERNEL_IR.md` — compiled schema/category/theory IR and backend lowering.
-- `docs/reference/RUNTIME_THEORY_CHECKER.md` — runtime theory judgments, closure tiers, completeness claims, and non-claims.
+- `docs/reference/SECURITY_BOUNDARIES.md` — bounded filesystem, process, network, parser, server, and storage surfaces.
+- `docs/reference/KERNEL_IR.md` — compiled schema/category/theory IR and runtime citations.
+- `docs/reference/BACKEND_PROJECTIONS.md` — typed backend capabilities, derived artifacts, semantic-loss reports, and readback evidence.
+- `docs/reference/RUNTIME_THEORY_CHECKER.md` — runtime theory admissibility, typed residuals, finite-saturation boundary, and non-claims.
 - `docs/reference/LEAN_THEORY_EVALUATION.md` — Lean-encoded theory status, feasibility, and gaps.
 - `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` — embedding sidecars and promotion boundaries.
 - `docs/reference/SOFTWARE_AUTHORING_TOOLS.md` — codegen, overlays, CLI, MCP, server, and LSP surfaces.
@@ -87,7 +92,7 @@ Repo-wide language rule:
 - `docs/reference/AGENT_CONTEXT.md` — current architecture and working policy for agents.
 - `docs/reference/AXI_STYLE.md` — canonical `.axi` authoring style.
 - `docs/reference/RUST_LIFECYCLE_TYPES.md` — Rust lifecycle/anchor artifact model.
-- `docs/reference/QUERY_LANG.md` — AxQL, SQL-ish elaboration, and typed query metadata.
+- `docs/reference/QUERY_LANG.md` — CQ/question-first authoring, typed query metadata, and SQL-ish/AxQL lowerings.
 - `docs/reference/SEMANTIC_VCS.md` — semantic refs, commits, merge/rebase, reconciliation, and projection manifests.
 - `docs/reference/LLM_REPL_PLUGIN.md` — LLM REPL plugin protocol.
 - `docs/reference/PREDICTIVE_PROPOSAL_ADAPTER.md` — predictive proposal adapter protocol.

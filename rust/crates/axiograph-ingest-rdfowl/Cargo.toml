@@ -2,18 +2,20 @@
 name = "axiograph-ingest-rdfowl"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "RDF/OWL ingestion for Axiograph"
 
+[lints]
+workspace = true
+
 [dependencies]
 axiograph-dsl = { path = "../axiograph-dsl" }
+axiograph-kernel = { path = "../axiograph-kernel" }
 axiograph-ingest-docs = { path = "../axiograph-ingest-docs" }
+axiograph-security = { path = "../axiograph-security" }
 anyhow.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 sophia.workspace = true
-
-[features]
-default = []
-rdf = []

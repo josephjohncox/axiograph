@@ -1,5 +1,4 @@
 use axiograph_dsl::axi_v1::parse_axi_v1;
-use axiograph_pathdb::axi_module_export::export_axi_schema_v1_module_from_pathdb;
 use axiograph_pathdb::axi_module_import::{
     import_axi_schema_v1_into_pathdb, import_axi_schema_v1_module_into_pathdb,
 };
@@ -50,7 +49,7 @@ module ImportLifecycleEquivalence
 schema S:
   object Person
   object Context
-  relation Parent(child: Person, parent: Person) @context Context
+  relation Parent(child: Person, parent: Person, ctx: Context @context)
 
 theory T on S:
   constraint key Parent(child, parent, ctx)
@@ -82,13 +81,8 @@ instance I of S:
     assert_eq!(validated_summary, reviewed_summary);
     assert_eq!(validated_db.entities.len(), reviewed_db.entities.len());
     assert_eq!(validated_db.relations.len(), reviewed_db.relations.len());
-
-    let validated_export =
-        export_axi_schema_v1_module_from_pathdb(&validated_db, "ImportLifecycleEquivalence")
-            .expect("export validated");
-    let reviewed_export =
-        export_axi_schema_v1_module_from_pathdb(&reviewed_db, "ImportLifecycleEquivalence")
-            .expect("export reviewed");
-
-    assert_eq!(validated_export, reviewed_export);
+    assert_eq!(
+        validated_db.canonical_fact_log_v1().unwrap(),
+        reviewed_db.canonical_fact_log_v1().unwrap()
+    );
 }

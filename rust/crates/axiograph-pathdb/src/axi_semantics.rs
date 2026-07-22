@@ -11,7 +11,7 @@
 //! semantics described in:
 //!
 //! - `docs/explanation/TOPOS_THEORY.md` (explanation-level),
-//! - `lean/Axiograph/Topos/Overview.lean` (mathlib-backed semantic scaffold).
+//! - `lean/Axiograph/Topos/Overview.lean` (mathlib-backed semantic support layer).
 //!
 //! In that view:
 //! - a schema presents a category (objects = types, relations-as-objects + projection arrows),
@@ -43,7 +43,7 @@ use axiograph_dsl::schema_v1::RewriteVarDeclV1;
 
 use crate::axi_meta::*;
 use crate::kernel_ir::{
-    classify_role, compile_relation_semantics, CompiledSchemaIr, RelationSemanticsIr, RoleIr,
+    derive_relation_semantics, RelationSemanticsIr, RoleIr, RoleKind, RuntimeSchemaIndex,
 };
 use crate::{ObjectTypeId, PathDB, RoleId, SchemaId};
 
@@ -164,6 +164,7 @@ pub struct FieldDecl {
     pub field_entity: u32,
     pub field_name: String,
     pub field_type: String,
+    pub field_kind: RoleKind,
     pub field_index: usize,
 }
 
@@ -188,9 +189,11 @@ impl SchemaIndex {
     /// can attach attributes, provenance, context/world scoping, etc.
     ///
     /// If a schema has both:
+    ///
     /// - `object Foo`, and
     /// - `relation Foo(...)`,
-    /// we use `FooFact` as the tuple type to avoid a name collision with the
+    ///
+    /// We use `FooFact` as the tuple type to avoid a name collision with the
     /// object type.
     pub fn tuple_entity_type_name(&self, relation_name: &str) -> String {
         if self.object_types.contains(relation_name) {
@@ -213,15 +216,10 @@ impl SchemaIndex {
                 name: field.field_name.clone(),
                 target_type: field.field_type.clone(),
                 order: field.field_index as u16,
-                kind: classify_role(
-                    field.field_name.as_str(),
-                    field.field_type.as_str(),
-                    self.is_subtype(&field.field_type, "Context"),
-                    self.is_subtype(&field.field_type, "Time"),
-                ),
+                kind: field.field_kind,
             })
             .collect::<Vec<_>>();
-        Some(compile_relation_semantics(
+        Some(derive_relation_semantics(
             &self.schema_name,
             relation_name,
             self.tuple_entity_type_name(relation_name),
@@ -229,14 +227,14 @@ impl SchemaIndex {
         ))
     }
 
-    pub fn compiled_schema_ir(&self, schema_name: &str) -> CompiledSchemaIr {
+    pub fn compiled_schema_ir(&self, schema_name: &str) -> RuntimeSchemaIndex {
         let object_type_ids = self
             .object_types
             .iter()
             .map(|object_type| {
                 (
                     object_type.clone(),
-                    ObjectTypeId::new(format!("object:{}:{}", schema_name, object_type)),
+                    ObjectTypeId::new(format!("object:{schema_name}:{object_type}")),
                 )
             })
             .collect();
@@ -265,7 +263,7 @@ impl SchemaIndex {
                 (expected.clone(), subtypes)
             })
             .collect::<HashMap<_, _>>();
-        let mut compiled = CompiledSchemaIr {
+        let mut compiled = RuntimeSchemaIndex {
             schema_id: SchemaId::new(schema_name.to_string()),
             object_types: self.object_types.clone(),
             object_type_ids,
@@ -360,6 +358,21 @@ impl MetaPlaneIndex {
                     let Some(field_type) = entity_attr_string(db, fid, ATTR_FIELD_TYPE) else {
                         continue;
                     };
+                    let Some(field_kind) =
+                        entity_attr_string(db, fid, ATTR_FIELD_KIND).and_then(|kind| {
+                            match kind.as_str() {
+                                "data" => Some(RoleKind::Data),
+                                "context" => Some(RoleKind::Context),
+                                "world" => Some(RoleKind::World),
+                                "temporal" => Some(RoleKind::Temporal),
+                                "parameter" => Some(RoleKind::Parameter),
+                                "evidence" => Some(RoleKind::Evidence),
+                                _ => None,
+                            }
+                        })
+                    else {
+                        continue;
+                    };
                     let field_index = entity_attr_string(db, fid, ATTR_FIELD_INDEX)
                         .and_then(|s| s.parse::<usize>().ok())
                         .unwrap_or(0);
@@ -367,6 +380,7 @@ impl MetaPlaneIndex {
                         field_entity: fid,
                         field_name,
                         field_type,
+                        field_kind,
                         field_index,
                     });
                 }
@@ -689,7 +703,7 @@ impl MetaPlaneIndex {
         Ok(out)
     }
 
-    pub fn compiled_schema_ir(&self, schema_name: &str) -> Option<CompiledSchemaIr> {
+    pub fn compiled_schema_ir(&self, schema_name: &str) -> Option<RuntimeSchemaIndex> {
         self.schemas
             .get(schema_name)
             .map(|schema| schema.compiled_schema_ir(schema_name))

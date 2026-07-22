@@ -901,10 +901,10 @@ pub struct ResolvedConflict {
 impl std::fmt::Display for crate::LLMProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            crate::LLMProvider::OpenAI { model } => write!(f, "openai:{}", model),
-            crate::LLMProvider::Anthropic { model } => write!(f, "anthropic:{}", model),
-            crate::LLMProvider::Local { model_path } => write!(f, "local:{}", model_path),
-            crate::LLMProvider::Custom { name, .. } => write!(f, "custom:{}", name),
+            crate::LLMProvider::OpenAI { model } => write!(f, "openai:{model}"),
+            crate::LLMProvider::Anthropic { model } => write!(f, "anthropic:{model}"),
+            crate::LLMProvider::Local { model_path } => write!(f, "local:{model_path}"),
+            crate::LLMProvider::Custom { name, .. } => write!(f, "custom:{name}"),
         }
     }
 }

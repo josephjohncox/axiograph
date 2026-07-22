@@ -40,6 +40,7 @@ target
 *.tlean
 *.ast.json
 *.lock
+!rust/Cargo.lock
 build
 GPATH
 GRTAGS
@@ -159,3 +160,6 @@ bin/
 
 *.stderr
 !rust/crates/axiograph-pathdb/tests/ui/*.stderr
+
+# Local multi-agent review artifacts
+.pi-subagents/

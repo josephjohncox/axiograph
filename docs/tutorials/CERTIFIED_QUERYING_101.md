@@ -6,8 +6,10 @@
 This tutorial walks through a minimal end-to-end “untrusted engine, trusted checker” flow:
 
 1. write/use a canonical `.axi` module (meaning plane),
-2. run a query and emit a **certificate** (Rust),
-3. verify the certificate against the formal semantics (Lean).
+2. express the intent as a question first,
+3. compile the question into `CompiledFiniteQuery` (untrusted Rust),
+4. request `query_result_v4` through a bound verifier route, and
+5. accept the result only with the matching Lean receipt.
 
 We use `examples/ontology/OntologyRewrites.axi`.
 
@@ -32,7 +34,7 @@ make lean-exe
 
 ---
 
-## 1) Write the query (AxQL)
+## 1) Start with the question
 
 Question: “Who is Bob’s parent?”
 
@@ -40,53 +42,82 @@ In `OntologyRewrites.axi`, the instance includes:
 
 - `Parent(parent=Alice, child=Bob)`
 
-So we bind the tuple node and select `?p`:
+For authoring and CQ review, keep this intent question-first. A `.cq` form would
+look like:
 
 ```text
-select ?p where ?f = Parent(parent=?p, child=Bob) limit 10
+version competency_question_bundle_v1
+
+question bob_parent:
+  ask: Who is Bob's parent?
+  expect: exists OrgFamily.Parent(parent=?p, child=Bob)
+  min_rows: 1
 ```
 
----
-
-## 2) Emit a typed query witness (Rust)
-
-For canonical `.axi` input, `axiograph cert query` now emits the canonical
-`.axi`-anchored typed query-witness path directly.
+Load/lower authored CQs when you want the question-first report:
 
 ```bash
-bin/axiograph cert query \
-  --lang axql \
+bin/axiograph discover competency-questions \
   examples/ontology/OntologyRewrites.axi \
-  'select ?p where ?f = Parent(parent=?p, child=Bob) limit 10' \
-  --out build/bob_parent.query_cert.json
+  --from-cq examples/competency_questions/bob_parent.cq \
+  --no-schema \
+  --out build/bob_parent.cq.json
 ```
 
-You now have:
+The executable compiler still consumes explicit structured query intent. The
+equivalent human-facing lowered query text is:
 
-- `build/bob_parent.query_cert.json` (certificate)
+```text
+select ?p where ?f = OrgFamily.Parent(parent=?p, child=Bob) limit 10
+```
 
 ---
 
-## 3) Verify the certificate (Lean)
+## 2) Run through the compiled query family
+
+CLI/REPL, HTTP, semantic MCP, and internal callers all lower into
+`CompiledFiniteQuery`. The HTTP request is structured `query_ir_v1`; it returns
+`family = compiled_finite_query` and makes no certificate claim because an
+`.axpd` materialization cannot reconstruct exact accepted `.axi` bytes.
+
+For a certified answer, use semantic MCP `axql_run` with
+`certificate_policy = require_verified`. The server must be configured with:
+
+- exact accepted `.axi` bytes for the runtime anchor;
+- an approved `axiograph_verify` executable SHA-256;
+- build id `axiograph-verify-main-v3`; and
+- a positive verifier timeout.
+
+The route emits `query_result_v4`, invokes Lean, validates every receipt field,
+and returns authoritative `verified_rows`. There is no emission-only
+query-certificate command.
+
+---
+
+## 3) Exercise the exact finite checker locally
 
 ```bash
-make verify-lean-cert \
-  CERT=build/bob_parent.query_cert.json \
-  AXI=examples/ontology/OntologyRewrites.axi
+make verify-lean-e2e-query-result-module-v4
+make verify-lean-certificate-rejections
 ```
 
-If the checker succeeds, it prints a success line and exits with code 0.
+The positive path covers finite type, bounded path, and disjunctive queries. The
+durable adversarial corpus rejects a missing row, a duplicate substituted row,
+and any truncated answer.
 
 ---
 
 ## 4) What you just proved (and what you did not)
 
-You proved:
+You proved, for the accepted receipt:
 
-- the returned binding(s) are **derivable from the anchored canonical `.axi` input** under the AxQL semantics.
+- every returned full binding has valid type/attribute/path witnesses against
+  the exact accepted module;
+- no satisfying binding in the declared bounded finite denotation is missing;
+- the prepared query, ordered selected answer, exact certificate bytes, module
+  revision, checker binary, and receipt are mutually bound.
 
-You did **not** prove:
-
-- the input facts are “true in the real world”.
-
-This separation is intentional: certificates prove **derivability from accepted inputs**, not correctness of the inputs.
+You did **not** prove that the accepted facts are true in the world, that the
+ontology is closed, that evidence retrieval is exhaustive, that approximate
+operators are complete, or that general dependent/HoTT reasoning is decidable.
+The theorem is exact only for the declared finite query fragment.

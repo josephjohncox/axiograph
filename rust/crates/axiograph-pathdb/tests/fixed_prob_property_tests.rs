@@ -21,7 +21,7 @@ proptest! {
         let p = FixedPointProbability::try_new(n).expect("in-range numerator");
         prop_assert_eq!(p.numerator(), n);
         let f = p.to_f32();
-        prop_assert!(f >= 0.0 && f <= 1.0);
+        prop_assert!((0.0..=1.0).contains(&f));
     }
 
     #[test]

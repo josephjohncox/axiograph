@@ -5,7 +5,6 @@
 //! to run continuous semantic coverage gates over behavior-case reports. It is
 //! not an ontology kernel and does not mutate accepted ontology state.
 
-use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -39,8 +38,12 @@ pub struct ContinuousSemanticCoverageExampleReportV1 {
 pub fn run_continuous_semantic_coverage_example(
     options: &ContinuousSemanticCoverageExampleOptions,
 ) -> Result<ContinuousSemanticCoverageExampleReportV1> {
-    let behavior_report_text = fs::read_to_string(&options.behavior_report)
-        .with_context(|| format!("read `{}`", options.behavior_report.display()))?;
+    let behavior_report_text = axiograph_security::read_utf8_file_bounded(
+        &options.behavior_report,
+        8 * 1024 * 1024,
+        "software-authoring behavior report",
+    )
+    .with_context(|| format!("read `{}`", options.behavior_report.display()))?;
     let coverage_report = build_continuous_software_coverage_report_from_json_str(
         &behavior_report_text,
         &ContinuousCheckOptions {
@@ -98,6 +101,7 @@ pub fn render_continuous_semantic_coverage_example(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn write_behavior_report(json: &str, label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

@@ -17,6 +17,18 @@ lean_exe axiograph_verify where
 lean_exe axiograph_semantic_vcs_check where
   root := `Axiograph.SemanticVCS.CheckMain
 
+lean_exe axiograph_axi_v1_parse where
+  root := `Axiograph.Axi.AxiV1ParseMain
+
+lean_exe axiograph_axi_v1_typecheck where
+  root := `Axiograph.Axi.TypeCheckMain
+
+lean_exe axiograph_finite_theory_tests where
+  root := `Axiograph.Theory.FiniteTests
+
+lean_exe axiograph_category_kernel_formation where
+  root := `Axiograph.Theory.CategoryKernelMain
+
 /--
 Build the trusted checker executable `axiograph_verify`.
 

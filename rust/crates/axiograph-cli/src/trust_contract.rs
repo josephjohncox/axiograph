@@ -86,7 +86,7 @@ pub struct TrustGapV1 {
 }
 
 fn default_query_claim_scope() -> String {
-    "returned_rows_within_snapshot_and_context".to_string()
+    "finite_query_denotation_within_exact_accepted_module".to_string()
 }
 
 fn default_query_completeness_claim() -> String {
@@ -98,10 +98,17 @@ fn default_query_ontology_closure_claim() -> String {
 }
 
 fn query_trust_notes(base: &TrustContractV1) -> Vec<String> {
-    let mut notes = vec![
-        "Soundness here is scoped to returned rows within the current snapshot/context boundary; it is not a claim that all satisfying rows were returned.".to_string(),
-        "This contract does not claim full ontology closure or exhaustive reasoning beyond the executed or certified query fragment.".to_string(),
-    ];
+    let mut notes = if base.soundness == "lean_verified_finite_exact_complete" {
+        vec![
+            "Lean checked every witness and exact equality with the declared bounded finite query denotation.".to_string(),
+            "This exact finite result is not an open-world ontology-closure, evidence-exhaustiveness, approximate-search, or unrestricted-HoTT claim.".to_string(),
+        ]
+    } else {
+        vec![
+            "Execution or certificate emission without an accepted Lean receipt carries no exact-completeness claim.".to_string(),
+            "This contract does not claim full ontology closure or exhaustive reasoning beyond the declared finite query fragment.".to_string(),
+        ]
+    };
 
     match base.trust_class.as_str() {
         "mixed" => notes.push(
@@ -125,9 +132,14 @@ fn query_trust_notes(base: &TrustContractV1) -> Vec<String> {
 
 impl From<TrustContractV1> for QueryTrustContractV1 {
     fn from(base: TrustContractV1) -> Self {
+        let finite_exact = base.soundness == "lean_verified_finite_exact_complete";
         QueryTrustContractV1 {
             claim_scope: default_query_claim_scope(),
-            completeness_claim: default_query_completeness_claim(),
+            completeness_claim: if finite_exact {
+                "exact_for_declared_finite_decidable_fragment".to_string()
+            } else {
+                default_query_completeness_claim()
+            },
             ontology_closure_claim: default_query_ontology_closure_claim(),
             notes: query_trust_notes(&base),
             trust_class: base.trust_class,
@@ -543,9 +555,9 @@ pub fn query_trust_contract(
         };
 
     let soundness = if certificate_verified == Some(true) {
-        "lean_verified_row_soundness".to_string()
+        "lean_verified_finite_exact_complete".to_string()
     } else if certificate_emitted {
-        "certificate_emitted_row_soundness_unverified".to_string()
+        "finite_exact_certificate_emitted_unverified".to_string()
     } else if matches!(
         certifiability,
         crate::axql::QueryCertifiability::Certifiable
@@ -664,14 +676,14 @@ mod tests {
 
         assert_eq!(
             trust.claim_scope,
-            "returned_rows_within_snapshot_and_context"
+            "finite_query_denotation_within_exact_accepted_module"
         );
         assert_eq!(trust.completeness_claim, "not_claimed");
         assert_eq!(trust.ontology_closure_claim, "not_claimed");
         assert!(trust
             .notes
             .iter()
-            .any(|note| note.contains("not a claim that all satisfying rows were returned")));
+            .any(|note| note.contains("no exact-completeness claim")));
         assert!(trust
             .notes
             .iter()

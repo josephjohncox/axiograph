@@ -1,10 +1,10 @@
-# Axiograph REPL script: schema discovery demo (proto/API candidate)
+# Axiograph REPL script: review-plane schema discovery inspection (proto/API candidate)
 #
-# This demo imports a *candidate* canonical `.axi` module that was generated from
+# This review-plane script imports a *candidate* canonical `.axi` module generated from
 # evidence-plane `proposals.json` (proto/gRPC-ish ingestion).
 #
 # Source proposals:
-#   examples/schema_discovery/fixtures/proto_api_proposals.json
+#   examples/schema_discovery/inputs/proto_api_proposals.json
 #
 # Run (from repo root):
 #   make binaries
@@ -48,8 +48,3 @@ q select ?f where ?f = proto_rpc_http_endpoint(from=GetUser, to=GET_v1_users_use
 
 # Repeat to demonstrate the REPL's compiled query cache (same query IR + snapshot key).
 q select ?f where ?f = proto_rpc_http_endpoint(from=GetUser, to=GET_v1_users_user_id) limit 10
-
-# Export the canonical module (schema/theory/instance) back out of PathDB.
-export_axi_module build/proto_schema_discovery_module.axi ProtoApi_Proposals
-
-save build/proto_schema_discovery.axpd

@@ -153,7 +153,7 @@ fn with_confidence_filters_low_conf_edges() {
 
 #[test]
 fn delta_f_is_functorial_on_objects_and_arrows() {
-    let optimizer = ProofProducingOptimizer::default();
+    let optimizer = ProofProducingOptimizer;
 
     // S0: A --f--> B
     let schema_s0 = SchemaV1 {

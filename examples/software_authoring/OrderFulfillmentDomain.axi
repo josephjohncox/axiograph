@@ -17,14 +17,14 @@ schema OrderFulfillment:
   object FulfillmentPolicy
   object BusinessInvariant
 
-  relation OrderHasReservation(order: Order, reservation: CreditReservation, ctx: Context, time: Time)
-  relation ReservationApprovesPayment(reservation: CreditReservation, payment: Payment, ctx: Context, time: Time)
-  relation OrderHasPayment(order: Order, payment: Payment, ctx: Context, time: Time)
-  relation PaymentAuthorizesShipment(payment: Payment, shipment: Shipment, ctx: Context, time: Time)
-  relation OrderEligibleForShipment(order: Order, shipment: Shipment, ctx: Context, time: Time)
+  relation OrderHasReservation(order: Order, reservation: CreditReservation, ctx: Context @context, time: Time @temporal)
+  relation ReservationApprovesPayment(reservation: CreditReservation, payment: Payment, ctx: Context @context, time: Time @temporal)
+  relation OrderHasPayment(order: Order, payment: Payment, ctx: Context @context, time: Time @temporal)
+  relation PaymentAuthorizesShipment(payment: Payment, shipment: Shipment, ctx: Context @context, time: Time @temporal)
+  relation OrderEligibleForShipment(order: Order, shipment: Shipment, ctx: Context @context, time: Time @temporal)
   relation ProcessRequiresInvariant(process: FulfillmentProcess, invariant: BusinessInvariant)
   relation PolicyRequiresInvariant(policy: FulfillmentPolicy, invariant: BusinessInvariant)
-  relation ReservationSatisfiesInvariant(reservation: CreditReservation, invariant: BusinessInvariant, ctx: Context, time: Time)
+  relation ReservationSatisfiesInvariant(reservation: CreditReservation, invariant: BusinessInvariant, ctx: Context @context, time: Time @temporal)
 
 theory OrderFulfillmentRules on OrderFulfillment:
   constraint key OrderHasReservation(order, reservation, ctx, time)

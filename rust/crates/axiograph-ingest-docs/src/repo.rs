@@ -13,12 +13,21 @@
 //!   `EvidenceChunkBundleV1` / proposal artifact shape.
 
 use crate::{extract_markdown, extract_text, Chunk, DocumentExtraction};
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use walkdir::WalkDir;
+
+const MAX_REPO_FILES: usize = 10_000;
+const MAX_REPO_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_REPO_SCAN_ENTRIES: usize = 100_000;
+const MAX_REPO_SCAN_DEPTH: usize = 64;
+const MAX_REPO_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_REPO_CHUNKS: usize = 100_000;
+const MAX_REPO_EDGES: usize = 500_000;
+const MAX_REPO_EXTENSION_RULES: usize = 128;
 
 /// Options controlling repository indexing behavior.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +47,7 @@ pub struct RepoIndexOptions {
 impl Default for RepoIndexOptions {
     fn default() -> Self {
         Self {
-            max_files: 50_000,
+            max_files: MAX_REPO_FILES,
             max_file_bytes: 512 * 1024,
             lines_per_chunk: 80,
             include_extensions: vec![
@@ -116,7 +125,27 @@ pub struct RepoIndexResult {
 
 /// Index a repository directory into chunks and lightweight structured edges.
 pub fn index_repo(root: &Path, options: &RepoIndexOptions) -> Result<RepoIndexResult> {
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !(1..=MAX_REPO_FILES).contains(&options.max_files) {
+        return Err(anyhow!("max_files must be in 1..={MAX_REPO_FILES}"));
+    }
+    if options.max_file_bytes == 0 || options.max_file_bytes > MAX_REPO_FILE_BYTES {
+        return Err(anyhow!(
+            "max_file_bytes must be in 1..={MAX_REPO_FILE_BYTES}"
+        ));
+    }
+    if options.lines_per_chunk == 0 || options.lines_per_chunk > 10_000 {
+        return Err(anyhow!("lines_per_chunk must be in 1..=10000"));
+    }
+    if options.include_extensions.len() > MAX_REPO_EXTENSION_RULES
+        || options.exclude_dir_names.len() > MAX_REPO_EXTENSION_RULES
+    {
+        return Err(anyhow!(
+            "repository include/exclude rule count exceeds {MAX_REPO_EXTENSION_RULES}"
+        ));
+    }
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalize repository root `{}`", root.display()))?;
     let root_display = root.to_string_lossy().to_string();
 
     let root_id = root
@@ -130,9 +159,12 @@ pub fn index_repo(root: &Path, options: &RepoIndexOptions) -> Result<RepoIndexRe
     let mut chunks = Vec::new();
     let mut edges = Vec::new();
     let mut files_indexed = 0usize;
+    let mut entries_scanned = 0_usize;
+    let mut total_bytes = 0_u64;
 
     let walker = WalkDir::new(&root)
         .follow_links(false)
+        .max_depth(MAX_REPO_SCAN_DEPTH)
         .into_iter()
         .filter_entry(|entry| {
             if !entry.file_type().is_dir() {
@@ -144,10 +176,14 @@ pub fn index_repo(root: &Path, options: &RepoIndexOptions) -> Result<RepoIndexRe
         });
 
     for entry in walker {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let entry = entry
+            .with_context(|| format!("failed while walking repository `{}`", root.display()))?;
+        entries_scanned = entries_scanned.saturating_add(1);
+        if entries_scanned > MAX_REPO_SCAN_ENTRIES {
+            return Err(anyhow!(
+                "repository scan exceeds {MAX_REPO_SCAN_ENTRIES} filesystem entries"
+            ));
+        }
 
         if entry.depth() == 0 {
             continue;
@@ -167,15 +203,14 @@ pub fn index_repo(root: &Path, options: &RepoIndexOptions) -> Result<RepoIndexRe
             break;
         }
 
-        let metadata = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
+        let metadata = std::fs::symlink_metadata(path)
+            .with_context(|| format!("inspect repository input `{}`", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            continue;
+        }
         if metadata.len() > options.max_file_bytes {
             continue;
         }
-
         let ext = match path.extension().and_then(|e| e.to_str()) {
             Some(e) => e.to_lowercase(),
             None => continue,
@@ -188,8 +223,21 @@ pub fn index_repo(root: &Path, options: &RepoIndexOptions) -> Result<RepoIndexRe
         let rel_path = path.strip_prefix(&root).unwrap_or(path);
         let rel_path_str = rel_path.to_string_lossy().to_string();
 
-        let text = match std::fs::read_to_string(path) {
-            Ok(s) => s,
+        let bytes = axiograph_security::read_file_bounded(
+            path,
+            usize::try_from(options.max_file_bytes).unwrap_or(usize::MAX),
+            "repository input",
+        )?;
+        total_bytes = total_bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| anyhow!("repository byte count overflow"))?;
+        if total_bytes > MAX_REPO_TOTAL_BYTES {
+            return Err(anyhow!(
+                "repository indexing exceeds {MAX_REPO_TOTAL_BYTES} input bytes"
+            ));
+        }
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
             Err(_) => continue,
         };
 
@@ -197,11 +245,11 @@ pub fn index_repo(root: &Path, options: &RepoIndexOptions) -> Result<RepoIndexRe
         let doc_id = sanitize_repo_id(&rel_path_str);
 
         let mut file_chunks = if ext == "md" {
-            extract_markdown(&text, &doc_id)
+            extract_markdown(&text, &doc_id)?
         } else if ext == "txt" {
-            extract_text(&text, &doc_id)
+            extract_text(&text, &doc_id)?
         } else {
-            extract_code_by_lines(&text, &doc_id, options.lines_per_chunk)
+            extract_code_by_lines(&text, &doc_id, options.lines_per_chunk)?
         };
 
         for chunk in &mut file_chunks.chunks {
@@ -223,9 +271,15 @@ pub fn index_repo(root: &Path, options: &RepoIndexOptions) -> Result<RepoIndexRe
                 language,
                 chunk,
             ));
+            if edges.len() > MAX_REPO_EDGES {
+                return Err(anyhow!("repository edge count exceeds {MAX_REPO_EDGES}"));
+            }
         }
 
         chunks.extend(file_chunks.chunks);
+        if chunks.len() > MAX_REPO_CHUNKS {
+            return Err(anyhow!("repository chunk count exceeds {MAX_REPO_CHUNKS}"));
+        }
         files_indexed += 1;
     }
 
@@ -265,7 +319,11 @@ fn language_from_extension(ext: &str) -> &'static str {
     }
 }
 
-fn extract_code_by_lines(text: &str, doc_id: &str, lines_per_chunk: usize) -> DocumentExtraction {
+fn extract_code_by_lines(
+    text: &str,
+    doc_id: &str,
+    lines_per_chunk: usize,
+) -> Result<DocumentExtraction> {
     let mut chunks = Vec::new();
     let mut chunk_idx = 0usize;
 
@@ -273,6 +331,11 @@ fn extract_code_by_lines(text: &str, doc_id: &str, lines_per_chunk: usize) -> Do
     for line in text.lines() {
         current.push(line);
         if current.len() >= lines_per_chunk {
+            if chunks.len() >= MAX_REPO_CHUNKS {
+                return Err(anyhow!(
+                    "repository code chunk count exceeds {MAX_REPO_CHUNKS}"
+                ));
+            }
             chunks.push(make_code_chunk(doc_id, chunk_idx, &current));
             chunk_idx += 1;
             current.clear();
@@ -280,24 +343,29 @@ fn extract_code_by_lines(text: &str, doc_id: &str, lines_per_chunk: usize) -> Do
     }
 
     if !current.is_empty() {
+        if chunks.len() >= MAX_REPO_CHUNKS {
+            return Err(anyhow!(
+                "repository code chunk count exceeds {MAX_REPO_CHUNKS}"
+            ));
+        }
         chunks.push(make_code_chunk(doc_id, chunk_idx, &current));
     }
 
-    DocumentExtraction {
+    Ok(DocumentExtraction {
         source_path: "".to_string(),
         document_id: doc_id.to_string(),
         title: None,
         chunks,
         metadata: HashMap::new(),
-    }
+    })
 }
 
 fn make_code_chunk(doc_id: &str, chunk_idx: usize, lines: &[&str]) -> Chunk {
     Chunk {
-        chunk_id: format!("{}_{}", doc_id, chunk_idx),
+        chunk_id: format!("{doc_id}_{chunk_idx}"),
         document_id: doc_id.to_string(),
         page: None,
-        span_id: format!("lines_{}", chunk_idx),
+        span_id: format!("lines_{chunk_idx}"),
         text: lines.join("\n"),
         bbox: None,
         metadata: HashMap::new(),

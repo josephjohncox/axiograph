@@ -6,8 +6,8 @@
 //! - gradual promotion into canonical `.axi`.
 //!
 //! The output is the generic Evidence/Proposals schema (`ProposalsFileV1`) from
-//! `axiograph-ingest-docs`, plus optional `Chunk` evidence suitable for loading
-//! into the PathDB WAL.
+//! `axiograph-ingest-docs`, plus optional `Chunk` evidence retained in the
+//! review bundle. These helpers never persist or mutate `.axpd`.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -57,7 +57,7 @@ pub struct ProposeRelationInputV1 {
     pub confidence: Option<f64>,
     pub schema_hint: Option<String>,
     pub public_rationale: Option<String>,
-    /// Optional evidence text to store as a `DocChunk` (WAL overlay).
+    /// Optional evidence text to retain as a review-bundle `DocChunk`.
     pub evidence_text: Option<String>,
     /// Optional source locator for the evidence chunk (e.g. "viz_ui").
     pub evidence_locator: Option<String>,
@@ -138,8 +138,8 @@ pub struct ProposeRelationsInputV1 {
     pub confidence: Option<f64>,
     pub schema_hint: Option<String>,
     pub public_rationale: Option<String>,
-    /// Optional evidence text to store as a single `DocChunk` (WAL overlay) and
-    /// attach to every generated proposal.
+    /// Optional evidence text to retain as a single review-bundle `DocChunk`
+    /// and attach to every generated proposal.
     pub evidence_text: Option<String>,
     /// Optional source locator for the evidence chunk (e.g. "viz_ui").
     pub evidence_locator: Option<String>,
@@ -164,7 +164,7 @@ pub struct ProposeFactInputV1 {
     pub confidence: Option<f64>,
     #[serde(default)]
     pub public_rationale: Option<String>,
-    /// Optional evidence text to store as a `DocChunk` (WAL overlay).
+    /// Optional evidence text to retain as a review-bundle `DocChunk`.
     #[serde(default)]
     pub evidence_text: Option<String>,
     /// Optional source locator for the evidence chunk (e.g. "viz_ui").
@@ -321,15 +321,11 @@ pub fn propose_relation_proposals_v1(
             }
         }
 
-        for id in candidates.iter() {
-            if want_type
+        candidates.iter().find(|&id| {
+            want_type
                 .map(|t| matches_type_hint(db, id, t))
                 .unwrap_or(true)
-            {
-                return Some(id);
-            }
-        }
-        None
+        })
     }
 
     fn sanitize_external_id(raw: &str) -> String {
@@ -670,7 +666,7 @@ pub fn propose_relation_proposals_v1(
             .map(|s| format!(" with schema_hint `{s}`"))
             .unwrap_or_default();
         return Err(anyhow!(
-            "propose_relation_proposals: relation `{rel_type}`{hint} did not resolve to a compiled canonical .axi relation; proposals are fail-closed instead of emitting untyped relation overlays. Import/review a canonical .axi schema first, use a schema-qualified relation name, or switch to a weak definition/coverage query for exploratory discovery."
+            "propose_relation_proposals: relation `{rel_type}`{hint} did not resolve to a compiled .axi relation; proposals are fail-closed instead of emitting untyped relation overlays. Import/review a .axi schema first, use a schema-qualified relation name, or switch to an advisory definition/coverage query for discovery."
         ));
     }
 
@@ -738,6 +734,7 @@ pub fn propose_relation_proposals_v1(
         proposals: Vec::new(),
     };
 
+    #[allow(clippy::too_many_arguments)]
     fn push_entity_proposal(
         file: &mut ProposalsFileV1,
         confidence: f64,
@@ -1206,14 +1203,12 @@ pub fn propose_fact_proposals_v1(
 
     let Some(src_name) = fields.get(&src_field).cloned() else {
         return Err(anyhow!(
-            "propose_fact_proposals: missing required endpoint field `{}`",
-            src_field
+            "propose_fact_proposals: missing required endpoint field `{src_field}`"
         ));
     };
     let Some(dst_name) = fields.get(&dst_field).cloned() else {
         return Err(anyhow!(
-            "propose_fact_proposals: missing required endpoint field `{}`",
-            dst_field
+            "propose_fact_proposals: missing required endpoint field `{dst_field}`"
         ));
     };
 
@@ -1340,6 +1335,6 @@ mod tests {
 
         assert!(err
             .to_string()
-            .contains("did not resolve to a compiled canonical .axi relation"));
+            .contains("did not resolve to a compiled .axi relation"));
     }
 }

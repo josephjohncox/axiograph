@@ -1,6 +1,6 @@
 # Axiograph Rust Build & Test Makefile
 
-.PHONY: all build test test-unit test-integration test-backend-pushdown test-backend-containers test-e2e test-all clean doc check fmt lint
+.PHONY: all build test test-unit test-integration test-projections test-backend-containers test-e2e test-all clean doc check fmt lint
 
 # Default target
 all: check test
@@ -26,14 +26,15 @@ test-integration:
 	@echo "=== Integration Tests ==="
 	cargo test --test integration_tests
 
-# Backend pushdown plan-shape tests that do not require external containers
-test-backend-pushdown:
-	@echo "=== Backend Pushdown Plan + Native Artifact Tests ==="
-	cargo test -p axiograph-cli backend_pushdown
+# Typed projection, semantic-loss, evidence-boundary, and readback tests
+test-projections:
+	@echo "=== Typed Derived Projection + Readback Tests ==="
+	cargo test -p axiograph-projections
+	cargo test -p axiograph-cli --test projection_cli_e2e
 
-# Container-backed backend smoke tests
+# Container-backed backend readback tests
 test-backend-containers:
-	@echo "=== Backend Container Smoke Tests (TypeDB + TerminusDB) ==="
+	@echo "=== Backend Container Readback Tests (TypeDB + TerminusDB) ==="
 	AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1 cargo test --test backend_container_tests -- --ignored --nocapture
 
 # E2E tests for LLM sync
@@ -125,8 +126,9 @@ summary:
 	@echo ""
 	@echo "Unit tests:            cargo test --workspace --lib"
 	@echo "Integration:           cargo test --test integration_tests"
-	@echo "Backend pushdown/artifacts: cargo test -p axiograph-cli backend_pushdown"
-	@echo "Backend containers:    AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1 cargo test --test backend_container_tests -- --ignored --nocapture"
+	@echo "Typed projections:      cargo test -p axiograph-projections"
+	@echo "Projection CLI E2E:     cargo test -p axiograph-cli --test projection_cli_e2e"
+	@echo "Backend container smoke (not projection semantics): AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1 cargo test --test backend_container_tests -- --ignored --nocapture"
 	@echo "LLM Sync E2E:          cargo test -p axiograph-llm-sync --test e2e_tests"
 	@echo "Reconciliation:        cargo test -p axiograph-llm-sync --test reconciliation_tests"
 	@echo "Reconciliation Format: cargo test -p axiograph-llm-sync --test reconciliation_format_tests"

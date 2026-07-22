@@ -1,4 +1,4 @@
-//! Container-backed backend smoke tests for the current advanced backend targets.
+//! Container-backed backend readback tests for the current advanced backend targets.
 //!
 //! These tests are intentionally ignored by default because they require:
 //! - Docker + docker compose
@@ -25,7 +25,7 @@ const KEEP_ENV: &str = "AXIOGRAPH_KEEP_BACKEND_TEST_CONTAINERS";
 const COMPOSE_RELATIVE_PATH: &str = "tests/docker/graph_backends.compose.yml";
 
 #[derive(Debug)]
-struct DockerComposeHarness {
+struct DockerComposeFixture {
     compose_file: PathBuf,
     project_name: String,
     keep_containers: bool,
@@ -37,7 +37,7 @@ struct CommandResult {
     stderr: String,
 }
 
-impl DockerComposeHarness {
+impl DockerComposeFixture {
     fn new() -> TestResult<Self> {
         let cargo_manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let compose_file = cargo_manifest_dir.join(COMPOSE_RELATIVE_PATH);
@@ -99,7 +99,7 @@ impl DockerComposeHarness {
         .into())
     }
 
-    fn typedb_smoke(&self) -> TestResult {
+    fn typedb_readback(&self) -> TestResult {
         self.wait_for_service("TypeDB HTTP endpoint", Duration::from_secs(90), || {
             let base_url = self.typedb_http_base_url()?;
             let _ = self.typedb_sign_in(&base_url)?;
@@ -108,7 +108,7 @@ impl DockerComposeHarness {
 
         let base_url = self.typedb_http_base_url()?;
         let token = self.typedb_sign_in(&base_url)?;
-        let db_name = format!("axiograph_backend_smoke_{}", unique_suffix());
+        let db_name = format!("axiograph_backend_readback_{}", unique_suffix());
         self.typedb_post_empty(&base_url, &token, &format!("/v1/databases/{db_name}"))?;
         self.typedb_post_json(
             &base_url,
@@ -129,7 +129,7 @@ impl DockerComposeHarness {
                 "databaseName": db_name,
                 "transactionType": "write",
                 "commit": true,
-                "query": "insert $n isa node, has name \"typedb-smoke\";"
+                "query": "insert $n isa node, has name \"typedb-readback\";"
             }),
         )?;
         let query = self.typedb_post_json(
@@ -143,24 +143,23 @@ impl DockerComposeHarness {
             }),
         )?;
 
-        if !query.to_string().contains("typedb-smoke") {
+        if !query.to_string().contains("typedb-readback") {
             return Err(format!(
-                "TypeDB smoke query did not surface inserted data; output was:\n{}",
-                query
+                "TypeDB readback query did not surface inserted data; output was:\n{query}"
             )
             .into());
         }
         Ok(())
     }
 
-    fn terminusdb_smoke(&self) -> TestResult {
+    fn terminusdb_readback(&self) -> TestResult {
         self.wait_for_service("TerminusDB CLI", Duration::from_secs(90), || {
             let _ =
                 self.compose_exec_checked("terminusdb", &["./terminusdb", "list", "-b", "-j"])?;
             Ok(())
         })?;
 
-        let database_spec = format!("admin/axiograph-smoke-{}", unique_suffix());
+        let database_spec = format!("admin/axiograph-readback-{}", unique_suffix());
         let _ = self.compose_exec_checked(
             "terminusdb",
             &["./terminusdb", "db", "create", &database_spec],
@@ -302,7 +301,7 @@ impl DockerComposeHarness {
     }
 }
 
-impl Drop for DockerComposeHarness {
+impl Drop for DockerComposeFixture {
     fn drop(&mut self) {
         if self.keep_containers {
             eprintln!(
@@ -325,16 +324,16 @@ impl Drop for DockerComposeHarness {
 
 #[test]
 #[ignore = "requires Docker images and explicit opt-in via AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1"]
-fn graph_backend_containers_boot_and_answer_smoke_operations() -> TestResult {
+fn graph_backend_containers_boot_and_answer_readback_operations() -> TestResult {
     if env::var_os(RUN_ENV).is_none() {
         eprintln!("skipping backend container tests because {RUN_ENV} is not set");
         return Ok(());
     }
 
-    let harness = DockerComposeHarness::new()?;
-    harness.up()?;
-    harness.typedb_smoke()?;
-    harness.terminusdb_smoke()?;
+    let fixture = DockerComposeFixture::new()?;
+    fixture.up()?;
+    fixture.typedb_readback()?;
+    fixture.terminusdb_readback()?;
     Ok(())
 }
 

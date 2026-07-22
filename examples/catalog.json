@@ -1,18 +1,22 @@
 {
   "version": 1,
-  "description": "Pedagogical example catalog for agents, docs, and smoke tests. Canonical examples teach typed Axiograph surfaces; storage/debug scripts are deliberately not the primary route.",
+  "description": "Pedagogical example index for agents, docs, and validation checks. Canonical examples teach typed Axiograph surfaces; storage/debug scripts are deliberately not the primary route.",
   "quality_bar": [
     "Each cataloged example must teach a clear feature, scenario, flow, tool, or process.",
     "Examples that only prove a command runs belong in tests, not the public teaching path.",
-    "Examples that use weak, advisory, or evidence-plane outputs must say so explicitly.",
+    "Examples that use advisory or evidence-plane outputs must say so explicitly.",
     "Non-catalog examples should be cataloged with a purpose or removed."
   ],
   "example_tiers": {
     "teaching": "Start here: canonical .axi, .cq, typed reports, overlays, codegen previews, or semantic VCS examples with clear learning goals.",
     "evidence_plane": "Review/discovery inputs and generated candidate modules. Useful for engineering workflows, but not accepted ontology truth.",
-    "projection_or_ops": "Backend projection, interop, smoke, or operational workflows. Useful for integration testing, not primary ontology authoring."
+    "projection_or_ops": "Backend projection, interop, or operational workflows. Useful for integration testing, not primary ontology authoring."
   },
   "recommended_flow": [
+    {
+      "step": "run_regulated_shipment_primary_fixture",
+      "surface": "one canonical scenario spanning finite query proof, evolution, merge, persistence, projection, and generated tests"
+    },
     {
       "step": "validate_canonical_axi",
       "surface": "canonical .axi parse/typecheck"
@@ -40,52 +44,69 @@
   ],
   "examples": [
     {
-      "id": "canonical-corpus",
-      "title": "Canonical-syntax parser and Rust/Lean parity corpus",
-      "path": "examples/canonical",
-      "kind": "parity_fixture",
-      "feature_tags": ["axi-v1", "parser-parity", "rust-lean", "review-plane-markers"],
-      "flow": ["inspect_corpus", "validate_canonical_syntax", "respect_trust_plane"]
-    },
-    {
-      "id": "certificate-fixtures",
-      "title": "Low-level Lean/Rust certificate fixtures",
-      "path": "examples/certificates",
-      "kind": "certificate_fixture",
-      "feature_tags": ["lean", "certificates", "path-normalization", "rewrite-derivation", "resolution"],
-      "flow": ["inspect_fixture", "run_lean_checker", "prefer_user_facing_axi_flows_for_teaching"],
+      "id": "regulated-shipment-primary-workflow",
+      "title": "Regulated pharmaceutical shipment end-to-end usefulness fixture",
+      "path": "examples/regulated_shipment",
+      "surface": "usefulness_workflow",
+      "teaching_tier": "teaching",
+      "feature_tags": [
+        "category",
+        "dependent-types",
+        "finite-query-completeness",
+        "path-explanations",
+        "axi-store",
+        "semantic-evolution",
+        "typed-merge",
+        "backend-projection",
+        "generated-tests"
+      ],
+      "flow": [
+        "compile_exact_canonical_axi",
+        "check_finite_category_and_dependent_roles",
+        "verify_exact_bounded_path_query",
+        "preview_compiled_payload_evolution",
+        "materialize_reviewed_typed_merge",
+        "restart_authenticated_store_and_pathdb",
+        "emit_projection_and_compile_generated_test"
+      ],
       "commands": [
-        "make verify-lean"
+        "make verify-regulated-shipment"
       ]
     },
     {
-      "id": "competency-question-fixtures",
+      "id": "competency-question-authoring",
       "title": "Competency questions for ontology coverage and repair",
       "path": "examples/competency_questions",
-      "kind": "cq_fixture",
+      "surface": "competency_question_suite",
+      "teaching_tier": "teaching",
       "feature_tags": ["cq", "coverage", "review-gates", "ontology-repair"],
       "flow": ["read_cq_text", "lower_expectations_to_typed_queries", "report_unresolved_authoring_obligations", "feed_coverage_or_repair_report"],
       "commands": [
-        "cargo test --manifest-path rust/Cargo.toml -p axiograph-cli competency_question_text_loads_typed_records -- --nocapture"
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover competency-questions examples/physics/PhysicsOntology.axi --no-schema --from-cq examples/competency_questions/physics.cq --out build/examples/physics_competency_questions.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover competency-questions examples/Family.axi --no-schema --from-cq examples/competency_questions/family_parent.cq --out build/examples/family_parent_competency_questions.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover competency-questions examples/ontology/OntologyRewrites.axi --no-schema --from-cq examples/competency_questions/bob_parent.cq --out build/examples/bob_parent_competency_questions.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover competency-questions examples/manufacturing/SupplyChainHoTT.axi --no-schema --from-cq examples/competency_questions/supply_chain.cq --out build/examples/supply_chain_competency_questions.json"
       ]
     },
     {
-      "id": "focused-demo-data",
+      "id": "runtime-theory-constraints",
       "title": "Focused constraint and fibered-closure modules",
-      "path": "examples/demo_data",
-      "kind": "focused_fixture",
-      "feature_tags": ["constraints", "fibered-closure", "runtime-theory", "focused-regression-module"],
-      "flow": ["validate_small_module", "exercise_specific_checker_surface"],
+      "path": "examples/runtime_theory",
+      "surface": "runtime_theory_module_set",
+      "teaching_tier": "teaching",
+      "feature_tags": ["constraints", "fibered-closure", "runtime-theory", "focused-checker-surface"],
+      "flow": ["validate_small_module", "inspect_one_runtime_theory_surface"],
       "commands": [
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/demo_data/ConstraintsOkDemo.axi",
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check theory examples/demo_data/FiberedClosureConstraints.axi --closure-tier finite_fragment --json --out build/examples/demo_data/fibered_closure_theory_check.json"
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/runtime_theory/ConstraintsOkDemo.axi",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check theory examples/runtime_theory/FiberedClosureConstraints.axi --closure-tier finite_fragment --json --out build/examples/runtime_theory/fibered_closure_theory_check.json"
       ]
     },
     {
       "id": "family-core",
       "title": "Minimal typed family ontology",
       "path": "examples/Family.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["schema", "instance", "context", "constraints"],
       "flow": ["inspect_domain_shape", "use_as_input_for_typed_query_and_repl_examples"]
     },
@@ -93,7 +114,8 @@
       "id": "family-hott",
       "title": "Family paths and HoTT-flavored witnesses",
       "path": "examples/family/FamilyHoTT.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["hott", "paths", "typed-query", "free-groupoid"],
       "flow": ["inspect_path_witness_model", "use_with_hott_or_certificate_tests"]
     },
@@ -101,7 +123,8 @@
       "id": "economics-flows",
       "title": "Economic flow ontology with typed business relations",
       "path": "examples/economics/EconomicFlows.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["business", "economics", "flows", "typed-relations"],
       "flow": ["inspect_typed_business_relations", "use_as_domain_input_for_flow_examples"]
     },
@@ -109,7 +132,8 @@
       "id": "modalities-core",
       "title": "Compact modal/context ontology",
       "path": "examples/modal/Modalities.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["modal", "context", "worlds", "evidence"],
       "flow": ["inspect_world_and_context_axes", "use_as_reference_for_modal_examples"]
     },
@@ -117,7 +141,8 @@
       "id": "ontology-rewrites",
       "title": "Runtime theory graph and rewrite surface",
       "path": "examples/ontology/OntologyRewrites.axi",
-      "kind": "canonical_axi",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["theory-ir", "rewrites", "constraints", "typed-exploration"],
       "commands": [
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover theory-graph examples/ontology/OntologyRewrites.axi --out build/examples/ontology_rewrites_theory_graph.json"
@@ -127,19 +152,20 @@
       "id": "schema-evolution",
       "title": "Schema/category evolution and transport",
       "path": "examples/ontology/SchemaEvolution.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["schema-evolution", "migration-preview", "transport", "semantic-vcs"],
-      "flow": ["inspect_schema_transport_terms", "use_with_migration_and_semantic_vcs_examples"]
+      "flow": ["inspect_schema_transport_terms", "use_with_migration_and_semantic_vcs_flows"]
     },
     {
       "id": "semantic-merge-plant-operations",
       "title": "Plant operations semantic merge and Lean theory check",
       "path": "examples/semantic_merge",
-      "kind": "semantic_vcs_fixture",
+      "surface": "semantic_vcs_flow",
+      "teaching_tier": "teaching",
       "feature_tags": ["semantic-vcs", "merge", "rebase", "lean-theory", "runtime-theory", "ddd", "industrial", "chemical-plant"],
-      "flow": ["validate", "runtime_theory", "accepted_refs", "dry_run_merge", "dry_run_rebase", "lean_check", "conformance_coverage"],
+      "flow": ["rust_plan_tests", "clean_fixture_acceptance", "adversarial_fixture_rejection", "lean_check"],
       "commands": [
-        "./examples/semantic_merge/run_merge_flow.sh",
         "make verify-lean-semantic-vcs",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate examples/semantic_merge/PlantOperationsCore.axi",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check theory examples/semantic_merge/PlantOperationsCore.axi --closure-tier finite_fragment"
@@ -149,17 +175,19 @@
       "id": "supply-chain-hott",
       "title": "Supply-chain path semantics",
       "path": "examples/manufacturing/SupplyChainHoTT.axi",
-      "kind": "canonical_axi",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["hott", "supply-chain", "certified-query", "paths"],
       "commands": [
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- cert query examples/manufacturing/SupplyChainHoTT.axi --lang axql 'select ?to where name(\"RawMetal_A\") -Flow-> ?to limit 10' --out build/examples/supply_chain_query_cert.json"
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover competency-questions examples/manufacturing/SupplyChainHoTT.axi --from-cq examples/competency_questions/supply_chain.cq --no-schema --out build/examples/supply_chain_competency_questions.json"
       ]
     },
     {
       "id": "supply-chain-modalities",
       "title": "Supply-chain modalities with observed/evidence/accepted distinctions",
       "path": "examples/manufacturing/SupplyChainModalitiesHoTT.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["manufacturing", "modal", "hott", "evidence", "context"],
       "flow": ["inspect_observed_evidence_accepted_distinctions", "use_with_manufacturing_query_or_certificate_examples"]
     },
@@ -167,7 +195,8 @@
       "id": "industrial-regulated-line",
       "title": "Regulated production line with business and implementation surfaces",
       "path": "examples/industrial/RegulatedProductionLine.axi",
-      "kind": "canonical_axi",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["bdd", "ddd", "fddd", "business-rules", "cq", "coverage", "agent-report"],
       "commands": [
         "./examples/behavior_cases/run_regulated_release_flow.sh",
@@ -179,7 +208,8 @@
       "id": "behavior-case-regulated-release",
       "title": "Regulated release behavior case and overlay",
       "path": "examples/behavior_cases",
-      "kind": "behavior_case_fixture",
+      "surface": "behavior_case_bundle",
+      "teaching_tier": "teaching",
       "feature_tags": ["bdd", "ddd", "behavior-case", "overlay", "codegen-preview", "cq"],
       "flow": ["load_domain_axi", "apply_behavior_case", "validate_overlay", "emit_receipts_and_test_skeletons"],
       "commands": [
@@ -190,8 +220,9 @@
       "id": "software-authoring-order-fulfillment",
       "title": "DDD/fDDD software authoring from typed overlay tools",
       "path": "examples/software_authoring/OrderFulfillmentDomain.axi",
-      "kind": "canonical_axi",
-      "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "competency-questions", "weak-definition-query", "behavior-case", "runtime-theory", "codegen", "continuous-coverage", "semantic-coverage"],
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
+      "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "competency-questions", "advisory-definition-lookup", "behavior-case", "runtime-theory", "codegen", "continuous-coverage", "semantic-coverage"],
       "flow": ["validate", "runtime_theory", "competency_question_authoring", "definition_query", "overlay_check", "coverage_query", "behavior_case", "software_coverage", "codegen_plan", "continuous_gates", "materialize_skeletons"],
       "commands": [
         "./examples/software_authoring/run_authoring_flow.sh",
@@ -201,8 +232,8 @@
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check theory examples/software_authoring/OrderFulfillmentDomain.axi --closure-tier finite_fragment",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring tool-specs --out build/examples/software_authoring/tool_specs.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring lsp-capabilities --out build/examples/software_authoring/lsp_capabilities.json",
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring integration-manifest --out build/examples/software_authoring/integration_manifest.json",
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring competency-questions --axi examples/software_authoring/OrderFulfillmentDomain.axi --cq examples/software_authoring/order_fulfillment.cq --out build/examples/software_authoring/competency_questions_authoring.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring integration-manifest --workspace . --out build/examples/software_authoring/integration_manifest.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring workspace --workspace . --request examples/software_authoring/authoring_workspace_request.json --out build/examples/software_authoring/authoring_workspace_report.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring codegen-plan --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/codegen_plan.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover overlay-check examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover define examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --prompt \"define the shipment eligibility business rule\" --kind-hint business_rule --include-queries",
@@ -216,12 +247,13 @@
       "id": "software-authoring-subscription-billing",
       "title": "Subscription billing codegen from typed ontology overlays",
       "path": "examples/software_authoring/SubscriptionBillingDomain.axi",
-      "kind": "canonical_axi",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "competency-questions", "subscription", "billing", "entitlements", "codegen", "continuous-coverage"],
       "flow": ["validate", "runtime_theory", "competency_question_authoring", "definition_query", "overlay_check", "coverage_query", "behavior_case", "software_coverage", "codegen_plan", "continuous_gates", "materialize_skeletons"],
       "commands": [
         "EXAMPLE_ID=subscription_billing ./examples/software_authoring/run_codegen_examples.sh",
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring competency-questions --axi examples/software_authoring/SubscriptionBillingDomain.axi --cq examples/software_authoring/subscription_billing.cq --out build/examples/software_authoring/subscription_billing_competency_questions.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring workspace --workspace . --request examples/software_authoring/subscription_billing_authoring_workspace_request.json --out build/examples/software_authoring/subscription_billing_authoring_workspace_report.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover define examples/software_authoring/SubscriptionBillingDomain.axi --overlay examples/software_authoring/subscription_billing_tooling_overlay.json --prompt \"define the paid invoice before access business rule\" --kind-hint business_rule --include-queries",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover coverage-query examples/software_authoring/SubscriptionBillingDomain.axi --overlay examples/software_authoring/subscription_billing_tooling_overlay.json --term \"paid invoice\" --relation PaidInvoiceGrantsEntitlement --cq-name paid_invoice_grants_subscription_entitlement --surface-hint entitlement --max-matches 8 --out build/examples/software_authoring/subscription_billing_coverage_query.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/software_authoring/SubscriptionBillingDomain.axi --request examples/software_authoring/subscription_billing_behavior_case.json --cq-file examples/software_authoring/subscription_billing.cq --overlay examples/software_authoring/subscription_billing_tooling_overlay.json --out build/examples/subscription_billing_behavior_case_report.json"
@@ -231,12 +263,13 @@
       "id": "software-authoring-process-control",
       "title": "Process-control codegen and coverage over simulator/HMI/PLC surfaces",
       "path": "examples/software_authoring/ProcessControlDomain.axi",
-      "kind": "canonical_axi",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["software-authoring", "ddd", "fddd", "tooling-overlay", "competency-questions", "industrial", "process-control", "hmi", "plc", "simulator", "codegen", "continuous-coverage"],
       "flow": ["validate", "runtime_theory", "competency_question_authoring", "definition_query", "overlay_check", "coverage_query", "behavior_case", "software_coverage", "codegen_plan", "continuous_gates", "materialize_skeletons"],
       "commands": [
         "EXAMPLE_ID=process_control ./examples/software_authoring/run_codegen_examples.sh",
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring competency-questions --axi examples/software_authoring/ProcessControlDomain.axi --cq examples/software_authoring/process_control.cq --out build/examples/software_authoring/process_control_competency_questions.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- authoring workspace --workspace . --request examples/software_authoring/process_control_authoring_workspace_request.json --out build/examples/software_authoring/process_control_authoring_workspace_report.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover define examples/software_authoring/ProcessControlDomain.axi --overlay examples/software_authoring/process_control_tooling_overlay.json --prompt \"define the safe charge window business rule\" --kind-hint business_rule --include-queries",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover coverage-query examples/software_authoring/ProcessControlDomain.axi --overlay examples/software_authoring/process_control_tooling_overlay.json --term \"charge authorization\" --relation BatchClearedForCharge --cq-name batch_cleared_for_charge --surface-hint hmi --max-matches 10 --out build/examples/software_authoring/process_control_coverage_query.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover behavior-case examples/software_authoring/ProcessControlDomain.axi --request examples/software_authoring/process_control_behavior_case.json --cq-file examples/software_authoring/process_control.cq --overlay examples/software_authoring/process_control_tooling_overlay.json --out build/examples/process_control_behavior_case_report.json"
@@ -246,7 +279,8 @@
       "id": "physics-ontology",
       "title": "Scientific ontology and measurement semantics",
       "path": "examples/physics/PhysicsOntology.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["physics", "scientific-ontology", "typed-relations"],
       "flow": ["inspect_scientific_object_and_relation_types", "use_with_measurement_or_predictive_proposal_examples"]
     },
@@ -254,7 +288,8 @@
       "id": "physics-measurements",
       "title": "Physics measurements and typed observation facts",
       "path": "examples/physics/PhysicsMeasurements.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["physics", "measurements", "observations", "typed-facts"],
       "flow": ["inspect_measurement_fact_model", "use_with_runtime_theory_or_predictive_proposal_examples"]
     },
@@ -262,43 +297,48 @@
       "id": "machining-knowledge",
       "title": "Machining knowledge ontology for ingestion and learning examples",
       "path": "examples/machining/MachiningKnowledge.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["machining", "manufacturing", "learning", "evidence"],
       "flow": ["inspect_machining_domain_terms", "use_with_ingestion_and_evidence_overlay_examples"]
     },
     {
-      "id": "physics-knowledge",
-      "title": "Physics knowledge ontology for learning/query examples",
+      "id": "machining-physics-knowledge",
+      "title": "Machining-oriented physics knowledge for learning/query examples",
       "path": "examples/machining/PhysicsKnowledge.axi",
-      "kind": "reference_axi_fixture",
-      "feature_tags": ["physics", "learning", "semantic-query", "typed-relations"],
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
+      "feature_tags": ["machining", "physics", "learning", "semantic-query", "typed-relations"],
       "flow": ["inspect_learning_query_terms", "use_with_llm_or_embedding_evidence_examples"]
     },
     {
       "id": "machinist-learning",
       "title": "Machinist learning ontology with evidence/review examples",
       "path": "examples/learning/MachinistLearning.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["learning", "machining", "evidence", "guardrails"],
       "flow": ["validate_domain_axi", "run_question_first_cq_examples", "use_with_llm_evidence_overlay_example"],
       "related": ["examples/learning/machinist_learning.cq"]
     },
     {
-      "id": "ingest-source-fixtures",
+      "id": "ingest-source-documents",
       "title": "Evidence-plane source text for ingestion flows",
-      "path": "examples/ingest_fixtures",
-      "kind": "source_fixture",
+      "path": "examples/ingest_sources",
+      "surface": "evidence_source_input",
+      "teaching_tier": "evidence_plane",
       "feature_tags": ["ingestion", "evidence-plane", "proposals", "chunks"],
       "flow": ["ingest_source", "emit_proposals", "review_before_promotion"],
       "commands": [
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- ingest doc examples/ingest_fixtures/machining_conversation.txt --out build/examples/ingest/machining_proposals.json --chunks build/examples/ingest/machining_chunks.json"
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- ingest doc examples/ingest_sources/machining_conversation.txt --out build/examples/ingest/machining_proposals.json --chunks build/examples/ingest/machining_chunks.json"
       ]
     },
     {
       "id": "social-network",
       "title": "Compact social graph for relation/path experiments",
       "path": "examples/social/SocialNetwork.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["social", "relations", "paths", "query"],
       "flow": ["inspect_relation_and_path_shapes", "use_with_query_or_repl_examples"]
     },
@@ -306,67 +346,94 @@
       "id": "proto-api-semantics",
       "title": "Proto/API semantics lowered to canonical ontology",
       "path": "examples/proto/ProtoApiSemantics.axi",
-      "kind": "reference_axi_fixture",
+      "surface": "canonical_axi_module",
+      "teaching_tier": "teaching",
       "feature_tags": ["proto", "api", "schema-discovery", "implementation-surface"],
       "flow": ["inspect_api_semantic_lowering", "use_with_schema_discovery_and_authoring_examples"]
+    },
+    {
+      "id": "proto-api-source-inputs",
+      "title": "Proto/API source inputs for evidence-plane schema discovery",
+      "path": "examples/proto/large_api",
+      "surface": "implementation_source_input",
+      "teaching_tier": "evidence_plane",
+      "feature_tags": ["proto", "api", "ingestion", "schema-discovery", "evidence-plane"],
+      "flow": ["ingest_proto_source", "emit_proposals", "draft_review_plane_axi", "validate_before_promotion"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- ingest proto ingest examples/proto/large_api --out build/examples/proto/proto_api_proposals.json"
+      ]
     },
     {
       "id": "schema-discovery-review-candidates",
       "title": "Review-plane schema discovery candidates",
       "path": "examples/schema_discovery",
-      "kind": "evidence_plane_review_candidate",
+      "surface": "review_candidate_bundle",
       "teaching_tier": "evidence_plane",
       "feature_tags": ["schema-discovery", "proposals", "review-plane", "typed-refinement"],
       "flow": ["read_proposals_as_evidence", "draft_candidate_axi", "validate_candidate", "promote_only_after_review"],
       "commands": [
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover draft-module examples/schema_discovery/fixtures/proto_api_proposals.json --module ProtoApi_Proposals --schema ProtoApi --instance Observed --out build/examples/schema_discovery/ProtoApi.proposals.axi",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover draft-module examples/schema_discovery/inputs/proto_api_proposals.json --module ProtoApi_Proposals --schema ProtoApi --instance Observed --out build/examples/schema_discovery/ProtoApi.proposals.axi",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- check validate build/examples/schema_discovery/ProtoApi.proposals.axi"
       ]
     },
     {
       "id": "repl-canonical-workflows",
       "title": "REPL scripts for canonical imports and typed exploration",
-      "path": "examples/repl_scripts",
-      "kind": "repl_workflow",
-      "feature_tags": ["repl", "typed-query", "visualization", "module-export", "synthetic-demarcation"],
-      "flow": ["import_axi", "inspect_schema", "run_typed_queries", "optional_visualization_or_roundtrip"],
+      "path": "examples/repl_scripts/ontology_rewrites_axi_demo.repl",
+      "surface": "repl_canonical_workflow",
+      "teaching_tier": "teaching",
+      "feature_tags": ["repl", "canonical-axi", "typed-query", "visualization", "module-export"],
+      "flow": ["import_canonical_axi", "inspect_schema", "run_typed_queries", "optional_visualization_or_module_export"],
       "commands": [
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- repl --script examples/repl_scripts/ontology_rewrites_axi_demo.repl"
       ]
     },
     {
+      "id": "repl-synthetic-workflows",
+      "title": "Synthetic REPL workflows for generated scenario exploration",
+      "path": "examples/repl_scripts/synthetic",
+      "surface": "repl_synthetic_workflow",
+      "teaching_tier": "projection_or_ops",
+      "feature_tags": ["repl", "synthetic-data", "mutation-preview", "visualization"],
+      "flow": ["generate_synthetic_runtime_state", "explore_typed_queries", "inspect_visualization_outputs"],
+      "commands": [
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- repl --script examples/repl_scripts/synthetic/proto_api_demo.repl"
+      ]
+    },
+    {
       "id": "rdf-shacl-boundary",
-      "title": "RDF and SHACL boundary-layer fixtures",
+      "title": "RDF and SHACL boundary-layer examples",
       "path": "examples/rdfowl",
-      "kind": "projection_interop_fixture",
+      "surface": "rdf_shacl_boundary",
       "teaching_tier": "projection_or_ops",
       "feature_tags": ["rdf", "shacl", "interop", "named-graphs", "contexts", "boundary-layer"],
-      "flow": ["ingest_rdf_boundary_fixture", "draft_candidate_axi", "validate_review_material", "keep_axiograph_as_semantic_authority"],
+      "flow": ["ingest_rdf_boundary_example", "draft_candidate_axi", "validate_review_material", "keep_axiograph_as_semantic_authority"],
       "commands": [
-        "./scripts/rdf_named_graph_context_demo.sh",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- ingest dir examples/rdfowl/w3c_shacl_minimal --out-dir build/examples/rdfowl/w3c_shacl_minimal --domain rdfowl"
       ]
     },
     {
       "id": "backend-projection-contracts",
-      "title": "Native-readable backend projection contract examples",
+      "title": "Typed capability-declared backend projections and readback reports",
       "path": "examples/backend_projection",
-      "kind": "projection_fixture",
-      "feature_tags": ["typedb", "terminusdb", "backend-projection", "native-readability", "trust-caveats"],
-      "flow": ["inspect_projection_plan", "native_read_contract", "mutation_authority_stays_axiograph"],
+      "surface": "derived_projection_manifest_v1",
+      "teaching_tier": "projection_or_ops",
+      "feature_tags": ["pathdb", "typedb", "terminusdb", "rdf-owl", "property-graph", "semantic-loss", "readback", "evidence-plane"],
+      "flow": ["compile_canonical_kernel_ir", "emit_typed_derived_projection", "inspect_semantic_loss", "readback_as_evidence", "mutation_authority_stays_axiograph"],
       "commands": [
-        "cargo test --manifest-path rust/Cargo.toml -p axiograph-cli backend_pushdown"
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- tools projection emit examples/backend_projection/ProjectionDemo.axi --backend typedb --search-root examples/backend_projection --out build/examples/backend_projection/typedb-manifest.json --artifact-out build/examples/backend_projection/typedb.tql"
       ]
     },
     {
       "id": "llm-evidence-overlay",
       "title": "LLM extraction as evidence-overlay and refinement planning",
       "path": "examples/llm_sync",
-      "kind": "evidence_overlay_fixture",
+      "surface": "evidence_overlay_bundle",
+      "teaching_tier": "evidence_plane",
       "feature_tags": ["llm", "embedding-sidecar", "evidence-plane", "definition-query", "refinement-handles", "promotion-boundary"],
-      "flow": ["source_evidence", "weak_definition_query", "embedding_evidence_overlay", "typed_refinement_suggestions", "review_before_promotion"],
+      "flow": ["source_evidence", "advisory_definition_lookup", "embedding_evidence_overlay", "typed_refinement_suggestions", "review_before_promotion"],
       "commands": [
-        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- ingest doc examples/ingest_fixtures/machining_conversation.txt --out build/examples/llm_sync/machining_proposals.json --machining --chunks build/examples/llm_sync/machining_chunks.json --facts build/examples/llm_sync/machining_facts.json",
+        "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- ingest doc examples/ingest_sources/machining_conversation.txt --out build/examples/llm_sync/machining_proposals.json --machining --chunks build/examples/llm_sync/machining_chunks.json --facts build/examples/llm_sync/machining_facts.json",
         "cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- discover define examples/learning/MachinistLearning.axi --prompt \"define the titanium chatter mitigation rule\" --kind-hint business_rule --include-queries"
       ]
     }

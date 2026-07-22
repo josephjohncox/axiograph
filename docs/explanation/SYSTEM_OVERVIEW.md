@@ -51,10 +51,10 @@ execution/evidence/projection surfaces.
 │                    │                                                          │
 │                    ▼                                                          │
 │     ┌───────────────────────────────────────────────────────────────┐         │
-│     │ Compiled semantic IR                                           │         │
-│     │  - KernelModuleIr                                              │         │
-│     │  - SchemaCategoryIr + TheoryIr + InstanceFunctorIr             │         │
-│     │  - KernelSurfaceV1 refs                                        │         │
+│     │ Canonical compiled snapshot                                    │         │
+│     │  - CompiledKernelSnapshot                                      │         │
+│     │  - KernelSnapshotIr + SchemaPresentationIr + InstanceModelIr   │         │
+│     │  - derived RuntimeSemanticIndex citations                      │         │
 │     └──────────────┬────────────────────────────────────────────────┘         │
 │                    │                                                          │
 │                    ├────────► typed runtime reports                           │
@@ -112,43 +112,32 @@ axiograph discover promote-proposals build/manual_proposals.json --out-dir build
 axiograph check validate examples/learning/MachinistLearning.axi
 ```
 
-### 4) Promote reviewed `.axi` through the accepted plane
+### 4) Promote reviewed `.axi` through AxiStore
 
-Promotion is the mutation boundary for accepted knowledge. It parses the
-candidate as canonical `.axi`, writes typed preview/review artifacts such as
-`EvolutionPreviewV1`, and advances semantic VCS history.
+Promotion is the mutation boundary for accepted knowledge. Build a typed
+`PromotionPlan` from the exact reviewed `.axi` bytes and complete gate closure,
+then call `AxiStore::promote` with the current generation. There is no legacy
+`db accept` CLI or filesystem `HEAD`; see `docs/howto/SNAPSHOT_STORE.md`.
 
-```bash
-axiograph db accept promote build/candidates/MachinistLearning.proposals.axi \
-  --dir build/accepted_plane \
-  --message "reviewed: initial machinist learning module"
-```
+### 5) Publish derived PathDB execution state
 
-### 5) Build a derived PathDB execution snapshot
+PathDB is the indexed execution/query substrate. Compile exact accepted `.axi`
+into `KernelSnapshotIr`, construct an explicit `AxpdBuildSpec`, and publish it
+with `AxiStore::publish_axpd`. AxiStore records an immutable SQLite
+image and receipt named by `MaterializationIdV2`.
 
-PathDB is the indexed execution/query substrate. Build it from canonical `.axi`
-or accepted-plane snapshots; do not make it the ontology authority.
+Machine/report query flows should compile `query_ir_v1` into the sole executable
+family, `CompiledFiniteQuery`, and return typed metadata/trust reports. Certified query
+results use envelope V3 / `query_result_v4` witnesses bound to canonical `.axi`
+bytes, prepared queries, and returned answers.
 
-```bash
-axiograph db pathdb materialize-axi examples/machining/PhysicsKnowledge.axi --out build/physics.axpd
-```
+### 6) Verify derived storage
 
-Machine/report query flows should compile to `query_ir_v1`, prepare a
-`PreparedQueryV1`, and return typed metadata/trust reports. Certified query
-results use canonical `.axi`-anchored `query_result_v3` witnesses.
-
-### 6) Storage round-trip checks
-
-For low-level storage checks, PathDB can round-trip through explicit DB debug
-commands:
-
-```bash
-axiograph db pathdb export-axi knowledge.axpd --out build/snapshot_pathdb_export_v1.axi
-axiograph db pathdb import-axi build/snapshot_pathdb_export_v1.axi --out build/knowledge.axpd
-```
-
-Do not use derived snapshots as semantic, query, tutorial, or certificate
-authority. Public semantic flows should load canonical `.axi` modules directly.
+Open durable query state only through
+`AxiStore::open_axpd`/`load_verified_pathdb`. These paths
+recompute schema, limits, anchors, logical digest, exact-image digest, and
+materialization identity before hydration. There is no PathDB-to-`.axi`
+round-trip or alternate binary reader.
 
 ### 7) Rust → Lean certificate verification (e2e)
 
@@ -159,16 +148,16 @@ make verify-semantics
 ## Data Formats
 
 | Format | Meaning |
-|--------|---------|
+| -------- | --------- |
 | `.axi` | Canonical accepted knowledge (schema + content) |
-| `.axpd` | Binary PathDB (derived, indexed, rebuildable) |
+| `.axpd` | Authenticated SQLite PathDB materialization (derived, indexed, rebuildable) |
 | `proposals.json` | Generic Evidence/Proposals output (untrusted) |
 | `chunks.json` | `EvidenceChunkBundleV1` RAG/evidence overlay, not accepted truth |
 | `facts.json` | Optional raw extractor output |
 | `EmbeddingEvidenceOverlayV1` / tooling overlays | Evidence/review attachments, not accepted truth |
 | `EvolutionPreviewV1` and typed reports | Review, trust, coverage, and refinement-handle surfaces |
-| `PreparedQueryV1` metadata | Typed prepared-query/report envelope |
-| `query_result_v3` | Canonical `.axi`-anchored query witness rows |
+| `CompiledFiniteQuery` metadata | Typed compiled-query/report envelope |
+| `query_result_v4` | Canonical `.axi`, prepared-query, ordered-answer-bound witnesses plus exact finite denotation check |
 | `certificate.json` | Rust→Lean proof payloads (versioned) |
 
 ## Key Invariants
@@ -177,5 +166,7 @@ make verify-semantics
 2. **Evidence is explicit**: ingestion outputs are proposals with provenance, not truth.
 3. **Reports are typed**: previews, query metadata, trust contracts, and refinement handles are machine-readable.
 4. **PathDB is derived**: `.axpd` indexes are rebuildable from accepted `.axi`/semantic refs.
-5. **Certified query rows use `query_result_v3`**: Lean is the trusted checker for supported witnesses.
+5. **Certified query rows use only `query_result_v4`**: Lean checks the module,
+   prepared-query, ordered answer, every witness row, and exact equality with
+   the declared bounded finite denotation.
 6. **Overlays stay reviewable**: evidence, embeddings, LLM/proposal-adapter output, and tooling overlays need typed validation before promotion.

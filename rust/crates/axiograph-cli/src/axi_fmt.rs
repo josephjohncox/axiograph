@@ -255,15 +255,19 @@ pub fn cmd_fmt_axi(input: &Path, out: Option<&Path>, write: bool) -> Result<()> 
     if write && out.is_some() {
         return Err(anyhow!("cannot use --write and --out together"));
     }
-    let text = std::fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let rendered = format_axi_surface(&text)?;
     if write {
-        std::fs::write(input, rendered)?;
+        crate::security::write_output_bounded(input, rendered, "CLI output")?;
         println!("formatted {}", input.display());
         return Ok(());
     }
     if let Some(out) = out {
-        std::fs::write(out, rendered)?;
+        crate::security::write_output_bounded(out, rendered, "CLI output")?;
         println!("wrote {}", out.display());
         return Ok(());
     }
@@ -276,15 +280,16 @@ mod tests {
     use super::format_axi_surface;
 
     #[test]
-    fn canonicalizes_relation_annotation_shorthand_into_explicit_roles() {
+    fn preserves_explicit_relation_axis_roles() {
         let input = r#"module Family
 
 schema Fam:
-  relation Parent(child: Person, parent: Person) @context Context @temporal Time
+  relation Parent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
 "#;
         let rendered = format_axi_surface(input).expect("format axi");
-        assert!(rendered
-            .contains("relation Parent(child: Person, parent: Person, ctx: Context, time: Time)"));
+        assert!(rendered.contains(
+            "relation Parent(child: Person @data, parent: Person @data, ctx: Context @context, time: Time @temporal)"
+        ));
     }
 
     #[test]

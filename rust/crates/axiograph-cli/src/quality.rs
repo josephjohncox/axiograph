@@ -1,4 +1,4 @@
-//! Quality checks / linting for `.axi` modules and `.axpd` snapshots.
+//! Quality checks and linting for exact canonical `.axi` modules.
 //!
 //! This is intentionally tooling-first:
 //! - it produces an auditable report,
@@ -13,7 +13,7 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::Path;
 
 use axiograph_pathdb::axi_meta::ATTR_AXI_RELATION;
 use axiograph_pathdb::axi_meta::REL_AXI_FACT_IN_CONTEXT;
@@ -74,8 +74,8 @@ fn node_name(db: &PathDB, id: u32) -> Option<String> {
 }
 
 pub fn cmd_quality(
-    input: &PathBuf,
-    out: Option<&PathBuf>,
+    input: &Path,
+    out: Option<&Path>,
     format: &str,
     profile: &str,
     plane: &str,
@@ -107,7 +107,7 @@ pub fn cmd_quality(
 
     match out {
         Some(path) => {
-            std::fs::write(path, rendered)?;
+            crate::security::write_output_bounded(path, rendered, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => {
@@ -126,7 +126,7 @@ pub fn cmd_quality(
 
 pub fn run_quality_checks(
     db: &PathDB,
-    input: &PathBuf,
+    input: &Path,
     profile: &str,
     plane: &str,
 ) -> Result<QualityReportV1> {
@@ -522,7 +522,7 @@ pub fn run_quality_checks(
                                             findings.push(QualityFindingV1 {
                                                 level: if profile == "strict" { "error".to_string() } else { "warning".to_string() },
                                                 code: "functional_violation".to_string(),
-                                                message: format!("functional violation on {rel_name}.{src_field} -> {rel_name}.{dst_field} (src={} has multiple dsts: {} and {}; tuple={i})", src, prev_dst, dst),
+                                                message: format!("functional violation on {rel_name}.{src_field} -> {rel_name}.{dst_field} (src={src} has multiple dsts: {prev_dst} and {dst}; tuple={i})"),
                                                 schema: Some(schema_name.clone()),
                                                 relation: Some(rel_name.clone()),
                                                 entity_id: None,
@@ -567,7 +567,7 @@ pub fn run_quality_checks(
                                     if missing_param {
                                         continue;
                                     }
-                                    let entry = map.entry(key).or_insert_with(HashSet::new);
+                                    let entry = map.entry(key).or_default();
                                     entry.insert(*dst);
                                     if entry.len() > *max as usize {
                                         let ctx = if param_pairs.is_empty() {

@@ -11,16 +11,16 @@ now, while Lean certification remains a later narrow-fragment strengthening.
 
 The implementation already has the pieces to make semantic merge operational:
 
-- `SchemaCategoryIr`: schemas as finite categories, with object types,
-  relation objects, role projection arrows, and subtype inclusion arrows.
-- `InstanceFunctorIr`: accepted instance data interpreted as a functor from the
-  schema category into finite sets of members, fact ids, and role-value maps.
-- `TheoryIr`: runtime-addressable constraints, equations, rewrite rules, and
-  theory obligations.
+- `SchemaPresentationIr`: the canonical finite category presentation, with
+  object types, relation objects, ordered projections, generators, equations,
+  and formation evidence.
+- `InstanceModelIr`: canonical finite carriers, fact ids, and total generator
+  interpretations without a duplicate runtime functor presentation.
+- `TypedTheoryIr` plus derived runtime theory indexes: addressable constraints,
+  equations, rewrite rules, and theory obligations.
 - `EvolutionPreviewV1`: the shared mutation-review payload for authoring,
   migration, reconciliation, and promotion.
-- `SemCommitV1` / `SemReconciliationV1`: persisted semantic VCS refs,
-  commits, and reconciliation previews.
+- AxiStore semantic commits/reconciliations plus filesystem-free CLI review DTOs.
 - `RuntimeRefinementHandleV1`: typed resolver handles shared by query,
   olog authoring, migration, reconciliation review, and CQ repair.
 
@@ -28,12 +28,11 @@ The next runtime work is to make these objects drive slice selection,
 conservative auto-merge, rebase/transport planning, and MCP-visible resolver
 flows.
 
-Current implementation note: `axiograph sem slice build` resolves the selected
-semantic ref to its accepted snapshot, reads the accepted canonical `.axi`
-modules, compiles them to `KernelModuleIr`, and enriches persisted slice
-manifests with concrete schema/category, theory, and instance-functor refs. Pure
-tool-loop payloads remain report-level unless a caller supplies the compiled IR
-or a stored manifest.
+Current implementation note: pure slice builders can enrich supplied semantic
+commit/ref payloads from `CompiledKernelSnapshot` and `RuntimeModuleIndex` with
+schema/category, theory, and instance-functor citations. The removed `axiograph
+sem` filesystem workflow is not a persistence path; durable review artifacts
+must be immutable AxiStore attachments.
 
 ## Theoretical Contract
 
@@ -81,7 +80,7 @@ outside the shipped verifier boundary until runtime `SemanticMergePlanV1` /
 
 ## Greenfield Policy
 
-Do not preserve superseded merge, export, wrapper, or query compatibility harnesses
+Do not preserve superseded merge, export, wrapper, or query carry-forward surfaces
 unless they protect:
 
 - accepted snapshot anchors,
@@ -111,11 +110,8 @@ Each slice must carry:
 - trust class,
 - non-claims around completeness and certification.
 
-Persistence target:
-
-```text
-sem/slices/<slice-id>.json
-```
+Persistence target: an immutable AxiStore attachment referenced by the
+candidate or semantic commit. There is no `sem/slices/` filesystem.
 
 ### Slice selectors
 
@@ -224,20 +220,11 @@ materialize an incomplete transport.
 No accepted-plane mutation is allowed until resolver steps and CQ/trust gates
 pass.
 
-## CLI And MCP Surfaces
+## Library And MCP Surfaces
 
-CLI targets:
-
-- `axiograph sem merge --dry-run --source <ref> --target <ref> --json`
-  returns a merge dry-run envelope including `SemanticMergePlanV1`.
-- `axiograph sem merge --source <ref> --target <ref>` materializes only when
-  the merge plan is materializable.
-- `axiograph sem rebase --source <ref> --onto <ref> --slice <selector.json>`
-  returns a rebase/transport plan.
-- `axiograph sem slice build|show|diff` persists and inspects `sem/slices/`
-  manifests directly.
-
-MCP/tool-loop targets:
+The removed `axiograph sem` command family is not a compatibility surface.
+Library adapters may build typed plans from AxiStore commits and immutable
+attachments. MCP/tool-loop targets remain read-only:
 
 - `semantic_slice_build`
 - `semantic_slice_show`
@@ -257,15 +244,17 @@ actions come next.
    - Add `SemanticSliceManifestV1`, `SemanticSliceSelectorV1`,
      `SemanticMergeLatticeV1`, `SemanticMergePlanV1`, and
      `SemanticResolverStepsReportV1`.
-   - Build plans from existing `SemMergeDryRunResultV1`.
-   - Persist first-class slice manifests under `sem/slices/`.
-   - Expose `axiograph sem slice build|show|diff`.
+   - Build untrusted plans from `SemanticMergeDryRunV2`; accepted materialization
+  must separately construct AxiStore `SemReconciliationV2`.
+   - Persist first-class slice manifests as immutable AxiStore attachments.
    - Expose pure MCP/tool-loop tools over supplied ref/dry-run payloads.
 
 2. Deepen selectors over kernel IR.
-   - Resolve CLI-built slices against accepted `KernelModuleIr`.
-   - Include explicit `SchemaCategoryIr`, `TheoryIr`, and `InstanceFunctorIr`
-     refs instead of commit-summary refs only.
+   - Resolve CLI-built slices against accepted `CompiledKernelSnapshot` and
+     its derived `RuntimeModuleIndex`.
+   - Include canonical object, generator, theory, instance, and fact
+     `KernelRefV2` citations instead of commit-summary refs or duplicate
+     runtime category/functor handles.
    - Add context/world, CQ, behavior-case, and implementation-surface selectors.
 
 3. Enforce materialization gates.
@@ -277,7 +266,7 @@ actions come next.
      than trusting `can_materialize` alone.
    - Return explicit `SemanticRebasePlanV1` transport results with
      `transported_refs` and `failed_transports`.
-   - Persist failed plans under `sem/validations/`.
+   - Persist failed plans as immutable AxiStore review attachments.
 
 4. Add resolver application loops.
    - Reuse `RuntimeRefinementHandleV1`.

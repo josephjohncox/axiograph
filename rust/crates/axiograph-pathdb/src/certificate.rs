@@ -4,11 +4,15 @@
 //! by a trusted checker (Lean during migration).
 
 use crate::migration::DeltaFMigrationProofV1;
-use crate::AxiDigest;
+use crate::{AnswerIdV2, AxiDigest, CertificateIdV2, QueryIdV2, RevisionDigestV2};
 use axiograph_dsl::schema_v1::PathExprV3 as AxiPathExprV3;
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 pub const CERTIFICATE_VERSION_V2: u32 = 2;
+pub const CERTIFICATE_VERSION_V3: u32 = 3;
+pub const PREPARED_QUERY_BINDING_VERSION_V1: u32 = 1;
 
 /// Fixed-point denominator shared with the Lean checker (`Axiograph.Prob.Precision`).
 pub const FIXED_POINT_DENOMINATOR: u32 = 1_000_000;
@@ -48,8 +52,7 @@ impl<'de> Deserialize<'de> for FixedPointProbability {
         let numerator = u32::deserialize(deserializer)?;
         FixedPointProbability::try_new(numerator).ok_or_else(|| {
             serde::de::Error::custom(format!(
-                "FixedProb numerator must be ≤ {}",
-                FIXED_POINT_DENOMINATOR
+                "FixedProb numerator must be ≤ {FIXED_POINT_DENOMINATOR}"
             ))
         })
     }
@@ -90,7 +93,7 @@ impl FixedPointProbability {
             return Self { numerator: 0 };
         }
 
-        // Clamp infinities; treat NaNs as 0 (should never appear in PathDB exports).
+        // Clamp infinities; treat NaNs as 0 (should never appear in checked facts).
         if exp == 255 {
             return if frac == 0 {
                 Self {
@@ -132,6 +135,7 @@ impl FixedPointProbability {
     }
 
     /// Fixed-point multiplication with rounding down.
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(self, other: Self) -> Self {
         let scaled =
             ((self.numerator as u64) * (other.numerator as u64)) / (FIXED_POINT_DENOMINATOR as u64);
@@ -186,17 +190,17 @@ impl<'de> Deserialize<'de> for CertificateV2 {
 ///
 /// This is intentionally minimal at first: a stable module digest.
 ///
-/// Digest format (shared with Lean `Axiograph.Util.Fnv1a`):
-/// - `axi_digest_v1 = "fnv1a64:<16 lowercase hex digits>"`
+/// Revision identity format (shared with Lean `Axiograph.Identity`):
+/// - `revision_digest_v2 = "axi:revision:v2:sha256:<64 lowercase hex digits>"`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AxiAnchorV1 {
-    pub axi_digest_v1: AxiDigest,
+    pub revision_digest_v2: AxiDigest,
 }
 
 impl AxiAnchorV1 {
-    pub fn new(axi_digest_v1: impl Into<AxiDigest>) -> Self {
+    pub fn new(revision_digest_v2: impl Into<AxiDigest>) -> Self {
         Self {
-            axi_digest_v1: axi_digest_v1.into(),
+            revision_digest_v2: revision_digest_v2.into(),
         }
     }
 }
@@ -230,7 +234,7 @@ pub struct AxiWellTypedProofV1 {
 /// - `constraint at_most N Rel.field -> Rel.field [param (...)]`
 /// - `constraint symmetric Rel`
 /// - `constraint symmetric Rel where Rel.field in {A, B, ...}`
-/// - `constraint transitive Rel` (closure-compatibility for keys/functionals on carrier fields)
+/// - `constraint transitive Rel` (certified transitive-closure checks for keys/functionals on carrier fields)
 /// - `constraint typing Rel: rule_name` (small builtin rule set; see docs)
 ///
 /// We intentionally do **not** certify global entailment/inference or full
@@ -250,6 +254,7 @@ pub struct AxiConstraintsOkProofV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum CertificatePayloadV2 {
     #[serde(rename = "axi_well_typed_v1")]
     AxiWellTypedV1 {
@@ -277,10 +282,6 @@ pub enum CertificatePayloadV2 {
     },
     PathEquivV2 {
         proof: PathEquivProofV2,
-    },
-    #[serde(rename = "query_result_v3")]
-    QueryResultV3 {
-        proof: QueryResultProofV3,
     },
     #[serde(rename = "delta_f_v1")]
     DeltaFMigrationV1 {
@@ -353,14 +354,6 @@ impl CertificateV2 {
         }
     }
 
-    pub fn query_result_v3(proof: QueryResultProofV3) -> Self {
-        Self {
-            version: CERTIFICATE_VERSION_V2,
-            anchor: None,
-            payload: CertificatePayloadV2::QueryResultV3 { proof },
-        }
-    }
-
     pub fn delta_f_v1(proof: DeltaFMigrationProofV1) -> Self {
         Self {
             version: CERTIFICATE_VERSION_V2,
@@ -424,7 +417,7 @@ fn decide_resolution_v2(
 ) -> ResolutionDecisionV2 {
     let n1 = first_confidence_fp.numerator();
     let n2 = second_confidence_fp.numerator();
-    let gap = if n1 >= n2 { n1 - n2 } else { n2 - n1 };
+    let gap = n1.abs_diff(n2);
     let thresh = threshold_fp.numerator();
 
     if gap >= thresh {
@@ -940,13 +933,13 @@ pub struct PathEquivProofV2 {
 }
 
 // =============================================================================
-// Typed query witnesses (v3): `.axi`-anchored, name-based
+// Exact finite query witnesses (v4): `.axi`-anchored, name-based
 // =============================================================================
 
-/// Typed query term (v3): name-based (canonical `.axi` anchoring).
+/// Exact finite query term (v4), name-based under canonical `.axi` anchoring.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum QueryTermV3 {
+pub enum FiniteQueryTermV4 {
     Var {
         name: String,
     },
@@ -954,59 +947,164 @@ pub enum QueryTermV3 {
     ///
     /// For `.axi`-anchored certificates we treat entity IDs as:
     /// - object element names (e.g. `"Alice"`), or
-    /// - tuple fact ids (`"factfnv1a64:..."`) when referring to fact nodes.
+    /// - typed fact ids (`"axi:fact:v2:sha256:..."`) when referring to fact nodes.
     Const {
         entity: String,
     },
 }
 
-/// Regular-path query (RPQ) expression over relation labels (v3).
+/// Finite regular-path expression over canonical relation labels (v4).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum QueryRegexV3 {
+pub enum FiniteQueryRegexV4 {
     Epsilon,
     Rel { rel: String },
-    Seq { parts: Vec<QueryRegexV3> },
-    Alt { parts: Vec<QueryRegexV3> },
-    Star { inner: Box<QueryRegexV3> },
-    Plus { inner: Box<QueryRegexV3> },
-    Opt { inner: Box<QueryRegexV3> },
+    Seq { parts: Vec<FiniteQueryRegexV4> },
+    Alt { parts: Vec<FiniteQueryRegexV4> },
+    Star { inner: Box<FiniteQueryRegexV4> },
+    Plus { inner: Box<FiniteQueryRegexV4> },
+    Opt { inner: Box<FiniteQueryRegexV4> },
 }
 
-/// Query atom in the typed certified query IR (v3).
+/// Query atom in the exact finite certified query IR (v4).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum QueryAtomV3 {
+pub enum FiniteQueryAtomV4 {
     Type {
-        term: QueryTermV3,
+        term: FiniteQueryTermV4,
         type_name: String,
     },
     AttrEq {
-        term: QueryTermV3,
+        term: FiniteQueryTermV4,
         key: String,
         value: String,
     },
     Path {
-        left: QueryTermV3,
-        regex: QueryRegexV3,
-        right: QueryTermV3,
+        left: FiniteQueryTermV4,
+        regex: FiniteQueryRegexV4,
+        right: FiniteQueryTermV4,
     },
 }
 
-/// Typed certified query IR (v3): union-of-conjunctive queries (UCQ).
+/// Exact finite certified query IR (v4): a bounded UCQ/RPQ.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryV3 {
+pub struct FiniteQueryV4 {
     pub select_vars: Vec<String>,
-    pub disjuncts: Vec<Vec<QueryAtomV3>>,
+    pub disjuncts: Vec<Vec<FiniteQueryAtomV4>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_hops: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_confidence_fp: Option<FixedPointProbability>,
 }
 
-/// A single variable binding in a typed query-witness row (v3).
+pub const FINITE_QUERY_MAX_DISJUNCTS: usize = 16;
+pub const FINITE_QUERY_MAX_ATOMS_PER_DISJUNCT: usize = 64;
+pub const FINITE_QUERY_MAX_REGEX_NODES: usize = 128;
+pub const FINITE_QUERY_MAX_HOPS: u32 = 32;
+pub const FINITE_QUERY_MAX_ASSIGNMENTS: usize = 1_000_000;
+
+fn collect_term_vars(term: &FiniteQueryTermV4, vars: &mut BTreeSet<String>) {
+    if let FiniteQueryTermV4::Var { name } = term {
+        vars.insert(name.clone());
+    }
+}
+
+fn regex_profile(regex: &FiniteQueryRegexV4) -> (usize, bool) {
+    match regex {
+        FiniteQueryRegexV4::Epsilon | FiniteQueryRegexV4::Rel { .. } => (1, false),
+        FiniteQueryRegexV4::Seq { parts } | FiniteQueryRegexV4::Alt { parts } => {
+            parts.iter().fold((1, false), |(nodes, repeated), part| {
+                let (part_nodes, part_repeated) = regex_profile(part);
+                (nodes.saturating_add(part_nodes), repeated || part_repeated)
+            })
+        }
+        FiniteQueryRegexV4::Star { inner } | FiniteQueryRegexV4::Plus { inner } => {
+            let (nodes, _) = regex_profile(inner);
+            (nodes.saturating_add(1), true)
+        }
+        FiniteQueryRegexV4::Opt { inner } => {
+            let (nodes, repeated) = regex_profile(inner);
+            (nodes.saturating_add(1), repeated)
+        }
+    }
+}
+
+/// Validate the exact finite fragment shared by Rust and Lean.
+///
+/// The fragment is a finite union of conjunctions over type, canonical derived
+/// attribute equality, and regular-path atoms. Repetition (`*`/`+`) requires an
+/// explicit hop bound. The checker also caps syntax, hops, and the Cartesian
+/// assignment universe so certificate checking is total and operationally
+/// bounded. These bounds are query-checker scope, not ontology-closure claims.
+pub fn validate_finite_exact_fragment(
+    binding: &PreparedQueryBindingV1,
+    entity_count: usize,
+) -> Result<(), String> {
+    if binding.query.disjuncts.is_empty()
+        || binding.query.disjuncts.len() > FINITE_QUERY_MAX_DISJUNCTS
+    {
+        return Err(format!(
+            "finite exact query requires 1..={FINITE_QUERY_MAX_DISJUNCTS} disjuncts"
+        ));
+    }
+    if binding
+        .query
+        .max_hops
+        .is_some_and(|hops| hops > FINITE_QUERY_MAX_HOPS)
+    {
+        return Err(format!(
+            "finite exact query max_hops exceeds {FINITE_QUERY_MAX_HOPS}"
+        ));
+    }
+
+    let mut total_assignments = 0usize;
+    for disjunct in &binding.query.disjuncts {
+        if disjunct.len() > FINITE_QUERY_MAX_ATOMS_PER_DISJUNCT {
+            return Err(format!(
+                "finite exact query disjunct exceeds {FINITE_QUERY_MAX_ATOMS_PER_DISJUNCT} atoms"
+            ));
+        }
+        let mut vars = BTreeSet::new();
+        for atom in disjunct {
+            match atom {
+                FiniteQueryAtomV4::Type { term, .. } | FiniteQueryAtomV4::AttrEq { term, .. } => {
+                    collect_term_vars(term, &mut vars);
+                }
+                FiniteQueryAtomV4::Path { left, regex, right } => {
+                    collect_term_vars(left, &mut vars);
+                    collect_term_vars(right, &mut vars);
+                    let (nodes, repeated) = regex_profile(regex);
+                    if nodes > FINITE_QUERY_MAX_REGEX_NODES {
+                        return Err(format!(
+                            "finite exact query regex exceeds {FINITE_QUERY_MAX_REGEX_NODES} nodes"
+                        ));
+                    }
+                    if repeated && binding.query.max_hops.is_none() {
+                        return Err(
+                            "finite exact query repetition requires explicit max_hops".to_string()
+                        );
+                    }
+                }
+            }
+        }
+        let assignments = entity_count
+            .checked_pow(vars.len() as u32)
+            .ok_or_else(|| "finite exact query assignment universe overflows usize".to_string())?;
+        total_assignments = total_assignments
+            .checked_add(assignments)
+            .ok_or_else(|| "finite exact query assignment universe overflows usize".to_string())?;
+        if total_assignments > FINITE_QUERY_MAX_ASSIGNMENTS {
+            return Err(format!(
+                "finite exact query assignment universe exceeds {FINITE_QUERY_MAX_ASSIGNMENTS}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A single variable binding in an exact finite query-witness row (v4).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryBindingV3 {
+pub struct FiniteQueryBindingV4 {
     pub var: String,
     pub entity: String,
 }
@@ -1031,10 +1129,10 @@ pub enum ReachabilityProofV3 {
     },
 }
 
-/// Witness for a single typed query atom under a given binding (v3).
+/// Witness for one exact finite query atom under a full binding (v4).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum QueryAtomWitnessV3 {
+pub enum FiniteQueryAtomWitnessV4 {
     Type {
         entity: String,
         type_name: String,
@@ -1049,57 +1147,624 @@ pub enum QueryAtomWitnessV3 {
     },
 }
 
-/// One typed query-witness row for a disjunctive query (v3).
+/// One full-binding witness row for a finite disjunctive query (v4).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryRowV3 {
+pub struct FiniteQueryRowV4 {
     pub disjunct: u32,
-    pub bindings: Vec<QueryBindingV3>,
-    pub witnesses: Vec<QueryAtomWitnessV3>,
+    pub bindings: Vec<FiniteQueryBindingV4>,
+    pub witnesses: Vec<FiniteQueryAtomWitnessV4>,
 }
 
-/// Typed query witness set (v3).
+// =============================================================================
+// Query-result v4: cryptographic binding plus exact finite completeness
+// =============================================================================
+
+/// The only certifiable claim: exact answer completeness for the explicitly
+/// bounded finite query denotation checked by Lean. It says nothing about
+/// open-world ontology closure, omitted evidence, approximate operators, or
+/// queries rejected by `validate_finite_exact_fragment`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedQueryClaimKindV1 {
+    FiniteExactComplete,
+}
+
+/// Lean-checkable binding constructed from the prepared lowered query AST.
+///
+/// Raw source, plans, inferred types, runtime kernel references, rows, and the
+/// runtime truncation observation are deliberately absent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QueryResultProofV3 {
-    pub query: QueryV3,
-    pub rows: Vec<QueryRowV3>,
-    pub truncated: bool,
-    /// Optional rewrite-derivation witnesses for query elaboration.
-    ///
-    /// These are intended to justify semantics-preserving path canonicalization
-    /// steps (e.g. `.axi` rewrite rules applied during elaboration).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub elaboration_rewrites: Vec<RewriteDerivationProofV3>,
+#[serde(deny_unknown_fields)]
+pub struct PreparedQueryBindingV1 {
+    pub version: u32,
+    pub query: FiniteQueryV4,
+    pub row_limit: u64,
+    pub claim_kind: PreparedQueryClaimKindV1,
+}
+
+/// Ordered selected projection for one returned certificate row. The order of
+/// `projections` is exactly `binding.query.select_vars`; row order is retained.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StableSelectedRowV1 {
+    pub projections: Vec<FiniteQueryBindingV4>,
+}
+
+fn push_text_field(fields: &mut Vec<Vec<u8>>, value: &str) {
+    fields.push(value.as_bytes().to_vec());
+}
+
+fn push_term_fields_v1(fields: &mut Vec<Vec<u8>>, term: &FiniteQueryTermV4) {
+    match term {
+        FiniteQueryTermV4::Var { name } => {
+            push_text_field(fields, "term_var");
+            push_text_field(fields, name);
+        }
+        FiniteQueryTermV4::Const { entity } => {
+            push_text_field(fields, "term_const");
+            push_text_field(fields, entity);
+        }
+    }
+}
+
+fn push_regex_fields_v1(fields: &mut Vec<Vec<u8>>, regex: &FiniteQueryRegexV4) {
+    match regex {
+        FiniteQueryRegexV4::Epsilon => push_text_field(fields, "regex_epsilon"),
+        FiniteQueryRegexV4::Rel { rel } => {
+            push_text_field(fields, "regex_rel");
+            push_text_field(fields, rel);
+        }
+        FiniteQueryRegexV4::Seq { parts } => {
+            push_text_field(fields, "regex_seq");
+            push_text_field(fields, &parts.len().to_string());
+            for part in parts {
+                push_regex_fields_v1(fields, part);
+            }
+        }
+        FiniteQueryRegexV4::Alt { parts } => {
+            push_text_field(fields, "regex_alt");
+            push_text_field(fields, &parts.len().to_string());
+            for part in parts {
+                push_regex_fields_v1(fields, part);
+            }
+        }
+        FiniteQueryRegexV4::Star { inner } => {
+            push_text_field(fields, "regex_star");
+            push_regex_fields_v1(fields, inner);
+        }
+        FiniteQueryRegexV4::Plus { inner } => {
+            push_text_field(fields, "regex_plus");
+            push_regex_fields_v1(fields, inner);
+        }
+        FiniteQueryRegexV4::Opt { inner } => {
+            push_text_field(fields, "regex_opt");
+            push_regex_fields_v1(fields, inner);
+        }
+    }
+}
+
+fn push_atom_fields_v1(fields: &mut Vec<Vec<u8>>, atom: &FiniteQueryAtomV4) {
+    match atom {
+        FiniteQueryAtomV4::Type { term, type_name } => {
+            push_text_field(fields, "atom_type");
+            push_term_fields_v1(fields, term);
+            push_text_field(fields, type_name);
+        }
+        FiniteQueryAtomV4::AttrEq { term, key, value } => {
+            push_text_field(fields, "atom_attr_eq");
+            push_term_fields_v1(fields, term);
+            push_text_field(fields, key);
+            push_text_field(fields, value);
+        }
+        FiniteQueryAtomV4::Path { left, regex, right } => {
+            push_text_field(fields, "atom_path");
+            push_term_fields_v1(fields, left);
+            push_regex_fields_v1(fields, regex);
+            push_term_fields_v1(fields, right);
+        }
+    }
+}
+
+impl PreparedQueryBindingV1 {
+    pub fn new(query: FiniteQueryV4, row_limit: u64) -> Self {
+        Self {
+            version: PREPARED_QUERY_BINDING_VERSION_V1,
+            query,
+            row_limit,
+            claim_kind: PreparedQueryClaimKindV1::FiniteExactComplete,
+        }
+    }
+
+    /// Canonical ordered fields fed to the shared V2 identity framing.
+    pub fn canonical_digest_fields_v1(&self) -> Result<Vec<Vec<u8>>, String> {
+        if self.version != PREPARED_QUERY_BINDING_VERSION_V1 {
+            return Err(format!(
+                "unsupported prepared query binding version {}, expected {}",
+                self.version, PREPARED_QUERY_BINDING_VERSION_V1
+            ));
+        }
+        if self.claim_kind != PreparedQueryClaimKindV1::FiniteExactComplete {
+            return Err("unsupported prepared query claim kind".to_string());
+        }
+
+        let mut fields = Vec::new();
+        push_text_field(&mut fields, "prepared_query_binding_v1");
+        push_text_field(&mut fields, "1");
+        push_text_field(&mut fields, "finite_exact_complete");
+        push_text_field(&mut fields, "select_count");
+        push_text_field(&mut fields, &self.query.select_vars.len().to_string());
+        for selected in &self.query.select_vars {
+            push_text_field(&mut fields, "select");
+            push_text_field(&mut fields, selected);
+        }
+        push_text_field(&mut fields, "disjunct_count");
+        push_text_field(&mut fields, &self.query.disjuncts.len().to_string());
+        for (index, disjunct) in self.query.disjuncts.iter().enumerate() {
+            push_text_field(&mut fields, "disjunct");
+            push_text_field(&mut fields, &index.to_string());
+            push_text_field(&mut fields, &disjunct.len().to_string());
+            for atom in disjunct {
+                push_atom_fields_v1(&mut fields, atom);
+            }
+        }
+        match self.query.max_hops {
+            Some(max_hops) => {
+                push_text_field(&mut fields, "max_hops_some");
+                push_text_field(&mut fields, &max_hops.to_string());
+            }
+            None => push_text_field(&mut fields, "max_hops_none"),
+        }
+        match self.query.min_confidence_fp {
+            Some(min_confidence) => {
+                push_text_field(&mut fields, "min_confidence_some");
+                push_text_field(&mut fields, &min_confidence.numerator().to_string());
+            }
+            None => push_text_field(&mut fields, "min_confidence_none"),
+        }
+        push_text_field(&mut fields, "row_limit");
+        push_text_field(&mut fields, &self.row_limit.to_string());
+        Ok(fields)
+    }
+
+    pub fn digest_v1(&self) -> Result<QueryIdV2, String> {
+        let fields = self.canonical_digest_fields_v1()?;
+        let refs = fields.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        Ok(QueryIdV2::from_canonical_fields(&refs))
+    }
+}
+
+/// Query-result v4. It is valid only inside a certificate envelope V3.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct QueryResultProofV4 {
+    pub binding: PreparedQueryBindingV1,
+    pub prepared_query_digest_v1: QueryIdV2,
+    pub rows: Vec<FiniteQueryRowV4>,
+    pub runtime_truncated: bool,
+    pub answer_digest_v1: AnswerIdV2,
+}
+
+impl QueryResultProofV4 {
+    pub fn selected_rows_v1(&self) -> Result<Vec<StableSelectedRowV1>, String> {
+        selected_rows_v1(&self.binding, &self.rows)
+    }
+
+    pub fn recompute_answer_digest_v1(&self) -> Result<AnswerIdV2, String> {
+        answer_digest_v1(
+            &self.binding,
+            &self.prepared_query_digest_v1,
+            &self.rows,
+            self.runtime_truncated,
+        )
+    }
+
+    pub fn validate_internal_digests(&self) -> Result<(), String> {
+        if self.runtime_truncated {
+            return Err(
+                "finite exact query certificate cannot claim a truncated runtime answer"
+                    .to_string(),
+            );
+        }
+        let prepared = self.binding.digest_v1()?;
+        if prepared != self.prepared_query_digest_v1 {
+            return Err("prepared-query digest does not match embedded binding".to_string());
+        }
+        if u64::try_from(self.rows.len()).unwrap_or(u64::MAX) > self.binding.row_limit {
+            return Err(format!(
+                "certificate row count {} exceeds row_limit {}",
+                self.rows.len(),
+                self.binding.row_limit
+            ));
+        }
+        let answer = self.recompute_answer_digest_v1()?;
+        if answer != self.answer_digest_v1 {
+            return Err("answer digest does not match certificate rows".to_string());
+        }
+        Ok(())
+    }
+}
+
+pub fn selected_rows_v1(
+    binding: &PreparedQueryBindingV1,
+    rows: &[FiniteQueryRowV4],
+) -> Result<Vec<StableSelectedRowV1>, String> {
+    rows.iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let mut projections = Vec::with_capacity(binding.query.select_vars.len());
+            for selected in &binding.query.select_vars {
+                let mut matches = row.bindings.iter().filter(|item| item.var == *selected);
+                let Some(found) = matches.next() else {
+                    return Err(format!(
+                        "row {row_index} is missing selected variable `{selected}`"
+                    ));
+                };
+                if matches.next().is_some() {
+                    return Err(format!(
+                        "row {row_index} has duplicate selected variable `{selected}`"
+                    ));
+                }
+                projections.push(found.clone());
+            }
+            Ok(StableSelectedRowV1 { projections })
+        })
+        .collect()
+}
+
+pub fn answer_digest_v1(
+    binding: &PreparedQueryBindingV1,
+    prepared_query_digest: &QueryIdV2,
+    rows: &[FiniteQueryRowV4],
+    runtime_truncated: bool,
+) -> Result<AnswerIdV2, String> {
+    let selected_rows = selected_rows_v1(binding, rows)?;
+    let mut fields = Vec::new();
+    push_text_field(&mut fields, "query_answer_v1");
+    push_text_field(&mut fields, prepared_query_digest.as_str());
+    push_text_field(&mut fields, "select_count");
+    push_text_field(&mut fields, &binding.query.select_vars.len().to_string());
+    for selected in &binding.query.select_vars {
+        push_text_field(&mut fields, selected);
+    }
+    push_text_field(&mut fields, "row_count");
+    push_text_field(&mut fields, &selected_rows.len().to_string());
+    for (row_index, row) in selected_rows.iter().enumerate() {
+        push_text_field(&mut fields, "row");
+        push_text_field(&mut fields, &row_index.to_string());
+        for projection in &row.projections {
+            push_text_field(&mut fields, &projection.var);
+            push_text_field(&mut fields, &projection.entity);
+        }
+    }
+    push_text_field(
+        &mut fields,
+        if runtime_truncated {
+            "runtime_truncated_true"
+        } else {
+            "runtime_truncated_false"
+        },
+    );
+    let refs = fields.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    Ok(AnswerIdV2::from_canonical_fields(&refs))
+}
+
+/// Exact accepted-byte revision anchor for certificate envelope V3.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CertificateAnchorV2 {
+    pub revision_digest_v2: RevisionDigestV2,
+}
+
+impl CertificateAnchorV2 {
+    pub fn new(revision_digest_v2: RevisionDigestV2) -> Self {
+        Self { revision_digest_v2 }
+    }
+}
+
+/// Strict V3 envelope. V2 certificates remain represented by `CertificateV2`;
+/// no V2 payload can be reinterpreted as this stronger family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertificateV3 {
+    pub version: u32,
+    pub anchor: CertificateAnchorV2,
+    pub proof: QueryResultProofV4,
+}
+
+impl CertificateV3 {
+    pub fn query_result_v4(
+        anchor: CertificateAnchorV2,
+        proof: QueryResultProofV4,
+    ) -> Result<Self, String> {
+        proof.validate_internal_digests()?;
+        Ok(Self {
+            version: CERTIFICATE_VERSION_V3,
+            anchor,
+            proof,
+        })
+    }
+
+    pub const fn kind(&self) -> &'static str {
+        "query_result_v4"
+    }
+}
+
+impl Serialize for CertificateV3 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("CertificateV3", 4)?;
+        state.serialize_field("version", &self.version)?;
+        state.serialize_field("kind", self.kind())?;
+        state.serialize_field("anchor", &self.anchor)?;
+        state.serialize_field("proof", &self.proof)?;
+        state.end()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CertificateV3Wire {
+    version: u32,
+    kind: String,
+    anchor: CertificateAnchorV2,
+    proof: QueryResultProofV4,
+}
+
+impl<'de> Deserialize<'de> for CertificateV3 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = CertificateV3Wire::deserialize(deserializer)?;
+        if wire.version != CERTIFICATE_VERSION_V3 {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported CertificateV3 version {}, expected {}",
+                wire.version, CERTIFICATE_VERSION_V3
+            )));
+        }
+        if wire.kind != "query_result_v4" {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported CertificateV3 kind `{}`",
+                wire.kind
+            )));
+        }
+        wire.proof
+            .validate_internal_digests()
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            version: wire.version,
+            anchor: wire.anchor,
+            proof: wire.proof,
+        })
+    }
+}
+
+pub fn certificate_digest_v2(canonical_certificate_bytes: &[u8]) -> CertificateIdV2 {
+    CertificateIdV2::from_canonical_fields(&[canonical_certificate_bytes])
 }
 
 /// Runtime-facing alias for the canonical `.axi`-anchored query witness path.
+#[cfg(test)]
+mod query_result_v4_tests {
+    use super::*;
+
+    fn golden_binding() -> PreparedQueryBindingV1 {
+        PreparedQueryBindingV1::new(
+            FiniteQueryV4 {
+                select_vars: vec!["?x".to_string()],
+                disjuncts: vec![vec![
+                    FiniteQueryAtomV4::Type {
+                        term: FiniteQueryTermV4::Var {
+                            name: "?x".to_string(),
+                        },
+                        type_name: "Node".to_string(),
+                    },
+                    FiniteQueryAtomV4::Path {
+                        left: FiniteQueryTermV4::Var {
+                            name: "?x".to_string(),
+                        },
+                        regex: FiniteQueryRegexV4::Seq {
+                            parts: vec![
+                                FiniteQueryRegexV4::Rel {
+                                    rel: "parent".to_string(),
+                                },
+                                FiniteQueryRegexV4::Opt {
+                                    inner: Box::new(FiniteQueryRegexV4::Rel {
+                                        rel: "friend".to_string(),
+                                    }),
+                                },
+                            ],
+                        },
+                        right: FiniteQueryTermV4::Const {
+                            entity: "Bob".to_string(),
+                        },
+                    },
+                ]],
+                max_hops: Some(3),
+                min_confidence_fp: Some(FixedPointProbability::try_new(500_000).unwrap()),
+            },
+            2,
+        )
+    }
+
+    fn row(entity: &str) -> FiniteQueryRowV4 {
+        FiniteQueryRowV4 {
+            disjunct: 0,
+            bindings: vec![FiniteQueryBindingV4 {
+                var: "?x".to_string(),
+                entity: entity.to_string(),
+            }],
+            witnesses: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn prepared_and_answer_digest_goldens_are_stable() {
+        let binding = golden_binding();
+        let prepared = binding.digest_v1().unwrap();
+        assert_eq!(
+            prepared.as_str(),
+            "axi:query:v2:sha256:966c31b16f91364c60c8c82f1d07645692ed72d440672a537efe2a5d7e621049"
+        );
+        let answer =
+            answer_digest_v1(&binding, &prepared, &[row("Alice"), row("Bob")], false).unwrap();
+        assert_eq!(
+            answer.as_str(),
+            "axi:answer:v2:sha256:f09ea571aa69cfca1701d37f321b6aab576791c0bda42b6acc21e9e017e07d8c"
+        );
+    }
+
+    #[test]
+    fn prepared_digest_binds_order_structure_bounds_and_limit() {
+        let binding = golden_binding();
+        let original = binding.digest_v1().unwrap();
+        let mut mutations = Vec::new();
+
+        let mut atom_order = binding.clone();
+        atom_order.query.disjuncts[0].swap(0, 1);
+        mutations.push(atom_order);
+
+        let mut relation = binding.clone();
+        let FiniteQueryAtomV4::Path { regex, .. } = &mut relation.query.disjuncts[0][1] else {
+            unreachable!()
+        };
+        *regex = FiniteQueryRegexV4::Rel {
+            rel: "different".to_string(),
+        };
+        mutations.push(relation);
+
+        let mut disjunct_order = binding.clone();
+        disjunct_order.query.disjuncts.push(Vec::new());
+        disjunct_order.query.disjuncts.swap(0, 1);
+        mutations.push(disjunct_order);
+
+        let mut max_hops = binding.clone();
+        max_hops.query.max_hops = Some(4);
+        mutations.push(max_hops);
+
+        let mut confidence = binding.clone();
+        confidence.query.min_confidence_fp = Some(FixedPointProbability::try_new(500_001).unwrap());
+        mutations.push(confidence);
+
+        let mut limit = binding.clone();
+        limit.row_limit = 1;
+        mutations.push(limit);
+
+        for mutation in mutations {
+            assert_ne!(mutation.digest_v1().unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn answer_digest_rejects_tamper_reorder_drop_duplicate_and_truncation() {
+        let binding = golden_binding();
+        let prepared = binding.digest_v1().unwrap();
+        let rows = vec![row("Alice"), row("Bob")];
+        let original = answer_digest_v1(&binding, &prepared, &rows, false).unwrap();
+
+        let mut tampered = rows.clone();
+        tampered[0].bindings[0].entity = "Mallory".to_string();
+        assert_ne!(
+            answer_digest_v1(&binding, &prepared, &tampered, false).unwrap(),
+            original
+        );
+
+        let mut reordered = rows.clone();
+        reordered.swap(0, 1);
+        assert_ne!(
+            answer_digest_v1(&binding, &prepared, &reordered, false).unwrap(),
+            original
+        );
+        assert_ne!(
+            answer_digest_v1(&binding, &prepared, &rows[..1], false).unwrap(),
+            original
+        );
+        assert_ne!(
+            answer_digest_v1(
+                &binding,
+                &prepared,
+                &[rows[0].clone(), rows[0].clone()],
+                false
+            )
+            .unwrap(),
+            original
+        );
+        assert_ne!(
+            answer_digest_v1(&binding, &prepared, &rows, true).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn finite_exact_fragment_rejects_unbounded_repetition() {
+        let mut binding = golden_binding();
+        let FiniteQueryAtomV4::Path { regex, .. } = &mut binding.query.disjuncts[0][1] else {
+            unreachable!()
+        };
+        *regex = FiniteQueryRegexV4::Star {
+            inner: Box::new(FiniteQueryRegexV4::Rel {
+                rel: "parent".to_string(),
+            }),
+        };
+        binding.query.max_hops = None;
+        let error = validate_finite_exact_fragment(&binding, 2)
+            .expect_err("unbounded repetition must remain outside the exact finite fragment");
+        assert!(error.contains("requires explicit max_hops"));
+    }
+
+    #[test]
+    fn certificate_v3_rejects_unknown_fields_and_internal_digest_mutation() {
+        let binding = golden_binding();
+        let prepared = binding.digest_v1().unwrap();
+        let rows = vec![row("Alice"), row("Bob")];
+        let answer = answer_digest_v1(&binding, &prepared, &rows, false).unwrap();
+        let proof = QueryResultProofV4 {
+            binding,
+            prepared_query_digest_v1: prepared,
+            rows,
+            runtime_truncated: false,
+            answer_digest_v1: answer,
+        };
+        let cert = CertificateV3::query_result_v4(
+            CertificateAnchorV2::new(RevisionDigestV2::from_accepted_text("module M\n")),
+            proof,
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(&cert).unwrap();
+        value["unknown_upgrade"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<CertificateV3>(value).is_err());
+
+        let mut value = serde_json::to_value(&cert).unwrap();
+        value["proof"]["runtime_truncated"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<CertificateV3>(value).is_err());
+    }
+}
+
 #[cfg(test)]
 mod normalize_path_v2_tests {
     use super::*;
     use serde_json::json;
 
     #[test]
-    fn axi_anchor_v1_round_trips_typed_digest_with_stable_wire_shape() {
-        let anchor = AxiAnchorV1::new("fnv1a64:0123456789abcdef");
+    fn axi_anchor_round_trips_revision_digest_with_stable_wire_shape() {
+        let digest = format!("axi:revision:v2:sha256:{}", "0".repeat(64));
+        let anchor = AxiAnchorV1::new(digest.clone());
         let value = serde_json::to_value(&anchor).expect("anchor should serialize");
-        assert_eq!(
-            value,
-            json!({ "axi_digest_v1": "fnv1a64:0123456789abcdef" })
-        );
+        assert_eq!(value, json!({ "revision_digest_v2": digest }));
 
         let round_trip: AxiAnchorV1 =
             serde_json::from_value(value).expect("anchor should deserialize");
-        assert_eq!(
-            round_trip.axi_digest_v1,
-            AxiDigest::new("fnv1a64:0123456789abcdef")
-        );
+        assert_eq!(round_trip.revision_digest_v2, AxiDigest::new(digest));
     }
 
     #[test]
     fn certificate_v2_round_trips_typed_anchor() {
+        let digest = AxiDigest::from_axi_text("module Demo\n");
         let cert = CertificateV2::reachability_v3(ReachabilityProofV3::Reflexive {
             entity: "axi:id:Node:alice".to_string(),
         })
-        .with_anchor(AxiAnchorV1::new("fnv1a64:feedfacecafebeef"));
+        .with_anchor(AxiAnchorV1::new(digest.clone()));
 
         let json = serde_json::to_string(&cert).expect("certificate should serialize");
         let round_trip: CertificateV2 =
@@ -1109,8 +1774,8 @@ mod normalize_path_v2_tests {
             round_trip
                 .anchor
                 .expect("anchor should be present")
-                .axi_digest_v1,
-            AxiDigest::new("fnv1a64:feedfacecafebeef")
+                .revision_digest_v2,
+            digest
         );
     }
 

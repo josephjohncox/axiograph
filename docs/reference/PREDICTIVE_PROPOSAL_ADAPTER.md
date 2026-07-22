@@ -45,12 +45,12 @@ and can interpret it however they choose.
   "trace_id": "pp::1730000000",
   "generated_at_unix_secs": 1730000000,
   "input": {
-    "axi_digest_v1": "fnv1a64:...",
+    "revision_digest_v2": "axi:revision:v2:sha256:...",
     "axi_module_text": "module ...",
     "semantic_input": {
       "kind": "canonical_axi_semantics_v1",
       "module_name": "Family",
-      "pathdb_snapshot_id": "pathdb:...",
+      "materialization_id": "axi:materialization:v2:sha256:...",
       "accepted_snapshot_id": "accepted:...",
       "layers": [
         {
@@ -78,17 +78,18 @@ and can interpret it however they choose.
 ```
 
 Notes:
+
 - `input.axi_module_text` is the primary semantic input. Plugins should be able to
   reason from canonical `.axi` alone.
-- `input.axi_digest_v1` is the stable anchor for that canonical module and should
-  match the digest of `input.axi_module_text`.
+- `input.revision_digest_v2` is the exact-byte SHA-256 anchor for that canonical
+  module and must match `input.axi_module_text`.
 - `input.semantic_input` is typed derived metadata about that canonical input:
   module selection, snapshot lineage ids, and optional semantic layers.
 - `semantic_input.layers[kind=training_export]` embeds a masked-tuple training
   export when the caller has one. It is optional derived metadata, not the
   primary contract.
 - If a training export layer is present, it should be derived from the same
-  canonical `.axi` bytes and therefore carry the same `axi_digest_v1` and
+  canonical `.axi` bytes and therefore carry the same `revision_digest_v2` and
   module name.
 - `semantic_input.layers[kind=guardrail]` is **optional** and provides cost context.
 - Snapshot/store paths and `export_path`-style file references are intentionally not
@@ -96,8 +97,9 @@ Notes:
 - `options.task_costs` and `options.horizon_steps` enable bounded proposal
   rollout contexts. This is not an autonomous-execution claim; it only scopes
   proposal generation and evaluation.
-- `input.axi_module_text` should be a full canonical `.axi` module (schema +
-  theory + instance + contexts + rewrite rules), not a PathDB export.
+- `input.axi_module_text` should be a full canonical `.axi` module (schema,
+  theory, instance, contexts, and rewrite rules), never reconstructed from
+  derived PathDB rows.
 
 ---
 
@@ -179,9 +181,6 @@ Environment variables (ONNX):
 export PREDICTIVE_PROPOSAL_MODEL_PATH=models/predictive_proposal_small.onnx
 ```
 
-Transformer stub (skeleton for PyTorch):
-`scripts/axiograph_predictive_proposal_plugin_transformer_stub.py`
-
 Baseline (no ML, deterministic):
 `scripts/axiograph_predictive_proposal_plugin_baseline.py`
 
@@ -213,11 +212,10 @@ axiograph ingest predictive-proposal examples/Family.axi \
 Only the entrypoints above are documented public surfaces for predictive
 proposal adapters and bounded proposal rollout examples.
 
-When these entrypoints start from a live PathDB snapshot, they first export the
-selected canonical module and attach typed lineage anchors
-(`axi_digest_v1`, `pathdb_snapshot_id`, `accepted_snapshot_id`) before invoking
-the predictive proposal adapter. Reversible `PathDBExportV1` snapshots are not
-part of the adapter request contract.
+These entrypoints require exact canonical `.axi` bytes and attach typed lineage
+anchors before invoking the predictive proposal adapter. A live PathDB snapshot
+cannot be reverse-exported into accepted meaning and is not an adapter request
+contract.
 
 All outputs remain **evidence-plane** until validated and promoted.
 If a predictive proposal adapter uses embeddings or vector retrieval internally,

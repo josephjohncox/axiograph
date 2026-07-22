@@ -27,6 +27,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 // Public API
 // =============================================================================
 
+pub const MAX_DESCRIPTOR_SET_BYTES: usize = 16 * 1024 * 1024;
+const MAX_DESCRIPTOR_FILES: usize = 4_096;
+const MAX_DESCRIPTOR_NODES: usize = 500_000;
+const MAX_DESCRIPTOR_NESTING: usize = 64;
+
 #[derive(Debug, Clone)]
 pub struct ProtoIngestResultV1 {
     pub chunks: Vec<Chunk>,
@@ -65,6 +70,7 @@ struct SemanticEntityCache {
 }
 
 impl SemanticEntityCache {
+    #[allow(clippy::too_many_arguments)]
     fn ensure_entity(
         &mut self,
         proposals: &mut Vec<ProposalV1>,
@@ -121,8 +127,14 @@ pub fn ingest_descriptor_set_bytes(
     evidence_locator: Option<String>,
     schema_hint: Option<String>,
 ) -> Result<ProtoIngestResultV1> {
+    if bytes.len() > MAX_DESCRIPTOR_SET_BYTES {
+        return Err(anyhow!(
+            "protobuf descriptor set exceeds {MAX_DESCRIPTOR_SET_BYTES} bytes"
+        ));
+    }
     let pool = DescriptorPool::decode(bytes)
         .map_err(|e| anyhow!("failed to decode binary FileDescriptorSet: {e}"))?;
+    validate_descriptor_pool(&pool)?;
     let set = descriptor_pool_to_input(&pool);
 
     let mut proposals: Vec<ProposalV1> = Vec::new();
@@ -409,6 +421,71 @@ struct LocationInput {
 }
 
 type DescriptorOptions = BTreeMap<String, Value>;
+
+fn validate_descriptor_pool(pool: &DescriptorPool) -> Result<()> {
+    let mut file_count = 0_usize;
+    let mut node_count = 0_usize;
+    for file in pool.files() {
+        file_count = file_count
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("descriptor file count overflow"))?;
+        if file_count > MAX_DESCRIPTOR_FILES {
+            return Err(anyhow!(
+                "descriptor file count exceeds {MAX_DESCRIPTOR_FILES}"
+            ));
+        }
+        add_descriptor_nodes(&mut node_count, file.enums().count())?;
+        for enumeration in file.enums() {
+            add_descriptor_nodes(&mut node_count, enumeration.values().count())?;
+        }
+        add_descriptor_nodes(&mut node_count, file.services().count())?;
+        for service in file.services() {
+            add_descriptor_nodes(&mut node_count, service.methods().count())?;
+        }
+        if let Some(source) = &file.file_descriptor_proto().source_code_info {
+            add_descriptor_nodes(&mut node_count, source.location.len())?;
+            for location in &source.location {
+                add_descriptor_nodes(&mut node_count, location.path.len())?;
+                add_descriptor_nodes(&mut node_count, location.leading_detached_comments.len())?;
+            }
+        }
+
+        let mut messages = file
+            .messages()
+            .map(|message| (message, 1_usize))
+            .collect::<Vec<_>>();
+        while let Some((message, depth)) = messages.pop() {
+            if depth > MAX_DESCRIPTOR_NESTING {
+                return Err(anyhow!(
+                    "descriptor message nesting exceeds {MAX_DESCRIPTOR_NESTING}"
+                ));
+            }
+            add_descriptor_nodes(&mut node_count, 1)?;
+            add_descriptor_nodes(&mut node_count, message.fields().count())?;
+            add_descriptor_nodes(&mut node_count, message.oneofs().count())?;
+            add_descriptor_nodes(&mut node_count, message.child_enums().count())?;
+            for enumeration in message.child_enums() {
+                add_descriptor_nodes(&mut node_count, enumeration.values().count())?;
+            }
+            for child in message.child_messages() {
+                messages.push((child, depth + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn add_descriptor_nodes(total: &mut usize, amount: usize) -> Result<()> {
+    *total = total
+        .checked_add(amount)
+        .ok_or_else(|| anyhow!("descriptor node count overflow"))?;
+    if *total > MAX_DESCRIPTOR_NODES {
+        return Err(anyhow!(
+            "descriptor node count exceeds {MAX_DESCRIPTOR_NODES}"
+        ));
+    }
+    Ok(())
+}
 
 fn descriptor_pool_to_input(pool: &DescriptorPool) -> FileDescriptorSetInput {
     FileDescriptorSetInput {
@@ -700,6 +777,7 @@ fn index_message(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_message(
     proposals: &mut Vec<ProposalV1>,
     chunks: &mut Vec<Chunk>,
@@ -847,6 +925,7 @@ fn emit_message(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_field(
     proposals: &mut Vec<ProposalV1>,
     chunks: &mut Vec<Chunk>,
@@ -900,7 +979,7 @@ fn emit_field(
     }
     if let Some(oneof_idx) = f.oneof_index {
         if let Some(oneof_name) = oneofs.get(oneof_idx as usize).and_then(|o| o.name.clone()) {
-            let mut oneof_path = message_prefix.iter().cloned().collect::<Vec<_>>();
+            let mut oneof_path = message_prefix.to_vec();
             oneof_path.push(format!("oneof:{oneof_name}"));
             attrs.insert("oneof".to_string(), oneof_path.join("."));
         }
@@ -909,7 +988,7 @@ fn emit_field(
     let evidence = comment_index
         .get(&(file_name.to_string(), path.clone()))
         .map(|comment| {
-            let span = format!("field:{}.{field_name}", message_fqn);
+            let span = format!("field:{message_fqn}.{field_name}");
             let chunk_id = make_chunk_id("proto_doc", file_name, &span);
             chunks.push(Chunk {
                 chunk_id: chunk_id.clone(),
@@ -1075,6 +1154,7 @@ fn emit_field(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_enum(
     proposals: &mut Vec<ProposalV1>,
     chunks: &mut Vec<Chunk>,
@@ -1233,6 +1313,7 @@ fn emit_enum(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_service(
     proposals: &mut Vec<ProposalV1>,
     chunks: &mut Vec<Chunk>,
@@ -1368,6 +1449,7 @@ struct WorkflowGroup {
     ordering: Vec<(String, String)>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_method(
     proposals: &mut Vec<ProposalV1>,
     chunks: &mut Vec<Chunk>,
@@ -2014,7 +2096,7 @@ fn short_hash(s: &str) -> String {
     let mut out = String::with_capacity(16);
     for b in digest[..8].iter() {
         use std::fmt::Write as _;
-        let _ = write!(&mut out, "{:02x}", b);
+        let _ = write!(&mut out, "{b:02x}");
     }
     out
 }
@@ -2032,6 +2114,7 @@ fn sanitize_id(s: &str) -> String {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn entity_proposal(
     schema_hint: &Option<String>,
     evidence_locator: &Option<String>,
@@ -2063,6 +2146,7 @@ fn entity_proposal(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn relation_proposal(
     schema_hint: &Option<String>,
     evidence_locator: &Option<String>,
@@ -2117,7 +2201,7 @@ mod tests {
         // A few sanity checks: we should have services/RPCs and some chunks.
         assert!(result.stats.services > 0);
         assert!(result.stats.rpcs > 0);
-        assert!(result.chunks.len() > 0);
+        assert!(!result.chunks.is_empty());
 
         let mut saw_http = false;
         let mut saw_workflow = false;

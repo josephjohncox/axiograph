@@ -1,16 +1,8 @@
-//! Snapshot-scoped embedding artifacts (extension layer).
+//! Materialization-scoped embedding evidence artifacts.
 //!
-//! Goals
-//! -----
-//! - Keep embeddings **outside the trusted kernel** (Lean certifies semantics, not ANN retrieval).
-//! - Store embeddings **snapshot-scoped** in the PathDB WAL so:
-//!   - they are reproducible for a given snapshot,
-//!   - they can be synced between master/replica stores,
-//!   - they can be used by the db server / viz UI for RAG-style grounding.
-//!
-//! Two modes (recommended to run together):
-//! - Deterministic token-hash embeddings (always-on; can be indexed with ANN).
-//! - Model embeddings (Ollama `/api/embed` or `/api/embeddings`) stored in the WAL.
+//! Embeddings stay outside the trusted kernel. Sidecars bind to accepted `.axi`
+//! anchors and, when available, an authenticated SQLite materialization id. They
+//! are advisory evidence and are never stored inside or used to recover `.axpd`.
 //!
 //! See `docs/reference/EMBEDDINGS_AND_EVIDENCE.md` for the trust contract:
 //! embedding-derived relationships are weak evidence/proposal overlays until
@@ -23,7 +15,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-use axiograph_pathdb::{AcceptedAxiAnchor, DbToken, PathdbSnapshotId};
+use axiograph_kernel::MaterializationIdV2;
+use axiograph_pathdb::{AcceptedAxiAnchor, DbToken};
 
 pub const EMBEDDINGS_FILE_VERSION_V1: &str = "axiograph_embeddings_v1";
 pub const EMBEDDING_SIDECAR_MANIFEST_VERSION_V1: &str = "axiograph_embedding_sidecar_manifest_v1";
@@ -32,6 +25,11 @@ pub const EMBEDDING_RELATIONSHIP_DISCOVERY_METHOD_V1: &str =
     "deterministic_pairwise_cosine_tiny_vectors_v1";
 pub const EMBEDDING_SIMILARITY_OBSERVATION_METHOD_V1: &str =
     "deterministic_pairwise_cosine_top_pairs_v1";
+const MAX_EMBEDDINGS_FILE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_EMBEDDING_DIM: usize = 8_192;
+const MAX_EMBEDDING_ITEMS: usize = 100_000;
+const MAX_EMBEDDING_COMPONENTS: usize = 4_000_000;
+const MAX_EMBEDDING_METADATA_ENTRIES: usize = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,7 +73,7 @@ pub struct EmbeddingsFileV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbeddingAcceptedRefV1 {
-    /// Semantic VCS ref or accepted-plane pointer used when the sidecar was built.
+    /// Review ref used when the sidecar was built.
     pub accepted_ref: String,
     /// Carries the accepted snapshot id and canonical module digest.
     pub accepted_axi_anchor: AcceptedAxiAnchor,
@@ -131,7 +129,7 @@ pub struct EmbeddingTargetIdentityV1 {
     /// Stable id local to the sidecar/manifest, used by overlay observations.
     pub target_id: String,
     pub key: EmbeddingKeyV1,
-    /// Optional accepted-plane or compiled-IR object/relation/chunk ref.
+    /// Optional accepted `.axi` or compiled-IR object/relation/chunk ref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typed_ref: Option<String>,
     /// Digest of the exact text used to produce this target embedding.
@@ -145,7 +143,7 @@ pub struct EmbeddingSidecarManifestV1 {
     pub created_at_unix_secs: u64,
     pub accepted: EmbeddingAcceptedRefV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    pub materialization_id: Option<MaterializationIdV2>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embeddings_file_digest: Option<String>,
     pub source_model: EmbeddingModelRefV1,
@@ -247,7 +245,7 @@ pub struct EmbeddingSidecarManifestBuildInputV1 {
     pub accepted: EmbeddingAcceptedRefV1,
     pub sidecar_id: Option<String>,
     pub created_at_unix_secs: Option<u64>,
-    pub pathdb_snapshot_id: Option<PathdbSnapshotId>,
+    pub materialization_id: Option<MaterializationIdV2>,
     pub embeddings_file_digest: Option<String>,
     pub model_version: Option<String>,
     pub model_digest: Option<String>,
@@ -263,7 +261,7 @@ impl EmbeddingSidecarManifestBuildInputV1 {
             accepted,
             sidecar_id: None,
             created_at_unix_secs: None,
-            pathdb_snapshot_id: None,
+            materialization_id: None,
             embeddings_file_digest: None,
             model_version: None,
             model_digest: None,
@@ -323,11 +321,30 @@ pub fn validate_embeddings_file_v1(file: &EmbeddingsFileV1) -> Result<()> {
     )?;
     ensure_non_empty(&file.backend, "embeddings_file.backend")?;
     ensure_non_empty(&file.model, "embeddings_file.model")?;
-    if file.dim == 0 {
-        return Err(anyhow!("embeddings file dim must be > 0"));
+    if file.dim == 0 || file.dim > MAX_EMBEDDING_DIM {
+        return Err(anyhow!(
+            "embeddings file dim must be in 1..={MAX_EMBEDDING_DIM}"
+        ));
     }
-    if file.items.is_empty() {
-        return Err(anyhow!("embeddings file must include at least one item"));
+    if file.items.is_empty() || file.items.len() > MAX_EMBEDDING_ITEMS {
+        return Err(anyhow!(
+            "embeddings file item count must be in 1..={MAX_EMBEDDING_ITEMS}"
+        ));
+    }
+    if file.metadata.len() > MAX_EMBEDDING_METADATA_ENTRIES {
+        return Err(anyhow!(
+            "embeddings metadata count exceeds {MAX_EMBEDDING_METADATA_ENTRIES}"
+        ));
+    }
+    let component_count = file
+        .items
+        .len()
+        .checked_mul(file.dim)
+        .ok_or_else(|| anyhow!("embedding component count overflow"))?;
+    if component_count > MAX_EMBEDDING_COMPONENTS {
+        return Err(anyhow!(
+            "embedding component count {component_count} exceeds {MAX_EMBEDDING_COMPONENTS}"
+        ));
     }
 
     let mut keys = BTreeSet::new();
@@ -411,7 +428,7 @@ pub fn embedding_file_digest_v1(file: &EmbeddingsFileV1) -> Result<String> {
     }
 
     let mut metadata = file.metadata.iter().collect::<Vec<_>>();
-    metadata.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+    metadata.sort_by_key(|(ka, _)| *ka);
     for (key, value) in metadata {
         material.push_str("metadata{");
         push_stable_field(&mut material, "key", key);
@@ -419,9 +436,7 @@ pub fn embedding_file_digest_v1(file: &EmbeddingsFileV1) -> Result<String> {
         material.push('}');
     }
 
-    Ok(axiograph_dsl::digest::fnv1a64_digest_bytes(
-        material.as_bytes(),
-    ))
+    Ok(axiograph_kernel::object_blob_digest_v2(material.as_bytes()))
 }
 
 pub fn build_embedding_sidecar_manifest_v1(
@@ -508,7 +523,7 @@ pub fn build_embedding_sidecar_manifest_v1(
         embedding_sidecar_id_v1(
             &embeddings_file_digest,
             &input.accepted,
-            input.pathdb_snapshot_id.as_ref(),
+            input.materialization_id.as_ref(),
         )
     });
 
@@ -519,7 +534,7 @@ pub fn build_embedding_sidecar_manifest_v1(
             .created_at_unix_secs
             .unwrap_or(file.created_at_unix_secs),
         accepted: input.accepted,
-        pathdb_snapshot_id: input.pathdb_snapshot_id,
+        materialization_id: input.materialization_id,
         embeddings_file_digest: Some(embeddings_file_digest),
         source_model,
         target_kind: file.target,
@@ -1043,7 +1058,7 @@ fn embedding_relationship_refinement_handle_v1(
             reconciliation_id: format!("embedding_evidence:{sidecar_id}"),
             artifact_kind: "embedding_relationship_evidence".to_string(),
             artifact_id: evidence_id.to_string(),
-            resolution: format!("review_{:?}_as_typed_ontology_delta", relationship)
+            resolution: format!("review_{relationship:?}_as_typed_ontology_delta")
                 .to_ascii_lowercase(),
             theory_obligation_ref: None,
             theory_subject_ref: None,
@@ -1062,8 +1077,7 @@ fn validate_embedding_key_for_target_kind_v1(
             ensure_non_empty(chunk_id, &format!("{field}.chunk_id"))?;
             if expected != EmbeddingTargetKindV1::DocChunks {
                 return Err(anyhow!(
-                    "{field} uses doc_chunk key but embeddings target is {:?}",
-                    expected
+                    "{field} uses doc_chunk key but embeddings target is {expected:?}"
                 ));
             }
         }
@@ -1072,8 +1086,7 @@ fn validate_embedding_key_for_target_kind_v1(
             ensure_non_empty(name, &format!("{field}.name"))?;
             if expected != EmbeddingTargetKindV1::Entities {
                 return Err(anyhow!(
-                    "{field} uses entity key but embeddings target is {:?}",
-                    expected
+                    "{field} uses entity key but embeddings target is {expected:?}"
                 ));
             }
         }
@@ -1113,14 +1126,14 @@ fn embedding_target_id_v1(stable_key: &str, source_text_digest: &str) -> String 
     push_stable_field(&mut material, "source_text_digest", source_text_digest);
     format!(
         "embedding_target_v1:{}",
-        axiograph_dsl::digest::fnv1a64_digest_bytes(material.as_bytes())
+        axiograph_kernel::object_blob_digest_v2(material.as_bytes())
     )
 }
 
 fn embedding_sidecar_id_v1(
     embeddings_file_digest: &str,
     accepted: &EmbeddingAcceptedRefV1,
-    pathdb_snapshot_id: Option<&PathdbSnapshotId>,
+    materialization_id: Option<&MaterializationIdV2>,
 ) -> String {
     let mut material = String::new();
     push_stable_field(
@@ -1141,14 +1154,14 @@ fn embedding_sidecar_id_v1(
     );
     push_stable_field(
         &mut material,
-        "pathdb_snapshot_id",
-        pathdb_snapshot_id
-            .map(PathdbSnapshotId::as_str)
+        "materialization_id",
+        materialization_id
+            .map(MaterializationIdV2::as_str)
             .unwrap_or(""),
     );
     format!(
         "embedding_sidecar_v1:{}",
-        axiograph_dsl::digest::fnv1a64_digest_bytes(material.as_bytes())
+        axiograph_kernel::object_blob_digest_v2(material.as_bytes())
     )
 }
 
@@ -1177,7 +1190,7 @@ fn embedding_overlay_id_v1(
     );
     format!(
         "embedding_overlay_v1:{}",
-        axiograph_dsl::digest::fnv1a64_digest_bytes(material.as_bytes())
+        axiograph_kernel::object_blob_digest_v2(material.as_bytes())
     )
 }
 
@@ -1200,7 +1213,7 @@ fn embedding_observation_id_v1(
     push_stable_field(&mut material, "rank", &rank.to_string());
     format!(
         "embedding_observation_v1:{}",
-        axiograph_dsl::digest::fnv1a64_digest_bytes(material.as_bytes())
+        axiograph_kernel::object_blob_digest_v2(material.as_bytes())
     )
 }
 
@@ -1223,7 +1236,7 @@ fn embedding_relationship_evidence_id_v1(
     push_stable_field(&mut material, "rank", &rank.to_string());
     format!(
         "embedding_relationship_v1:{}",
-        axiograph_dsl::digest::fnv1a64_digest_bytes(material.as_bytes())
+        axiograph_kernel::object_blob_digest_v2(material.as_bytes())
     )
 }
 
@@ -1301,27 +1314,31 @@ fn validate_finite_score(score: f32, field: &str) -> Result<()> {
 }
 
 pub fn encode_embeddings_file_v1(file: &EmbeddingsFileV1) -> Result<Vec<u8>> {
-    if file.version != EMBEDDINGS_FILE_VERSION_V1 {
-        return Err(anyhow!(
-            "unsupported embeddings file version: {} (expected {EMBEDDINGS_FILE_VERSION_V1})",
-            file.version
-        ));
-    }
+    validate_embeddings_file_v1(file)?;
     let mut out = Vec::new();
     ciborium::ser::into_writer(file, &mut out)
         .map_err(|e| anyhow!("failed to CBOR-encode embeddings file: {e}"))?;
+    if out.len() > MAX_EMBEDDINGS_FILE_BYTES {
+        return Err(anyhow!(
+            "embeddings file exceeds {MAX_EMBEDDINGS_FILE_BYTES} bytes"
+        ));
+    }
     Ok(out)
 }
 
 pub fn decode_embeddings_file_v1(bytes: &[u8]) -> Result<EmbeddingsFileV1> {
-    let file: EmbeddingsFileV1 = ciborium::de::from_reader(bytes)
-        .map_err(|e| anyhow!("failed to CBOR-decode embeddings file: {e}"))?;
-    if file.version != EMBEDDINGS_FILE_VERSION_V1 {
+    if bytes.len() > MAX_EMBEDDINGS_FILE_BYTES {
         return Err(anyhow!(
-            "unsupported embeddings file version: {} (expected {EMBEDDINGS_FILE_VERSION_V1})",
-            file.version
+            "embeddings file exceeds {MAX_EMBEDDINGS_FILE_BYTES} bytes"
         ));
     }
+    let mut cursor = std::io::Cursor::new(bytes);
+    let file: EmbeddingsFileV1 = ciborium::de::from_reader_with_recursion_limit(&mut cursor, 64)
+        .map_err(|e| anyhow!("failed to CBOR-decode embeddings file: {e}"))?;
+    if cursor.position() != bytes.len() as u64 {
+        return Err(anyhow!("embeddings file contains trailing CBOR data"));
+    }
+    validate_embeddings_file_v1(&file)?;
     Ok(file)
 }
 
@@ -1513,7 +1530,7 @@ mod tests {
 
     fn sample_accepted_ref() -> EmbeddingAcceptedRefV1 {
         EmbeddingAcceptedRefV1 {
-            accepted_ref: "sem/refs/heads/main".to_string(),
+            accepted_ref: "heads/main".to_string(),
             accepted_axi_anchor: AcceptedAxiAnchor::new(
                 AcceptedSnapshotId::new("accepted:test"),
                 AxiDigest::new("fnv1a64:module"),
@@ -1562,7 +1579,9 @@ mod tests {
             sidecar_id: "embeddings:demo:1".to_string(),
             created_at_unix_secs: 10,
             accepted: sample_accepted_ref(),
-            pathdb_snapshot_id: Some(PathdbSnapshotId::new("pathdb:test")),
+            materialization_id: Some(MaterializationIdV2::from_canonical_fields(&[
+                b"embedding-test-materialization",
+            ])),
             embeddings_file_digest: Some("sha256:embeddings-file".to_string()),
             source_model: sample_model_ref(),
             target_kind: EmbeddingTargetKindV1::DocChunks,
@@ -1664,7 +1683,9 @@ mod tests {
 
     fn sample_manifest_build_input() -> EmbeddingSidecarManifestBuildInputV1 {
         let mut input = EmbeddingSidecarManifestBuildInputV1::new(sample_accepted_ref());
-        input.pathdb_snapshot_id = Some(PathdbSnapshotId::new("pathdb:test"));
+        input.materialization_id = Some(MaterializationIdV2::from_canonical_fields(&[
+            b"embedding-input-test-materialization",
+        ]));
         input.normalization = EmbeddingNormalizationPolicyV1::UnitL2;
         input
     }
@@ -1726,11 +1747,10 @@ mod tests {
         assert!(manifest_a
             .embeddings_file_digest
             .as_deref()
-            .is_some_and(|digest| digest.starts_with("fnv1a64:")));
-        assert!(manifest_a
-            .targets
-            .iter()
-            .all(|target| target.target_id.starts_with("embedding_target_v1:fnv1a64:")));
+            .is_some_and(|digest| digest.starts_with("axi:object-blob:v2:sha256:")));
+        assert!(manifest_a.targets.iter().all(|target| target
+            .target_id
+            .starts_with("embedding_target_v1:axi:object-blob:v2:sha256:")));
         assert_eq!(
             manifest_a.metadata.get("builder").map(String::as_str),
             Some("build_embedding_sidecar_manifest_v1")
@@ -1785,7 +1805,7 @@ mod tests {
         );
         assert!(relationship
             .evidence_id
-            .starts_with("embedding_relationship_v1:fnv1a64:"));
+            .starts_with("embedding_relationship_v1:axi:object-blob:v2:sha256:"));
         assert_eq!(relationship.suggested_refinement_handles.len(), 1);
         assert!(relationship.suggested_refinement_handles[0]
             .validate()
@@ -1928,7 +1948,7 @@ mod tests {
         let value = serde_json::to_value(&manifest).expect("serialize manifest");
         assert_eq!(
             value["accepted"]["accepted_ref"].as_str(),
-            Some("sem/refs/heads/main")
+            Some("heads/main")
         );
         assert_eq!(
             value["accepted"]["accepted_axi_anchor"]["axi_digest"].as_str(),

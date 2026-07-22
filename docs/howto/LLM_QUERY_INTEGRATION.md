@@ -1,7 +1,7 @@
 # LLM Query Integration
 
 **Diataxis:** How-to
-**Audience:** users, tool authors, and agent harness authors
+**Audience:** users, tool authors, and agent-integration authors
 
 LLM-assisted Axiograph workflows are typed tool workflows. The model may help
 draft questions, queries, definitions, or proposals, but Axiograph remains the
@@ -10,7 +10,7 @@ authority for type checking, execution, trust contracts, and promotion.
 Use this rule:
 
 - humans ask in natural language, `.cq`, or AxQL;
-- tools lower to `query_ir_v1` / `PreparedQueryV1`;
+- tools lower `query_ir_v1` into `CompiledFiniteQuery`;
 - Rust elaborates, typechecks, runs, and reports typed metadata;
 - Lean verification is optional and only applies to supported certified
   fragments;
@@ -28,7 +28,7 @@ typed tool boundaries, not as the authoring experience.
 | Human explores in the terminal | REPL `ask`, `q --elaborate`, `q --typecheck` | Fast feedback, inferred types, typed holes, refinement handles |
 | CQ/BDD/DDD authoring | `.cq` plus behavior-case/overlay tools | Question-first, domain readable, lowerable to typed query checks |
 | Weak definition discovery | `discover define` / `semantic_definition_query` | Advisory grounding for “define this process/rule/function” prompts |
-| Promotion-sensitive query results | `PreparedQueryV1` plus certificate policy | Shared query lifecycle and fail-closed verifier policy |
+| Promotion-sensitive query results | `CompiledFiniteQuery` plus certificate policy | Single query lifecycle and fail-closed V4 verifier policy |
 
 See also:
 
@@ -57,15 +57,16 @@ AxQL. The useful query/exploration loop is:
    canonical `.axi`, accepted anchor, certifiable fragment, and verifier are
    available.
 
-For software-authoring flows, prefer the dedicated read-only authoring MCP:
+For typed authoring flows, run the workspace-aware read-only MCP adapter:
 
 ```bash
-axiograph authoring mcp
+axiograph authoring mcp --workspace .
 ```
 
-That server exposes overlay checks, weak coverage probes, behavior-case planning,
-software coverage, codegen previews, and integration metadata without writing
-files.
+It exposes one `axiograph_authoring_workspace` tool. The tool accepts the same
+`authoring_workspace_request_v1` used by CLI, LSP, and HTTP and returns
+`authoring_workspace_report_v1`. Overlay coverage and codegen remain explicit
+CLI/tooling-overlay workflows rather than a second authoring MCP protocol.
 
 ## REPL Flow
 
@@ -84,7 +85,7 @@ want the typed query plan, inferred variable types, and refinement handles. Use
 
 ## CQ-First Authoring
 
-Competency questions should be readable domain questions first, not raw AxQL
+Competency questions should be readable domain questions first, not lowered AxQL
 first. A `.cq` file can express the authoring intent:
 
 ```text
@@ -94,13 +95,13 @@ given accepted_order
 expect shipment_eligible
 ```
 
-Then lower and check it through the authoring tools:
+Then lower, prepare, execute, and explain it through the shared workspace service:
 
 ```bash
-axiograph authoring competency-questions \
-  --axi examples/software_authoring/OrderFulfillmentDomain.axi \
-  --cq examples/software_authoring/order_fulfillment.cq \
-  --out build/examples/software_authoring/competency_questions_authoring.json
+axiograph authoring workspace \
+  --workspace . \
+  --request examples/software_authoring/authoring_workspace_request.json \
+  --out build/examples/software_authoring/authoring_workspace_report.json
 ```
 
 Raw AxQL remains available as a precise lowering/debug format, but it is not the
@@ -125,7 +126,7 @@ promotion gates or enforced software coverage.
 Every promotion-sensitive query should follow one lifecycle:
 
 ```text
-QueryIrV1 -> PreparedQueryV1 -> ValidatedQueryAnswer -> CertifiedQueryAnswer
+QueryIrV1 -> CompiledFiniteQuery -> QueryAnswer<Validated> -> QueryAnswer<CertificateEmitted> -> QueryAnswer<LeanVerified>
 ```
 
 The shared certificate policy is:
@@ -170,10 +171,10 @@ axiograph discover define examples/software_authoring/OrderFulfillmentDomain.axi
   --include-queries \
   --out build/examples/software_authoring/definition_query.json
 
-axiograph authoring competency-questions \
-  --axi examples/software_authoring/OrderFulfillmentDomain.axi \
-  --cq examples/software_authoring/order_fulfillment.cq \
-  --out build/examples/software_authoring/competency_questions_authoring.json
+axiograph authoring workspace \
+  --workspace . \
+  --request examples/software_authoring/authoring_workspace_request.json \
+  --out build/examples/software_authoring/authoring_workspace_report.json
 
 axiograph discover behavior-case examples/software_authoring/OrderFulfillmentDomain.axi \
   --request examples/software_authoring/order_fulfillment_behavior_case.json \
@@ -196,5 +197,5 @@ examples/software_authoring/run_authoring_flow.sh
   libraries.
 - Command plugins are local adapter/debug boundaries: one typed request on
   stdin, one typed response on stdout. They are not the product protocol.
-- PathDBExport snapshots are storage/debug/parser parity only and must not be
-  used as query, certificate, or semantic authority.
+- Derived PathDB rows and `.axpd` images must not be used as certificate or
+  semantic authority.

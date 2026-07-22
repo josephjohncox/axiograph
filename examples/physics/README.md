@@ -1,6 +1,6 @@
 # Physics Examples
 
-Physics examples are domain-ontology teaching fixtures. They show how to model
+Physics examples are domain-ontology teaching examples. They show how to model
 scientific concepts, measurement relations, and evidence-bearing domain facts
 without making the domain model part of the Axiograph core runtime.
 

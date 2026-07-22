@@ -276,7 +276,7 @@ pub fn extract_facts_from_pdf(doc: &PdfDocument, domain: &str) -> Vec<ExtractedF
 
     // Extract section headers from outline
     for item in &doc.outline {
-        extract_outline_facts(&mut facts, item, domain);
+        extract_outline_facts(&mut facts, item);
     }
 
     // Pattern-based extraction from text
@@ -285,7 +285,7 @@ pub fn extract_facts_from_pdf(doc: &PdfDocument, domain: &str) -> Vec<ExtractedF
     facts
 }
 
-fn extract_outline_facts(facts: &mut Vec<ExtractedFact>, item: &OutlineItem, domain: &str) {
+fn extract_outline_facts(facts: &mut Vec<ExtractedFact>, item: &OutlineItem) {
     facts.push(ExtractedFact {
         fact_type: "Section".to_string(),
         content: item.title.clone(),
@@ -297,7 +297,7 @@ fn extract_outline_facts(facts: &mut Vec<ExtractedFact>, item: &OutlineItem, dom
     });
 
     for child in &item.children {
-        extract_outline_facts(facts, child, domain);
+        extract_outline_facts(facts, child);
     }
 }
 

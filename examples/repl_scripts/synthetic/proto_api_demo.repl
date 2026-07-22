@@ -38,6 +38,3 @@ q select ?p where ?p is PathWitness, ?p -from-> name("doc_proto_api_0") limit 10
 q select ?next where name("acme.svc0.v1.Service0.CreateWidget") -workflow_suggests_order-> ?next limit 10
 q select ?next where name("acme.svc0.v1.Service0.CreateWidget") -observed_next-> ?next limit 10
 q select ?p where ?p is PathWitness, ?p -from-> name("acme.svc0.v1.Service0.CreateWidget") limit 10
-
-# Save the runnable `.axpd` snapshot.
-save build/proto_api.axpd

@@ -49,12 +49,26 @@ use axiograph_pathdb::axi_meta::{
 };
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
 use axiograph_pathdb::certificate::{
-    CertificatePayloadV2, CertificateV2, FixedPointProbability, PathRewriteStepV3, QueryAtomV3,
-    QueryAtomWitnessV3, QueryBindingV3, QueryRegexV3, QueryResultProofV3, QueryRowV3, QueryTermV3,
-    QueryV3, RewriteDerivationProofV3,
+    answer_digest_v1, CertificateAnchorV2, CertificateV3, FiniteQueryAtomV4,
+    FiniteQueryAtomWitnessV4, FiniteQueryBindingV4, FiniteQueryRegexV4, FiniteQueryRowV4,
+    FiniteQueryTermV4, FiniteQueryV4, FixedPointProbability, PreparedQueryBindingV1,
+    QueryResultProofV4, StableSelectedRowV1,
 };
 use axiograph_pathdb::witness;
-use axiograph_pathdb::{DbToken, DbTokenMismatch};
+use axiograph_pathdb::{DbToken, DbTokenMismatch, QueryIdV2, RevisionDigestV2};
+
+pub(crate) const MAX_AXQL_TEXT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_AXQL_PATH_BYTES: usize = 4096;
+pub(crate) const MAX_QUERY_DISJUNCTS: usize = 32;
+pub(crate) const MAX_QUERY_ATOMS: usize = 256;
+pub(crate) const MAX_QUERY_VARIABLES: usize = 64;
+pub(crate) const MAX_QUERY_SELECT_VARS: usize = 64;
+pub(crate) const MAX_QUERY_CONTEXTS: usize = 32;
+pub(crate) const MAX_QUERY_RESULT_ROWS: usize = 200;
+pub(crate) const MAX_QUERY_HOPS: u32 = 64;
+pub(crate) const MAX_QUERY_REGEX_NODES: usize = 256;
+pub(crate) const MAX_QUERY_NESTING_DEPTH: usize = 32;
+pub(crate) const MAX_QUERY_WORK_STEPS: usize = 5_000_000;
 
 /// A context/world selector for query scoping.
 ///
@@ -271,7 +285,162 @@ pub enum AxqlTerm {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+fn validate_surface_nesting(input: &str, max_bytes: usize, label: &str) -> Result<()> {
+    if input.len() > max_bytes {
+        return Err(anyhow!("{label} exceeds {max_bytes} UTF-8 bytes"));
+    }
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for character in input.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '(' | '[' | '{' => {
+                depth = depth.saturating_add(1);
+                if depth > MAX_QUERY_NESTING_DEPTH {
+                    return Err(anyhow!("{label} nesting exceeds {MAX_QUERY_NESTING_DEPTH}"));
+                }
+            }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn regex_shape(regex: &AxqlRegex, depth: usize) -> Result<usize> {
+    if depth > MAX_QUERY_NESTING_DEPTH {
+        return Err(anyhow!(
+            "query regular-expression nesting exceeds {MAX_QUERY_NESTING_DEPTH}"
+        ));
+    }
+    let children = match regex {
+        AxqlRegex::Epsilon | AxqlRegex::Rel(_) => 0,
+        AxqlRegex::Seq(parts) | AxqlRegex::Alt(parts) => {
+            if parts.len() > usize::try_from(MAX_QUERY_HOPS).unwrap_or(usize::MAX) {
+                return Err(anyhow!(
+                    "query regular-expression branch width exceeds {MAX_QUERY_HOPS}"
+                ));
+            }
+            let mut total = 0_usize;
+            for part in parts {
+                total = total
+                    .checked_add(regex_shape(part, depth + 1)?)
+                    .ok_or_else(|| anyhow!("query regular-expression size overflow"))?;
+            }
+            total
+        }
+        AxqlRegex::Star(inner) | AxqlRegex::Plus(inner) | AxqlRegex::Opt(inner) => {
+            regex_shape(inner, depth + 1)?
+        }
+    };
+    1_usize
+        .checked_add(children)
+        .ok_or_else(|| anyhow!("query regular-expression size overflow"))
+}
+
+fn collect_term_variable<'a>(term: &'a AxqlTerm, variables: &mut HashSet<&'a str>) {
+    if let AxqlTerm::Var(variable) = term {
+        variables.insert(variable.as_str());
+    }
+}
+
+fn validate_query_resource_limits(query: &AxqlQuery) -> Result<()> {
+    if query.disjuncts.is_empty() || query.disjuncts.len() > MAX_QUERY_DISJUNCTS {
+        return Err(anyhow!(
+            "query disjunct count must be in 1..={MAX_QUERY_DISJUNCTS}"
+        ));
+    }
+    if query.select_vars.len() > MAX_QUERY_SELECT_VARS {
+        return Err(anyhow!(
+            "query select variable count exceeds {MAX_QUERY_SELECT_VARS}"
+        ));
+    }
+    if query.contexts.len() > MAX_QUERY_CONTEXTS {
+        return Err(anyhow!("query context count exceeds {MAX_QUERY_CONTEXTS}"));
+    }
+    if query.limit == 0 || query.limit > MAX_QUERY_RESULT_ROWS {
+        return Err(anyhow!(
+            "query result row limit must be in 1..={MAX_QUERY_RESULT_ROWS}"
+        ));
+    }
+    if query.max_hops.is_some_and(|value| value > MAX_QUERY_HOPS) {
+        return Err(anyhow!("query max_hops exceeds {MAX_QUERY_HOPS}"));
+    }
+    if query
+        .min_confidence
+        .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+    {
+        return Err(anyhow!(
+            "query min_confidence must be a finite number in [0, 1]"
+        ));
+    }
+
+    let mut atoms = 0_usize;
+    let mut regex_nodes = 0_usize;
+    let mut variables = HashSet::new();
+    for disjunct in &query.disjuncts {
+        atoms = atoms
+            .checked_add(disjunct.len())
+            .ok_or_else(|| anyhow!("query atom count overflow"))?;
+        for atom in disjunct {
+            match atom {
+                AxqlAtom::Type { term, .. }
+                | AxqlAtom::AttrEq { term, .. }
+                | AxqlAtom::AttrContains { term, .. }
+                | AxqlAtom::AttrFts { term, .. }
+                | AxqlAtom::AttrFuzzy { term, .. }
+                | AxqlAtom::HasOut { term, .. }
+                | AxqlAtom::Attrs { term, .. }
+                | AxqlAtom::Shape { term, .. } => collect_term_variable(term, &mut variables),
+                AxqlAtom::Edge { left, path, right } => {
+                    collect_term_variable(left, &mut variables);
+                    collect_term_variable(right, &mut variables);
+                    regex_nodes = regex_nodes
+                        .checked_add(regex_shape(&path.regex, 1)?)
+                        .ok_or_else(|| anyhow!("query regular-expression size overflow"))?;
+                }
+                AxqlAtom::Fact { fact, fields, .. } => {
+                    if let Some(term) = fact {
+                        collect_term_variable(term, &mut variables);
+                    }
+                    for (_, term) in fields {
+                        collect_term_variable(term, &mut variables);
+                    }
+                }
+            }
+        }
+    }
+    for variable in &query.select_vars {
+        variables.insert(variable.as_str());
+    }
+    if atoms > MAX_QUERY_ATOMS {
+        return Err(anyhow!("query atom count exceeds {MAX_QUERY_ATOMS}"));
+    }
+    if regex_nodes > MAX_QUERY_REGEX_NODES {
+        return Err(anyhow!(
+            "query regular-expression nodes exceed {MAX_QUERY_REGEX_NODES}"
+        ));
+    }
+    if variables.len() > MAX_QUERY_VARIABLES {
+        return Err(anyhow!(
+            "query variable count exceeds {MAX_QUERY_VARIABLES}"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AxqlResult {
     pub selected_vars: Vec<String>,
     pub rows: Vec<BTreeMap<String, u32>>,
@@ -452,6 +621,7 @@ impl AxqlRefinementTermV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 pub enum AxqlRefinementOpV1 {
     AddTypeGuard {
         term: AxqlRefinementTermV1,
@@ -515,7 +685,7 @@ impl AxqlRefinementHandleV1 {
     pub fn new(scope: AxqlRefinementApplicationScopeV1, op: AxqlRefinementOpV1) -> Self {
         let id = format!(
             "axql_refine_v1:{}",
-            axiograph_dsl::digest::axi_digest_v1(&format!(
+            axiograph_kernel::revision_digest_v2(&format!(
                 "{scope:?}:{}",
                 op.stable_digest_input()
             ))
@@ -568,12 +738,44 @@ pub struct AxqlRefinementCandidateV1 {
     pub target_type: Option<String>,
 }
 
+fn regex_requires_explicit_hop_bound(regex: &AxqlRegex) -> bool {
+    match regex {
+        AxqlRegex::Star(_) | AxqlRegex::Plus(_) => true,
+        AxqlRegex::Seq(parts) | AxqlRegex::Alt(parts) => {
+            parts.iter().any(regex_requires_explicit_hop_bound)
+        }
+        AxqlRegex::Opt(inner) => regex_requires_explicit_hop_bound(inner),
+        AxqlRegex::Epsilon | AxqlRegex::Rel(_) => false,
+    }
+}
+
 impl AxqlQuery {
-    /// Classify how much of this query can be sent through the certificate path.
+    /// Classify whether the compiled query belongs to Lean's exact finite
+    /// decidable fragment.
     pub fn certifiability(&self) -> QueryCertifiability {
         if self.disjuncts.is_empty() {
             return QueryCertifiability::ExecutionOnly {
                 reasons: vec!["query must contain at least one disjunct".to_string()],
+            };
+        }
+
+        if self.disjuncts.len() > axiograph_pathdb::certificate::FINITE_QUERY_MAX_DISJUNCTS {
+            return QueryCertifiability::ExecutionOnly {
+                reasons: vec![format!(
+                    "finite exact certification supports at most {} disjuncts",
+                    axiograph_pathdb::certificate::FINITE_QUERY_MAX_DISJUNCTS
+                )],
+            };
+        }
+        if self
+            .max_hops
+            .is_some_and(|hops| hops > axiograph_pathdb::certificate::FINITE_QUERY_MAX_HOPS)
+        {
+            return QueryCertifiability::ExecutionOnly {
+                reasons: vec![format!(
+                    "finite exact certification supports max_hops <= {}",
+                    axiograph_pathdb::certificate::FINITE_QUERY_MAX_HOPS
+                )],
             };
         }
 
@@ -584,6 +786,12 @@ impl AxqlQuery {
 
         for disjunct in &self.disjuncts {
             let mut disjunct_reasons = Vec::new();
+            if disjunct.len() > axiograph_pathdb::certificate::FINITE_QUERY_MAX_ATOMS_PER_DISJUNCT {
+                disjunct_reasons.push(format!(
+                    "finite exact certification supports at most {} atoms per disjunct",
+                    axiograph_pathdb::certificate::FINITE_QUERY_MAX_ATOMS_PER_DISJUNCT
+                ));
+            }
             if multi_context {
                 disjunct_reasons.push(
                     "cannot certify multi-context scoping yet; use a single `in <context>`"
@@ -608,6 +816,15 @@ impl AxqlQuery {
                     AxqlAtom::AttrFuzzy { .. } => {
                         disjunct_reasons.push(
                             "cannot certify `fuzzy(...)` atoms (approximate querying is not in the certified core)"
+                                .to_string(),
+                        );
+                    }
+                    AxqlAtom::Edge { path, .. }
+                        if self.max_hops.is_none()
+                            && regex_requires_explicit_hop_bound(&path.regex) =>
+                    {
+                        disjunct_reasons.push(
+                            "finite exact certification requires max_hops for `*` or `+` path repetition"
                                 .to_string(),
                         );
                     }
@@ -647,6 +864,7 @@ impl AxqlQuery {
 }
 
 pub fn parse_axql_query(input: &str) -> Result<AxqlQuery> {
+    validate_surface_nesting(input, MAX_AXQL_TEXT_BYTES, "AxQL query")?;
     let (_, mut q) = all_consuming(ws(axql_query))(input)
         .map_err(|e| anyhow!("failed to parse axql query: {e:?}"))?;
     if let Some(c) = q.min_confidence {
@@ -658,12 +876,20 @@ pub fn parse_axql_query(input: &str) -> Result<AxqlQuery> {
         // Defensive normalization: keep it within bounds for downstream comparisons.
         q.min_confidence = Some(c.clamp(0.0, 1.0));
     }
+    validate_query_resource_limits(&q)?;
     Ok(q)
 }
 
 pub fn parse_axql_path_expr(input: &str) -> Result<AxqlPathExpr> {
+    validate_surface_nesting(input, MAX_AXQL_PATH_BYTES, "AxQL path expression")?;
     let (_, p) = all_consuming(ws(path_expr))(input)
         .map_err(|e| anyhow!("failed to parse axql path expr: {e:?}"))?;
+    let nodes = regex_shape(&p.regex, 1)?;
+    if nodes > MAX_QUERY_REGEX_NODES {
+        return Err(anyhow!(
+            "query regular-expression nodes exceed {MAX_QUERY_REGEX_NODES}"
+        ));
+    }
     Ok(p)
 }
 
@@ -682,9 +908,15 @@ pub fn follow_path_expr(
     rpq.reachable_set(db, 0, start)
 }
 
-pub fn execute_axql_query(db: &axiograph_pathdb::PathDB, query: &AxqlQuery) -> Result<AxqlResult> {
+#[cfg(test)]
+pub(crate) fn execute_compiled_query_for_test(
+    db: &axiograph_pathdb::PathDB,
+    query: &AxqlQuery,
+) -> Result<AxqlResult> {
     let meta = MetaPlaneIndex::from_db(db)?;
-    execute_axql_query_with_meta(db, query, Some(&meta))
+    let query_ir = crate::query_ir::QueryIrV1::from_axql_query(query);
+    let mut compiled = query_ir.compile_with_meta(db, Some(&meta))?;
+    compiled.execute(db, Some(&meta))
 }
 
 /// Compute a stable digest for an AxQL query IR.
@@ -706,7 +938,7 @@ pub fn axql_query_ir_digest_v1(query: &AxqlQuery) -> String {
     );
     let _ = write!(&mut s, "disjuncts={:?};", query.disjuncts);
 
-    axiograph_dsl::digest::axi_digest_v1(&s)
+    axiograph_kernel::revision_digest_v2(&s)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -716,7 +948,7 @@ pub(crate) struct AxqlQueryCacheKey {
 }
 
 pub(crate) struct AxqlPreparedQueryCache {
-    entries: HashMap<AxqlQueryCacheKey, PreparedQueryHandle>,
+    entries: HashMap<AxqlQueryCacheKey, CompiledFiniteQueryPlan>,
     lru: std::collections::VecDeque<AxqlQueryCacheKey>,
     max_entries: usize,
 }
@@ -744,7 +976,10 @@ impl AxqlPreparedQueryCache {
         self.lru.push_back(key.clone());
     }
 
-    pub(crate) fn get_mut(&mut self, key: &AxqlQueryCacheKey) -> Option<&mut PreparedQueryHandle> {
+    pub(crate) fn get_mut(
+        &mut self,
+        key: &AxqlQueryCacheKey,
+    ) -> Option<&mut CompiledFiniteQueryPlan> {
         if self.entries.contains_key(key) {
             self.touch(key);
             return self.entries.get_mut(key);
@@ -752,7 +987,7 @@ impl AxqlPreparedQueryCache {
         None
     }
 
-    pub(crate) fn insert(&mut self, key: AxqlQueryCacheKey, value: PreparedQueryHandle) {
+    pub(crate) fn insert(&mut self, key: AxqlQueryCacheKey, value: CompiledFiniteQueryPlan) {
         self.entries.insert(key.clone(), value);
         self.touch(&key);
 
@@ -867,13 +1102,18 @@ struct PreparedAxqlQueryExpr {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PreparedQueryHandle {
+pub(crate) struct CompiledFiniteQueryPlan {
     inner: PreparedAxqlQueryExpr,
     certifiability: QueryCertifiability,
     context_count: usize,
+    db_token: DbToken,
+    meta_present: bool,
+    prepared_binding_v1: Option<PreparedQueryBindingV1>,
+    prepared_query_digest_v1: Option<QueryIdV2>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 enum PreparedAxqlQueryExprInner {
     Conjunction(PreparedAxqlQuery),
     Disjunction(PreparedAxqlDisjunction),
@@ -964,20 +1204,11 @@ impl TypecheckedLoweredQuery {
             elaboration: self.elaboration,
         })
     }
-
-    fn certify_v3(
-        self,
-        db: &axiograph_pathdb::PathDB,
-        meta: Option<&MetaPlaneIndex>,
-        axi_digest_v1: &str,
-    ) -> Result<CertificateV2> {
-        self.lowered
-            .certify_v3(db, meta, axi_digest_v1, &self.elaboration)
-    }
 }
 
 /// A typechecked AxQL query expression: either a single conjunctive query, or a
 /// disjunction (OR) of conjunctive branches.
+#[allow(clippy::large_enum_variant)]
 enum TypecheckedAxqlQueryExpr {
     Conjunction(TypecheckedLoweredQuery),
     Disjunction(Vec<TypecheckedLoweredQuery>),
@@ -1123,6 +1354,16 @@ impl PreparedAxqlQuery {
             }));
         }
 
+        if self.lowered.limit == 0 {
+            // Fixed V4 semantics: a zero row budget returns no rows and reports
+            // the cap conservatively, including for Boolean queries.
+            return Ok(AxqlResult {
+                selected_vars: self.lowered.select_vars.clone(),
+                rows: Vec::new(),
+                truncated: true,
+            });
+        }
+
         if self.lowered.vars.is_empty() {
             let ok = self.lowered.check_grounded(db, &mut self.rpq, meta)?;
             let rows = if ok { vec![BTreeMap::new()] } else { vec![] };
@@ -1133,16 +1374,21 @@ impl PreparedAxqlQuery {
             });
         }
 
-        if let Some(result) = self
+        if let Some(mut result) = self
             .lowered
             .fast_single_path_query(db, &mut self.rpq, meta)?
         {
+            if self.lowered.select_vars.is_empty() && result.rows.len() > 1 {
+                result.rows.truncate(1);
+                result.truncated = true;
+            }
             return Ok(result);
         }
 
         let mut assigned: Vec<Option<u32>> = vec![None; self.lowered.vars.len()];
         let mut rows: Vec<BTreeMap<String, u32>> = Vec::new();
         let mut truncated = false;
+        let mut work_steps = 0_usize;
 
         self.lowered.search(
             db,
@@ -1153,9 +1399,15 @@ impl PreparedAxqlQuery {
             &mut assigned,
             &mut rows,
             &mut truncated,
+            &mut work_steps,
             &mut self.rpq,
             meta,
         )?;
+
+        if self.lowered.select_vars.is_empty() && rows.len() > 1 {
+            rows.truncate(1);
+            truncated = true;
+        }
 
         Ok(AxqlResult {
             selected_vars: self.lowered.select_vars.clone(),
@@ -1338,7 +1590,7 @@ impl PreparedAxqlQuery {
     }
 }
 
-impl PreparedQueryHandle {
+impl CompiledFiniteQueryPlan {
     pub(crate) fn execute(
         &mut self,
         db: &axiograph_pathdb::PathDB,
@@ -1373,7 +1625,7 @@ impl PreparedQueryHandle {
                 out.push(format!("disjunction: {} branch(es)", q.disjuncts.len()));
                 for (i, d) in q.disjuncts.iter().enumerate() {
                     out.push(format!("branch {}:", i + 1));
-                    out.extend(d.explain_plan_lines(Some("  ")).into_iter());
+                    out.extend(d.explain_plan_lines(Some("  ")));
                 }
                 out
             }
@@ -1382,6 +1634,22 @@ impl PreparedQueryHandle {
 
     pub(crate) fn certifiability(&self) -> QueryCertifiability {
         self.certifiability.clone()
+    }
+
+    pub(crate) fn db_token(&self) -> DbToken {
+        self.db_token
+    }
+
+    pub(crate) fn meta_present(&self) -> bool {
+        self.meta_present
+    }
+
+    pub(crate) fn prepared_binding_v1(&self) -> Option<&PreparedQueryBindingV1> {
+        self.prepared_binding_v1.as_ref()
+    }
+
+    pub(crate) fn prepared_query_digest_v1(&self) -> Option<&QueryIdV2> {
+        self.prepared_query_digest_v1.as_ref()
     }
 
     pub(crate) fn introspection(&self) -> PreparedQueryIntrospection {
@@ -1411,20 +1679,203 @@ impl PreparedQueryHandle {
         out
     }
 
-    pub(crate) fn certify_typed_with_anchor(
+    /// Emit the only executable certificate family directly from the stored
+    /// compiled finite query. No diagnostic text is reparsed and no second
+    /// query representation is accepted.
+    pub(crate) fn certify_typed_v4_with_anchor(
         &self,
         db: &axiograph_pathdb::PathDB,
-        query: &AxqlQuery,
         meta: Option<&MetaPlaneIndex>,
-        axi_digest_v1: &str,
-    ) -> Result<CertificateV2> {
-        if query.contexts.len() > 1 {
+        module_digest_v2: RevisionDigestV2,
+    ) -> Result<CertificateV3> {
+        let actual = db.db_token();
+        if self.db_token != actual {
+            return Err(anyhow!(DbTokenMismatch {
+                expected: self.db_token,
+                actual,
+            }));
+        }
+        if self.meta_present != meta.is_some() {
             return Err(anyhow!(
-                "cannot certify multi-context scoping yet; use a single `in <context>`"
+                "prepared query meta-plane state differs from certification state"
             ));
         }
-        certify_axql_query_typed_with_meta(db, query, meta, axi_digest_v1)
+
+        let (rows, runtime_truncated) = match &self.inner.inner {
+            PreparedAxqlQueryExprInner::Conjunction(prepared) => {
+                prepared.lowered.finite_witness_rows(db, meta)?
+            }
+            PreparedAxqlQueryExprInner::Disjunction(prepared) => {
+                finite_disjunction_witness_rows(prepared, db, meta)?
+            }
+        };
+        if runtime_truncated {
+            return Err(anyhow!(
+                "query_result_v4 exact finite completeness requires an untruncated answer; raise the query limit"
+            ));
+        }
+
+        let prepared_binding_v1 = self
+            .prepared_binding_v1
+            .as_ref()
+            .ok_or_else(|| anyhow!("prepared query has no certifiable lowered binding"))?;
+        // Rust can validate syntax here, but only Lean reconstructs the exact
+        // canonical object/fact universe from accepted `.axi` bytes. Pass the
+        // neutral count for the runtime-side preflight; the trusted checker
+        // enforces the real Cartesian-assignment bound.
+        axiograph_pathdb::certificate::validate_finite_exact_fragment(prepared_binding_v1, 1)
+            .map_err(anyhow::Error::msg)?;
+        let prepared_query_digest_v1 = prepared_binding_v1
+            .digest_v1()
+            .map_err(anyhow::Error::msg)?;
+        if Some(&prepared_query_digest_v1) != self.prepared_query_digest_v1.as_ref() {
+            return Err(anyhow!(
+                "stored prepared-query digest no longer matches its binding"
+            ));
+        }
+        let answer_digest_v1 =
+            answer_digest_v1(prepared_binding_v1, &prepared_query_digest_v1, &rows, false)
+                .map_err(anyhow::Error::msg)?;
+        let proof = QueryResultProofV4 {
+            binding: prepared_binding_v1.clone(),
+            prepared_query_digest_v1,
+            rows,
+            runtime_truncated: false,
+            answer_digest_v1,
+        };
+        CertificateV3::query_result_v4(CertificateAnchorV2::new(module_digest_v2), proof)
+            .map_err(anyhow::Error::msg)
     }
+}
+
+fn prepared_binding_v1_from_expr(
+    prepared: &PreparedAxqlQueryExpr,
+    db: &axiograph_pathdb::PathDB,
+) -> Result<PreparedQueryBindingV1> {
+    let (select_vars, disjuncts, max_hops, min_confidence_fp, row_limit) = match &prepared.inner {
+        PreparedAxqlQueryExprInner::Conjunction(query) => (
+            query.lowered.select_vars.clone(),
+            vec![query.lowered.to_finite_query_v4_disjunct(db)?],
+            query.lowered.max_hops,
+            query.lowered.min_confidence.map(fixed_prob_from_confidence),
+            query.lowered.limit,
+        ),
+        PreparedAxqlQueryExprInner::Disjunction(query) => {
+            let mut disjuncts = Vec::with_capacity(query.disjuncts.len());
+            let mut max_hops = None;
+            let mut min_confidence_fp = None;
+            for (index, disjunct) in query.disjuncts.iter().enumerate() {
+                if index == 0 {
+                    max_hops = disjunct.lowered.max_hops;
+                    min_confidence_fp = disjunct
+                        .lowered
+                        .min_confidence
+                        .map(fixed_prob_from_confidence);
+                } else if disjunct.lowered.max_hops != max_hops
+                    || disjunct
+                        .lowered
+                        .min_confidence
+                        .map(fixed_prob_from_confidence)
+                        != min_confidence_fp
+                {
+                    return Err(anyhow!(
+                        "stored disjuncts disagree on max_hops or min_confidence"
+                    ));
+                }
+                disjuncts.push(disjunct.lowered.to_finite_query_v4_disjunct(db)?);
+            }
+            (
+                query.select_vars.clone(),
+                disjuncts,
+                max_hops,
+                min_confidence_fp,
+                query.limit,
+            )
+        }
+    };
+    let row_limit = u64::try_from(row_limit)
+        .map_err(|_| anyhow!("prepared query row limit does not fit u64"))?;
+    Ok(PreparedQueryBindingV1::new(
+        FiniteQueryV4 {
+            select_vars,
+            disjuncts,
+            max_hops,
+            min_confidence_fp,
+        },
+        row_limit,
+    ))
+}
+
+fn finite_disjunction_witness_rows(
+    prepared: &PreparedAxqlDisjunction,
+    db: &axiograph_pathdb::PathDB,
+    meta: Option<&MetaPlaneIndex>,
+) -> Result<(Vec<FiniteQueryRowV4>, bool)> {
+    let binding = prepared_binding_v1_from_expr(
+        &PreparedAxqlQueryExpr {
+            inner: PreparedAxqlQueryExprInner::Disjunction(prepared.clone()),
+        },
+        db,
+    )?;
+    let requested_limit = usize::try_from(binding.row_limit)
+        .map_err(|_| anyhow!("prepared query row limit does not fit usize"))?;
+    let limit = if binding.query.select_vars.is_empty() {
+        requested_limit.min(1)
+    } else {
+        requested_limit
+    };
+    let mut rows = Vec::new();
+    let mut truncated = limit == 0;
+    for (disjunct_index, disjunct) in prepared.disjuncts.iter().enumerate() {
+        if rows.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let mut lowered = disjunct.lowered.clone();
+        lowered.limit = limit - rows.len();
+        let (disjunct_rows, disjunct_truncated) = lowered.finite_witness_rows(db, meta)?;
+        for row in disjunct_rows {
+            if rows.len() >= limit {
+                truncated = true;
+                break;
+            }
+            rows.push(FiniteQueryRowV4 {
+                disjunct: u32::try_from(disjunct_index).unwrap_or(u32::MAX),
+                bindings: row.bindings,
+                witnesses: row.witnesses,
+            });
+        }
+        truncated |= disjunct_truncated;
+        if truncated {
+            break;
+        }
+    }
+
+    Ok((rows, truncated))
+}
+
+pub(crate) fn stable_selected_rows_from_result_v1(
+    db: &axiograph_pathdb::PathDB,
+    result: &AxqlResult,
+) -> Result<Vec<StableSelectedRowV1>> {
+    result
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let mut projections = Vec::with_capacity(result.selected_vars.len());
+            for selected in &result.selected_vars {
+                let entity = row.get(selected).ok_or_else(|| {
+                    anyhow!("runtime row {row_index} is missing selected variable `{selected}`")
+                })?;
+                projections.push(FiniteQueryBindingV4 {
+                    var: selected.clone(),
+                    entity: witness::stable_entity_id_v1(db, *entity)?,
+                });
+            }
+            Ok(StableSelectedRowV1 { projections })
+        })
+        .collect()
 }
 
 impl PreparedAxqlDisjunction {
@@ -1435,15 +1886,20 @@ impl PreparedAxqlDisjunction {
     ) -> Result<AxqlResult> {
         let mut rows: Vec<BTreeMap<String, u32>> = Vec::new();
         let mut truncated = false;
+        let effective_limit = if self.select_vars.is_empty() {
+            self.limit.min(1)
+        } else {
+            self.limit
+        };
 
         for disjunct in &mut self.disjuncts {
-            if rows.len() >= self.limit {
+            if rows.len() >= effective_limit {
                 truncated = true;
                 break;
             }
             let result = disjunct.execute(db, meta)?;
             for row in result.rows {
-                if rows.len() >= self.limit {
+                if rows.len() >= effective_limit {
                     truncated = true;
                     break;
                 }
@@ -1481,16 +1937,32 @@ pub(crate) fn prepare_axql_query_with_meta(
     db: &axiograph_pathdb::PathDB,
     query: &AxqlQuery,
     meta: Option<&MetaPlaneIndex>,
-) -> Result<PreparedQueryHandle> {
-    Ok(PreparedQueryHandle {
-        inner: TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?.prepare(
-            db,
-            meta,
-            query.select_vars.clone(),
-            query.limit,
-        )?,
-        certifiability: query.certifiability(),
+) -> Result<CompiledFiniteQueryPlan> {
+    validate_query_resource_limits(query)?;
+    let inner = TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?.prepare(
+        db,
+        meta,
+        query.select_vars.clone(),
+        query.limit,
+    )?;
+    let certifiability = query.certifiability();
+    let prepared_binding_v1 = if certifiability.is_certifiable() {
+        Some(prepared_binding_v1_from_expr(&inner, db)?)
+    } else {
+        None
+    };
+    let prepared_query_digest_v1 = prepared_binding_v1
+        .as_ref()
+        .map(|binding| binding.digest_v1().map_err(anyhow::Error::msg))
+        .transpose()?;
+    Ok(CompiledFiniteQueryPlan {
+        inner,
+        certifiability,
         context_count: query.contexts.len(),
+        db_token: db.db_token(),
+        meta_present: meta.is_some(),
+        prepared_binding_v1,
+        prepared_query_digest_v1,
     })
 }
 
@@ -1498,7 +1970,7 @@ pub(crate) fn prepare_query_ir_handle_with_meta(
     db: &axiograph_pathdb::PathDB,
     query_ir: &crate::query_ir::QueryIrV1,
     meta: Option<&MetaPlaneIndex>,
-) -> Result<PreparedQueryHandle> {
+) -> Result<CompiledFiniteQueryPlan> {
     let query = query_ir.to_axql_query()?;
     prepare_axql_query_with_meta(db, &query, meta)
 }
@@ -1509,7 +1981,7 @@ pub(crate) fn get_or_prepare_axql_query_handle_mut<'a>(
     meta: Option<&MetaPlaneIndex>,
     snapshot_key: &str,
     cache: &'a mut AxqlPreparedQueryCache,
-) -> Result<&'a mut PreparedQueryHandle> {
+) -> Result<&'a mut CompiledFiniteQueryPlan> {
     let key = axql_query_cache_key(snapshot_key, query);
     if !cache.entries.contains_key(&key) {
         let prepared = prepare_axql_query_with_meta(db, query, meta)?;
@@ -1518,147 +1990,6 @@ pub(crate) fn get_or_prepare_axql_query_handle_mut<'a>(
     cache
         .get_mut(&key)
         .ok_or_else(|| anyhow!("query cache insert failed"))
-}
-
-/// Execute an AxQL query with an optional precomputed meta-plane index.
-///
-/// This is primarily used by the REPL to avoid rebuilding the `.axi` meta-plane
-/// index on every query when repeatedly querying the same snapshot.
-pub fn execute_axql_query_with_meta(
-    db: &axiograph_pathdb::PathDB,
-    query: &AxqlQuery,
-    meta: Option<&MetaPlaneIndex>,
-) -> Result<AxqlResult> {
-    let mut prepared = prepare_axql_query_with_meta(db, query, meta)?;
-    prepared.execute(db, meta)
-}
-
-/// Emit the canonical `.axi`-anchored typed query witness path with an optional
-/// precomputed meta-plane index.
-///
-/// This format is intended to make certificates verifiable against canonical
-/// `.axi` inputs without requiring a `PathDBExportV1` snapshot export as an
-/// anchor.
-pub fn certify_axql_query_typed_with_meta(
-    db: &axiograph_pathdb::PathDB,
-    query: &AxqlQuery,
-    meta: Option<&MetaPlaneIndex>,
-    axi_digest_v1: &str,
-) -> Result<CertificateV2> {
-    if query.contexts.len() > 1 {
-        return Err(anyhow!(
-            "cannot certify multi-context scoping yet; use a single `in <context>`"
-        ));
-    }
-
-    let expr = TypecheckedAxqlQueryExpr::from_parsed(db, query, meta)?;
-    match expr {
-        TypecheckedAxqlQueryExpr::Conjunction(q) => q.certify_v3(db, meta, axi_digest_v1),
-        TypecheckedAxqlQueryExpr::Disjunction(disjuncts) => {
-            certify_disjunctive_query_v3(db, disjuncts, meta, query.limit, axi_digest_v1)
-        }
-    }
-}
-
-fn certify_disjunctive_query_v3(
-    db: &axiograph_pathdb::PathDB,
-    disjuncts: Vec<TypecheckedLoweredQuery>,
-    meta: Option<&MetaPlaneIndex>,
-    limit: usize,
-    axi_digest_v1: &str,
-) -> Result<CertificateV2> {
-    if disjuncts.is_empty() {
-        return Err(anyhow!("AxQL query must have at least one disjunct"));
-    }
-
-    // For a UCQ (union of conjunctive queries), the natural “implicit select”
-    // semantics is: return only variables common to all branches.
-    let mut select_vars = disjuncts
-        .first()
-        .map(|d| d.lowered.select_vars.clone())
-        .unwrap_or_default();
-    for d in &disjuncts[1..] {
-        let set: HashSet<&str> = d.lowered.select_vars.iter().map(|s| s.as_str()).collect();
-        select_vars.retain(|v| set.contains(v.as_str()));
-    }
-
-    let mut query_disjuncts: Vec<Vec<QueryAtomV3>> = Vec::with_capacity(disjuncts.len());
-    let mut max_hops: Option<u32> = None;
-    let mut min_confidence_fp: Option<FixedPointProbability> = None;
-    for (i, d) in disjuncts.iter().enumerate() {
-        let q = d.lowered.to_query_ir_v3_disjunct(db)?;
-        if i == 0 {
-            max_hops = d.lowered.max_hops;
-            min_confidence_fp = d.lowered.min_confidence.map(fixed_prob_from_confidence);
-        } else {
-            if d.lowered.max_hops != max_hops {
-                return Err(anyhow!(
-                    "internal error: disjunct max_hops mismatch (expected {max_hops:?}, got {:?})",
-                    d.lowered.max_hops
-                ));
-            }
-            if d.lowered.min_confidence.map(fixed_prob_from_confidence) != min_confidence_fp {
-                return Err(anyhow!(
-                    "internal error: disjunct min_confidence mismatch (expected {min_confidence_fp:?}, got {:?})",
-                    d.lowered.min_confidence.map(fixed_prob_from_confidence)
-                ));
-            }
-        }
-        query_disjuncts.push(q);
-    }
-
-    let query = QueryV3 {
-        select_vars,
-        disjuncts: query_disjuncts,
-        max_hops,
-        min_confidence_fp,
-    };
-
-    let mut rows: Vec<QueryRowV3> = Vec::new();
-    let mut truncated = rows.len() >= limit;
-    let mut elaboration_rewrites: Vec<RewriteDerivationProofV3> = Vec::new();
-
-    for (i, mut d) in disjuncts.into_iter().enumerate() {
-        if rows.len() >= limit {
-            truncated = true;
-            break;
-        }
-
-        let remaining = limit - rows.len();
-        d.lowered.limit = remaining;
-
-        let cert = d
-            .lowered
-            .certify_v3(db, meta, axi_digest_v1, &d.elaboration)?;
-        let proof = match cert.payload {
-            CertificatePayloadV2::QueryResultV3 { proof } => proof,
-            other => {
-                return Err(anyhow!(
-                    "internal error: expected typed query witness from conjunctive certifier, got {other:?}"
-                ))
-            }
-        };
-
-        elaboration_rewrites.extend(proof.elaboration_rewrites.iter().cloned());
-        for row in proof.rows {
-            if rows.len() >= limit {
-                truncated = true;
-                break;
-            }
-            rows.push(QueryRowV3 {
-                disjunct: u32::try_from(i).unwrap_or(u32::MAX),
-                bindings: row.bindings,
-                witnesses: row.witnesses,
-            });
-        }
-    }
-
-    Ok(CertificateV2::query_result_v3(QueryResultProofV3 {
-        query,
-        rows,
-        truncated,
-        elaboration_rewrites,
-    }))
 }
 
 // =============================================================================
@@ -2313,7 +2644,7 @@ fn tag_no_case<'a>(s: &'static str) -> impl FnMut(&'a str) -> IResult<&'a str, &
                     nom::error::ErrorKind::Tag,
                 )));
             };
-            if got.to_ascii_lowercase() != expected.to_ascii_lowercase() {
+            if !got.eq_ignore_ascii_case(&expected) {
                 return Err(nom::Err::Error(nom::error::Error::new(
                     input,
                     nom::error::ErrorKind::Tag,
@@ -2423,7 +2754,7 @@ fn lower_query_disjunct(query: &AxqlQuery, disjunct: &[AxqlAtom]) -> Result<Lowe
                         return Err(anyhow!("fact binder must be a variable (got {other:?})"))
                     }
                     None => {
-                        let name = format!("?_fact{}", fresh_anon);
+                        let name = format!("?_fact{fresh_anon}");
                         fresh_anon += 1;
                         AxqlTerm::Var(name)
                     }
@@ -3252,6 +3583,7 @@ fn substitute_rewrite_endpoints_v3(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_chain_rewrites<'a>(
     chain: &[String],
     rules: &'a [ChainRewriteRule],
@@ -4613,7 +4945,7 @@ impl LoweredQuery {
                                     resolved.clear();
                                     break;
                                 };
-                                resolved.push((format!("{rel}"), schema_name, src_type, dst_type));
+                                resolved.push((rel.to_string(), schema_name, src_type, dst_type));
                                 if i >= 32 {
                                     // Defensive cap: elaboration should stay cheap.
                                     break;
@@ -4903,29 +5235,24 @@ impl LoweredQuery {
         Ok(rewrites)
     }
 
-    fn certify_v3(
+    /// Build witness rows for the canonical finite query certificate family.
+    ///
+    /// This is not a second certificate API: callers can only place these rows
+    /// inside `query_result_v4`, where Lean recomputes the exact finite
+    /// denotation and checks completeness as well as every witness.
+    fn finite_witness_rows(
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&MetaPlaneIndex>,
-        axi_digest_v1: &str,
-        elaboration: &AxqlElaborationReport,
-    ) -> Result<CertificateV2> {
+    ) -> Result<(Vec<FiniteQueryRowV4>, bool)> {
         let mut rpq = RpqContext::new(db, &self.rpqs, self.max_hops, self.min_confidence)?;
+        let mut rows: Vec<FiniteQueryRowV4> = Vec::new();
 
-        let disjunct_atoms = self.to_query_ir_v3_disjunct(db)?;
-        let query = QueryV3 {
-            select_vars: self.select_vars.clone(),
-            disjuncts: vec![disjunct_atoms],
-            max_hops: self.max_hops,
-            min_confidence_fp: self.min_confidence.map(fixed_prob_from_confidence),
-        };
-
-        let mut rows: Vec<QueryRowV3> = Vec::new();
-
-        let truncated = if self.vars.is_empty() {
-            // Boolean query: either 0 or 1 row, with no bindings.
+        let truncated = if self.limit == 0 {
+            true
+        } else if self.vars.is_empty() {
             if let Some(witnesses) = self.witnesses_for_assignment_v3(db, &[], &mut rpq, meta)? {
-                rows.push(QueryRowV3 {
+                rows.push(FiniteQueryRowV4 {
                     disjunct: 0,
                     bindings: Vec::new(),
                     witnesses,
@@ -4933,20 +5260,23 @@ impl LoweredQuery {
             }
             false
         } else {
-            let (assignments, truncated) = self.execute_assignments(db, &mut rpq, meta)?;
+            let (mut assignments, mut truncated) = self.execute_assignments(db, &mut rpq, meta)?;
+            if self.select_vars.is_empty() && assignments.len() > 1 {
+                assignments.truncate(1);
+                truncated = true;
+            }
             for assignment in assignments {
                 let bindings = self
                     .vars
                     .iter()
                     .zip(assignment.iter().copied())
                     .map(|(var, entity)| {
-                        Ok(QueryBindingV3 {
+                        Ok(FiniteQueryBindingV4 {
                             var: var.clone(),
                             entity: witness::stable_entity_id_v1(db, entity)?,
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
-
                 let Some(witnesses) =
                     self.witnesses_for_assignment_v3(db, &assignment, &mut rpq, meta)?
                 else {
@@ -4954,7 +5284,7 @@ impl LoweredQuery {
                         "internal error: assignment from search does not satisfy constraints"
                     ));
                 };
-                rows.push(QueryRowV3 {
+                rows.push(FiniteQueryRowV4 {
                     disjunct: 0,
                     bindings,
                     witnesses,
@@ -4963,96 +5293,79 @@ impl LoweredQuery {
             truncated
         };
 
-        let proof = QueryResultProofV3 {
-            query,
-            rows,
-            truncated,
-            elaboration_rewrites: elaboration
-                .elaboration_rewrites
-                .iter()
-                .map(|step| RewriteDerivationProofV3 {
-                    input: step.input.clone(),
-                    output: step.output.clone(),
-                    derivation: vec![PathRewriteStepV3 {
-                        pos: Vec::new(),
-                        rule_ref: format!(
-                            "axi:{}:{}:{}",
-                            axi_digest_v1, step.theory_name, step.rule_name
-                        ),
-                    }],
-                })
-                .collect(),
-        };
-        Ok(CertificateV2::query_result_v3(proof))
+        Ok((rows, truncated))
     }
 
-    fn to_query_ir_v3_disjunct(&self, db: &axiograph_pathdb::PathDB) -> Result<Vec<QueryAtomV3>> {
+    fn to_finite_query_v4_disjunct(
+        &self,
+        db: &axiograph_pathdb::PathDB,
+    ) -> Result<Vec<FiniteQueryAtomV4>> {
         self.atoms
             .iter()
-            .map(|a| self.atom_to_query_ir_v3(db, a))
+            .map(|a| self.atom_to_finite_query_v4(db, a))
             .collect::<Result<Vec<_>>>()
     }
 
-    fn term_to_query_ir_v3(
+    fn term_to_finite_query_v4(
         &self,
         db: &axiograph_pathdb::PathDB,
         term: &LoweredTerm,
-    ) -> Result<QueryTermV3> {
+    ) -> Result<FiniteQueryTermV4> {
         Ok(match term {
-            LoweredTerm::Var(v) => QueryTermV3::Var {
+            LoweredTerm::Var(v) => FiniteQueryTermV4::Var {
                 name: self
                     .vars
                     .get(*v)
                     .cloned()
                     .unwrap_or_else(|| format!("?v{v}")),
             },
-            LoweredTerm::Const(entity) => QueryTermV3::Const {
+            LoweredTerm::Const(entity) => FiniteQueryTermV4::Const {
                 entity: witness::stable_entity_id_v1(db, *entity)?,
             },
         })
     }
 
-    fn regex_to_query_ir_v3(&self, regex: &AxqlRegex) -> QueryRegexV3 {
+    fn regex_to_finite_query_v4(regex: &AxqlRegex) -> FiniteQueryRegexV4 {
         match regex {
-            AxqlRegex::Epsilon => QueryRegexV3::Epsilon,
-            AxqlRegex::Rel(r) => QueryRegexV3::Rel { rel: r.clone() },
-            AxqlRegex::Seq(parts) => QueryRegexV3::Seq {
-                parts: parts.iter().map(|p| self.regex_to_query_ir_v3(p)).collect(),
+            AxqlRegex::Epsilon => FiniteQueryRegexV4::Epsilon,
+            AxqlRegex::Rel(r) => FiniteQueryRegexV4::Rel { rel: r.clone() },
+            AxqlRegex::Seq(parts) => FiniteQueryRegexV4::Seq {
+                parts: parts.iter().map(Self::regex_to_finite_query_v4).collect(),
             },
-            AxqlRegex::Alt(parts) => QueryRegexV3::Alt {
-                parts: parts.iter().map(|p| self.regex_to_query_ir_v3(p)).collect(),
+            AxqlRegex::Alt(parts) => FiniteQueryRegexV4::Alt {
+                parts: parts.iter().map(Self::regex_to_finite_query_v4).collect(),
             },
-            AxqlRegex::Star(inner) => QueryRegexV3::Star {
-                inner: Box::new(self.regex_to_query_ir_v3(inner)),
+            AxqlRegex::Star(inner) => FiniteQueryRegexV4::Star {
+                inner: Box::new(Self::regex_to_finite_query_v4(inner)),
             },
-            AxqlRegex::Plus(inner) => QueryRegexV3::Plus {
-                inner: Box::new(self.regex_to_query_ir_v3(inner)),
+            AxqlRegex::Plus(inner) => FiniteQueryRegexV4::Plus {
+                inner: Box::new(Self::regex_to_finite_query_v4(inner)),
             },
-            AxqlRegex::Opt(inner) => QueryRegexV3::Opt {
-                inner: Box::new(self.regex_to_query_ir_v3(inner)),
+            AxqlRegex::Opt(inner) => FiniteQueryRegexV4::Opt {
+                inner: Box::new(Self::regex_to_finite_query_v4(inner)),
             },
         }
     }
 
-    fn atom_to_query_ir_v3(
+    fn atom_to_finite_query_v4(
         &self,
         db: &axiograph_pathdb::PathDB,
         atom: &LoweredAtom,
-    ) -> Result<QueryAtomV3> {
+    ) -> Result<FiniteQueryAtomV4> {
         match atom {
-            LoweredAtom::Type { term, type_name } => Ok(QueryAtomV3::Type {
-                term: self.term_to_query_ir_v3(db, term)?,
+            LoweredAtom::Type { term, type_name } => Ok(FiniteQueryAtomV4::Type {
+                term: self.term_to_finite_query_v4(db, term)?,
                 type_name: type_name.clone(),
             }),
-            LoweredAtom::AttrEq { term, key, value } => Ok(QueryAtomV3::AttrEq {
-                term: self.term_to_query_ir_v3(db, term)?,
+            LoweredAtom::AttrEq { term, key, value } => Ok(FiniteQueryAtomV4::AttrEq {
+                term: self.term_to_finite_query_v4(db, term)?,
                 key: key.clone(),
                 value: value.clone(),
             }),
-            LoweredAtom::Edge { left, rel, right } => Ok(QueryAtomV3::Path {
-                left: self.term_to_query_ir_v3(db, left)?,
-                regex: QueryRegexV3::Rel { rel: rel.clone() },
-                right: self.term_to_query_ir_v3(db, right)?,
+            LoweredAtom::Edge { left, rel, right } => Ok(FiniteQueryAtomV4::Path {
+                left: self.term_to_finite_query_v4(db, left)?,
+                regex: FiniteQueryRegexV4::Rel { rel: rel.clone() },
+                right: self.term_to_finite_query_v4(db, right)?,
             }),
             LoweredAtom::Rpq {
                 left,
@@ -5063,10 +5376,10 @@ impl LoweredQuery {
                     .rpqs
                     .get(*rpq_id)
                     .ok_or_else(|| anyhow!("invalid rpq_id {rpq_id}"))?;
-                Ok(QueryAtomV3::Path {
-                    left: self.term_to_query_ir_v3(db, left)?,
-                    regex: self.regex_to_query_ir_v3(regex),
-                    right: self.term_to_query_ir_v3(db, right)?,
+                Ok(FiniteQueryAtomV4::Path {
+                    left: self.term_to_finite_query_v4(db, left)?,
+                    regex: Self::regex_to_finite_query_v4(regex),
+                    right: self.term_to_finite_query_v4(db, right)?,
                 })
             }
             other => Err(anyhow!(
@@ -5269,6 +5582,7 @@ impl LoweredQuery {
         let mut assigned: Vec<Option<u32>> = vec![None; self.vars.len()];
         let mut assignments: Vec<Vec<u32>> = Vec::new();
         let mut truncated = false;
+        let mut work_steps = 0_usize;
 
         self.search_assignments(
             db,
@@ -5279,6 +5593,7 @@ impl LoweredQuery {
             &mut assigned,
             &mut assignments,
             &mut truncated,
+            &mut work_steps,
             rpq,
             meta,
         )?;
@@ -5286,6 +5601,7 @@ impl LoweredQuery {
         Ok((assignments, truncated))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn search_assignments(
         &self,
         db: &axiograph_pathdb::PathDB,
@@ -5296,6 +5612,7 @@ impl LoweredQuery {
         assigned: &mut [Option<u32>],
         out: &mut Vec<Vec<u32>>,
         truncated: &mut bool,
+        work_steps: &mut usize,
         rpq: &mut RpqContext,
         meta: Option<&MetaPlaneIndex>,
     ) -> Result<()> {
@@ -5306,8 +5623,8 @@ impl LoweredQuery {
 
         if idx == order.len() {
             let mut row: Vec<u32> = Vec::with_capacity(self.vars.len());
-            for v in 0..self.vars.len() {
-                let Some(value) = assigned[v] else {
+            for (v, assigned_value) in assigned.iter().enumerate().take(self.vars.len()) {
+                let Some(value) = *assigned_value else {
                     return Err(anyhow!(
                         "internal error: missing assignment for var {}",
                         self.vars[v]
@@ -5321,6 +5638,12 @@ impl LoweredQuery {
 
         let var = order[idx];
         for value in candidates[var].iter() {
+            *work_steps = work_steps.saturating_add(1);
+            if *work_steps > MAX_QUERY_WORK_STEPS {
+                return Err(anyhow!(
+                    "query certificate enumeration exceeds {MAX_QUERY_WORK_STEPS} candidate steps"
+                ));
+            }
             assigned[var] = Some(value);
 
             if self.partial_check(db, candidates, assigned, rpq, atom_order, meta)? {
@@ -5333,6 +5656,7 @@ impl LoweredQuery {
                     assigned,
                     out,
                     truncated,
+                    work_steps,
                     rpq,
                     meta,
                 )?;
@@ -5354,8 +5678,8 @@ impl LoweredQuery {
         assignment: &[u32],
         rpq: &mut RpqContext,
         meta: Option<&MetaPlaneIndex>,
-    ) -> Result<Option<Vec<QueryAtomWitnessV3>>> {
-        let mut witnesses: Vec<QueryAtomWitnessV3> = Vec::with_capacity(self.atoms.len());
+    ) -> Result<Option<Vec<FiniteQueryAtomWitnessV4>>> {
+        let mut witnesses: Vec<FiniteQueryAtomWitnessV4> = Vec::with_capacity(self.atoms.len());
 
         for atom in &self.atoms {
             let wit = match atom {
@@ -5368,7 +5692,7 @@ impl LoweredQuery {
                     if !bitmap.contains(entity) {
                         return Ok(None);
                     }
-                    QueryAtomWitnessV3::Type {
+                    FiniteQueryAtomWitnessV4::Type {
                         entity: witness::stable_entity_id_v1(db, entity)?,
                         type_name: type_name.clone(),
                     }
@@ -5384,7 +5708,7 @@ impl LoweredQuery {
                     if db.entities.get_attr(entity, key_id) != Some(value_id) {
                         return Ok(None);
                     }
-                    QueryAtomWitnessV3::AttrEq {
+                    FiniteQueryAtomWitnessV4::AttrEq {
                         entity: witness::stable_entity_id_v1(db, entity)?,
                         key: key.clone(),
                         value: value.clone(),
@@ -5424,7 +5748,7 @@ impl LoweredQuery {
                         witness::reachability_proof_v3_from_relation_ids(db, src, &[relation_id])?
                             .into_inner_in_db(db)
                             .map_err(|e| anyhow!(e))?;
-                    QueryAtomWitnessV3::Path { proof }
+                    FiniteQueryAtomWitnessV4::Path { proof }
                 }
                 LoweredAtom::Rpq {
                     left,
@@ -5439,7 +5763,7 @@ impl LoweredQuery {
                     let proof = witness::reachability_proof_v3_from_relation_ids(db, src, &rel_ids)?
                         .into_inner_in_db(db)
                         .map_err(|e| anyhow!(e))?;
-                    QueryAtomWitnessV3::Path { proof }
+                    FiniteQueryAtomWitnessV4::Path { proof }
                 }
             };
 
@@ -5825,6 +6149,7 @@ impl LoweredQuery {
 
         let mut rows: Vec<BTreeMap<String, u32>> = Vec::new();
         let mut truncated = false;
+        let mut work_steps = 0_usize;
 
         self.search(
             db,
@@ -5835,6 +6160,7 @@ impl LoweredQuery {
             &mut assigned,
             &mut rows,
             &mut truncated,
+            &mut work_steps,
             &mut rpq,
             meta,
         )?;
@@ -6395,6 +6721,7 @@ impl LoweredQuery {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn search(
         &self,
         db: &axiograph_pathdb::PathDB,
@@ -6405,6 +6732,7 @@ impl LoweredQuery {
         assigned: &mut [Option<u32>],
         rows: &mut Vec<BTreeMap<String, u32>>,
         truncated: &mut bool,
+        work_steps: &mut usize,
         rpq: &mut RpqContext,
         meta: Option<&MetaPlaneIndex>,
     ) -> Result<()> {
@@ -6427,6 +6755,12 @@ impl LoweredQuery {
 
         let var = order[idx];
         for value in candidates[var].iter() {
+            *work_steps = work_steps.saturating_add(1);
+            if *work_steps > MAX_QUERY_WORK_STEPS {
+                return Err(anyhow!(
+                    "query execution work exceeds {MAX_QUERY_WORK_STEPS} candidate steps"
+                ));
+            }
             assigned[var] = Some(value);
 
             if self.partial_check(db, candidates, assigned, rpq, atom_order, meta)? {
@@ -6439,6 +6773,7 @@ impl LoweredQuery {
                     assigned,
                     rows,
                     truncated,
+                    work_steps,
                     rpq,
                     meta,
                 )?;
@@ -7183,6 +7518,8 @@ struct CompiledRpq {
     simple_chain: Option<Vec<String>>,
 }
 
+const MAX_RPQ_CACHE_ENTRIES: usize = 1024;
+
 #[derive(Debug, Clone, Default)]
 struct RpqCache {
     forward: HashMap<(u32, usize), RoaringBitmap>,
@@ -7251,8 +7588,13 @@ impl RpqContext {
                 source,
                 self.max_hops,
                 self.min_confidence,
-            )
+            )?
         };
+        if self.cache.forward.len() >= MAX_RPQ_CACHE_ENTRIES {
+            return Err(anyhow!(
+                "query RPQ forward cache exceeds {MAX_RPQ_CACHE_ENTRIES} entries"
+            ));
+        }
         self.cache.forward.insert((source, rpq_id), set.clone());
         Ok(set)
     }
@@ -7279,8 +7621,13 @@ impl RpqContext {
                 target,
                 self.max_hops,
                 self.min_confidence,
-            )
+            )?
         };
+        if self.cache.reverse.len() >= MAX_RPQ_CACHE_ENTRIES {
+            return Err(anyhow!(
+                "query RPQ reverse cache exceeds {MAX_RPQ_CACHE_ENTRIES} entries"
+            ));
+        }
         self.cache.reverse.insert((target, rpq_id), set.clone());
         Ok(set)
     }
@@ -7353,8 +7700,15 @@ impl RpqContext {
         }
 
         let mut found: Option<(u32, usize)> = None;
+        let mut work_steps = 0_usize;
 
         while let Some((node, st, depth)) = queue.pop_front() {
+            work_steps = work_steps.saturating_add(1);
+            if work_steps > MAX_QUERY_WORK_STEPS {
+                return Err(anyhow!(
+                    "query RPQ witness search exceeds {MAX_QUERY_WORK_STEPS} states"
+                ));
+            }
             if let Some(max) = self.max_hops {
                 if depth >= max {
                     continue;
@@ -7706,7 +8060,7 @@ fn eval_rpq_program_forward(
     start_node: u32,
     max_hops: Option<u32>,
     min_confidence: Option<f32>,
-) -> RoaringBitmap {
+) -> Result<RoaringBitmap> {
     eval_rpq_program_impl(
         db,
         program,
@@ -7723,7 +8077,7 @@ fn eval_rpq_program_reverse(
     target_node: u32,
     max_hops: Option<u32>,
     min_confidence: Option<f32>,
-) -> RoaringBitmap {
+) -> Result<RoaringBitmap> {
     eval_rpq_program_impl(
         db,
         program,
@@ -7747,7 +8101,7 @@ fn eval_rpq_program_impl(
     max_hops: Option<u32>,
     min_confidence: Option<f32>,
     dir: Direction,
-) -> RoaringBitmap {
+) -> Result<RoaringBitmap> {
     let n_states = program.nfa.states();
     let mut visited: Vec<RoaringBitmap> = (0..n_states).map(|_| RoaringBitmap::new()).collect();
     let mut queue: std::collections::VecDeque<(u32, usize, u32)> =
@@ -7760,8 +8114,15 @@ fn eval_rpq_program_impl(
     }
 
     let mut results = RoaringBitmap::new();
+    let mut work_steps = 0_usize;
 
     while let Some((node, st, depth)) = queue.pop_front() {
+        work_steps = work_steps.saturating_add(1);
+        if work_steps > MAX_QUERY_WORK_STEPS {
+            return Err(anyhow!(
+                "query RPQ evaluation exceeds {MAX_QUERY_WORK_STEPS} states"
+            ));
+        }
         if program.accepting[st] {
             results.insert(node);
         }
@@ -7794,7 +8155,7 @@ fn eval_rpq_program_impl(
         }
     }
 
-    results
+    Ok(results)
 }
 
 // =============================================================================
@@ -7804,8 +8165,24 @@ fn eval_rpq_program_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axiograph_pathdb::certificate::CertificatePayloadV2;
     use proptest::prelude::*;
+
+    fn certify_v4_for_test(
+        db: &axiograph_pathdb::PathDB,
+        query: &AxqlQuery,
+    ) -> Result<CertificateV3> {
+        let meta = MetaPlaneIndex::from_db(db)?;
+        let query_ir = crate::query_ir::QueryIrV1::from_axql_query(query);
+        let mut compiled = query_ir.compile_with_meta(db, Some(&meta))?;
+        let answer = compiled.execute_answer(db, Some(&meta))?;
+        let emitted = compiled.certify_answer_with_anchors(
+            answer,
+            db,
+            Some(&meta),
+            RevisionDigestV2::from_accepted_text("module Test"),
+        )?;
+        Ok(emitted.certificate().clone())
+    }
 
     fn db_with_axi_meta_plane() -> axiograph_pathdb::PathDB {
         let mut db = axiograph_pathdb::PathDB::new();
@@ -7917,6 +8294,36 @@ instance DemoInst of Demo:
     }
 
     #[test]
+    fn query_surface_rejects_oversized_rows_hops_atoms_and_nesting() -> Result<()> {
+        let rows = parse_axql_query("select ?x where ?x is Node limit 201")
+            .expect_err("row limit above finite budget must reject");
+        assert!(rows.to_string().contains("row limit"));
+
+        let mut hops = parse_axql_query("select ?x where ?x is Node limit 10")?;
+        hops.max_hops = Some(MAX_QUERY_HOPS + 1);
+        let db = tiny_db();
+        let error = prepare_axql_query_with_meta(&db, &hops, None)
+            .expect_err("hop budget above finite bound must reject");
+        assert!(error.to_string().contains("max_hops"));
+
+        let mut atoms = parse_axql_query("select ?x where ?x is Node limit 10")?;
+        atoms.disjuncts[0] = vec![atoms.disjuncts[0][0].clone(); MAX_QUERY_ATOMS + 1];
+        let error = prepare_axql_query_with_meta(&db, &atoms, None)
+            .expect_err("atom fanout above finite bound must reject");
+        assert!(error.to_string().contains("atom count"));
+
+        let nested = format!(
+            "{}rel_0{}",
+            "(".repeat(MAX_QUERY_NESTING_DEPTH + 1),
+            ")".repeat(MAX_QUERY_NESTING_DEPTH + 1)
+        );
+        let error = parse_axql_path_expr(&nested)
+            .expect_err("deep path expression must reject before recursive parsing");
+        assert!(error.to_string().contains("nesting exceeds"));
+        Ok(())
+    }
+
+    #[test]
     fn axql_elaboration_infers_field_types_and_supertypes() -> Result<()> {
         let db = db_with_axi_meta_plane();
         let meta = MetaPlaneIndex::from_db(&db)?;
@@ -7939,7 +8346,7 @@ instance DemoInst of Demo:
     fn axql_schema_qualified_type_filters_axi_schema() -> Result<()> {
         let db = db_with_multi_schema_parent_collision();
         let q = parse_axql_query(r#"select ?x where ?x is Fam.Person limit 100"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 3);
         Ok(())
     }
@@ -7949,11 +8356,11 @@ instance DemoInst of Demo:
         let db = db_with_multi_schema_parent_collision();
 
         let fam = parse_axql_query(r#"select ?p where Carol -Fam.Parent-> ?p limit 10"#)?;
-        let fam_res = execute_axql_query(&db, &fam)?;
+        let fam_res = execute_compiled_query_for_test(&db, &fam)?;
         assert_eq!(fam_res.rows.len(), 2);
 
         let census = parse_axql_query(r#"select ?p where Dan -Census.Parent-> ?p limit 10"#)?;
-        let census_res = execute_axql_query(&db, &census)?;
+        let census_res = execute_compiled_query_for_test(&db, &census)?;
         assert_eq!(census_res.rows.len(), 2);
 
         Ok(())
@@ -7984,7 +8391,7 @@ instance DemoInst of Demo:
         let q = parse_axql_query(
             r#"select ?f where ?f = Fam.Parent(child=Carol, parent=Alice) limit 10"#,
         )?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         Ok(())
     }
@@ -8201,7 +8608,7 @@ instance I2 of S2:
     fn axql_elaboration_errors_on_unknown_type() {
         let db = db_with_axi_meta_plane();
         let q = parse_axql_query(r#"select ?x where ?x : Ndoe"#).expect("parse");
-        let err = execute_axql_query(&db, &q).unwrap_err();
+        let err = execute_compiled_query_for_test(&db, &q).unwrap_err();
         assert!(err.to_string().contains("unknown type `Ndoe`"));
     }
 
@@ -8265,7 +8672,7 @@ instance I2 of S2:
     fn query_finds_expected_binding() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -rel_0/rel_1-> ?y"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?y").copied(), Some(2));
         Ok(())
@@ -8275,7 +8682,7 @@ instance I2 of S2:
     fn query_or_returns_union_of_rows() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -rel_0-> ?y or 1 -rel_1-> ?y limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         let ys: Vec<u32> = res
             .rows
             .iter()
@@ -8289,11 +8696,8 @@ instance I2 of S2:
     fn certify_typed_query_witness_supports_disjunction() -> Result<()> {
         let db = tiny_axi_witness_db();
         let q = parse_axql_query(r#"select ?y where a -rel_0-> ?y or b -rel_1-> ?y limit 10"#)?;
-        let cert = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")?;
-        let proof = match cert.payload {
-            CertificatePayloadV2::QueryResultV3 { proof } => proof,
-            other => return Err(anyhow!("expected query_result_v3, got {other:?}")),
-        };
+        let cert = certify_v4_for_test(&db, &q)?;
+        let proof = cert.proof;
         assert_eq!(proof.rows.len(), 2);
         assert!(proof.rows.iter().any(|r| r.disjunct == 0));
         assert!(proof.rows.iter().any(|r| r.disjunct == 1));
@@ -8314,7 +8718,7 @@ instance I2 of S2:
     fn query_attr_filters() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x : Node, attr(?x, "name", "b")"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(1));
         Ok(())
@@ -8324,7 +8728,7 @@ instance I2 of S2:
     fn query_rel_star_includes_reflexive() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -rel_0*-> ?y limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         let ys: Vec<u32> = res
             .rows
             .iter()
@@ -8338,7 +8742,7 @@ instance I2 of S2:
     fn query_rel_plus_excludes_reflexive_without_cycle() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -rel_0+-> ?y limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         let ys: Vec<u32> = res
             .rows
             .iter()
@@ -8358,7 +8762,7 @@ instance I2 of S2:
         db.build_indexes();
 
         let q = parse_axql_query(r#"select ?y where 0 -rel_0+-> ?y limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         let ys: Vec<u32> = res
             .rows
             .iter()
@@ -8372,7 +8776,7 @@ instance I2 of S2:
     fn shape_macro_has_out_expands_to_edges() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x : Node, has(?x, rel_0)"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -8382,7 +8786,7 @@ instance I2 of S2:
     fn shape_macro_attrs_expands_to_attr_constraints() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x : Node, attrs(?x, name="c")"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(2));
         Ok(())
@@ -8392,7 +8796,7 @@ instance I2 of S2:
     fn lookup_term_name_resolves_by_attr() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x -rel_0-> name("b")"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -8402,7 +8806,7 @@ instance I2 of S2:
     fn rpq_alternation_works() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -(rel_0|rel_1)-> ?y limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         let ys: Vec<u32> = res
             .rows
             .iter()
@@ -8416,7 +8820,7 @@ instance I2 of S2:
     fn rpq_optional_allows_empty_path() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -rel_0?-> ?y limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         let ys: Vec<u32> = res
             .rows
             .iter()
@@ -8430,7 +8834,7 @@ instance I2 of S2:
     fn rpq_grouping_and_plus_works() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -((rel_0/rel_1)+)-> ?y limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         let ys: Vec<u32> = res
             .rows
             .iter()
@@ -8444,7 +8848,7 @@ instance I2 of S2:
     fn max_hops_bounds_path_search() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -rel_0*-> ?y max_hops 0 limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         let ys: Vec<u32> = res
             .rows
             .iter()
@@ -8458,7 +8862,7 @@ instance I2 of S2:
     fn attr_dot_syntax_parses_and_executes() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x : Node, ?x.name = "b""#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(1));
         Ok(())
@@ -8468,7 +8872,7 @@ instance I2 of S2:
     fn type_infix_is_parses() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x is Node, ?x.name = "a""#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -8478,7 +8882,7 @@ instance I2 of S2:
     fn has_infix_parses_and_executes() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x is Node, ?x has rel_0"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -8488,7 +8892,7 @@ instance I2 of S2:
     fn bracketed_path_syntax_parses() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where 0 -[rel_0/rel_1]-> ?y"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?y").copied(), Some(2));
         Ok(())
@@ -8498,7 +8902,7 @@ instance I2 of S2:
     fn single_quoted_strings_work() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x -rel_0-> name('b')"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -8508,7 +8912,7 @@ instance I2 of S2:
     fn shape_literal_parses_and_executes() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x { is Node, name="b" }"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(1));
         Ok(())
@@ -8518,7 +8922,7 @@ instance I2 of S2:
     fn shape_literal_rel_sugar_parses_and_executes() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x { : Node, rel_0 }"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -8528,7 +8932,7 @@ instance I2 of S2:
     fn bare_identifier_terms_parse_as_name_lookup() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?y where a -rel_0-> ?y"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?y").copied(), Some(1));
         Ok(())
@@ -8538,7 +8942,7 @@ instance I2 of S2:
     fn fact_atom_binds_tuple_entity() -> Result<()> {
         let db = tiny_db_with_fact_tuple();
         let q = parse_axql_query(r#"select ?f where ?f = Flow(from=a, to=b)"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
 
         // The only fact node we created is entity id 2 (after a=0, b=1).
@@ -8550,7 +8954,7 @@ instance I2 of S2:
     fn fact_atom_without_binder_joins_fields() -> Result<()> {
         let db = tiny_db_with_fact_tuple();
         let q = parse_axql_query(r#"select ?x where Flow(from=?x, to=b)"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -8560,7 +8964,7 @@ instance I2 of S2:
     fn query_contains_filters() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x : Node, contains(?x, "name", "B")"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(1));
         Ok(())
@@ -8571,7 +8975,7 @@ instance I2 of S2:
         let db = materials_db();
         let q =
             parse_axql_query(r#"select ?x where ?x : Material, fuzzy(?x, "name", "titainum", 2)"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0].get("?x").copied(), Some(0));
         Ok(())
@@ -8581,23 +8985,29 @@ instance I2 of S2:
     fn certify_rejects_approximate_atoms() -> Result<()> {
         let db = tiny_db();
         let q = parse_axql_query(r#"select ?x where ?x : Node, contains(?x, "name", "a")"#)?;
-        let err = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")
+        let meta = MetaPlaneIndex::from_db(&db)?;
+        let query_ir = crate::query_ir::QueryIrV1::from_axql_query(&q);
+        let mut compiled = query_ir.compile_with_meta(&db, Some(&meta))?;
+        assert!(!compiled.certifiability().is_certifiable());
+        let answer = compiled.execute_answer(&db, Some(&meta))?;
+        let err = compiled
+            .certify_answer_with_anchors(
+                answer,
+                &db,
+                Some(&meta),
+                RevisionDigestV2::from_accepted_text("module Test"),
+            )
             .expect_err("expected certification to fail");
-        assert!(err.to_string().contains("cannot certify"));
+        assert!(err.to_string().contains("no certifiable"));
         Ok(())
     }
 
     #[test]
-    fn certify_typed_query_witness_emits_axi_fact_id_for_edge_atoms() -> Result<()> {
+    fn query_result_v4_emits_axi_fact_id_for_edge_atoms() -> Result<()> {
         let db = tiny_axi_witness_db();
         let q = parse_axql_query(r#"select ?y where a -rel_0-> ?y"#)?;
-        let cert = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")?;
-
-        let axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } =
-            cert.payload
-        else {
-            return Err(anyhow!("expected query_result_v3 certificate"));
-        };
+        let cert = certify_v4_for_test(&db, &q)?;
+        let proof = cert.proof;
 
         assert_eq!(proof.rows.len(), 1);
         let row = &proof.rows[0];
@@ -8610,14 +9020,14 @@ instance I2 of S2:
             .witnesses
             .iter()
             .find_map(|witness| match witness {
-                QueryAtomWitnessV3::Path { proof } => Some(proof),
+                FiniteQueryAtomWitnessV4::Path { proof } => Some(proof),
                 _ => None,
             })
             .ok_or_else(|| anyhow!("expected at least one path witness"))?;
 
         match path_witness {
             axiograph_pathdb::certificate::ReachabilityProofV3::Step { axi_fact_id, .. } => {
-                assert!(axi_fact_id.starts_with("factfnv1a64:"));
+                assert!(axi_fact_id.starts_with("axi:fact:v2:sha256:"));
             }
             other => return Err(anyhow!("unexpected path witness shape: {other:?}")),
         }
@@ -8626,16 +9036,11 @@ instance I2 of S2:
     }
 
     #[test]
-    fn certify_typed_query_witness_emits_axi_fact_ids_for_path_seq_rpq() -> Result<()> {
+    fn query_result_v4_emits_axi_fact_ids_for_path_seq_rpq() -> Result<()> {
         let db = tiny_axi_witness_db();
         let q = parse_axql_query(r#"select ?y where a -rel_0/rel_1-> ?y"#)?;
-        let cert = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")?;
-
-        let axiograph_pathdb::certificate::CertificatePayloadV2::QueryResultV3 { proof } =
-            cert.payload
-        else {
-            return Err(anyhow!("expected query_result_v3 certificate"));
-        };
+        let cert = certify_v4_for_test(&db, &q)?;
+        let proof = cert.proof;
 
         assert_eq!(proof.rows.len(), 1);
         let row = &proof.rows[0];
@@ -8645,7 +9050,7 @@ instance I2 of S2:
             .iter()
             .any(|b| b.var == "?y" && b.entity == "c"));
         let fact_chain = match row.witnesses.iter().find_map(|witness| match witness {
-            QueryAtomWitnessV3::Path { proof } => Some(proof),
+            FiniteQueryAtomWitnessV4::Path { proof } => Some(proof),
             _ => None,
         }) {
             Some(proof) => {
@@ -8664,7 +9069,7 @@ instance I2 of S2:
                             ..
                         } => {
                             ids.push(axi_fact_id.clone());
-                            cur = rest;
+                            cur = rest.as_ref();
                         }
                     }
                 }
@@ -8674,7 +9079,9 @@ instance I2 of S2:
         };
 
         assert_eq!(fact_chain.len(), 2);
-        assert!(fact_chain.iter().all(|id| id.starts_with("factfnv1a64:")));
+        assert!(fact_chain
+            .iter()
+            .all(|id| id.starts_with("axi:fact:v2:sha256:")));
         Ok(())
     }
 
@@ -8689,17 +9096,12 @@ instance I2 of S2:
         db.build_indexes();
 
         let q = parse_axql_query(r#"select ?y where 0 -rel_0/rel_1-> ?y min_conf 0.5 limit 10"#)?;
-        let res = execute_axql_query(&db, &q)?;
+        let res = execute_compiled_query_for_test(&db, &q)?;
         assert_eq!(res.rows.len(), 0);
 
-        let cert = certify_axql_query_typed_with_meta(&db, &q, None, "fnv1a64:test")?;
-        match cert.payload {
-            CertificatePayloadV2::QueryResultV3 { proof } => {
-                assert!(proof.query.min_confidence_fp.is_some());
-                assert_eq!(proof.rows.len(), 0);
-            }
-            other => panic!("expected query_result_v3 certificate, got {other:?}"),
-        }
+        let cert = certify_v4_for_test(&db, &q)?;
+        assert!(cert.proof.binding.query.min_confidence_fp.is_some());
+        assert_eq!(cert.proof.rows.len(), 0);
 
         Ok(())
     }
@@ -8792,10 +9194,10 @@ instance I2 of S2:
         if let Some(min_conf) = min_confidence {
             q.push_str(&format!(" min_conf {min_conf:.6}"));
         }
-        q.push_str(" limit 500");
+        q.push_str(" limit 200");
 
         let parsed = parse_axql_query(&q).expect("parse AxQL query");
-        let res = execute_axql_query(db, &parsed).expect("execute AxQL query");
+        let res = execute_compiled_query_for_test(db, &parsed).expect("execute AxQL query");
         assert!(!res.truncated);
         let mut out: Vec<u32> = res
             .rows
@@ -8855,9 +9257,9 @@ instance I2 of S2:
             let pa = path_a.join("/");
             let pb = path_b.join("/");
 
-            let q = format!("select ?dst where {start} -{pa}-> ?dst or {start} -{pb}-> ?dst limit 500");
+            let q = format!("select ?dst where {start} -{pa}-> ?dst or {start} -{pb}-> ?dst limit 200");
             let parsed = parse_axql_query(&q).expect("parse AxQL query");
-            let res = execute_axql_query(&db, &parsed).expect("execute AxQL query");
+            let res = execute_compiled_query_for_test(&db, &parsed).expect("execute AxQL query");
             prop_assert!(!res.truncated);
 
             let mut actual: Vec<u32> = res.rows.iter().filter_map(|row| row.get("?dst").copied()).collect();

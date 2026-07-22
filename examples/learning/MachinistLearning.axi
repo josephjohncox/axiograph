@@ -197,7 +197,15 @@ instance MachinistLearningExample of MachiningLearning:
     -- Guideline explanations (full prose kept here in comments; identifiers are stable)
     Text_Explain_TitaniumSpeed,
     Text_Explain_DeepHoleCoolant,
-    Text_Explain_ThinWallChatter
+    Text_Explain_ThinWallChatter,
+
+    -- Scalar/evidence/visual literal labels
+    Text_scalar_45_0, Text_scalar_7_1, Text_scalar_30,
+    Text_scalar_60_0, Text_scalar_205_0, Text_scalar_80,
+    Text_scalar_120_0, Text_scalar_0_15, Text_scalar_0_10,
+    Text_scalar_2_0, Text_scalar_3_0,
+    Text_scalar_0_95, Text_scalar_0_88, Text_scalar_0_92,
+    Text_titanium_heat_zones_png
   }
 
   Scalar = {
@@ -215,7 +223,10 @@ instance MachinistLearningExample of MachiningLearning:
     Scalar_Feed_0_15,                      -- mm/rev
     Scalar_Feed_0_10,                      -- mm/rev
     Scalar_Depth_2_0,                      -- mm
-    Scalar_Depth_3_0                       -- mm
+    Scalar_Depth_3_0,                      -- mm
+
+    -- Confidence scalar encodings
+    Scalar_conf_0_95, Scalar_conf_0_88, Scalar_conf_0_92
   }
 
   Confidence = { Conf_0_95, Conf_0_88, Conf_0_92 }
@@ -232,21 +243,10 @@ instance MachinistLearningExample of MachiningLearning:
     (scalar=Scalar_Feed_0_15, text=Text_scalar_0_15),
     (scalar=Scalar_Feed_0_10, text=Text_scalar_0_10),
     (scalar=Scalar_Depth_2_0, text=Text_scalar_2_0),
-    (scalar=Scalar_Depth_3_0, text=Text_scalar_3_0)
-  }
-
-  Text = {
-    Text_scalar_45_0,
-    Text_scalar_7_1,
-    Text_scalar_30,
-    Text_scalar_60_0,
-    Text_scalar_205_0,
-    Text_scalar_80,
-    Text_scalar_120_0,
-    Text_scalar_0_15,
-    Text_scalar_0_10,
-    Text_scalar_2_0,
-    Text_scalar_3_0
+    (scalar=Scalar_Depth_3_0, text=Text_scalar_3_0),
+    (scalar=Scalar_conf_0_95, text=Text_scalar_0_95),
+    (scalar=Scalar_conf_0_88, text=Text_scalar_0_88),
+    (scalar=Scalar_conf_0_92, text=Text_scalar_0_92)
   }
 
   confidenceValue = {
@@ -254,14 +254,6 @@ instance MachinistLearningExample of MachiningLearning:
     (confidence=Conf_0_88, value=Scalar_conf_0_88),
     (confidence=Conf_0_92, value=Scalar_conf_0_92)
   }
-
-  Scalar = { Scalar_conf_0_95, Scalar_conf_0_88, Scalar_conf_0_92 }
-  scalarValue = {
-    (scalar=Scalar_conf_0_95, text=Text_scalar_0_95),
-    (scalar=Scalar_conf_0_88, text=Text_scalar_0_88),
-    (scalar=Scalar_conf_0_92, text=Text_scalar_0_92)
-  }
-  Text = { Text_scalar_0_95, Text_scalar_0_88, Text_scalar_0_92 }
 
   -- Material attribute relations
   hardness = {
@@ -354,8 +346,6 @@ instance MachinistLearningExample of MachiningLearning:
   guidelineVisualExample = {
     (guideline=TitaniumSpeed, text=Text_titanium_heat_zones_png)
   }
-  Text = { Text_titanium_heat_zones_png }
-
   -- Guideline explanations (human-readable prose)
   -- Text_Explain_TitaniumSpeed: (see original learning example for full prose)
   -- Text_Explain_DeepHoleCoolant: (see original learning example for full prose)

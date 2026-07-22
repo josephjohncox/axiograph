@@ -11,12 +11,14 @@ semantic workflow explicit and difficult to misuse.
 
 Current implemented slice (2026-04):
 
-- `axiograph_pathdb::anchor` is live and re-exported from the crate root with
-  `AxiDigest`, `AcceptedSnapshotId`, `PathdbSnapshotId`, `ProposalDigest`,
-  `ProposalAdapterRunId`, `SchemaId`, `TheoryId`, `ContextId`, `StableFactId`, and
-  `AcceptedAxiAnchor`.
+- `axiograph_pathdb::runtime_handle` is live and re-exported from the crate root
+  with `AxiDigest`, `AcceptedSnapshotId`, `MaterializationIdV2`,
+  `ProposalDigest`, `ProposalAdapterRunId`, `SchemaId`, `TheoryId`, `ContextId`,
+  `StableFactId`, and `AcceptedAxiAnchor`.
 - `axiograph_pathdb::lifecycle` is live and re-exported from the crate root
-  with `Parsed`, `Validated`, `Reviewed`, `Accepted`, and `Certified`.
+  with `Parsed`, `Validated`, `Reviewed`, `Accepted`, `Certified`,
+  `CertificateEmitted`, and `LeanVerified`. Query workflows use the last two to
+  separate untrusted witness production from checker acceptance.
 - `axiograph_pathdb::axi_module_typecheck` implements
   `Module<Validated>` / `Module<Reviewed>` plus `ReviewStamp`, and
   `axiograph_pathdb::axi_module_import` accepts only `Module<S>` where
@@ -60,6 +62,8 @@ pub enum Validated {}
 pub enum Reviewed {}
 pub enum Accepted {}
 pub enum Certified {}
+pub enum CertificateEmitted {}
+pub enum LeanVerified {}
 ```
 
 These are for artifact construction and trusted workflow transitions.
@@ -78,8 +82,7 @@ pub struct AxiDigest(String);
 #[serde(transparent)]
 pub struct AcceptedSnapshotId(String);
 
-#[serde(transparent)]
-pub struct PathdbSnapshotId(String);
+pub struct MaterializationIdV2(String);
 
 #[serde(transparent)]
 pub struct ProposalDigest(String);
@@ -170,8 +173,9 @@ pub struct Snapshot<S, A> {
 ```rust
 pub struct WorldState<A> {
     pub meaning_anchor: A,
-    pub pathdb_snapshot: Option<PathdbSnapshotId>,
-    pub schema_ir: Arc<KernelModuleIr>,
+    pub materialization_id: Option<MaterializationIdV2>,
+    pub compiled_snapshot: Arc<CompiledKernelSnapshot>,
+    pub runtime_index: Option<Arc<RuntimeModuleIndex>>,
     pub db: Arc<PathDB>,
 }
 ```
@@ -188,11 +192,17 @@ pub struct Query<S, A> {
 pub struct Answer<S, A> {
     pub anchor: A,
     pub rows: Vec<Row<A>>,
-    pub certificate: Option<CertificateV2>,
+    pub prepared_query_digest_v1: Option<QueryIdV2>,
+    pub answer_digest_v1: Option<AnswerIdV2>,
+    pub certificate: Option<CertificateV3>,
+    pub certificate_text: Option<String>,
+    pub certificate_digest_v2: Option<CertificateIdV2>,
+    pub receipt: Option<VerifierReceiptV2>,
     pub _state: PhantomData<S>,
 }
 
-pub type CertifiedAnswer<A> = Answer<Certified, A>;
+pub type CertificateEmittedAnswer<A> = Answer<CertificateEmitted, A>;
+pub type LeanVerifiedAnswer<A> = Answer<LeanVerified, A>;
 ```
 
 ### Typed semantic values
@@ -265,7 +275,8 @@ promote(Module<Reviewed>) -> Result<Snapshot<Accepted, AcceptedSnapshotId>>
 
 compile_query(WorldState<A>, Query<Parsed, Unbound>) -> Result<Query<Validated, A>>
 execute_query(WorldState<A>, Query<Validated, A>) -> Result<Answer<Validated, A>>
-verify_certificate(Answer<Validated, A>, LeanCheck) -> Result<CertifiedAnswer<A>>
+emit_certificate(Answer<Validated, A>) -> Result<CertificateEmittedAnswer<A>>
+verify_certificate(CertificateEmittedAnswer<A>, LeanCheck) -> Result<LeanVerifiedAnswer<A>>
 ```
 
 No direct constructor should allow callers to skip these workflow edges.
@@ -278,7 +289,7 @@ Core crate APIs should prefer:
 - `RelationId` / typed relation handles over raw relation labels
 - `FactId<A>` over raw `u32`
 - `Query<S, A>` over untyped query blobs
-- `CertifiedAnswer<A>` over “rows plus maybe some metadata”
+- `LeanVerifiedAnswer<A>` over unbound “rows plus maybe some metadata”
 - typed report objects over one-off JSON/prose payloads for business-rule,
   coverage, preview, and agent-facing semantics
 
@@ -340,22 +351,38 @@ Target shape:
 ```rust
 let q: Query<Validated, AcceptedSnapshotId> = compile_query(...)?;
 let answer: Answer<Validated, AcceptedSnapshotId> = execute_query(...)?;
-let certified: CertifiedAnswer<AcceptedSnapshotId> = verify_certificate(answer, ...)?;
+let emitted: CertificateEmittedAnswer<AcceptedSnapshotId> = emit_certificate(answer)?;
+let verified: LeanVerifiedAnswer<AcceptedSnapshotId> = verify_certificate(emitted, ...)?;
 ```
 
-Once a result is `CertifiedAnswer<AcceptedSnapshotId>`, downstream code should
-not need to ask which accepted snapshot it refers to. The type already carries
-that answer.
+The implemented `QueryAnswer<S>` specialization also records the process-local
+DB/meta token, prepared digest, ordered selected stable projections, row limit,
+and runtime truncation before certificate emission. The transition rejects
+state drift or answer drift. `CertificateEmitted` retains the exact serialized
+certificate bytes and their `CertificateIdV2`; `LeanVerified` is available only
+after the full V2 receipt matches the module, exact certificate, prepared query,
+and answer.
+
+Once a result is `LeanVerifiedAnswer<AcceptedSnapshotId>`, downstream code
+should not need to ask which accepted snapshot or answer digest it refers to.
+The artifact carries both. Entity-view enrichment remains a separate unverified
+runtime projection.
 
 ## First Implementation Slice
 
 Current status of the first implementation cut:
 
 1. Done: `anchor.rs` and `lifecycle.rs` are live.
-2. Done for the main semantic workflow seams: accepted-plane, WAL, db-server
-   snapshot state, and proposal-adapter lineage now use stable anchor newtypes
-   internally, while HTTP/CLI JSON remains string-compatible at the boundary.
+2. Done for the main semantic workflow seams: AxiStore accepted state,
+   authenticated `.axpd` materialization, db-server state, and proposal-adapter
+   lineage use stable anchor newtypes internally, while HTTP/CLI JSON remains
+   string-compatible at the boundary.
 3. Done: the canonical `.axi` import boundary now uses
    `Module<Validated>` plus `Module<Reviewed>`.
-4. Pending: broaden typed builders so more public handles carry anchors/states.
-5. Pending: wrap public query execution in `Query<S, A>` / `Answer<S, A>`.
+4. Done for certifiable queries: `CompiledFiniteQuery -> QueryAnswer<Validated> ->
+   QueryAnswer<CertificateEmitted> -> QueryAnswer<LeanVerified>` is the sole
+   lifecycle. Semantic MCP uses the full bound path; HTTP executes the same
+   compiled family but makes no certificate claim without exact accepted bytes.
+5. Pending: broaden typed builders so more public handles carry anchors/states
+   and converge the generic target `Query<S, A>` / `Answer<S, A>` API with the
+   implemented query specialization.

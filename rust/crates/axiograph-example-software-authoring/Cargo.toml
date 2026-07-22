@@ -2,6 +2,7 @@
 name = "axiograph-example-software-authoring"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Software-authoring example harness for continuous semantic coverage checks"
@@ -11,8 +12,12 @@ publish = false
 name = "axiograph-software-authoring-example"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow.workspace = true
+axiograph-security = { path = "../axiograph-security" }
 axiograph-software-authoring = { path = "../axiograph-software-authoring" }
 clap.workspace = true
 serde.workspace = true

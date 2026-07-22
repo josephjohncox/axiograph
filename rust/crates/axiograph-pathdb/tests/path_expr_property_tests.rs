@@ -158,7 +158,7 @@ proptest! {
 
     #[test]
     fn normalize_with_proof_has_consistent_payload(p in path_expr_v2_strategy()) {
-        let opt = ProofProducingOptimizer::default();
+        let opt = ProofProducingOptimizer;
         let proved = opt.normalize_path_v2::<WithProof>(p.clone());
         prop_assert_eq!(&proved.value, &proved.proof.normalized);
         prop_assert_eq!(&proved.value, &p.normalize());
@@ -170,7 +170,7 @@ proptest! {
 
     #[test]
     fn path_equiv_by_normalization_accepts_normal_form(p in path_expr_v2_strategy()) {
-        let opt = ProofProducingOptimizer::default();
+        let opt = ProofProducingOptimizer;
         let norm = p.normalize();
         let proved = opt.path_equiv_v2::<NoProof>(p, norm.clone()).expect("paths must be equivalent by normalization");
         prop_assert_eq!(proved.value, norm);

@@ -41,8 +41,8 @@ schema RegulatedLine:
   object PriceTerm
   object DeliveryWindow
 
-  relation SalesOrderForProduct(order: SalesOrder, product: Product, customer: Customer, ctx: Context, time: Time)
-  relation WorkOrderForSalesOrder(work_order: WorkOrder, order: SalesOrder, recipe: Recipe, ctx: Context, time: Time)
+  relation SalesOrderForProduct(order: SalesOrder, product: Product, customer: Customer, ctx: Context @context, time: Time @temporal)
+  relation WorkOrderForSalesOrder(work_order: WorkOrder, order: SalesOrder, recipe: Recipe, ctx: Context @context, time: Time @temporal)
   relation RecipeStep(recipe: Recipe, step: ProcessStep, sequence: Time)
   relation StepRunsOn(step: ProcessStep, machine: Machine)
   relation StepControlledBy(step: ProcessStep, plc: PLCRoutine)
@@ -50,11 +50,11 @@ schema RegulatedLine:
   relation StepGovernedBy(step: ProcessStep, sop: SOPSection)
   relation LotSuppliedBy(lot: MaterialLot, supplier: Supplier)
   relation LotHasCertificate(lot: MaterialLot, cert: SupplierCertificate)
-  relation WorkOrderConsumesLot(work_order: WorkOrder, lot: MaterialLot, ctx: Context, time: Time)
-  relation InspectionForWorkOrder(inspection: Inspection, work_order: WorkOrder, step: ProcessStep, ctx: Context, time: Time)
-  relation InspectionDecision(inspection: Inspection, decision: ReleaseDecision, ctx: Context, time: Time)
-  relation ShipmentFulfills(shipment: Shipment, order: SalesOrder, work_order: WorkOrder, ctx: Context, time: Time)
-  relation DeliveryCommitment(order: SalesOrder, window: DeliveryWindow, price: PriceTerm, ctx: Context, time: Time)
+  relation WorkOrderConsumesLot(work_order: WorkOrder, lot: MaterialLot, ctx: Context @context, time: Time @temporal)
+  relation InspectionForWorkOrder(inspection: Inspection, work_order: WorkOrder, step: ProcessStep, ctx: Context @context, time: Time @temporal)
+  relation InspectionDecision(inspection: Inspection, decision: ReleaseDecision, ctx: Context @context, time: Time @temporal)
+  relation ShipmentFulfills(shipment: Shipment, order: SalesOrder, work_order: WorkOrder, ctx: Context @context, time: Time @temporal)
+  relation DeliveryCommitment(order: SalesOrder, window: DeliveryWindow, price: PriceTerm, ctx: Context @context, time: Time @temporal)
 
 theory RegulatedLineRules on RegulatedLine:
   constraint key WorkOrderForSalesOrder(work_order, order, ctx, time)

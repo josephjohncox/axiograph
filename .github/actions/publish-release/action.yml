@@ -1,0 +1,14 @@
+---
+name: Publish release assets
+description: Publish platform-qualified artifacts to the current GitHub release
+inputs:
+  files:
+    description: Newline-delimited artifact globs
+    required: true
+runs:
+  using: composite
+  steps:
+    # softprops/action-gh-release pinned to an immutable commit.
+    - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+      with:
+        files: ${{ inputs.files }}

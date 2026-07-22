@@ -1,10 +1,10 @@
 # REPL Scripts
 
-These scripts are smoke demos for the interactive REPL. They now use canonical
-`.axi` imports plus typed query/report commands as the teaching surface.
-Some scripts end with `export_axi_module` and `save`; treat those final lines as
-optional round-trip/e2e checks, not the authoring path. Reversible
-snapshot exports are intentionally absent from REPL teaching scripts.
+These scripts are interactive REPL workflows. Start with the accepted-domain
+canonical walkthroughs below. Proposal-review and deterministic planning scripts also live
+here, but they are not the default ontology-authoring path.
+REPL state is process-local. Scripts do not save bare `.axpd` files or
+reverse-export canonical modules from PathDB.
 
 Preferred scripts for current workflows:
 
@@ -12,9 +12,17 @@ Preferred scripts for current workflows:
 - `schema_evolution_axi_demo.repl`
 - `supply_chain_hott_axi_demo.repl`
 - `regulated_production_line_axi_demo.repl`
+
+Use these after the canonical CLI flows when the lesson benefits from
+interactive state. The current path is exact `.axi` validation plus runtime
+theory and query reports.
+
+Review-plane candidate inspection scripts:
+
+- `proto_schema_discovery_axi_demo.repl`
 - `sql_schema_discovery_axi_demo.repl`
 
-Use these as smoke tests after the canonical CLI flows, not as the first
-learning path. The current path is `.axi` validation, runtime theory/query
-reports, and optional module export or `.axpd` save/load only when a REPL
-scenario intentionally needs a round-trip check.
+Deterministic proposal-planning walkthroughs:
+
+- `bounded_proposal_rollout_demo.repl`
+- `physics_bounded_proposal_rollout_demo.repl`

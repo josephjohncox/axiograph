@@ -9,10 +9,10 @@ schema Fam:
   object Time
 
   -- Parent relation: (child, parent) scoped by context and time.
-  relation Parent(child: Person, parent: Person, ctx: Context, time: Time)
+  relation Parent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
 
   -- Spouse relation: symmetric and context-scoped.
-  relation Spouse(a: Person, b: Person, ctx: Context)
+  relation Spouse(a: Person, b: Person, ctx: Context @context)
 
   -- Sibling relation: symmetric
   relation Sibling(a: Person, b: Person)

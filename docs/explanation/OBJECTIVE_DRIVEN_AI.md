@@ -48,6 +48,7 @@ native controller, actuator, or receding-horizon execution semantics.
 ## Guardrail costs vs task costs
 
 **Guardrail costs (immutable):**
+
 - Derived from certified constraints (e.g., key/functional violations,
   rewrite consistency, schema typing), and from safety policies.
 - In Axiograph, we map these to the **immutable intrinsic cost** term in
@@ -58,6 +59,7 @@ native controller, actuator, or receding-horizon execution semantics.
 - These costs must be explainable and, when required, certificate-checked.
 
 **Task costs (configurable):**
+
 - Encode goal-directed behavior for a specific objective (e.g., "maximize recall
   of relevant facts", "minimize reconciliation conflicts", "avoid low-confidence
   merges", "achieve target coverage for schema X").
@@ -65,7 +67,8 @@ native controller, actuator, or receding-horizon execution semantics.
   modifying guardrail terms (LeCun's configurator configures modules for the
   task at hand).
 - Competency-question coverage is a natural task cost: penalize states where
-  key AxQL questions return too few answers (drives completeness).
+  required typed CQs return too few answers or remain unresolved after lowering
+  (drives finite, declared-scope completeness).
 
 ## Learned predictive model (multi-step, recurrent)
 
@@ -75,6 +78,7 @@ trajectory with cost summed across time. In Axiograph core, those predictions
 are still proposal candidates, not accepted semantic state transitions.
 
 In an Axiograph research-adapter interpretation:
+
 - **State**: (accepted `.axi` snapshot id, schema/theory + instance, evidence
   overlays, context filters)
 - **Action**: reconciliation choice, promotion decision, ingest/merge decision,
@@ -83,8 +87,9 @@ In an Axiograph research-adapter interpretation:
   provenance
 
 State should be grounded in *full* `.axi` modules (schema + theory + instance),
-including modal context scopes and dependent-type constraints. PathDB exports
-remain derived views for query performance, not the canonical training target.
+including modal context scopes and dependent-type constraints. Derived PathDB
+rows and `.axpd` images are query acceleration, not a training or semantic
+interchange surface.
 
 A JEPA/H-JEPA-style adapter fits here: it predicts future *representations* of
 snapshots rather than raw facts, then a decoder/nearest-neighbor step turns
@@ -132,47 +137,56 @@ horizons. Instead of planning over primitive actions only, the planner composes
 **skills/options** (macro-actions) that operate over multiple steps.
 
 In Axiograph terms:
+
 - **Primitive actions**: promote/reject/merge/rewrite/annotate, single-step.
 - **Skills/options**: multi-step routines like "normalize a theory module",
   "reconcile schema X with snapshot Y", or "bootstrap a candidate ontology".
 
 The planner can operate at multiple levels:
+
 - High-level planner chooses a sequence of skills (coarse horizon).
 - Low-level planner executes or refines each skill (fine horizon).
 
 Costs propagate across levels:
+
 - Guardrail costs apply at all levels (skills must respect constraints).
 - Task costs can be defined per-skill or per-trajectory segment.
 
 This gives two advantages:
+
 1) Search becomes tractable (smaller branching factor at the high level).
 2) Plans are more interpretable (skills map to auditable workflows).
 
 ## Implementation sketch for research adapters
 
 ### 1) State + action interfaces
+
 - Define a `SemanticState` abstraction: accepted snapshot id + full `.axi` module
   view + context + evidence overlays.
 - Define `Action` primitives: merge, split, promote, reject, rewrite, annotate.
 - Define `Transition` outputs: predicted deltas + confidence.
 
 ### 2) Predictive proposal adapter service
+
 - Pluggable predictive proposal adapter interface (optionally backed by a
   JEPA-style latent predictor).
 - Rollout API: `rollout(state, actions, horizon) -> {proposal trajectories}`
 - Optional uncertainty sampling: multiple trajectories from latent variables.
 
 ### 3) Cost module API
+
 - `GuardrailCost`: immutable cost terms (hard constraints, policy rules).
 - `TaskCost`: configurable cost terms (objective-specific scoring).
 - `TotalCost = sum_t (GuardrailCost(s_t) + TaskCost(s_t))`.
 
 ### 4) Bounded proposal rollout engine
+
 - Bounded search/evaluation over proposal candidates.
 - Do not call this MPC unless a deployment supplies real dynamics,
   receding-horizon execution, and control objectives.
 
 ### 5) Evidence-plane integration
+
 - Convert plan outputs into `proposals.json` entries with provenance.
 - Use reconciliation + quality checks + certificates for acceptance.
 
@@ -193,6 +207,7 @@ This gives two advantages:
 ### LLM and tool-loop integration
 
 LLMs remain an untrusted boundary, just like predictive proposal adapters:
+
 - LLMs can request predictive proposals via the server endpoint, then review or
   refine them using the same guardrail reports and constraint checks.
 - LLM-generated proposals and adapter-generated proposals both land in the

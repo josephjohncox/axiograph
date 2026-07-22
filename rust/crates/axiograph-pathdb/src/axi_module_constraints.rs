@@ -15,7 +15,7 @@
 //! - `constraint at_most N Rel.field -> Rel.field [param (...)]`
 //! - `constraint symmetric Rel`
 //! - `constraint symmetric Rel where Rel.field in {A, B, ...}`
-//! - `constraint transitive Rel` (closure-compatibility for keys/functionals on carrier fields)
+//! - `constraint transitive Rel` (certified transitive-closure checks for keys/functionals on carrier fields)
 //! - `constraint typing Rel: rule_name` (small builtin rule set)
 //!
 //! Carrier fields for closure constraints (`symmetric`/`transitive`):
@@ -215,7 +215,7 @@ fn relation_tuples<'a>(
         .filter(move |a| a.name == relation_name)
         .flat_map(|a| a.value.items.iter())
         .filter_map(|it| match it {
-            SetItemV1::Tuple { fields } => Some(fields),
+            SetItemV1::Tuple { fields, .. } => Some(fields),
             _ => None,
         })
 }
@@ -321,6 +321,7 @@ fn check_functional_on_tuples(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_at_most_on_tuples(
     inst_name: &str,
     relation_name: &str,
@@ -385,7 +386,8 @@ fn check_at_most_on_tuples(
     Ok(())
 }
 
-fn check_symmetric_closure_compatible_with_keys_and_functionals(
+#[allow(clippy::too_many_arguments)]
+fn check_symmetric_closure_admissible_with_keys_and_functionals(
     inst: &SchemaV1Instance,
     schema_name: &str,
     relation_name: &str,
@@ -632,7 +634,7 @@ fn check_symmetric_closure_compatible_with_keys_and_functionals(
     Ok(())
 }
 
-fn check_transitive_closure_compatible_with_keys_and_functionals(
+fn check_transitive_closure_admissible_with_keys_and_functionals(
     inst: &SchemaV1Instance,
     schema_name: &str,
     relation_name: &str,
@@ -724,7 +726,7 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
         }
     }
 
-    // We only certify "closure compatibility" when keys/functionals are present,
+    // We only certify supported closure checks when keys/functionals are present,
     // and only for constraints that talk about the carrier fields (and optional
     // param fields, when `param (...)` is present).
     let mut has_relevant_checks = false;
@@ -757,7 +759,7 @@ fn check_transitive_closure_compatible_with_keys_and_functionals(
                     && *dst_field != carrier1
                 {
                     return Err(anyhow!(
-                        "transitive `{schema_name}.{relation_name}`: functional constraint mentions non-carrier fields (`{src_field}` -> `{dst_field}`); only `{carrier0}` and `{carrier1}` are supported for transitive closure-compatibility checks",
+                        "transitive `{schema_name}.{relation_name}`: functional constraint mentions non-carrier fields (`{src_field}` -> `{dst_field}`); only `{carrier0}` and `{carrier1}` are supported for certified transitive-closure checks",
                     ));
                 }
                 if *src_field != carrier0 && *src_field != carrier1 {
@@ -1016,6 +1018,7 @@ fn check_typing_rule_preserves_manifold_and_increments_degree(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_typing_rule_preserves_manifold_and_adds_degree(
     _inst: &SchemaV1Instance,
     left: &str,
@@ -1097,6 +1100,7 @@ fn check_typing_rule_preserves_manifold_and_adds_degree(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_typing_rule_depends_on_metric_and_dualizes_degree(
     _inst: &SchemaV1Instance,
     metric: &str,
@@ -1523,7 +1527,7 @@ pub fn check_axi_constraints_ok_v1<S: WellTypedModuleState>(
                     ..
                 } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
-                    check_symmetric_closure_compatible_with_keys_and_functionals(
+                    check_symmetric_closure_admissible_with_keys_and_functionals(
                         inst,
                         &inst.schema,
                         relation,
@@ -1544,7 +1548,7 @@ pub fn check_axi_constraints_ok_v1<S: WellTypedModuleState>(
                     ..
                 } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
-                    check_symmetric_closure_compatible_with_keys_and_functionals(
+                    check_symmetric_closure_admissible_with_keys_and_functionals(
                         inst,
                         &inst.schema,
                         relation,
@@ -1563,7 +1567,7 @@ pub fn check_axi_constraints_ok_v1<S: WellTypedModuleState>(
                     ..
                 } => {
                     let relation_fields = field_index.relation_fields(&inst.schema, relation)?;
-                    check_transitive_closure_compatible_with_keys_and_functionals(
+                    check_transitive_closure_admissible_with_keys_and_functionals(
                         inst,
                         &inst.schema,
                         relation,

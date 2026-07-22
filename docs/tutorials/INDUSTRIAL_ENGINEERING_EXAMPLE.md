@@ -28,7 +28,7 @@ Use this when teaching the type-theory/category seam: relation objects, role
 projections, constraints, equations, and obligations should be runtime-visible
 before agents try to repair or extend the ontology.
 
-## 3. Run The Example Harness
+## 3. Run The Example Scenario
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml \
@@ -42,9 +42,9 @@ cargo run --manifest-path rust/Cargo.toml \
   --json
 ```
 
-The harness imports canonical `.axi` through PathDB, computes an accepted-style
-anchor from the `.axi` digest, and writes cache-only teaching artifacts under
-`build/examples/industrial/_cache/industrial_harness/...`.
+The example crate imports canonical `.axi` through PathDB, computes an accepted-style
+anchor from the `.axi` digest, and writes cache-only teaching artifacts under the
+regulated production line cache directory.
 
 ## 4. Inspect The Run
 
@@ -65,7 +65,7 @@ work.
 ## What This Teaches
 
 - Canonical `.axi` is the meaning-bearing input.
-- Domain harnesses belong outside the core CLI.
+- Domain example crates belong outside the core CLI.
 - PathDB is an execution substrate used by the example, not the ontology kernel.
 - CQ and coverage artifacts are useful for coding agents, but their trust
   contract matters.
@@ -78,5 +78,5 @@ work.
 - Add a semantic slice selector for the PLC/HMI/SOP bounded context.
 - Add a migration preview that splits material certification into a separate
   bounded context.
-- Promote accepted deltas through the semantic VCS instead of mutating harness
+- Promote accepted deltas through the semantic VCS instead of mutating example
   cache artifacts.

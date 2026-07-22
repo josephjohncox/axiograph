@@ -45,18 +45,14 @@ pub struct BehaviorGivenV1 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BehaviorStimulusKindV1 {
+    #[default]
     Query,
     Command,
     Event,
     ProposalDelta,
     ReviewOnly,
-}
-
-impl Default for BehaviorStimulusKindV1 {
-    fn default() -> Self {
-        Self::Query
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +254,7 @@ pub fn discover_behavior_case_report_from_request_json(
     build_behavior_case_report_from_request(db, meta, accepted_snapshot_id, request)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_behavior_case_report(
     db: &PathDB,
     meta: Option<&MetaPlaneIndex>,
@@ -342,7 +339,7 @@ pub fn build_behavior_case_report(
     let mut notes = behavior_case.notes.iter().cloned().collect::<BTreeSet<_>>();
     notes.extend(context_report.notes.iter().cloned());
     notes.insert(
-        "BehaviorCaseV1 is JSON-only in this tranche; Gherkin/BDD syntax should import/export this same typed payload later"
+        "BehaviorCaseV1 is a typed tooling payload at this boundary; Gherkin/BDD syntax can import/export the same payload later"
             .to_string(),
     );
     notes.insert(
@@ -1035,8 +1032,8 @@ instance I of Family:
             blocked_obligations: 0,
             excluded_by_evidence: 0,
             blocking_errors: 0,
-            closure_tiers: vec!["finite_fragment".to_string()],
-            closure_trace: Default::default(),
+            admissibility_scopes: vec!["finite_fragment".to_string()],
+            admissibility_trace: Default::default(),
             transport_summary: Default::default(),
             completeness_claim: "not_claimed_for_all_obligations".to_string(),
             ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
@@ -1091,7 +1088,10 @@ instance I of Family:
             .codegen_previews
             .iter()
             .any(|preview| preview.content.contains("from \"vitest\"")));
-        assert!(report.notes.iter().any(|note| note.contains("JSON-only")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("typed tooling payload")));
         Ok(())
     }
 

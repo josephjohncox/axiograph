@@ -1,5 +1,5 @@
-# Machining Examples
+# Machining And Applied Physics Examples
 
-Machining examples are domain-knowledge fixtures for manufacturing and physics
-knowledge. They are useful for ingestion, learning, and evidence-plane examples
-where the ontology should remain separate from the core runtime.
+These examples model machining knowledge and machining-oriented physics
+knowledge for ingestion, learning, and evidence-plane workflows. They are
+domain examples that use Axiograph tooling; they are not core runtime models.

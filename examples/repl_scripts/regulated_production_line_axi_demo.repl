@@ -31,6 +31,3 @@ ctx use Plan
 q select ?window ?price where ?f = DeliveryCommitment(order=SalesOrder_1001, window=?window, price=?price, ctx=Plan, time=T0) limit 10
 
 viz build/regulated_production_line_typed.json format json plane both focus_name WorkOrder_5001 hops 2 max_nodes 280 typed_overlay
-
-export_axi_module build/regulated_production_line_axi_module.axi RegulatedProductionLine
-save build/regulated_production_line_axi.axpd

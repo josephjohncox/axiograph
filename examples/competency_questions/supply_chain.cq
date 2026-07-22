@@ -1,0 +1,7 @@
+version competency_question_bundle_v1
+
+question raw_material_supplier_has_flow:
+  ask: Can the supply-chain model find the first raw-material transfer from RawMetal_A?
+  expect: exists SupplyChain.Flow(from=RawMetal_A, to=?to, material=Steel_Billet, qty=?qty, time=?time)
+  min_rows: 1
+  weight: 1.0

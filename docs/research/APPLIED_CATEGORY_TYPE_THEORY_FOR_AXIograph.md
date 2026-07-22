@@ -15,16 +15,16 @@ kernel.
 The categorical core is:
 
 ```text
-SchemaCategoryIr S
+SchemaPresentationIr S
   objects  : object types and relation objects
-  arrows   : role projections and subtype inclusions
+  arrows   : ordered role projections, subtypes, aspects, and functions
 
-TheoryIr T over S
+TypedTheoryIr T over S
   constraints, path equations, rewrites, obligations
 
-InstanceFunctorIr I : S -> Set
-  object images   : finite sets of entities/facts
-  arrow images    : role/projection functions where totality is declared
+InstanceModelIr I (intended as I : S -> FinSet)
+  carriers        : finite sets of entities/facts
+  interpretations : total generator maps checked over the supported fragment
 ```
 
 Relation-as-object is canonical. A binary or n-ary relation is represented as an

@@ -66,5 +66,3 @@ q select ?component where BOM(product=Widget, component=?component) limit 10
 
 # Typed overlay: visualize a neighborhood with meta-plane-as-type-layer annotations.
 viz build/supply_chain_hott_rawmetal_typed.json format json plane both focus_name RawMetal_A hops 2 max_nodes 260 typed_overlay
-
-save build/supply_chain_hott.axpd

@@ -3,15 +3,18 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use axiograph_pathdb::kernel_ir::WitnessViewIr;
+#[cfg(test)]
+use axiograph_pathdb::AxiDigest;
 use axiograph_pathdb::{
     check_runtime_theory_with_options_v1, default_evidence_policy_v1, default_world_assumption_v1,
     kernel_ir::{
-        CompiledSchemaIr, RelationSemanticsIr, RoleKind, TheoryIr, TheoryObligationKindIr,
-        TheoryObligationRefIr, TheorySubjectRefIr, TheoryTransportStatusIr, WitnessViewIr,
+        RelationSemanticsIr, RoleKind, RuntimeSchemaIndex, TheoryIr, TheoryObligationKindIr,
+        TheoryObligationRefIr, TheorySubjectRefIr, TheoryTransportStatusIr,
     },
     migration::{MigrationFunctorKindV1, SchemaMorphismV1, SchemaV1},
-    AcceptedSnapshotId, AxiDigest, ProposalDigest, RuntimeTheoryCheckStatusV1,
-    RuntimeTheoryClosureTierV1,
+    AcceptedSnapshotId, ProposalDigest, RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureTierV1,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -473,7 +476,7 @@ pub struct SemCompetencySummaryV1 {
     pub gate_passed: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SemRuleSummaryV1 {
     #[serde(default)]
     pub constraint_count: u32,
@@ -503,87 +506,6 @@ pub struct SemRuleSummaryV1 {
     pub notes: Vec<String>,
 }
 
-impl Default for SemRuleSummaryV1 {
-    fn default() -> Self {
-        Self {
-            constraint_count: 0,
-            instance_count: 0,
-            check_count: 0,
-            total_rules: 0,
-            relation_constraints: 0,
-            rewrite_rules: 0,
-            named_block_constraints: 0,
-            runtime_checkable_rules: 0,
-            runtime_visible_rules: 0,
-            review_only_rules: 0,
-            relations_with_rules: 0,
-            theories_with_rules: 0,
-            notes: Vec::new(),
-        }
-    }
-}
-
-impl SemRuleSummaryV1 {
-    fn merged_with(self, overlay: SemRuleSummaryV1) -> SemRuleSummaryV1 {
-        fn choose_u32(base: u32, overlay: u32) -> u32 {
-            if overlay == 0 {
-                base
-            } else {
-                overlay
-            }
-        }
-
-        fn choose_usize(base: usize, overlay: usize) -> usize {
-            if overlay == 0 {
-                base
-            } else {
-                overlay
-            }
-        }
-
-        let mut notes = self.notes;
-        for note in overlay.notes {
-            if !notes.iter().any(|existing| existing == &note) {
-                notes.push(note);
-            }
-        }
-
-        SemRuleSummaryV1 {
-            constraint_count: choose_u32(self.constraint_count, overlay.constraint_count),
-            instance_count: choose_u32(self.instance_count, overlay.instance_count),
-            check_count: choose_u32(self.check_count, overlay.check_count),
-            total_rules: choose_usize(self.total_rules, overlay.total_rules),
-            relation_constraints: choose_usize(
-                self.relation_constraints,
-                overlay.relation_constraints,
-            ),
-            rewrite_rules: choose_usize(self.rewrite_rules, overlay.rewrite_rules),
-            named_block_constraints: choose_usize(
-                self.named_block_constraints,
-                overlay.named_block_constraints,
-            ),
-            runtime_checkable_rules: choose_usize(
-                self.runtime_checkable_rules,
-                overlay.runtime_checkable_rules,
-            ),
-            runtime_visible_rules: choose_usize(
-                self.runtime_visible_rules,
-                overlay.runtime_visible_rules,
-            ),
-            review_only_rules: choose_usize(self.review_only_rules, overlay.review_only_rules),
-            relations_with_rules: choose_usize(
-                self.relations_with_rules,
-                overlay.relations_with_rules,
-            ),
-            theories_with_rules: choose_usize(
-                self.theories_with_rules,
-                overlay.theories_with_rules,
-            ),
-            notes,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SemGateSummaryV1 {
     pub kind: String,
@@ -600,16 +522,6 @@ pub struct SemGateSummaryV1 {
     pub rule: Option<SemRuleSummaryV1>,
     #[serde(default)]
     pub residual_obligation_count: usize,
-}
-
-impl SemGateSummaryV1 {
-    pub fn with_rule_summary(mut self, rule: SemRuleSummaryV1) -> Self {
-        self.rule = Some(match self.rule.take() {
-            Some(existing) => existing.merged_with(rule),
-            None => rule,
-        });
-        self
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -1166,8 +1078,7 @@ fn coverage_summary_from_preview(
     let mut notes = trust_delta.notes.clone();
     if competency_gate_configured {
         notes.push(format!(
-            "competency gate evaluated {} question(s) for this preview",
-            competency_questions_total
+            "competency gate evaluated {competency_questions_total} question(s) for this preview"
         ));
     } else {
         notes.push(
@@ -1257,6 +1168,7 @@ fn trust_delta_from_preview(
     }
 }
 
+#[cfg(test)]
 pub fn sem_gate_summary_from_evolution_preview(preview: &EvolutionPreviewV1) -> SemGateSummaryV1 {
     SemGateSummaryV1 {
         kind: preview.kind.clone(),
@@ -1294,8 +1206,7 @@ where
     let mut obligations = extra.into_iter().map(Into::into).collect::<Vec<_>>();
     if quality_error_count > 0 {
         obligations.push(format!(
-            "preview introduced {} quality error(s) that still require author review",
-            quality_error_count
+            "preview introduced {quality_error_count} quality error(s) that still require author review"
         ));
     }
     if let Some(gate) = competency_gate {
@@ -1458,7 +1369,7 @@ pub fn apply_runtime_refinement_handle_to_migration_transport_obligations(
 
 #[allow(dead_code)]
 pub fn apply_runtime_refinement_by_id_to_migration_transport_obligations_from_compiled_theory_v1(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     morphism: &SchemaMorphismV1,
     handle_id: &str,
@@ -1509,7 +1420,7 @@ pub fn apply_runtime_refinement_handle_to_migration_preview_v1(
 pub fn apply_runtime_refinement_by_id_to_migration_preview_from_compiled_theory_v1(
     base_snapshot_id: Option<AcceptedSnapshotId>,
     candidate_label: String,
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     morphism: &SchemaMorphismV1,
     source_schema: &SchemaV1,
@@ -1540,7 +1451,7 @@ fn local_name(raw: &str) -> &str {
 }
 
 fn relation_semantics_for_name<'a>(
-    compiled_schema: &'a CompiledSchemaIr,
+    compiled_schema: &'a RuntimeSchemaIndex,
     relation_name: &str,
 ) -> Option<&'a RelationSemanticsIr> {
     compiled_schema
@@ -1578,7 +1489,7 @@ fn transport_kind_for_obligation(
 }
 
 fn typed_subject_refs_for_relation(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     relation_name: &str,
 ) -> Vec<TheorySubjectRefIr> {
     let Some(relation) = relation_semantics_for_name(compiled_schema, relation_name) else {
@@ -1682,7 +1593,7 @@ fn subject_matches_artifact(
 }
 
 fn theory_handles_for_artifact(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     artifact_kind: &str,
     artifact_id: &str,
@@ -1738,7 +1649,7 @@ fn theory_handles_for_artifact(
 
 #[allow(dead_code)]
 pub fn build_migration_transport_obligations_from_compiled_theory_v1(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     morphism: &SchemaMorphismV1,
 ) -> Vec<MigrationTransportObligationV1> {
@@ -1794,8 +1705,8 @@ pub fn build_migration_transport_obligations_from_compiled_theory_v1(
     }
 
     for mapping in morphism.arrows.iter().filter(|mapping| {
-        !(mapping.target_path.len() == 1 && mapping.target_path[0] == mapping.source_arrow)
-            && !covered_relation_transport.contains(&mapping.source_arrow)
+        !(covered_relation_transport.contains(&mapping.source_arrow)
+            || (mapping.target_path.len() == 1 && mapping.target_path[0] == mapping.source_arrow))
     }) {
         let relation = relation_semantics_for_name(compiled_schema, &mapping.source_arrow);
         let target_path = if mapping.target_path.is_empty() {
@@ -1829,10 +1740,10 @@ pub fn build_migration_transport_obligations_from_compiled_theory_v1(
 
 #[allow(dead_code)]
 pub fn enrich_reconciliation_with_compiled_theory_v1(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
-    reconciliation: &crate::accepted_plane::SemReconciliationV1,
-) -> crate::accepted_plane::SemReconciliationV1 {
+    reconciliation: &crate::semantic_model::UntrustedMergeReviewV2,
+) -> crate::semantic_model::UntrustedMergeReviewV2 {
     let mut enriched = reconciliation.clone();
     for conflict in &mut enriched.conflicts {
         if conflict.artifact.theory_obligation_ref.is_some()
@@ -1875,7 +1786,7 @@ pub fn build_migration_evolution_preview_from_compiled_theory_v1(
     candidate_label: String,
     morphism: &SchemaMorphismV1,
     source_schema: &SchemaV1,
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
 ) -> EvolutionPreviewV1 {
     let transport_obligations = build_migration_transport_obligations_from_compiled_theory_v1(
@@ -1902,9 +1813,9 @@ pub fn build_migration_evolution_preview_from_compiled_theory_v1(
 #[allow(dead_code)]
 pub fn build_reconciliation_evolution_preview_from_compiled_theory_v1(
     base_snapshot_id: Option<AcceptedSnapshotId>,
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
-    reconciliation: &crate::accepted_plane::SemReconciliationV1,
+    reconciliation: &crate::semantic_model::UntrustedMergeReviewV2,
 ) -> EvolutionPreviewV1 {
     let enriched =
         enrich_reconciliation_with_compiled_theory_v1(compiled_schema, theories, reconciliation);
@@ -1919,7 +1830,7 @@ pub fn build_reconciliation_evolution_preview_from_compiled_theory_v1(
 }
 
 fn runtime_theory_check_summary_for_compiled_theories_v1(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     morphism: Option<&SchemaMorphismV1>,
     surface: &str,
@@ -1962,29 +1873,11 @@ fn runtime_theory_check_summary_for_compiled_theories_v1(
         .flat_map(|report| report.judgments.iter())
         .filter(|judgment| judgment.status == RuntimeTheoryCheckStatusV1::Blocked)
         .count();
-    let all_complete = reports
-        .iter()
-        .all(|report| report.completeness_claim.claimed);
-    let all_closed = reports
-        .iter()
-        .all(|report| report.ontology_closure_claim.claimed);
-    let completeness_claim = if all_complete {
-        "claimed_under_finite_fragment".to_string()
-    } else {
-        "not_claimed_for_all_obligations".to_string()
-    };
-    let ontology_closure_claim = if all_closed {
-        "claimed_under_finite_fragment".to_string()
-    } else {
-        "not_claimed_for_all_obligations".to_string()
-    };
     Some(
         crate::runtime_theory_check::runtime_theory_check_summary_from_reports(
-            &compiled_schema.schema_id.to_string(),
+            compiled_schema.schema_id.as_ref(),
             &reports,
             blocking_errors,
-            completeness_claim,
-            ontology_closure_claim,
             vec![
                 format!("runtime theory check attached by {surface}"),
                 "summary is runtime-operational and remains below Lean-certified proof strength"
@@ -1995,7 +1888,7 @@ fn runtime_theory_check_summary_for_compiled_theories_v1(
 }
 
 fn reconciliation_refinement_candidates(
-    reconciliation: &crate::accepted_plane::SemReconciliationV1,
+    reconciliation: &crate::semantic_model::UntrustedMergeReviewV2,
 ) -> Vec<crate::typed_refinement::RuntimeRefinementCandidateV1> {
     let mut candidates = Vec::new();
     for conflict in &reconciliation.conflicts {
@@ -2035,6 +1928,7 @@ fn reconciliation_refinement_candidates(
     candidates
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_evolution_preview_v1<I, S>(
     kind: &str,
     base_snapshot_id: Option<AcceptedSnapshotId>,
@@ -2159,90 +2053,6 @@ pub fn proposal_typed_change_summary(
             added: import_summary.contexts_created,
             notes: vec![
                 "context delta tracks preview-only context nodes introduced by proposals"
-                    .to_string(),
-            ],
-            ..TypedChangeBucketV1::default()
-        },
-    }
-}
-
-pub fn promotion_typed_change_summary(
-    module_name: &str,
-    module_digest: &AxiDigest,
-    import_summary: &crate::accepted_plane::PromotionImportSummaryV1,
-) -> TypedChangeSummaryV1 {
-    let mut counts = BTreeMap::new();
-    counts.insert(
-        "meta_entities_added".to_string(),
-        import_summary.meta_entities_added,
-    );
-    counts.insert(
-        "meta_relations_added".to_string(),
-        import_summary.meta_relations_added,
-    );
-    counts.insert(
-        "instances_imported".to_string(),
-        import_summary.instances_imported,
-    );
-    counts.insert("entities_added".to_string(), import_summary.entities_added);
-    counts.insert(
-        "tuple_entities_added".to_string(),
-        import_summary.tuple_entities_added,
-    );
-    counts.insert(
-        "relations_added".to_string(),
-        import_summary.relations_added,
-    );
-    counts.insert(
-        "derived_edges_added".to_string(),
-        import_summary.derived_edges_added,
-    );
-    counts.insert(
-        "entity_type_upgrades".to_string(),
-        import_summary.entity_type_upgrades,
-    );
-
-    TypedChangeSummaryV1 {
-        kind: "accepted_module_delta".to_string(),
-        subjects: vec![module_name.to_string(), module_digest.to_string()],
-        primitives: Vec::new(),
-        counts,
-        notes: vec![
-            "delta compares accepted-snapshot state before and after candidate promotion"
-                .to_string(),
-            "counts describe import/build effects, not yet a categorical migration witness"
-                .to_string(),
-        ],
-        schema: TypedChangeBucketV1 {
-            added: import_summary.meta_entities_added + import_summary.meta_relations_added,
-            notes: vec![
-                "schema delta is approximated from imported meta-plane entities and relations"
-                    .to_string(),
-            ],
-            ..TypedChangeBucketV1::default()
-        },
-        theory: TypedChangeBucketV1 {
-            notes: vec![
-                "theory/context deltas are not yet separated in the current promotion import summary"
-                    .to_string(),
-            ],
-            ..TypedChangeBucketV1::default()
-        },
-        instance: TypedChangeBucketV1 {
-            added: import_summary.entities_added
-                + import_summary.tuple_entities_added
-                + import_summary.relations_added
-                + import_summary.derived_edges_added,
-            reused: import_summary.entity_type_upgrades,
-            notes: vec![
-                "instance delta aggregates imported entities, tuple facts, relation edges, and type upgrades"
-                    .to_string(),
-            ],
-            ..TypedChangeBucketV1::default()
-        },
-        context: TypedChangeBucketV1 {
-            notes: vec![
-                "context changes remain folded into the imported instance layer for accepted-module previews"
                     .to_string(),
             ],
             ..TypedChangeBucketV1::default()
@@ -2500,7 +2310,7 @@ pub fn build_migration_evolution_preview_v1(
 
 #[allow(dead_code)]
 pub fn reconciliation_typed_change_summary(
-    reconciliation: &crate::accepted_plane::SemReconciliationV1,
+    reconciliation: &crate::semantic_model::UntrustedMergeReviewV2,
 ) -> TypedChangeSummaryV1 {
     let mut subjects: BTreeSet<String> = BTreeSet::from([
         reconciliation.base_commit_id.to_string(),
@@ -2632,7 +2442,7 @@ pub fn reconciliation_typed_change_summary(
 #[allow(dead_code)]
 pub fn build_reconciliation_evolution_preview_v1(
     base_snapshot_id: Option<AcceptedSnapshotId>,
-    reconciliation: &crate::accepted_plane::SemReconciliationV1,
+    reconciliation: &crate::semantic_model::UntrustedMergeReviewV2,
 ) -> EvolutionPreviewV1 {
     let typed_change = reconciliation_typed_change_summary(reconciliation);
     let unresolved_conflicts = reconciliation
@@ -2663,7 +2473,7 @@ pub fn build_reconciliation_evolution_preview_v1(
         coverage: "persisted_conflicts_plus_decisions".to_string(),
         scope: "semantic_reconciliation_preview".to_string(),
         reasons: vec![
-            "preview is derived from persisted SemReconciliationV1 conflict/decision records"
+            "preview is untrusted analysis; accepted materialization requires AxiStore SemReconciliationV2 typed payload decisions"
                 .to_string(),
             "operator decisions remain explicit; unresolved conflicts are carried forward as residual obligations"
                 .to_string(),
@@ -2686,8 +2496,9 @@ pub fn build_reconciliation_evolution_preview_v1(
     preview
 }
 
+#[cfg(test)]
 pub fn compiled_ir_exploration_typed_change_summary(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
 ) -> TypedChangeSummaryV1 {
     let mut subjects: BTreeSet<String> = BTreeSet::from([compiled_ir.schema_id.to_string()]);
     let mut primitives = Vec::new();
@@ -2902,8 +2713,9 @@ pub fn compiled_ir_exploration_typed_change_summary(
     }
 }
 
+#[cfg(test)]
 pub fn build_compiled_ir_exploration_evolution_preview_v1(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
 ) -> EvolutionPreviewV1 {
     let typed_change = compiled_ir_exploration_typed_change_summary(compiled_ir);
     let quality_delta = synthetic_quality_report(
@@ -3496,8 +3308,12 @@ mod tests {
         );
     }
 
-    fn compiled_theory_migration_fixture(
-    ) -> (SchemaV1, SchemaMorphismV1, CompiledSchemaIr, Vec<TheoryIr>) {
+    fn compiled_theory_migration_fixture() -> (
+        SchemaV1,
+        SchemaMorphismV1,
+        RuntimeSchemaIndex,
+        Vec<TheoryIr>,
+    ) {
         let source_schema = axiograph_pathdb::migration::SchemaV1 {
             name: "Plant".to_string(),
             objects: vec![
@@ -3554,7 +3370,7 @@ schema Plant:
   object Pump
   object Compressor
   object Context
-  relation installed_at(asset: PlantAsset, site: PlantAsset, ctx: Context)
+  relation installed_at(asset: PlantAsset, site: PlantAsset, ctx: Context @context)
   subtype Pump < PlantAsset
   subtype Compressor < PlantAsset
 
@@ -3563,12 +3379,13 @@ theory PlantTransport on Plant:
 "#,
         )
         .expect("parse transport theory");
-        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&module.schemas[0]);
+        let compiled_schema =
+            axiograph_pathdb::kernel_ir::derive_runtime_schema_index(&module.schemas[0]);
         let theories = module
             .theories
             .iter()
             .map(|theory| {
-                axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory)
+                axiograph_pathdb::kernel_ir::derive_runtime_theory_index(&compiled_schema, theory)
                     .expect("compile theory ir")
             })
             .collect::<Vec<_>>();
@@ -3786,30 +3603,40 @@ theory DemoRules on Demo:
 "#,
         )
         .expect("parse reconciliation theory");
-        let compiled_schema = axiograph_pathdb::kernel_ir::compile_schema_ir(&module.schemas[0]);
+        let compiled_schema =
+            axiograph_pathdb::kernel_ir::derive_runtime_schema_index(&module.schemas[0]);
         let theories = module
             .theories
             .iter()
             .map(|theory| {
-                axiograph_pathdb::kernel_ir::compile_theory_ir(&compiled_schema, theory)
+                axiograph_pathdb::kernel_ir::derive_runtime_theory_index(&compiled_schema, theory)
                     .expect("compile theory ir")
             })
             .collect::<Vec<_>>();
-        let reconciliation = crate::accepted_plane::SemReconciliationV1 {
-            version: "accepted_plane_sem_reconciliation_v1".to_string(),
-            reconciliation_id: AxiDigest::new("fnv1a64:reconcile"),
+        let reconciliation = crate::semantic_model::UntrustedMergeReviewV2 {
+            version: "untrusted_merge_review_v2".to_string(),
+            reconciliation_id: AxiDigest::new(
+                axiograph_kernel::ObjectBlobIdV2::from_canonical_fields(&[b"reconcile"])
+                    .to_string(),
+            ),
             created_at_unix_secs: 0,
-            base_commit_id: AxiDigest::new("fnv1a64:base"),
-            left_commit_id: AxiDigest::new("fnv1a64:left"),
-            right_commit_id: AxiDigest::new("fnv1a64:right"),
+            base_commit_id: AxiDigest::new(
+                axiograph_kernel::ObjectBlobIdV2::from_canonical_fields(&[b"base"]).to_string(),
+            ),
+            left_commit_id: AxiDigest::new(
+                axiograph_kernel::ObjectBlobIdV2::from_canonical_fields(&[b"left"]).to_string(),
+            ),
+            right_commit_id: AxiDigest::new(
+                axiograph_kernel::ObjectBlobIdV2::from_canonical_fields(&[b"right"]).to_string(),
+            ),
             policy: "cq_gated_merge".to_string(),
             source_ref_name: Some("heads/review/left".to_string()),
             target_ref_name: Some("heads/review/right".to_string()),
             resolved_ref_name: None,
             outcome_commit_id: None,
             conflicts: vec![
-                crate::accepted_plane::SemConflictRecordV1 {
-                    artifact: crate::accepted_plane::ArtifactRefV1 {
+                crate::semantic_model::MergePreviewConflictV2 {
+                    artifact: crate::semantic_model::ArtifactRefV1 {
                         artifact_kind: "schema_relation".to_string(),
                         artifact_id: "WorksFor".to_string(),
                         theory_obligation_ref: None,
@@ -3818,8 +3645,8 @@ theory DemoRules on Demo:
                     },
                     detail: "left changes carrier roles, right changes subtype target".to_string(),
                 },
-                crate::accepted_plane::SemConflictRecordV1 {
-                    artifact: crate::accepted_plane::ArtifactRefV1 {
+                crate::semantic_model::MergePreviewConflictV2 {
+                    artifact: crate::semantic_model::ArtifactRefV1 {
                         artifact_kind: "rewrite_rule".to_string(),
                         artifact_id: "normalize_parent".to_string(),
                         theory_obligation_ref: None,
@@ -3829,8 +3656,8 @@ theory DemoRules on Demo:
                     detail: "conflicting normalization scopes".to_string(),
                 },
             ],
-            decisions: vec![crate::accepted_plane::SemDecisionRecordV1 {
-                artifact: crate::accepted_plane::ArtifactRefV1 {
+            decisions: vec![crate::semantic_model::MergePreviewDecisionV2 {
+                artifact: crate::semantic_model::ArtifactRefV1 {
                     artifact_kind: "rewrite_rule".to_string(),
                     artifact_id: "normalize_parent".to_string(),
                     theory_obligation_ref: None,
@@ -3923,8 +3750,8 @@ schema Plant:
   object Time
   subtype Pump <: PlantAsset
   subtype Compressor <: PlantAsset
-  relation Certification(asset: Pump, batch: Batch, ctx: Context, time: Time)
-  relation Maintenance(asset: Compressor, batch: Batch, ctx: Context, time: Time)
+  relation Certification(asset: Pump, batch: Batch, ctx: Context @context, time: Time @temporal)
+  relation Maintenance(asset: Compressor, batch: Batch, ctx: Context @context, time: Time @temporal)
   relation ProcessEquiv(lhs: Process, rhs: Process)
 
 instance PlantInst of Plant:
@@ -3943,7 +3770,7 @@ instance PlantInst of Plant:
             .iter()
             .find(|schema| schema.name == "Plant")
             .unwrap();
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
 
         let preview = build_compiled_ir_exploration_evolution_preview_v1(&compiled_ir);
 

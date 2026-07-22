@@ -5,18 +5,18 @@
 
 Axiograph is a typed ontology engineering system grounded in category theory,
 dependent type theory, HoTT/groupoid intuition, and finite operational
-verification. This page states the current design target. It is not a history
-of earlier proof prototypes.
+verification. This page states the current design target, not old proof
+experiments.
 
 The implementation spine is:
 
 ```text
-canonical .axi
-  -> KernelModuleIr
-  -> SchemaCategoryIr + TheoryIr + InstanceFunctorIr
-  -> KernelSurfaceV1 refs
-  -> typed runtime reports
-  -> optional Lean verifier
+exact canonical .axi bytes + import closure + accepted snapshot handle
+  -> CanonicalCompiler
+  -> CompiledKernelSnapshot
+  -> KernelSnapshotIr + SchemaPresentationIr + InstanceModelIr
+  -> derived runtime reports
+  -> optional Lean verifier for the supported fragment
 ```
 
 ## 1. Schemas As Categories
@@ -36,13 +36,14 @@ This keeps n-ary relations, business events, provenance, approvals, and process
 steps first-class. The relation-as-object form is canonical internally because
 it preserves roles and supports olog-style authoring.
 
-## 2. Instances As Functors
+## 2. Instances As Finite Interpretations
 
-Instance data interprets the schema category in a runtime category of finite
-sets, typed facts, or indexed evidence objects. Operationally this is
-`InstanceFunctorIr`.
+Instance data can be understood functorially as an interpretation of the
+schema category in finite sets, typed facts, or indexed evidence objects.
+Operationally, the canonical representation is `InstanceModelIr`; Axiograph
+does not maintain a second `InstanceFunctorIr` category presentation.
 
-For a schema category `S`, an instance functor `I : S -> Set` maps:
+For a schema category `S`, an intended interpretation `I : S -> Set` maps:
 
 - each object type to a finite set of facts/entities,
 - each arrow to a total or partial runtime interpretation with explicit

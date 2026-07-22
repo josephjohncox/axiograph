@@ -1,0 +1,7 @@
+version competency_question_bundle_v1
+
+question bob_parent:
+  ask: Who is Bob's parent?
+  expect: exists OrgFamily.Parent(parent=?p, child=Bob)
+  min_rows: 1
+  weight: 1.0

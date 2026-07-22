@@ -1,4 +1,4 @@
-//! Schema migration semantics scaffolding (Δ/Σ/Π).
+//! Schema migration semantics and witness payloads (Δ/Σ/Π).
 //!
 //! This module holds **shared, serializable** data structures that are used by:
 //!
@@ -160,8 +160,7 @@ impl SchemaMorphismV1 {
             for intermediate_arrow in &mapping.target_path {
                 let Some(after_path) = after.arrow_image(intermediate_arrow.as_str()) else {
                     return Err(anyhow!(
-                        "cannot compose: missing arrow mapping for intermediate arrow `{}`",
-                        intermediate_arrow
+                        "cannot compose: missing arrow mapping for intermediate arrow `{intermediate_arrow}`"
                     ));
                 };
                 composed_path.extend(after_path.iter().cloned());
@@ -181,7 +180,7 @@ impl SchemaMorphismV1 {
     }
 }
 
-/// Proof payload for Δ_F (v1 scaffold).
+/// Proof payload for the supported Δ_F v1 witness.
 ///
 /// A future Lean checker can validate this by recomputing Δ_F
 /// from `(morphism, source_schema, target_instance)` and comparing the result.

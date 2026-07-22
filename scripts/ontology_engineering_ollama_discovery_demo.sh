@@ -42,32 +42,32 @@ echo "out:   $OUT_DIR"
 echo "llm_backend: $LLM_BACKEND"
 echo "llm_model:   $LLM_MODEL"
 if [ "$LLM_BACKEND" = "ollama" ]; then
-  echo "ollama_host: $OLLAMA_HOST"
+	echo "ollama_host: $OLLAMA_HOST"
 fi
 
 DISCOVER_LLM_FLAGS=()
 if [ "$LLM_BACKEND" = "ollama" ]; then
-  if ! command -v ollama >/dev/null 2>&1; then
-    echo "error: ollama not found. Install it from https://ollama.com and retry." >&2
-    exit 1
-  fi
-  if ! ollama list >/dev/null 2>&1; then
-    echo "error: Ollama server not reachable. Start it with: ollama serve" >&2
-    exit 1
-  fi
-  if ! ollama show "$LLM_MODEL" >/dev/null 2>&1; then
-    echo "-- pulling model: $LLM_MODEL"
-    ollama pull "$LLM_MODEL"
-  fi
-  DISCOVER_LLM_FLAGS+=(--llm-ollama --llm-ollama-host "$OLLAMA_HOST" --llm-model "$LLM_MODEL")
+	if ! command -v ollama >/dev/null 2>&1; then
+		echo "error: ollama not found. Install it from https://ollama.com and retry." >&2
+		exit 1
+	fi
+	if ! ollama list >/dev/null 2>&1; then
+		echo "error: Ollama server not reachable. Start it with: ollama serve" >&2
+		exit 1
+	fi
+	if ! ollama show "$LLM_MODEL" >/dev/null 2>&1; then
+		echo "-- pulling model: $LLM_MODEL"
+		ollama pull "$LLM_MODEL"
+	fi
+	DISCOVER_LLM_FLAGS+=(--llm-ollama --llm-ollama-host "$OLLAMA_HOST" --llm-model "$LLM_MODEL")
 elif [ "$LLM_BACKEND" = "openai" ]; then
-  : "${OPENAI_API_KEY:?error: set OPENAI_API_KEY when LLM_BACKEND=openai}"
-  DISCOVER_LLM_FLAGS+=(--llm-openai --llm-model "$LLM_MODEL")
+	: "${OPENAI_API_KEY:?error: set OPENAI_API_KEY when LLM_BACKEND=openai}"
+	DISCOVER_LLM_FLAGS+=(--llm-openai --llm-model "$LLM_MODEL")
 elif [ "$LLM_BACKEND" = "anthropic" ]; then
-  : "${ANTHROPIC_API_KEY:?error: set ANTHROPIC_API_KEY when LLM_BACKEND=anthropic}"
-  DISCOVER_LLM_FLAGS+=(--llm-anthropic --llm-model "$LLM_MODEL")
+	: "${ANTHROPIC_API_KEY:?error: set ANTHROPIC_API_KEY when LLM_BACKEND=anthropic}"
+	DISCOVER_LLM_FLAGS+=(--llm-anthropic --llm-model "$LLM_MODEL")
 else
-  echo "warn: unknown LLM_BACKEND=$LLM_BACKEND; running without LLM"
+	echo "warn: unknown LLM_BACKEND=$LLM_BACKEND; running without LLM"
 fi
 
 echo ""
@@ -77,24 +77,24 @@ make binaries
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
-  AXIOGRAPH="$ROOT_DIR/bin/axiograph"
+	AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 fi
 if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 verify_lean_cert_if_available() {
-  local axi="$1"
-  local cert="$2"
-  if command -v lake >/dev/null 2>&1; then
-    (cd "$ROOT_DIR" && make verify-lean-cert AXI="$axi" CERT="$cert")
-  elif [ "${REQUIRE_LEAN:-0}" = "1" ]; then
-    echo "error: Lean/lake not found and REQUIRE_LEAN=1" >&2
-    exit 1
-  else
-    echo "skip: Lean/lake not found; set REQUIRE_LEAN=1 to make verification mandatory"
-  fi
+	local axi="$1"
+	local cert="$2"
+	if command -v lake >/dev/null 2>&1; then
+		(cd "$ROOT_DIR" && make verify-lean-cert AXI="$axi" CERT="$cert")
+	elif [ "${REQUIRE_LEAN:-0}" = "1" ]; then
+		echo "error: Lean/lake not found and REQUIRE_LEAN=1" >&2
+		exit 1
+	else
+		echo "skip: Lean/lake not found; set REQUIRE_LEAN=1 to make verification mandatory"
+	fi
 }
 
 echo ""
@@ -102,21 +102,21 @@ echo "-- A) semantic discovery (augment proposals with LLM schema_hint routing)"
 SRC_DIR="$OUT_DIR/semantic_src"
 mkdir -p "$SRC_DIR"
 
-cat > "$SRC_DIR/economic_flows.md" <<'MD'
+cat >"$SRC_DIR/economic_flows.md" <<'MD'
 # Economic Flows Notes
 
 Customer pays Invoice; invoices have line items; costs and revenues roll up into accounts.
 Transactions move money between accounts. A payment settles an invoice.
 MD
 
-cat > "$SRC_DIR/machining.md" <<'MD'
+cat >"$SRC_DIR/machining.md" <<'MD'
 # Machinist Learning Notes
 
 Feeds and speeds depend on tool material, workpiece material, and operation type.
 Tool wear impacts surface finish; recommend cutting speed ranges with confidence.
 MD
 
-cat > "$SRC_DIR/schema_evolution.md" <<'MD'
+cat >"$SRC_DIR/schema_evolution.md" <<'MD'
 # Schema Evolution Notes
 
 We evolve schemas via migrations. A delta changes an instance along a functor.
@@ -124,40 +124,40 @@ Normalization and reconciliation should be certificate-checked against the denot
 MD
 
 "$AXIOGRAPH" ingest dir "$SRC_DIR" \
-  --out-dir "$OUT_DIR/semantic_ingest" \
-  --chunks "$OUT_DIR/semantic_chunks.json" \
-  --facts "$OUT_DIR/semantic_facts.json" \
-  --proposals "$OUT_DIR/semantic_proposals.json" \
-  --domain generic
+	--out-dir "$OUT_DIR/semantic_ingest" \
+	--chunks "$OUT_DIR/semantic_chunks.json" \
+	--facts "$OUT_DIR/semantic_facts.json" \
+	--proposals "$OUT_DIR/semantic_proposals.json" \
+	--domain generic
 
 echo ""
 echo "-- run LLM-assisted augment-proposals (semantic routing)"
 "$AXIOGRAPH" discover augment-proposals \
-  "$OUT_DIR/semantic_proposals.json" \
-  --out "$OUT_DIR/semantic_proposals.aug.json" \
-  --trace "$OUT_DIR/semantic_proposals.aug.trace.json" \
-  --chunks "$OUT_DIR/semantic_chunks.json" \
-  "${DISCOVER_LLM_FLAGS[@]}" \
-  --overwrite-schema-hints
+	"$OUT_DIR/semantic_proposals.json" \
+	--out "$OUT_DIR/semantic_proposals.aug.json" \
+	--trace "$OUT_DIR/semantic_proposals.aug.trace.json" \
+	--chunks "$OUT_DIR/semantic_chunks.json" \
+	"${DISCOVER_LLM_FLAGS[@]}" \
+	--overwrite-schema-hints
 
 echo ""
 echo "-- promote augmented proposals into candidate domain .axi modules"
 "$AXIOGRAPH" discover promote-proposals \
-  "$OUT_DIR/semantic_proposals.aug.json" \
-  --out-dir "$OUT_DIR/candidates" \
-  --min-confidence 0.4 \
-  --domains all
+	"$OUT_DIR/semantic_proposals.aug.json" \
+	--out-dir "$OUT_DIR/candidates" \
+	--min-confidence 0.4 \
+	--domains all
 
 echo ""
 echo "-- B) structural discovery (draft a module + LLM structure suggestions)"
 "$AXIOGRAPH" discover draft-module \
-  "$ROOT_DIR/examples/schema_discovery/fixtures/proto_api_proposals.json" \
-  --out "$OUT_DIR/ProtoApi.llm_draft.axi" \
-  --module ProtoApi_LLM_Proposals \
-  --schema ProtoApi \
-  --instance ProtoApiInstance \
-  --infer-constraints \
-  "${DISCOVER_LLM_FLAGS[@]}"
+	"$ROOT_DIR/examples/schema_discovery/inputs/proto_api_proposals.json" \
+	--out "$OUT_DIR/ProtoApi.llm_draft.axi" \
+	--module ProtoApi_LLM_Proposals \
+	--schema ProtoApi \
+	--instance ProtoApiInstance \
+	--infer-constraints \
+	"${DISCOVER_LLM_FLAGS[@]}"
 
 echo ""
 echo "-- validate drafted module parses + typechecks (AST-level)"
@@ -166,12 +166,12 @@ echo "-- validate drafted module parses + typechecks (AST-level)"
 echo ""
 echo "-- visualize a small neighborhood"
 "$AXIOGRAPH" tools viz "$OUT_DIR/ProtoApi.llm_draft.axi" \
-  --out "$OUT_DIR/proto_api_llm_draft_service.json" \
-  --format json \
-  --plane data \
-  --focus-name UserService \
-  --hops 2 \
-  --max-nodes 180
+	--out "$OUT_DIR/proto_api_llm_draft_service.json" \
+	--format json \
+	--plane data \
+	--focus-name UserService \
+	--hops 2 \
+	--max-nodes 180
 
 echo ""
 echo "-- C) promotion gate (candidate -> accepted) + snapshot outputs"
@@ -208,31 +208,24 @@ ACCEPTED_AXPD="$ACCEPTED_DIR/ProtoApi.accepted.axpd"
 echo ""
 echo "-- visualize meta-plane and data-plane (accepted snapshot)"
 "$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
-  --out "$ACCEPTED_DIR/proto_api_meta.json" \
-  --format json \
-  --plane meta \
-  --focus-name ProtoApi \
-  --hops 3 \
-  --max-nodes 340
+	--out "$ACCEPTED_DIR/proto_api_meta.json" \
+	--format json \
+	--plane meta \
+	--focus-name ProtoApi \
+	--hops 3 \
+	--max-nodes 340
 
 "$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
-  --out "$ACCEPTED_DIR/proto_api_user_service.json" \
-  --format json \
-  --plane data \
-  --focus-name UserService \
-  --hops 2 \
-  --max-nodes 220
+	--out "$ACCEPTED_DIR/proto_api_user_service.json" \
+	--format json \
+	--plane data \
+	--focus-name UserService \
+	--hops 2 \
+	--max-nodes 220
 
 echo ""
-echo "-- (optional) emit a query certificate anchored to accepted canonical .axi"
-QUERY_CERT="$ACCEPTED_DIR/proto_api_query_cert.json"
-"$AXIOGRAPH" cert query "$ACCEPTED_AXI" \
-  'select ?rpc where UserService -proto_service_has_rpc-> ?rpc limit 10' \
-  --out "$QUERY_CERT"
-
-echo ""
-echo "-- (optional) Lean: verify the query certificate"
-verify_lean_cert_if_available "$ACCEPTED_AXI" "$QUERY_CERT"
+echo "-- query certification requires semantic MCP require_verified with exact accepted .axi bytes"
+echo "-- this CLI demo intentionally makes no query-certificate claim"
 
 echo ""
 echo "Done."
@@ -247,6 +240,5 @@ echo "Accepted (gated) outputs:"
 echo "  $ACCEPTED_AXI"
 echo "  $ACCEPTED_AXPD"
 echo "  $TYPECHECK_CERT"
-echo "  $QUERY_CERT"
 echo "  $ACCEPTED_DIR/proto_api_meta.json"
 echo "  $ACCEPTED_DIR/proto_api_user_service.json"

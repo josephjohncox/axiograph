@@ -1,4 +1,4 @@
-# Axiograph REPL script: physics-scale bounded proposal rollout demo
+# Axiograph REPL script: physics-scale bounded proposal planning walkthrough
 #
 # Run (from repo root):
 #   make binaries
@@ -7,8 +7,9 @@
 import_axi examples/physics/PhysicsOntology.axi
 import_axi examples/physics/PhysicsMeasurements.axi
 # Notes:
-# - This script is used by offline CI/e2e tests, so it uses the `stub` predictive-proposal backend
-#   (deterministic, no network/secrets).
+# - This script demonstrates the bounded proposal-planning surface in offline
+#   mode. The `stub` predictive-proposal backend is deterministic and returns no
+#   proposals, so the walkthrough is safe for docs and CI.
 # - For an LLM-backed run, replace `proposal use stub` with:
 #     proposal use llm
 #   and configure one of:
@@ -19,4 +20,3 @@ proposal use stub
 proposal plan build/physics_bounded_proposal_rollout_plan.json --steps 2 --rollouts 2 --max 150 --guardrail strict --plane both --goal "expand physics ontology coverage" --axi examples/physics/PhysicsOntology.axi --cq-file examples/competency_questions/physics.cq
 
 # Save the bounded proposal rollout snapshot for inspection.
-save build/physics_bounded_proposal_rollout.axpd

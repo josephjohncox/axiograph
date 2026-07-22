@@ -65,7 +65,7 @@ pub(crate) struct RuntimeTheoryCheckInputV1 {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct RuntimeTheoryClosureTraceSummaryV1 {
+pub(crate) struct RuntimeTheoryAdmissibilityTraceSummaryV1 {
     #[serde(default)]
     pub total_steps: usize,
     #[serde(default)]
@@ -77,9 +77,7 @@ pub(crate) struct RuntimeTheoryClosureTraceSummaryV1 {
     #[serde(default)]
     pub blocking_error_steps: usize,
     #[serde(default)]
-    pub fixpoint_reached_steps: usize,
-    #[serde(default)]
-    pub fixpoint_blocked_steps: usize,
+    pub admissibility_scan_complete_steps: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,9 +116,9 @@ pub(crate) struct RuntimeTheoryCheckSummaryV1 {
     #[serde(default)]
     pub blocking_errors: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub closure_tiers: Vec<String>,
+    pub admissibility_scopes: Vec<String>,
     #[serde(default)]
-    pub closure_trace: RuntimeTheoryClosureTraceSummaryV1,
+    pub admissibility_trace: RuntimeTheoryAdmissibilityTraceSummaryV1,
     #[serde(default)]
     pub transport_summary: RuntimeTheoryTransportSummaryV1,
     pub completeness_claim: String,
@@ -145,20 +143,6 @@ pub(crate) struct RuntimeTheoryCheckModuleReportV1 {
     pub notes: Vec<String>,
 }
 
-pub(crate) fn runtime_theory_check_reports_from_axi_text(
-    axi_text: &str,
-    theory_filter: Option<&str>,
-    closure_tier: RuntimeTheoryClosureTierV1,
-) -> Result<RuntimeTheoryCheckModuleReportV1> {
-    runtime_theory_check_reports_from_axi_text_with_assumptions(
-        axi_text,
-        theory_filter,
-        closure_tier,
-        default_world_assumption_v1(),
-        default_evidence_policy_v1(),
-    )
-}
-
 pub(crate) fn runtime_theory_check_reports_from_axi_text_with_assumptions(
     axi_text: &str,
     theory_filter: Option<&str>,
@@ -167,9 +151,47 @@ pub(crate) fn runtime_theory_check_reports_from_axi_text_with_assumptions(
     evidence_policy: EvidencePolicyV1,
 ) -> Result<RuntimeTheoryCheckModuleReportV1> {
     let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
-    let kernel = axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), axi_text)
-        .map_err(|err| anyhow!("failed to compile KernelModuleIr: {err}"))?;
+    let kernel =
+        axiograph_pathdb::derive_runtime_module_index(canonical.module().module(), axi_text)
+            .map_err(|err| anyhow!("failed to derive runtime module index: {err}"))?;
+    runtime_theory_check_reports_from_runtime_index(
+        &kernel,
+        canonical.digest().to_string(),
+        theory_filter,
+        closure_tier,
+        world,
+        evidence_policy,
+    )
+}
 
+pub(crate) fn runtime_theory_check_reports_from_package(
+    package: &crate::axi_input::CanonicalAxiPackage,
+    theory_filter: Option<&str>,
+    closure_tier: RuntimeTheoryClosureTierV1,
+    world: WorldAssumptionV1,
+    evidence_policy: EvidencePolicyV1,
+) -> Result<RuntimeTheoryCheckModuleReportV1> {
+    let sources = package.ordered_sources();
+    let kernel = axiograph_pathdb::derive_runtime_package_index(package.snapshot(), &sources)
+        .map_err(|err| anyhow!("failed to derive runtime package index: {err}"))?;
+    runtime_theory_check_reports_from_runtime_index(
+        &kernel,
+        kernel.module_digest.to_string(),
+        theory_filter,
+        closure_tier,
+        world,
+        evidence_policy,
+    )
+}
+
+fn runtime_theory_check_reports_from_runtime_index(
+    kernel: &axiograph_pathdb::RuntimeModuleIndex,
+    module_digest: String,
+    theory_filter: Option<&str>,
+    closure_tier: RuntimeTheoryClosureTierV1,
+    world: WorldAssumptionV1,
+    evidence_policy: EvidencePolicyV1,
+) -> Result<RuntimeTheoryCheckModuleReportV1> {
     let mut reports = Vec::new();
     for theory in kernel.theories.iter().filter(|theory| {
         let Some(filter) = theory_filter else {
@@ -203,7 +225,7 @@ pub(crate) fn runtime_theory_check_reports_from_axi_text_with_assumptions(
         ));
     }
 
-    reports.sort_by(|a, b| a.theory_ref.stable_id().cmp(&b.theory_ref.stable_id()));
+    reports.sort_by_key(|a| a.theory_ref.stable_id());
     if reports.is_empty() {
         return Err(anyhow!(
             "no compiled theories matched{}",
@@ -218,25 +240,9 @@ pub(crate) fn runtime_theory_check_reports_from_axi_text_with_assumptions(
         .flat_map(|report| report.judgments.iter())
         .filter(|judgment| judgment.status == RuntimeTheoryCheckStatusV1::Blocked)
         .count();
-    let all_complete = reports
-        .iter()
-        .all(|report| report.completeness_claim.claimed);
-    let all_closed = reports
-        .iter()
-        .all(|report| report.ontology_closure_claim.claimed);
-
     let version = "runtime_theory_check_module_report_v1".to_string();
-    let module_digest = canonical.digest().to_string();
-    let completeness_claim = if all_complete {
-        format!("claimed_under_{}", closure_tier.as_str())
-    } else {
-        "not_claimed_for_all_obligations".to_string()
-    };
-    let ontology_closure_claim = if all_closed {
-        format!("claimed_under_{}", closure_tier.as_str())
-    } else {
-        "not_claimed_for_all_obligations".to_string()
-    };
+    let completeness_claim = "not_claimed_runtime_admissibility_only".to_string();
+    let ontology_closure_claim = "not_claimed_runtime_admissibility_only".to_string();
     let notes = vec![
         "runtime theory check reports are typed operational artifacts, not Lean certificates"
             .to_string(),
@@ -247,8 +253,6 @@ pub(crate) fn runtime_theory_check_reports_from_axi_text_with_assumptions(
         &module_digest,
         &reports,
         blocking_errors,
-        completeness_claim.clone(),
-        ontology_closure_claim.clone(),
         notes.clone(),
     );
 
@@ -258,7 +262,7 @@ pub(crate) fn runtime_theory_check_reports_from_axi_text_with_assumptions(
         summary,
         reports,
         blocking_errors,
-        trust_boundary: "rust_runtime_operational_not_lean_certificate".to_string(),
+        trust_boundary: "Runtime checked in Rust; not Lean verified.".to_string(),
         completeness_claim,
         ontology_closure_claim,
         notes,
@@ -345,19 +349,23 @@ pub(crate) fn runtime_theory_check_summary_from_reports(
     module_digest: &str,
     reports: &[RuntimeTheoryCheckReportV1],
     blocking_errors: usize,
-    completeness_claim: String,
-    ontology_closure_claim: String,
     mut notes: Vec<String>,
 ) -> RuntimeTheoryCheckSummaryV1 {
-    let mut closure_tiers = reports
+    let mut admissibility_scopes = reports
         .iter()
         .map(|report| report.fragment.closure_tier.as_str().to_string())
         .collect::<Vec<_>>();
-    closure_tiers.sort();
-    closure_tiers.dedup();
+    admissibility_scopes.sort();
+    admissibility_scopes.dedup();
     let mut residual_obligation_ids = reports
         .iter()
-        .flat_map(|report| report.closure.residual_obligations.iter().cloned())
+        .flat_map(|report| {
+            report
+                .admissibility_scan
+                .residual_obligations
+                .iter()
+                .cloned()
+        })
         .collect::<Vec<_>>();
     residual_obligation_ids.sort();
     residual_obligation_ids.dedup();
@@ -366,7 +374,7 @@ pub(crate) fn runtime_theory_check_summary_from_reports(
             "{blocking_errors} runtime theory judgment(s) are blocking"
         ));
     }
-    let closure_trace = runtime_theory_closure_trace_summary_from_reports(reports);
+    let admissibility_trace = runtime_theory_admissibility_trace_summary_from_reports(reports);
     let transport_summary = runtime_theory_transport_summary_from_reports(reports);
 
     RuntimeTheoryCheckSummaryV1 {
@@ -395,23 +403,23 @@ pub(crate) fn runtime_theory_check_summary_from_reports(
             .map(|report| report.excluded_by_evidence)
             .sum(),
         blocking_errors,
-        closure_tiers,
-        closure_trace,
+        admissibility_scopes,
+        admissibility_trace,
         transport_summary,
-        completeness_claim,
-        ontology_closure_claim,
+        completeness_claim: "not_claimed_runtime_admissibility_only".to_string(),
+        ontology_closure_claim: "not_claimed_runtime_admissibility_only".to_string(),
         residual_obligation_ids,
         notes,
     }
 }
 
-fn runtime_theory_closure_trace_summary_from_reports(
+fn runtime_theory_admissibility_trace_summary_from_reports(
     reports: &[RuntimeTheoryCheckReportV1],
-) -> RuntimeTheoryClosureTraceSummaryV1 {
-    let mut summary = RuntimeTheoryClosureTraceSummaryV1::default();
+) -> RuntimeTheoryAdmissibilityTraceSummaryV1 {
+    let mut summary = RuntimeTheoryAdmissibilityTraceSummaryV1::default();
     for step in reports
         .iter()
-        .flat_map(|report| report.closure.steps.iter())
+        .flat_map(|report| report.admissibility_scan.steps.iter())
     {
         summary.total_steps += 1;
         match step.kind {
@@ -421,11 +429,8 @@ fn runtime_theory_closure_trace_summary_from_reports(
             }
             RuntimeTheoryClosureStepKindV1::ReviewResidual => summary.review_residual_steps += 1,
             RuntimeTheoryClosureStepKindV1::BlockingError => summary.blocking_error_steps += 1,
-            RuntimeTheoryClosureStepKindV1::FixpointReached => {
-                summary.fixpoint_reached_steps += 1;
-            }
-            RuntimeTheoryClosureStepKindV1::FixpointBlocked => {
-                summary.fixpoint_blocked_steps += 1;
+            RuntimeTheoryClosureStepKindV1::AdmissibilityScanComplete => {
+                summary.admissibility_scan_complete_steps += 1;
             }
         }
     }
@@ -472,7 +477,7 @@ pub(crate) fn runtime_theory_check_human_summary(
         report.reports.len(),
         report.blocking_errors
     ));
-    lines.push(format!("anchor: module_digest={}", report.module_digest));
+    lines.push(format!("anchor: revision_digest={}", report.module_digest));
     let mut worlds: Vec<String> = report
         .reports
         .iter()
@@ -510,20 +515,19 @@ pub(crate) fn runtime_theory_check_human_summary(
     evidence_policies.sort();
     evidence_policies.dedup();
     lines.push(format!(
-        "scope: closure_tiers={}, worlds={}, evidence_policies={}",
-        list_or_none(&report.summary.closure_tiers),
+        "scope: admissibility_scopes={}, worlds={}, evidence_policies={}",
+        list_or_none(&report.summary.admissibility_scopes),
         list_or_none(&worlds),
         list_or_none(&evidence_policies)
     ));
     lines.push(format!(
-        "closure trace: steps={}, checked_seed={}, evidence_filtered={}, review_residual={}, blocking={}, fixpoint_reached={}, fixpoint_blocked={}",
-        report.summary.closure_trace.total_steps,
-        report.summary.closure_trace.checked_seed_steps,
-        report.summary.closure_trace.evidence_filtered_steps,
-        report.summary.closure_trace.review_residual_steps,
-        report.summary.closure_trace.blocking_error_steps,
-        report.summary.closure_trace.fixpoint_reached_steps,
-        report.summary.closure_trace.fixpoint_blocked_steps,
+        "admissibility trace: steps={}, checked_seed={}, evidence_filtered={}, review_residual={}, blocking={}, scan_complete={}",
+        report.summary.admissibility_trace.total_steps,
+        report.summary.admissibility_trace.checked_seed_steps,
+        report.summary.admissibility_trace.evidence_filtered_steps,
+        report.summary.admissibility_trace.review_residual_steps,
+        report.summary.admissibility_trace.blocking_error_steps,
+        report.summary.admissibility_trace.admissibility_scan_complete_steps,
     ));
     if report
         .summary
@@ -544,14 +548,12 @@ pub(crate) fn runtime_theory_check_human_summary(
     }
     for theory_report in &report.reports {
         lines.push(format!(
-            "- {}: checked={}, review_only={}, residual={}, blocked={}, closure_complete={}, ontology_closed={}",
+            "- {}: checked={}, review_only={}, residual={}, blocked={}, saturation=not_run",
             theory_report.theory_ref.display_name(),
             theory_report.checked_obligations,
             theory_report.review_only_obligations,
             theory_report.residual_obligations,
             theory_report.blocked_obligations,
-            theory_report.closure.complete,
-            theory_report.closure.closed,
         ));
     }
     if report.blocking_errors > 0 {
@@ -562,12 +564,12 @@ pub(crate) fn runtime_theory_check_human_summary(
     } else if report.summary.residual_obligations > 0 || report.summary.review_only_obligations > 0
     {
         lines.push(
-            "next: review residual/review-only obligations before making stronger completeness or closure claims"
+            "next: review residual/review-only obligations; this admissibility scan does not compute saturation"
                 .to_string(),
         );
     } else {
         lines.push(
-            "next: runtime gate is closed under declared assumptions; Lean certification remains separate for certifiable fragments"
+            "next: runtime admissibility checks passed; closure requires a separate replayable finite certificate"
                 .to_string(),
         );
     }

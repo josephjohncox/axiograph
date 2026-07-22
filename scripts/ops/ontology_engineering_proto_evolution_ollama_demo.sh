@@ -42,50 +42,50 @@ echo "out:   $OUT_DIR"
 echo "llm_backend: $LLM_BACKEND"
 echo "llm_model:   $LLM_MODEL"
 if [ "$LLM_BACKEND" = "ollama" ]; then
-  echo "ollama_host: $OLLAMA_HOST"
+	echo "ollama_host: $OLLAMA_HOST"
 fi
 
 if ! command -v buf >/dev/null 2>&1; then
-  echo "error: buf not found. Install it from https://buf.build and retry." >&2
-  exit 1
+	echo "error: buf not found. Install it from https://buf.build and retry." >&2
+	exit 1
 fi
 
 verify_lean_cert_if_available() {
-  local axi="$1"
-  local cert="$2"
-  if command -v lake >/dev/null 2>&1; then
-    (cd "$ROOT_DIR" && make verify-lean-cert AXI="$axi" CERT="$cert")
-  elif [ "${REQUIRE_LEAN:-0}" = "1" ]; then
-    echo "error: Lean/lake not found and REQUIRE_LEAN=1" >&2
-    exit 1
-  else
-    echo "skip: Lean/lake not found; set REQUIRE_LEAN=1 to make verification mandatory"
-  fi
+	local axi="$1"
+	local cert="$2"
+	if command -v lake >/dev/null 2>&1; then
+		(cd "$ROOT_DIR" && make verify-lean-cert AXI="$axi" CERT="$cert")
+	elif [ "${REQUIRE_LEAN:-0}" = "1" ]; then
+		echo "error: Lean/lake not found and REQUIRE_LEAN=1" >&2
+		exit 1
+	else
+		echo "skip: Lean/lake not found; set REQUIRE_LEAN=1 to make verification mandatory"
+	fi
 }
 
 DISCOVER_LLM_FLAGS=()
 if [ "$LLM_BACKEND" = "ollama" ]; then
-  if ! command -v ollama >/dev/null 2>&1; then
-    echo "error: ollama not found. Install it from https://ollama.com and retry." >&2
-    exit 1
-  fi
-  if ! ollama list >/dev/null 2>&1; then
-    echo "error: Ollama server not reachable. Start it with: ollama serve" >&2
-    exit 1
-  fi
-  if ! ollama show "$LLM_MODEL" >/dev/null 2>&1; then
-    echo "-- pulling model: $LLM_MODEL"
-    ollama pull "$LLM_MODEL"
-  fi
-  DISCOVER_LLM_FLAGS+=(--llm-ollama --llm-ollama-host "$OLLAMA_HOST" --llm-model "$LLM_MODEL")
+	if ! command -v ollama >/dev/null 2>&1; then
+		echo "error: ollama not found. Install it from https://ollama.com and retry." >&2
+		exit 1
+	fi
+	if ! ollama list >/dev/null 2>&1; then
+		echo "error: Ollama server not reachable. Start it with: ollama serve" >&2
+		exit 1
+	fi
+	if ! ollama show "$LLM_MODEL" >/dev/null 2>&1; then
+		echo "-- pulling model: $LLM_MODEL"
+		ollama pull "$LLM_MODEL"
+	fi
+	DISCOVER_LLM_FLAGS+=(--llm-ollama --llm-ollama-host "$OLLAMA_HOST" --llm-model "$LLM_MODEL")
 elif [ "$LLM_BACKEND" = "openai" ]; then
-  : "${OPENAI_API_KEY:?error: set OPENAI_API_KEY when LLM_BACKEND=openai}"
-  DISCOVER_LLM_FLAGS+=(--llm-openai --llm-model "$LLM_MODEL")
+	: "${OPENAI_API_KEY:?error: set OPENAI_API_KEY when LLM_BACKEND=openai}"
+	DISCOVER_LLM_FLAGS+=(--llm-openai --llm-model "$LLM_MODEL")
 elif [ "$LLM_BACKEND" = "anthropic" ]; then
-  : "${ANTHROPIC_API_KEY:?error: set ANTHROPIC_API_KEY when LLM_BACKEND=anthropic}"
-  DISCOVER_LLM_FLAGS+=(--llm-anthropic --llm-model "$LLM_MODEL")
+	: "${ANTHROPIC_API_KEY:?error: set ANTHROPIC_API_KEY when LLM_BACKEND=anthropic}"
+	DISCOVER_LLM_FLAGS+=(--llm-anthropic --llm-model "$LLM_MODEL")
 else
-  echo "warn: unknown LLM_BACKEND=$LLM_BACKEND; running without LLM"
+	echo "warn: unknown LLM_BACKEND=$LLM_BACKEND; running without LLM"
 fi
 
 rm -rf "$OUT_DIR"
@@ -102,162 +102,158 @@ make binaries
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
 if [ ! -x "$AXIOGRAPH" ]; then
-  AXIOGRAPH="$ROOT_DIR/bin/axiograph"
+	AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 fi
 if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 run_tick() {
-  local tick="$1"
-  local schema="$2"
-  local instance="$3"
-  local focus_service="$4"
-  local focus_doc="$5"
+	local tick="$1"
+	local schema="$2"
+	local instance="$3"
+	local focus_service="$4"
+	local focus_doc="$5"
 
-  local tick_dir="$OUT_DIR/tick${tick}"
-  local accepted_dir="$tick_dir/accepted"
-  mkdir -p "$tick_dir" "$accepted_dir"
+	local tick_dir="$OUT_DIR/tick${tick}"
+	local accepted_dir="$tick_dir/accepted"
+	mkdir -p "$tick_dir" "$accepted_dir"
 
-  local proposals="$tick_dir/proposals.json"
-  local chunks="$tick_dir/chunks.json"
-  local descriptor="$tick_dir/descriptor.binpb"
-  local aug="$tick_dir/proposals.aug.json"
-  local aug_trace="$tick_dir/proposals.aug.trace.json"
-  local candidate_axi="$tick_dir/ProtoApi.tick${tick}.llm_draft.axi"
-  local typecheck_cert="$accepted_dir/ProtoApi.tick${tick}.typecheck_cert.json"
-  local accepted_axi="$accepted_dir/ProtoApi.tick${tick}.accepted.axi"
-  local accepted_axpd="$accepted_dir/ProtoApi.tick${tick}.accepted.axpd"
-  local accepted_axpd_with_chunks="$accepted_dir/ProtoApi.tick${tick}.accepted.with_chunks.axpd"
+	local proposals="$tick_dir/proposals.json"
+	local chunks="$tick_dir/chunks.json"
+	local descriptor="$tick_dir/descriptor.binpb"
+	local aug="$tick_dir/proposals.aug.json"
+	local aug_trace="$tick_dir/proposals.aug.trace.json"
+	local candidate_axi="$tick_dir/ProtoApi.tick${tick}.llm_draft.axi"
+	local typecheck_cert="$accepted_dir/ProtoApi.tick${tick}.typecheck_cert.json"
+	local accepted_axi="$accepted_dir/ProtoApi.tick${tick}.accepted.axi"
+	local accepted_axpd="$accepted_dir/ProtoApi.tick${tick}.accepted.axpd"
+	local accepted_axpd_with_chunks="$accepted_dir/ProtoApi.tick${tick}.accepted.with_chunks.axpd"
 
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "-- tick $tick: ingest proto workspace -> proposals/chunks"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  "$AXIOGRAPH" ingest proto ingest "$PROTO_ROOT" \
-    --out "$proposals" \
-    --chunks "$chunks" \
-    --descriptor-out "$descriptor" \
-    --schema-hint proto_api
+	echo ""
+	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	echo "-- tick $tick: ingest proto workspace -> proposals/chunks"
+	echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	"$AXIOGRAPH" ingest proto ingest "$PROTO_ROOT" \
+		--out "$proposals" \
+		--chunks "$chunks" \
+		--descriptor-out "$descriptor" \
+		--schema-hint proto_api
 
-  echo ""
-  echo "-- tick $tick: LLM augment-proposals (schema hints + grounded additions)"
-  "$AXIOGRAPH" discover augment-proposals \
-    "$proposals" \
-    --out "$aug" \
-    --trace "$aug_trace" \
-    --chunks "$chunks" \
-    "${DISCOVER_LLM_FLAGS[@]}" \
-    --llm-add-proposals \
-    --overwrite-schema-hints
+	echo ""
+	echo "-- tick $tick: LLM augment-proposals (schema hints + grounded additions)"
+	"$AXIOGRAPH" discover augment-proposals \
+		"$proposals" \
+		--out "$aug" \
+		--trace "$aug_trace" \
+		--chunks "$chunks" \
+		"${DISCOVER_LLM_FLAGS[@]}" \
+		--llm-add-proposals \
+		--overwrite-schema-hints
 
-  echo ""
-  echo "-- tick $tick: structural discovery (draft candidate module + LLM structure suggestions)"
-  "$AXIOGRAPH" discover draft-module \
-    "$aug" \
-    --out "$candidate_axi" \
-    --module "ProtoApi_Tick${tick}_LLM" \
-    --schema "$schema" \
-    --instance "$instance" \
-    --infer-constraints \
-    "${DISCOVER_LLM_FLAGS[@]}"
+	echo ""
+	echo "-- tick $tick: structural discovery (draft candidate module + LLM structure suggestions)"
+	"$AXIOGRAPH" discover draft-module \
+		"$aug" \
+		--out "$candidate_axi" \
+		--module "ProtoApi_Tick${tick}_LLM" \
+		--schema "$schema" \
+		--instance "$instance" \
+		--infer-constraints \
+		"${DISCOVER_LLM_FLAGS[@]}"
 
-  echo ""
-  echo "-- tick $tick: validate drafted module parses + typechecks (AST-level)"
-  "$AXIOGRAPH" check validate "$candidate_axi"
+	echo ""
+	echo "-- tick $tick: validate drafted module parses + typechecks (AST-level)"
+	"$AXIOGRAPH" check validate "$candidate_axi"
 
-  echo ""
-  echo "-- tick $tick: promotion gate (certificate) emit typecheck certificate (axi_well_typed_v1)"
-  "$AXIOGRAPH" cert typecheck "$candidate_axi" --out "$typecheck_cert"
+	echo ""
+	echo "-- tick $tick: promotion gate (certificate) emit typecheck certificate (axi_well_typed_v1)"
+	"$AXIOGRAPH" cert typecheck "$candidate_axi" --out "$typecheck_cert"
 
-  echo ""
-  echo "-- tick $tick: promotion gate (Lean) verify typecheck certificate (optional)"
-  verify_lean_cert_if_available "$candidate_axi" "$typecheck_cert"
+	echo ""
+	echo "-- tick $tick: promotion gate (Lean) verify typecheck certificate (optional)"
+	verify_lean_cert_if_available "$candidate_axi" "$typecheck_cert"
 
-  echo ""
-  echo "-- tick $tick: promote (copy candidate -> accepted plane)"
-  cp "$candidate_axi" "$accepted_axi"
+	echo ""
+	echo "-- tick $tick: promote (copy candidate -> accepted plane)"
+	cp "$candidate_axi" "$accepted_axi"
 
-  echo ""
-  echo "-- tick $tick: build PathDB snapshot (.axpd) from accepted canonical .axi"
-  "$AXIOGRAPH" db pathdb materialize-axi "$accepted_axi" --out "$accepted_axpd"
+	echo ""
+	echo "-- tick $tick: build PathDB snapshot (.axpd) from accepted canonical .axi"
+	"$AXIOGRAPH" db pathdb materialize-axi "$accepted_axi" --out "$accepted_axpd"
 
-  echo ""
-  echo "-- tick $tick: import doc chunks into the local derived snapshot (extension layer)"
-  "$AXIOGRAPH" db pathdb import-chunks "$accepted_axpd" \
-    --chunks "$chunks" \
-    --out "$accepted_axpd_with_chunks"
+	echo ""
+	echo "-- tick $tick: import doc chunks into the local derived snapshot (extension layer)"
+	"$AXIOGRAPH" db pathdb import-chunks "$accepted_axpd" \
+		--chunks "$chunks" \
+		--out "$accepted_axpd_with_chunks"
 
-  echo ""
-  echo "-- tick $tick: viz (meta-plane)"
-  "$AXIOGRAPH" tools viz "$accepted_axpd" \
-    --out "$accepted_dir/proto_api_meta.json" \
-    --format json \
-    --plane meta \
-    --focus-name "$schema" \
-    --hops 3 \
-    --max-nodes 520
+	echo ""
+	echo "-- tick $tick: viz (meta-plane)"
+	"$AXIOGRAPH" tools viz "$accepted_axpd" \
+		--out "$accepted_dir/proto_api_meta.json" \
+		--format json \
+		--plane meta \
+		--focus-name "$schema" \
+		--hops 3 \
+		--max-nodes 520
 
-  echo ""
-  echo "-- tick $tick: viz (data-plane, focus service + docs)"
-  "$AXIOGRAPH" tools viz "$accepted_axpd_with_chunks" \
-    --out "$accepted_dir/proto_api_${focus_service}.json" \
-    --format json \
-    --plane data \
-    --focus-name "$focus_service" \
-    --hops 3 \
-    --max-nodes 720
+	echo ""
+	echo "-- tick $tick: viz (data-plane, focus service + docs)"
+	"$AXIOGRAPH" tools viz "$accepted_axpd_with_chunks" \
+		--out "$accepted_dir/proto_api_${focus_service}.json" \
+		--format json \
+		--plane data \
+		--focus-name "$focus_service" \
+		--hops 3 \
+		--max-nodes 720
 
-  echo ""
-  echo "-- tick $tick: viz (doc plane, focus proto file)"
-  "$AXIOGRAPH" tools viz "$accepted_axpd_with_chunks" \
-    --out "$accepted_dir/proto_api_${focus_doc}.json" \
-    --format json \
-    --plane data \
-    --focus-name "$focus_doc" \
-    --hops 2 \
-    --max-nodes 520
+	echo ""
+	echo "-- tick $tick: viz (doc plane, focus proto file)"
+	"$AXIOGRAPH" tools viz "$accepted_axpd_with_chunks" \
+		--out "$accepted_dir/proto_api_${focus_doc}.json" \
+		--format json \
+		--plane data \
+		--focus-name "$focus_doc" \
+		--hops 2 \
+		--max-nodes 520
 
-  echo ""
-  echo "-- tick $tick: sample semantic queries (non-interactive REPL)"
-  "$AXIOGRAPH" repl --quiet --continue-on-error \
-    --cmd "load $accepted_axpd" \
-    --cmd "q select ?svc where ?svc is ProtoService limit 50" \
-    --cmd "q select ?rpc where name(\"$focus_service\") -proto_service_has_rpc-> ?rpc limit 50" \
-    --cmd "q select ?rpc ?scope where ?rpc is ProtoRpc, ?rpc -proto_rpc_auth_scope-> ?scope limit 100" \
-    --cmd "q select ?rpc where ?rpc is ProtoRpc, ?rpc -proto_rpc_idempotent-> false limit 100" \
-    --cmd "q select ?rpc ?tag where ?rpc is ProtoRpc, ?rpc -proto_rpc_has_tag-> ?tag limit 100" \
-    --cmd "q select ?f where ?f is ProtoField, ?f -proto_field_pii-> true limit 100" \
-    --cmd "q select ?f ?ex where ?f is ProtoField, ?f -proto_field_example-> ?ex limit 100"
+	echo ""
+	echo "-- tick $tick: sample semantic queries (non-interactive REPL)"
+	"$AXIOGRAPH" repl --quiet --continue-on-error \
+		--cmd "load $accepted_axpd" \
+		--cmd "q select ?svc where ?svc is ProtoService limit 50" \
+		--cmd "q select ?rpc where name(\"$focus_service\") -proto_service_has_rpc-> ?rpc limit 50" \
+		--cmd "q select ?rpc ?scope where ?rpc is ProtoRpc, ?rpc -proto_rpc_auth_scope-> ?scope limit 100" \
+		--cmd "q select ?rpc where ?rpc is ProtoRpc, ?rpc -proto_rpc_idempotent-> false limit 100" \
+		--cmd "q select ?rpc ?tag where ?rpc is ProtoRpc, ?rpc -proto_rpc_has_tag-> ?tag limit 100" \
+		--cmd "q select ?f where ?f is ProtoField, ?f -proto_field_pii-> true limit 100" \
+		--cmd "q select ?f ?ex where ?f is ProtoField, ?f -proto_field_example-> ?ex limit 100"
 
-  echo ""
-  echo "-- tick $tick: doc search + grounding (extension layer, non-certified)"
-  "$AXIOGRAPH" repl --quiet --continue-on-error \
-    --cmd "load $accepted_axpd_with_chunks" \
-    --cmd "q select ?c where name(\"$focus_doc\") -document_has_chunk-> ?c limit 30" \
-    --cmd "q select ?c where name(\"$focus_service\") -has_doc_chunk-> ?c limit 30" \
-    --cmd "q select ?c where ?c is DocChunk, fts(?c, \"text\", \"idempotent\") limit 10" \
-    --cmd "q select ?c where ?c is DocChunk, fts(?c, \"text\", \"capture payment\") limit 10" \
-    --cmd "q select ?c where ?c is DocChunk, fts(?c, \"search_text\", \"$focus_service\") limit 10"
+	echo ""
+	echo "-- tick $tick: doc search + grounding (extension layer, non-certified)"
+	"$AXIOGRAPH" repl --quiet --continue-on-error \
+		--cmd "load $accepted_axpd_with_chunks" \
+		--cmd "q select ?c where name(\"$focus_doc\") -document_has_chunk-> ?c limit 30" \
+		--cmd "q select ?c where name(\"$focus_service\") -has_doc_chunk-> ?c limit 30" \
+		--cmd "q select ?c where ?c is DocChunk, fts(?c, \"text\", \"idempotent\") limit 10" \
+		--cmd "q select ?c where ?c is DocChunk, fts(?c, \"text\", \"capture payment\") limit 10" \
+		--cmd "q select ?c where ?c is DocChunk, fts(?c, \"search_text\", \"$focus_service\") limit 10"
 
-  echo ""
-  echo "-- tick $tick: optional certified query anchored to accepted canonical .axi"
-  local query_cert="$accepted_dir/proto_api_query_cert.json"
-  "$AXIOGRAPH" cert query "$accepted_axi" \
-    'select ?rpc where name("acme_payments_v1_PaymentService") -proto_service_has_rpc-> ?rpc limit 10' \
-    --out "$query_cert"
-  verify_lean_cert_if_available "$accepted_axi" "$query_cert"
+	echo ""
+	echo "-- tick $tick: query certification requires semantic MCP require_verified"
+	echo "-- this CLI evolution demo intentionally makes no query-certificate claim"
 
-  echo ""
-  echo "-- tick $tick outputs:"
-  echo "  accepted axi:         $accepted_axi"
-  echo "  accepted axpd:        $accepted_axpd"
-  echo "  accepted axpd+chunks: $accepted_axpd_with_chunks"
-  echo "  typecheck cert:       $typecheck_cert"
-  echo "  meta viz:             $accepted_dir/proto_api_meta.json"
-  echo "  service viz:          $accepted_dir/proto_api_${focus_service}.json"
-  echo "  doc viz:              $accepted_dir/proto_api_${focus_doc}.json"
+	echo ""
+	echo "-- tick $tick outputs:"
+	echo "  accepted axi:         $accepted_axi"
+	echo "  accepted axpd:        $accepted_axpd"
+	echo "  accepted axpd+chunks: $accepted_axpd_with_chunks"
+	echo "  typecheck cert:       $typecheck_cert"
+	echo "  meta viz:             $accepted_dir/proto_api_meta.json"
+	echo "  service viz:          $accepted_dir/proto_api_${focus_service}.json"
+	echo "  doc viz:              $accepted_dir/proto_api_${focus_doc}.json"
 }
 
 # ---------------------------------------------------------------------------
@@ -277,7 +273,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 mkdir -p "$PROTO_ROOT/acme/orders/v1"
 
-cat > "$PROTO_ROOT/acme/orders/v1/orders.proto" <<'PROTO'
+cat >"$PROTO_ROOT/acme/orders/v1/orders.proto" <<'PROTO'
 syntax = "proto3";
 
 package acme.orders.v1;
@@ -365,7 +361,7 @@ PROTO
 
 # Add `order_id` as a linkage point on payments.
 perl -0777 -i -pe 's/message Payment \\{\n  string payment_id = 1/\\0\\n  string order_id = 5 [(acme.annotations.v1.field).example = \"ord_123\"];\\n/;' \
-  "$PROTO_ROOT/acme/payments/v1/payments.proto"
+	"$PROTO_ROOT/acme/payments/v1/payments.proto"
 
 run_tick 1 ProtoApiTick1 ProtoApiTick1Instance acme_orders_v1_OrderService acme_orders_v1_orders_proto
 
@@ -384,7 +380,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 mkdir -p "$PROTO_ROOT/acme/fulfillment/v1"
 
-cat > "$PROTO_ROOT/acme/fulfillment/v1/fulfillment.proto" <<'PROTO'
+cat >"$PROTO_ROOT/acme/fulfillment/v1/fulfillment.proto" <<'PROTO'
 syntax = "proto3";
 
 package acme.fulfillment.v1;

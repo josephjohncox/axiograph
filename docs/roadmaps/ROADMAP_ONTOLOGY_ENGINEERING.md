@@ -93,15 +93,15 @@ These rules apply to every workstream in this document.
 - Plan new ontology-engineering surfaces under a **greenfield default**:
   - do not preserve superseded authoring/query/review payloads by default,
   - do not carry parallel semantic vocabularies indefinitely,
-  - and do not keep old workflow shapes alive unless they preserve trust-critical
+  - and do not keep superseded workflow shapes alive unless they preserve trust-critical
     anchors or a defended migration path.
-- When compatibility is kept, scope it explicitly:
-  - compatibility is allowed for soundness/trust-preserving migration,
+- When a migration/import path is kept, scope it explicitly:
+  - it is allowed for soundness/trust-preserving migration,
   - for anchor-preserving export/import,
   - or for short-lived operator migration windows with a defined removal target.
-- Prefer explicit migration/drop-compat plans over silent adapter accretion:
-  - new canonical contracts should replace old defaults,
-  - old surfaces should become migration/import adapters or be removed,
+- Prefer explicit migration/drop plans over silent adapter accretion:
+  - new canonical contracts should replace superseded defaults,
+  - superseded surfaces should become migration/import adapters or be removed,
   - and roadmap language should say when a superseded path is temporary rather than
     "supported" in the open-ended sense.
 
@@ -118,8 +118,8 @@ The roadmap should build on the slices that already exist today.
 | Proposal preview validation | `proposals_validate` already does preview import, meta-plane typecheck, quality delta, optional CQ before/after reporting, and `fail_on_regression` / `fail_on_unsatisfied_after` policy | This is the first real CQ-gated evolution slice |
 | Accepted-plane promotion preview | reviewed `.axi` modules can already be previewed against the current accepted snapshot with quality delta, optional CQ gate, stored validation report, and a trust narrative | This proves accepted-plane mutation can be gated before commit |
 | Typed authoring draft path | `draft_axi_from_proposals` already distinguishes `draft_only` from `validated` canonical drafts and can surface an `axi_well_typed_proof_v1` summary | This is the first authoring surface that already speaks typing and review |
-| Semantic history store | `sem/` layout exists, including `sem/evidence/proposal_adapter_runs/` and `sem/validations/`; semantic commit structs exist in the accepted-plane layer | This is enough scaffolding to stop inventing one-off lineage paths |
-| Accepted plane + PathDB WAL split | accepted snapshots plus PathDB WAL/checkpoints are live, with explicit promotion and `pathdb-commit` flows | This is the core evidence-plane to accepted-plane operating model |
+| Semantic history store | AxiStore owns immutable semantic commits, refs, audit lineage, accepted objects, snapshots, trees, and materialization receipts | CLI/service semantic commands must converge on this authority rather than filesystem-specific `sem/` helpers |
+| Authenticated derived execution | SQLite `.axpd` images are deterministic, content-addressed, receipt-authenticated, and disposable; evidence remains typed until review | This separates accepted meaning, evidence, and query acceleration without a custom PathDB WAL |
 
 The roadmap below should close the gaps between these slices rather than invent a parallel workflow vocabulary.
 
@@ -140,7 +140,7 @@ Every ontology change, regardless of source, should converge on the same loop.
 
 1. **Anchor the base world**
    - Start from an `AcceptedSnapshotId`.
-   - When relevant, carry the derived `PathdbSnapshotId` too, but do not treat it as the semantic anchor.
+   - When relevant, carry the derived `MaterializationIdV2` too, but do not treat it as the semantic anchor.
 
 2. **Create or collect a candidate**
    - Evidence-plane proposals (`proposals.json`)
@@ -156,7 +156,8 @@ Every ontology change, regardless of source, should converge on the same loop.
    - State an explicit trust contract and non-claims.
 
 4. **Persist review artifacts**
-   - Store the preview report under `sem/validations/`.
+   - Store the preview report as an immutable AxiStore object attached to the
+     candidate or promotion plan.
    - Attach proposal digests, proposal-adapter run ids, or source refs when relevant.
    - Make the preview report the review unit, not an incidental log line.
 
@@ -169,7 +170,8 @@ Every ontology change, regardless of source, should converge on the same loop.
    - Rejection leaves the candidate in the evidence/review plane with diagnostics intact.
 
 7. **Rebuild derived execution**
-   - Rebuild/query PathDB or export interop views from the new accepted meaning.
+   - Rebuild the authenticated SQLite `.axpd` materialization or export interop
+     views from the new accepted meaning.
 
 ### 3.2 Target evolution-preview contract
 
@@ -196,7 +198,7 @@ Minimum fields:
 | `reindexing_links[]` | source/target semantic ids that remain comparable across the evolution |
 | `reconciliation_decisions[]` | typed conflict-set and decision inventory when the candidate is a semantic merge |
 | `exploration_next_actions[]` | directed follow-on work suggested by the structural change: CQs to rerun, sibling relations to inspect, candidate shared supertypes, roles to re-home, code/docs/tests likely affected |
-| `stored_report_path` | semantic-history location of the persisted report |
+| `report_object_id` | immutable AxiStore object id for a persisted report |
 
 The important change is not merely storing more data. It is making the same
 review object appear at every ontology mutation seam.
@@ -293,14 +295,14 @@ Implemented today:
   - `certifiable -> mixed`,
   - `mixed -> execution_only`,
   - or the reverse.
-- [ ] Persist CQ preview reports under `sem/validations/` and reference them from semantic commits.
+- [ ] Persist CQ preview reports as immutable AxiStore objects and reference them from semantic commits.
 - [ ] Require a CQ policy decision on merge/promotion paths rather than silently defaulting to permissive behavior.
 
 ### Operational deliverables
 
 - [ ] Define a first-class `EvolutionPreviewV1` or equivalent report shape that subsumes current proposal and promotion preview reports.
 - [ ] Make `EvolutionPreviewV1` carry rich structural primitives rather than only bucketed add/remove/change counts.
-- [ ] Add one stable storage convention for CQ-bearing preview reports under `sem/validations/`.
+- [ ] Use one typed AxiStore attachment convention for CQ-bearing preview reports.
 - [ ] Add a CQ suite manifest location in the repo for reusable acceptance suites.
 - [ ] Make every ontology-changing CLI/server surface accept the same CQ policy and emit the same per-question result structure.
 - [ ] Emit `exploration_next_actions[]` from preview generation so authoring/review tooling can drive directed follow-up inspection instead of only printing deltas.
@@ -339,10 +341,8 @@ Implemented today:
   `SchemaMorphismV1` inputs plus residual transport obligations.
 - reconciliation preview builders now emit typed conflict/decision previews from
   persisted reconciliation records without overstating merge completeness.
-- accepted-plane reconciliation can now persist a stored reconciliation preview
-  report under `sem/validations/` and emit a `SemCommitKindV1::Merge` semantic
-  commit carrying typed delta/trust/rule/coverage summaries plus the cited
-  preview path.
+- AxiStore reconciliation can attach an immutable reconciliation preview object
+  to a merge semantic commit carrying typed delta/trust/rule/coverage summaries.
 - compiled-IR directed exploration now emits relation-object, indexed-family,
   carrier-lift, rewrite-candidate, and subtype-factor opportunities beyond
   hand-authored olog fragments.
@@ -464,7 +464,7 @@ That means the authoring bundle should be able to produce:
   - migration obligations,
   - backend projection obligations for advanced graph stores,
   - and code/test generation hints anchored to semantic ids.
-- [ ] Keep advanced graph database compatibility above the storage layer:
+- [ ] Keep advanced graph database projection above the storage layer:
   - authoring, ologs, CQ gates, semantic VCS refs/commits, and trust contracts
     stay in Axiograph,
   - graph databases receive anchored projections/materializations from accepted
@@ -486,14 +486,14 @@ That means the authoring bundle should be able to produce:
   - and only then other advanced RDF/quad or constrained property-graph
     systems when their capability profiles justify it.
 - [ ] Use backend-native strengths deliberately instead of flattening them into
-  one compatibility story:
+  one generic backend story:
   - push rich type/constraint/query-validation fragments into `TypeDB`,
   - import TypeDB-style interface typing into the canonical IR:
     scoped role interfaces, subtype-inherited admissible players, and explicit
     single-change schema evolution/redefinition discipline,
   - push mirrored branch/history/diff collaboration views into `TerminusDB`,
   - treat property-graph execution/indexing as experimental until a backend
-    clears the same long-term compatibility bar,
+    clears the same long-term projection bar,
   - and keep semantic meaning, olog authoring, CQ gates, trust contracts, and
     lifecycle state in Axiograph above every backend.
 - [ ] Treat backend-native VCS/history as advisory projection infrastructure,
@@ -658,7 +658,7 @@ Make schema and theory evolution reviewable before accepted meaning changes.
 
 Implemented today:
 
-- `delta_f_v1` exists as a recompute-and-compare migration scaffold,
+- `delta_f_v1` exists as a migration certificate that checks recomputed parity over a bounded fragment,
 - promotion preview already compares current accepted state against a candidate module,
 - typed-ontology docs already define the required behavioral shape for useful migration preview.
 
@@ -694,7 +694,7 @@ A migration preview must make these questions answerable before promotion:
 - [ ] Attach CQ before/after reporting and trust deltas to migration preview.
 - [ ] Route migration preview through the same stored validation path as proposal and promotion preview.
 - [ ] Fail closed on unresolved required obligations before accepted-plane mutation.
-- [ ] Treat migration as the place where compatibility is made explicit rather than assumed:
+- [ ] Treat migration as the place where preservation/drop behavior is made explicit:
   - if an old ontology/module/rule shape is being replaced, the preview should
     say what is preserved,
   - what is intentionally dropped,
@@ -726,10 +726,10 @@ opaque accepted-plane mutations.
 Implemented today:
 
 - `sem/` layout exists,
-- `sem/evidence/proposal_adapter_runs/` is already used,
-- `sem/validations/` already exists as a persistence seam,
-- semantic commit structs already exist in the accepted-plane layer,
-- accepted-plane promotion already has enough metadata to reference validation artifacts.
+- AxiStore already stores immutable evidence/review attachments,
+- semantic commits and reconciliations are typed catalog objects,
+- promotion plans carry enough typed attachments to reference validation
+  artifacts without a parallel `sem/*` filesystem.
 
 ### Required branch and object model
 
@@ -756,7 +756,7 @@ Required persisted objects remain:
 - [ ] Make reconciliation objects carry conflict sets, decisions, attached certificates, and typed layer classification usable directly by preview/report tooling.
 - [ ] Treat merge as typed reconciliation over semantic deltas rather than as commit ancestry plus free-form notes.
 - [ ] Link proposal-adapter runs, proposal digests, validations, and resulting promotions through semantic history rather than loose filenames.
-- [ ] Stop treating `sem/` as scaffolding only; make it the review audit trail for ontology change.
+- [ ] Stop treating `sem/` as optional lineage metadata; make it the review audit trail for ontology change.
 
 ### Exit criteria
 
@@ -780,9 +780,10 @@ Make the evidence-to-meaning transition explicit, typed, and hard to bypass.
 1. **Ingest or generate evidence**
    - Source artifacts become `proposals.json`, `chunks.json`, or proposal-adapter output.
 
-2. **Optionally preserve evidence in the PathDB WAL**
-   - Use WAL overlays for discovery, retrieval, grounding, and authoring assistance.
-   - Do not treat these overlays as accepted meaning.
+2. **Retain typed evidence outside accepted state**
+   - Use review bundles and evidence sidecars for discovery, retrieval,
+     grounding, and authoring assistance.
+   - Do not persist evidence inside `.axpd` or treat it as accepted meaning.
 
 3. **Preview and validate**
    - Run proposal preview validation against the anchored current snapshot.
@@ -827,7 +828,7 @@ These flows should remain impossible or explicitly unsupported:
   canonical preview/review contract exists:
   - keep importers/exporters only where needed for migration or trust-preserving
     audit trails,
-  - otherwise remove old defaults.
+  - otherwise remove superseded defaults.
 
 ### Exit criteria
 
@@ -1140,7 +1141,7 @@ Agents and operators should receive a structured report, not only prose:
 ### Phase 0: unify what already exists
 
 - [ ] Define the shared evolution-preview contract.
-- [ ] Persist all preview reports under `sem/validations/`.
+- [ ] Persist all preview reports as immutable AxiStore attachments.
 - [ ] Converge authoring, proposal preview, and promotion preview on one trust-language family.
 - [ ] Require CQ policy to be carried explicitly through ontology-changing surfaces.
 - [ ] Replace superseded review payloads as defaults once the shared contract lands;

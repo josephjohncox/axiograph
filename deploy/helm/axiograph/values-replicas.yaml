@@ -1,19 +1,14 @@
-# Example: multiple read-only replicas.
-# Note: replicas require shared storage or external sync of the snapshot store.
+# Example: multiple read-only replicas pinned to one immutable materialization.
+# Replicas require shared access to the complete AxiStore image+receipt family.
 statefulset:
   replicas: 3
   args:
     - db
     - serve
     - --dir
-    - /data/accepted
-    - --layer
-    - accepted
-    - --snapshot
-    - head
-    - --role
-    - replica
-    - --watch-head
+    - /data/store
+    - --materialization
+    - $(AXIOGRAPH_MATERIALIZATION_ID)
     - --listen
     - 0.0.0.0:7878
   persistence:

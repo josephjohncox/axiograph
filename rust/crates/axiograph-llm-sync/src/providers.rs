@@ -278,7 +278,7 @@ pub fn create_provider(
                 .unwrap_or("Mock response");
             Ok(Box::new(MockProvider::always(response)))
         }
-        _ => Err(anyhow::anyhow!("Unknown provider: {}", provider_type)),
+        _ => Err(anyhow::anyhow!("Unknown provider: {provider_type}")),
     }
 }
 

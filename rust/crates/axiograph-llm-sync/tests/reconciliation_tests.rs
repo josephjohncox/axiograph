@@ -17,7 +17,7 @@ fn test_source_user() -> SourceCredibility {
 fn make_fact(name: &str, confidence: f32) -> ExtractedFact {
     ExtractedFact {
         id: Uuid::new_v4(),
-        claim: format!("{} is a Material", name),
+        claim: format!("{name} is a Material"),
         structured: StructuredFact::Entity {
             entity_type: "Material".to_string(),
             name: name.to_string(),

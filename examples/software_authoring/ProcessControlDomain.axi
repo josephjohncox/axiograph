@@ -19,13 +19,13 @@ schema ProcessControl:
   object PlantProcess
   object BusinessInvariant
 
-  relation BatchUsesMaterial(batch: Batch, lot: MaterialLot, ctx: Context, time: Time)
-  relation MaterialHasCertificate(lot: MaterialLot, certificate: Certificate, ctx: Context, time: Time)
-  relation BatchHasCertifiedMaterial(batch: Batch, certificate: Certificate, ctx: Context, time: Time)
-  relation ReactorHasReading(reactor: Reactor, reading: SensorReading, ctx: Context, time: Time)
-  relation SimulationSupportsAction(run: SimulationRun, action: ControlAction, ctx: Context, time: Time)
-  relation InterlockAllowsAction(interlock: SafetyInterlock, action: ControlAction, ctx: Context, time: Time)
-  relation BatchClearedForCharge(batch: Batch, reactor: Reactor, ctx: Context, time: Time)
+  relation BatchUsesMaterial(batch: Batch, lot: MaterialLot, ctx: Context @context, time: Time @temporal)
+  relation MaterialHasCertificate(lot: MaterialLot, certificate: Certificate, ctx: Context @context, time: Time @temporal)
+  relation BatchHasCertifiedMaterial(batch: Batch, certificate: Certificate, ctx: Context @context, time: Time @temporal)
+  relation ReactorHasReading(reactor: Reactor, reading: SensorReading, ctx: Context @context, time: Time @temporal)
+  relation SimulationSupportsAction(run: SimulationRun, action: ControlAction, ctx: Context @context, time: Time @temporal)
+  relation InterlockAllowsAction(interlock: SafetyInterlock, action: ControlAction, ctx: Context @context, time: Time @temporal)
+  relation BatchClearedForCharge(batch: Batch, reactor: Reactor, ctx: Context @context, time: Time @temporal)
   relation ProcessRequiresInvariant(process: PlantProcess, invariant: BusinessInvariant)
 
 theory ProcessControlRules on ProcessControl:

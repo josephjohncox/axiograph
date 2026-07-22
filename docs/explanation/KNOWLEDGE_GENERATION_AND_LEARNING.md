@@ -99,7 +99,7 @@ with explicit caveats.
 
 Use these examples to exercise the learning workflow:
 
-- `examples/software_authoring/` for weak definition queries, overlays,
+- `examples/software_authoring/` for advisory definition lookup, overlays,
   behavior cases, codegen planning, and continuous software coverage.
 - `examples/semantic_merge/` for typed co-evolution across bounded contexts.
 - `examples/llm_sync/` for evidence-overlay guidance.

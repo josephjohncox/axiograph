@@ -1,8 +1,9 @@
-//! Runtime theory checking and closure reporting over compiled semantic IR.
+//! Runtime theory admissibility reporting over compiled semantic IR.
 //!
-//! This module is intentionally operational: it produces typed reports for
-//! authoring, CQ gates, migration, reconciliation, and agent tooling. It is not
-//! the Lean trusted checker.
+//! This module is intentionally operational: it classifies typed obligations
+//! for authoring, CQ gates, migration, reconciliation, and agent tooling. It
+//! does not saturate theories or claim closure, and it is not the Lean trusted
+//! checker.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -13,10 +14,11 @@ use serde::{Deserialize, Serialize};
 use axiograph_dsl::schema_v1::PathExprV3;
 
 use crate::kernel_ir::{
-    CompiledSchemaIr, KernelRefV1, RelationSemanticsIr, RoleKind, TheoryContextAxisRefIr,
-    TheoryEndpointRefIr, TheoryIr, TheoryObligationDependencyIr, TheoryObligationRefIr,
-    TheoryPathExpressionRefIr, TheoryPathStepRefIr, TheorySubjectRefIr, TheoryTransportItemRefIr,
-    TheoryTransportPlanIr, TheoryTransportStatusIr, TheoryVariableRefIr,
+    RelationSemanticsIr, RoleKind, RuntimeIrRef, RuntimeSchemaIndex,
+    RuntimeTheoryObligationFragmentStatusV1, RuntimeTheoryObligationTrustClassV1,
+    TheoryContextAxisRefIr, TheoryEndpointRefIr, TheoryIr, TheoryObligationDependencyIr,
+    TheoryObligationRefIr, TheoryPathExpressionRefIr, TheoryPathStepRefIr, TheorySubjectRefIr,
+    TheoryTransportItemRefIr, TheoryTransportPlanIr, TheoryTransportStatusIr, TheoryVariableRefIr,
 };
 use crate::SchemaId;
 
@@ -81,12 +83,11 @@ pub enum RuntimeTheoryCheckSeverityV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeTheoryFragmentV1 {
     pub closure_tier: RuntimeTheoryClosureTierV1,
-    pub supports_structured_constraints: bool,
-    pub supports_path_equations: bool,
-    pub supports_rewrites: bool,
-    pub supports_transports: bool,
+    pub classifies_structured_constraints: bool,
+    pub checks_path_equation_endpoints: bool,
+    pub checks_rewrite_endpoints_and_axes: bool,
+    pub classifies_transports: bool,
     pub supports_weighted_evidence: bool,
-    pub terminating_fragment: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
@@ -104,6 +105,7 @@ pub struct RuntimeTheoryAxisRoleV1 {
     pub role_id: String,
     pub role_name: String,
     pub role_kind: RoleKind,
+    pub axis: axiograph_kernel::ScopeAxisIr,
     pub target_type: String,
 }
 
@@ -177,8 +179,7 @@ pub enum RuntimeTheoryClosureStepKindV1 {
     EvidenceFiltered,
     ReviewResidual,
     BlockingError,
-    FixpointReached,
-    FixpointBlocked,
+    AdmissibilityScanComplete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -188,16 +189,12 @@ pub struct RuntimeTheoryClosureStepV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obligation_ref: Option<TheoryObligationRefIr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kernel_refs: Vec<KernelRefV1>,
+    pub kernel_refs: Vec<RuntimeIrRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dependency_subjects: Vec<TheorySubjectRefIr>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub derived_obligations: Vec<String>,
     pub status: RuntimeTheoryCheckStatusV1,
     pub severity: RuntimeTheoryCheckSeverityV1,
     pub admissible: bool,
-    pub complete_under_assumptions: bool,
-    pub closed_under_assumptions: bool,
     pub evidence_weight_ppm: u32,
     pub detail: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -322,42 +319,17 @@ pub struct WorldAssumptionV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CompletenessClaimV1 {
-    pub claimed: bool,
-    pub closure_tier: RuntimeTheoryClosureTierV1,
-    pub scope: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assumptions: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub residual_obligations: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OntologyClosureClaimV1 {
-    pub claimed: bool,
-    pub closure_tier: RuntimeTheoryClosureTierV1,
-    pub scope: String,
-    pub fixpoint_reached: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assumptions: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub residual_obligations: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeTheoryJudgmentV1 {
     pub obligation_ref: TheoryObligationRefIr,
     pub label: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kernel_refs: Vec<KernelRefV1>,
+    pub kernel_refs: Vec<RuntimeIrRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subject_refs: Vec<TheorySubjectRefIr>,
     pub status: RuntimeTheoryCheckStatusV1,
     pub severity: RuntimeTheoryCheckSeverityV1,
     pub closure_tier: RuntimeTheoryClosureTierV1,
     pub admissible: bool,
-    pub complete_under_assumptions: bool,
-    pub closed_under_assumptions: bool,
     pub evidence_weight_ppm: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typed_endpoint: Option<RuntimeTheoryTypedEndpointV1>,
@@ -381,15 +353,11 @@ pub struct RuntimeTheoryJudgmentV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeTheoryClosureReportV1 {
+pub struct RuntimeTheoryAdmissibilityScanV1 {
     pub closure_tier: RuntimeTheoryClosureTierV1,
-    pub complete: bool,
-    pub closed: bool,
-    pub fixpoint_reached: bool,
-    pub iterations: u32,
+    pub evidence_iterations: u32,
     pub considered_obligations: usize,
     pub excluded_obligations: usize,
-    pub derived_obligations: usize,
     pub blocked_obligations: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub residual_obligations: Vec<String>,
@@ -409,7 +377,7 @@ pub struct RuntimeTheoryCheckReportV1 {
     pub schema_id: SchemaId,
     pub theory_ref: TheorySubjectRefIr,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kernel_refs: Vec<KernelRefV1>,
+    pub kernel_refs: Vec<RuntimeIrRef>,
     pub fragment: RuntimeTheoryFragmentV1,
     pub world: WorldAssumptionV1,
     pub evidence_policy: EvidencePolicyV1,
@@ -429,9 +397,7 @@ pub struct RuntimeTheoryCheckReportV1 {
     pub judgments: Vec<RuntimeTheoryJudgmentV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub admissibility_checks: Vec<RuntimeTheoryAdmissibilityCheckV1>,
-    pub closure: RuntimeTheoryClosureReportV1,
-    pub completeness_claim: CompletenessClaimV1,
-    pub ontology_closure_claim: OntologyClosureClaimV1,
+    pub admissibility_scan: RuntimeTheoryAdmissibilityScanV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assumption_diagnostics: Vec<RuntimeTheoryAssumptionDiagnosticV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -464,7 +430,7 @@ pub fn default_evidence_policy_v1() -> EvidencePolicyV1 {
 }
 
 pub fn check_runtime_theory_v1(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &TheoryIr,
 ) -> RuntimeTheoryCheckReportV1 {
     check_runtime_theory_with_options_v1(
@@ -478,7 +444,7 @@ pub fn check_runtime_theory_v1(
 }
 
 pub fn check_runtime_theory_with_options_v1(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &TheoryIr,
     closure_tier: RuntimeTheoryClosureTierV1,
     world: WorldAssumptionV1,
@@ -489,13 +455,15 @@ pub fn check_runtime_theory_with_options_v1(
         .runtime_fragment_summary()
         .obligation_statuses
         .into_iter()
-        .map(|status| {
+        .map(|classification| {
             judgment_for_obligation(
                 compiled_schema,
                 theory,
                 closure_tier,
                 &evidence_policy,
-                status.obligation_ref,
+                classification.obligation_ref,
+                classification.fragment_status,
+                classification.trust_class,
             )
         })
         .collect::<Vec<_>>();
@@ -536,29 +504,25 @@ pub fn check_runtime_theory_with_options_v1(
             && world.included_imports.is_empty()
         {
             let residual =
-                "global_indexed closure requires a finite declared ref/world/slice/import universe"
+                "global_indexed admissibility requires a finite declared ref/world/slice/import universe"
                     .to_string();
             for judgment in &mut judgments {
                 if judgment.status == RuntimeTheoryCheckStatusV1::Checked {
                     judgment.status = RuntimeTheoryCheckStatusV1::ResidualObligation;
                     judgment.severity = RuntimeTheoryCheckSeverityV1::Warning;
-                    judgment.complete_under_assumptions = false;
-                    judgment.closed_under_assumptions = false;
                     judgment.residual_obligations.push(residual.clone());
                 }
             }
         }
         if !world.undeclared_imports.is_empty() {
             let residual = format!(
-                "global_indexed closure rejected undeclared imports: {}",
+                "global_indexed admissibility rejected undeclared imports: {}",
                 world.undeclared_imports.join(", ")
             );
             for judgment in &mut judgments {
                 judgment.status = RuntimeTheoryCheckStatusV1::Blocked;
                 judgment.severity = RuntimeTheoryCheckSeverityV1::Error;
                 judgment.admissible = false;
-                judgment.complete_under_assumptions = false;
-                judgment.closed_under_assumptions = false;
                 judgment.residual_obligations.push(residual.clone());
             }
             non_claims.push(RuntimeTheoryNonClaimV1 {
@@ -603,14 +567,12 @@ pub fn check_runtime_theory_with_options_v1(
                 RuntimeTheoryCheckStatusV1::ReviewOnly
                     | RuntimeTheoryCheckStatusV1::ResidualObligation
                     | RuntimeTheoryCheckStatusV1::Blocked
-            ) && !judgment
-                .non_claims
-                .iter()
-                .any(|claim| claim.code == "excluded_by_evidence_threshold")
+            )
         })
         .map(|judgment| judgment.obligation_ref.stable_id())
         .chain(assumption_residuals.iter().cloned())
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
+    let residual_ids = residual_ids.into_iter().collect::<Vec<_>>();
 
     if evidence_propagation_iterations > 0 {
         notes.push(format!(
@@ -637,49 +599,30 @@ pub fn check_runtime_theory_with_options_v1(
     }
 
     let considered_obligations = total_obligations.saturating_sub(excluded_by_evidence);
-    let complete = blocked_obligations == 0 && residual_obligations == 0 && residual_ids.is_empty();
-    let closed = complete && residual_ids.is_empty();
-    let fixpoint_reached = blocked_obligations == 0 && residual_ids.is_empty();
-    let iterations = if considered_obligations == 0 {
-        evidence_propagation_iterations
-    } else {
-        1 + evidence_propagation_iterations
-    };
-    let closure_steps =
-        build_closure_steps(&judgments, fixpoint_reached, closed, &assumption_residuals);
+    let scan_steps = build_admissibility_scan_steps(&judgments, &assumption_residuals);
 
-    let closure = RuntimeTheoryClosureReportV1 {
+    notes.push(
+        "the runtime report completed an admissibility scan only; no obligation saturation, rewrite termination, or ontology closure was computed"
+            .to_string(),
+    );
+    non_claims.push(RuntimeTheoryNonClaimV1 {
+        code: "closure_engine_not_implemented".to_string(),
+        message: "checked obligations are classified inputs, not derived closure facts; finite saturation requires a replayable explanation certificate"
+            .to_string(),
+    });
+
+    let admissibility_scan = RuntimeTheoryAdmissibilityScanV1 {
         closure_tier,
-        complete,
-        closed,
-        fixpoint_reached,
-        iterations,
+        evidence_iterations: evidence_propagation_iterations,
         considered_obligations,
         excluded_obligations: excluded_by_evidence,
-        derived_obligations: checked_obligations,
         blocked_obligations,
-        residual_obligations: residual_ids.clone(),
+        residual_obligations: residual_ids,
         world: world.clone(),
         evidence_policy: evidence_policy.clone(),
         assumption_diagnostics: assumption_diagnostics.clone(),
-        steps: closure_steps,
-        notes: closure_notes(closure_tier, &world, &evidence_policy),
-    };
-
-    let completeness_claim = CompletenessClaimV1 {
-        claimed: complete,
-        closure_tier,
-        scope: completeness_scope(closure_tier, &world),
-        assumptions: completeness_assumptions(closure_tier, &world, &evidence_policy),
-        residual_obligations: residual_ids.clone(),
-    };
-    let ontology_closure_claim = OntologyClosureClaimV1 {
-        claimed: closed,
-        closure_tier,
-        scope: completeness_scope(closure_tier, &world),
-        fixpoint_reached,
-        assumptions: completeness_assumptions(closure_tier, &world, &evidence_policy),
-        residual_obligations: residual_ids,
+        steps: scan_steps,
+        notes: admissibility_notes(closure_tier, &world, &evidence_policy),
     };
 
     let admissibility_checks = judgments
@@ -697,15 +640,15 @@ pub fn check_runtime_theory_with_options_v1(
         kernel_refs,
         fragment: RuntimeTheoryFragmentV1 {
             closure_tier,
-            supports_structured_constraints: true,
-            supports_path_equations: true,
-            supports_rewrites: true,
-            supports_transports: true,
+            classifies_structured_constraints: true,
+            checks_path_equation_endpoints: true,
+            checks_rewrite_endpoints_and_axes: true,
+            classifies_transports: true,
             supports_weighted_evidence: evidence_policy.weighted_propagation_enabled
                 && evidence_policy.semantics == EvidenceWeightSemanticsV1::WeightedLattice,
-            terminating_fragment: true,
             notes: vec![
-                "finite saturation is traced over compiled obligations and their typed subject dependencies; recursive higher-order closure remains residual".to_string(),
+                "the runtime checker classifies compiled obligations and typed dependencies; it does not orient rules, prove termination, or saturate a theory".to_string(),
+                "Lean Axiograph.Theory.Finite separately certifies bounded finite generator reachability with replayable explanations".to_string(),
             ],
         },
         world,
@@ -718,9 +661,7 @@ pub fn check_runtime_theory_with_options_v1(
         excluded_by_evidence,
         admissibility_checks,
         judgments,
-        closure,
-        completeness_claim,
-        ontology_closure_claim,
+        admissibility_scan,
         assumption_diagnostics,
         non_claims,
         notes,
@@ -728,11 +669,13 @@ pub fn check_runtime_theory_with_options_v1(
 }
 
 fn judgment_for_obligation(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &TheoryIr,
     closure_tier: RuntimeTheoryClosureTierV1,
     evidence_policy: &EvidencePolicyV1,
     obligation_ref: TheoryObligationRefIr,
+    fragment_status: RuntimeTheoryObligationFragmentStatusV1,
+    trust_class: RuntimeTheoryObligationTrustClassV1,
 ) -> RuntimeTheoryJudgmentV1 {
     let subject_refs = theory.subject_refs_for_obligation(&obligation_ref);
     let mut residual_obligations = Vec::new();
@@ -763,11 +706,34 @@ fn judgment_for_obligation(
                     message = "constraint is not admissible because its relation ref is unresolved"
                         .to_string();
                 }
-                Some(constraint) if is_runtime_constraint_kind(&constraint.kind) => {
+                Some(constraint)
+                    if fragment_status
+                        == RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked
+                        && trust_class == RuntimeTheoryObligationTrustClassV1::RuntimeEnforced =>
+                {
                     message = format!(
-                        "structured `{}` constraint resolved stable relation/role ids",
+                        "structured `{}` constraint resolved stable relation/role ids and is runtime-enforced",
                         constraint.kind
                     );
+                }
+                Some(constraint)
+                    if fragment_status
+                        == RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked =>
+                {
+                    status = RuntimeTheoryCheckStatusV1::ReviewOnly;
+                    severity = RuntimeTheoryCheckSeverityV1::Warning;
+                    admissible = false;
+                    residual_obligations.push(format!(
+                        "constraint kind `{}` is typed but classified {:?}; no runtime enforcement or closure is claimed",
+                        constraint.kind, trust_class
+                    ));
+                    non_claims.push(RuntimeTheoryNonClaimV1 {
+                        code: "constraint_review_only".to_string(),
+                        message: "typed constraint classification is review-only and cannot support a closure claim"
+                            .to_string(),
+                    });
+                    message =
+                        "constraint is typed and addressable but remains review-only".to_string();
                 }
                 Some(constraint) => {
                     status = RuntimeTheoryCheckStatusV1::ReviewOnly;
@@ -899,17 +865,18 @@ fn judgment_for_obligation(
                         severity = RuntimeTheoryCheckSeverityV1::Error;
                         admissible = false;
                         residual_obligations.push(
-                            "rewrite drops context or temporal axes from lhs to rhs".to_string(),
+                            "rewrite drops context, world, or temporal axes from lhs to rhs"
+                                .to_string(),
                         );
                         admissibility_diagnostics.push(admissibility_diagnostic(
                             "rewrite_axis_roles_dropped",
                             severity,
                             false,
-                            "rewrite drops context or temporal role keys; make the residual explicit or preserve the scoped relation",
+                            "rewrite drops context, world, or temporal role keys; make the residual explicit or preserve the scoped relation",
                             &subject_refs,
                             rule.relation_refs.clone(),
                         ));
-                        message = "rewrite is blocked because context/time roles must be preserved or explicitly reviewed".to_string();
+                        message = "rewrite is blocked because context/world/time roles must be preserved or explicitly reviewed".to_string();
                     } else {
                         admissibility_diagnostics.push(admissibility_diagnostic(
                             "rewrite_endpoint_preserved",
@@ -923,7 +890,7 @@ fn judgment_for_obligation(
                             "rewrite_axis_roles_preserved",
                             RuntimeTheoryCheckSeverityV1::Info,
                             true,
-                            "rewrite preserves all context and temporal role keys present on the lhs",
+                            "rewrite preserves all context, world, and temporal role keys present on the lhs",
                             &subject_refs,
                             rule.relation_refs.clone(),
                         ));
@@ -946,8 +913,6 @@ fn judgment_for_obligation(
         }
     }
 
-    let complete_under_assumptions = status == RuntimeTheoryCheckStatusV1::Checked;
-    let closed_under_assumptions = status == RuntimeTheoryCheckStatusV1::Checked;
     let evidence_weight_ppm = obligation_weight_ppm(evidence_policy, &obligation_ref);
     let dependency = theory.obligation_dependencies(&obligation_ref);
     let admissibility_checks = admissibility_diagnostics
@@ -965,8 +930,6 @@ fn judgment_for_obligation(
         severity,
         closure_tier,
         admissible,
-        complete_under_assumptions,
-        closed_under_assumptions,
         evidence_weight_ppm,
         typed_endpoint,
         transport_status: None,
@@ -1006,11 +969,8 @@ fn apply_transport_classification(
                         judgment.status = RuntimeTheoryCheckStatusV1::ResidualObligation;
                         judgment.severity = RuntimeTheoryCheckSeverityV1::Warning;
                     }
-                    judgment.complete_under_assumptions = false;
-                    judgment.closed_under_assumptions = false;
                     judgment.residual_obligations.push(format!(
-                        "transported under {:?}; review/certification required before strong migration soundness",
-                        closure_tier
+                        "transported under {closure_tier:?}; review/certification required before strong migration soundness"
                     ));
                 }
                 TheoryTransportStatusIr::MissingObjectImage
@@ -1019,8 +979,6 @@ fn apply_transport_classification(
                     judgment.status = RuntimeTheoryCheckStatusV1::Blocked;
                     judgment.severity = RuntimeTheoryCheckSeverityV1::Error;
                     judgment.admissible = false;
-                    judgment.complete_under_assumptions = false;
-                    judgment.closed_under_assumptions = false;
                     judgment.residual_obligations.push(item.detail.clone());
                 }
             }
@@ -1036,8 +994,6 @@ fn apply_evidence_threshold(
         if judgment.status == RuntimeTheoryCheckStatusV1::Checked {
             judgment.status = RuntimeTheoryCheckStatusV1::ReviewOnly;
             judgment.severity = RuntimeTheoryCheckSeverityV1::Warning;
-            judgment.complete_under_assumptions = true;
-            judgment.closed_under_assumptions = true;
         }
         judgment.non_claims.push(RuntimeTheoryNonClaimV1 {
             code: "excluded_by_evidence_threshold".to_string(),
@@ -1087,10 +1043,8 @@ fn propagate_weighted_evidence(judgments: &mut [RuntimeTheoryJudgmentV1]) -> u32
     iterations
 }
 
-fn build_closure_steps(
+fn build_admissibility_scan_steps(
     judgments: &[RuntimeTheoryJudgmentV1],
-    fixpoint_reached: bool,
-    closed: bool,
     assumption_residuals: &[String],
 ) -> Vec<RuntimeTheoryClosureStepV1> {
     let mut steps = judgments
@@ -1120,16 +1074,9 @@ fn build_closure_steps(
                 obligation_ref: Some(judgment.obligation_ref.clone()),
                 kernel_refs: judgment.kernel_refs.clone(),
                 dependency_subjects: dependency_subjects(&judgment.subject_refs),
-                derived_obligations: if judgment.status == RuntimeTheoryCheckStatusV1::Checked {
-                    vec![judgment.obligation_ref.stable_id()]
-                } else {
-                    Vec::new()
-                },
                 status: judgment.status,
                 severity: judgment.severity,
                 admissible: judgment.admissible,
-                complete_under_assumptions: judgment.complete_under_assumptions,
-                closed_under_assumptions: judgment.closed_under_assumptions,
                 evidence_weight_ppm: judgment.evidence_weight_ppm,
                 detail: judgment.message.clone(),
                 transport_status: judgment.transport_status,
@@ -1144,13 +1091,31 @@ fn build_closure_steps(
         })
         .collect::<Vec<_>>();
 
+    let blocked = judgments
+        .iter()
+        .any(|judgment| judgment.status == RuntimeTheoryCheckStatusV1::Blocked);
+    let residual_obligations = judgments
+        .iter()
+        .filter(|judgment| {
+            matches!(
+                judgment.status,
+                RuntimeTheoryCheckStatusV1::ReviewOnly
+                    | RuntimeTheoryCheckStatusV1::ResidualObligation
+                    | RuntimeTheoryCheckStatusV1::Blocked
+            )
+        })
+        .map(|judgment| judgment.obligation_ref.stable_id())
+        .chain(assumption_residuals.iter().cloned())
+        .chain(std::iter::once(
+            "closure_engine_not_implemented".to_string(),
+        ))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
     steps.push(RuntimeTheoryClosureStepV1 {
         step_index: steps.len() as u32,
-        kind: if fixpoint_reached {
-            RuntimeTheoryClosureStepKindV1::FixpointReached
-        } else {
-            RuntimeTheoryClosureStepKindV1::FixpointBlocked
-        },
+        kind: RuntimeTheoryClosureStepKindV1::AdmissibilityScanComplete,
         obligation_ref: None,
         kernel_refs: judgments
             .iter()
@@ -1159,62 +1124,30 @@ fn build_closure_steps(
             .into_iter()
             .collect(),
         dependency_subjects: Vec::new(),
-        derived_obligations: if closed {
-            judgments
-                .iter()
-                .filter(|judgment| judgment.status == RuntimeTheoryCheckStatusV1::Checked)
-                .map(|judgment| judgment.obligation_ref.stable_id())
-                .collect()
-        } else {
-            Vec::new()
-        },
-        status: if fixpoint_reached {
-            RuntimeTheoryCheckStatusV1::Checked
-        } else if judgments
-            .iter()
-            .any(|judgment| judgment.status == RuntimeTheoryCheckStatusV1::Blocked)
-        {
+        status: if blocked {
             RuntimeTheoryCheckStatusV1::Blocked
         } else {
-            RuntimeTheoryCheckStatusV1::ResidualObligation
+            RuntimeTheoryCheckStatusV1::Checked
         },
-        severity: if fixpoint_reached {
-            RuntimeTheoryCheckSeverityV1::Info
-        } else if judgments
-            .iter()
-            .any(|judgment| judgment.status == RuntimeTheoryCheckStatusV1::Blocked)
-        {
+        severity: if blocked {
             RuntimeTheoryCheckSeverityV1::Error
         } else {
-            RuntimeTheoryCheckSeverityV1::Warning
+            RuntimeTheoryCheckSeverityV1::Info
         },
-        admissible: fixpoint_reached,
-        complete_under_assumptions: fixpoint_reached,
-        closed_under_assumptions: closed,
+        admissible: !blocked,
         evidence_weight_ppm: 1_000_000,
-        detail: if fixpoint_reached {
-            "runtime closure reached a finite fixpoint over in-scope typed obligations".to_string()
-        } else {
-            "runtime closure stopped with blocking or residual obligations".to_string()
-        },
+        detail:
+            "runtime admissibility scan completed; no saturation or fixpoint claim was computed"
+                .to_string(),
         transport_status: None,
         transport_basis: Vec::new(),
         missing_object_images: Vec::new(),
         missing_arrow_images: Vec::new(),
-        residual_obligations: judgments
-            .iter()
-            .filter(|judgment| {
-                matches!(
-                    judgment.status,
-                    RuntimeTheoryCheckStatusV1::ReviewOnly
-                        | RuntimeTheoryCheckStatusV1::ResidualObligation
-                        | RuntimeTheoryCheckStatusV1::Blocked
-                ) && !is_excluded_by_evidence_threshold(judgment)
-            })
-            .map(|judgment| judgment.obligation_ref.stable_id())
-            .chain(assumption_residuals.iter().cloned())
-            .collect(),
-        non_claims: Vec::new(),
+        residual_obligations,
+        non_claims: vec![RuntimeTheoryNonClaimV1 {
+            code: "closure_engine_not_implemented".to_string(),
+            message: "classified obligations are not derived closure facts".to_string(),
+        }],
         admissibility_diagnostics: Vec::new(),
         admissibility_checks: Vec::new(),
     });
@@ -1234,17 +1167,17 @@ fn theory_kernel_refs(
     theory: &TheoryIr,
     obligation_ref: &TheoryObligationRefIr,
     subject_refs: &[TheorySubjectRefIr],
-) -> Vec<KernelRefV1> {
+) -> Vec<RuntimeIrRef> {
     let mut refs = BTreeSet::new();
-    refs.insert(KernelRefV1::Theory {
+    refs.insert(RuntimeIrRef::Theory {
         theory_id: theory.theory_id.clone(),
         schema_id: theory.schema_id.clone(),
     });
-    refs.insert(KernelRefV1::TheoryObligation {
+    refs.insert(RuntimeIrRef::TheoryObligation {
         obligation: obligation_ref.clone(),
     });
     for subject in subject_refs {
-        refs.insert(KernelRefV1::TheorySubject {
+        refs.insert(RuntimeIrRef::TheorySubject {
             theory_id: theory.theory_id.clone(),
             subject: subject.clone(),
         });
@@ -1255,9 +1188,9 @@ fn theory_kernel_refs(
 fn report_kernel_refs(
     theory: &TheoryIr,
     judgments: &[RuntimeTheoryJudgmentV1],
-) -> Vec<KernelRefV1> {
+) -> Vec<RuntimeIrRef> {
     let mut refs = BTreeSet::new();
-    refs.insert(KernelRefV1::Theory {
+    refs.insert(RuntimeIrRef::Theory {
         theory_id: theory.theory_id.clone(),
         schema_id: theory.schema_id.clone(),
     });
@@ -1340,12 +1273,12 @@ fn build_assumption_diagnostics(
 ) -> Vec<RuntimeTheoryAssumptionDiagnosticV1> {
     let mut diagnostics = vec![
         assumption_diagnostic(
-            "runtime_fragment_terminating",
+            "runtime_admissibility_scan_bounded",
             RuntimeTheoryAssumptionKindV1::Fragment,
-            RuntimeTheoryAssumptionEffectV1::SupportsClaim,
+            RuntimeTheoryAssumptionEffectV1::NarrowsClaim,
             RuntimeTheoryCheckSeverityV1::Info,
             closure_tier,
-            "runtime closure is over the declared terminating Rust fragment, not full HoTT/topos semantics",
+            "runtime work is a bounded admissibility scan over supplied obligations; no termination or saturation claim is made",
             Vec::new(),
             vec![RuntimeTheoryNonClaimV1 {
                 code: "not_full_hott".to_string(),
@@ -1360,7 +1293,7 @@ fn build_assumption_diagnostics(
                 RuntimeTheoryAssumptionEffectV1::SupportsClaim,
                 RuntimeTheoryCheckSeverityV1::Info,
                 closure_tier,
-                "declared world is finite for runtime saturation",
+                "declared world is finite for bounded admissibility reporting; no runtime saturation is performed",
                 vec![world.world_id.clone()],
                 Vec::new(),
             )
@@ -1389,7 +1322,7 @@ fn build_assumption_diagnostics(
             RuntimeTheoryAssumptionEffectV1::NarrowsClaim,
             RuntimeTheoryCheckSeverityV1::Info,
             closure_tier,
-            "no named closed context set is declared; context/time roles remain typed axes but are not exhaustively closed as worlds",
+            "no named closed context set is declared; context/world/time roles remain typed axes but are not exhaustively closed as worlds",
             Vec::new(),
             vec![RuntimeTheoryNonClaimV1 {
                 code: "context_axes_not_world_complete".to_string(),
@@ -1523,6 +1456,7 @@ fn build_assumption_diagnostics(
     diagnostics
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assumption_diagnostic(
     assumption_id: &str,
     kind: RuntimeTheoryAssumptionKindV1,
@@ -1556,15 +1490,8 @@ fn obligation_weight_ppm(
         .unwrap_or(1_000_000)
 }
 
-fn is_runtime_constraint_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "functional" | "at_most" | "key" | "symmetric_where_in" | "symmetric" | "transitive"
-    )
-}
-
 fn missing_relation_ids(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     relation_ids: &[crate::RelationId],
 ) -> Vec<String> {
     relation_ids
@@ -1575,7 +1502,7 @@ fn missing_relation_ids(
 }
 
 fn relation_by_id<'a>(
-    compiled_schema: &'a CompiledSchemaIr,
+    compiled_schema: &'a RuntimeSchemaIndex,
     relation_id: &crate::RelationId,
 ) -> Option<&'a RelationSemanticsIr> {
     compiled_schema
@@ -1585,7 +1512,7 @@ fn relation_by_id<'a>(
 }
 
 fn relation_by_name<'a>(
-    compiled_schema: &'a CompiledSchemaIr,
+    compiled_schema: &'a RuntimeSchemaIndex,
     relation_name: &str,
 ) -> Option<&'a RelationSemanticsIr> {
     compiled_schema.relations.get(relation_name).or_else(|| {
@@ -1597,7 +1524,7 @@ fn relation_by_name<'a>(
 }
 
 fn typed_endpoint_for_path_equation(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     equation: &crate::kernel_ir::PathEquationIr,
 ) -> RuntimeTheoryTypedEndpointV1 {
     let relation_names = relation_names_for_paths(&[&equation.lhs, &equation.rhs]);
@@ -1621,7 +1548,7 @@ fn typed_endpoint_for_path_equation(
 }
 
 fn typed_endpoint_for_rewrite_rule(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     rule: &crate::kernel_ir::RewriteRuleIr,
 ) -> RuntimeTheoryTypedEndpointV1 {
     let relation_names = relation_names_for_paths(&[&rule.lhs, &rule.rhs]);
@@ -1658,7 +1585,7 @@ fn path_step_count(path: &PathExprV3) -> usize {
 }
 
 fn axis_roles_for_relation_names(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     relation_names: &[String],
 ) -> Vec<RuntimeTheoryAxisRoleV1> {
     let mut roles = relation_names
@@ -1666,18 +1593,15 @@ fn axis_roles_for_relation_names(
         .filter_map(|relation_name| relation_by_name(compiled_schema, relation_name))
         .flat_map(|relation| {
             relation.roles.iter().filter_map(move |role| {
-                if matches!(role.kind, RoleKind::Context | RoleKind::Temporal) {
-                    Some(RuntimeTheoryAxisRoleV1 {
-                        relation_id: relation.relation_id.to_string(),
-                        relation_name: relation.name.clone(),
-                        role_id: role.role_id.to_string(),
-                        role_name: role.name.clone(),
-                        role_kind: role.kind,
-                        target_type: role.target_type.clone(),
-                    })
-                } else {
-                    None
-                }
+                role.kind.scope_axis().map(|axis| RuntimeTheoryAxisRoleV1 {
+                    relation_id: relation.relation_id.to_string(),
+                    relation_name: relation.name.clone(),
+                    role_id: role.role_id.to_string(),
+                    role_name: role.name.clone(),
+                    role_kind: role.kind,
+                    axis,
+                    target_type: role.target_type.clone(),
+                })
             })
         })
         .collect::<Vec<_>>();
@@ -1702,7 +1626,7 @@ fn axis_roles_for_relation_names(
 }
 
 fn drops_axis_roles(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     lhs: &PathExprV3,
     rhs: &PathExprV3,
 ) -> bool {
@@ -1715,7 +1639,7 @@ fn drops_axis_roles(
 }
 
 fn axis_role_keys_for_path(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     path: &PathExprV3,
 ) -> BTreeSet<String> {
     let mut relation_names = BTreeSet::new();
@@ -1724,11 +1648,8 @@ fn axis_role_keys_for_path(
     for relation_name in relation_names {
         if let Some(relation) = relation_by_name(compiled_schema, &relation_name) {
             for role in &relation.roles {
-                if matches!(role.kind, RoleKind::Context | RoleKind::Temporal) {
-                    keys.insert(format!(
-                        "{:?}:{}:{}",
-                        role.kind, role.name, role.target_type
-                    ));
+                if let Some(axis) = role.kind.scope_axis() {
+                    keys.insert(format!("{axis:?}:{}:{}", role.name, role.target_type));
                 }
             }
         }
@@ -1760,8 +1681,12 @@ fn base_non_claims(
             message: "runtime theory check report is not a Lean certificate".to_string(),
         },
         RuntimeTheoryNonClaimV1 {
+            code: "closure_engine_not_implemented".to_string(),
+            message: "this report classifies admissibility and residuals; it does not derive closure facts or reach a theory fixpoint".to_string(),
+        },
+        RuntimeTheoryNonClaimV1 {
             code: "not_global_ontology_truth".to_string(),
-            message: "closure is scoped to declared worlds, evidence policy, imports, and runtime fragment".to_string(),
+            message: "no open-world or global ontology closure is claimed".to_string(),
         },
         RuntimeTheoryNonClaimV1 {
             code: "not_full_hott".to_string(),
@@ -1792,7 +1717,7 @@ fn base_non_claims(
     claims
 }
 
-fn closure_notes(
+fn admissibility_notes(
     closure_tier: RuntimeTheoryClosureTierV1,
     world: &WorldAssumptionV1,
     evidence_policy: &EvidencePolicyV1,
@@ -1800,11 +1725,11 @@ fn closure_notes(
     let mut notes = Vec::new();
     match closure_tier {
         RuntimeTheoryClosureTierV1::FiniteFragment => {
-            notes.push("finite_fragment closure is over accepted finite compiled obligations and terminating runtime rules".to_string());
+            notes.push("finite_fragment performs a bounded admissibility scan; it does not saturate obligations or prove rewrite termination".to_string());
         }
         RuntimeTheoryClosureTierV1::EvidenceWeighted => {
             notes.push(format!(
-                "evidence_weighted closure first filters obligations at {}ppm",
+                "evidence_weighted admissibility first filters obligations at {}ppm",
                 evidence_policy.threshold_ppm
             ));
             if evidence_policy.weighted_propagation_enabled
@@ -1815,7 +1740,7 @@ fn closure_notes(
         }
         RuntimeTheoryClosureTierV1::GlobalIndexed => {
             notes.push(format!(
-                "global_indexed closure is finite over refs/worlds/slices/imports: refs={}, worlds={}, slices={}, imports={}",
+                "global_indexed admissibility scope is annotated by refs/worlds/slices/imports: refs={}, worlds={}, slices={}, imports={}",
                 world.included_refs.len(),
                 world.included_worlds.len(),
                 world.included_slices.len(),
@@ -1826,63 +1751,15 @@ fn closure_notes(
     notes
 }
 
-fn completeness_scope(
-    closure_tier: RuntimeTheoryClosureTierV1,
-    world: &WorldAssumptionV1,
-) -> String {
-    match closure_tier {
-        RuntimeTheoryClosureTierV1::FiniteFragment => {
-            format!("finite accepted world `{}`", world.world_id)
-        }
-        RuntimeTheoryClosureTierV1::EvidenceWeighted => {
-            format!("thresholded evidence world `{}`", world.world_id)
-        }
-        RuntimeTheoryClosureTierV1::GlobalIndexed => {
-            format!("declared global indexed universe `{}`", world.world_id)
-        }
-    }
-}
-
-fn completeness_assumptions(
-    closure_tier: RuntimeTheoryClosureTierV1,
-    world: &WorldAssumptionV1,
-    evidence_policy: &EvidencePolicyV1,
-) -> Vec<String> {
-    let mut assumptions = vec![
-        "compiled schema/category/theory ids are the semantic context".to_string(),
-        "runtime closure covers only the supported terminating fragment".to_string(),
-        "open-world unknowns are not converted into false facts".to_string(),
-    ];
-    if world.finite {
-        assumptions.push("declared world is finite".to_string());
-    } else {
-        assumptions.push("declared world is not finite; closure is advisory".to_string());
-    }
-    match closure_tier {
-        RuntimeTheoryClosureTierV1::FiniteFragment => {}
-        RuntimeTheoryClosureTierV1::EvidenceWeighted => {
-            assumptions.push(format!(
-                "obligations below {}ppm are outside the thresholded world",
-                evidence_policy.threshold_ppm
-            ));
-        }
-        RuntimeTheoryClosureTierV1::GlobalIndexed => {
-            assumptions
-                .push("all refs/worlds/slices/imports must be explicitly declared".to_string());
-        }
-    }
-    assumptions
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axiograph_dsl::axi_v1::parse_axi_v1;
 
-    fn compiled_fixture(axi: &str) -> (CompiledSchemaIr, TheoryIr) {
+    fn compiled_fixture(axi: &str) -> (RuntimeSchemaIndex, TheoryIr) {
         let module = parse_axi_v1(axi).expect("fixture parses");
-        let kernel =
-            crate::compile_kernel_module_ir(&module, axi).expect("fixture compiles to kernel IR");
+        let kernel = crate::derive_runtime_module_index(&module, axi)
+            .expect("fixture compiles to kernel IR");
         (kernel.schemas[0].clone(), kernel.theories[0].clone())
     }
 
@@ -1913,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_path_equation_closes_under_finite_fragment() {
+    fn valid_path_equation_is_admissible_without_synthetic_closure() {
         let (schema, theory) = compiled_fixture(
             r#"
 module Family
@@ -1934,8 +1811,15 @@ theory FamilyTheory on Family:
         assert_eq!(report.version, RUNTIME_THEORY_CHECK_REPORT_VERSION_V1);
         assert_eq!(report.blocked_obligations, 0);
         assert_eq!(report.checked_obligations, 1);
-        assert!(report.closure.complete);
-        assert!(report.ontology_closure_claim.claimed);
+        assert!(!report
+            .admissibility_scan
+            .residual_obligations
+            .iter()
+            .any(|residual| residual == "closure_engine_not_implemented"));
+        assert!(report
+            .non_claims
+            .iter()
+            .any(|claim| claim.code == "closure_engine_not_implemented"));
         let endpoint = report.judgments[0]
             .typed_endpoint
             .as_ref()
@@ -1945,7 +1829,7 @@ theory FamilyTheory on Family:
         assert_eq!(endpoint.rhs_steps, 1);
         assert_eq!(endpoint.relation_names, vec!["parent".to_string()]);
         assert!(endpoint.endpoint_preserved);
-        assert!(report.closure.steps.iter().any(|step| {
+        assert!(report.admissibility_scan.steps.iter().any(|step| {
             step.kind == RuntimeTheoryClosureStepKindV1::CheckedSeed
                 && step
                     .obligation_ref
@@ -1953,8 +1837,8 @@ theory FamilyTheory on Family:
                     .is_some_and(|obligation| obligation.display_name() == "p_id")
         }));
         assert_eq!(
-            report.closure.steps.last().map(|step| step.kind),
-            Some(RuntimeTheoryClosureStepKindV1::FixpointReached)
+            report.admissibility_scan.steps.last().map(|step| step.kind),
+            Some(RuntimeTheoryClosureStepKindV1::AdmissibilityScanComplete)
         );
     }
 
@@ -1978,8 +1862,6 @@ theory FamilyTheory on Family:
         let report = check_runtime_theory_v1(&schema, &theory);
 
         assert_eq!(report.review_only_obligations, 1);
-        assert!(!report.completeness_claim.claimed);
-        assert!(!report.ontology_closure_claim.claimed);
         assert!(report.judgments[0]
             .non_claims
             .iter()
@@ -2017,10 +1899,9 @@ theory FamilyTheory on Family:
         );
 
         assert_eq!(report.excluded_by_evidence, 1);
-        assert_eq!(report.closure.considered_obligations, 0);
-        assert!(report.closure.complete);
+        assert_eq!(report.admissibility_scan.considered_obligations, 0);
         assert!(report
-            .closure
+            .admissibility_scan
             .steps
             .iter()
             .any(|step| { step.kind == RuntimeTheoryClosureStepKindV1::EvidenceFiltered }));
@@ -2077,7 +1958,7 @@ theory FamilyTheory on Family:
             .judgments
             .iter()
             .all(|judgment| judgment.evidence_weight_ppm == 250_000));
-        assert_eq!(report.closure.iterations, 1);
+        assert_eq!(report.admissibility_scan.evidence_iterations, 1);
         assert!(report
             .notes
             .iter()
@@ -2113,7 +1994,6 @@ theory FamilyTheory on Family:
         );
 
         assert_eq!(report.blocked_obligations, 1);
-        assert!(!report.completeness_claim.claimed);
         assert!(report
             .non_claims
             .iter()
@@ -2121,7 +2001,7 @@ theory FamilyTheory on Family:
     }
 
     #[test]
-    fn transport_status_is_structured_in_runtime_judgment_and_closure_step() {
+    fn transport_status_is_structured_in_runtime_judgment_and_scan_step() {
         let (schema, theory) = compiled_fixture(
             r#"
 module Family
@@ -2174,10 +2054,9 @@ theory FamilyTheory on Family:
             .iter()
             .any(|basis| basis == "object Person -> Human"));
         assert_eq!(
-            report.closure.steps[0].transport_status,
+            report.admissibility_scan.steps[0].transport_status,
             Some(TheoryTransportStatusIr::Transported)
         );
-        assert!(!report.ontology_closure_claim.claimed);
     }
 
     #[test]
@@ -2233,8 +2112,6 @@ theory FamilyTheory on Family:
             report.judgments[0].status,
             RuntimeTheoryCheckStatusV1::ResidualObligation
         );
-        assert!(!report.judgments[0].complete_under_assumptions);
-        assert!(!report.ontology_closure_claim.claimed);
         assert!(report.judgments[0]
             .non_claims
             .iter()
@@ -2250,7 +2127,7 @@ module Family
 schema Family:
   object Person
   object Context
-  relation ScopedParent(child: Person, parent: Person, ctx: Context)
+  relation ScopedParent(child: Person, parent: Person, ctx: Context @context)
   relation Parent(child: Person, parent: Person)
 
 theory FamilyTheory on Family:
@@ -2280,13 +2157,16 @@ theory FamilyTheory on Family:
         assert!(report.judgments[0]
             .residual_obligations
             .iter()
-            .any(|residual| residual.contains("drops context or temporal axes")));
+            .any(|residual| residual.contains("drops context, world, or temporal axes")));
+        assert!(report.judgments[0]
+            .admissibility_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "rewrite_axis_roles_dropped"));
     }
 
     #[test]
     fn invalid_path_endpoint_fails_before_runtime_report() {
-        let err = parse_axi_v1(
-            r#"
+        let axi = r#"
 module Family
 
 schema Family:
@@ -2299,19 +2179,18 @@ theory FamilyTheory on Family:
   equation bad_endpoint:
     step(x,parent,y) =
     step(x,member,o)
-"#,
-        )
-        .map_err(|err| err.to_string())
-        .and_then(|module| crate::compile_kernel_module_ir(&module, "fixture").map(|_| ()))
-        .expect_err("endpoint mismatch should fail compile");
+"#;
+        let err = parse_axi_v1(axi)
+            .map_err(|err| err.to_string())
+            .and_then(|module| crate::derive_runtime_module_index(&module, axi).map(|_| ()))
+            .expect_err("endpoint mismatch should fail compile");
 
         assert!(err.contains("mismatched path endpoints"));
     }
 
     #[test]
     fn rewrite_with_undeclared_variable_fails_before_runtime_report() {
-        let err = parse_axi_v1(
-            r#"
+        let axi = r#"
 module Family
 
 schema Family:
@@ -2323,11 +2202,11 @@ theory FamilyTheory on Family:
     vars: a: Person
     lhs: step(a, parent, b)
     rhs: step(a, parent, b)
-"#,
-        )
-        .map_err(|err| err.to_string())
-        .and_then(|module| crate::compile_kernel_module_ir(&module, "fixture").map(|_| ()))
-        .expect_err("undeclared rewrite variable should fail compile");
+"#;
+        let err = parse_axi_v1(axi)
+            .map_err(|err| err.to_string())
+            .and_then(|module| crate::derive_runtime_module_index(&module, axi).map(|_| ()))
+            .expect_err("undeclared rewrite variable should fail compile");
 
         assert!(err.contains("unbound object variable"));
     }

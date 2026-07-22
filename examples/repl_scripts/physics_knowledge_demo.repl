@@ -25,12 +25,10 @@ validate_axi
 stats
 
 # Derived binary edges for 2-field relations let us traverse directly.
-q select ?cat where name("NewtonsSecond") -LawCategory-> ?cat limit 10
+q select ?cat where name("NewtonsSecond") -LawHasCategory-> ?cat limit 10
 
 # Reified tuples are still available as first-class objects (fact nodes).
 q select ?rule where name("CuttingForceProportional") -HeuristicRule-> ?rule limit 10
 
-# Fact atom demo: query the relation tuples directly (uses FactIndex via `axi_relation="LawCategory"`).
-q select ?f ?cat where ?f = LawCategory(law=NewtonsSecond, category=?cat) limit 10
-
-save build/physics_knowledge.axpd
+# Fact atom demo: query the relation tuples directly (uses FactIndex via `axi_relation="LawHasCategory"`).
+q select ?f ?cat where ?f = LawHasCategory(law=NewtonsSecond, category=?cat) limit 10

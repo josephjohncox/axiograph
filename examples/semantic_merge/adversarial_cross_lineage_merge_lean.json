@@ -1,0 +1,46 @@
+{
+  "version": "semantic_vcs_lean_merge_plan_v1",
+  "base": {
+    "anchor": {
+      "accepted_ref": "heads/main",
+      "accepted_snapshot_id": "snapshot-base",
+      "kernel_ir_digest": "kernel-base",
+      "context_id": "plant",
+      "world_id": "accepted"
+    },
+    "refs": []
+  },
+  "left": {
+    "anchor": {
+      "accepted_ref": "heads/review/left",
+      "accepted_snapshot_id": "snapshot-left",
+      "kernel_ir_digest": "kernel-left"
+    },
+    "refs": [{"kind": "schema_object", "id": "Left.Object"}]
+  },
+  "right": {
+    "anchor": {
+      "accepted_ref": "heads/review/right",
+      "accepted_snapshot_id": "snapshot-right",
+      "kernel_ir_digest": "kernel-right"
+    },
+    "refs": [{"kind": "schema_object", "id": "Right.Object"}]
+  },
+  "result": {
+    "anchor": {
+      "accepted_ref": "heads/attacker",
+      "accepted_snapshot_id": "snapshot-result",
+      "kernel_ir_digest": "kernel-result",
+      "context_id": "plant",
+      "world_id": "accepted"
+    },
+    "refs": [
+      {"kind": "schema_object", "id": "Left.Object"},
+      {"kind": "schema_object", "id": "Right.Object"}
+    ]
+  },
+  "blockers": [],
+  "resolver_steps": [],
+  "residual_obligations": [],
+  "trust_class": "runtime_checked"
+}

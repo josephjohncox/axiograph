@@ -1,7 +1,7 @@
 //! Synthetic PathDB generators used by CLI tooling.
 //!
 //! We keep this separate from the core `axiograph-pathdb` crate so that:
-//! - performance harnesses can evolve quickly without polluting the library API
+//! - performance runners can evolve quickly without polluting the library API
 //! - REPL/demo tooling can share deterministic generators
 
 #![allow(dead_code)]
@@ -362,7 +362,7 @@ fn build_enterprise_large_api_scenario(
         "enterprise_large_api",
         "Enterprise-ish KB aligned with `examples/proto/large_api`: teams/services/docs plus a proto-shaped API surface that can be imported and matched.",
         |i| {
-            let base = domains.get(i).copied().unwrap_or_else(|| "misc");
+            let base = domains.get(i).copied().unwrap_or("misc");
             format!("svc_{base}")
         },
         vec![
@@ -1971,7 +1971,7 @@ fn build_proto_api_scenario(
     // cite and users can `open chunk ...` in the REPL/HTML explorer.
     let mut extra_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     let doc_id = scenario_doc_id("proto_api");
-    for svc_i in 0..scale.max(1).min(8) {
+    for svc_i in 0..scale.clamp(1, 8) {
         let service_fqn = format!("acme.svc{svc_i}.v1.Service{svc_i}");
         let rpc_fqns = ["CreateWidget", "GetWidget", "DeleteWidget"]
             .into_iter()
@@ -2835,10 +2835,8 @@ fn build_proto_api_business_scenario(
     // generate hundreds of thousands of chunks.
     let mut extra_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     let doc_id = scenario_doc_id("proto_api_business");
-    let chunk_cap = scale.max(1).min(64);
-    for svc_i in 0..chunk_cap {
-        let b = &bundles[svc_i];
-
+    let chunk_cap = scale.clamp(1, 64);
+    for (svc_i, b) in bundles.iter().enumerate().take(chunk_cap) {
         let service_fqn = builder
             .db
             .get_entity(b.service_id)
@@ -2856,7 +2854,7 @@ fn build_proto_api_business_scenario(
                 "Business proto service: {service_fqn}\nDomain: {}\nResource: {}\nRPCs: {}",
                 b.domain,
                 b.resource_fqn,
-                rpc_fqns.iter().cloned().collect::<Vec<_>>().join(", ")
+                rpc_fqns.to_vec().join(", ")
             ),
             bbox: None,
             metadata: HashMap::from([

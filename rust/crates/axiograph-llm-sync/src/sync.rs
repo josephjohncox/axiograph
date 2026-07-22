@@ -139,7 +139,7 @@ impl SyncManager {
         self.emit(SyncEvent::FactsExtracted {
             session_id,
             count: extracted.len(),
-            source: format!("{:?}", provider),
+            source: format!("{provider:?}"),
         });
 
         // Step 2: Validate facts
@@ -281,12 +281,12 @@ impl SyncManager {
             } => {
                 let attrs: Vec<String> = attributes
                     .iter()
-                    .map(|(k, v)| format!("{} = {}", k, v))
+                    .map(|(k, v)| format!("{k} = {v}"))
                     .collect();
                 if attrs.is_empty() {
-                    format!("{} is a {}", name, entity_type)
+                    format!("{name} is a {entity_type}")
                 } else {
-                    format!("{} is a {} with {}", name, entity_type, attrs.join(", "))
+                    format!("{name} is a {entity_type} with {}", attrs.join(", "))
                 }
             }
             StructuredFact::Relation {
@@ -295,24 +295,19 @@ impl SyncManager {
                 target,
                 ..
             } => {
-                format!("{} {} {}", source, rel_type, target)
+                format!("{source} {rel_type} {target}")
             }
             StructuredFact::Constraint {
                 name, condition, ..
             } => {
-                format!("Constraint {}: {}", name, condition)
+                format!("Constraint {name}: {condition}")
             }
             StructuredFact::TacitKnowledge {
                 rule,
                 confidence,
                 domain,
             } => {
-                format!(
-                    "[{}] {} (confidence: {:.0}%)",
-                    domain,
-                    rule,
-                    confidence * 100.0
-                )
+                format!("[{domain}] {rule} (confidence: {:.0}%)", confidence * 100.0)
             }
         }
     }
@@ -466,7 +461,7 @@ impl SyncManager {
         // Add to runtime evidence storage.
         let source = ChangeSource::LLMExtraction {
             session_id,
-            model: format!("{:?}", provider),
+            model: format!("{provider:?}"),
             confidence: facts.iter().map(|f| f.confidence).sum::<f32>() / facts.len() as f32,
         };
 
@@ -478,7 +473,7 @@ impl SyncManager {
         // Update fact statuses
         for (i, fact) in facts.into_iter().enumerate() {
             let mut updated = fact;
-            if let Some(result) = results.get(0) {
+            if let Some(result) = results.first() {
                 // Simplified
                 updated.status = FactStatus::Integrated {
                     entity_ids: result.pathdb_ids.clone(),
@@ -804,8 +799,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let config = StorageConfig {
             axi_dir: dir.path().to_path_buf(),
-            pathdb_path: dir.path().join("test.axpd"),
-            changelog_path: dir.path().join("changelog.json"),
             ..Default::default()
         };
 

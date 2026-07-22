@@ -1,19 +1,15 @@
-# Example: RWX-backed shared storage + external snapshot sync.
-# Use a storage class that supports ReadWriteMany or an external sync sidecar.
+# Example: RWX-backed shared storage for replicas pinned to one immutable
+# materialization id. Populate the complete AxiStore image+receipt family before
+# advancing the configured id.
 statefulset:
   replicas: 2
   args:
     - db
     - serve
     - --dir
-    - /data/accepted
-    - --layer
-    - accepted
-    - --snapshot
-    - head
-    - --role
-    - replica
-    - --watch-head
+    - /data/store
+    - --materialization
+    - $(AXIOGRAPH_MATERIALIZATION_ID)
     - --listen
     - 0.0.0.0:7878
   persistence:

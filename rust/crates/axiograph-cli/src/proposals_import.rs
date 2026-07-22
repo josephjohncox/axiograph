@@ -41,8 +41,10 @@ pub(crate) fn import_proposals_file_into_pathdb(
     file: &ProposalsFileV1,
     proposals_digest: &str,
 ) -> Result<ImportProposalsSummary> {
-    let mut summary = ImportProposalsSummary::default();
-    summary.proposals_total = file.proposals.len();
+    let mut summary = ImportProposalsSummary {
+        proposals_total: file.proposals.len(),
+        ..Default::default()
+    };
 
     let meta_plane = MetaPlaneIndex::from_db(db).unwrap_or_default();
     let mut relation_name_counts: HashMap<String, usize> = HashMap::new();
@@ -195,7 +197,7 @@ pub(crate) fn import_proposals_file_into_pathdb(
             schema_hint,
             rel_type.as_str(),
         );
-        let schema_rel = schema_rel.map(|r| {
+        let schema_rel = schema_rel.inspect(|r| {
             // Canonical relation resolution is exact. Orientation is kept in the
             // report type for explicit future morphism/refinement flows, but the
             // greenfield resolver does not infer aliases or swap endpoints.
@@ -203,7 +205,6 @@ pub(crate) fn import_proposals_file_into_pathdb(
                 std::mem::swap(&mut source_key, &mut target_key);
             }
             rel_type = r.rel_name.clone();
-            r
         });
 
         let resolved = match schema_rel {
@@ -489,13 +490,14 @@ fn get_or_create_proposal_run(
         return Ok(id);
     }
 
-    let mut attrs: Vec<(String, String)> = Vec::new();
-    attrs.push((META_ATTR_NAME.to_string(), external_id.clone()));
-    attrs.push(("external_id".to_string(), external_id));
-    attrs.push(("proposals_digest".to_string(), proposals_digest.to_string()));
-    attrs.push(("generated_at".to_string(), file.generated_at.clone()));
-    attrs.push(("source_type".to_string(), file.source.source_type.clone()));
-    attrs.push(("source_locator".to_string(), file.source.locator.clone()));
+    let mut attrs: Vec<(String, String)> = vec![
+        (META_ATTR_NAME.to_string(), external_id.clone()),
+        ("external_id".to_string(), external_id),
+        ("proposals_digest".to_string(), proposals_digest.to_string()),
+        ("generated_at".to_string(), file.generated_at.clone()),
+        ("source_type".to_string(), file.source.source_type.clone()),
+        ("source_locator".to_string(), file.source.locator.clone()),
+    ];
     if let Some(hint) = file.schema_hint.as_ref() {
         attrs.push(("schema_hint".to_string(), hint.clone()));
     }
@@ -540,10 +542,11 @@ fn get_or_create_context(
         }
 
         // Otherwise, create an extension-layer Context entity in this schema.
-        let mut attrs: Vec<(String, String)> = Vec::new();
-        attrs.push((META_ATTR_NAME.to_string(), ctx.to_string()));
-        attrs.push(("external_id".to_string(), ctx.to_string()));
-        attrs.push((ATTR_AXI_SCHEMA.to_string(), schema_name.to_string()));
+        let attrs: Vec<(String, String)> = vec![
+            (META_ATTR_NAME.to_string(), ctx.to_string()),
+            ("external_id".to_string(), ctx.to_string()),
+            (ATTR_AXI_SCHEMA.to_string(), schema_name.to_string()),
+        ];
 
         let can_typecheck = meta_plane
             .schemas
@@ -585,9 +588,10 @@ fn get_or_create_context(
         return Ok(id);
     }
     // Otherwise, create an extension-layer Context entity.
-    let mut attrs: Vec<(String, String)> = Vec::new();
-    attrs.push((META_ATTR_NAME.to_string(), ctx.to_string()));
-    attrs.push(("external_id".to_string(), ctx.to_string()));
+    let attrs: Vec<(String, String)> = vec![
+        (META_ATTR_NAME.to_string(), ctx.to_string()),
+        ("external_id".to_string(), ctx.to_string()),
+    ];
     let attrs_ref = attrs
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -615,14 +619,15 @@ fn build_entity_attrs(
     attributes: &HashMap<String, String>,
     description: &Option<String>,
 ) -> Vec<(String, String)> {
-    let mut attrs: Vec<(String, String)> = Vec::new();
-    attrs.push((META_ATTR_NAME.to_string(), name.to_string()));
-    attrs.push(("external_id".to_string(), entity_id.to_string()));
-    attrs.push(("proposal_id".to_string(), meta.proposal_id.clone()));
-    attrs.push((
-        "proposal_confidence".to_string(),
-        meta.confidence.to_string(),
-    ));
+    let mut attrs: Vec<(String, String)> = vec![
+        (META_ATTR_NAME.to_string(), name.to_string()),
+        ("external_id".to_string(), entity_id.to_string()),
+        ("proposal_id".to_string(), meta.proposal_id.clone()),
+        (
+            "proposal_confidence".to_string(),
+            meta.confidence.to_string(),
+        ),
+    ];
     if let Some(hint) = meta.schema_hint.as_ref() {
         attrs.push(("schema_hint".to_string(), hint.clone()));
     }
@@ -725,14 +730,15 @@ fn build_relation_fact_attrs(
     axi_schema: Option<&str>,
     attributes: &HashMap<String, String>,
 ) -> Vec<(String, String)> {
-    let mut attrs: Vec<(String, String)> = Vec::new();
-    attrs.push((META_ATTR_NAME.to_string(), relation_id.to_string()));
-    attrs.push(("external_id".to_string(), relation_id.to_string()));
-    attrs.push(("proposal_id".to_string(), meta.proposal_id.clone()));
-    attrs.push((
-        "proposal_confidence".to_string(),
-        meta.confidence.to_string(),
-    ));
+    let mut attrs: Vec<(String, String)> = vec![
+        (META_ATTR_NAME.to_string(), relation_id.to_string()),
+        ("external_id".to_string(), relation_id.to_string()),
+        ("proposal_id".to_string(), meta.proposal_id.clone()),
+        (
+            "proposal_confidence".to_string(),
+            meta.confidence.to_string(),
+        ),
+    ];
     if let Some(schema) = axi_schema {
         if !schema.trim().is_empty() {
             attrs.push((ATTR_AXI_SCHEMA.to_string(), schema.to_string()));
@@ -1275,7 +1281,9 @@ instance I of Demo:
             "expected endpoint diagnostic, got {msg}"
         );
         assert!(
-            msg.contains("did not resolve to an imported proposal entity or accepted canonical .axi object"),
+            msg.contains(
+                "did not resolve to an imported proposal entity or accepted canonical .axi object"
+            ),
             "expected fail-closed resolution diagnostic, got {msg}"
         );
         assert!(

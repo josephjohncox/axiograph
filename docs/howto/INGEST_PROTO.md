@@ -103,8 +103,8 @@ evolution ticks, run:
 ./scripts/ops/ontology_engineering_proto_evolution_ollama_demo.sh
 ```
 
-This demo can attach doc comment chunks to the accepted-plane PathDB layer with
-`axiograph db accept pathdb-commit ... --chunks <chunks.json>` so local search
-and LLM grounding can cite `DocChunk` evidence. Promotion still requires a
-reviewed canonical `.axi` candidate and the normal CQ/trust/runtime-theory
-gates.
+Doc comment chunks remain typed evidence. They may be loaded into process-local
+query state or included as an explicitly ordered, content-digested
+materialization overlay so grounding can cite `DocChunk` evidence. Promotion
+still requires a reviewed canonical `.axi` candidate and the normal
+CQ/trust/runtime-theory gates.

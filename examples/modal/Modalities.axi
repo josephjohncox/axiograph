@@ -23,7 +23,7 @@ schema Modal:
   object Proposition
 
   -- A proposition holds at a world (extensional truth-at-world relation).
-  relation Holds(world: World, prop: Proposition)
+  relation Holds(world: World @world, prop: Proposition)
 
   -- Accessibility between worlds (what worlds are considered possible).
   --
@@ -47,7 +47,7 @@ schema Modal:
   relation Ideal(from: World, to: World)
 
   -- Precomputed obligations (again: can be certificate-backed in the future).
-  relation Obligatory(world: World, obl: Obligation)
+  relation Obligatory(world: World @world, obl: Obligation)
 
   relation PolicySays(policy: Policy, obl: Obligation, text: Text)
 
@@ -166,5 +166,8 @@ instance ModalitiesDemo of Modal:
   }
 
   JustificationEquiv = {
-    (path1=Path_Policy, path2=Path_Sensor, witness=Text_Justification_Equiv)
+    (path1=Path_Policy, path2=Path_Sensor, witness=Text_Justification_Equiv),
+    (path1=Path_Sensor, path2=Path_Policy, witness=Text_Justification_Equiv),
+    (path1=Path_Policy, path2=Path_Policy, witness=Text_Justification_Equiv),
+    (path1=Path_Sensor, path2=Path_Sensor, witness=Text_Justification_Equiv)
   }

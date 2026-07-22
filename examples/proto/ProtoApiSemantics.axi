@@ -2,7 +2,7 @@
 --
 -- This is a canonical `.axi` module intended to be:
 -- - small and readable,
--- - easy to export back out of PathDB via `export_axi_module`,
+-- - suitable for exact-byte accepted storage and derived query hydration,
 -- - and useful as an example of **theories / axioms** applied to a proto/gRPC-ish
 --   API surface.
 --

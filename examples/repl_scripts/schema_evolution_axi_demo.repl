@@ -47,5 +47,3 @@ viz build/schema_evolution_axi_addcategories_both.json format json plane both fo
 # Visualize a schema node neighborhood (shows SchemaEquiv witness nodes).
 viz build/schema_evolution_axi_productv3_both.dot format dot plane both focus_name ProductV3 hops 2 max_nodes 260
 viz build/schema_evolution_axi_productv3_both.json format json plane both focus_name ProductV3 hops 2 max_nodes 260
-
-save build/schema_evolution_axi.axpd

@@ -55,7 +55,7 @@ cargo run --manifest-path rust/Cargo.toml \
 ## What To Look For
 
 - `run.json` carries the accepted-style `.axi` anchor used by every artifact.
-- `cq_results.json` shows the competency-question smoke checks for the imported
+- `cq_results.json` shows the competency-question coverage gates for the imported
   canonical instance.
 - `coverage.json` maps ontology relations to overlay-defined software/business
   surfaces.

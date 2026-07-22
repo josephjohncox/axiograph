@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# AxQL perf harness (synthetic querying over a generated PathDB).
+# AxQL perf runner (synthetic querying over a generated PathDB).
 #
 # Run:
 #   ./scripts/perf_axql.sh

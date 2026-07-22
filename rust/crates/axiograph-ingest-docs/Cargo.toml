@@ -2,12 +2,17 @@
 name = "axiograph-ingest-docs"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Document/PDF/book ingestion for Axiograph knowledge graphs"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow.workspace = true
+axiograph-security = { path = "../axiograph-security" }
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

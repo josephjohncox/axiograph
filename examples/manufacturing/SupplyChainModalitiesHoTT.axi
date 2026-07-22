@@ -61,7 +61,7 @@ schema SupplyChainModal:
   object LeadTime
 
   -- A flow is a directed transfer, scoped to a Context.
-  relation Flow(from: Node, to: Node, material: Material, qty: Quantity, time: LeadTime, ctx: Context)
+  relation Flow(from: Node, to: Node, material: Material, qty: Quantity, time: LeadTime @temporal, ctx: Context @context)
 
   -- ==========================================================================
   -- 2-cells: equivalences between routes (homotopies / “paths between paths”)
@@ -76,8 +76,8 @@ schema SupplyChainModal:
     to: Node,
     route1: Route,
     route2: Route,
-    proof: RouteProof,
-    ctx: Context
+    proof: RouteProof @evidence,
+    ctx: Context @context
   )
 
   -- ==========================================================================
@@ -93,10 +93,10 @@ schema SupplyChainModal:
   object DocChunk
 
   -- A proposition holds in a world/context (extensional truth-at-world relation).
-  relation Holds(world: Context, prop: Proposition)
+  relation Holds(world: Context @world, prop: Proposition)
 
   -- Evidence supports propositions, and is itself context-scoped.
-  relation EvidenceSupports(ev: Evidence, prop: Proposition, ctx: Context)
+  relation EvidenceSupports(ev: Evidence @evidence, prop: Proposition, ctx: Context @context)
 
   -- Evidence may have supporting doc chunks (tooling / discovery convenience).
   relation EvidenceChunk(ev: Evidence, chunk: DocChunk)
@@ -106,7 +106,7 @@ schema SupplyChainModal:
   relation EvidenceSuggestsObligation(ev: Evidence, obl: Obligation)
 
   -- Deontic: obligations that hold at a world/context.
-  relation Obligatory(world: Context, obl: Obligation)
+  relation Obligatory(world: Context @world, obl: Obligation)
 
   -- ==========================================================================
   -- Proof terms: explicit justifications and equivalences between them
@@ -190,6 +190,21 @@ instance SupplyChainModalDemo of SupplyChainModal:
      route1=Route_Via_SupplierA,
      route2=Route_Via_SupplierB,
      proof=SameMaterial,
+     ctx=Plan),
+    (from=Machining_Plant, to=RawMetal_A,
+     route1=Route_Via_SupplierB,
+     route2=Route_Via_SupplierA,
+     proof=SameMaterial,
+     ctx=Plan),
+    (from=RawMetal_A, to=RawMetal_A,
+     route1=Route_Via_SupplierA,
+     route2=Route_Via_SupplierA,
+     proof=SameMaterial,
+     ctx=Plan),
+    (from=Machining_Plant, to=Machining_Plant,
+     route1=Route_Via_SupplierB,
+     route2=Route_Via_SupplierB,
+     proof=SameMaterial,
      ctx=Plan)
   }
 
@@ -231,5 +246,8 @@ instance SupplyChainModalDemo of SupplyChainModal:
   }
 
   JustificationEquiv = {
-    (path1=Justification_Policy, path2=Justification_ObservedDelay)
+    (path1=Justification_Policy, path2=Justification_ObservedDelay),
+    (path1=Justification_ObservedDelay, path2=Justification_Policy),
+    (path1=Justification_Policy, path2=Justification_Policy),
+    (path1=Justification_ObservedDelay, path2=Justification_ObservedDelay)
   }

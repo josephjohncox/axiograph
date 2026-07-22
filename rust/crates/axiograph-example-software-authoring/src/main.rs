@@ -76,7 +76,12 @@ fn main() -> Result<()> {
                 if let Some(parent) = out.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+                axiograph_security::write_file_atomic_bounded(
+                    &out,
+                    serde_json::to_string_pretty(&report)?,
+                    8 * 1024 * 1024,
+                    "software-authoring example report",
+                )?;
                 println!("wrote {}", out.display());
             } else if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);

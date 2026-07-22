@@ -2,78 +2,133 @@ name: CI
 
 on: [push, pull_request]
 
-jobs:
-  rust-tests:
-    name: Rust Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run Rust tests
-        run: make rust-test
+permissions:
+  contents: read
 
-  semantics:
-    name: Semantics Verification (Rust + Lean)
-    runs-on: ubuntu-latest
+jobs:
+  release-gate:
+    name: Pinned release gate (Rust + Lean)
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Cache elan toolchains
-        uses: actions/cache@v4
+      # actions/checkout pinned to an immutable commit.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          path: |
-            ~/.elan
+          persist-credentials: false
+      # dtolnay/rust-toolchain
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.88.0
+      - name: Cache elan toolchains
+        # actions/cache pinned to an immutable commit.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.elan
           key: ${{ runner.os }}-elan-${{ hashFiles('lean/lean-toolchain') }}
       - name: Cache lake build artifacts
-        uses: actions/cache@v4
+        # actions/cache pinned to an immutable commit.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             lean/.lake
             ~/.cache/lake
-          key: ${{ runner.os }}-lake-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.lean', 'lean/lake-manifest.json') }}
-          restore-keys: |
-            ${{ runner.os }}-lake-
+          key: >-
+            ${{ runner.os }}-lake-${{ hashFiles(
+            'lean/lean-toolchain', 'lean/lakefile.lean',
+            'lean/lake-manifest.json') }}
       - name: Install Lean (elan)
         run: |
+          set -euo pipefail
           if [ ! -x "$HOME/.elan/bin/elan" ]; then
-            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
+            elan_commit=464c9d28395000a2a0128e07081e4956d50eced2
+            elan_sha256=a620ff1641616222c8d37c54845492004bb84d6877cdbc944dd65c1aa685bf53
+            elan_url="https://raw.githubusercontent.com/leanprover/elan"
+            curl -fsSL \
+              "$elan_url/$elan_commit/elan-init.sh" \
+              -o /tmp/elan-init.sh
+            echo "$elan_sha256  /tmp/elan-init.sh" | sha256sum -c -
+            sh /tmp/elan-init.sh -y
+            rm /tmp/elan-init.sh
           fi
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-      - name: Fetch precompiled Lean dependencies (mathlib cache)
-        run: |
-          cd lean
-          lake update
-          lake exe cache get
-      - name: Verify semantics
-        run: make verify-semantics
+      - name: Fetch pinned Lean dependencies (mathlib cache)
+        working-directory: lean
+        run: lake exe cache get
+      - name: Run exact release decision
+        run: make release-gate
 
   k8s-manifests:
     name: Kubernetes Manifests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      # actions/checkout pinned to an immutable commit.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      # azure/setup-helm pinned to an immutable commit.
+      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a
       - name: Install kubeconform
         run: |
           set -euo pipefail
           ver="v0.6.7"
-          curl -fsSL -o /tmp/kubeconform.tgz \
+          archive=/tmp/kubeconform.tgz
+          curl -fsSL -o "$archive" \
             "https://github.com/yannh/kubeconform/releases/download/${ver}/kubeconform-linux-amd64.tar.gz"
-          tar -C /tmp -xzf /tmp/kubeconform.tgz
+          sha256="95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
+          echo "$sha256  $archive" |
+            sha256sum -c -
+          ARCHIVE="$archive" python3 - <<'PY'
+          import os
+          import shutil
+          import tarfile
+          from pathlib import Path, PurePosixPath
+
+          archive = Path(os.environ["ARCHIVE"])
+          output = Path("/tmp/kubeconform")
+          with tarfile.open(archive, "r:gz") as source:
+              members = source.getmembers()
+              expected = {
+                  "LICENSE": (11_346, 0o644),
+                  "kubeconform": (11_163_270, 0o755),
+              }
+              if len(members) != len(expected):
+                  raise SystemExit("unexpected kubeconform archive entry count")
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if path.is_absolute() or len(path.parts) != 1:
+                      raise SystemExit("unsafe kubeconform archive path")
+                  if not member.isreg() or member.name not in expected:
+                      raise SystemExit("unexpected kubeconform archive entry")
+                  size, mode = expected[member.name]
+                  if member.size != size or member.mode & 0o777 != mode:
+                      raise SystemExit("kubeconform archive metadata mismatch")
+              binary = source.extractfile("kubeconform")
+              if binary is None:
+                  raise SystemExit("kubeconform binary missing")
+              with output.open("xb") as target:
+                  shutil.copyfileobj(binary, target, length=1024 * 1024)
+              output.chmod(0o755)
+          PY
           sudo mv /tmp/kubeconform /usr/local/bin/kubeconform
           kubeconform -v
       - name: Helm lint
         run: |
           helm lint deploy/helm/axiograph
-          helm lint deploy/helm/axiograph -f deploy/helm/axiograph/values-replicas.yaml
-          helm lint deploy/helm/axiograph -f deploy/helm/axiograph/values-ingress.yaml
-          helm lint deploy/helm/axiograph -f deploy/helm/axiograph/values-rwx-sync.yaml
+          helm lint deploy/helm/axiograph \
+            -f deploy/helm/axiograph/values-replicas.yaml
+          helm lint deploy/helm/axiograph \
+            -f deploy/helm/axiograph/values-ingress.yaml
+          helm lint deploy/helm/axiograph \
+            -f deploy/helm/axiograph/values-rwx-sync.yaml
       - name: Render Helm chart
         run: helm template axiograph deploy/helm/axiograph > /tmp/axiograph.yaml
       - name: Validate raw manifests
-        run: kubeconform -strict -summary -kubernetes-version 1.28.0 deploy/k8s/*.yaml
+        run: >-
+          kubeconform -strict -summary
+          -kubernetes-version 1.28.0 deploy/k8s/*.yaml
       - name: Validate Helm render
-        run: kubeconform -strict -summary -kubernetes-version 1.28.0 /tmp/axiograph.yaml
+        run: >-
+          kubeconform -strict -summary
+          -kubernetes-version 1.28.0 /tmp/axiograph.yaml
 
   container-build:
     name: Container Build (Dockerfile)
@@ -82,39 +137,105 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      # actions/checkout pinned to an immutable commit.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      # docker/setup-buildx-action pinned to an immutable commit.
+      - uses: >-
+          docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Validate Dockerfile with BuildKit
+        run: docker buildx build --check --progress=plain -f Dockerfile .
       - name: Build container image (no push)
-        uses: docker/build-push-action@v5
+        # docker/build-push-action pinned to an immutable commit.
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: .
           file: Dockerfile
           load: true
           platforms: linux/${{ matrix.arch }}
           tags: axiograph:ci-${{ matrix.arch }}
-      - name: Generate tiny axpd
+      - name: Run packaged checker accept/reject release corpus
         run: |
-          docker run --rm -v /tmp:/out axiograph:ci-${{ matrix.arch }} \
-            tools perf pathdb \
-            --entities 200 --edges-per-entity 2 --rel-types 2 \
-            --index-depth 1 --path-len 1 --queries 10 \
-            --out-axpd /out/ci.axpd
-      - name: Smoke test /status
-        run: |
-          cid=$(docker run --rm -d -p 7878:7878 -v /tmp:/data axiograph:ci-${{ matrix.arch }} \
-            db serve --axpd /data/ci.axpd --listen 0.0.0.0:7878)
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:7878/status >/dev/null; then
-              docker stop "$cid"
-              exit 0
+          set -euo pipefail
+          image="axiograph:ci-${{ matrix.arch }}"
+          checker_dir="$(mktemp -d)"
+          container_id="$(docker create "$image")"
+          cleanup() {
+            if [ -n "$container_id" ]; then
+              docker rm -f "$container_id" >/dev/null 2>&1 || true
             fi
-            sleep 1
-          done
-          docker logs "$cid" || true
-          docker stop "$cid" || true
-          exit 1
+            rm -rf "$checker_dir"
+          }
+          trap cleanup EXIT
+          docker cp \
+            "$container_id:/usr/local/bin/axiograph_verify" \
+            "$checker_dir/axiograph_verify"
+          docker rm "$container_id" >/dev/null
+          container_id=""
+          chmod 0755 "$checker_dir/axiograph_verify"
+          python3 scripts/run_release_fixture_suite.py \
+            --checker "$checker_dir/axiograph_verify" \
+            --manifest release/fixtures.json \
+            --repo-root "$PWD"
+      - name: Validate packaged checker and accepted-plane build receipts
+        run: |
+          docker run --rm \
+            --entrypoint /bin/sh \
+            axiograph:ci-${{ matrix.arch }} \
+            -ec '
+              cd /usr/local/bin
+              sha256sum -c \
+                /usr/local/share/axiograph/axiograph_verify.sha256
+              marker=/usr/local/share/axiograph/accepted-plane-smoke.json
+              grep -Fx "  \"accepted_manifest\": \"verified\"," "$marker"
+              schema_value=axiograph-container-accepted-plane-smoke-v2
+              grep -Fx "  \"schema\": \"$schema_value\"," "$marker"
+              grep -Fx "  \"unaccepted_manifest\": \"rejected\"" "$marker"
+            '
+      - name: Reject a tampered packaged trusted checker
+        run: |
+          docker run --rm \
+            --entrypoint /bin/sh \
+            axiograph:ci-${{ matrix.arch }} \
+            -ec '
+              work="$(mktemp -d)"
+              cp /usr/local/bin/axiograph_verify "$work/axiograph_verify"
+              cp /usr/local/share/axiograph/axiograph_verify.sha256 \
+                "$work/axiograph_verify.sha256"
+              printf "tampered\n" >> "$work/axiograph_verify"
+              cd "$work"
+              if sha256sum -c axiograph_verify.sha256; then
+                echo "tampered checker passed checksum validation" >&2
+                exit 1
+              fi
+            '
+      - name: Smoke test canonical input and authenticated DB CLI contract
+        run: |
+          set -euo pipefail
+          fixture="$PWD/examples/ontology/OntologyRewrites.axi"
+          image="axiograph:ci-${{ matrix.arch }}"
+
+          docker run --rm \
+            -v "$fixture:/tmp/ContainerSmoke.axi:ro" \
+            "$image" check validate /tmp/ContainerSmoke.axi
+
+          help="$(docker run --rm "$image" db --help)"
+          grep -q 'materialize' <<<"$help"
+          grep -q 'materialization-show' <<<"$help"
+          grep -q 'serve' <<<"$help"
+          if grep -qE '(^|[[:space:]])accept([[:space:]]|$)' <<<"$help"; then
+            echo "removed accepted-plane CLI unexpectedly present" >&2
+            exit 1
+          fi
+
+          if docker run --rm "$image" db serve \
+            --axpd /tmp/unbound.axpd --listen 127.0.0.1:7878; then
+            echo "bare --axpd server startup unexpectedly succeeded" >&2
+            exit 1
+          fi

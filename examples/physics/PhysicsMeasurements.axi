@@ -16,11 +16,11 @@
 --
 -- The intended workflow is:
 --
---   1) Promote this module into the accepted plane (append-only).
---   2) Commit observations into the PathDB WAL as evidence-plane overlays
---      (`proposals.json` + `chunks.json`) using `axiograph db accept pathdb-commit`.
---   3) Query/visualize across planes; optionally require certificates for
---      high-value answers (Lean verifies).
+--   1) Promote this exact module through AxiStore review.
+--   2) Keep observations as typed evidence and, when needed, include them as
+--      explicitly ordered, content-digested materialization overlays.
+--   3) Query/visualize derived state; require checked certificates for
+--      high-value answers.
 --
 -- Design choice: “values” are not stored as raw floats in the canonical surface.
 -- -----------------------------------------------------------------------------
@@ -29,8 +29,8 @@
 -- too expensive, so the intended pattern is:
 --
 -- - store the *typed* part as edges (run/quantity/unit/bin/context/time),
--- - store the raw numeric value as an attribute on the fact node in the WAL
---   overlay (e.g. `value_f64="3.14159"`), and/or keep an approximation via
+-- - retain raw numeric values in typed evidence sidecars
+--   (e.g. `value_f64="3.14159"`), and/or keep an approximation via
 --   `ScalarBin` to preserve typed queryability.
 --
 -- This keeps the type layer useful while staying scalable.
@@ -107,7 +107,7 @@ instance PhysicsMeasurementsSeed of PhysicsMeasurements:
   -- A compact seed instance:
   -- - provides stable identifiers for common quantities/units/contexts,
   -- - keeps the accepted plane inspectable,
-  -- - real datasets are added as WAL overlays.
+  -- - real datasets remain typed evidence until reviewed into canonical `.axi`.
 
   Context = {ObservedSensors, Simulation, Literature, TacitNotes}
   Time = {T0}

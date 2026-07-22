@@ -2,13 +2,18 @@
 name = "axiograph-llm-sync"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "LLM evidence extraction, grounding, and reconciliation inputs for Axiograph"
 
+[lints]
+workspace = true
+
 [dependencies]
 axiograph-dsl = { path = "../axiograph-dsl" }
 axiograph-pathdb = { path = "../axiograph-pathdb" }
+axiograph-security = { path = "../axiograph-security" }
 axiograph-storage = { path = "../axiograph-storage" }
 anyhow.workspace = true
 thiserror.workspace = true

@@ -1,28 +1,29 @@
 use axiograph_dsl::axi_v1::parse_axi_v1;
 use axiograph_pathdb::kernel_ir::{
-    CompiledSchemaIr, KernelRefV1, RoleKind, TheoryIr, TheoryObligationRefIr, TheoryPathSideIr,
+    RoleKind, RuntimeIrRef, RuntimeSchemaIndex, TheoryIr, TheoryObligationRefIr, TheoryPathSideIr,
     TheorySubjectRefIr, TheoryTransportStatusIr, TheoryVariableKindIr,
     THEORY_ADDRESS_INDEX_VERSION_V1,
 };
 use axiograph_pathdb::runtime_theory_checker::{
-    RuntimeTheoryAssumptionEffectV1, RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureTierV1,
+    RuntimeTheoryAssumptionEffectV1, RuntimeTheoryCheckStatusV1, RuntimeTheoryClosureStepKindV1,
+    RuntimeTheoryClosureTierV1,
 };
 use axiograph_pathdb::{
-    check_runtime_theory_v1, check_runtime_theory_with_options_v1, compile_kernel_module_ir,
-    default_evidence_policy_v1, default_world_assumption_v1, ArrowMappingV1,
+    check_runtime_theory_v1, check_runtime_theory_with_options_v1, default_evidence_policy_v1,
+    default_world_assumption_v1, derive_runtime_module_index, ArrowMappingV1,
     MigrationFunctorKindV1, ObjectMappingV1, SchemaMorphismV1,
 };
 
-fn compiled_fixture(axi: &str) -> (CompiledSchemaIr, TheoryIr) {
+fn compiled_fixture(axi: &str) -> (RuntimeSchemaIndex, TheoryIr) {
     let module = parse_axi_v1(axi).expect("fixture parses");
-    let kernel = compile_kernel_module_ir(&module, axi).expect("fixture compiles to kernel IR");
+    let kernel = derive_runtime_module_index(&module, axi).expect("fixture compiles to kernel IR");
     (kernel.schemas[0].clone(), kernel.theories[0].clone())
 }
 
 fn compile_error(axi: &str) -> String {
     parse_axi_v1(axi)
         .map_err(|err| err.to_string())
-        .and_then(|module| compile_kernel_module_ir(&module, axi).map(|_| ()))
+        .and_then(|module| derive_runtime_module_index(&module, axi).map(|_| ()))
         .expect_err("fixture should be rejected")
 }
 
@@ -68,12 +69,12 @@ theory FamilyTheory on Family:
 "#,
     );
 
-    assert!(err.contains("rewrite `bad_var`"));
+    assert!(err.contains("rewrite rule `bad_var`"));
     assert!(err.contains("unbound object variable `b`"));
 }
 
 #[test]
-fn context_and_time_roles_are_preserved_as_runtime_subjects() {
+fn context_world_and_time_roles_share_one_runtime_axis_semantics() {
     let (schema, theory) = compiled_fixture(
         r#"
 module Family
@@ -81,8 +82,9 @@ module Family
 schema Family:
   object Person
   object Context
+  object World
   object Time
-  relation ScopedParent(child: Person, parent: Person, ctx: Context, time: Time)
+  relation ScopedParent(child: Person, parent: Person, ctx: Context @context, world: World @world, time: Time @temporal)
 
 theory FamilyTheory on Family:
   rewrite keep_scope:
@@ -97,6 +99,10 @@ theory FamilyTheory on Family:
     assert!(subjects.iter().any(|subject| matches!(
         subject,
         TheorySubjectRefIr::Role { role_name, .. } if role_name == "ctx"
+    )));
+    assert!(subjects.iter().any(|subject| matches!(
+        subject,
+        TheorySubjectRefIr::Role { role_name, .. } if role_name == "world"
     )));
     assert!(subjects.iter().any(|subject| matches!(
         subject,
@@ -121,11 +127,52 @@ theory FamilyTheory on Family:
     assert!(endpoint
         .axis_roles
         .iter()
+        .any(|role| role.role_kind == RoleKind::World && role.role_name == "world"));
+    assert!(endpoint
+        .axis_roles
+        .iter()
         .any(|role| role.role_kind == RoleKind::Temporal && role.role_name == "time"));
     assert!(report.assumption_diagnostics.iter().any(|diagnostic| {
         diagnostic.assumption_id == "context_scope_named"
             && diagnostic.effect == RuntimeTheoryAssumptionEffectV1::NarrowsClaim
     }));
+    assert!(!report
+        .admissibility_scan
+        .residual_obligations
+        .iter()
+        .any(|id| id == "closure_engine_not_implemented"));
+}
+
+#[test]
+fn dropping_a_world_axis_blocks_rewrite_admissibility() {
+    let (schema, theory) = compiled_fixture(
+        r#"
+module WorldAxis
+
+schema S:
+  object Person
+  object World
+  relation Scoped(child: Person, parent: Person, world: World @world)
+  relation Bare(child: Person, parent: Person)
+
+theory T on S:
+  rewrite drop_world:
+    vars: a: Person, b: Person
+    lhs: step(a, Scoped, b)
+    rhs: step(a, Bare, b)
+"#,
+    );
+
+    let report = check_runtime_theory_v1(&schema, &theory);
+    assert_eq!(report.blocked_obligations, 1);
+    assert_eq!(
+        report.judgments[0].status,
+        RuntimeTheoryCheckStatusV1::Blocked
+    );
+    assert!(report.judgments[0]
+        .admissibility_diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "rewrite_axis_roles_dropped"));
 }
 
 #[test]
@@ -138,7 +185,7 @@ schema Family:
   object Person
   object Context
   object Time
-  relation ScopedParent(child: Person, parent: Person, ctx: Context, time: Time)
+  relation ScopedParent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
 
 theory FamilyTheory on Family:
   rewrite keep_scope:
@@ -233,7 +280,7 @@ schema Family:
   object Person
   object Context
   object Time
-  relation ScopedParent(child: Person, parent: Person, ctx: Context, time: Time)
+  relation ScopedParent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
 
 theory FamilyTheory on Family:
   rewrite keep_scope:
@@ -266,26 +313,26 @@ theory FamilyTheory on Family:
         .admissibility_checks
         .iter()
         .any(|judgment_check| judgment_check.check_id == check.check_id));
-    assert!(report.closure.steps[0]
+    assert!(report.admissibility_scan.steps[0]
         .admissibility_checks
         .iter()
         .any(|step_check| step_check.check_id == check.check_id));
     assert!(report
         .kernel_refs
         .iter()
-        .any(|reference| matches!(reference, KernelRefV1::Theory { .. })));
+        .any(|reference| matches!(reference, RuntimeIrRef::Theory { .. })));
     assert!(report.judgments[0]
         .kernel_refs
         .iter()
-        .any(|reference| matches!(reference, KernelRefV1::TheoryObligation { .. })));
-    assert!(report.closure.steps[0]
+        .any(|reference| matches!(reference, RuntimeIrRef::TheoryObligation { .. })));
+    assert!(report.admissibility_scan.steps[0]
         .kernel_refs
         .iter()
-        .any(|reference| matches!(reference, KernelRefV1::TheorySubject { .. })));
+        .any(|reference| matches!(reference, RuntimeIrRef::TheorySubject { .. })));
 }
 
 #[test]
-fn opaque_equation_keeps_addressable_handle_without_closure_claim() {
+fn opaque_equation_keeps_addressable_handle_as_scan_residual() {
     let (schema, theory) = compiled_fixture(
         r#"
 module Family
@@ -312,13 +359,12 @@ theory FamilyTheory on Family:
         .obligation_ref
         .matches_artifact_id("business_axiom"));
     assert_eq!(judgment.status, RuntimeTheoryCheckStatusV1::ReviewOnly);
-    assert!(!report.completeness_claim.claimed);
     assert!(judgment
         .admissibility_diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code == "opaque_equation_addressable_review_only"));
     assert!(report
-        .closure
+        .admissibility_scan
         .residual_obligations
         .contains(&judgment.obligation_ref.stable_id()));
 }
@@ -333,7 +379,7 @@ schema Family:
   object Person
   object Context
   object Time
-  relation ScopedParent(child: Person, parent: Person, ctx: Context, time: Time)
+  relation ScopedParent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
 
 theory FamilyTheory on Family:
   rewrite keep_scope:
@@ -420,8 +466,87 @@ theory FamilyTheory on Family:
         RuntimeTheoryCheckStatusV1::Blocked
     );
     assert_eq!(
-        report.closure.steps[0].transport_status,
+        report.admissibility_scan.steps[0].transport_status,
         Some(TheoryTransportStatusIr::MissingObjectImage)
     );
-    assert!(!report.ontology_closure_claim.claimed);
+}
+
+#[test]
+fn transitive_constraint_remains_review_only_without_runtime_enforcement() {
+    let (schema, theory) = compiled_fixture(
+        r#"
+module Family
+
+schema Family:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory FamilyTheory on Family:
+  constraint transitive Parent on (child, parent)
+"#,
+    );
+
+    let report = check_runtime_theory_v1(&schema, &theory);
+
+    assert_eq!(report.review_only_obligations, 1);
+    assert_eq!(
+        report.judgments[0].status,
+        RuntimeTheoryCheckStatusV1::ReviewOnly
+    );
+    assert!(report.judgments[0]
+        .non_claims
+        .iter()
+        .any(|claim| claim.code == "constraint_review_only"));
+    assert!(report.fragment.classifies_structured_constraints);
+    assert!(report.fragment.checks_path_equation_endpoints);
+    assert!(report.fragment.checks_rewrite_endpoints_and_axes);
+    assert!(report.fragment.classifies_transports);
+    assert!(!report
+        .admissibility_scan
+        .residual_obligations
+        .iter()
+        .any(|id| id == "closure_engine_not_implemented"));
+}
+
+#[test]
+fn evidence_filter_cannot_erase_an_opaque_semantic_residual() {
+    let (schema, theory) = compiled_fixture(
+        r#"
+module Family
+
+schema Family:
+  object Person
+  relation Parent(child: Person, parent: Person)
+
+theory FamilyTheory on Family:
+  equation policy_statement:
+    parent is socially meaningful =
+    reviewed by domain owner
+"#,
+    );
+    let obligation_id = theory.obligation_refs()[0].stable_id();
+    let mut evidence = default_evidence_policy_v1();
+    evidence.threshold_ppm = 900_000;
+    evidence
+        .obligation_weights_ppm
+        .insert(obligation_id.clone(), 100_000);
+
+    let report = check_runtime_theory_with_options_v1(
+        &schema,
+        &theory,
+        RuntimeTheoryClosureTierV1::EvidenceWeighted,
+        default_world_assumption_v1(),
+        evidence,
+        None,
+    );
+
+    assert_eq!(report.review_only_obligations, 1);
+    assert!(report
+        .admissibility_scan
+        .residual_obligations
+        .contains(&obligation_id));
+    assert_eq!(
+        report.admissibility_scan.steps.last().map(|step| step.kind),
+        Some(RuntimeTheoryClosureStepKindV1::AdmissibilityScanComplete)
+    );
 }

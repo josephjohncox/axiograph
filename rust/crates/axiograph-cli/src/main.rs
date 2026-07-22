@@ -4,9 +4,9 @@
 //! - Validating canonical `.axi` modules (`axi_v1`)
 //! - Ingesting sources into `proposals.json` (Evidence/Proposals schema)
 //! - Promoting proposals into candidate domain `.axi` modules (explicit, reviewable)
-//! - Managing derived PathDB snapshots (`canonical .axi → .axpd`)
+//! - Publishing and inspecting authenticated SQLite `.axpd` materializations
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -14,32 +14,32 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-mod accepted_plane;
 mod analyze;
+mod authoring_workspace;
 mod axi_fmt;
 mod axi_input;
 mod axql;
-mod backend_pushdown;
 mod behavior_case;
 mod competency_questions;
 mod context_report;
 mod db_server;
 mod doc_chunks;
 mod embeddings;
-mod evidence_support;
 mod evolution_preview;
 mod github;
 mod llm;
 mod mcp;
 mod nlq;
-mod pathdb_wal;
 mod perf;
+mod predictive_proposal_input;
+mod predictive_proposals;
 mod profiling;
+mod projection;
 mod proposal_gen;
 mod proposals_import;
 mod proposals_validate;
@@ -52,27 +52,27 @@ mod route_preview;
 mod route_preview_tools;
 mod runtime_theory_check;
 mod schema_discovery;
+mod security;
 mod semantic_claim;
 mod semantic_merge_lattice;
+mod semantic_model;
 mod semantic_tools;
 mod sqlish;
-mod store_sync;
 mod synthetic_pathdb;
 mod transport_preview_tools;
 mod trust_contract;
 mod typed_authoring;
 mod typed_refinement;
+mod verifier_bridge;
 mod viz;
 mod web;
-mod predictive_proposals;
-mod predictive_proposal_input;
 
 #[derive(Parser)]
 #[command(name = "axiograph")]
 #[command(
     author,
     version,
-    about = "Axiograph: Dependently typed ontology language"
+    about = "Axiograph: proof-carrying ontology workbench with canonical .axi authority"
 )]
 struct Cli {
     #[command(flatten)]
@@ -89,26 +89,24 @@ enum Commands {
         command: IngestCommands,
     },
 
-    /// Check/lint canonical `.axi` modules and `.axpd` snapshots.
+    /// Check/lint exact canonical `.axi` modules.
     ///
-    /// This is the preferred, "clean" entrypoint for:
-    /// - Rust-side `.axi` validation, and
-    /// - practical quality/lint reports.
+    /// Runs Rust-side validation and quality reports over reviewable inputs.
     Check {
         #[command(subcommand)]
         command: CheckCommands,
     },
 
-    /// Emit certificates (Rust computes, Lean verifies).
+    /// Emit untrusted certificates; this command does not invoke Lean.
     ///
-    /// Certificates are untrusted proof objects emitted by the Rust engine
-    /// and checked by the Lean trusted checker (`axiograph_verify`).
+    /// Verify emitted certificates separately with the trusted
+    /// `axiograph_verify` checker or a `make verify-lean-*` target.
     Cert {
         #[command(subcommand)]
         command: CertCommands,
     },
 
-    /// Tooling commands (visualization, analysis, perf harnesses).
+    /// Tooling commands (visualization, analysis, performance runners).
     Tools {
         #[command(subcommand)]
         command: ToolsCommands,
@@ -120,11 +118,7 @@ enum Commands {
         command: AuthoringCommands,
     },
 
-    /// Database commands (snapshot store + PathDB snapshots/WAL).
-    ///
-    /// This is the preferred, "clean" entrypoint for:
-    /// - accepted-plane management (canonical `.axi` snapshots), and
-    /// - PathDB (`.axpd`) import/export and WAL-based overlays.
+    /// Manage accepted state and serve authenticated AxiStore materializations.
     Db {
         #[command(subcommand)]
         command: DbCommands,
@@ -139,17 +133,8 @@ enum Commands {
         command: DiscoverCommands,
     },
 
-    /// Semantic VCS commands over refs, semantic commits, and reconciliations.
-    Sem {
-        #[command(subcommand)]
-        command: SemCommands,
-    },
-
-    /// Interactive REPL for PathDB snapshots and reversible `.axi` exports.
+    /// Interactive REPL with process-local query state.
     Repl {
-        /// Optional `.axpd` file to load on startup.
-        #[arg(long)]
-        axpd: Option<PathBuf>,
         /// Run a non-interactive REPL script (one command per line). Use `-` to read from stdin.
         #[arg(long)]
         script: Option<PathBuf>,
@@ -195,13 +180,13 @@ enum CheckCommands {
         write: bool,
     },
 
-    /// Lint/quality checks for `.axi` modules and `.axpd` snapshots.
+    /// Lint/quality checks for canonical `.axi` modules.
     ///
     /// This is a practical ontology-engineering helper. It produces a structured
     /// report (JSON/text) and exits non-zero when errors are found (unless
     /// `--no-fail` is set).
     Quality {
-        /// Input `.axpd` or `.axi` file.
+        /// Input canonical `.axi` file.
         input: PathBuf,
         /// Output report path (defaults to stdout).
         #[arg(short, long)]
@@ -289,14 +274,14 @@ struct CheckTheoryArgs {
 
 #[derive(Args, Debug, Clone)]
 struct CheckSoftwareCoverageArgs {
-    /// Input `.axpd` or canonical `.axi` snapshot.
+    /// Input canonical `.axi` module.
     input: PathBuf,
 
-    /// Input JSON file containing domain-only `BehaviorCaseCheckRequestV1`.
+    /// Typed behavior-case request payload file (`BehaviorCaseCheckRequestV1`).
     #[arg(long)]
     behavior_case: PathBuf,
 
-    /// Input JSON file containing `ToolingOverlayBundleV1`.
+    /// Typed tooling overlay payload file (`ToolingOverlayBundleV1`).
     #[arg(long)]
     overlay: PathBuf,
 
@@ -316,7 +301,7 @@ struct CheckSoftwareCoverageArgs {
 
 #[derive(Subcommand)]
 enum ToolsCommands {
-    /// Visualize a `.axpd` snapshot or imported `.axi` module as a neighborhood graph.
+    /// Visualize a canonical `.axi` module as a neighborhood graph.
     Viz(VizArgs),
 
     /// Tooling-focused analysis commands (untrusted / evidence-plane friendly).
@@ -325,18 +310,24 @@ enum ToolsCommands {
         command: analyze::AnalyzeCommands,
     },
 
-    /// Performance harnesses (synthetic ingestion/query timings).
+    /// Performance runners (synthetic ingestion/query timings).
     Perf {
         #[command(subcommand)]
         command: perf::PerfCommands,
+    },
+
+    /// Emit and audit capability-declared derived backend projections.
+    Projection {
+        #[command(subcommand)]
+        command: projection::ProjectionCommands,
     },
 }
 
 #[derive(Subcommand)]
 enum AuthoringCommands {
-        /// Run a cataloged software-authoring example flow and emit `authoring_suite_run_report_v1`.
+    /// Run a cataloged software-authoring example flow and emit `authoring_suite_run_report_v1`.
     Run {
-        /// JSON suite catalog, for example examples/software_authoring/software_authoring_examples.json.
+        /// Typed suite catalog file, for example examples/software_authoring/software_authoring_examples.json.
         #[arg(long)]
         suite: PathBuf,
         /// Example id from the suite catalog.
@@ -361,7 +352,7 @@ enum AuthoringCommands {
 
     /// Return codegen skeleton file hints from a typed tooling overlay.
     CodegenPlan {
-        /// Input JSON file containing `ToolingOverlayBundleV1`.
+        /// Typed tooling overlay payload file (`ToolingOverlayBundleV1`).
         #[arg(long)]
         overlay: PathBuf,
         /// Output JSON path. Defaults to stdout.
@@ -369,14 +360,14 @@ enum AuthoringCommands {
         out: Option<PathBuf>,
     },
 
-    /// Load/lower question-first `.cq` text and optionally validate refs against canonical `.axi`.
-    CompetencyQuestions {
-        /// Optional canonical .axi module used to validate referenced types/relations.
+    /// Run the unified workspace-aware typed authoring service from one JSON request.
+    Workspace {
+        /// Workspace root. Every source path in the request is resolved beneath it.
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// JSON-encoded `authoring_workspace_request_v1`.
         #[arg(long)]
-        axi: Option<PathBuf>,
-        /// Question-first `.cq` file.
-        #[arg(long)]
-        cq: PathBuf,
+        request: PathBuf,
         /// Output JSON path. Defaults to stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
@@ -430,7 +421,7 @@ enum AuthoringCommands {
         out: Option<PathBuf>,
     },
 
-    /// Emit read-only plugin/tool metadata for agent and editor integrations.
+    /// Emit software-coverage, overlay-codegen, and workspace-service tool metadata.
     ToolSpecs {
         /// Output JSON path. Defaults to stdout.
         #[arg(short, long)]
@@ -444,50 +435,66 @@ enum AuthoringCommands {
         out: Option<PathBuf>,
     },
 
-    /// Emit LSP/MCP/background-process launch metadata.
+    /// Emit launch metadata for the unified LSP/MCP/HTTP authoring adapters.
     IntegrationManifest {
+        /// Workspace root embedded in adapter launch commands.
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
         /// Output JSON path. Defaults to stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
 
-    /// Run the SDK-backed stdio LSP software-authoring server.
-    Lsp,
+    /// Run the stdio LSP adapter over the unified workspace service.
+    Lsp {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Default workspace-relative `.axi` root used when diagnosing `.cq` buffers.
+        #[arg(long)]
+        axi: Option<String>,
+    },
 
-    /// Run the read-only stdio MCP software-authoring server.
-    Mcp,
+    /// Run the read-only stdio MCP adapter over the unified workspace service.
+    Mcp {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+    },
+
+    /// Run the read-only HTTP adapter over the unified workspace service.
+    Serve {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:8787")]
+        listen: std::net::SocketAddr,
+    },
 }
 
 #[derive(Subcommand)]
 enum DbCommands {
-    /// Manage the accepted/canonical `.axi` plane (append-only log + snapshot ids).
-    Accept {
-        #[command(subcommand)]
-        command: AcceptedCommands,
+    /// Publish a deterministic SQLite materialization from an explicit JSON build spec.
+    Materialize {
+        /// Initialized AxiStore root.
+        #[arg(long)]
+        dir: PathBuf,
+        /// JSON-encoded `AxpdBuildSpec` with exact semantic anchors.
+        #[arg(long)]
+        spec: PathBuf,
     },
 
-    /// Convert PathDB snapshots between `.axpd` and `.axi` and import chunk overlays.
-    Pathdb {
-        #[command(subcommand)]
-        command: PathdbCommands,
+    /// Verify and print one immutable materialization receipt.
+    MaterializationShow {
+        /// Initialized AxiStore root.
+        #[arg(long)]
+        dir: PathBuf,
+        /// Exact `MaterializationIdV2`.
+        #[arg(long)]
+        materialization: String,
     },
 
-    /// Run a database server process over a loaded snapshot.
+    /// Serve one immutable, authenticated AxiStore materialization read-only.
     ///
-    /// This keeps a `.axpd` snapshot loaded in memory and serves:
-    /// - `/healthz`
-    /// - `/status`
-    /// - `/snapshots` (store-backed only; list snapshots for time-travel)
-    /// - `/query` (AxQL)
-    /// - `/viz` (HTML), `/viz.json` (graph JSON), `/viz.dot` (Graphviz DOT)
-    ///
-    /// Time travel:
-    /// - `GET /viz?...&snapshot=<id>` renders an older snapshot (store-backed only).
-    ///
-    /// In `--role master` mode, the server can also accept write operations
-    /// that mutate the snapshot store (accepted plane + PathDB WAL). Treat
-    /// this as an **untrusted** runtime surface: trusted correctness remains
-    /// certificate checking in Lean.
+    /// Startup verifies the receipt, exact SQLite image, logical rows, and
+    /// semantic anchors before publishing `/healthz`, `/status`, and `/query`.
     Serve(DbServeArgs),
 }
 
@@ -497,195 +504,72 @@ struct DbServeArgs {
     #[arg(long, default_value = "127.0.0.1:7878")]
     listen: std::net::SocketAddr,
 
-    /// Role: `standalone` (read-only), `master` (read/write), or `replica` (read-only + watch).
-    #[arg(long, default_value = "standalone")]
-    role: String,
-
-    /// Load a `.axpd` snapshot directly.
+    /// AxiStore root containing the immutable materialization and receipt.
     #[arg(long)]
-    axpd: Option<PathBuf>,
+    dir: PathBuf,
 
-    /// Load from a snapshot store directory (accepted plane + PathDB WAL).
-    ///
-    /// Use with `--layer` + `--snapshot`.
+    /// Exact immutable `MaterializationIdV2` to verify and serve.
     #[arg(long)]
-    dir: Option<PathBuf>,
+    materialization: String,
 
-    /// Which store layer to serve: `pathdb` (WAL head) or `accepted` (canonical head).
-    #[arg(long, default_value = "pathdb")]
-    layer: String,
+    /// Maximum number of simultaneously open HTTP connections.
+    #[arg(long, default_value_t = 128)]
+    max_connections: usize,
 
-    /// Snapshot id (or `head`/`latest`) when loading from `--dir`.
-    #[arg(long, default_value = "head")]
-    snapshot: String,
+    /// Maximum lifetime of an HTTP connection in seconds.
+    #[arg(long, default_value_t = 300)]
+    connection_timeout_secs: u64,
 
-    /// Reload when `HEAD` changes (polling).
-    #[arg(long)]
-    watch_head: bool,
-
-    /// Polling interval for `--watch-head`.
-    #[arg(long, default_value_t = 2)]
-    poll_interval_secs: u64,
-
-    /// Optional admin token required for write endpoints (recommended for `--role master`).
-    #[arg(long)]
-    admin_token: Option<String>,
-
-    /// If set, write an `axiograph_db_server_ready_v1` file once the server is listening.
-    ///
-    /// Useful for scripts/tests to learn the chosen port when `--listen ...:0`.
+    /// Write a readiness receipt after verification and listener publication.
     #[arg(long)]
     ready_file: Option<PathBuf>,
 
-    /// Optional Lean verifier executable (axiograph_verify) to validate certificates server-side.
-    ///
-    /// If omitted, the server will try (in order):
-    /// - `AXIOGRAPH_VERIFY_BIN`,
-    /// - `axiograph_verify` next to the running `axiograph` binary,
-    /// - `lean/.lake/build/bin/axiograph_verify` (when running from repo root).
-    #[arg(long)]
-    verify_bin: Option<PathBuf>,
-
-    /// Certificate verification timeout (seconds). `0` disables the timeout.
-    ///
-    /// This is only used for server-side verification calls (e.g. `POST /query`
-    /// with `"certificate_policy":"verify"`).
-    #[arg(long, default_value_t = 30)]
-    verify_timeout_secs: u64,
-
-    /// Enable LLM endpoints for the server UI (`/viz`).
-    ///
-    /// This is an untrusted convenience feature: the model proposes tool calls
-    /// and/or structured queries; Rust executes them against the loaded snapshot.
-    /// Trusted correctness remains certificate-checking in Lean.
-    ///
-    /// Choose at most one backend: `--llm-mock`, `--llm-ollama`, `--llm-openai`, `--llm-anthropic`, or `--llm-plugin ...`.
-    #[arg(long)]
-    llm_mock: bool,
-
-    /// Optional LLM plugin executable (supports v2 query mode and v3 tool-loop mode).
-    #[arg(long)]
-    llm_plugin: Option<PathBuf>,
-
-    /// Extra args for `--llm-plugin` (repeatable).
-    #[arg(long)]
-    llm_plugin_arg: Vec<String>,
-
-    /// Use the built-in Ollama backend (local models via Ollama).
-    #[arg(long)]
-    llm_ollama: bool,
-
-    /// Optional Ollama host override (defaults to `OLLAMA_HOST` or `http://127.0.0.1:11434`).
-    #[arg(long)]
-    llm_ollama_host: Option<String>,
-
-    /// Use the built-in OpenAI backend (networked).
-    #[arg(long)]
-    llm_openai: bool,
-
-    /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
-    #[arg(long)]
-    llm_openai_base_url: Option<String>,
-
-    /// Use the built-in Anthropic backend (networked).
-    #[arg(long)]
-    llm_anthropic: bool,
-
-    /// Optional Anthropic base URL override (defaults to `ANTHROPIC_BASE_URL` or `https://api.anthropic.com`).
-    #[arg(long)]
-    llm_anthropic_base_url: Option<String>,
-
-    /// Optional model name for the plugin, or for Ollama (required when `--llm-ollama` is set).
-    #[arg(long)]
-    llm_model: Option<String>,
-
-    /// Enable predictive proposal adapter plugin endpoints for proposal generation.
-    ///
-    /// Choose at most one backend: `--proposal-adapter-stub`, `--proposal-adapter-plugin ...`,
-    /// `--proposal-adapter-http ...`, or `--proposal-adapter-llm`.
-    #[arg(long = "proposal-adapter-stub")]
-    predictive_proposal_stub: bool,
-
-    /// Optional predictive proposal adapter plugin executable (speaks `axiograph_predictive_proposal_v1`).
-    #[arg(long = "proposal-adapter-plugin")]
-    predictive_proposal_plugin: Option<PathBuf>,
-
-    /// Extra args for `--proposal-adapter-plugin` (repeatable).
-    #[arg(long = "proposal-adapter-plugin-arg")]
-    predictive_proposal_plugin_arg: Vec<String>,
-
-    /// Optional predictive proposal adapter HTTP endpoint (speaks `axiograph_predictive_proposal_v1`).
-    #[arg(long = "proposal-adapter-http")]
-    predictive_proposal_http: Option<String>,
-
-    /// Use the built-in LLM-backed predictive proposal adapter plugin.
-    #[arg(long = "proposal-adapter-llm")]
-    predictive_proposal_llm: bool,
-
-    /// Optional predictive proposal adapter model name for provenance (free-form).
-    #[arg(long = "proposal-adapter-model")]
-    predictive_proposal_model: Option<String>,
-
-    /// Number of worker slots reserved for proposal-adapter jobs.
-    #[arg(long = "proposal-adapter-workers", default_value_t = 2)]
-    predictive_proposal_workers: usize,
-
-    /// LRU capacity (number of path signatures) for deeper-than-indexed paths.
-    /// `0` disables the LRU cache.
+    /// LRU capacity for deeper-than-indexed paths; zero disables it.
     #[arg(long, default_value_t = 0)]
     path_index_lru_capacity: usize,
 
-    /// Enable async updates for the deeper-path LRU cache.
+    /// Enable asynchronous updates for the process-local path LRU.
     #[arg(long)]
     path_index_lru_async: bool,
 
-    /// Async queue size for deeper-path LRU updates (ignored unless async is enabled).
+    /// Async path-LRU update queue size.
     #[arg(long, default_value_t = 1024)]
     path_index_lru_queue: usize,
 }
 
 #[derive(Args, Debug, Clone)]
 struct McpArgs {
-    /// Load a `.axpd` snapshot directly.
+    /// AxiStore root containing the immutable materialization and receipt.
     #[arg(long)]
-    axpd: Option<PathBuf>,
+    dir: PathBuf,
 
-    /// Load from a snapshot store directory (accepted plane + PathDB WAL).
+    /// Exact immutable `MaterializationIdV2` to verify and expose.
     #[arg(long)]
-    dir: Option<PathBuf>,
-
-    /// Which store layer to load when using `--dir`: `accepted` or `pathdb`.
-    #[arg(long, default_value = "pathdb")]
-    layer: String,
-
-    /// Snapshot id (or `head`/`latest`) when loading from `--dir`.
-    #[arg(long, default_value = "head")]
-    snapshot: String,
+    materialization: String,
 
     /// Hard cap for rows returned by `axql_run` calls.
     #[arg(long, default_value_t = 50)]
     tool_max_rows: usize,
+
+    /// Approved Lean verifier executable for MCP query verification.
+    #[arg(long)]
+    verify_bin: Option<PathBuf>,
+
+    /// SHA-256 of the approved verifier executable.
+    #[arg(long)]
+    verify_sha256: Option<String>,
+
+    /// Approved stdio V2 checker build id.
+    #[arg(long)]
+    verify_build_id: Option<String>,
+
+    /// Query verifier timeout in seconds.
+    #[arg(long, default_value_t = 30)]
+    verify_timeout_secs: u64,
 }
 
 #[derive(Subcommand)]
 enum CertCommands {
-    /// Run an AxQL/SQL-ish query over a canonical `.axi` module and emit a typed query witness.
-    Query {
-        /// Input `.axi` file (canonical `axi_v1` module only).
-        input: PathBuf,
-
-        /// Query language: `axql` or `sql`.
-        #[arg(long, default_value = "axql")]
-        lang: String,
-
-        /// Query text (quote it in your shell).
-        query: String,
-
-        /// Write certificate JSON to this path (defaults to stdout).
-        #[arg(short, long)]
-        out: Option<PathBuf>,
-    },
-
     /// Typecheck a canonical `.axi` module and emit an `axi_well_typed_v1` certificate.
     Typecheck {
         /// Input `.axi` file (canonical `axi_v1` schema/theory/instance module).
@@ -709,7 +593,7 @@ enum CertCommands {
 
 #[derive(Args)]
 struct VizArgs {
-    /// Input `.axpd` or `.axi` file.
+    /// Input canonical `.axi` file.
     input: PathBuf,
     /// Output file (extension does not matter; use `--format`).
     #[arg(short, long)]
@@ -1000,73 +884,6 @@ enum RepoCommands {
 }
 
 #[derive(Subcommand)]
-enum PathdbCommands {
-    /// Export a `.axpd` PathDB file to a reversible debug/parity `.axi` snapshot (`PathDBExportV1`)
-    ExportAxi {
-        /// Input `.axpd` file
-        input: PathBuf,
-        /// Output `.axi` file
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Export a canonical `.axi` module from a `.axpd` file (schema/theory/instance).
-    ///
-    /// This requires that the PathDB contains the `.axi` meta-plane produced by
-    /// materializing a canonical `.axi` module (e.g. via `axiograph db pathdb materialize-axi`
-    /// or `axiograph repl import_axi`).
-    ///
-    /// If multiple modules are present, pass `--module <name>`.
-    ExportModule {
-        /// Input `.axpd` file
-        input: PathBuf,
-        /// Output `.axi` file
-        #[arg(short, long)]
-        out: PathBuf,
-        /// Module name to export (required if multiple modules are present).
-        #[arg(long)]
-        module: Option<String>,
-    },
-
-    /// Materialize a canonical `.axi` module into a derived `.axpd` PathDB file.
-    MaterializeAxi {
-        /// Input canonical `.axi` file
-        input: PathBuf,
-        /// Output `.axpd` file
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Import a reversible debug/parity snapshot `.axi` file into `.axpd`.
-    ///
-    /// This command is not for canonical semantic authoring. Use
-    /// `materialize-axi` for canonical `.axi -> .axpd`.
-    ImportAxi {
-        /// Input `.axi` file
-        input: PathBuf,
-        /// Output `.axpd` file
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Import `chunks.json` into a `.axpd` snapshot as `DocChunk` entities.
-    ///
-    /// This is an **extension layer** intended for discovery workflows:
-    /// - enables `fts(...)` / `contains(...)` queries over chunk text
-    /// - links chunk evidence to typed entities when chunk metadata permits
-    ImportChunks {
-        /// Input `.axpd` file
-        input: PathBuf,
-        /// Input `EvidenceChunkBundleV1` chunks JSON.
-        #[arg(long)]
-        chunks: PathBuf,
-        /// Output `.axpd` file
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-}
-
-#[derive(Subcommand)]
 enum DiscoverCommands {
     /// Suggest lightweight links based on chunks + repo edges
     SuggestLinks {
@@ -1250,11 +1067,11 @@ enum DiscoverCommands {
     ///
     /// This exports **full** schema+theory+instance context and a list of
     /// masked targets derived from instance tuples. It is anchored to the
-    /// module's `axi_digest_v1` and is suitable for self-supervised training
-    /// pipelines.
+    /// module's exact-byte `revision_digest_v2` and is suitable for
+    /// self-supervised training pipelines.
     #[command(name = "training-export")]
     MaskedTupleTrainingExport {
-        /// Input `.axi` module (canonical `axi_v1`)
+        /// Input canonical `.axi` module
         input: PathBuf,
         /// Output `MaskedTupleTrainingExportV1` (`version=axi_training_export_v1`).
         #[arg(short, long)]
@@ -1284,19 +1101,19 @@ enum DiscoverCommands {
     /// trust, and optional evolution-preview contracts.
     ContextReport(DiscoverContextReportArgs),
 
-    /// Validate a typed DDD/fDDD/software tooling overlay against canonical `.axi`.
+    /// Validate a typed DDD/fDDD/software tooling overlay against reviewable `.axi`.
     OverlayCheck(DiscoverOverlayCheckArgs),
 
-    /// Run a weak/queryable software coverage probe over ontology plus optional overlay.
+    /// Run an advisory software coverage lookup over ontology plus optional overlay.
     CoverageQuery(DiscoverCoverageQueryArgs),
 
-    /// Define a process, function, business rule, relation, or surface from weak prompts.
+    /// Define a process, function, business rule, relation, or surface from advisory prompts.
     Define(DiscoverDefineArgs),
 
     /// Discover advisory embedding-derived relationship evidence from an embeddings JSON file.
     EmbeddingRelationships(DiscoverEmbeddingRelationshipsArgs),
 
-    /// Check a JSON BehaviorCaseV1 and emit trust receipts plus Rust/TS test skeletons.
+    /// Check a typed BehaviorCaseV1 request and emit trust receipts plus test skeleton previews.
     BehaviorCase(DiscoverBehaviorCaseArgs),
 
     /// Preview a concrete route and optional route equivalence over a snapshot.
@@ -1308,10 +1125,10 @@ enum DiscoverCommands {
     /// Emit runtime theory-obligation graphs from a canonical `.axi` module.
     TheoryGraph(DiscoverTheoryGraphArgs),
 
-    /// Emit the shared compiled KernelSurfaceV1 runtime index from canonical `.axi`.
+    /// Inspect the derived runtime semantic index for canonical `.axi`.
     KernelSurface(DiscoverKernelSurfaceArgs),
 
-    /// Emit runtime theory checker closure/completeness reports from canonical `.axi`.
+    /// Emit scoped runtime theory checker reports from canonical `.axi`.
     TheoryCheck(DiscoverTheoryCheckArgs),
 
     /// Run a predictive proposal adapter plugin to propose new facts/relations (evidence plane).
@@ -1428,7 +1245,7 @@ struct DiscoverTheoryCheckArgs {
 
 #[derive(Args, Debug, Clone)]
 struct DiscoverContextReportArgs {
-    /// Input `.axpd` or canonical `.axi` snapshot.
+    /// Input canonical `.axi` module.
     input: PathBuf,
 
     /// Input JSON file containing `ContextReportRequestV1`.
@@ -1540,7 +1357,7 @@ struct DiscoverEmbeddingRelationshipsArgs {
     #[arg(long)]
     embeddings: PathBuf,
 
-    /// Semantic ref or accepted-plane pointer used to scope the sidecar.
+    /// Review ref used to scope the advisory sidecar.
     #[arg(long, default_value = "heads/main")]
     accepted_ref: String,
 
@@ -1591,10 +1408,10 @@ struct DiscoverEmbeddingRelationshipsArgs {
 
 #[derive(Args, Debug, Clone)]
 struct DiscoverBehaviorCaseArgs {
-    /// Input `.axpd` or canonical `.axi` snapshot.
+    /// Input canonical `.axi` module.
     input: PathBuf,
 
-    /// Input JSON file containing `BehaviorCaseCheckRequestV1`.
+    /// Typed behavior-case request payload file (`BehaviorCaseCheckRequestV1`).
     #[arg(long)]
     request: PathBuf,
 
@@ -1615,7 +1432,7 @@ struct DiscoverBehaviorCaseArgs {
 
 #[derive(Args, Debug, Clone)]
 struct DiscoverRoutePreviewArgs {
-    /// Input `.axpd` or `.axi` snapshot.
+    /// Input canonical `.axi` module.
     input: PathBuf,
 
     /// Input JSON file containing `RoutePreviewRequestV1`.
@@ -1651,7 +1468,7 @@ struct DiscoverTransportPreviewArgs {
 
 #[derive(Args, Debug, Clone)]
 struct PredictiveProposalsArgs {
-    /// Input `.axi` or `.axpd` snapshot (used for guardrails / validation).
+    /// Exact canonical `.axi` input used for guardrails and validation.
     input: PathBuf,
 
     /// Instance filter for generated masked-tuple training input.
@@ -1736,30 +1553,6 @@ struct PredictiveProposalsArgs {
     /// Optional guardrail report output path.
     #[arg(long)]
     guardrail_out: Option<PathBuf>,
-
-    /// Commit proposals into the PathDB WAL under this accepted-plane directory.
-    #[arg(long)]
-    commit_dir: Option<PathBuf>,
-
-    /// Accepted snapshot id for WAL commit (default: head).
-    #[arg(long, default_value = "head")]
-    accepted_snapshot: String,
-
-    /// Commit message for WAL commit.
-    #[arg(long)]
-    commit_message: Option<String>,
-
-    /// Validate proposals before commit (default: true when committing).
-    #[arg(long)]
-    validate: Option<bool>,
-
-    /// Validation quality profile: off|fast|strict.
-    #[arg(long, default_value = "fast")]
-    quality: String,
-
-    /// Validation plane: meta|data|both.
-    #[arg(long, default_value = "both")]
-    quality_plane: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1787,7 +1580,7 @@ struct PredictiveProposalsLlmArgs {
 
 #[derive(Args, Debug, Clone)]
 struct CompetencyQuestionsArgs {
-    /// Input `.axi` or `.axpd` snapshot (for schema + NL query translation).
+    /// Exact canonical `.axi` input for schema and NL query translation.
     input: PathBuf,
 
     /// Output JSON file (array of competency questions).
@@ -1876,541 +1669,6 @@ struct CompetencyQuestionsArgs {
     llm_model: Option<String>,
 }
 
-#[derive(Subcommand)]
-enum AcceptedCommands {
-    /// Initialize the accepted-plane + PathDB WAL directory layout.
-    ///
-    /// This is idempotent and safe to run even if the directory already exists.
-    Init {
-        /// Accepted-plane directory (contains `modules/`, `snapshots/`, `HEAD`, and logs).
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-    },
-
-    /// Sync an accepted-plane directory to another directory (master → replica).
-    ///
-    /// This is filesystem-only and intended to be used with:
-    /// - local disk copies (cp/rsync),
-    /// - shared storage (NFS),
-    /// - or object-store sync (future).
-    ///
-    /// The snapshot store is treated as:
-    /// - immutable, content-addressed objects (`modules/`, `snapshots/`, `pathdb/blobs/`, …), plus
-    /// - a small mutable pointer (`HEAD`) per layer.
-    ///
-    /// Sync copies missing immutable objects first, then optionally updates `HEAD`
-    /// pointers (so a replica becomes queryable immediately).
-    Sync {
-        /// Source accepted-plane directory (master).
-        #[arg(long)]
-        from: PathBuf,
-        /// Destination accepted-plane directory (replica).
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Which layer to sync: `accepted`, `pathdb`, or `both`.
-        #[arg(long, default_value = "both")]
-        layer: String,
-        /// Include PathDB `.axpd` checkpoints when syncing `pathdb`.
-        ///
-        /// If omitted, a replica can still rebuild checkpoints from manifests + blobs.
-        #[arg(long)]
-        include_checkpoints: bool,
-        /// Include append-only logs (`accepted_plane.log.jsonl`, `pathdb_wal.log.jsonl`).
-        #[arg(long)]
-        include_logs: bool,
-        /// Do not update `HEAD` pointers (copy immutable objects only).
-        #[arg(long)]
-        no_update_head: bool,
-        /// Print what would be copied, but do not write.
-        #[arg(long)]
-        dry_run: bool,
-    },
-
-    /// List accepted-plane and/or PathDB WAL snapshots (most recent first).
-    #[command(aliases = ["ls"])]
-    List {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Which layer to list: `accepted`, `pathdb`, or `both`.
-        #[arg(long, default_value = "accepted")]
-        layer: String,
-        /// Maximum number of snapshots to print.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// Print full snapshot ids (default prints shortened ids).
-        #[arg(long)]
-        full: bool,
-    },
-
-    /// Show details of an accepted-plane or PathDB WAL snapshot.
-    #[command(aliases = ["cat", "describe"])]
-    Show {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Which layer: `accepted` or `pathdb`.
-        #[arg(long, default_value = "accepted")]
-        layer: String,
-        /// Snapshot id (or `latest` / `head`, or a unique prefix).
-        #[arg(long, default_value = "head")]
-        snapshot: String,
-        /// Print the typed snapshot manifest as JSON.
-        #[arg(long)]
-        json: bool,
-        /// Print full snapshot ids (default prints shortened ids).
-        #[arg(long)]
-        full: bool,
-    },
-
-    /// Show a persisted semantic reconciliation preview.
-    ///
-    /// This surfaces the typed conflict set, trust summary, and any compiled-IR
-    /// refinement handles available for review.
-    ReconciliationShow {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Reconciliation id.
-        #[arg(long)]
-        reconciliation: String,
-        /// Write the preview JSON to this path (defaults to stdout).
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-
-    /// Apply a typed refinement handle to a persisted semantic reconciliation.
-    ///
-    /// This updates the stored reconciliation record and returns the typed
-    /// before/after apply result.
-    ReconciliationApply {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Reconciliation id.
-        #[arg(long)]
-        reconciliation: String,
-        /// Runtime refinement handle id from the reconciliation preview.
-        #[arg(long)]
-        handle_id: String,
-        /// Write the apply result JSON to this path (defaults to stdout).
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-
-    /// Promote a reviewed canonical `.axi` module into the accepted plane.
-    ///
-    /// This:
-    /// - parses + typechecks the module (Rust gate),
-    /// - stores it under `modules/<name>/<digest>.axi`,
-    /// - appends a JSONL log event, and
-    /// - writes a new snapshot manifest (content-derived snapshot id).
-    Promote {
-        /// Input canonical `.axi` module (axi_v1).
-        input: PathBuf,
-        /// Accepted-plane directory (contains `modules/`, `snapshots/`, `HEAD`, and `accepted_plane.log.jsonl`).
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Optional promotion message (for human audit trail).
-        #[arg(long)]
-        message: Option<String>,
-        /// Optional quality gate (and report attachment): off|fast|strict.
-        ///
-        /// - `off`: do not run quality checks (default)
-        /// - `fast`: run cheap lints + key/functional checks when meta-plane is present
-        /// - `strict`: run additional expensive lints (still untrusted tooling)
-        #[arg(long, default_value = "off")]
-        quality: String,
-        /// Optional JSON file containing competency questions to compare before/after promotion.
-        #[arg(long)]
-        competency_questions: Option<PathBuf>,
-        /// Fail promotion if any previously satisfied competency question regresses.
-        #[arg(long)]
-        cq_fail_on_regression: bool,
-        /// Fail promotion unless all supplied competency questions are satisfied after preview.
-        #[arg(long)]
-        cq_fail_on_unsatisfied_after: bool,
-    },
-
-    /// Rebuild a `.axpd` PathDB snapshot from an accepted-plane snapshot id.
-    BuildPathdb {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Snapshot id (or `latest` / `head`).
-        #[arg(long, default_value = "latest")]
-        snapshot: String,
-        /// Output `.axpd` file.
-        #[arg(short, long)]
-        out: PathBuf,
-    },
-
-    /// Commit a PathDB WAL snapshot (append-only) under the accepted-plane directory.
-    ///
-    /// This adds *extension-layer* overlays (currently: `EvidenceChunkBundleV1` + `proposals.json` imports) on
-    /// top of an accepted-plane snapshot. The resulting PathDB snapshot id is
-    /// content-derived and can be checked out later via `pathdb-build`.
-    PathdbCommit {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Accepted-plane snapshot id (or `latest` / `head`).
-        #[arg(long, default_value = "latest")]
-        accepted_snapshot: String,
-        /// One or more `EvidenceChunkBundleV1` chunks JSON files to import.
-        #[arg(long)]
-        chunks: Vec<PathBuf>,
-        /// One or more proposals JSON files (`ProposalsFileV1`) to import.
-        #[arg(long)]
-        proposals: Vec<PathBuf>,
-        /// Optional message (for human audit trail).
-        #[arg(long)]
-        message: Option<String>,
-
-        /// Print phase timings (useful for profiling large overlay commits).
-        #[arg(long)]
-        timings: bool,
-
-        /// Write phase timings JSON to this path.
-        #[arg(long)]
-        timings_json: Option<PathBuf>,
-
-        /// Override path index depth for this commit (0 disables path indexing).
-        #[arg(long)]
-        path_index_depth: Option<usize>,
-    },
-
-    /// Compute and commit snapshot-scoped embeddings into the PathDB WAL (extension layer).
-    ///
-    /// This stores embeddings as immutable blobs under `pathdb/blobs/` and
-    /// references them from the PathDB snapshot manifest.
-    ///
-    /// Intended usage:
-    /// 1) `axiograph db accept pathdb-commit ... --chunks <chunks.json>`
-    /// 2) `axiograph db accept pathdb-embed --snapshot head --target docchunks --embed-backend ollama --embed-model nomic-embed-text`
-    PathdbEmbed {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Base PathDB snapshot id to embed (or `latest`/`head`).
-        #[arg(long, default_value = "head")]
-        snapshot: String,
-        /// What to embed: `docchunks`, `entities`, or `both`.
-        #[arg(long, default_value = "docchunks")]
-        target: String,
-        /// Which embedding backend to use: `ollama` or `openai`.
-        ///
-        /// Notes:
-        /// - Anthropic does not provide embeddings; use `openai` or rely on deterministic retrieval.
-        #[arg(long, default_value = "ollama")]
-        embed_backend: String,
-        /// Optional Ollama host override (defaults to `OLLAMA_HOST` or `http://127.0.0.1:11434`).
-        #[arg(long)]
-        ollama_host: Option<String>,
-        /// Embedding model name (backend-dependent).
-        ///
-        /// Common values:
-        /// - Ollama: `nomic-embed-text`
-        /// - OpenAI: `text-embedding-3-small` / `text-embedding-3-large`
-        ///
-        #[arg(long)]
-        embed_model: Option<String>,
-        /// Optional OpenAI base URL override (defaults to `OPENAI_BASE_URL` or `https://api.openai.com`).
-        #[arg(long)]
-        openai_base_url: Option<String>,
-        /// Max number of items to embed (safety valve).
-        #[arg(long, default_value_t = 25_000)]
-        max_items: usize,
-        /// Batch size for `/api/embed` (fallback to per-item calls when unsupported).
-        #[arg(long, default_value_t = 32)]
-        batch_size: usize,
-        /// Optional Ollama request timeout in seconds (0 disables). Can also be set via `AXIOGRAPH_LLM_TIMEOUT_SECS`.
-        #[arg(long)]
-        timeout_secs: Option<u64>,
-        /// Optional message (for human audit trail).
-        #[arg(long)]
-        message: Option<String>,
-    },
-
-    /// Build/check out a PathDB `.axpd` from a PathDB WAL snapshot id.
-    PathdbBuild {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// PathDB snapshot id (or `latest` / `head`).
-        #[arg(long, default_value = "latest")]
-        snapshot: String,
-        /// Output `.axpd` file.
-        #[arg(short, long)]
-        out: PathBuf,
-
-        /// Print phase timings (useful for profiling large checkouts).
-        #[arg(long)]
-        timings: bool,
-
-        /// Write phase timings JSON to this path.
-        #[arg(long)]
-        timings_json: Option<PathBuf>,
-
-        /// Force a full rebuild (ignore any stored `.axpd` checkpoint).
-        ///
-        /// This is useful to:
-        /// - profile the rebuild hot-path (apply ops + build indexes), and
-        /// - sanity-check determinism vs checkpoints.
-        #[arg(long)]
-        rebuild: bool,
-
-        /// Override path index depth (0 disables path indexing).
-        #[arg(long)]
-        path_index_depth: Option<usize>,
-
-        /// Rewrite the checkpoint for this snapshot (implies rebuild).
-        #[arg(long)]
-        update_checkpoint: bool,
-    },
-
-    /// Show accepted-plane + PathDB WAL snapshot status (HEADs, counts).
-    ///
-    /// This is intended to be a “git status”-like quick diagnostic.
-    Status {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-    },
-
-    /// Show recent accepted-plane or PathDB WAL log events.
-    ///
-    /// This is intended to be a “git log”-like view over snapshot history.
-    Log {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Which log to show: `accepted`, `pathdb`, or `both`.
-        #[arg(long, default_value = "accepted")]
-        layer: String,
-        /// Maximum number of events to print (most recent first).
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-}
-
-#[derive(Subcommand)]
-enum SemCommands {
-    /// Show a summary of semantic refs, semantic head, reconciliations, and proposal-adapter runs.
-    Status {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Print the typed semantic status report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Create or move a semantic branch ref.
-    Branch {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Branch family: main, review, evidence, or proposal.
-        #[arg(long, default_value = "review")]
-        family: String,
-        /// Branch name. Ignored for family=main.
-        name: Option<String>,
-        /// Commit id to point the branch at. Defaults to current semantic HEAD commit.
-        #[arg(long)]
-        commit: Option<String>,
-        /// Print the typed branch update report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Move symbolic sem/HEAD to an existing semantic branch ref.
-    Checkout {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Branch ref, for example heads/main or heads/review/demo.
-        r#ref: String,
-        /// Print the typed checkout report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Create an immutable semantic tag ref.
-    Tag {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Tag name under refs/tags/.
-        name: String,
-        /// Commit id to tag. Defaults to current semantic HEAD commit.
-        #[arg(long)]
-        commit: Option<String>,
-        /// Print the typed tag report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Show a semantic ref, commit, or proposal-adapter run from the semantic store.
-    Show {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Optional ref name (e.g. heads/main, heads/review/demo, heads/evidence/proposals/run).
-        #[arg(long)]
-        r#ref: Option<String>,
-        /// Optional commit id.
-        #[arg(long)]
-        commit: Option<String>,
-        /// Optional reconciliation id.
-        #[arg(long)]
-        reconciliation: Option<String>,
-        /// Optional proposal-adapter run id.
-        #[arg(long)]
-        proposal_adapter_run: Option<String>,
-        /// Print the typed semantic object report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Manage semantic refs.
-    Ref {
-        #[command(subcommand)]
-        command: SemRefCommands,
-    },
-    /// Build a semantic merge preview from two refs, or materialize it into a merge commit.
-    Merge {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Source semantic ref.
-        #[arg(long)]
-        source: String,
-        /// Target semantic ref.
-        #[arg(long)]
-        target: String,
-        /// Merge/reconciliation policy label.
-        #[arg(long, default_value = "semantic_merge_dry_run")]
-        policy: String,
-        /// Optional JSON SemanticSliceSelectorV1 for the source ref.
-        #[arg(long)]
-        source_slice: Option<PathBuf>,
-        /// Optional JSON SemanticSliceSelectorV1 for the target ref.
-        #[arg(long)]
-        target_slice: Option<PathBuf>,
-        /// Do not materialize a merge commit; emit the candidate reconciliation and preview only.
-        #[arg(long)]
-        dry_run: bool,
-        /// Print the typed merge/rebase preview report as JSON.
-        #[arg(long)]
-        json: bool,
-        /// Print the reduced Lean-readable checker JSON instead of the runtime report.
-        #[arg(long)]
-        lean_json: bool,
-    },
-    /// Build a semantic rebase preview by transporting one ref onto another.
-    Rebase {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Source semantic ref to transport.
-        #[arg(long)]
-        source: String,
-        /// Target semantic ref to rebase onto.
-        #[arg(long)]
-        onto: String,
-        /// Optional JSON SemanticSliceSelectorV1 applied to the source ref.
-        #[arg(long)]
-        slice: Option<PathBuf>,
-        /// Rebase/transport policy label.
-        #[arg(long, default_value = "semantic_rebase_dry_run")]
-        policy: String,
-        /// Print the typed rebase transport report as JSON.
-        #[arg(long)]
-        json: bool,
-        /// Print the reduced Lean-readable checker JSON instead of the runtime report.
-        #[arg(long)]
-        lean_json: bool,
-    },
-    /// Build, show, or diff persisted semantic slice manifests.
-    Slice {
-        #[command(subcommand)]
-        command: SemSliceCommands,
-    },
-    /// Show semantic commit history from sem/HEAD.
-    Log {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Maximum number of commits to print.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// Print the typed semantic log report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum SemRefCommands {
-    /// Set a semantic ref to a specific semantic commit id.
-    Set {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Semantic ref name (for example `heads/main` or `heads/custom/demo`).
-        #[arg(long)]
-        r#ref: String,
-        /// Semantic commit id to write into the ref pointer.
-        #[arg(long)]
-        commit: String,
-        /// Print the typed ref update report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum SemSliceCommands {
-    /// Build and persist a semantic slice manifest under sem/slices/.
-    Build {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Semantic ref to slice.
-        #[arg(long)]
-        r#ref: String,
-        /// Optional JSON SemanticSliceSelectorV1.
-        #[arg(long)]
-        selector: Option<PathBuf>,
-        /// Print the typed slice build report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Show a persisted semantic slice manifest.
-    Show {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Slice id, relative sem/slices path, or manifest path.
-        #[arg(long)]
-        slice: String,
-        /// Print the typed slice manifest as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Diff two persisted semantic slice manifests.
-    Diff {
-        /// Accepted-plane directory.
-        #[arg(long, default_value = "build/accepted_plane")]
-        dir: PathBuf,
-        /// Left slice id, relative sem/slices path, or manifest path.
-        #[arg(long)]
-        left: String,
-        /// Right slice id, relative sem/slices path, or manifest path.
-        #[arg(long)]
-        right: String,
-        /// Print the typed slice diff report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-}
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let profiler = profiling::Profiler::start(&cli.profile)?;
@@ -2419,7 +1677,7 @@ fn main() -> Result<()> {
         match cli.command {
             Commands::Ingest { command } => match command {
                 IngestCommands::Sql { input, out, chunks } => {
-                    cmd_sql(&input, &out, chunks.as_ref())?;
+                    cmd_sql(&input, &out, chunks.as_deref())?;
                 }
                 IngestCommands::Doc {
                     input,
@@ -2432,8 +1690,8 @@ fn main() -> Result<()> {
                     cmd_doc(
                         &input,
                         &out,
-                        chunks.as_ref(),
-                        facts.as_ref(),
+                        chunks.as_deref(),
+                        facts.as_deref(),
                         machining,
                         &domain,
                     )?;
@@ -2445,7 +1703,7 @@ fn main() -> Result<()> {
                     facts,
                     format,
                 } => {
-                    cmd_conversation(&input, &out, chunks.as_ref(), facts.as_ref(), &format)?;
+                    cmd_conversation(&input, &out, chunks.as_deref(), facts.as_deref(), &format)?;
                 }
                 IngestCommands::Confluence {
                     input,
@@ -2454,10 +1712,10 @@ fn main() -> Result<()> {
                     chunks,
                     facts,
                 } => {
-                    cmd_confluence(&input, &out, &space, chunks.as_ref(), facts.as_ref())?;
+                    cmd_confluence(&input, &out, &space, chunks.as_deref(), facts.as_deref())?;
                 }
                 IngestCommands::Json { input, out, chunks } => {
-                    cmd_json(&input, &out, chunks.as_ref())?;
+                    cmd_json(&input, &out, chunks.as_deref())?;
                 }
                 IngestCommands::Readings {
                     input,
@@ -2465,7 +1723,7 @@ fn main() -> Result<()> {
                     chunks,
                     format,
                 } => {
-                    cmd_readings(&input, &out, chunks.as_ref(), &format)?;
+                    cmd_readings(&input, &out, chunks.as_deref(), &format)?;
                 }
                 IngestCommands::Proto { command } => {
                     proto::cmd_proto(command)?;
@@ -2483,8 +1741,8 @@ fn main() -> Result<()> {
                         cmd_repo_index(
                             &root,
                             &out,
-                            chunks.as_ref(),
-                            edges.as_ref(),
+                            chunks.as_deref(),
+                            edges.as_deref(),
                             max_file_bytes,
                             max_files,
                             lines_per_chunk,
@@ -2502,9 +1760,9 @@ fn main() -> Result<()> {
                         cmd_repo_watch(
                             &root,
                             &out,
-                            chunks.as_ref(),
-                            edges.as_ref(),
-                            trace.as_ref(),
+                            chunks.as_deref(),
+                            edges.as_deref(),
+                            trace.as_deref(),
                             interval_secs,
                             max_suggestions,
                         )?;
@@ -2532,9 +1790,9 @@ fn main() -> Result<()> {
                         &out_dir,
                         &confluence_space,
                         &domain,
-                        chunks.as_ref(),
-                        facts.as_ref(),
-                        proposals.as_ref(),
+                        chunks.as_deref(),
+                        facts.as_deref(),
+                        proposals.as_deref(),
                         max_file_bytes,
                         max_files,
                     )?;
@@ -2550,7 +1808,7 @@ fn main() -> Result<()> {
                         &proposals,
                         &chunks,
                         &out,
-                        chunks_out.as_ref(),
+                        chunks_out.as_deref(),
                         schema_hint.as_deref(),
                     )?;
                 }
@@ -2582,23 +1840,22 @@ fn main() -> Result<()> {
                     plane,
                     no_fail,
                 } => {
-                    quality::cmd_quality(&input, out.as_ref(), &format, &profile, &plane, no_fail)?;
+                    quality::cmd_quality(
+                        &input,
+                        out.as_deref(),
+                        &format,
+                        &profile,
+                        &plane,
+                        no_fail,
+                    )?;
                 }
             },
             Commands::Cert { command } => match command {
-                CertCommands::Query {
-                    input,
-                    lang,
-                    query,
-                    out,
-                } => {
-                    cmd_query_cert(&input, &lang, &query, out.as_ref())?;
-                }
                 CertCommands::Typecheck { input, out } => {
-                    cmd_typecheck_cert(&input, out.as_ref())?;
+                    cmd_typecheck_cert(&input, out.as_deref())?;
                 }
                 CertCommands::Constraints { input, out } => {
-                    cmd_constraints_cert(&input, out.as_ref())?;
+                    cmd_constraints_cert(&input, out.as_deref())?;
                 }
             },
             Commands::Tools { command } => match command {
@@ -2611,16 +1868,22 @@ fn main() -> Result<()> {
                 ToolsCommands::Perf { command } => {
                     perf::cmd_perf(command)?;
                 }
+                ToolsCommands::Projection { command } => {
+                    projection::cmd_projection(command)?;
+                }
             },
             Commands::Authoring { command } => {
                 cmd_authoring(command)?;
             }
             Commands::Db { command } => match command {
-                DbCommands::Accept { command } => {
-                    cmd_accept(command)?;
+                DbCommands::Materialize { dir, spec } => {
+                    cmd_publish_materialization(&dir, &spec)?;
                 }
-                DbCommands::Pathdb { command } => {
-                    cmd_pathdb(command)?;
+                DbCommands::MaterializationShow {
+                    dir,
+                    materialization,
+                } => {
+                    cmd_show_materialization(&dir, &materialization)?;
                 }
                 DbCommands::Serve(args) => {
                     db_server::cmd_db_serve(args)?;
@@ -2648,7 +1911,7 @@ fn main() -> Result<()> {
                     cmd_discover_promote_proposals(
                         &proposals,
                         &out_dir,
-                        trace.as_ref(),
+                        trace.as_deref(),
                         min_confidence,
                         &domains,
                     )?;
@@ -2678,9 +1941,9 @@ fn main() -> Result<()> {
                     cmd_discover_augment_proposals(
                         &proposals,
                         &out,
-                        trace.as_ref(),
-                        chunks.as_ref(),
-                        llm_plugin.as_ref(),
+                        trace.as_deref(),
+                        chunks.as_deref(),
+                        llm_plugin.as_deref(),
                         &llm_plugin_arg,
                         llm_ollama,
                         llm_ollama_host.as_deref(),
@@ -2716,8 +1979,18 @@ fn main() -> Result<()> {
                     llm_model,
                     llm_timeout_secs,
                 } => {
-                    let text = fs::read_to_string(&proposals)?;
-                    let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
+                    let text = crate::security::read_utf8_file_bounded(
+                        &proposals,
+                        crate::security::MAX_TEXT_INPUT_BYTES,
+                        "CLI input",
+                    )?;
+                    let file: axiograph_ingest_docs::ProposalsFileV1 =
+                        crate::security::parse_json_bounded(
+                            text.as_bytes(),
+                            crate::security::MAX_JSON_INPUT_BYTES,
+                            "CLI JSON input",
+                        )?;
+                    axiograph_ingest_docs::validate_proposals_file_v1(&file)?;
 
                     let options = crate::schema_discovery::DraftAxiModuleOptions {
                         module_name: module,
@@ -2828,7 +2101,7 @@ fn main() -> Result<()> {
                             suggestions.as_ref(),
                         )?;
 
-                    fs::write(&out, draft)?;
+                    crate::security::write_output_bounded(&out, draft, "CLI output")?;
                     println!("wrote {}", out.display());
                 }
                 DiscoverCommands::MaskedTupleTrainingExport {
@@ -2891,26 +2164,16 @@ fn main() -> Result<()> {
                     cmd_predictive_proposals(&args)?;
                 }
             },
-            Commands::Sem { command } => {
-                cmd_sem(command)?;
-            }
             Commands::Repl {
-                axpd,
                 script,
                 cmd,
                 continue_on_error,
                 quiet,
             } => {
                 if script.is_some() || !cmd.is_empty() {
-                    repl::cmd_repl_script(
-                        axpd.as_ref(),
-                        script.as_ref(),
-                        &cmd,
-                        continue_on_error,
-                        quiet,
-                    )?;
+                    repl::cmd_repl_script(script.as_ref(), &cmd, continue_on_error, quiet)?;
                 } else {
-                    repl::cmd_repl(axpd.as_ref())?;
+                    repl::cmd_repl()?;
                 }
             }
         }
@@ -2926,1953 +2189,16 @@ fn main() -> Result<()> {
     result
 }
 
-fn cmd_pathdb(command: PathdbCommands) -> Result<()> {
-    match command {
-        PathdbCommands::ExportAxi { input, out } => {
-            cmd_pathdb_export_axi(&input, &out)?;
-        }
-        PathdbCommands::ExportModule { input, out, module } => {
-            cmd_pathdb_export_module(&input, &out, module.as_deref())?;
-        }
-        PathdbCommands::MaterializeAxi { input, out } => {
-            cmd_pathdb_materialize_axi(&input, &out)?;
-        }
-        PathdbCommands::ImportAxi { input, out } => {
-            cmd_pathdb_import_axi(&input, &out)?;
-        }
-        PathdbCommands::ImportChunks { input, chunks, out } => {
-            cmd_pathdb_import_chunks(&input, &chunks, &out)?;
-        }
-    }
-    Ok(())
-}
-
-fn cmd_accept(command: AcceptedCommands) -> Result<()> {
-    match command {
-        AcceptedCommands::Init { dir } => {
-            cmd_accept_init(&dir)?;
-        }
-        AcceptedCommands::Sync {
-            from,
-            dir,
-            layer,
-            include_checkpoints,
-            include_logs,
-            no_update_head,
-            dry_run,
-        } => {
-            let layer = crate::store_sync::SyncLayer::parse(&layer)?;
-            let stats = crate::store_sync::sync_snapshot_store_dirs(
-                &from,
-                &dir,
-                layer,
-                include_checkpoints,
-                include_logs,
-                !no_update_head,
-                dry_run,
-            )?;
-            eprintln!(
-                "{} synced snapshot store {} → {} (files={} bytes={})",
-                "ok".green().bold(),
-                from.display(),
-                dir.display(),
-                stats.files_copied,
-                stats.bytes_copied
-            );
-        }
-        AcceptedCommands::List {
-            dir,
-            layer,
-            limit,
-            full,
-        } => {
-            cmd_accept_list(&dir, &layer, limit, full)?;
-        }
-        AcceptedCommands::Show {
-            dir,
-            layer,
-            snapshot,
-            json,
-            full,
-        } => {
-            cmd_accept_show(&dir, &layer, &snapshot, json, full)?;
-        }
-        AcceptedCommands::ReconciliationShow {
-            dir,
-            reconciliation,
-            out,
-        } => {
-            cmd_accept_reconciliation_show(&dir, &reconciliation, out.as_ref())?;
-        }
-        AcceptedCommands::ReconciliationApply {
-            dir,
-            reconciliation,
-            handle_id,
-            out,
-        } => {
-            cmd_accept_reconciliation_apply(&dir, &reconciliation, &handle_id, out.as_ref())?;
-        }
-        AcceptedCommands::Promote {
-            input,
-            dir,
-            message,
-            quality,
-            competency_questions,
-            cq_fail_on_regression,
-            cq_fail_on_unsatisfied_after,
-        } => {
-            let competency_questions = if let Some(path) = competency_questions.as_ref() {
-                crate::predictive_proposals::load_competency_questions(path)?
-            } else {
-                Vec::new()
-            };
-            let result = accepted_plane::promote_reviewed_module_with_options(
-                &input,
-                &dir,
-                &accepted_plane::PromoteReviewedModuleOptionsV1 {
-                    message,
-                    quality_profile: quality,
-                    quality_plane: "both".to_string(),
-                    competency_questions,
-                    competency_gate: crate::proposals_validate::CompetencyGatePolicyV1 {
-                        fail_on_regression: cq_fail_on_regression,
-                        fail_on_unsatisfied_after: cq_fail_on_unsatisfied_after,
-                    },
-                    persist_validation_report: true,
-                },
-            )?;
-            let snapshot_id = result.snapshot_id;
-            eprintln!(
-                "{} promoted module to accepted snapshot {}",
-                "ok".green().bold(),
-                snapshot_id
-            );
-            if let Some(report) = result.validation_report_path.as_ref() {
-                eprintln!("validation report: {}", report.bold());
-            }
-            if let Some(report) = result.stored_report_path.as_ref() {
-                eprintln!("stored preview: {}", report.bold());
-            }
-            eprintln!(
-                "next: {}",
-                format!(
-                    "axiograph db accept build-pathdb --dir {} --snapshot {} --out build/accepted.axpd",
-                    dir.display(),
-                    snapshot_id
-                )
-                .bold()
-            );
-            println!("{snapshot_id}");
-        }
-        AcceptedCommands::BuildPathdb { dir, snapshot, out } => {
-            accepted_plane::build_pathdb_from_snapshot(&dir, &snapshot, &out)?;
-            eprintln!(
-                "{} {}",
-                "wrote".green().bold(),
-                out.display().to_string().bold()
-            );
-        }
-        AcceptedCommands::PathdbCommit {
-            dir,
-            accepted_snapshot,
-            chunks,
-            proposals,
-            message,
-            timings,
-            timings_json,
-            path_index_depth,
-        } => {
-            if chunks.is_empty() && proposals.is_empty() {
-                return Err(anyhow!(
-                    "pathdb-commit requires at least one --chunks <file.json> or --proposals <file.json>"
-                ));
-            }
-            let result = pathdb_wal::commit_pathdb_snapshot_with_overlays_with_options(
-                &dir,
-                &accepted_snapshot,
-                &chunks,
-                &proposals,
-                message.as_deref(),
-                pathdb_wal::PathdbCommitOptions {
-                    timings,
-                    timings_json,
-                    path_index_depth,
-                },
-            )?;
-            let semantic_commit = accepted_plane::persist_pathdb_semantic_commit(
-                &dir,
-                &result.accepted_snapshot_id,
-                &result.snapshot_id,
-                &accepted_plane::PathdbSemanticCommitOptionsV1 {
-                    message: message.clone(),
-                    proposal_digests: proposal_digests_from_paths(&proposals)?,
-                    ..accepted_plane::PathdbSemanticCommitOptionsV1::default()
-                },
-            )?;
-            let _ = accepted_plane::persist_semantic_ref(
-                &dir,
-                "heads/evidence/manual",
-                &semantic_commit.commit_id,
-            )?;
-            eprintln!(
-                "{} committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
-                "ok".green().bold(),
-                result.ops_added,
-                result.accepted_snapshot_id,
-                result.snapshot_id
-            );
-            eprintln!(
-                "semantic commit: {}",
-                semantic_commit.commit_id.to_string().bold()
-            );
-            eprintln!(
-                "next: {}",
-                format!(
-                    "axiograph db accept pathdb-build --dir {} --snapshot {} --out build/accepted_wal.axpd",
-                    dir.display(),
-                    result.snapshot_id
-                )
-                .bold()
-            );
-            println!("{}", result.snapshot_id);
-        }
-        AcceptedCommands::PathdbBuild {
-            dir,
-            snapshot,
-            out,
-            timings,
-            timings_json,
-            rebuild,
-            path_index_depth,
-            update_checkpoint,
-        } => {
-            pathdb_wal::build_pathdb_from_pathdb_snapshot_with_options(
-                &dir,
-                &snapshot,
-                &out,
-                pathdb_wal::PathdbBuildOptions {
-                    timings,
-                    timings_json,
-                    rebuild,
-                    path_index_depth,
-                    update_checkpoint,
-                },
-            )?;
-            eprintln!(
-                "{} {}",
-                "wrote".green().bold(),
-                out.display().to_string().bold()
-            );
-        }
-        AcceptedCommands::PathdbEmbed {
-            dir,
-            snapshot,
-            target,
-            embed_backend,
-            ollama_host,
-            embed_model,
-            openai_base_url,
-            max_items,
-            batch_size,
-            timeout_secs,
-            message,
-        } => {
-            cmd_accept_pathdb_embed(
-                &dir,
-                &snapshot,
-                &target,
-                embed_backend.as_str(),
-                ollama_host.as_deref(),
-                embed_model.as_deref(),
-                openai_base_url.as_deref(),
-                max_items,
-                batch_size,
-                timeout_secs,
-                message.as_deref(),
-            )?;
-        }
-        AcceptedCommands::Status { dir } => {
-            cmd_accept_status(&dir)?;
-        }
-        AcceptedCommands::Log { dir, layer, limit } => {
-            cmd_accept_log(&dir, &layer, limit)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_sem(command: SemCommands) -> Result<()> {
-    match command {
-        SemCommands::Status { dir, json } => {
-            let status = accepted_plane::sem_status(&dir)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&status)?);
-            } else {
-                println!("sem status");
-                println!("  version: {}", status.version);
-                if let Some(head) = status.sem_head.as_ref() {
-                    println!("  sem HEAD: {}", semantic_head_label(head));
-                }
-                println!(
-                    "  sem head commit: {}",
-                    status
-                        .sem_head_commit_id
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "(none)".to_string())
-                );
-                println!(
-                    "  main ref: {}",
-                    status
-                        .main_ref
-                        .as_ref()
-                        .map(|pointer| format!("{} -> {}", pointer.ref_name, pointer.commit_id))
-                        .unwrap_or_else(|| "(none)".to_string())
-                );
-                println!("  review refs: {}", status.review_refs.len());
-                for pointer in &status.review_refs {
-                    println!("    - {} -> {}", pointer.ref_name, pointer.commit_id);
-                }
-                println!("  proposal-adapter refs: {}", status.predictive_proposal_refs.len());
-                for pointer in &status.predictive_proposal_refs {
-                    println!("    - {} -> {}", pointer.ref_name, pointer.commit_id);
-                }
-                println!("  reconciliations: {}", status.reconciliation_ids.len());
-                for reconciliation_id in &status.reconciliation_ids {
-                    println!("    - {}", reconciliation_id);
-                }
-                println!("  proposal-adapter runs: {}", status.proposal_adapter_run_ids.len());
-                for run_id in &status.proposal_adapter_run_ids {
-                    println!("    - {}", run_id);
-                }
-            }
-        }
-        SemCommands::Branch {
-            dir,
-            family,
-            name,
-            commit,
-            json,
-        } => {
-            let commit_id = resolve_sem_command_commit_id(&dir, commit.as_deref())?;
-            let target = semantic_branch_target(&family, name.as_deref())?;
-            let pointer = accepted_plane::persist_semantic_branch_ref(&dir, &target, &commit_id)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&pointer)?);
-            } else {
-                println!("sem branch");
-                println!("  ref: {}", pointer.ref_name);
-                println!("  commit: {}", pointer.commit_id);
-            }
-        }
-        SemCommands::Checkout { dir, r#ref, json } => {
-            let view = accepted_plane::checkout_semantic_ref(&dir, &r#ref)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&view)?);
-            } else {
-                println!("sem checkout");
-                println!("  HEAD -> {}", view.pointer.ref_name);
-                println!("  commit: {}", view.pointer.commit_id);
-                println!("  kind: {:?}", view.commit.kind);
-            }
-        }
-        SemCommands::Tag {
-            dir,
-            name,
-            commit,
-            json,
-        } => {
-            let commit_id = resolve_sem_command_commit_id(&dir, commit.as_deref())?;
-            let target = accepted_plane::SemRefNameV1::tag(name)?;
-            let pointer = accepted_plane::persist_semantic_tag_ref(&dir, &target, &commit_id)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&pointer)?);
-            } else {
-                println!("sem tag");
-                println!("  ref: {}", pointer.ref_name);
-                println!("  commit: {}", pointer.commit_id);
-            }
-        }
-        SemCommands::Show {
-            dir,
-            r#ref,
-            commit,
-            reconciliation,
-            proposal_adapter_run,
-            json,
-        } => {
-            let provided = [
-                r#ref.is_some(),
-                commit.is_some(),
-                reconciliation.is_some(),
-                proposal_adapter_run.is_some(),
-            ]
-            .into_iter()
-            .filter(|v| *v)
-            .count();
-            if provided != 1 {
-                return Err(anyhow!(
-                    "sem show requires exactly one of --ref, --commit, --reconciliation, or --proposal-adapter-run"
-                ));
-            }
-
-            if let Some(ref_name) = r#ref {
-                let view = accepted_plane::read_sem_ref_view(&dir, &ref_name)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&view)?);
-                } else {
-                    println!("sem ref");
-                    println!("  ref: {}", view.pointer.ref_name);
-                    println!("  commit: {}", view.pointer.commit_id);
-                    println!("  kind: {:?}", view.commit.kind);
-                    println!("  action: {}", view.commit.action);
-                    println!("  module: {}", view.commit.module_name);
-                    if let Some(message) = view.commit.message.as_deref() {
-                        println!("  message: {}", message);
-                    }
-                    println!("  accepted snapshot: {}", view.commit.accepted_snapshot_id);
-                }
-            } else if let Some(commit_id) = commit {
-                let commit = accepted_plane::read_semantic_commit_for_cli(
-                    &dir,
-                    &axiograph_pathdb::AxiDigest::new(commit_id),
-                )?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&commit)?);
-                } else {
-                    println!("sem commit");
-                    println!("  id: {}", commit.commit_id);
-                    println!("  kind: {:?}", commit.kind);
-                    println!("  action: {}", commit.action);
-                    if let Some(parent_commit_id) = commit.parent_commit_id.as_ref() {
-                        println!("  parent: {}", parent_commit_id);
-                    }
-                    println!("  policy: {}", commit.policy);
-                    println!("  module: {}", commit.module_name);
-                    println!("  accepted snapshot: {}", commit.accepted_snapshot_id);
-                    if let Some(pathdb_snapshot_id) = commit.pathdb_snapshot_id.as_ref() {
-                        println!("  pathdb snapshot: {}", pathdb_snapshot_id);
-                    }
-                    if let Some(message) = commit.message.as_deref() {
-                        println!("  message: {}", message);
-                    }
-                }
-            } else if let Some(reconciliation_id) = reconciliation {
-                let view = accepted_plane::read_sem_reconciliation_view(
-                    &dir,
-                    &axiograph_pathdb::AxiDigest::new(reconciliation_id),
-                )?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&view)?);
-                } else {
-                    println!("sem reconciliation");
-                    println!("  id: {}", view.reconciliation.reconciliation_id);
-                    println!("  stored record: {}", view.stored_reconciliation_path);
-                    if let Some(source_ref_name) = view.reconciliation.source_ref_name.as_deref() {
-                        println!("  source ref: {}", source_ref_name);
-                    }
-                    if let Some(target_ref_name) = view.reconciliation.target_ref_name.as_deref() {
-                        println!("  target ref: {}", target_ref_name);
-                    }
-                    if let Some(resolved_ref_name) =
-                        view.reconciliation.resolved_ref_name.as_deref()
-                    {
-                        println!("  resolved ref: {}", resolved_ref_name);
-                    }
-                    println!("  base commit: {}", view.reconciliation.base_commit_id);
-                    println!("  left commit: {}", view.reconciliation.left_commit_id);
-                    println!("  right commit: {}", view.reconciliation.right_commit_id);
-                    println!("  policy: {}", view.reconciliation.policy);
-                    println!("  conflicts: {}", view.reconciliation.conflicts.len());
-                    println!("  decisions: {}", view.reconciliation.decisions.len());
-                    println!(
-                        "  refinement candidates: {}",
-                        view.preview.evolution_preview.refinement_candidates.len()
-                    );
-                    println!("  ok: {}", view.preview.ok);
-                }
-            } else if let Some(run_id) = proposal_adapter_run {
-                let run = accepted_plane::read_proposal_adapter_run_record(
-                    &dir,
-                    &axiograph_pathdb::ProposalAdapterRunId::new(run_id),
-                )?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&run)?);
-                } else {
-                    println!("predictive proposal adapter run");
-                    println!("  run: {}", run.run_id);
-                    println!("  status: {:?}", run.status);
-                    println!("  backend: {}", run.backend);
-                    println!("  proposals: {}", run.proposal_count);
-                }
-            }
-        }
-        SemCommands::Ref { command } => match command {
-            SemRefCommands::Set {
-                dir,
-                r#ref,
-                commit,
-                json,
-            } => {
-                let commit_id = axiograph_pathdb::AxiDigest::new(commit);
-                let pointer = accepted_plane::persist_semantic_ref(&dir, &r#ref, &commit_id)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&pointer)?);
-                } else {
-                    println!("sem ref set");
-                    println!("  ref: {}", pointer.ref_name);
-                    println!("  commit: {}", pointer.commit_id);
-                }
-            }
-        },
-        SemCommands::Merge {
-            dir,
-            source,
-            target,
-            policy,
-            source_slice,
-            target_slice,
-            dry_run,
-            json,
-            lean_json,
-        } => {
-            let result = accepted_plane::sem_merge_dry_run(&dir, &source, &target, &policy)?;
-            let merge_plan = crate::semantic_merge_lattice::semantic_merge_plan_from_dry_run(
-                &result,
-                crate::semantic_merge_lattice::SemanticMergeOperationKindV1::Merge,
-                read_semantic_slice_selector(source_slice.as_ref())?,
-                read_semantic_slice_selector(target_slice.as_ref())?,
-            );
-            if lean_json {
-                if !dry_run {
-                    return Err(anyhow!(
-                        "axiograph sem merge --lean-json requires --dry-run because Lean receives a checker payload for the candidate plan, not a materialized commit"
-                    ));
-                }
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &crate::semantic_merge_lattice::semantic_merge_plan_lean_json_v1(
-                            &merge_plan
-                        )
-                    )?
-                );
-                return Ok(());
-            }
-            if dry_run {
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "version": "semantic_merge_dry_run_with_plan_v1",
-                            "dry_run": result,
-                            "merge_plan": merge_plan,
-                        }))?
-                    );
-                } else {
-                    println!("sem merge --dry-run");
-                    println!(
-                        "  source: {} -> {}",
-                        result.source.pointer.ref_name, result.source.pointer.commit_id
-                    );
-                    println!(
-                        "  target: {} -> {}",
-                        result.target.pointer.ref_name, result.target.pointer.commit_id
-                    );
-                    println!(
-                        "  merge base: {}",
-                        result.reconciliation.reconciliation.base_commit_id
-                    );
-                    println!(
-                        "  reconciliation: {}",
-                        result.reconciliation.reconciliation.reconciliation_id
-                    );
-                    println!(
-                        "  stored record: {}",
-                        result.reconciliation.stored_reconciliation_path
-                    );
-                    println!(
-                        "  preview kind: {}",
-                        result.reconciliation.preview.evolution_preview.kind
-                    );
-                    println!(
-                        "  refinement candidates: {}",
-                        result
-                            .reconciliation
-                            .preview
-                            .evolution_preview
-                            .refinement_candidates
-                            .len()
-                    );
-                    println!("  merge plan: {}", merge_plan.plan_id);
-                    println!("  auto decisions: {}", merge_plan.auto_join_decisions.len());
-                    println!("  conflicts: {}", merge_plan.conflicts.len());
-                    println!("  resolver steps: {}", merge_plan.resolver_steps.len());
-                    println!("  can materialize: {}", merge_plan.can_materialize);
-                    println!("  ok: {}", result.reconciliation.preview.ok);
-                    println!(
-                        "  inspect: axiograph sem show --dir {} --reconciliation {}",
-                        dir.display(),
-                        result.reconciliation.reconciliation.reconciliation_id
-                    );
-                }
-            } else {
-                if !merge_plan.can_materialize {
-                    return Err(anyhow!(
-                        "semantic merge plan `{}` is not materializable; {} resolver step(s), {} residual obligation(s)",
-                        merge_plan.plan_id,
-                        merge_plan.resolver_steps.len(),
-                        merge_plan.residual_obligations.len()
-                    ));
-                }
-                let commit = accepted_plane::persist_reconciliation_semantic_commit(
-                    &dir,
-                    &result.reconciliation.reconciliation,
-                    &accepted_plane::ReconciliationSemanticCommitOptionsV1::default(),
-                )?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&commit)?);
-                } else {
-                    println!("sem merge");
-                    println!(
-                        "  source: {} -> {}",
-                        result.source.pointer.ref_name, result.source.pointer.commit_id
-                    );
-                    println!(
-                        "  target: {} -> {}",
-                        result.target.pointer.ref_name, result.target.pointer.commit_id
-                    );
-                    println!(
-                        "  merge base: {}",
-                        result.reconciliation.reconciliation.base_commit_id
-                    );
-                    println!(
-                        "  reconciliation: {}",
-                        result.reconciliation.reconciliation.reconciliation_id
-                    );
-                    println!("  merge plan: {}", merge_plan.plan_id);
-                    println!("  commit: {}", commit.commit_id);
-                    if let Some(ref_name) = result
-                        .reconciliation
-                        .reconciliation
-                        .resolved_ref_name
-                        .as_deref()
-                    {
-                        println!("  updated ref: {} -> {}", ref_name, commit.commit_id);
-                    }
-                    if let Some(report) = commit.validation_report_path.as_deref() {
-                        println!("  validation report: {}", report);
-                    }
-                }
-            }
-        }
-        SemCommands::Rebase {
-            dir,
-            source,
-            onto,
-            slice,
-            policy,
-            json,
-            lean_json,
-        } => {
-            let result = accepted_plane::sem_merge_dry_run(&dir, &source, &onto, &policy)?;
-            let rebase_plan = crate::semantic_merge_lattice::semantic_rebase_plan_from_dry_run(
-                &result,
-                read_semantic_slice_selector(slice.as_ref())?,
-                crate::semantic_merge_lattice::SemanticSliceSelectorV1::default(),
-            );
-            if lean_json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &crate::semantic_merge_lattice::semantic_rebase_plan_lean_json_v1(
-                            &rebase_plan
-                        )
-                    )?
-                );
-            } else if json {
-                println!("{}", serde_json::to_string_pretty(&rebase_plan)?);
-            } else {
-                println!("sem rebase --dry-run");
-                println!("  source: {source}");
-                println!("  onto: {onto}");
-                println!("  plan: {}", rebase_plan.plan_id);
-                println!("  auto decisions: {}", rebase_plan.transported_refs.len());
-                println!(
-                    "  failed transports: {}",
-                    rebase_plan.failed_transports.len()
-                );
-                println!("  resolver steps: {}", rebase_plan.resolver_steps.len());
-                println!(
-                    "  residual obligations: {}",
-                    rebase_plan.residual_obligations.len()
-                );
-                println!("  can materialize: {}", rebase_plan.can_materialize);
-            }
-        }
-        SemCommands::Slice { command } => match command {
-            SemSliceCommands::Build {
-                dir,
-                r#ref,
-                selector,
-                json,
-            } => {
-                let view = accepted_plane::read_sem_ref_view(&dir, &r#ref)?;
-                let selector = read_semantic_slice_selector(selector.as_ref())?;
-                let manifest =
-                    crate::semantic_merge_lattice::semantic_slice_from_ref_view(&view, selector);
-                let manifest =
-                    enrich_semantic_slice_manifest_from_accepted_snapshot(&dir, manifest)?;
-                let stored_path = accepted_plane::persist_semantic_slice_manifest(&dir, &manifest)?;
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "version": "semantic_slice_build_result_v1",
-                            "stored_path": stored_path,
-                            "slice": manifest,
-                        }))?
-                    );
-                } else {
-                    println!("sem slice build");
-                    println!("  ref: {}", manifest.base_ref_name);
-                    println!("  slice: {}", manifest.slice_id);
-                    println!("  selected refs: {}", manifest.selected_refs.len());
-                    println!("  trust: {:?}", manifest.trust_class);
-                    println!("  stored: {stored_path}");
-                }
-            }
-            SemSliceCommands::Show { dir, slice, json } => {
-                let manifest = accepted_plane::read_semantic_slice_manifest(&dir, &slice)?;
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&manifest)?);
-                } else {
-                    println!("sem slice");
-                    println!("  slice: {}", manifest.slice_id);
-                    println!("  label: {}", manifest.label);
-                    println!("  ref: {}", manifest.base_ref_name);
-                    println!("  commit: {}", manifest.commit_id);
-                    println!("  accepted snapshot: {}", manifest.accepted_snapshot_id);
-                    if let Some(kernel_ir_digest) = manifest.kernel_ir_digest.as_ref() {
-                        println!("  kernel ir: {kernel_ir_digest}");
-                    }
-                    println!("  selected refs: {}", manifest.selected_refs.len());
-                    println!("  trust: {:?}", manifest.trust_class);
-                    for note in &manifest.notes {
-                        println!("  note: {note}");
-                    }
-                }
-            }
-            SemSliceCommands::Diff {
-                dir,
-                left,
-                right,
-                json,
-            } => {
-                let left = accepted_plane::read_semantic_slice_manifest(&dir, &left)?;
-                let right = accepted_plane::read_semantic_slice_manifest(&dir, &right)?;
-                let diff = crate::semantic_merge_lattice::semantic_slice_diff(&left, &right);
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&diff)?);
-                } else {
-                    println!("sem slice diff");
-                    println!("  left: {}", diff.left_slice_id);
-                    println!("  right: {}", diff.right_slice_id);
-                    println!("  added refs: {}", diff.added_refs.len());
-                    println!("  removed refs: {}", diff.removed_refs.len());
-                    println!("  shared refs: {}", diff.shared_refs.len());
-                }
-            }
-        },
-        SemCommands::Log { dir, limit, json } => {
-            let commits = accepted_plane::sem_log(&dir, limit)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&commits)?);
-            } else {
-                println!("sem log");
-                for commit in commits {
-                    println!("  {} {:?} {}", commit.commit_id, commit.kind, commit.action);
-                    if let Some(message) = commit.message.as_deref() {
-                        println!("    message: {}", message);
-                    }
-                    if let Some(parent) = commit.parent_commit_id.as_ref() {
-                        println!("    parent: {}", parent);
-                    }
-                    println!("    accepted snapshot: {}", commit.accepted_snapshot_id);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn semantic_head_label(head: &accepted_plane::SemHeadV1) -> String {
-    match head {
-        accepted_plane::SemHeadV1::Symbolic {
-            ref_name,
-            commit_id,
-        } => commit_id
-            .as_ref()
-            .map(|commit_id| format!("{ref_name} -> {commit_id}"))
-            .unwrap_or_else(|| format!("{ref_name} -> (missing ref)")),
-        accepted_plane::SemHeadV1::Detached { commit_id } => {
-            format!("detached -> {commit_id}")
-        }
-    }
-}
-
-fn resolve_sem_command_commit_id(
-    dir: &Path,
-    commit: Option<&str>,
-) -> Result<axiograph_pathdb::AxiDigest> {
-    if let Some(commit) = commit {
-        return Ok(axiograph_pathdb::AxiDigest::new(commit.to_string()));
-    }
-    accepted_plane::sem_status(dir)?
-        .sem_head_commit_id
-        .ok_or_else(|| anyhow!("semantic command needs --commit because sem/HEAD is not set"))
-}
-
-fn semantic_branch_target(
-    family: &str,
-    name: Option<&str>,
-) -> Result<accepted_plane::SemRefNameV1> {
-    match family.trim().to_ascii_lowercase().as_str() {
-        "main" => Ok(accepted_plane::SemRefNameV1::main()),
-        "review" => accepted_plane::SemRefNameV1::review(
-            name.ok_or_else(|| anyhow!("sem branch --family review requires <name>"))?,
-        ),
-        "evidence" => accepted_plane::SemRefNameV1::evidence(
-            name.ok_or_else(|| anyhow!("sem branch --family evidence requires <name>"))?,
-        ),
-        "proposal" | "proposal-adapter" | "predictive_proposal_adapter" => accepted_plane::SemRefNameV1::predictive_proposal(
-            name.ok_or_else(|| anyhow!("sem branch --family proposal requires <name>"))?,
-        ),
-        other => Err(anyhow!(
-            "unknown semantic branch family `{other}` (expected main|review|evidence|proposal)"
-        )),
-    }
-}
-
-fn read_semantic_slice_selector(
-    path: Option<&PathBuf>,
-) -> Result<crate::semantic_merge_lattice::SemanticSliceSelectorV1> {
-    let Some(path) = path else {
-        return Ok(crate::semantic_merge_lattice::SemanticSliceSelectorV1::default());
-    };
-    let text = fs::read_to_string(path)?;
-    serde_json::from_str(&text).map_err(|err| {
-        anyhow!(
-            "failed to parse SemanticSliceSelectorV1 at {}: {err}",
-            path.display()
-        )
-    })
-}
-
-fn enrich_semantic_slice_manifest_from_accepted_snapshot(
-    accepted_dir: &Path,
-    mut manifest: crate::semantic_merge_lattice::SemanticSliceManifestV1,
-) -> Result<crate::semantic_merge_lattice::SemanticSliceManifestV1> {
-    let snapshot = accepted_plane::read_snapshot_for_cli(
-        accepted_dir,
-        manifest.accepted_snapshot_id.as_str(),
-    )?;
-    for module_ref in snapshot.modules.values() {
-        let module_path = accepted_stored_module_path(accepted_dir, &module_ref.stored_path)?;
-        let text = fs::read_to_string(&module_path).map_err(|err| {
-            anyhow!(
-                "failed to read accepted module `{}` for semantic slice enrichment: {err}",
-                module_path.display()
-            )
-        })?;
-        let canonical = crate::axi_input::require_canonical_axi_text(&text).map_err(|err| {
-            anyhow!(
-                "accepted module `{}` is not canonical .axi and cannot enrich semantic slices: {err}",
-                module_path.display()
-            )
-        })?;
-        let kernel = axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), &text)
-            .map_err(|err| {
-                anyhow!(
-                    "failed to compile KernelModuleIr for accepted module `{}`: {err}",
-                    module_path.display()
-                )
-            })?;
-        manifest = crate::semantic_merge_lattice::enrich_semantic_slice_with_kernel_module_ir(
-            manifest, &kernel,
-        );
-    }
-    Ok(manifest)
-}
-
-fn accepted_stored_module_path(accepted_dir: &Path, stored_path: &str) -> Result<PathBuf> {
-    let stored = Path::new(stored_path);
-    if stored.is_absolute()
-        || stored
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(anyhow!(
-            "accepted module stored_path must be relative and stay under accepted dir: `{stored_path}`"
-        ));
-    }
-    Ok(accepted_dir.join(stored))
-}
-
 // =============================================================================
 // Accepted plane / snapshot store CLI helpers
 // =============================================================================
 
-fn now_unix_secs() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn format_age_ago(created_at_unix_secs: u64) -> String {
-    let now = now_unix_secs();
-    let delta = if created_at_unix_secs > now {
-        0
-    } else {
-        now.saturating_sub(created_at_unix_secs)
-    };
-    let days = delta / 86_400;
-    let hours = (delta % 86_400) / 3_600;
-    let mins = (delta % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d{hours}h ago")
-    } else if hours > 0 {
-        format!("{hours}h{mins}m ago")
-    } else if mins > 0 {
-        format!("{mins}m ago")
-    } else {
-        format!("{delta}s ago")
-    }
-}
-
-fn format_age_compact(created_at_unix_secs: u64) -> String {
-    let now = now_unix_secs();
-    let delta = if created_at_unix_secs > now {
-        0
-    } else {
-        now.saturating_sub(created_at_unix_secs)
-    };
-    let days = delta / 86_400;
-    let hours = (delta % 86_400) / 3_600;
-    let mins = (delta % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d{hours}h")
-    } else if hours > 0 {
-        format!("{hours}h{mins}m")
-    } else if mins > 0 {
-        format!("{mins}m")
-    } else {
-        format!("{delta}s")
-    }
-}
-
-fn short_snapshot_id(id: impl AsRef<str>) -> String {
-    let id = id.as_ref();
-    let (prefix, rest) = id.split_once(':').unwrap_or(("", id));
-    let rest = rest.chars().take(12).collect::<String>();
-    if prefix.is_empty() {
-        rest
-    } else {
-        format!("{prefix}:{rest}")
-    }
-}
-
-fn format_snapshot_id(id: impl AsRef<str>, full: bool) -> String {
-    let id = id.as_ref();
-    if full {
-        id.to_string()
-    } else {
-        short_snapshot_id(id)
-    }
-}
-
-fn snapshot_id_filename(id: impl AsRef<str>) -> String {
-    let id = id.as_ref();
-    id.replace(':', "_")
-}
-
-fn proposal_digests_from_paths(paths: &[PathBuf]) -> Result<Vec<axiograph_pathdb::ProposalDigest>> {
-    let mut out: BTreeSet<axiograph_pathdb::ProposalDigest> = BTreeSet::new();
-    for path in paths {
-        let text = fs::read_to_string(path)
-            .map_err(|e| anyhow!("failed to read proposals `{}`: {e}", path.display()))?;
-        let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)
-            .map_err(|e| anyhow!("failed to parse proposals `{}`: {e}", path.display()))?;
-        let bytes = serde_json::to_vec(&file).map_err(|e| {
-            anyhow!(
-                "failed to serialize proposals `{}` for digesting: {e}",
-                path.display()
-            )
-        })?;
-        out.insert(axiograph_pathdb::ProposalDigest::new(
-            axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes),
-        ));
-    }
-    Ok(out.into_iter().collect())
-}
-
-fn cmd_accept_init(dir: &PathBuf) -> Result<()> {
-    accepted_plane::init_accepted_plane_dir(dir)?;
-    pathdb_wal::init_pathdb_wal_dir(dir)?;
-    println!("ok: initialized snapshot store at {}", dir.display());
-    println!(
-        "  next: axiograph db accept promote <module.axi> --dir {}",
-        dir.display()
-    );
-    Ok(())
-}
-
-fn cmd_accept_list(dir: &PathBuf, layer: &str, limit: usize, full: bool) -> Result<()> {
-    use std::fs;
-
-    fn read_head(path: &std::path::Path) -> Option<String> {
-        let text = fs::read_to_string(path).ok()?;
-        let id = text.trim().to_string();
-        if id.is_empty() {
-            None
-        } else {
-            Some(id)
-        }
-    }
-
-    fn read_json_files(dir: &std::path::Path) -> Vec<String> {
-        let Ok(rd) = fs::read_dir(dir) else {
-            return Vec::new();
-        };
-        rd.filter_map(|e| e.ok())
-            .filter(|e| e.file_type().ok().map(|t| t.is_file()).unwrap_or(false))
-            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
-            .filter_map(|e| fs::read_to_string(e.path()).ok())
-            .collect()
-    }
-
-    let layer = layer.trim().to_ascii_lowercase();
-    let show_accepted = layer == "accepted" || layer == "both";
-    let show_pathdb = layer == "pathdb" || layer == "both";
-    if !show_accepted && !show_pathdb {
-        return Err(anyhow!(
-            "unknown --layer `{}` (expected accepted|pathdb|both)",
-            layer
-        ));
-    }
-
-    if show_accepted {
-        let head = read_head(&dir.join("HEAD"));
-        let mut snaps: Vec<accepted_plane::AcceptedPlaneSnapshotV1> =
-            read_json_files(&dir.join("snapshots"))
-                .into_iter()
-                .filter_map(|text| serde_json::from_str(&text).ok())
-                .collect();
-        snaps.sort_by_key(|s| std::cmp::Reverse(s.created_at_unix_secs));
-
-        println!("accepted snapshots (dir={}):", dir.display());
-        for s in snaps.into_iter().take(limit) {
-            let mark = head
-                .as_deref()
-                .map(|h| {
-                    if h == s.snapshot_id.as_str() {
-                        "*"
-                    } else {
-                        " "
-                    }
-                })
-                .unwrap_or(" ");
-            let prev = s
-                .previous_snapshot_id
-                .as_ref()
-                .map(|p| format_snapshot_id(p, full))
-                .unwrap_or_else(|| "(none)".to_string());
-            println!(
-                " {mark} {} age={} modules={} prev={}",
-                format_snapshot_id(&s.snapshot_id, full),
-                format_age_compact(s.created_at_unix_secs),
-                s.modules.len(),
-                prev
-            );
-        }
-        if head.is_none() {
-            println!("  (no HEAD yet; run `axiograph db accept promote ...`)");
-        }
-        println!();
-    }
-
-    if show_pathdb {
-        let pathdb_dir = dir.join("pathdb");
-        let head = read_head(&pathdb_dir.join("HEAD"));
-        let mut snaps: Vec<pathdb_wal::PathDbSnapshotV1> =
-            read_json_files(&pathdb_dir.join("snapshots"))
-                .into_iter()
-                .filter_map(|text| serde_json::from_str(&text).ok())
-                .collect();
-        snaps.sort_by_key(|s| std::cmp::Reverse(s.created_at_unix_secs));
-
-        println!("pathdb snapshots (dir={}):", pathdb_dir.display());
-        for s in snaps.into_iter().take(limit) {
-            let mark = head
-                .as_deref()
-                .map(|h| {
-                    if h == s.snapshot_id.as_str() {
-                        "*"
-                    } else {
-                        " "
-                    }
-                })
-                .unwrap_or(" ");
-            let prev = s
-                .previous_snapshot_id
-                .as_ref()
-                .map(|p| format_snapshot_id(p, full))
-                .unwrap_or_else(|| "(none)".to_string());
-            println!(
-                " {mark} {} age={} base={} ops={} prev={}",
-                format_snapshot_id(&s.snapshot_id, full),
-                format_age_compact(s.created_at_unix_secs),
-                format_snapshot_id(&s.accepted_snapshot_id, full),
-                s.ops.len(),
-                prev
-            );
-        }
-        if head.is_none() {
-            println!("  (no HEAD yet; run `axiograph db accept pathdb-commit ...`)");
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_accept_show(
-    dir: &PathBuf,
-    layer: &str,
-    snapshot: &str,
-    json: bool,
-    full: bool,
-) -> Result<()> {
-    let layer = layer.trim().to_ascii_lowercase();
-    match layer.as_str() {
-        "accepted" => {
-            let snap = accepted_plane::read_snapshot_for_cli(dir, snapshot)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&snap)?);
-                return Ok(());
-            }
-            println!(
-                "accepted snapshot {}",
-                format_snapshot_id(&snap.snapshot_id, full)
-            );
-            println!(
-                "  prev: {}",
-                snap.previous_snapshot_id
-                    .as_ref()
-                    .map(|p| format_snapshot_id(p, full))
-                    .unwrap_or_else(|| "(none)".to_string())
-            );
-            println!("  created_at_unix_secs: {}", snap.created_at_unix_secs);
-            println!("  age: {}", format_age_ago(snap.created_at_unix_secs));
-            println!("  modules: {}", snap.modules.len());
-            for (name, m) in snap.modules {
-                println!(
-                    "    - {} digest={} path={}",
-                    name,
-                    format_snapshot_id(&m.module_digest, full),
-                    m.stored_path
-                );
-            }
-            Ok(())
-        }
-        "pathdb" => {
-            let snap = pathdb_wal::read_pathdb_snapshot_for_cli(dir, snapshot)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&snap)?);
-                return Ok(());
-            }
-            println!(
-                "pathdb snapshot {}",
-                format_snapshot_id(&snap.snapshot_id, full)
-            );
-            println!(
-                "  prev: {}",
-                snap.previous_snapshot_id
-                    .as_ref()
-                    .map(|p| format_snapshot_id(p, full))
-                    .unwrap_or_else(|| "(none)".to_string())
-            );
-            println!(
-                "  base_accepted_snapshot: {}",
-                format_snapshot_id(&snap.accepted_snapshot_id, full)
-            );
-            println!("  created_at_unix_secs: {}", snap.created_at_unix_secs);
-            println!("  age: {}", format_age_ago(snap.created_at_unix_secs));
-
-            let checkpoint = dir
-                .join("pathdb")
-                .join("checkpoints")
-                .join(format!("{}.axpd", snapshot_id_filename(&snap.snapshot_id)));
-            println!(
-                "  checkpoint: {}",
-                if checkpoint.exists() {
-                    checkpoint.display().to_string()
-                } else {
-                    "(missing)".to_string()
-                }
-            );
-
-            println!("  ops: {}", snap.ops.len());
-            for (idx, op) in snap.ops.iter().enumerate() {
-                match op {
-                    pathdb_wal::PathDbWalOpV1::ImportChunksV1 {
-                        chunks_digest,
-                        stored_path,
-                    } => {
-                        println!(
-                            "    {}. import_chunks_v1 digest={} path={}",
-                            idx + 1,
-                            format_snapshot_id(chunks_digest, full),
-                            stored_path
-                        );
-                    }
-                    pathdb_wal::PathDbWalOpV1::ImportEmbeddingsV1 {
-                        embeddings_digest,
-                        stored_path,
-                    } => {
-                        println!(
-                            "    {}. import_embeddings_v1 digest={} path={}",
-                            idx + 1,
-                            format_snapshot_id(embeddings_digest, full),
-                            stored_path
-                        );
-                    }
-                    pathdb_wal::PathDbWalOpV1::ImportProposalsV1 {
-                        proposals_digest,
-                        stored_path,
-                    } => {
-                        println!(
-                            "    {}. import_proposals_v1 digest={} path={}",
-                            idx + 1,
-                            format_snapshot_id(proposals_digest, full),
-                            stored_path
-                        );
-                    }
-                }
-            }
-            Ok(())
-        }
-        other => Err(anyhow!(
-            "unknown --layer `{other}` (expected accepted|pathdb)"
-        )),
-    }
-}
-
-fn cmd_accept_status(dir: &PathBuf) -> Result<()> {
-    use std::fs;
-
-    fn read_head(path: &std::path::Path) -> Option<String> {
-        let text = fs::read_to_string(path).ok()?;
-        let id = text.trim().to_string();
-        if id.is_empty() {
-            None
-        } else {
-            Some(id)
-        }
-    }
-
-    fn count_json_files(dir: &std::path::Path) -> usize {
-        let Ok(rd) = fs::read_dir(dir) else {
-            return 0;
-        };
-        rd.filter_map(|e| e.ok())
-            .filter(|e| e.file_type().ok().map(|t| t.is_file()).unwrap_or(false))
-            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
-            .count()
-    }
-
-    let accepted_head = read_head(&dir.join("HEAD"));
-    let accepted_snapshots = count_json_files(&dir.join("snapshots"));
-    let accepted_head_snapshot = accepted_plane::read_snapshot_for_cli(dir, "head").ok();
-    let accepted_modules_in_head = accepted_head_snapshot.as_ref().map(|s| s.modules.len());
-
-    let pathdb_dir = dir.join("pathdb");
-    let pathdb_head = read_head(&pathdb_dir.join("HEAD"));
-    let pathdb_snapshots = count_json_files(&pathdb_dir.join("snapshots"));
-    let pathdb_head_snapshot = pathdb_wal::read_pathdb_snapshot_for_cli(dir, "head").ok();
-    let pathdb_head_info = pathdb_head_snapshot.as_ref().map(|s| {
-        (
-            s.accepted_snapshot_id.clone(),
-            s.ops.len(),
-            s.created_at_unix_secs,
-        )
-    });
-
-    println!("accepted_plane:");
-    println!("  dir: {}", dir.display());
-    println!(
-        "  head: {}",
-        accepted_head
-            .as_deref()
-            .map(|id| format!("{} ({})", short_snapshot_id(id), id))
-            .unwrap_or_else(|| "(none)".to_string())
-    );
-    println!("  snapshots: {accepted_snapshots}");
-    if let Some(n) = accepted_modules_in_head {
-        let age = accepted_head_snapshot
-            .as_ref()
-            .map(|s| format_age_ago(s.created_at_unix_secs))
-            .unwrap_or_default();
-        if age.is_empty() {
-            println!("  modules_in_head: {n}");
-        } else {
-            println!("  modules_in_head: {n} ({age})");
-        }
-    }
-
-    println!("pathdb_wal:");
-    println!(
-        "  head: {}",
-        pathdb_head
-            .as_deref()
-            .map(|id| format!("{} ({})", short_snapshot_id(id), id))
-            .unwrap_or_else(|| "(none)".to_string())
-    );
-    println!("  snapshots: {pathdb_snapshots}");
-    if let Some((base, ops, created_at)) = pathdb_head_info {
-        println!(
-            "  base_accepted_snapshot: {} ({})",
-            short_snapshot_id(&base),
-            base
-        );
-        println!("  ops_total: {ops}");
-        println!("  age: {}", format_age_ago(created_at));
-    }
-
-    if let (Some(accepted_id), Some(pathdb_snap)) = (accepted_head.as_deref(), pathdb_head_snapshot)
-    {
-        if pathdb_snap.accepted_snapshot_id.as_str() != accepted_id {
-            println!(
-                "note: pathdb WAL HEAD is based on an older accepted snapshot (base={} head={}).",
-                short_snapshot_id(&pathdb_snap.accepted_snapshot_id),
-                short_snapshot_id(accepted_id)
-            );
-            println!(
-                "      run: axiograph db accept pathdb-commit --dir {} --accepted-snapshot head --chunks <file.json>",
-                dir.display()
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_accept_log(dir: &PathBuf, layer: &str, limit: usize) -> Result<()> {
-    use std::fs;
-
-    fn read_jsonl_lines(path: &std::path::Path) -> Result<Vec<String>> {
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let text = fs::read_to_string(path)?;
-        Ok(text
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect())
-    }
-
-    let layer = layer.trim().to_ascii_lowercase();
-    let show_accepted = layer == "accepted" || layer == "both";
-    let show_pathdb = layer == "pathdb" || layer == "both";
-    if !show_accepted && !show_pathdb {
-        return Err(anyhow!(
-            "unknown --layer `{}` (expected accepted|pathdb|both)",
-            layer
-        ));
-    }
-
-    if show_accepted {
-        let path = dir.join("accepted_plane.log.jsonl");
-        let mut lines = read_jsonl_lines(&path)?;
-        if lines.is_empty() {
-            println!("accepted_plane log: (empty)");
-        } else {
-            println!("accepted_plane log:");
-            let start = lines.len().saturating_sub(limit);
-            for line in lines.drain(start..) {
-                match serde_json::from_str::<accepted_plane::AcceptedPlaneEventV1>(&line) {
-                    Ok(e) => {
-                        let msg = e.message.unwrap_or_default();
-                        let age = format_age_compact(e.created_at_unix_secs);
-                        if msg.is_empty() {
-                            println!(
-                                "  {} {} {} module={} snapshot={} prev={}",
-                                e.created_at_unix_secs,
-                                age,
-                                e.action,
-                                e.module_name,
-                                short_snapshot_id(&e.snapshot_id),
-                                e.previous_snapshot_id
-                                    .as_ref()
-                                    .map(short_snapshot_id)
-                                    .unwrap_or_else(|| "(none)".to_string())
-                            );
-                        } else {
-                            println!(
-                                "  {} {} {} module={} snapshot={} prev={} msg={}",
-                                e.created_at_unix_secs,
-                                age,
-                                e.action,
-                                e.module_name,
-                                short_snapshot_id(&e.snapshot_id),
-                                e.previous_snapshot_id
-                                    .as_ref()
-                                    .map(short_snapshot_id)
-                                    .unwrap_or_else(|| "(none)".to_string()),
-                                msg
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        // Preserve the original log line on parse failures so users can still inspect it.
-                        println!("  {line}");
-                    }
-                }
-            }
-        }
-    }
-
-    if show_pathdb {
-        let path = dir.join("pathdb").join("pathdb_wal.log.jsonl");
-        let mut lines = read_jsonl_lines(&path)?;
-        if lines.is_empty() {
-            println!("pathdb_wal log: (empty)");
-        } else {
-            println!("pathdb_wal log:");
-            let start = lines.len().saturating_sub(limit);
-            for line in lines.drain(start..) {
-                match serde_json::from_str::<pathdb_wal::PathDbWalEventV1>(&line) {
-                    Ok(e) => {
-                        let msg = e.message.unwrap_or_default();
-                        let age = format_age_compact(e.created_at_unix_secs);
-                        let ops = e.ops_appended.len();
-                        if msg.is_empty() {
-                            println!(
-                                "  {} {} {} snapshot={} base={} ops+={} prev={}",
-                                e.created_at_unix_secs,
-                                age,
-                                e.action,
-                                short_snapshot_id(&e.snapshot_id),
-                                short_snapshot_id(&e.accepted_snapshot_id),
-                                ops,
-                                e.previous_snapshot_id
-                                    .as_ref()
-                                    .map(short_snapshot_id)
-                                    .unwrap_or_else(|| "(none)".to_string())
-                            );
-                        } else {
-                            println!(
-                                "  {} {} {} snapshot={} base={} ops+={} prev={} msg={}",
-                                e.created_at_unix_secs,
-                                age,
-                                e.action,
-                                short_snapshot_id(&e.snapshot_id),
-                                short_snapshot_id(&e.accepted_snapshot_id),
-                                ops,
-                                e.previous_snapshot_id
-                                    .as_ref()
-                                    .map(short_snapshot_id)
-                                    .unwrap_or_else(|| "(none)".to_string()),
-                                msg
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        println!("  {line}");
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_accept_pathdb_embed(
-    dir: &PathBuf,
-    base_snapshot: &str,
-    target: &str,
-    embed_backend: &str,
-    ollama_host: Option<&str>,
-    embed_model: Option<&str>,
-    openai_base_url: Option<&str>,
-    max_items: usize,
-    batch_size: usize,
-    timeout_secs: Option<u64>,
-    message: Option<&str>,
-) -> Result<()> {
-    let target = target.trim().to_ascii_lowercase();
-    let want_docchunks = target == "docchunks" || target == "doc_chunks" || target == "both";
-    let want_entities = target == "entities" || target == "both";
-    if !want_docchunks && !want_entities {
-        return Err(anyhow!(
-            "invalid --target `{}` (expected docchunks|entities|both)",
-            target
-        ));
-    }
-
-    let embed_backend = embed_backend.trim().to_ascii_lowercase();
-    let embed_model = embed_model.map(|s| s.trim()).filter(|s| !s.is_empty());
-    let embed_model = match (embed_backend.as_str(), embed_model) {
-        ("ollama", Some(m)) => m.to_string(),
-        ("ollama", None) => "nomic-embed-text".to_string(),
-        ("openai", Some(m)) => m.to_string(),
-        ("openai", None) => "text-embedding-3-small".to_string(),
-        ("anthropic", _) => {
-            return Err(anyhow!(
-                "anthropic does not provide embeddings; use `--embed-backend openai` or rely on deterministic retrieval"
-            ));
-        }
-        _ => {
-            return Err(anyhow!(
-                "invalid --embed-backend `{}` (expected ollama|openai)",
-                embed_backend
-            ))
-        }
-    };
-
-    use crate::embeddings::{
-        EmbeddingItemV1, EmbeddingKeyV1, EmbeddingTargetKindV1, EmbeddingsFileV1,
-        EMBEDDINGS_FILE_VERSION_V1,
-    };
-
-    let base = pathdb_wal::read_pathdb_snapshot_for_cli(dir, base_snapshot)?;
-
-    let checkpoint = dir
-        .join("pathdb")
-        .join("checkpoints")
-        .join(format!("{}.axpd", snapshot_id_filename(&base.snapshot_id)));
-    let bytes = if checkpoint.exists() {
-        fs::read(&checkpoint)?
-    } else {
-        // Rare path: no checkpoint present; rebuild into a temp `.axpd` file.
-        fs::create_dir_all(dir.join("pathdb").join("tmp"))?;
-        let tmp = dir.join("pathdb").join("tmp").join("embed_tmp.axpd");
-        pathdb_wal::build_pathdb_from_pathdb_snapshot(dir, base.snapshot_id.as_str(), &tmp)?;
-        let bytes = fs::read(&tmp)?;
-        let _ = fs::remove_file(&tmp);
-        bytes
-    };
-
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-
-    let timeout = crate::llm::llm_timeout(timeout_secs)?;
-
-    #[allow(unused_variables)]
-    let resolved_ollama_host: Option<String> = if embed_backend == "ollama" {
-        #[cfg(feature = "llm-ollama")]
-        {
-            Some(
-                ollama_host
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(crate::llm::default_ollama_host),
-            )
-        }
-        #[cfg(not(feature = "llm-ollama"))]
-        {
-            None
-        }
-    } else {
-        None
-    };
-
-    #[allow(unused_variables)]
-    let resolved_openai_base_url: Option<String> = if embed_backend == "openai" {
-        #[cfg(feature = "llm-openai")]
-        {
-            Some(
-                openai_base_url
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(crate::llm::default_openai_base_url),
-            )
-        }
-        #[cfg(not(feature = "llm-openai"))]
-        {
-            None
-        }
-    } else {
-        None
-    };
-
-    fn db_attr(db: &axiograph_pathdb::PathDB, id: u32, key: &str) -> Option<String> {
-        let view = db.get_entity(id)?;
-        view.attrs.get(key).cloned()
-    }
-
-    fn truncate_chars(s: &str, max_chars: usize) -> String {
-        if max_chars == 0 {
-            return String::new();
-        }
-        if s.chars().count() <= max_chars {
-            return s.to_string();
-        }
-        let mut out = String::new();
-        out.extend(s.chars().take(max_chars));
-        out.push('…');
-        out
-    }
-
-    #[allow(clippy::needless_return)]
-    fn embed_batches(
-        embed_backend: &str,
-        embed_model: &str,
-        ollama_host: Option<&str>,
-        openai_base_url: Option<&str>,
-        texts: &[String],
-        batch_size: usize,
-        timeout: Option<Duration>,
-    ) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let bs = batch_size.clamp(1, 256);
-        let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(bs) {
-            match embed_backend {
-                "ollama" => {
-                    #[cfg(feature = "llm-ollama")]
-                    {
-                        let host = ollama_host.unwrap_or("http://127.0.0.1:11434");
-                        let e = crate::llm::ollama_embed_texts_with_timeout(
-                            host,
-                            embed_model,
-                            chunk,
-                            timeout,
-                        )?;
-                        out.extend(e);
-                    }
-                    #[cfg(not(feature = "llm-ollama"))]
-                    {
-                        let _ = (ollama_host, embed_model, chunk, timeout);
-                        return Err(anyhow!(
-                            "ollama embeddings not available (compiled without `llm-ollama`)"
-                        ));
-                    }
-                }
-                "openai" => {
-                    #[cfg(feature = "llm-openai")]
-                    {
-                        let base_url = openai_base_url.unwrap_or("https://api.openai.com");
-                        let e = crate::llm::openai_embed_texts_with_timeout(
-                            base_url,
-                            embed_model,
-                            chunk,
-                            timeout,
-                        )?;
-                        out.extend(e);
-                    }
-                    #[cfg(not(feature = "llm-openai"))]
-                    {
-                        let _ = (openai_base_url, embed_model, chunk, timeout);
-                        return Err(anyhow!(
-                            "openai embeddings not available (compiled without `llm-openai`)"
-                        ));
-                    }
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "invalid embed backend `{}` (expected ollama|openai)",
-                        embed_backend
-                    ))
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    let mut blobs: Vec<Vec<u8>> = Vec::new();
-
-    if want_docchunks {
-        let Some(chunks) = db.find_by_type("DocChunk") else {
-            return Err(anyhow!(
-                "no DocChunk loaded in this snapshot; import chunks first, then embed (try: `axiograph db accept pathdb-commit --chunks <chunks.json> ...`)"
-            ));
-        };
-
-        let mut keys: Vec<EmbeddingKeyV1> = Vec::new();
-        let mut texts: Vec<String> = Vec::new();
-        let mut digests: Vec<String> = Vec::new();
-
-        for id in chunks.iter().take(max_items) {
-            let chunk_id = db_attr(&db, id, "chunk_id").unwrap_or_else(|| id.to_string());
-            let text = db_attr(&db, id, "text").unwrap_or_default();
-            let search_text = db_attr(&db, id, "search_text").unwrap_or_default();
-            let mut combined = String::new();
-            combined.push_str(&text);
-            if !search_text.trim().is_empty() {
-                combined.push('\n');
-                combined.push_str(&search_text);
-            }
-            let combined = truncate_chars(&combined, 2500);
-            if combined.trim().is_empty() {
-                continue;
-            }
-            let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(combined.as_bytes());
-            digests.push(digest);
-            keys.push(EmbeddingKeyV1::DocChunk { chunk_id });
-            texts.push(combined);
-        }
-
-        if keys.is_empty() {
-            return Err(anyhow!("no docchunk text found to embed"));
-        }
-
-        eprintln!(
-            "{} embedding docchunks (n={}) via {} model={}",
-            "info:".yellow().bold(),
-            keys.len(),
-            embed_backend,
-            embed_model
-        );
-        let vectors = embed_batches(
-            &embed_backend,
-            &embed_model,
-            resolved_ollama_host.as_deref(),
-            resolved_openai_base_url.as_deref(),
-            &texts,
-            batch_size,
-            timeout,
-        )?;
-        if vectors.len() != keys.len() {
-            return Err(anyhow!(
-                "embed returned {} vectors for {} inputs",
-                vectors.len(),
-                keys.len()
-            ));
-        }
-        let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
-        if dim == 0 {
-            return Err(anyhow!("embed returned empty vectors"));
-        }
-
-        let items = keys
-            .into_iter()
-            .zip(vectors)
-            .zip(digests)
-            .map(|((key, vector), text_digest)| EmbeddingItemV1 {
-                key,
-                vector,
-                text_digest: Some(text_digest),
-            })
-            .collect::<Vec<_>>();
-
-        let file = EmbeddingsFileV1 {
-            version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
-            created_at_unix_secs: now_unix_secs(),
-            backend: embed_backend.to_string(),
-            model: embed_model.to_string(),
-            dim,
-            target: EmbeddingTargetKindV1::DocChunks,
-            items,
-            metadata: std::collections::HashMap::from([
-                (
-                    "base_pathdb_snapshot".to_string(),
-                    base.snapshot_id.to_string(),
-                ),
-                (
-                    "base_accepted_snapshot".to_string(),
-                    base.accepted_snapshot_id.to_string(),
-                ),
-            ]),
-        };
-        blobs.push(crate::embeddings::encode_embeddings_file_v1(&file)?);
-    }
-
-    if want_entities {
-        let mut keys: Vec<EmbeddingKeyV1> = Vec::new();
-        let mut texts: Vec<String> = Vec::new();
-        let mut digests: Vec<String> = Vec::new();
-
-        for id in 0..(db.entities.len() as u32) {
-            let Some(view) = db.get_entity(id) else {
-                continue;
-            };
-            if view.entity_type == "DocChunk"
-                || view.entity_type == "Document"
-                || view.entity_type.starts_with("AxiMeta")
-            {
-                continue;
-            }
-            let Some(name) = view.attrs.get("name").cloned() else {
-                continue;
-            };
-
-            let mut text = String::new();
-            text.push_str(&view.entity_type);
-            text.push(' ');
-            text.push_str(&name);
-            for k in ["search_text", "description", "comment", "iri"] {
-                if let Some(v) = view.attrs.get(k) {
-                    if !v.trim().is_empty() {
-                        text.push(' ');
-                        text.push_str(v);
-                    }
-                }
-            }
-
-            let text = truncate_chars(&text, 1500);
-            if text.trim().is_empty() {
-                continue;
-            }
-
-            let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(text.as_bytes());
-            digests.push(digest);
-            keys.push(EmbeddingKeyV1::Entity {
-                entity_type: view.entity_type.to_string(),
-                name,
-            });
-            texts.push(text);
-
-            if keys.len() >= max_items {
-                break;
-            }
-        }
-
-        if keys.is_empty() {
-            return Err(anyhow!("no entities found to embed (no `name` attrs?)"));
-        }
-
-        eprintln!(
-            "{} embedding entities (n={}) via {} model={}",
-            "info:".yellow().bold(),
-            keys.len(),
-            embed_backend,
-            embed_model
-        );
-        let vectors = embed_batches(
-            &embed_backend,
-            &embed_model,
-            resolved_ollama_host.as_deref(),
-            resolved_openai_base_url.as_deref(),
-            &texts,
-            batch_size,
-            timeout,
-        )?;
-        if vectors.len() != keys.len() {
-            return Err(anyhow!(
-                "embed returned {} vectors for {} inputs",
-                vectors.len(),
-                keys.len()
-            ));
-        }
-        let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
-        if dim == 0 {
-            return Err(anyhow!("embed returned empty vectors"));
-        }
-
-        let items = keys
-            .into_iter()
-            .zip(vectors)
-            .zip(digests)
-            .map(|((key, vector), text_digest)| EmbeddingItemV1 {
-                key,
-                vector,
-                text_digest: Some(text_digest),
-            })
-            .collect::<Vec<_>>();
-
-        let file = EmbeddingsFileV1 {
-            version: EMBEDDINGS_FILE_VERSION_V1.to_string(),
-            created_at_unix_secs: now_unix_secs(),
-            backend: embed_backend.to_string(),
-            model: embed_model.to_string(),
-            dim,
-            target: EmbeddingTargetKindV1::Entities,
-            items,
-            metadata: std::collections::HashMap::from([
-                (
-                    "base_pathdb_snapshot".to_string(),
-                    base.snapshot_id.to_string(),
-                ),
-                (
-                    "base_accepted_snapshot".to_string(),
-                    base.accepted_snapshot_id.to_string(),
-                ),
-            ]),
-        };
-        blobs.push(crate::embeddings::encode_embeddings_file_v1(&file)?);
-    }
-
-    let result = pathdb_wal::commit_pathdb_snapshot_with_embedding_bytes(
-        dir,
-        base.snapshot_id.as_str(),
-        &blobs,
-        message,
+fn cmd_typecheck_cert(input: &Path, out: Option<&Path>) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
     )?;
-    eprintln!(
-        "{} committed embeddings ops={} base_pathdb_snapshot={} → pathdb_snapshot={}",
-        "ok".green().bold(),
-        result.ops_added,
-        short_snapshot_id(&base.snapshot_id),
-        short_snapshot_id(&result.snapshot_id)
-    );
-    println!("{}", result.snapshot_id);
-    Ok(())
-}
-
-fn cmd_query_cert(
-    input: &PathBuf,
-    lang: &str,
-    query_text: &str,
-    out: Option<&PathBuf>,
-) -> Result<()> {
-    let axi_text = fs::read_to_string(input)?;
-    let module = crate::axi_input::require_canonical_axi_text(&axi_text)?;
-    let mut db = axiograph_pathdb::PathDB::new();
-    let anchor_digest = module.digest().clone();
-    let _summary = module.import_into_pathdb(&mut db)?;
-    db.build_indexes();
-    let query = match lang {
-        "axql" => crate::axql::parse_axql_query(query_text)?,
-        "sql" => crate::sqlish::parse_sqlish_query(query_text)?,
-        other => {
-            return Err(anyhow::anyhow!(
-                "unknown --lang `{other}` (expected `axql` or `sql`)"
-            ))
-        }
-    };
-
-    let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db)?;
-    let cert = crate::axql::certify_axql_query_typed_with_meta(
-        &db,
-        &query,
-        Some(&meta),
-        anchor_digest.as_str(),
-    )?
-    .with_anchor(axiograph_pathdb::certificate::AxiAnchorV1::new(
-        anchor_digest,
-    ));
-
-    let json = serde_json::to_string_pretty(&cert)?;
-    match out {
-        Some(path) => {
-            fs::write(path, json)?;
-            println!("wrote {}", path.display());
-        }
-        None => {
-            println!("{json}");
-        }
-    }
-
-    Ok(())
-}
-
-fn cmd_typecheck_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
-    let axi_text = fs::read_to_string(input)?;
     let typed = crate::axi_input::require_canonical_axi_text(&axi_text)?;
     let digest = typed.digest().clone();
     let (_m, proof) = typed.module().clone().into_parts();
@@ -4883,7 +2209,7 @@ fn cmd_typecheck_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     let json = serde_json::to_string_pretty(&cert)?;
     match out {
         Some(path) => {
-            fs::write(path, json)?;
+            crate::security::write_output_bounded(path, json, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => {
@@ -4894,8 +2220,12 @@ fn cmd_typecheck_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_constraints_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
-    let axi_text = fs::read_to_string(input)?;
+fn cmd_constraints_cert(input: &Path, out: Option<&Path>) -> Result<()> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let typed = crate::axi_input::require_canonical_axi_text(&axi_text)?;
     let digest = typed.digest().clone();
     let proof =
@@ -4907,7 +2237,7 @@ fn cmd_constraints_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     let json = serde_json::to_string_pretty(&cert)?;
     match out {
         Some(path) => {
-            fs::write(path, json)?;
+            crate::security::write_output_bounded(path, json, "CLI output")?;
             println!("wrote {}", path.display());
         }
         None => {
@@ -4918,18 +2248,49 @@ fn cmd_constraints_cert(input: &PathBuf, out: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn load_pathdb_for_cli(input: &PathBuf) -> Result<axiograph_pathdb::PathDB> {
+fn cmd_publish_materialization(dir: &Path, spec_path: &Path) -> Result<()> {
+    let bytes = crate::security::read_file_bounded(
+        spec_path,
+        crate::security::MAX_BINARY_INPUT_BYTES,
+        "materialization build spec",
+    )?;
+    let spec: axiograph_store::AxpdBuildSpec = crate::security::parse_json_bounded(
+        &bytes,
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .with_context(|| format!("parse AxpdBuildSpec `{}`", spec_path.display()))?;
+    let store = axiograph_store::AxiStore::open(dir).context("open AxiStore")?;
+    let receipt = store
+        .publish_axpd(spec, &axiograph_store::AxpdLimits::default())
+        .context("publish authenticated SQLite materialization")?;
+    println!("{}", serde_json::to_string_pretty(&receipt)?);
+    Ok(())
+}
+
+fn cmd_show_materialization(dir: &PathBuf, materialization: &str) -> Result<()> {
+    let materialization_id: axiograph_kernel::MaterializationIdV2 = materialization
+        .parse()
+        .map_err(|error| anyhow!("invalid materialization id `{materialization}`: {error}"))?;
+    let store = axiograph_store::AxiStore::open(dir).context("open AxiStore")?;
+    let verified = store
+        .open_axpd(&materialization_id, &axiograph_store::AxpdLimits::default())
+        .context("verify authenticated SQLite materialization")?;
+    println!("{}", serde_json::to_string_pretty(verified.receipt())?);
+    Ok(())
+}
+
+pub(crate) fn load_pathdb_for_cli(input: &Path) -> Result<axiograph_pathdb::PathDB> {
     let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
-    if ext.eq_ignore_ascii_case("axpd") {
-        let bytes = fs::read(input)?;
-        return Ok(axiograph_pathdb::PathDB::from_bytes(&bytes)?);
-    }
     if ext.eq_ignore_ascii_case("axi") {
-        let text = fs::read_to_string(input)?;
+        let text = crate::security::read_utf8_file_bounded(
+            input,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
         let module = crate::axi_input::require_canonical_axi_text(&text).map_err(|err| {
             anyhow!(
-                "{err}; generic semantic/query/cert commands only accept canonical .axi modules. \
-                 Use `axiograph db pathdb import-axi` for PathDBExportV1 debug/live-byte parity."
+                "{err}; semantic inspection and certified-query commands accept exact reviewable `.axi` modules"
             )
         })?;
         let mut db = axiograph_pathdb::PathDB::new();
@@ -4938,7 +2299,7 @@ pub(crate) fn load_pathdb_for_cli(input: &PathBuf) -> Result<axiograph_pathdb::P
         return Ok(db);
     }
     Err(anyhow!(
-        "unsupported input `{}` (expected .axpd or .axi)",
+        "unsupported input `{}` (expected exact canonical .axi)",
         input.display()
     ))
 }
@@ -4963,9 +2324,10 @@ fn cmd_viz_from_args(args: &VizArgs) -> Result<()> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_viz(
-    input: &PathBuf,
-    out: &PathBuf,
+    input: &Path,
+    out: &Path,
     format: &str,
     plane: &str,
     focus_id: &[u32],
@@ -5002,8 +2364,7 @@ fn cmd_viz(
                     focus.push(id);
                 } else {
                     return Err(anyhow!(
-                        "no entity found with name `{}` (tip: try `axiograph repl` + `find_by_type`/`q` to locate ids)",
-                        name
+                        "no entity found with name `{name}` (tip: try `axiograph repl` + `find_by_type`/`q` to locate ids)"
                     ));
                 }
             }
@@ -5037,7 +2398,7 @@ fn cmd_viz(
     if matches!(format, crate::viz::VizFormat::Html) {
         let json = crate::viz::render_json(&g)?;
         let out_dir = crate::viz::write_html_bundle(out, &rendered, Some(&json))?;
-        fs::write(out_dir.join("graph.json"), json)?;
+        crate::security::write_output_bounded(out_dir.join("graph.json"), json, "CLI output")?;
         println!(
             "wrote {} (nodes={} edges={} truncated={})",
             out_dir.display(),
@@ -5046,7 +2407,7 @@ fn cmd_viz(
             g.truncated
         );
     } else {
-        fs::write(out, rendered)?;
+        crate::security::write_output_bounded(out, rendered, "CLI output")?;
         println!(
             "wrote {} (nodes={} edges={} truncated={})",
             out.display(),
@@ -5061,34 +2422,12 @@ fn cmd_viz(
 fn write_json_output<T: Serialize>(value: &T, out: Option<&PathBuf>) -> Result<()> {
     let json = serde_json::to_string_pretty(value)?;
     if let Some(path) = out {
-        fs::write(path, json)?;
+        crate::security::write_output_bounded(path, json, "CLI output")?;
         println!("wrote {}", path.display());
     } else {
         println!("{json}");
     }
     Ok(())
-}
-
-fn cmd_accept_reconciliation_show(
-    dir: &PathBuf,
-    reconciliation: &str,
-    out: Option<&PathBuf>,
-) -> Result<()> {
-    let reconciliation_id = axiograph_pathdb::AxiDigest::new(reconciliation);
-    let report = accepted_plane::preview_reconciliation(dir, &reconciliation_id)?;
-    write_json_output(&report, out)
-}
-
-fn cmd_accept_reconciliation_apply(
-    dir: &PathBuf,
-    reconciliation: &str,
-    handle_id: &str,
-    out: Option<&PathBuf>,
-) -> Result<()> {
-    let reconciliation_id = axiograph_pathdb::AxiDigest::new(reconciliation);
-    let report =
-        accepted_plane::apply_reconciliation_refinement_by_id(dir, &reconciliation_id, handle_id)?;
-    write_json_output(&report, out)
 }
 
 fn sanitize_id_component(s: &str) -> String {
@@ -5450,7 +2789,7 @@ fn proposals_from_json_schema(
                 },
                 entity_id: field_id.clone(),
                 entity_type: "JsonField".to_string(),
-                name: format!("{}.{}", ty_name, field_name),
+                name: format!("{ty_name}.{field_name}"),
                 attributes: field_attrs,
                 description: None,
             });
@@ -5517,14 +2856,18 @@ fn proposals_from_json_schema(
     out
 }
 
-fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Result<()> {
+fn cmd_sql(input: &Path, out: &Path, chunks_path: Option<&Path>) -> Result<()> {
     println!(
         "{} SQL schema {}",
         "Ingesting".green().bold(),
         input.display()
     );
 
-    let text = fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let sql_schema = axiograph_ingest_sql::parse_sql_ddl(&text)?;
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -5533,7 +2876,7 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
         .to_string();
 
     // Also emit DocChunks for RAG grounding (default: alongside the proposals output).
-    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
         out.parent()
             .unwrap_or(std::path::Path::new("."))
             .join("chunks.json")
@@ -5541,7 +2884,7 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
 
     let locator = input.to_string_lossy().to_string();
-    let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(locator.as_bytes());
+    let doc_digest = axiograph_kernel::object_blob_digest_v2(locator.as_bytes());
     let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     for (i, stmt) in text.split(';').enumerate() {
         let stmt = stmt.trim();
@@ -5561,13 +2904,14 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
             metadata,
         });
     }
-    fs::write(
+    crate::security::write_output_bounded(
         &chunks_out,
         axiograph_ingest_docs::chunks_to_json_for_chunks(
             "sql_ingest",
             locator.clone(),
             chunks.clone(),
         )?,
+        "CLI output",
     )?;
     println!(
         "  {} {} (chunks={})",
@@ -5590,7 +2934,7 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
 
     let json = serde_json::to_string_pretty(&file)?;
     fs::create_dir_all(out.parent().unwrap_or(std::path::Path::new(".")))?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!(
         "  {} {} tables, {} foreign keys",
@@ -5603,10 +2947,10 @@ fn cmd_sql(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Res
 }
 
 fn cmd_doc(
-    input: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    facts_path: Option<&PathBuf>,
+    input: &Path,
+    out: &Path,
+    chunks_path: Option<&Path>,
+    facts_path: Option<&Path>,
     machining: bool,
     domain: &str,
 ) -> Result<()> {
@@ -5616,13 +2960,17 @@ fn cmd_doc(
         input.display()
     );
 
-    let text = fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
     let domain = if machining { "machining" } else { domain };
 
     // Full knowledge extraction with probabilistic facts
-    let result = axiograph_ingest_docs::extract_knowledge_full(&text, &stem, domain);
+    let result = axiograph_ingest_docs::extract_knowledge_full(&text, &stem, domain)?;
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -5644,23 +2992,23 @@ fn cmd_doc(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!("  {} {} facts extracted", "→".yellow(), result.facts.len());
 
-    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
         out.parent()
             .unwrap_or(std::path::Path::new("."))
             .join("chunks.json")
     });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     if let Some(facts_out) = facts_path {
         let facts_json = serde_json::to_string_pretty(&result.facts)?;
-        fs::write(facts_out, &facts_json)?;
+        crate::security::write_output_bounded(facts_out, &facts_json, "CLI output")?;
         println!("  {} {}", "→".cyan(), facts_out.display());
     }
 
@@ -5668,10 +3016,10 @@ fn cmd_doc(
 }
 
 fn cmd_conversation(
-    input: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    facts_path: Option<&PathBuf>,
+    input: &Path,
+    out: &Path,
+    chunks_path: Option<&Path>,
+    facts_path: Option<&Path>,
     format: &str,
 ) -> Result<()> {
     println!(
@@ -5680,10 +3028,14 @@ fn cmd_conversation(
         input.display()
     );
 
-    let text = fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
-    let result = axiograph_ingest_docs::extract_knowledge_from_conversation(&text, &stem, format);
+    let result = axiograph_ingest_docs::extract_knowledge_from_conversation(&text, &stem, format)?;
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -5705,7 +3057,7 @@ fn cmd_conversation(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!(
         "  {} {} turns, {} facts",
@@ -5714,19 +3066,19 @@ fn cmd_conversation(
         result.facts.len()
     );
 
-    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
         out.parent()
             .unwrap_or(std::path::Path::new("."))
             .join("chunks.json")
     });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     if let Some(facts_out) = facts_path {
         let facts_json = serde_json::to_string_pretty(&result.facts)?;
-        fs::write(facts_out, &facts_json)?;
+        crate::security::write_output_bounded(facts_out, &facts_json, "CLI output")?;
         println!("  {} {}", "→".cyan(), facts_out.display());
     }
 
@@ -5734,11 +3086,11 @@ fn cmd_conversation(
 }
 
 fn cmd_confluence(
-    input: &PathBuf,
-    out: &PathBuf,
+    input: &Path,
+    out: &Path,
     space: &str,
-    chunks_path: Option<&PathBuf>,
-    facts_path: Option<&PathBuf>,
+    chunks_path: Option<&Path>,
+    facts_path: Option<&Path>,
 ) -> Result<()> {
     println!(
         "{} Confluence page {}",
@@ -5746,7 +3098,11 @@ fn cmd_confluence(
         input.display()
     );
 
-    let html = fs::read_to_string(input)?;
+    let html = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let page_id = input.file_stem().unwrap_or_default().to_string_lossy();
 
     let result = axiograph_ingest_docs::extract_knowledge_from_confluence(&html, &page_id, space)?;
@@ -5771,7 +3127,7 @@ fn cmd_confluence(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!(
         "  {} {} sections, {} facts",
@@ -5780,30 +3136,38 @@ fn cmd_confluence(
         result.facts.len()
     );
 
-    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
         out.parent()
             .unwrap_or(std::path::Path::new("."))
             .join("chunks.json")
     });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     if let Some(facts_out) = facts_path {
         let facts_json = serde_json::to_string_pretty(&result.facts)?;
-        fs::write(facts_out, &facts_json)?;
+        crate::security::write_output_bounded(facts_out, &facts_json, "CLI output")?;
         println!("  {} {}", "→".cyan(), facts_out.display());
     }
 
     Ok(())
 }
 
-fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Result<()> {
+fn cmd_json(input: &Path, out: &Path, chunks_path: Option<&Path>) -> Result<()> {
     println!("{} JSON {}", "Ingesting".green().bold(), input.display());
 
-    let text = fs::read_to_string(input)?;
-    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let value: serde_json::Value = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )?;
     let schema = axiograph_ingest_json::infer_schema(&value, "Root");
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -5812,7 +3176,7 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
         .to_string();
 
     // Also emit DocChunks for RAG grounding (default: alongside the proposals output).
-    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
         out.parent()
             .unwrap_or(std::path::Path::new("."))
             .join("chunks.json")
@@ -5840,7 +3204,7 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
     }
 
     let locator = input.to_string_lossy().to_string();
-    let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(locator.as_bytes());
+    let doc_digest = axiograph_kernel::object_blob_digest_v2(locator.as_bytes());
     let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| text.clone());
     let parts = chunk_by_lines(&pretty, 2_500);
     let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
@@ -5858,13 +3222,14 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
             metadata,
         });
     }
-    fs::write(
+    crate::security::write_output_bounded(
         &chunks_out,
         axiograph_ingest_docs::chunks_to_json_for_chunks(
             "json_ingest",
             locator.clone(),
             chunks.clone(),
         )?,
+        "CLI output",
     )?;
     println!(
         "  {} {} (chunks={})",
@@ -5886,33 +3251,37 @@ fn cmd_json(input: &PathBuf, out: &PathBuf, chunks_path: Option<&PathBuf>) -> Re
     };
     let json = serde_json::to_string_pretty(&file)?;
     fs::create_dir_all(out.parent().unwrap_or(std::path::Path::new(".")))?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
 
     Ok(())
 }
 
-fn cmd_readings(
-    input: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    format: &str,
-) -> Result<()> {
+fn cmd_readings(input: &Path, out: &Path, chunks_path: Option<&Path>, format: &str) -> Result<()> {
     println!(
         "{} readings {}",
         "Ingesting".green().bold(),
         input.display()
     );
 
-    let text = fs::read_to_string(input)?;
+    let text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
     let readings = match format {
         "bibtex" => axiograph_ingest_docs::parse_bibtex(&text),
-        "markdown" | _ => axiograph_ingest_docs::parse_reading_list(&text)
+        "markdown" => axiograph_ingest_docs::parse_reading_list(&text)
             .into_iter()
             .map(|r| r.bib)
             .collect(),
+        other => {
+            return Err(anyhow!(
+                "unsupported reading format `{other}` (expected bibtex|markdown)"
+            ))
+        }
     };
 
     println!("  {} {} references found", "→".yellow(), readings.len());
@@ -5931,14 +3300,14 @@ fn cmd_readings(
         &stem,
     );
 
-    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
         out.parent()
             .unwrap_or(std::path::Path::new("."))
             .join("chunks.json")
     });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     let generated_at = SystemTime::now()
@@ -5949,7 +3318,7 @@ fn cmd_readings(
     // Readings ingestion currently produces chunks; treat each reading as a claim-like entity.
     let mut proposals = Vec::new();
     for (idx, r) in readings.iter().enumerate() {
-        let id = format!("reading::{}", idx);
+        let id = format!("reading::{idx}");
         let title = if r.title.trim().is_empty() {
             "Untitled".to_string()
         } else {
@@ -5995,216 +3364,30 @@ fn cmd_readings(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
 
     Ok(())
 }
 
-fn cmd_pathdb_export_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
-    println!(
-        "{} {}",
-        "Exporting PathDB (.axpd → .axi)".green().bold(),
-        input.display()
-    );
-
-    let bytes = fs::read(input)?;
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-    let axi = axiograph_pathdb::axi_export::export_pathdb_to_axi_v1(&db)?;
-    fs::write(out, &axi)?;
-
-    println!("  {} {}", "→".cyan(), out.display());
-    Ok(())
-}
-
-fn cmd_pathdb_export_module(input: &PathBuf, out: &PathBuf, module: Option<&str>) -> Result<()> {
-    println!(
-        "{} {}",
-        "Exporting canonical module from".green().bold(),
-        input.display()
-    );
-
-    let bytes = fs::read(input)?;
-    let db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-
-    let module_name = match module {
-        Some(m) => m.to_string(),
-        None => infer_single_meta_module_name(&db)?,
-    };
-
-    let axi = axiograph_pathdb::axi_module_export::export_axi_schema_v1_module_from_pathdb(
-        &db,
-        &module_name,
-    )?;
-    fs::write(out, axi)?;
-
-    println!(
-        "  {} module={} {} {}",
-        "→".cyan(),
-        module_name.cyan(),
-        "→".cyan(),
-        out.display()
-    );
-    Ok(())
-}
-
-fn cmd_pathdb_import_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
-    println!(
-        "{} {}",
-        "Importing reversible PathDB snapshot (.axi → .axpd)"
-            .green()
-            .bold(),
-        input.display()
-    );
-
-    let text = fs::read_to_string(input)?;
-    let mut db = match crate::axi_input::classify_axi_text(&text)? {
-        crate::axi_input::ClassifiedAxiModule::PathdbExport(module) => module.import_pathdb()?,
-        crate::axi_input::ClassifiedAxiModule::Canonical(_) => {
-            return Err(anyhow!(
-                "expected a reversible PathDB snapshot .axi; use `axiograph db pathdb materialize-axi` for canonical .axi modules"
-            ));
-        }
-    };
-
-    db.build_indexes();
-    let bytes = db.to_bytes()?;
-    fs::write(out, bytes)?;
-
-    println!("  {} {}", "→".cyan(), out.display());
-    Ok(())
-}
-
-fn cmd_pathdb_materialize_axi(input: &PathBuf, out: &PathBuf) -> Result<()> {
-    println!(
-        "{} {}",
-        "Materializing canonical .axi into derived PathDB"
-            .green()
-            .bold(),
-        input.display()
-    );
-
-    let text = fs::read_to_string(input)?;
-    let module = match crate::axi_input::classify_axi_text(&text)? {
-        crate::axi_input::ClassifiedAxiModule::Canonical(module) => module,
-        crate::axi_input::ClassifiedAxiModule::PathdbExport(_) => {
-            return Err(anyhow!(
-                "expected a canonical .axi module; use `axiograph db pathdb import-axi` for reversible PathDB snapshot .axi files"
-            ));
-        }
-    };
-
-    let mut db = axiograph_pathdb::PathDB::new();
-    let summary = module.import_into_pathdb(&mut db)?;
-    println!(
-        "  {} imported module={} (meta_entities={} meta_relations={} instances={} entities={} upgraded_types={} tuple_entities={} relations={} derived_edges={})",
-        "→".cyan(),
-        module.module().module().module_name,
-        summary.meta_entities_added,
-        summary.meta_relations_added,
-        summary.instances_imported,
-        summary.entities_added,
-        summary.entity_type_upgrades,
-        summary.tuple_entities_added,
-        summary.relations_added,
-        summary.derived_edges_added
-    );
-
-    // Grounding always has evidence: embed the canonical module text as an untrusted
-    // DocChunk so LLM/UIs can cite and open it even when no external docs exist.
-    let digest = axiograph_dsl::digest::axi_digest_v1(&text);
-    let module_chunk_id = module.module().module().module_name.clone();
-    let module_chunk =
-        crate::doc_chunks::chunk_from_axi_module_text(&module_chunk_id, &digest, &text);
-    let _ = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &[module_chunk]);
-
-    db.build_indexes();
-    let bytes = db.to_bytes()?;
-    fs::write(out, bytes)?;
-
-    println!("  {} {}", "→".cyan(), out.display());
-    Ok(())
-}
-
-fn cmd_pathdb_import_chunks(input: &PathBuf, chunks: &PathBuf, out: &PathBuf) -> Result<()> {
-    println!(
-        "{} {}",
-        "Importing chunks into PathDB (.axpd + chunks.json)"
-            .green()
-            .bold(),
-        input.display()
-    );
-
-    let bytes = fs::read(input)?;
-    let mut db = axiograph_pathdb::PathDB::from_bytes(&bytes)?;
-
-    let chunks_text = fs::read_to_string(chunks)?;
-    let chunks = axiograph_ingest_docs::chunks_from_json_str(&chunks_text)?;
-
-    let summary = crate::doc_chunks::import_chunks_into_pathdb(&mut db, &chunks)?;
-    db.build_indexes();
-
-    let bytes = db.to_bytes()?;
-    fs::write(out, bytes)?;
-
-    println!(
-        "  {} chunks_total={} chunks_added={} documents_added={} links_added={} missing_targets={}",
-        "→".cyan(),
-        summary.chunks_total,
-        summary.chunks_added,
-        summary.documents_added,
-        summary.links_added,
-        summary.links_missing_target
-    );
-    println!("  {} {}", "→".cyan(), out.display());
-    Ok(())
-}
-
-fn infer_single_meta_module_name(db: &axiograph_pathdb::PathDB) -> Result<String> {
-    let Some(mods) = db.find_by_type(axiograph_pathdb::axi_meta::META_TYPE_MODULE) else {
-        return Err(anyhow::anyhow!(
-            "no `.axi` meta-plane module found (import a canonical `.axi` module first, or pass `--module <name>`)"
-        ));
-    };
-
-    let mut names: Vec<String> = Vec::new();
-    for id in mods.iter() {
-        let Some(view) = db.get_entity(id) else {
-            continue;
-        };
-        if let Some(name) = view.attrs.get("name") {
-            names.push(name.clone());
-        }
-    }
-    names.sort();
-    names.dedup();
-
-    if names.is_empty() {
-        return Err(anyhow::anyhow!(
-            "no `.axi` meta-plane modules have a `name` attribute"
-        ));
-    }
-    if names.len() != 1 {
-        return Err(anyhow::anyhow!(
-            "multiple `.axi` modules imported: {:?} (pass `--module <name>`)",
-            names
-        ));
-    }
-    Ok(names[0].clone())
-}
-
-fn cmd_validate(input: &PathBuf) -> Result<()> {
+fn cmd_validate(input: &Path) -> Result<()> {
     println!("{} {}", "Validating".green().bold(), input.display());
 
-    let text = fs::read_to_string(input)?;
-    let typed = crate::axi_input::require_canonical_axi_text(&text)?;
-    let m = typed.module().module();
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let package = crate::axi_input::compile_canonical_axi_path(input, &[repository_root])?;
+    let root_source = package.root_source();
+    let m = root_source.parsed();
+    let snapshot = package.snapshot();
 
     println!("  Dialect: {}", "axi_v1 (schema/theory/instance)".cyan());
     println!("  Module: {}", m.module_name.cyan());
-    println!("  Schemas: {}", m.schemas.len());
-    println!("  Theories: {}", m.theories.len());
-    println!("  Instances: {}", m.instances.len());
+    println!(
+        "  Import closure: {} module(s)",
+        snapshot.ir().ordered_module_closure().len()
+    );
+    println!("  Schemas: {}", snapshot.ir().schemas().len());
+    println!("  Theories: {}", snapshot.ir().theories().len());
+    println!("  Instances: {}", snapshot.ir().instances().len());
 
     for schema in &m.schemas {
         println!(
@@ -6215,13 +3398,14 @@ fn cmd_validate(input: &PathBuf) -> Result<()> {
         );
     }
 
-    if !m.theories.is_empty() {
-        let theory_report =
-            crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text(
-                &text,
-                None,
-                axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
-            )?;
+    if !snapshot.ir().theories().is_empty() {
+        let theory_report = crate::runtime_theory_check::runtime_theory_check_reports_from_package(
+            &package,
+            None,
+            axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
+            axiograph_pathdb::default_world_assumption_v1(),
+            axiograph_pathdb::default_evidence_policy_v1(),
+        )?;
         if theory_report.blocking_errors > 0 {
             return Err(anyhow!(
                 "runtime theory check found {} blocking error(s)",
@@ -6240,7 +3424,8 @@ fn cmd_validate(input: &PathBuf) -> Result<()> {
 }
 
 fn cmd_check_theory(args: &CheckTheoryArgs) -> Result<()> {
-    let text = fs::read_to_string(&args.input)?;
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let package = crate::axi_input::compile_canonical_axi_path(&args.input, &[repository_root])?;
     let closure_tier =
         crate::runtime_theory_check::parse_runtime_theory_closure_tier(&args.closure_tier)?;
     let (world, evidence_policy) = runtime_theory_cli_assumptions(
@@ -6256,14 +3441,13 @@ fn cmd_check_theory(args: &CheckTheoryArgs) -> Result<()> {
         args.weighted_evidence,
         &args.evidence_weights,
     )?;
-    let report =
-        crate::runtime_theory_check::runtime_theory_check_reports_from_axi_text_with_assumptions(
-            &text,
-            args.theory.as_deref(),
-            closure_tier,
-            world,
-            evidence_policy,
-        )?;
+    let report = crate::runtime_theory_check::runtime_theory_check_reports_from_package(
+        &package,
+        args.theory.as_deref(),
+        closure_tier,
+        world,
+        evidence_policy,
+    )?;
 
     if args.json || args.out.is_some() {
         write_json_output(&report, args.out.as_ref())?;
@@ -6338,21 +3522,14 @@ fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
             let report = axiograph_tooling_overlays::codegen_plan_report(&overlay);
             write_json_output(&report, out.as_ref())
         }
-        AuthoringCommands::CompetencyQuestions { axi, cq, out } => {
-            let cq_text = fs::read_to_string(&cq)
-                .map_err(|err| anyhow!("failed to read `{}`: {err}", cq.display()))?;
-            let axi_text = axi
-                .as_ref()
-                .map(|path| {
-                    fs::read_to_string(path)
-                        .map_err(|err| anyhow!("failed to read `{}`: {err}", path.display()))
-                })
-                .transpose()?;
-            let report =
-                axiograph_software_authoring::build_authoring_competency_questions_report_from_text(
-                    axi_text.as_deref(),
-                    &cq_text,
-                )?;
+        AuthoringCommands::Workspace {
+            workspace,
+            request,
+            out,
+        } => {
+            let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
+            let request = crate::authoring_workspace::read_authoring_request(&request)?;
+            let report = service.execute(request)?;
             write_json_output(&report, out.as_ref())
         }
         AuthoringCommands::MaterializeSkeletons {
@@ -6405,17 +3582,26 @@ fn cmd_authoring(command: AuthoringCommands) -> Result<()> {
             write_json_output(&specs, out.as_ref())
         }
         AuthoringCommands::LspCapabilities { out } => {
-            let capabilities =
-                axiograph_software_authoring::software_authoring_lsp_capabilities_v1();
+            let capabilities = crate::authoring_workspace::authoring_workspace_capabilities_v1();
             write_json_output(&capabilities, out.as_ref())
         }
-        AuthoringCommands::IntegrationManifest { out } => {
+        AuthoringCommands::IntegrationManifest { workspace, out } => {
             let manifest =
-                axiograph_software_authoring::software_authoring_integration_manifest_v1();
+                crate::authoring_workspace::authoring_workspace_integration_manifest_v1(&workspace);
             write_json_output(&manifest, out.as_ref())
         }
-        AuthoringCommands::Lsp => axiograph_software_authoring::run_lsp_stdio(),
-        AuthoringCommands::Mcp => axiograph_software_authoring::run_mcp_stdio(),
+        AuthoringCommands::Lsp { workspace, axi } => {
+            let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
+            crate::authoring_workspace::run_lsp_stdio(service, axi)
+        }
+        AuthoringCommands::Mcp { workspace } => {
+            let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
+            crate::authoring_workspace::run_mcp_stdio(service)
+        }
+        AuthoringCommands::Serve { workspace, listen } => {
+            let service = crate::authoring_workspace::AuthoringWorkspaceService::new(&workspace)?;
+            crate::authoring_workspace::run_http(service, listen)
+        }
     }
 }
 
@@ -6468,9 +3654,17 @@ fn cmd_authoring_run_suite(
     repo_root: &Path,
     out_dir: Option<&PathBuf>,
 ) -> Result<Value> {
-    let suite_text = fs::read_to_string(suite_path)?;
-    let suite: SoftwareAuthoringExampleSuiteV1 = serde_json::from_str(&suite_text)
-        .map_err(|err| anyhow!("failed to parse software authoring suite JSON: {err}"))?;
+    let suite_text = crate::security::read_utf8_file_bounded(
+        suite_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let suite: SoftwareAuthoringExampleSuiteV1 = crate::security::parse_json_bounded(
+        suite_text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .map_err(|err| anyhow!("failed to parse software authoring suite JSON: {err}"))?;
     let entry = suite
         .examples
         .iter()
@@ -6510,10 +3704,11 @@ fn cmd_authoring_run_suite(
         axiograph_tooling_overlays::behavior_case_coverage_view_from_value(&behavior_report_json)?;
 
     let overlay_coverage =
-        axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report(
+        axiograph_tooling_overlays::continuous_coverage_report_from_behavior_report_with_validation(
             &behavior_report_view,
             &overlay,
             repo_root,
+            &overlay_report,
         );
     write_optional_step_report(out_dir, "overlay_coverage.json", &overlay_coverage)?;
 
@@ -6538,7 +3733,7 @@ fn cmd_authoring_run_suite(
 
     let coverage_query_report = if let Some(query) = coverage_query_from_catalog_entry(entry) {
         let report =
-            axiograph_tooling_overlays::coverage_query_report(&kernel, Some(&overlay), &query);
+            axiograph_tooling_overlays::coverage_query_report(&kernel, Some(&overlay), &query)?;
         write_optional_step_report(out_dir, "coverage_query.json", &report)?;
         Some(serde_json::to_value(report)?)
     } else {
@@ -6548,7 +3743,11 @@ fn cmd_authoring_run_suite(
     let definition_query_reports =
         definition_query_reports_from_catalog_entry(entry, &kernel, Some(&overlay))?;
     if !definition_query_reports.is_empty() {
-        write_optional_step_report(out_dir, "definition_queries.json", &definition_query_reports)?;
+        write_optional_step_report(
+            out_dir,
+            "definition_queries.json",
+            &definition_query_reports,
+        )?;
     }
     let definition_query_report_count = definition_query_reports.len();
 
@@ -6594,7 +3793,7 @@ fn cmd_authoring_run_suite(
 
 fn definition_query_reports_from_catalog_entry(
     entry: &SoftwareAuthoringExampleCatalogEntryV1,
-    kernel: &axiograph_pathdb::kernel_ir::KernelModuleIr,
+    kernel: &axiograph_pathdb::kernel_ir::RuntimeModuleIndex,
     overlay: Option<&axiograph_tooling_overlays::ToolingOverlayBundleV1>,
 ) -> Result<Vec<Value>> {
     let mut reports = Vec::new();
@@ -6608,7 +3807,7 @@ fn definition_query_reports_from_catalog_entry(
             max_matches: prompt.max_matches,
             include_queries: prompt.include_queries,
         };
-        let report = axiograph_tooling_overlays::definition_query_report(kernel, overlay, &query);
+        let report = axiograph_tooling_overlays::definition_query_report(kernel, overlay, &query)?;
         reports.push(serde_json::json!({
             "id": prompt.id,
             "report": report,
@@ -6717,11 +3916,20 @@ fn write_optional_step_report<T: Serialize>(
 }
 
 fn read_json_file(path: &Path) -> Result<Value> {
-    let text = fs::read_to_string(path)?;
-    serde_json::from_str(&text)
-        .map_err(|err| anyhow!("failed to parse `{}` as JSON: {err}", path.display()))
+    let text = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .map_err(|err| anyhow!("failed to parse `{}` as JSON: {err}", path.display()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn runtime_theory_cli_assumptions(
     world_id: Option<&str>,
     finite_world: bool,
@@ -6786,10 +3994,10 @@ fn runtime_theory_cli_assumptions(
 }
 
 fn cmd_repo_index(
-    root: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    edges_path: Option<&PathBuf>,
+    root: &Path,
+    out: &Path,
+    chunks_path: Option<&Path>,
+    edges_path: Option<&Path>,
     max_file_bytes: u64,
     max_files: usize,
     lines_per_chunk: usize,
@@ -6805,19 +4013,19 @@ fn cmd_repo_index(
 
     let result = axiograph_ingest_docs::index_repo(root, &options)?;
 
-    let chunks_out = chunks_path.cloned().unwrap_or_else(|| {
+    let chunks_out = chunks_path.map(Path::to_path_buf).unwrap_or_else(|| {
         out.parent()
             .unwrap_or(std::path::Path::new("."))
             .join("chunks.json")
     });
     fs::create_dir_all(chunks_out.parent().unwrap_or(std::path::Path::new(".")))?;
     let chunks_json = axiograph_ingest_docs::chunks_to_json(&result.extraction)?;
-    fs::write(&chunks_out, &chunks_json)?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     if let Some(edges_out) = edges_path {
         let edges_json = serde_json::to_string_pretty(&result.edges)?;
-        fs::write(edges_out, &edges_json)?;
+        crate::security::write_output_bounded(edges_out, &edges_json, "CLI output")?;
         println!("  {} {}", "→".cyan(), edges_out.display());
     }
 
@@ -6841,7 +4049,7 @@ fn cmd_repo_index(
         proposals,
     };
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!(
         "  {} {} chunks, {} edges",
@@ -6854,11 +4062,11 @@ fn cmd_repo_index(
 }
 
 fn cmd_repo_watch(
-    root: &PathBuf,
-    out: &PathBuf,
-    chunks_path: Option<&PathBuf>,
-    edges_path: Option<&PathBuf>,
-    trace_path: Option<&PathBuf>,
+    root: &Path,
+    out: &Path,
+    chunks_path: Option<&Path>,
+    edges_path: Option<&Path>,
+    trace_path: Option<&Path>,
     interval_secs: u64,
     max_suggestions: usize,
 ) -> Result<()> {
@@ -6882,9 +4090,9 @@ fn cmd_repo_watch(
 }
 
 fn cmd_discover_suggest_links(
-    chunks_path: &PathBuf,
-    edges_path: &PathBuf,
-    out: &PathBuf,
+    chunks_path: &Path,
+    edges_path: &Path,
+    out: &Path,
     max_proposals: usize,
 ) -> Result<()> {
     println!(
@@ -6894,11 +4102,23 @@ fn cmd_discover_suggest_links(
         edges_path.display()
     );
 
-    let chunks_text = fs::read_to_string(chunks_path)?;
-    let edges_text = fs::read_to_string(edges_path)?;
+    let chunks_text = crate::security::read_utf8_file_bounded(
+        chunks_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let edges_text = crate::security::read_utf8_file_bounded(
+        edges_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
 
     let chunks = axiograph_ingest_docs::chunks_from_json_str(&chunks_text)?;
-    let edges: Vec<axiograph_ingest_docs::RepoEdgeV1> = serde_json::from_str(&edges_text)?;
+    let edges: Vec<axiograph_ingest_docs::RepoEdgeV1> = crate::security::parse_json_bounded(
+        edges_text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )?;
 
     let trace_id = format!(
         "trace_{}",
@@ -6925,7 +4145,7 @@ fn cmd_discover_suggest_links(
     )?;
 
     let trace_json = serde_json::to_string_pretty(&trace)?;
-    fs::write(out, &trace_json)?;
+    crate::security::write_output_bounded(out, &trace_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
     println!("  {} {} proposals", "→".yellow(), trace.proposals.len());
 
@@ -6971,9 +4191,9 @@ fn parse_promotion_domains(
 }
 
 fn cmd_discover_promote_proposals(
-    proposals_path: &PathBuf,
-    out_dir: &PathBuf,
-    trace_path: Option<&PathBuf>,
+    proposals_path: &Path,
+    out_dir: &Path,
+    trace_path: Option<&Path>,
     min_confidence: f64,
     domains: &str,
 ) -> Result<()> {
@@ -6983,8 +4203,17 @@ fn cmd_discover_promote_proposals(
         proposals_path.display()
     );
 
-    let text = fs::read_to_string(proposals_path)?;
-    let proposals: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
+    let text = crate::security::read_utf8_file_bounded(
+        proposals_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let proposals: axiograph_ingest_docs::ProposalsFileV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )?;
+    axiograph_ingest_docs::validate_proposals_file_v1(&proposals)?;
 
     let domains = parse_promotion_domains(domains)?;
     let options = axiograph_ingest_docs::PromoteOptionsV1 {
@@ -6997,15 +4226,15 @@ fn cmd_discover_promote_proposals(
 
     for (domain, axi) in &result.candidates {
         let out_path = out_dir.join(domain.default_output_file());
-        fs::write(&out_path, axi)?;
+        crate::security::write_output_bounded(&out_path, axi, "CLI output")?;
         println!("  {} {}", "→".cyan(), out_path.display());
     }
 
     let trace_out = trace_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| out_dir.join("promotion_trace.json"));
     let json = serde_json::to_string_pretty(&result.trace)?;
-    fs::write(&trace_out, json)?;
+    crate::security::write_output_bounded(&trace_out, json, "CLI output")?;
     println!("  {} {}", "→".cyan(), trace_out.display());
 
     Ok(())
@@ -7052,32 +4281,18 @@ struct SchemaHintUpdateV1 {
 }
 
 fn run_llm_plugin(
-    program: &PathBuf,
+    program: &Path,
     args: &[String],
     request: &AugmentPluginRequestV1,
     timeout: Option<Duration>,
 ) -> Result<AugmentPluginResponseV1> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow!("failed to start llm plugin `{}`: {e}", program.display()))?;
-
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("failed to open stdin for llm plugin"))?;
-        serde_json::to_writer(stdin, request)?;
-    }
-
-    let output = crate::llm::wait_with_output_timeout(
-        child,
-        timeout,
-        &format!("llm plugin `{}`", program.display()),
-    )?;
+    let payload = serde_json::to_vec(request)?;
+    let timeout = timeout.ok_or_else(|| anyhow!("LLM plugin timeout is required"))?;
+    let limits = crate::security::ProcessLimits::plugin(timeout)?;
+    let context = format!("llm plugin `{}`", program.display());
+    let mut command = Command::new(program);
+    command.args(args);
+    let output = crate::security::run_command_bounded(command, &payload, limits, &context)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!(
@@ -7088,10 +4303,14 @@ fn run_llm_plugin(
         ));
     }
 
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| anyhow!("llm plugin returned invalid JSON: {e}"))
+    crate::security::parse_json_bounded(
+        &output.stdout,
+        axiograph_security::DEFAULT_PLUGIN_STDOUT_BYTES,
+        "LLM augmentation plugin response",
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn llm_augment_proposals(
     llm_backend: &str,
     endpoint: &str,
@@ -7126,14 +4345,14 @@ fn llm_augment_proposals(
     fn llm_entity_id(entity_type: &str, name: &str) -> String {
         let et = sanitize_symbol(entity_type, 64);
         let key = format!("llm_entity:{et}:{name}");
-        let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(key.as_bytes());
+        let digest = axiograph_kernel::object_blob_digest_v2(key.as_bytes());
         format!("llm_entity::{et}::{digest}")
     }
 
     fn llm_relation_id(rel_type: &str, source: &str, target: &str) -> String {
         let rt = sanitize_symbol(rel_type, 64);
         let key = format!("llm_relation:{rt}:{source}:{target}");
-        let digest = axiograph_dsl::digest::fnv1a64_digest_bytes(key.as_bytes());
+        let digest = axiograph_kernel::object_blob_digest_v2(key.as_bytes());
         format!("llm_rel::{rt}::{digest}")
     }
 
@@ -7222,7 +4441,7 @@ fn llm_augment_proposals(
             let mut t = text.clone();
             if t.len() > 400 {
                 t.truncate(400);
-                t.push_str("…");
+                t.push('…');
             }
             Some(t)
         });
@@ -7322,7 +4541,7 @@ Do NOT add proposals in this mode.
 Max new proposals budget (ignored here): {max_new_proposals}"#
         );
 
-        let content = match llm_backend {
+        let content: String = match llm_backend {
             "ollama" => {
                 #[cfg(feature = "llm-ollama")]
                 {
@@ -7381,8 +4600,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
             }
             other => {
                 return Err(anyhow!(
-                    "unsupported llm backend `{}` for augment-proposals",
-                    other
+                    "unsupported llm backend `{other}` for augment-proposals"
                 ));
             }
         };
@@ -7423,7 +4641,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
         if let Some(t) = evidence_snippet.as_mut() {
             if t.len() > 400 {
                 t.truncate(400);
-                t.push_str("…");
+                t.push('…');
             }
         }
 
@@ -7532,7 +4750,7 @@ Return ONE JSON object with keys:
 If you have no good suggestions, return empty arrays."#
     );
 
-    let content = match llm_backend {
+    let content: String = match llm_backend {
         "ollama" => {
             #[cfg(feature = "llm-ollama")]
             {
@@ -7591,8 +4809,7 @@ If you have no good suggestions, return empty arrays."#
         }
         other => {
             return Err(anyhow!(
-                "unsupported llm backend `{}` for augment-proposals",
-                other
+                "unsupported llm backend `{other}` for augment-proposals"
             ));
         }
     };
@@ -7865,9 +5082,9 @@ fn llm_suggest_schema_structure(
         let mut to_type = "Entity".to_string();
         for f in &r.fields {
             if f.field == "from" {
-                from_type = f.ty.clone();
+                from_type = f.ty.referenced_name().to_string();
             } else if f.field == "to" {
-                to_type = f.ty.clone();
+                to_type = f.ty.referenced_name().to_string();
             }
         }
         relations.push(RelationSummaryV1 {
@@ -7923,7 +5140,7 @@ Return a single JSON object with keys:
 If you have no good suggestions, return empty arrays."#
     );
 
-    let content = match llm_backend {
+    let content: String = match llm_backend {
         "ollama" => {
             #[cfg(feature = "llm-ollama")]
             {
@@ -7982,8 +5199,7 @@ If you have no good suggestions, return empty arrays."#
         }
         other => {
             return Err(anyhow!(
-                "unsupported llm backend `{}` for draft-module structure suggestions",
-                other
+                "unsupported llm backend `{other}` for draft-module structure suggestions"
             ));
         }
     };
@@ -8006,25 +5222,26 @@ If you have no good suggestions, return empty arrays."#
         }
     }
 
-    let mut out = crate::schema_discovery::DraftAxiModuleSuggestions::default();
-    out.subtypes = parsed
-        .subtypes
-        .into_iter()
-        .map(|s| crate::schema_discovery::SuggestedSubtype {
-            sub: s.sub,
-            sup: s.sup,
-            public_rationale: s.public_rationale,
-        })
-        .collect();
-    out.constraints = parsed
-        .constraints
-        .into_iter()
-        .map(|c| crate::schema_discovery::SuggestedConstraint {
-            kind: c.kind,
-            relation: c.relation,
-            public_rationale: c.public_rationale,
-        })
-        .collect();
+    let out = crate::schema_discovery::DraftAxiModuleSuggestions {
+        subtypes: parsed
+            .subtypes
+            .into_iter()
+            .map(|s| crate::schema_discovery::SuggestedSubtype {
+                sub: s.sub,
+                sup: s.sup,
+                public_rationale: s.public_rationale,
+            })
+            .collect(),
+        constraints: parsed
+            .constraints
+            .into_iter()
+            .map(|c| crate::schema_discovery::SuggestedConstraint {
+                kind: c.kind,
+                relation: c.relation,
+                public_rationale: c.public_rationale,
+            })
+            .collect(),
+    };
     Ok(out)
 }
 
@@ -8091,12 +5308,13 @@ fn proposal_meta_mut(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_discover_augment_proposals(
-    proposals_path: &PathBuf,
-    out: &PathBuf,
-    trace_path: Option<&PathBuf>,
-    chunks_path: Option<&PathBuf>,
-    llm_plugin: Option<&PathBuf>,
+    proposals_path: &Path,
+    out: &Path,
+    trace_path: Option<&Path>,
+    chunks_path: Option<&Path>,
+    llm_plugin: Option<&Path>,
     llm_plugin_args: &[String],
     llm_ollama: bool,
     llm_ollama_host: Option<&str>,
@@ -8115,8 +5333,17 @@ fn cmd_discover_augment_proposals(
         proposals_path.display()
     );
 
-    let text = fs::read_to_string(proposals_path)?;
-    let proposals: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
+    let text = crate::security::read_utf8_file_bounded(
+        proposals_path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let proposals: axiograph_ingest_docs::ProposalsFileV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )?;
+    axiograph_ingest_docs::validate_proposals_file_v1(&proposals)?;
 
     let trace_id = format!(
         "augment_{}",
@@ -8149,7 +5376,11 @@ fn cmd_discover_augment_proposals(
     let llm_enabled = llm_selected > 0;
     let evidence_chunks = if llm_enabled {
         if let Some(chunks_path) = chunks_path {
-            let chunks_text = fs::read_to_string(chunks_path)?;
+            let chunks_text = crate::security::read_utf8_file_bounded(
+                chunks_path,
+                crate::security::MAX_TEXT_INPUT_BYTES,
+                "CLI input",
+            )?;
             let chunks = axiograph_ingest_docs::chunks_from_json_str(&chunks_text)?;
 
             let mut needed: BTreeSet<String> = BTreeSet::new();
@@ -8178,7 +5409,7 @@ fn cmd_discover_augment_proposals(
                 let mut t = c.text;
                 if t.len() > 1200 {
                     t.truncate(1200);
-                    t.push_str("…");
+                    t.push('…');
                 }
                 out_map.insert(c.chunk_id, t);
                 if out_map.len() >= 2000 {
@@ -8372,14 +5603,14 @@ fn cmd_discover_augment_proposals(
     }
 
     let json = serde_json::to_string_pretty(&augmented)?;
-    fs::write(out, &json)?;
+    crate::security::write_output_bounded(out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), out.display());
 
     let trace_out = trace_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(format!("{}.trace.json", out.display())));
     let trace_json = serde_json::to_string_pretty(&trace)?;
-    fs::write(&trace_out, &trace_json)?;
+    crate::security::write_output_bounded(&trace_out, &trace_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), trace_out.display());
     println!(
         "  {} {} → {} proposals (+{}, schema_hints_set={})",
@@ -8394,8 +5625,8 @@ fn cmd_discover_augment_proposals(
 }
 
 fn cmd_discover_training_export(
-    input: &PathBuf,
-    out: &PathBuf,
+    input: &Path,
+    out: &Path,
     instance_filter: Option<&str>,
     max_items: usize,
     mask_fields: usize,
@@ -8419,8 +5650,12 @@ fn discover_check_olog_report_from_inputs(
     fragment_json: &str,
     apply_refinement_handle_id: Option<&str>,
 ) -> Result<crate::typed_authoring::DiscoverCheckOlogReportV1> {
-    let fragment: crate::typed_authoring::OlogFragmentV1 = serde_json::from_str(fragment_json)
-        .map_err(|e| anyhow!("failed to parse olog fragment JSON: {e}"))?;
+    let fragment: crate::typed_authoring::OlogFragmentV1 = crate::security::parse_json_bounded(
+        fragment_json.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .map_err(|e| anyhow!("failed to parse olog fragment JSON: {e}"))?;
     crate::typed_authoring::discover_check_olog_report_against_axi_text(
         axi_text,
         schema_name,
@@ -8447,8 +5682,9 @@ fn discover_theory_graph_report_from_axi_text(
     theory_filter: Option<&str>,
 ) -> Result<DiscoverTheoryGraphReportV1> {
     let canonical = crate::axi_input::require_canonical_axi_text(axi_text)?;
-    let kernel = axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), axi_text)
-        .map_err(|err| anyhow!("failed to compile KernelModuleIr: {err}"))?;
+    let kernel =
+        axiograph_pathdb::derive_runtime_module_index(canonical.module().module(), axi_text)
+            .map_err(|err| anyhow!("failed to derive runtime module index: {err}"))?;
     let mut graphs = kernel
         .theories
         .iter()
@@ -8465,7 +5701,7 @@ fn discover_theory_graph_report_from_axi_text(
         })
         .map(axiograph_pathdb::kernel_ir::TheoryIr::obligation_graph)
         .collect::<Vec<_>>();
-    graphs.sort_by(|a, b| a.theory_ref.stable_id().cmp(&b.theory_ref.stable_id()));
+    graphs.sort_by_key(|a| a.theory_ref.stable_id());
     if graphs.is_empty() {
         return Err(anyhow!(
             "no compiled theories matched{}",
@@ -8478,7 +5714,7 @@ fn discover_theory_graph_report_from_axi_text(
         version: "discover_theory_graph_report_v1".to_string(),
         module_digest: canonical.digest().to_string(),
         graphs,
-        trust_boundary: "rust_runtime_operational_not_lean_certificate".to_string(),
+        trust_boundary: "Runtime checked in Rust; not Lean verified.".to_string(),
         completeness_claim: "not_claimed".to_string(),
         ontology_closure_claim: "not_claimed".to_string(),
         notes: vec![
@@ -8504,8 +5740,8 @@ fn migration_preview_schema_from_axi_schema(
             }
             Ok(axiograph_pathdb::migration::ArrowDeclV1 {
                 name: relation.name.clone(),
-                src: relation.fields[0].ty.clone(),
-                dst: relation.fields[1].ty.clone(),
+                src: relation.fields[0].ty.referenced_name().to_string(),
+                dst: relation.fields[1].ty.referenced_name().to_string(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -8576,8 +5812,12 @@ pub(crate) fn discover_transport_preview_from_inputs(
     let validated = canonical.module();
     let module = validated.module();
     let morphism: axiograph_pathdb::migration::SchemaMorphismV1 =
-        serde_json::from_str(morphism_json)
-            .map_err(|e| anyhow!("failed to parse schema morphism JSON: {e}"))?;
+        crate::security::parse_json_bounded(
+            morphism_json.as_bytes(),
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CLI JSON input",
+        )
+        .map_err(|e| anyhow!("failed to parse schema morphism JSON: {e}"))?;
     let schema = select_transport_preview_schema(module, schema_name, &morphism.source_schema)?;
     if schema.name != morphism.source_schema {
         return Err(anyhow!(
@@ -8621,8 +5861,16 @@ pub(crate) fn discover_transport_preview_from_inputs(
 }
 
 fn cmd_discover_check_olog(args: &DiscoverCheckOlogArgs) -> Result<()> {
-    let axi_text = fs::read_to_string(&args.input)?;
-    let fragment_json = fs::read_to_string(&args.fragment)?;
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let fragment_json = crate::security::read_utf8_file_bounded(
+        &args.fragment,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let report = discover_check_olog_report_from_inputs(
         &axi_text,
         args.schema.as_deref(),
@@ -8631,7 +5879,7 @@ fn cmd_discover_check_olog(args: &DiscoverCheckOlogArgs) -> Result<()> {
     )?;
     let json = serde_json::to_string_pretty(&report)?;
     if let Some(path) = args.out.as_ref() {
-        fs::write(path, json)?;
+        crate::security::write_output_bounded(path, json, "CLI output")?;
         println!("wrote {}", path.display());
     } else {
         println!("{json}");
@@ -8640,21 +5888,34 @@ fn cmd_discover_check_olog(args: &DiscoverCheckOlogArgs) -> Result<()> {
 }
 
 fn cmd_discover_theory_graph(args: &DiscoverTheoryGraphArgs) -> Result<()> {
-    let axi_text = fs::read_to_string(&args.input)?;
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let report = discover_theory_graph_report_from_axi_text(&axi_text, args.theory.as_deref())?;
     write_json_output(&report, args.out.as_ref())
 }
 
 fn cmd_discover_kernel_surface(args: &DiscoverKernelSurfaceArgs) -> Result<()> {
-    let axi_text = fs::read_to_string(&args.input)?;
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let canonical = crate::axi_input::require_canonical_axi_text(&axi_text)?;
-    let kernel = axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), &axi_text)
-        .map_err(|err| anyhow!("failed to compile KernelModuleIr: {err}"))?;
-    write_json_output(&kernel.kernel_surface_v1(), args.out.as_ref())
+    let kernel =
+        axiograph_pathdb::derive_runtime_module_index(canonical.module().module(), &axi_text)
+            .map_err(|err| anyhow!("failed to derive runtime module index: {err}"))?;
+    write_json_output(&kernel.runtime_semantic_index(), args.out.as_ref())
 }
 
 fn cmd_discover_theory_check(args: &DiscoverTheoryCheckArgs) -> Result<()> {
-    let axi_text = fs::read_to_string(&args.input)?;
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let closure_tier =
         crate::runtime_theory_check::parse_runtime_theory_closure_tier(&args.closure_tier)?;
     let (world, evidence_policy) = runtime_theory_cli_assumptions(
@@ -8683,7 +5944,11 @@ fn cmd_discover_theory_check(args: &DiscoverTheoryCheckArgs) -> Result<()> {
 
 fn cmd_discover_context_report(args: &DiscoverContextReportArgs) -> Result<()> {
     let db = load_pathdb_for_cli(&args.input)?;
-    let request_json = fs::read_to_string(&args.request)?;
+    let request_json = crate::security::read_utf8_file_bounded(
+        &args.request,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let report = crate::context_report::discover_context_report_from_request_json(
         &db,
         None,
@@ -8705,11 +5970,11 @@ fn cmd_discover_coverage_query(args: &DiscoverCoverageQueryArgs) -> Result<()> {
     let query = coverage_query_from_discover_args(args)?;
     let overlay = args
         .overlay
-        .as_ref()
+        .as_deref()
         .map(load_tooling_overlay)
         .transpose()?;
     let report =
-        axiograph_tooling_overlays::coverage_query_report(&kernel, overlay.as_ref(), &query);
+        axiograph_tooling_overlays::coverage_query_report(&kernel, overlay.as_ref(), &query)?;
     write_json_output(&report, args.out.as_ref())
 }
 
@@ -8717,9 +5982,16 @@ fn coverage_query_from_discover_args(
     args: &DiscoverCoverageQueryArgs,
 ) -> Result<axiograph_tooling_overlays::CoverageQueryV1> {
     let mut query = if let Some(path) = args.query.as_ref() {
-        let query_json = fs::read_to_string(path)?;
-        serde_json::from_str::<axiograph_tooling_overlays::CoverageQueryV1>(&query_json)
-            .map_err(|err| anyhow!("failed to parse CoverageQueryV1 JSON: {err}"))?
+        let query_json = crate::security::read_file_bounded(
+            path,
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CoverageQueryV1",
+        )?;
+        crate::security::parse_json_bounded::<axiograph_tooling_overlays::CoverageQueryV1>(
+            &query_json,
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CoverageQueryV1",
+        )?
     } else {
         axiograph_tooling_overlays::CoverageQueryV1 {
             version: Some(axiograph_tooling_overlays::COVERAGE_QUERY_VERSION_V1.to_string()),
@@ -8766,7 +6038,7 @@ fn cmd_discover_define(args: &DiscoverDefineArgs) -> Result<()> {
     let kernel = compile_kernel_for_tooling_overlay(&args.input)?;
     let overlay = args
         .overlay
-        .as_ref()
+        .as_deref()
         .map(load_tooling_overlay)
         .transpose()?;
     let query = axiograph_tooling_overlays::DefinitionQueryV1 {
@@ -8779,14 +6051,22 @@ fn cmd_discover_define(args: &DiscoverDefineArgs) -> Result<()> {
         include_queries: args.include_queries,
     };
     let report =
-        axiograph_tooling_overlays::definition_query_report(&kernel, overlay.as_ref(), &query);
+        axiograph_tooling_overlays::definition_query_report(&kernel, overlay.as_ref(), &query)?;
     write_json_output(&report, args.out.as_ref())
 }
 
 fn cmd_discover_embedding_relationships(args: &DiscoverEmbeddingRelationshipsArgs) -> Result<()> {
-    let text = fs::read_to_string(&args.embeddings)?;
-    let file: crate::embeddings::EmbeddingsFileV1 = serde_json::from_str(&text)
-        .map_err(|err| anyhow!("failed to parse EmbeddingsFileV1 JSON: {err}"))?;
+    let text = crate::security::read_utf8_file_bounded(
+        &args.embeddings,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let file: crate::embeddings::EmbeddingsFileV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "EmbeddingsFileV1",
+    )?;
+    crate::embeddings::validate_embeddings_file_v1(&file)?;
     let accepted = crate::embeddings::EmbeddingAcceptedRefV1 {
         accepted_ref: args.accepted_ref.clone(),
         accepted_axi_anchor: axiograph_pathdb::AcceptedAxiAnchor::new(
@@ -8853,7 +6133,7 @@ fn cmd_discover_behavior_case(args: &DiscoverBehaviorCaseArgs) -> Result<()> {
     let db = load_pathdb_for_cli(&args.input)?;
     let mut request = load_behavior_case_request(&args.request)?;
     attach_behavior_case_cq_files(&mut request, &args.cq_files)?;
-    if let Some(overlay_path) = args.overlay.as_ref() {
+    if let Some(overlay_path) = args.overlay.as_deref() {
         let overlay = load_tooling_overlay(overlay_path)?;
         request.codegen = behavior_codegen_request_from_overlay(&overlay)?;
         request.overlay = Some(overlay);
@@ -8874,42 +6154,59 @@ fn attach_behavior_case_cq_files(
     }
     let mut loaded = Vec::new();
     for path in cq_files {
-        loaded.extend(crate::predictive_proposals::load_competency_questions(path)?);
+        loaded.extend(crate::predictive_proposals::load_competency_questions(
+            path,
+        )?);
     }
-    let then = request
-        .behavior_case
-        .then
-        .get_or_insert_with(|| crate::behavior_case::BehaviorThenV1 {
-            expected_outcomes: Vec::new(),
-            competency_questions: Vec::new(),
-            rule_scopes: Vec::new(),
-            trust_target: None,
-            notes: Vec::new(),
-        });
+    let then =
+        request
+            .behavior_case
+            .then
+            .get_or_insert_with(|| crate::behavior_case::BehaviorThenV1 {
+                expected_outcomes: Vec::new(),
+                competency_questions: Vec::new(),
+                rule_scopes: Vec::new(),
+                trust_target: None,
+                notes: Vec::new(),
+            });
     then.competency_questions.extend(loaded);
     Ok(())
 }
 
 fn compile_kernel_for_tooling_overlay(
-    input: &PathBuf,
-) -> Result<axiograph_pathdb::kernel_ir::KernelModuleIr> {
-    let axi_text = fs::read_to_string(input)?;
-    axiograph_tooling_overlays::compile_kernel_from_axi_text(&axi_text)
+    input: &Path,
+) -> Result<axiograph_pathdb::kernel_ir::RuntimeModuleIndex> {
+    let axi_text = crate::security::read_utf8_file_bounded(
+        input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    axiograph_tooling_overlays::derive_runtime_index_from_axi_text(&axi_text)
 }
 
-fn load_tooling_overlay(
-    path: &PathBuf,
-) -> Result<axiograph_tooling_overlays::ToolingOverlayBundleV1> {
-    let json_text = fs::read_to_string(path)?;
+fn load_tooling_overlay(path: &Path) -> Result<axiograph_tooling_overlays::ToolingOverlayBundleV1> {
+    let json_text = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     axiograph_tooling_overlays::parse_overlay_bundle(&json_text)
 }
 
 fn load_behavior_case_request(
-    path: &PathBuf,
+    path: &Path,
 ) -> Result<crate::behavior_case::BehaviorCaseCheckRequestV1> {
-    let request_json = fs::read_to_string(path)?;
-    serde_json::from_str(&request_json)
-        .map_err(|err| anyhow!("failed to parse BehaviorCaseCheckRequestV1 JSON: {err}"))
+    let request_json = crate::security::read_utf8_file_bounded(
+        path,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    crate::security::parse_json_bounded(
+        request_json.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "CLI JSON input",
+    )
+    .map_err(|err| anyhow!("failed to parse BehaviorCaseCheckRequestV1 JSON: {err}"))
 }
 
 fn behavior_codegen_request_from_overlay(
@@ -8971,15 +6268,27 @@ fn parse_definition_kind_hint(
 
 fn cmd_discover_route_preview(args: &DiscoverRoutePreviewArgs) -> Result<()> {
     let db = load_pathdb_for_cli(&args.input)?;
-    let request_json = fs::read_to_string(&args.request)?;
+    let request_json = crate::security::read_utf8_file_bounded(
+        &args.request,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let report =
         crate::route_preview::discover_route_preview_from_request_json(&db, &request_json)?;
     write_json_output(&report, args.out.as_ref())
 }
 
 fn cmd_discover_transport_preview(args: &DiscoverTransportPreviewArgs) -> Result<()> {
-    let axi_text = fs::read_to_string(&args.input)?;
-    let morphism_json = fs::read_to_string(&args.morphism)?;
+    let axi_text = crate::security::read_utf8_file_bounded(
+        &args.input,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
+    let morphism_json = crate::security::read_utf8_file_bounded(
+        &args.morphism,
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "CLI input",
+    )?;
     let preview = discover_transport_preview_from_inputs(
         &axi_text,
         args.schema.as_deref(),
@@ -9040,7 +6349,7 @@ fn cmd_discover_competency_questions(args: &CompetencyQuestionsArgs) -> Result<(
     }
 
     let json = serde_json::to_string_pretty(&out)?;
-    fs::write(&args.out, json)?;
+    crate::security::write_output_bounded(&args.out, json, "CLI output")?;
     println!("wrote {}", args.out.display());
     Ok(())
 }
@@ -9355,12 +6664,16 @@ fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
     if args.predictive_proposal_stub {
         adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Stub;
     } else if let Some(url) = args.predictive_proposal_http.as_ref() {
-        adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Http { url: url.clone() };
+        adapter.backend =
+            crate::predictive_proposals::ProposalAdapterBackend::Http { url: url.clone() };
     } else if args.predictive_proposal_llm {
         let exe = std::env::current_exe()
             .map_err(|e| anyhow!("failed to resolve current executable: {e}"))?;
         let mut args_list = vec!["ingest".to_string(), "predictive-proposals-llm".to_string()];
-        let has_model_arg = args.predictive_proposal_plugin_arg.iter().any(|a| a == "--model");
+        let has_model_arg = args
+            .predictive_proposal_plugin_arg
+            .iter()
+            .any(|a| a == "--model");
         if let Some(model) = args.predictive_proposal_model.as_ref() {
             if !has_model_arg {
                 args_list.push("--model".to_string());
@@ -9386,14 +6699,15 @@ fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("");
 
-    let mut db: Option<axiograph_pathdb::PathDB> = None;
-    let training_export = Some(crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
-        instance_filter: args.export_instance.clone(),
-        max_items: args.export_max_items,
-        mask_fields: args.export_mask_fields,
-        seed: args.export_seed,
-        exclude_relations: Vec::new(),
-    });
+    let training_export = Some(
+        crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
+            instance_filter: args.export_instance.clone(),
+            max_items: args.export_max_items,
+            mask_fields: args.export_mask_fields,
+            seed: args.export_seed,
+            exclude_relations: Vec::new(),
+        },
+    );
 
     let guardrail_profile = args.guardrail_profile.trim().to_ascii_lowercase();
     let guardrail_plane = args.guardrail_plane.trim().to_ascii_lowercase();
@@ -9414,10 +6728,9 @@ fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
             &guardrail_plane,
             &guardrail_weights,
         )?;
-        db = Some(loaded);
         if let Some(path) = args.guardrail_out.as_ref() {
             let json = serde_json::to_string_pretty(&report)?;
-            fs::write(path, json)?;
+            crate::security::write_output_bounded(path, json, "CLI output")?;
             println!("wrote {}", path.display());
         }
         Some(report)
@@ -9426,7 +6739,11 @@ fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
     };
 
     let mut input = if input_ext.eq_ignore_ascii_case("axi") {
-        let text = fs::read_to_string(&args.input)?;
+        let text = crate::security::read_utf8_file_bounded(
+            &args.input,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
         crate::predictive_proposal_input::build_predictive_proposal_input_from_axi_text(
             &text,
             None,
@@ -9434,41 +6751,28 @@ fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
             None,
             training_export,
         )?
-    } else if input_ext.eq_ignore_ascii_case("axpd") {
-        let loaded = if let Some(db) = db.take() {
-            db
-        } else {
-            crate::load_pathdb_for_cli(&args.input)?
-        };
-        let built = crate::predictive_proposal_input::build_predictive_proposal_input_from_pathdb(
-            &loaded,
-            &crate::predictive_proposal_input::PredictiveProposalInputBuildOptionsV1 {
-                module_name: None,
-                pathdb_snapshot_id: None,
-                accepted_snapshot_id: None,
-                training_export,
-            },
-        )?;
-        db = Some(loaded);
-        built
     } else {
         return Err(anyhow!(
-            "predictive proposal adapter input must be a canonical `.axi` module or an `.axpd` snapshot with an imported canonical module"
+            "predictive proposal adapter input must be exact canonical `.axi` bytes"
         ));
     };
     if guardrail.is_some() {
         input.set_guardrail_layer(guardrail.clone().expect("guardrail already checked"));
     }
-    input.notes.push("source=cli_predictive_proposals".to_string());
+    input
+        .notes
+        .push("source=cli_predictive_proposals".to_string());
 
-    let mut options = crate::predictive_proposals::PredictiveProposalOptionsV1::default();
-    options.max_new_proposals = args.max_new_proposals;
-    options.seed = args.seed;
-    options.goals = args.goal.clone();
-    options.task_costs = task_costs.clone();
-    options.horizon_steps = args.horizon_steps;
+    let options = crate::predictive_proposals::PredictiveProposalOptionsV1 {
+        max_new_proposals: args.max_new_proposals,
+        seed: args.seed,
+        goals: args.goal.clone(),
+        task_costs: task_costs.clone(),
+        horizon_steps: args.horizon_steps,
+        ..Default::default()
+    };
 
-    let input_pathdb_snapshot_id = input.pathdb_snapshot_id();
+    let input_materialization_id = input.materialization_id();
     let input_accepted_snapshot_id = input.accepted_snapshot_id();
     let req = crate::predictive_proposals::make_predictive_proposal_request(input, options);
     let mut response = adapter.propose(&req)?;
@@ -9480,8 +6784,8 @@ fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
         &response,
         adapter.backend_label(),
         adapter.model.clone(),
-        req.input.axi_digest_v1.clone(),
-        input_pathdb_snapshot_id,
+        req.input.revision_digest_v2.clone(),
+        input_materialization_id,
         input_accepted_snapshot_id,
         guardrail.as_ref().map(|g| g.summary.total_cost),
         if guardrail_profile == "off" {
@@ -9496,106 +6800,38 @@ fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
         },
     )?;
 
-    let mut proposals =
-        crate::predictive_proposals::apply_predictive_proposal_provenance(response.proposals, &provenance);
+    let mut proposals = crate::predictive_proposals::apply_predictive_proposal_provenance(
+        response.proposals,
+        &provenance,
+    );
 
     if args.max_new_proposals > 0 && proposals.proposals.len() > args.max_new_proposals {
         proposals.proposals.truncate(args.max_new_proposals);
     }
 
     let json = serde_json::to_string_pretty(&proposals)?;
-    fs::write(&args.out, &json)?;
+    crate::security::write_output_bounded(&args.out, &json, "CLI output")?;
     println!("wrote {}", args.out.display());
-
-    if let Some(dir) = args.commit_dir.as_ref() {
-        let should_validate = args.validate.unwrap_or(true);
-        if should_validate {
-            let base = if let Some(db) = db.as_ref() {
-                db
-            } else {
-                db = Some(crate::load_pathdb_for_cli(&args.input)?);
-                db.as_ref().expect("db loaded")
-            };
-            let validation = crate::proposals_validate::validate_proposals_v1(
-                base,
-                &proposals,
-                &args.quality,
-                &args.quality_plane,
-            )?;
-            if !validation.ok {
-                return Err(anyhow!(
-                    "refusing to commit: proposals validation failed (errors={}, warnings={})",
-                    validation.quality_delta.summary.error_count,
-                    validation.quality_delta.summary.warning_count
-                ));
-            }
-        }
-
-        let res = crate::pathdb_wal::commit_pathdb_snapshot_with_overlays(
-            dir,
-            &args.accepted_snapshot,
-            &[],
-            &[args.out.clone()],
-            args.commit_message.as_deref(),
-        )?;
-        let run_record = crate::predictive_proposals::build_proposal_adapter_run_record(
-            &provenance,
-            &proposals,
-            Some(res.snapshot_id.clone()),
-            Some(res.accepted_snapshot_id.clone()),
-            Vec::new(),
-        )?;
-        let run_path = crate::accepted_plane::persist_proposal_adapter_run_record(dir, &run_record)?;
-        let semantic_commit = crate::accepted_plane::persist_pathdb_semantic_commit(
-            dir,
-            &res.accepted_snapshot_id,
-            &res.snapshot_id,
-            &crate::accepted_plane::PathdbSemanticCommitOptionsV1 {
-                message: args.commit_message.clone(),
-                proposal_digests: vec![run_record.proposals_digest.clone()],
-                proposal_adapter_run_id: Some(run_record.run_id.clone()),
-                ..crate::accepted_plane::PathdbSemanticCommitOptionsV1::default()
-            },
-        )?;
-        let proposal_ref = format!(
-            "heads/evidence/proposals/{}",
-            run_record
-                .run_id
-                .as_str()
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                    c
-                } else {
-                    '_'
-                })
-                .collect::<String>()
-        );
-        let _ = crate::accepted_plane::persist_semantic_ref(
-            dir,
-            &proposal_ref,
-            &semantic_commit.commit_id,
-        )?;
-        println!(
-            "ok committed {} WAL op(s) on accepted snapshot {} → pathdb snapshot {}",
-            res.ops_added, res.accepted_snapshot_id, res.snapshot_id
-        );
-        println!("ok persisted proposal-adapter run record {}", run_path.display());
-        println!("ok persisted semantic commit {}", semantic_commit.commit_id);
-    }
 
     Ok(())
 }
 
 fn cmd_predictive_proposal_plugin_llm(args: &PredictiveProposalsLlmArgs) -> Result<()> {
-    let mut input = String::new();
-    io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|e| anyhow!("failed to read stdin: {e}"))?;
+    let input = crate::security::read_utf8_stream_bounded(
+        io::stdin(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "predictive proposal stdin",
+    )?;
     if input.trim().is_empty() {
         return Err(anyhow!("expected JSON request on stdin"));
     }
     let req: crate::predictive_proposals::PredictiveProposalRequestV1 =
-        serde_json::from_str(&input).map_err(|e| anyhow!("invalid JSON request: {e}"))?;
+        crate::security::parse_json_bounded(
+            input.as_bytes(),
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CLI JSON input",
+        )
+        .map_err(|e| anyhow!("invalid JSON request: {e}"))?;
     let llm = resolve_llm_state_for_predictive_proposal_plugin(args)?;
     let resp = crate::llm::predictive_proposal_llm_plugin(&llm, &req)?;
     let json = serde_json::to_string(&resp)?;
@@ -9603,17 +6839,43 @@ fn cmd_predictive_proposal_plugin_llm(args: &PredictiveProposalsLlmArgs) -> Resu
     Ok(())
 }
 
+fn account_directory_bytes(total: &mut u64, actual: usize, limit: u64) -> Result<()> {
+    *total = total
+        .checked_add(actual as u64)
+        .ok_or_else(|| anyhow!("directory ingest byte count overflow"))?;
+    if *total > limit {
+        return Err(anyhow!("directory ingest exceeds {limit} input bytes"));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cmd_ingest_dir(
-    root: &PathBuf,
-    out_dir: &PathBuf,
+    root: &Path,
+    out_dir: &Path,
     confluence_space: &str,
     domain: &str,
-    chunks_path: Option<&PathBuf>,
-    facts_path: Option<&PathBuf>,
-    proposals_path: Option<&PathBuf>,
+    chunks_path: Option<&Path>,
+    facts_path: Option<&Path>,
+    proposals_path: Option<&Path>,
     max_file_bytes: u64,
     max_files: usize,
 ) -> Result<()> {
+    const MAX_DIRECTORY_FILES: usize = 10_000;
+    const MAX_DIRECTORY_SCAN_ENTRIES: usize = 100_000;
+    const MAX_DIRECTORY_DEPTH: usize = 32;
+    const MAX_DIRECTORY_CHUNKS: usize = 100_000;
+    const MAX_DIRECTORY_FACTS: usize = 100_000;
+    const MAX_DIRECTORY_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+    if !(1..=MAX_DIRECTORY_FILES).contains(&max_files) {
+        return Err(anyhow!("--max-files must be in 1..={MAX_DIRECTORY_FILES}"));
+    }
+    if max_file_bytes == 0 || max_file_bytes > crate::security::MAX_TEXT_INPUT_BYTES as u64 {
+        return Err(anyhow!(
+            "--max-file-bytes must be in 1..={} bytes",
+            crate::security::MAX_TEXT_INPUT_BYTES
+        ));
+    }
     println!(
         "{} {} → {}",
         "Ingesting dir".green().bold(),
@@ -9621,20 +6883,27 @@ fn cmd_ingest_dir(
         out_dir.display()
     );
 
-    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalize ingest root `{}`", root.display()))?;
     fs::create_dir_all(out_dir)?;
 
     let mut all_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
     let mut all_facts: Vec<axiograph_ingest_docs::ExtractedFact> = Vec::new();
     let mut all_proposals: Vec<axiograph_ingest_docs::ProposalV1> = Vec::new();
     let mut files_ingested = 0usize;
+    let mut entries_scanned = 0_usize;
+    let mut total_input_bytes = 0_u64;
 
-    fn chunk_by_lines(text: &str, max_chars: usize) -> Vec<String> {
+    fn chunk_by_lines(text: &str, max_chars: usize) -> Result<Vec<String>> {
         let mut out: Vec<String> = Vec::new();
         let mut cur = String::new();
         for line in text.lines() {
             let line = line.trim_end();
             if cur.len().saturating_add(line.len() + 1) > max_chars && !cur.is_empty() {
+                if out.len() >= 100_000 {
+                    return Err(anyhow!("directory chunk count exceeds 100000"));
+                }
                 out.push(cur);
                 cur = String::new();
             }
@@ -9644,13 +6913,17 @@ fn cmd_ingest_dir(
             cur.push_str(line);
         }
         if !cur.trim().is_empty() {
+            if out.len() >= 100_000 {
+                return Err(anyhow!("directory chunk count exceeds 100000"));
+            }
             out.push(cur);
         }
-        out
+        Ok(out)
     }
 
     for entry in walkdir::WalkDir::new(&root)
         .follow_links(false)
+        .max_depth(MAX_DIRECTORY_DEPTH)
         .into_iter()
         .filter_entry(|e| {
             if !e.file_type().is_dir() {
@@ -9660,10 +6933,14 @@ fn cmd_ingest_dir(
             name != ".git" && name != "target" && name != "build" && name != "node_modules"
         })
     {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let entry = entry
+            .with_context(|| format!("failed while walking ingest root `{}`", root.display()))?;
+        entries_scanned = entries_scanned.saturating_add(1);
+        if entries_scanned > MAX_DIRECTORY_SCAN_ENTRIES {
+            return Err(anyhow!(
+                "directory ingest scan exceeds {MAX_DIRECTORY_SCAN_ENTRIES} filesystem entries"
+            ));
+        }
 
         if !entry.file_type().is_file() {
             continue;
@@ -9674,14 +6951,14 @@ fn cmd_ingest_dir(
         }
 
         let path = entry.path();
-        let metadata = match std::fs::metadata(path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
+        let metadata = std::fs::symlink_metadata(path)
+            .with_context(|| format!("inspect ingest input `{}`", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            continue;
+        }
         if metadata.len() > max_file_bytes {
             continue;
         }
-
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -9689,15 +6966,26 @@ fn cmd_ingest_dir(
             .to_lowercase();
         let rel_path = path.strip_prefix(&root).unwrap_or(path);
 
-        // Dispatch by extension.
+        // Dispatch by extension. Count the bytes actually read from the
+        // no-follow handle rather than metadata observed before opening.
+        let mut rdf_grounding_text = None;
         match ext.as_str() {
             "md" | "txt" => {
-                let text = match fs::read_to_string(path) {
-                    Ok(s) => s,
+                let text = match crate::security::read_utf8_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "directory text input",
+                ) {
+                    Ok(text) => text,
                     Err(_) => continue,
                 };
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    text.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
                 let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-                let result = axiograph_ingest_docs::extract_knowledge_full(&text, &stem, domain);
+                let result = axiograph_ingest_docs::extract_knowledge_full(&text, &stem, domain)?;
 
                 // Emit generic proposals (claims + mentions) before moving facts.
                 let proposals = axiograph_ingest_docs::proposals_from_extracted_facts_v1(
@@ -9711,10 +6999,19 @@ fn cmd_ingest_dir(
                 all_proposals.extend(proposals);
             }
             "html" => {
-                let html = match fs::read_to_string(path) {
-                    Ok(s) => s,
+                let html = match crate::security::read_utf8_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "directory HTML input",
+                ) {
+                    Ok(html) => html,
                     Err(_) => continue,
                 };
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    html.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
                 let page_id = path.file_stem().unwrap_or_default().to_string_lossy();
                 match axiograph_ingest_docs::extract_knowledge_from_confluence(
                     &html,
@@ -9739,12 +7036,21 @@ fn cmd_ingest_dir(
                 }
             }
             "sql" => {
-                let text = match fs::read_to_string(path) {
-                    Ok(s) => s,
+                let text = match crate::security::read_utf8_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "directory SQL input",
+                ) {
+                    Ok(text) => text,
                     Err(_) => continue,
                 };
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    text.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
                 let doc_id = rel_path.to_string_lossy().to_string();
-                let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
+                let doc_digest = axiograph_kernel::object_blob_digest_v2(doc_id.as_bytes());
 
                 // Evidence chunk(s) for grounding + provenance pointers.
                 let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
@@ -9752,6 +7058,11 @@ fn cmd_ingest_dir(
                     let stmt = stmt.trim();
                     if stmt.is_empty() {
                         continue;
+                    }
+                    if chunks.len() >= MAX_DIRECTORY_CHUNKS {
+                        return Err(anyhow!(
+                            "SQL statement chunk count exceeds {MAX_DIRECTORY_CHUNKS}"
+                        ));
                     }
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("kind".to_string(), "sql_ddl".to_string());
@@ -9777,16 +7088,29 @@ fn cmd_ingest_dir(
                 }
             }
             "json" => {
-                let text = match fs::read_to_string(path) {
-                    Ok(s) => s,
+                let text = match crate::security::read_utf8_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "directory JSON input",
+                ) {
+                    Ok(text) => text,
                     Err(_) => continue,
                 };
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    text.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
+                if let Ok(value) = crate::security::parse_json_bounded::<serde_json::Value>(
+                    text.as_bytes(),
+                    max_file_bytes as usize,
+                    "directory JSON input",
+                ) {
                     let schema = axiograph_ingest_json::infer_schema(&value, "Root");
                     let doc_id = rel_path.to_string_lossy().to_string();
-                    let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
+                    let doc_digest = axiograph_kernel::object_blob_digest_v2(doc_id.as_bytes());
                     let pretty = serde_json::to_string_pretty(&value).unwrap_or(text.clone());
-                    let parts = chunk_by_lines(&pretty, 2_500);
+                    let parts = chunk_by_lines(&pretty, 2_500)?;
 
                     // Evidence chunks for grounding + provenance pointers.
                     let mut chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
@@ -9813,19 +7137,34 @@ fn cmd_ingest_dir(
                 }
             }
             "nt" | "ntriples" | "ttl" | "turtle" | "nq" | "nquads" | "trig" | "rdf" | "owl"
-            | "xml" => match axiograph_ingest_rdfowl::proposals_from_rdf_file_v1(
-                path,
-                Some(rel_path.to_string_lossy().to_string()),
-                Some(domain.to_string()),
-            ) {
-                Ok(proposals) => {
-                    all_proposals.extend(proposals);
-                }
-                Err(_) => {
-                    // Treat RDF ingestion as best-effort for now: keep going so we
-                    // can still preserve text chunks for grounding.
-                }
-            },
+            | "xml" => {
+                let bytes = crate::security::read_file_bounded(
+                    path,
+                    max_file_bytes as usize,
+                    "RDF ingest input",
+                )?;
+                account_directory_bytes(
+                    &mut total_input_bytes,
+                    bytes.len(),
+                    MAX_DIRECTORY_TOTAL_BYTES,
+                )?;
+                rdf_grounding_text = String::from_utf8(bytes.clone()).ok();
+                let format = match ext.as_str() {
+                    "nt" | "ntriples" => axiograph_ingest_rdfowl::RdfFormatV1::NTriples,
+                    "ttl" | "turtle" => axiograph_ingest_rdfowl::RdfFormatV1::Turtle,
+                    "nq" | "nquads" => axiograph_ingest_rdfowl::RdfFormatV1::NQuads,
+                    "trig" => axiograph_ingest_rdfowl::RdfFormatV1::TriG,
+                    "rdf" | "owl" | "xml" => axiograph_ingest_rdfowl::RdfFormatV1::RdfXml,
+                    _ => unreachable!("extension matched RDF branch"),
+                };
+                let proposals = axiograph_ingest_rdfowl::proposals_from_rdf_v1(
+                    &bytes,
+                    format,
+                    Some(rel_path.to_string_lossy().to_string()),
+                    Some(domain.to_string()),
+                )?;
+                all_proposals.extend(proposals);
+            }
             _ => continue,
         }
 
@@ -9834,10 +7173,10 @@ fn cmd_ingest_dir(
             ext.as_str(),
             "nt" | "ntriples" | "ttl" | "turtle" | "nq" | "nquads" | "trig" | "rdf" | "owl" | "xml"
         ) {
-            if let Ok(text) = fs::read_to_string(path) {
+            if let Some(text) = rdf_grounding_text {
                 let doc_id = rel_path.to_string_lossy().to_string();
-                let doc_digest = axiograph_dsl::digest::fnv1a64_digest_bytes(doc_id.as_bytes());
-                let parts = chunk_by_lines(&text, 2_500);
+                let doc_digest = axiograph_kernel::object_blob_digest_v2(doc_id.as_bytes());
+                let parts = chunk_by_lines(&text, 2_500)?;
                 for (i, part) in parts.into_iter().enumerate() {
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("kind".to_string(), "rdf".to_string());
@@ -9855,26 +7194,44 @@ fn cmd_ingest_dir(
             }
         }
 
+        if all_chunks.len() > MAX_DIRECTORY_CHUNKS {
+            return Err(anyhow!(
+                "directory ingest chunk count exceeds {MAX_DIRECTORY_CHUNKS}"
+            ));
+        }
+        if all_facts.len() > MAX_DIRECTORY_FACTS {
+            return Err(anyhow!(
+                "directory ingest fact count exceeds {MAX_DIRECTORY_FACTS}"
+            ));
+        }
+        if all_proposals.len() > axiograph_ingest_docs::MAX_PROPOSALS_V1 {
+            return Err(anyhow!(
+                "directory ingest proposal count exceeds hard limit"
+            ));
+        }
         files_ingested += 1;
     }
 
     let chunks_out = chunks_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| out_dir.join("chunks.json"));
     let facts_out = facts_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| out_dir.join("facts.json"));
     let proposals_out = proposals_path
-        .cloned()
+        .map(Path::to_path_buf)
         .unwrap_or_else(|| out_dir.join("proposals.json"));
 
-    let chunks_json =
-        axiograph_ingest_docs::chunks_to_json_for_chunks("ingest_dir", root.display().to_string(), all_chunks.clone())?;
-    fs::write(&chunks_out, &chunks_json)?;
+    let chunks_json = axiograph_ingest_docs::chunks_to_json_for_chunks(
+        "ingest_dir",
+        root.display().to_string(),
+        all_chunks,
+    )?;
+    crate::security::write_output_bounded(&chunks_out, &chunks_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), chunks_out.display());
 
     let facts_json = serde_json::to_string_pretty(&all_facts)?;
-    fs::write(&facts_out, &facts_json)?;
+    crate::security::write_output_bounded(&facts_out, &facts_json, "CLI output")?;
     println!("  {} {}", "→".cyan(), facts_out.display());
 
     let generated_at = SystemTime::now()
@@ -9892,8 +7249,9 @@ fn cmd_ingest_dir(
         schema_hint: Some(domain.to_string()),
         proposals: all_proposals,
     };
+    axiograph_ingest_docs::validate_proposals_file_v1(&file)?;
     let json = serde_json::to_string_pretty(&file)?;
-    fs::write(&proposals_out, &json)?;
+    crate::security::write_output_bounded(&proposals_out, &json, "CLI output")?;
     println!("  {} {}", "→".cyan(), proposals_out.display());
 
     println!("  {} {} files ingested", "→".yellow(), files_ingested);
@@ -9904,7 +7262,7 @@ fn cmd_ingest_merge(
     proposals_paths: &[PathBuf],
     chunks_paths: &[PathBuf],
     out_proposals: &PathBuf,
-    out_chunks: Option<&PathBuf>,
+    out_chunks: Option<&Path>,
     schema_hint_override: Option<&str>,
 ) -> Result<()> {
     if proposals_paths.is_empty() {
@@ -9917,12 +7275,24 @@ fn cmd_ingest_merge(
     let mut schema_hint: Option<String> = None;
 
     for p in proposals_paths {
-        let text = fs::read_to_string(p)?;
-        let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)?;
+        let text = crate::security::read_utf8_file_bounded(
+            p,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )?;
+        let file: axiograph_ingest_docs::ProposalsFileV1 = crate::security::parse_json_bounded(
+            text.as_bytes(),
+            crate::security::MAX_JSON_INPUT_BYTES,
+            "CLI JSON input",
+        )?;
+        axiograph_ingest_docs::validate_proposals_file_v1(&file)?;
         if schema_hint.is_none() {
             schema_hint = file.schema_hint.clone();
         }
         merged_proposals.extend(file.proposals);
+        if merged_proposals.len() > axiograph_ingest_docs::MAX_PROPOSALS_V1 {
+            return Err(anyhow!("merged proposal count exceeds hard limit"));
+        }
     }
 
     // Deduplicate by proposal_id (stable identifiers).
@@ -9963,17 +7333,29 @@ fn cmd_ingest_merge(
         schema_hint,
         proposals: deduped,
     };
+    axiograph_ingest_docs::validate_proposals_file_v1(&file)?;
 
     fs::create_dir_all(out_proposals.parent().unwrap_or(std::path::Path::new(".")))?;
-    fs::write(out_proposals, serde_json::to_string_pretty(&file)?)?;
+    crate::security::write_output_bounded(
+        out_proposals,
+        serde_json::to_string_pretty(&file)?,
+        "CLI output",
+    )?;
     println!("wrote {}", out_proposals.display());
 
     if !chunks_paths.is_empty() {
         let mut merged_chunks: Vec<axiograph_ingest_docs::Chunk> = Vec::new();
         for p in chunks_paths {
-            let text = fs::read_to_string(p)?;
+            let text = crate::security::read_utf8_file_bounded(
+                p,
+                crate::security::MAX_TEXT_INPUT_BYTES,
+                "CLI input",
+            )?;
             let chunks = axiograph_ingest_docs::chunks_from_json_str(&text)?;
             merged_chunks.extend(chunks);
+            if merged_chunks.len() > 100_000 {
+                return Err(anyhow!("merged chunk count exceeds hard limit"));
+            }
         }
 
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -9985,20 +7367,21 @@ fn cmd_ingest_merge(
             }
         }
 
-        let out_path = out_chunks.cloned().unwrap_or_else(|| {
+        let out_path = out_chunks.map(Path::to_path_buf).unwrap_or_else(|| {
             out_proposals
                 .parent()
                 .unwrap_or(std::path::Path::new("."))
                 .join("chunks.json")
         });
         fs::create_dir_all(out_path.parent().unwrap_or(std::path::Path::new(".")))?;
-        fs::write(
+        crate::security::write_output_bounded(
             &out_path,
             axiograph_ingest_docs::chunks_to_json_for_chunks(
                 "merged_chunks",
                 "merge-proposals",
                 deduped,
             )?,
+            "CLI output",
         )?;
         println!("wrote {}", out_path.display());
     }
@@ -10013,19 +7396,6 @@ fn cmd_ingest_merge(
 mod tests {
     use super::*;
     use clap::Parser;
-
-    fn temp_test_dir(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "axiograph-cli-main-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        dir
-    }
 
     #[test]
     fn discover_check_olog_report_from_inputs_can_apply_handle() {
@@ -10179,7 +7549,7 @@ theory PlantTransport on Plant:
             "axiograph",
             "discover",
             "route-preview",
-            "/tmp/demo.axpd",
+            "/tmp/demo.axi",
             "--request",
             "/tmp/route.json",
             "--out",
@@ -10191,7 +7561,7 @@ theory PlantTransport on Plant:
             Commands::Discover {
                 command: DiscoverCommands::RoutePreview(args),
             } => {
-                assert_eq!(args.input, PathBuf::from("/tmp/demo.axpd"));
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axi"));
                 assert_eq!(args.request, PathBuf::from("/tmp/route.json"));
                 assert_eq!(args.out, Some(PathBuf::from("/tmp/route_preview.json")));
             }
@@ -10205,7 +7575,7 @@ theory PlantTransport on Plant:
             "axiograph",
             "discover",
             "context-report",
-            "/tmp/demo.axpd",
+            "/tmp/demo.axi",
             "--request",
             "/tmp/context.json",
             "--out",
@@ -10217,7 +7587,7 @@ theory PlantTransport on Plant:
             Commands::Discover {
                 command: DiscoverCommands::ContextReport(args),
             } => {
-                assert_eq!(args.input, PathBuf::from("/tmp/demo.axpd"));
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axi"));
                 assert_eq!(args.request, PathBuf::from("/tmp/context.json"));
                 assert_eq!(args.out, Some(PathBuf::from("/tmp/context_report.json")));
             }
@@ -10231,7 +7601,7 @@ theory PlantTransport on Plant:
             "axiograph",
             "discover",
             "behavior-case",
-            "/tmp/demo.axpd",
+            "/tmp/demo.axi",
             "--request",
             "/tmp/behavior_case.json",
             "--out",
@@ -10243,7 +7613,7 @@ theory PlantTransport on Plant:
             Commands::Discover {
                 command: DiscoverCommands::BehaviorCase(args),
             } => {
-                assert_eq!(args.input, PathBuf::from("/tmp/demo.axpd"));
+                assert_eq!(args.input, PathBuf::from("/tmp/demo.axi"));
                 assert_eq!(args.request, PathBuf::from("/tmp/behavior_case.json"));
                 assert_eq!(
                     args.out,
@@ -10255,27 +7625,32 @@ theory PlantTransport on Plant:
     }
 
     #[test]
-    fn authoring_competency_questions_command_parses_nested_subcommand() {
+    fn authoring_workspace_command_parses_unified_request() {
         let cli = Cli::try_parse_from([
             "axiograph",
             "authoring",
-            "competency-questions",
-            "--axi",
-            "/tmp/domain.axi",
-            "--cq",
-            "/tmp/domain.cq",
+            "workspace",
+            "--workspace",
+            "/tmp/workspace",
+            "--request",
+            "/tmp/authoring_request.json",
             "--out",
-            "/tmp/cq_report.json",
+            "/tmp/authoring_report.json",
         ])
-        .expect("parse authoring competency-questions");
+        .expect("parse authoring workspace request");
 
         match cli.command {
             Commands::Authoring {
-                command: AuthoringCommands::CompetencyQuestions { axi, cq, out },
+                command:
+                    AuthoringCommands::Workspace {
+                        workspace,
+                        request,
+                        out,
+                    },
             } => {
-                assert_eq!(axi, Some(PathBuf::from("/tmp/domain.axi")));
-                assert_eq!(cq, PathBuf::from("/tmp/domain.cq"));
-                assert_eq!(out, Some(PathBuf::from("/tmp/cq_report.json")));
+                assert_eq!(workspace, PathBuf::from("/tmp/workspace"));
+                assert_eq!(request, PathBuf::from("/tmp/authoring_request.json"));
+                assert_eq!(out, Some(PathBuf::from("/tmp/authoring_report.json")));
             }
             _ => panic!("unexpected command parse result"),
         }
@@ -10313,163 +7688,11 @@ theory PlantTransport on Plant:
                 assert_eq!(args.query, None);
                 assert_eq!(args.terms, vec!["shipment eligibility"]);
                 assert_eq!(args.relation_names, vec!["OrderEligibleForShipment"]);
-                assert_eq!(
-                    args.cq_names,
-                    vec!["accepted_order_is_shipment_eligible"]
-                );
+                assert_eq!(args.cq_names, vec!["accepted_order_is_shipment_eligible"]);
                 assert_eq!(args.code_refs, vec!["workers/shipping/src/eligibility.rs"]);
                 assert_eq!(args.surface_hints, vec!["shipping"]);
                 assert_eq!(args.max_matches, Some(8));
                 assert_eq!(args.out, Some(PathBuf::from("/tmp/coverage_query.json")));
-            }
-            _ => panic!("unexpected command parse result"),
-        }
-    }
-
-    #[test]
-    fn sem_ref_set_command_parses_nested_subcommand() {
-        let cli = Cli::try_parse_from([
-            "axiograph",
-            "sem",
-            "ref",
-            "set",
-            "--dir",
-            "/tmp/accepted",
-            "--ref",
-            "heads/custom/demo",
-            "--commit",
-            "fnv1a64:demo-commit",
-            "--json",
-        ])
-        .expect("parse sem ref set");
-
-        match cli.command {
-            Commands::Sem {
-                command:
-                    SemCommands::Ref {
-                        command:
-                            SemRefCommands::Set {
-                                dir,
-                                r#ref,
-                                commit,
-                                json,
-                            },
-                    },
-            } => {
-                assert_eq!(dir, PathBuf::from("/tmp/accepted"));
-                assert_eq!(r#ref, "heads/custom/demo");
-                assert_eq!(commit, "fnv1a64:demo-commit");
-                assert!(json);
-            }
-            _ => panic!("unexpected command parse result"),
-        }
-    }
-
-    #[test]
-    fn sem_slice_build_command_parses_nested_subcommand() {
-        let cli = Cli::try_parse_from([
-            "axiograph",
-            "sem",
-            "slice",
-            "build",
-            "--dir",
-            "/tmp/accepted",
-            "--ref",
-            "heads/main",
-            "--selector",
-            "/tmp/slice-selector.json",
-            "--json",
-        ])
-        .expect("parse sem slice build");
-
-        match cli.command {
-            Commands::Sem {
-                command:
-                    SemCommands::Slice {
-                        command:
-                            SemSliceCommands::Build {
-                                dir,
-                                r#ref,
-                                selector,
-                                json,
-                            },
-                    },
-            } => {
-                assert_eq!(dir, PathBuf::from("/tmp/accepted"));
-                assert_eq!(r#ref, "heads/main");
-                assert_eq!(selector, Some(PathBuf::from("/tmp/slice-selector.json")));
-                assert!(json);
-            }
-            _ => panic!("unexpected command parse result"),
-        }
-    }
-
-    #[test]
-    fn sem_merge_lean_json_command_parses() {
-        let cli = Cli::try_parse_from([
-            "axiograph",
-            "sem",
-            "merge",
-            "--source",
-            "heads/review/demo",
-            "--target",
-            "heads/main",
-            "--dry-run",
-            "--lean-json",
-        ])
-        .expect("parse sem merge --lean-json");
-
-        match cli.command {
-            Commands::Sem {
-                command:
-                    SemCommands::Merge {
-                        source,
-                        target,
-                        dry_run,
-                        json,
-                        lean_json,
-                        ..
-                    },
-            } => {
-                assert_eq!(source, "heads/review/demo");
-                assert_eq!(target, "heads/main");
-                assert!(dry_run);
-                assert!(!json);
-                assert!(lean_json);
-            }
-            _ => panic!("unexpected command parse result"),
-        }
-    }
-
-    #[test]
-    fn sem_rebase_lean_json_command_parses() {
-        let cli = Cli::try_parse_from([
-            "axiograph",
-            "sem",
-            "rebase",
-            "--source",
-            "heads/review/demo",
-            "--onto",
-            "heads/main",
-            "--lean-json",
-        ])
-        .expect("parse sem rebase --lean-json");
-
-        match cli.command {
-            Commands::Sem {
-                command:
-                    SemCommands::Rebase {
-                        source,
-                        onto,
-                        json,
-                        lean_json,
-                        ..
-                    },
-            } => {
-                assert_eq!(source, "heads/review/demo");
-                assert_eq!(onto, "heads/main");
-                assert!(!json);
-                assert!(lean_json);
             }
             _ => panic!("unexpected command parse result"),
         }
@@ -10617,111 +7840,16 @@ theory PlantTransport on Plant:
     }
 
     #[test]
-    fn sem_ref_set_command_persists_generic_ref_pointer() {
-        let dir = temp_test_dir("sem-ref-set-command");
-        accepted_plane::init_accepted_plane_dir(&dir).expect("init accepted dir");
-        let family_axi = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("examples/Family.axi");
-        accepted_plane::promote_reviewed_module(&family_axi, &dir, Some("seed"), "off")
-            .expect("seed accepted-plane semantic commit");
-        let commit_id = accepted_plane::read_sem_ref_pointer(&dir, "heads/main")
-            .expect("read main ref after seed")
-            .commit_id;
-
-        cmd_sem(SemCommands::Ref {
-            command: SemRefCommands::Set {
-                dir: dir.clone(),
-                r#ref: "heads/custom/demo".to_string(),
-                commit: commit_id.to_string(),
-                json: false,
-            },
-        })
-        .expect("run sem ref set");
-
-        let pointer = accepted_plane::read_sem_ref_pointer(&dir, "heads/custom/demo")
-            .expect("read persisted semantic ref");
-        assert_eq!(pointer.ref_name, "heads/custom/demo");
-        assert_eq!(pointer.commit_id, commit_id);
-        assert!(dir.join("sem/refs/heads/custom/demo").exists());
-
-        fs::remove_dir_all(&dir).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn sem_slice_build_command_persists_manifest() {
-        let dir = temp_test_dir("sem-slice-build-command");
-        accepted_plane::init_accepted_plane_dir(&dir).expect("init accepted dir");
-        let family_axi = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("examples/Family.axi");
-        accepted_plane::promote_reviewed_module(&family_axi, &dir, Some("seed"), "off")
-            .expect("seed accepted-plane semantic commit");
-
-        cmd_sem(SemCommands::Slice {
-            command: SemSliceCommands::Build {
-                dir: dir.clone(),
-                r#ref: "heads/main".to_string(),
-                selector: None,
-                json: false,
-            },
-        })
-        .expect("run sem slice build");
-
-        let mut entries = fs::read_dir(dir.join("sem/slices"))
-            .expect("read sem slices")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect sem slices");
-        entries.sort_by_key(|entry| entry.path());
-        assert_eq!(entries.len(), 1);
-        let manifest: crate::semantic_merge_lattice::SemanticSliceManifestV1 =
-            serde_json::from_str(
-                &fs::read_to_string(entries[0].path()).expect("read slice manifest"),
-            )
-            .expect("parse slice manifest");
-        assert_eq!(
-            manifest.version,
-            crate::semantic_merge_lattice::SEMANTIC_SLICE_MANIFEST_VERSION_V1
-        );
-        assert_eq!(manifest.base_ref_name, "heads/main");
-        assert!(!manifest.selected_refs.is_empty());
-        assert!(manifest.selected_refs.iter().any(|reference| {
-            reference.kind == crate::semantic_merge_lattice::SemanticSliceRefKindV1::SchemaObject
-                && reference.label.as_deref() == Some("Person")
-        }));
-        assert!(manifest.selected_refs.iter().any(|reference| {
-            reference.kind == crate::semantic_merge_lattice::SemanticSliceRefKindV1::RelationObject
-                && reference.label.as_deref() == Some("Parent")
-        }));
-        assert!(manifest.selected_refs.iter().any(|reference| {
-            reference.kind == crate::semantic_merge_lattice::SemanticSliceRefKindV1::RoleProjection
-                && reference
-                    .label
-                    .as_deref()
-                    .is_some_and(|label| label.contains("Parent.child"))
-        }));
-        assert!(manifest.selected_refs.iter().any(|reference| {
-            reference.kind
-                == crate::semantic_merge_lattice::SemanticSliceRefKindV1::TheoryObligation
-                && reference
-                    .label
-                    .as_deref()
-                    .is_some_and(|label| label.contains("Parent"))
-        }));
-        assert!(manifest.selected_refs.iter().any(|reference| {
-            reference.kind == crate::semantic_merge_lattice::SemanticSliceRefKindV1::InstanceFunctor
-                && reference.id.contains("TinyFamily")
-        }));
-
-        fs::remove_dir_all(&dir).expect("cleanup temp dir");
-    }
-
-    #[test]
     fn discover_theory_graph_report_exposes_runtime_obligation_graphs() {
         let family_axi = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
             .join("examples/Family.axi");
-        let axi_text = fs::read_to_string(family_axi).expect("read Family.axi");
+        let axi_text = crate::security::read_utf8_file_bounded(
+            &family_axi,
+            crate::security::MAX_TEXT_INPUT_BYTES,
+            "CLI input",
+        )
+        .expect("read Family.axi");
         let report = discover_theory_graph_report_from_axi_text(&axi_text, Some("FamRules"))
             .expect("build theory graph report");
 
@@ -10742,24 +7870,5 @@ theory PlantTransport on Plant:
             graph.completeness_claim,
             "use RuntimeTheoryCheckReportV1 for scoped runtime completeness claims"
         );
-    }
-
-    #[test]
-    fn sem_ref_set_command_rejects_missing_commit() {
-        let dir = temp_test_dir("sem-ref-set-missing-commit");
-        accepted_plane::init_accepted_plane_dir(&dir).expect("init accepted dir");
-
-        let err = cmd_sem(SemCommands::Ref {
-            command: SemRefCommands::Set {
-                dir: dir.clone(),
-                r#ref: "heads/custom/demo".to_string(),
-                commit: "fnv1a64:missing-commit".to_string(),
-                json: false,
-            },
-        })
-        .expect_err("missing commit should fail");
-
-        assert!(err.to_string().contains("failed to read semantic commit"));
-        fs::remove_dir_all(&dir).expect("cleanup temp dir");
     }
 }

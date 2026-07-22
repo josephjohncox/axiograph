@@ -1,6 +1,6 @@
 # RDF/SHACL Boundary Examples
 
-These fixtures demonstrate RDF-family interop as a boundary layer. They are not
+These examples demonstrate RDF-family interop as a boundary layer. They are not
 the ontology kernel: import produces evidence/review artifacts that must lower
 through canonical `.axi` and typed review before they can become accepted
 meaning.
@@ -11,13 +11,16 @@ meaning.
 Axiograph contexts/worlds.
 
 ```bash
-./scripts/rdf_named_graph_context_demo.sh
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  ingest dir examples/rdfowl/named_graphs_minimal \
+  --out-dir build/examples/rdfowl/named_graphs_minimal \
+  --domain rdfowl
 ```
 
-The script runs `axiograph ingest dir ... --domain rdfowl`, drafts candidate
-`.axi`, validates it, and emits inspection artifacts under `build/`.
+The command emits typed evidence/review artifacts under `build/`; it does not
+promote accepted meaning.
 
-## SHACL Boundary Fixture
+## SHACL Boundary Example
 
 `w3c_shacl_minimal/` pairs an RDF data graph with a compact SHACL shapes graph.
 The current flow checks RDF/SHACL ingestion and proposal generation; SHACL is a

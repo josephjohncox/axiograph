@@ -1,4 +1,4 @@
-//! Performance harnesses for Axiograph.
+//! Performance runners for Axiograph.
 //!
 //! This is intentionally **not** a microbenchmark framework (no Criterion).
 //! It's a practical CLI tool to answer questions like:
@@ -15,8 +15,7 @@
 use anyhow::{anyhow, Result};
 use clap::Subcommand;
 use serde::Serialize;
-use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -56,10 +55,6 @@ pub enum PerfCommands {
         /// RNG seed (deterministic).
         #[arg(long, default_value_t = 1)]
         seed: u64,
-
-        /// Persist the generated database to `.axpd`.
-        #[arg(long)]
-        out_axpd: Option<PathBuf>,
     },
 
     /// Synthetic AxQL querying over a generated PathDB.
@@ -101,7 +96,7 @@ pub enum PerfCommands {
         seed: u64,
     },
 
-    /// Scenario-based (typed) synthetic ingestion + `.axpd` roundtrip + workload.
+    /// Scenario-based typed synthetic ingestion, detached clone, and workload.
     ///
     /// This is intended to approximate “real model” structure better than a
     /// uniform random graph.
@@ -133,10 +128,6 @@ pub enum PerfCommands {
         /// Max rows per AxQL query.
         #[arg(long, default_value_t = 25)]
         axql_limit: usize,
-
-        /// Persist the generated database to `.axpd`.
-        #[arg(long)]
-        out_axpd: Option<PathBuf>,
 
         /// Write a JSON performance report to this path.
         #[arg(long)]
@@ -214,10 +205,10 @@ pub enum PerfCommands {
         out_json: Option<PathBuf>,
     },
 
-    /// Bounded proposal rollout/eval harness (untrusted; evidence-plane rollouts).
+    /// Bounded proposal rollout/eval runner (untrusted; evidence-plane rollouts).
     #[command(name = "proposal-rollout")]
     PredictiveProposal {
-        /// Input `.axi` (preferred for eval) or `.axpd` snapshot.
+        /// Exact canonical `.axi` input.
         #[arg(long)]
         input: PathBuf,
 
@@ -317,7 +308,6 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             path_len,
             queries,
             seed,
-            out_axpd,
         } => cmd_perf_pathdb(
             entities,
             edges_per_entity,
@@ -326,7 +316,6 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             path_len,
             queries,
             seed,
-            out_axpd.as_ref(),
         ),
         PerfCommands::Axql {
             entities,
@@ -357,7 +346,6 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             path_queries,
             axql_queries,
             axql_limit,
-            out_axpd,
             out_json,
         } => cmd_perf_scenario(
             &scenario,
@@ -367,7 +355,6 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             path_queries,
             axql_queries,
             axql_limit,
-            out_axpd.as_ref(),
             out_json.as_ref(),
         ),
         PerfCommands::Indexes {
@@ -432,7 +419,7 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             out_json,
         } => cmd_perf_predictive_proposal(
             &input,
-            predictive_proposal_plugin.as_ref(),
+            predictive_proposal_plugin.as_deref(),
             &predictive_proposal_plugin_arg,
             predictive_proposal_http.as_deref(),
             predictive_proposal_llm,
@@ -452,7 +439,7 @@ pub fn cmd_perf(command: PerfCommands) -> Result<()> {
             holdout_frac,
             holdout_max,
             seed,
-            out_json.as_ref(),
+            out_json.as_deref(),
         ),
     }
 }
@@ -465,7 +452,6 @@ fn cmd_perf_pathdb(
     path_len: usize,
     queries: usize,
     seed: u64,
-    out_axpd: Option<&PathBuf>,
 ) -> Result<()> {
     if path_len == 0 {
         return Err(anyhow!("--path-len must be > 0"));
@@ -473,8 +459,7 @@ fn cmd_perf_pathdb(
 
     println!("perf/pathdb");
     println!(
-        "  entities={} edges_per_entity={} rel_types={} index_depth={} path_len={} queries={} seed={}",
-        entities, edges_per_entity, rel_types, index_depth, path_len, queries, seed
+        "  entities={entities} edges_per_entity={edges_per_entity} rel_types={rel_types} index_depth={index_depth} path_len={path_len} queries={queries} seed={seed}"
     );
 
     let ingest = crate::synthetic_pathdb::build_synthetic_pathdb_ingest(
@@ -518,16 +503,6 @@ fn cmd_perf_pathdb(
     let query_time = start.elapsed();
 
     // ---------------------------------------------------------------------
-    // Optional persistence.
-    // ---------------------------------------------------------------------
-    if let Some(out) = out_axpd {
-        let start = Instant::now();
-        let bytes = db.to_bytes()?;
-        fs::write(out, bytes)?;
-        println!("  wrote_axpd={} ({:?})", out.display(), start.elapsed());
-    }
-
-    // ---------------------------------------------------------------------
     // Report.
     // ---------------------------------------------------------------------
     println!(
@@ -540,7 +515,7 @@ fn cmd_perf_pathdb(
         relation_time,
         rate(edge_count, relation_time)
     );
-    println!("  build_indexes={:?}", index_time);
+    println!("  build_indexes={index_time:?}");
     println!(
         "  queries={:?} ({:.1} queries/sec)",
         query_time,
@@ -603,7 +578,9 @@ struct PredictiveProposalPerfReportV1 {
     steps: Vec<PredictiveProposalPerfStepV1>,
 }
 
-fn guardrail_summary(report: &crate::predictive_proposals::GuardrailCostReportV1) -> GuardrailSummaryOut {
+fn guardrail_summary(
+    report: &crate::predictive_proposals::GuardrailCostReportV1,
+) -> GuardrailSummaryOut {
     GuardrailSummaryOut {
         total_cost: report.summary.total_cost,
         error_count: report.quality.error_count,
@@ -619,7 +596,7 @@ fn guardrail_summary(report: &crate::predictive_proposals::GuardrailCostReportV1
 fn proposals_digest(file: &axiograph_ingest_docs::ProposalsFileV1) -> Result<String> {
     let bytes = serde_json::to_vec(file)
         .map_err(|e| anyhow!("failed to serialize proposals for digest: {e}"))?;
-    Ok(axiograph_dsl::digest::fnv1a64_digest_bytes(&bytes))
+    Ok(axiograph_kernel::object_blob_digest_v2(&bytes))
 }
 
 fn apply_proposals(
@@ -633,8 +610,7 @@ fn apply_proposals(
 }
 
 fn clone_db(db: &PathDB) -> Result<PathDB> {
-    let bytes = db.to_bytes()?;
-    Ok(PathDB::from_bytes(&bytes)?)
+    db.detached_clone()
 }
 
 fn infer_binary_endpoint_fields(
@@ -687,7 +663,7 @@ fn build_holdout_module(
                 continue;
             };
             for (item_idx, item) in assign.value.items.iter().enumerate() {
-                let axiograph_dsl::schema_v1::SetItemV1::Tuple { fields } = item else {
+                let axiograph_dsl::schema_v1::SetItemV1::Tuple { fields, .. } = item else {
                     continue;
                 };
                 let mut map: HashMap<&str, &str> = HashMap::new();
@@ -755,7 +731,7 @@ fn proposal_relation_keys(file: &axiograph_ingest_docs::ProposalsFileV1) -> Hash
             ..
         } = p
         {
-            out.insert(format!("{}|{}|{}", rel_type, source, target));
+            out.insert(format!("{rel_type}|{source}|{target}"));
         }
     }
     out
@@ -793,9 +769,10 @@ fn precision_recall(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_perf_predictive_proposal(
-    input: &PathBuf,
-    predictive_proposal_plugin: Option<&PathBuf>,
+    input: &Path,
+    predictive_proposal_plugin: Option<&Path>,
     predictive_proposal_plugin_arg: &[String],
     predictive_proposal_http: Option<&str>,
     predictive_proposal_llm: bool,
@@ -815,7 +792,7 @@ fn cmd_perf_predictive_proposal(
     holdout_frac: f64,
     holdout_max: usize,
     seed: u64,
-    out_json: Option<&PathBuf>,
+    out_json: Option<&Path>,
 ) -> Result<()> {
     let selected = (predictive_proposal_stub as usize)
         + (predictive_proposal_plugin.is_some() as usize)
@@ -843,47 +820,39 @@ fn cmd_perf_predictive_proposal(
     let task_cost_total: f64 = task_costs.iter().map(|t| t.value * t.weight).sum();
 
     let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let mut heldout: HashSet<String> = HashSet::new();
-    let mut axi_text: Option<String> = None;
-    let mut axi_digest: Option<axiograph_pathdb::AxiDigest> = None;
-    let mut training_export: Option<crate::predictive_proposals::MaskedTupleTrainingExportV1> = None;
-
-    let mut db = if ext.eq_ignore_ascii_case("axi") {
-        let text = fs::read_to_string(input)?;
-        let canonical = crate::axi_input::require_canonical_axi_text(&text)?;
-        axi_digest = Some(canonical.digest().clone());
-        axi_text = Some(text.clone());
-        let (module, holdout_set) =
-            build_holdout_module(canonical.module().module(), holdout_frac, holdout_max, seed)?;
-        heldout = holdout_set;
-
-        let opts = crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
-            instance_filter: export_instance.map(|s| s.to_string()),
-            max_items: export_max_items,
-            mask_fields: export_mask_fields,
-            seed: export_seed,
-            exclude_relations: Vec::new(),
-        };
-        training_export = Some(crate::predictive_proposals::build_training_export_from_axi_text(
-            &text, &opts,
-        )?);
-
-        let mut db = PathDB::new();
-        let module = axiograph_pathdb::validate_axi_v1_module(module)?;
-        let _summary =
-            axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
-                &mut db, &module,
+    let (mut db, heldout, axi_text, axi_digest, training_export) =
+        if ext.eq_ignore_ascii_case("axi") {
+            let text = crate::security::read_utf8_file_bounded(
+                input,
+                crate::security::MAX_TEXT_INPUT_BYTES,
+                "CLI input",
             )?;
-        db
-    } else if ext.eq_ignore_ascii_case("axpd") {
-        let bytes = fs::read(input)?;
-        PathDB::from_bytes(&bytes)?
-    } else {
-        return Err(anyhow!(
-            "perf proposal-adapter: unsupported input `{}` (expected .axi or .axpd)",
-            input.display()
-        ));
-    };
+            let canonical = crate::axi_input::require_canonical_axi_text(&text)?;
+            let digest = canonical.digest().clone();
+            let (module, heldout) =
+                build_holdout_module(canonical.module().module(), holdout_frac, holdout_max, seed)?;
+            let opts = crate::predictive_proposals::MaskedTupleTrainingExportOptionsV1 {
+                instance_filter: export_instance.map(|s| s.to_string()),
+                max_items: export_max_items,
+                mask_fields: export_mask_fields,
+                seed: export_seed,
+                exclude_relations: Vec::new(),
+            };
+            let training_export =
+                crate::predictive_proposals::build_training_export_from_axi_text(&text, &opts)?;
+            let mut db = PathDB::new();
+            let module = axiograph_pathdb::validate_axi_v1_module(module)?;
+            let _summary =
+                axiograph_pathdb::axi_module_import::import_axi_schema_v1_module_into_pathdb(
+                    &mut db, &module,
+                )?;
+            (db, heldout, Some(text), Some(digest), Some(training_export))
+        } else {
+            return Err(anyhow!(
+                "perf proposal-adapter requires exact canonical `.axi` input; got `{}`",
+                input.display()
+            ));
+        };
 
     let mut adapter = crate::predictive_proposals::ProposalAdapterState::default();
     if predictive_proposal_stub {
@@ -893,10 +862,13 @@ fn cmd_perf_predictive_proposal(
             url: url.to_string(),
         };
     } else if predictive_proposal_llm {
-        let exe = std::env::current_exe()
-            .map_err(|e| anyhow!("perf proposal-adapter: failed to resolve current executable: {e}"))?;
+        let exe = std::env::current_exe().map_err(|e| {
+            anyhow!("perf proposal-adapter: failed to resolve current executable: {e}")
+        })?;
         let mut args_list = vec!["ingest".to_string(), "predictive-proposals-llm".to_string()];
-        let has_model_arg = predictive_proposal_plugin_arg.iter().any(|a| a == "--model");
+        let has_model_arg = predictive_proposal_plugin_arg
+            .iter()
+            .any(|a| a == "--model");
         if let Some(model) = predictive_proposal_model {
             if !has_model_arg {
                 args_list.push("--model".to_string());
@@ -910,7 +882,7 @@ fn cmd_perf_predictive_proposal(
         };
     } else if let Some(plugin) = predictive_proposal_plugin {
         adapter.backend = crate::predictive_proposals::ProposalAdapterBackend::Command {
-            program: plugin.clone(),
+            program: plugin.to_path_buf(),
             args: predictive_proposal_plugin_arg.to_vec(),
         };
     }
@@ -937,9 +909,11 @@ fn cmd_perf_predictive_proposal(
         )> = None;
 
         for rollout in 0..rollouts {
-            let mut input = crate::predictive_proposals::PredictiveProposalInputV1::default();
-            input.axi_digest_v1 = axi_digest.clone();
-            input.axi_module_text = axi_text.clone();
+            let mut input = crate::predictive_proposals::PredictiveProposalInputV1 {
+                revision_digest_v2: axi_digest.clone(),
+                axi_module_text: axi_text.clone(),
+                ..Default::default()
+            };
             if let Some(export) = training_export.clone() {
                 input.set_training_export_layer(export);
             }
@@ -948,11 +922,13 @@ fn cmd_perf_predictive_proposal(
                 "source=perf_predictive_proposal step={step} rollout={rollout}"
             ));
 
-            let mut options = crate::predictive_proposals::PredictiveProposalOptionsV1::default();
-            options.max_new_proposals = max_new_proposals;
-            options.seed = Some(seed.wrapping_add((step as u64) * 1_000 + rollout as u64));
-            options.task_costs = task_costs.clone();
-            options.horizon_steps = Some(horizon_steps);
+            let options = crate::predictive_proposals::PredictiveProposalOptionsV1 {
+                max_new_proposals,
+                seed: Some(seed.wrapping_add((step as u64) * 1_000 + rollout as u64)),
+                task_costs: task_costs.clone(),
+                horizon_steps: Some(horizon_steps),
+                ..Default::default()
+            };
 
             let req = crate::predictive_proposals::make_predictive_proposal_request(input, options);
             let mut response = adapter.propose(&req)?;
@@ -979,8 +955,10 @@ fn cmd_perf_predictive_proposal(
                     Some(guardrail_plane.clone())
                 },
             )?;
-            let mut proposals =
-                crate::predictive_proposals::apply_predictive_proposal_provenance(response.proposals, &provenance);
+            let mut proposals = crate::predictive_proposals::apply_predictive_proposal_provenance(
+                response.proposals,
+                &provenance,
+            );
             if max_new_proposals > 0 && proposals.proposals.len() > max_new_proposals {
                 proposals.proposals.truncate(max_new_proposals);
             }
@@ -1065,7 +1043,7 @@ fn cmd_perf_predictive_proposal(
 
     let json = serde_json::to_string_pretty(&report)?;
     if let Some(path) = out_json {
-        fs::write(path, &json)?;
+        crate::security::write_output_bounded(path, &json, "CLI output")?;
         println!("wrote {}", path.display());
     } else {
         println!("{json}");
@@ -1073,6 +1051,7 @@ fn cmd_perf_predictive_proposal(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_perf_axql(
     entities: usize,
     edges_per_entity: usize,
@@ -1090,8 +1069,7 @@ fn cmd_perf_axql(
 
     println!("perf/axql");
     println!(
-        "  entities={} edges_per_entity={} rel_types={} index_depth={} mode={} path_len={} limit={} queries={} seed={}",
-        entities, edges_per_entity, rel_types, index_depth, mode, path_len, limit, queries, seed
+        "  entities={entities} edges_per_entity={edges_per_entity} rel_types={rel_types} index_depth={index_depth} mode={mode} path_len={path_len} limit={limit} queries={queries} seed={seed}"
     );
 
     let ingest = crate::synthetic_pathdb::build_synthetic_pathdb_ingest(
@@ -1165,7 +1143,7 @@ fn cmd_perf_axql(
             min_confidence: None,
         };
 
-        let res = crate::axql::execute_axql_query(&db, &query)?;
+        let res = execute_compiled_perf_query(&db, &query)?;
         total_rows = total_rows.wrapping_add(res.rows.len() as u64);
     }
 
@@ -1181,7 +1159,7 @@ fn cmd_perf_axql(
         relation_time,
         rate(edge_count, relation_time)
     );
-    println!("  build_indexes={:?}", index_time);
+    println!("  build_indexes={index_time:?}");
     println!(
         "  queries={:?} ({:.1} queries/sec)",
         query_time,
@@ -1238,6 +1216,7 @@ struct PerfIndexesWorkload {
     path_warm_hits: Option<RoaringBitmap>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_perf_indexes(
     entities: usize,
     edges_per_entity: usize,
@@ -1257,14 +1236,40 @@ fn cmd_perf_indexes(
     seed: u64,
     out_json: Option<&PathBuf>,
 ) -> Result<()> {
-    if entities == 0 {
-        return Err(anyhow!("--entities must be > 0"));
+    if entities == 0 || entities > 2_000_000 {
+        return Err(anyhow!("--entities must be in 1..=2000000"));
     }
-    if rel_types == 0 {
-        return Err(anyhow!("--rel-types must be > 0"));
+    if rel_types == 0 || rel_types > 100_000 {
+        return Err(anyhow!("--rel-types must be in 1..=100000"));
     }
-    if path_len == 0 {
-        return Err(anyhow!("--path-len must be > 0"));
+    if index_depth > 16 || path_len == 0 || path_len > 64 {
+        return Err(anyhow!(
+            "--index-depth must be <=16 and --path-len must be in 1..=64"
+        ));
+    }
+    let edge_count = entities
+        .checked_mul(edges_per_entity)
+        .ok_or_else(|| anyhow!("edge count overflow"))?;
+    if edge_count > 8_000_000 {
+        return Err(anyhow!("synthetic edge count exceeds 8000000"));
+    }
+    for (name, actual, maximum) in [
+        ("--path-queries", path_queries, 1_000_000),
+        ("--fact-queries", fact_queries, 1_000_000),
+        ("--text-queries", text_queries, 1_000_000),
+        ("--lru-capacity", lru_capacity, 1_000_000),
+        ("--lru-queue", lru_queue, 65_536),
+        ("--mutations", mutations, 1_000_000),
+    ] {
+        if actual > maximum {
+            return Err(anyhow!("{name} exceeds hard maximum {maximum}"));
+        }
+    }
+    if lru_async && lru_queue == 0 {
+        return Err(anyhow!("--lru-queue must be positive with --lru-async"));
+    }
+    if async_wait_secs > 300 {
+        return Err(anyhow!("--async-wait-secs must be <=300"));
     }
 
     let async_indexes = match index_mode.to_ascii_lowercase().as_str() {
@@ -1279,8 +1284,7 @@ fn cmd_perf_indexes(
 
     println!("perf/indexes");
     println!(
-        "  entities={} edges_per_entity={} rel_types={} index_depth={} path_len={} path_queries={} fact_queries={} text_queries={} seed={}",
-        entities, edges_per_entity, rel_types, index_depth, path_len, path_queries, fact_queries, text_queries, seed
+        "  entities={entities} edges_per_entity={edges_per_entity} rel_types={rel_types} index_depth={index_depth} path_len={path_len} path_queries={path_queries} fact_queries={fact_queries} text_queries={text_queries} seed={seed}"
     );
     println!(
         "  lru_capacity={} lru_async={} lru_queue={} index_mode={} async_wait_secs={} verify={} mutations={}",
@@ -1332,7 +1336,6 @@ fn cmd_perf_indexes(
         }
     }
     let relation_time = start.elapsed();
-    let edge_count = entities.saturating_mul(edges_per_entity);
 
     // ---------------------------------------------------------------------
     // Build indexes (PathIndex only).
@@ -1379,8 +1382,7 @@ fn cmd_perf_indexes(
             Ok(db) => (db, workload),
             Err(arc) => {
                 eprintln!("warn: async indexing still active; cloning db for mutation stage");
-                let bytes = arc.to_bytes()?;
-                (PathDB::from_bytes(&bytes)?, workload)
+                (arc.detached_clone()?, workload)
             }
         }
     } else {
@@ -1495,7 +1497,7 @@ fn cmd_perf_indexes(
         relation_time,
         rate(edge_count, relation_time)
     );
-    println!("  build_indexes={:?}", index_time);
+    println!("  build_indexes={index_time:?}");
     println!(
         "  path_queries={:?} ({:.1} queries/sec)",
         workload.path_warm_time,
@@ -1546,7 +1548,11 @@ fn cmd_perf_indexes(
             mutations,
             mutation_relations_added,
         };
-        fs::write(out, serde_json::to_string_pretty(&report)?)?;
+        crate::security::write_output_bounded(
+            out,
+            serde_json::to_string_pretty(&report)?,
+            "CLI output",
+        )?;
         println!("  wrote_json={}", out.display());
     }
 
@@ -1590,6 +1596,7 @@ fn path_sig(db: &PathDB, rels: &[&str]) -> PathSig {
     PathSig::new(ids)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_index_workload(
     db: &PathDB,
     relation_type_names: &[String],
@@ -1618,20 +1625,11 @@ fn run_index_workload(
     let (text_cold_time, text_cold_hits) =
         time_call(|| db.entities_with_attr_fts("name", cold_token));
 
-    let name_id = db.interner.id_of("name");
     let async_timeout = Duration::from_secs(async_wait_secs);
     if async_wait_secs > 0 {
-        let _ = wait_for(
-            || {
-                let sidecar = db.snapshot_index_sidecar(None);
-                let fact_ready = sidecar.fact_index.is_some();
-                let text_ready = name_id
-                    .and_then(|id| sidecar.text_indexes.get(&id))
-                    .is_some();
-                fact_ready && text_ready
-            },
-            async_timeout,
-        );
+        // Async cache builders are rebuildable process-local state; no durable
+        // sidecar is consulted. A bounded wait lets the workers settle.
+        std::thread::sleep(async_timeout);
     }
 
     if lru_capacity > 0 && path_len > index_depth {
@@ -1733,15 +1731,12 @@ struct PerfScenarioReport {
     ingest_entities_secs: f64,
     ingest_relations_secs: f64,
     build_indexes_secs: f64,
-    axpd_bytes: usize,
-    axpd_serialize_secs: f64,
-    axpd_write_secs: Option<f64>,
-    axpd_read_secs: Option<f64>,
-    axpd_load_secs: f64,
+    detached_clone_secs: f64,
     workload_original: PerfScenarioWorkloadReport,
-    workload_reloaded: PerfScenarioWorkloadReport,
+    workload_detached_clone: PerfScenarioWorkloadReport,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_perf_scenario(
     scenario: &str,
     scale: usize,
@@ -1750,7 +1745,6 @@ fn cmd_perf_scenario(
     path_queries: usize,
     axql_queries: usize,
     axql_limit: usize,
-    out_axpd: Option<&PathBuf>,
     out_json: Option<&PathBuf>,
 ) -> Result<()> {
     if scale == 0 {
@@ -1762,8 +1756,7 @@ fn cmd_perf_scenario(
 
     println!("perf/scenario");
     println!(
-        "  scenario={} scale={} index_depth={} seed={} path_queries={} axql_queries={} axql_limit={}",
-        scenario, scale, index_depth, seed, path_queries, axql_queries, axql_limit
+        "  scenario={scenario} scale={scale} index_depth={index_depth} seed={seed} path_queries={path_queries} axql_queries={axql_queries} axql_limit={axql_limit}"
     );
 
     // ---------------------------------------------------------------------
@@ -1807,43 +1800,14 @@ fn cmd_perf_scenario(
         axql_limit,
         index_depth,
     )?;
-
-    // ---------------------------------------------------------------------
-    // `.axpd` roundtrip.
-    // ---------------------------------------------------------------------
     let start = Instant::now();
-    let bytes = db.to_bytes()?;
-    let serialize_time = start.elapsed();
-
-    let mut write_time = None;
-    if let Some(out) = out_axpd {
-        let start = Instant::now();
-        fs::write(out, &bytes)?;
-        write_time = Some(start.elapsed());
-        println!(
-            "  wrote_axpd={} ({} bytes, {:?})",
-            out.display(),
-            bytes.len(),
-            write_time.expect("set above")
-        );
-    }
-
-    let (read_time, load_bytes) = if let Some(out) = out_axpd {
-        let start = Instant::now();
-        let loaded = fs::read(out)?;
-        (Some(start.elapsed()), loaded)
-    } else {
-        (None, bytes.clone())
-    };
-
-    let start = Instant::now();
-    let db2 = axiograph_pathdb::PathDB::from_bytes(&load_bytes)?;
-    let load_time = start.elapsed();
+    let db2 = db.detached_clone()?;
+    let detached_clone_time = start.elapsed();
 
     // ---------------------------------------------------------------------
-    // Workload after reload (this is the “PathDB snapshot is useful” story).
+    // Workload on a detached in-memory clone.
     // ---------------------------------------------------------------------
-    let workload_reloaded = run_scenario_workload(
+    let workload_detached_clone = run_scenario_workload(
         &scenario_name,
         &relation_type_names,
         &db2,
@@ -1869,17 +1833,10 @@ fn cmd_perf_scenario(
         rate(relations, relation_time)
     );
     println!("  build_indexes={index_time:?}");
-    println!(
-        "  axpd_serialize={serialize_time:?} ({} bytes)",
-        bytes.len()
-    );
-    if let Some(read_time) = read_time {
-        println!("  axpd_read={read_time:?}");
-    }
-    println!("  axpd_load={load_time:?}");
+    println!("  detached_clone={detached_clone_time:?}");
 
     print_workload("workload_original", &workload_original);
-    print_workload("workload_reloaded", &workload_reloaded);
+    print_workload("workload_detached_clone", &workload_detached_clone);
 
     if let Some(out) = out_json {
         let report = PerfScenarioReport {
@@ -1893,16 +1850,12 @@ fn cmd_perf_scenario(
             ingest_entities_secs: entity_time.as_secs_f64(),
             ingest_relations_secs: relation_time.as_secs_f64(),
             build_indexes_secs: index_time.as_secs_f64(),
-            axpd_bytes: bytes.len(),
-            axpd_serialize_secs: serialize_time.as_secs_f64(),
-            axpd_write_secs: write_time.map(|d| d.as_secs_f64()),
-            axpd_read_secs: read_time.map(|d| d.as_secs_f64()),
-            axpd_load_secs: load_time.as_secs_f64(),
+            detached_clone_secs: detached_clone_time.as_secs_f64(),
             workload_original,
-            workload_reloaded,
+            workload_detached_clone,
         };
         let json = serde_json::to_vec_pretty(&report)?;
-        fs::write(out, json)?;
+        crate::security::write_output_bounded(out, json, "CLI output")?;
         println!("  wrote_json={} ", out.display());
     }
 
@@ -1941,6 +1894,7 @@ fn print_workload(label: &str, w: &PerfScenarioWorkloadReport) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_scenario_workload(
     scenario_name: &str,
     relation_type_names: &[String],
@@ -2003,14 +1957,14 @@ fn run_proto_api_workload(
             0 => {
                 let svc = services[rng.gen_range_usize(services.len())];
                 let hits = db.follow_path(svc, &["proto_service_has_rpc"]);
-                total_hits = total_hits.wrapping_add(hits.len() as u64);
+                total_hits = total_hits.wrapping_add(hits.len());
             }
             // service -> rpc -> endpoint
             1 => {
                 let svc = services[rng.gen_range_usize(services.len())];
                 let hits =
                     db.follow_path(svc, &["proto_service_has_rpc", "proto_rpc_http_endpoint"]);
-                total_hits = total_hits.wrapping_add(hits.len() as u64);
+                total_hits = total_hits.wrapping_add(hits.len());
             }
             // doc -> http endpoint -> rpc  (two-step identification path)
             2 => {
@@ -2019,13 +1973,13 @@ fn run_proto_api_workload(
                     doc,
                     &["mentions_http_endpoint", "proto_http_endpoint_of_rpc"],
                 );
-                total_hits = total_hits.wrapping_add(hits.len() as u64);
+                total_hits = total_hits.wrapping_add(hits.len());
             }
             // service -> calls -> calls -> calls (cross-bundle traversal)
             _ => {
                 let svc = services[rng.gen_range_usize(services.len())];
                 let hits = db.follow_path(svc, &["calls", "calls", "calls"]);
-                total_hits = total_hits.wrapping_add(hits.len() as u64);
+                total_hits = total_hits.wrapping_add(hits.len());
             }
         }
     }
@@ -2123,7 +2077,7 @@ fn run_proto_api_workload(
             }
         };
 
-        let res = crate::axql::execute_axql_query(db, &query)?;
+        let res = execute_compiled_perf_query(db, &query)?;
         total_rows = total_rows.wrapping_add(res.rows.len() as u64);
     }
 
@@ -2137,6 +2091,16 @@ fn run_proto_api_workload(
         axql_total_rows: total_rows,
         axql_time_secs: axql_time.as_secs_f64(),
     })
+}
+
+fn execute_compiled_perf_query(
+    db: &axiograph_pathdb::PathDB,
+    query: &crate::axql::AxqlQuery,
+) -> Result<crate::axql::AxqlResult> {
+    let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(db)?;
+    let query_ir = crate::query_ir::QueryIrV1::from_axql_query(query);
+    let mut compiled = query_ir.compile_with_meta(db, Some(&meta))?;
+    compiled.execute(db, Some(&meta))
 }
 
 fn ids_of_type(db: &axiograph_pathdb::PathDB, type_name: &str) -> Vec<u32> {
@@ -2163,7 +2127,7 @@ fn run_generic_workload(
         ));
     }
 
-    let max_len = index_depth.max(1).min(3);
+    let max_len = index_depth.clamp(1, 3);
     let rels: Vec<&str> = relation_type_names.iter().map(|s| s.as_str()).collect();
 
     let mut rng = crate::synthetic_pathdb::XorShift64::new(seed.wrapping_add(11));
@@ -2186,7 +2150,7 @@ fn run_generic_workload(
             2 => db.follow_path(start_id, &[r1, r2]),
             _ => db.follow_path(start_id, &[r1, r2, r3]),
         };
-        total_hits = total_hits.wrapping_add(hits.len() as u64);
+        total_hits = total_hits.wrapping_add(hits.len());
     }
 
     let path_time = start.elapsed();
@@ -2223,7 +2187,7 @@ fn run_generic_workload(
             min_confidence: None,
         };
 
-        let res = crate::axql::execute_axql_query(db, &query)?;
+        let res = execute_compiled_perf_query(db, &query)?;
         total_rows = total_rows.wrapping_add(res.rows.len() as u64);
     }
 

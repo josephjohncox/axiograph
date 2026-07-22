@@ -3,7 +3,6 @@
 use axiograph_pathdb::*;
 use std::sync::{Arc, Barrier};
 use std::thread;
-use tempfile::tempdir;
 
 // ============================================================================
 // String Interning Tests
@@ -25,22 +24,6 @@ fn test_string_interning() {
     // Lookup should work
     assert_eq!(interner.lookup(id1), Some("hello".to_string()));
     assert_eq!(interner.lookup(id2), Some("world".to_string()));
-}
-
-#[test]
-fn test_string_interner_serialization() {
-    let interner = StringInterner::new();
-    interner.intern("first");
-    interner.intern("second");
-    interner.intern("third");
-
-    let bytes = interner.to_bytes();
-    assert!(!bytes.is_empty());
-
-    let restored = StringInterner::from_bytes(&bytes).unwrap();
-    assert_eq!(restored.lookup(StrId::new(0)), Some("first".to_string()));
-    assert_eq!(restored.lookup(StrId::new(1)), Some("second".to_string()));
-    assert_eq!(restored.lookup(StrId::new(2)), Some("third".to_string()));
 }
 
 #[test]
@@ -67,10 +50,6 @@ fn test_string_interner_concurrent_duplicate_insert_is_stable() {
     assert!(ids.iter().all(|id| *id == ids[0]));
     assert_eq!(interner.id_of("shared"), Some(ids[0]));
     assert_eq!(interner.lookup(ids[0]), Some("shared".to_string()));
-
-    let restored = StringInterner::from_bytes(&interner.to_bytes()).expect("restore interner");
-    assert_eq!(restored.id_of("shared"), Some(ids[0]));
-    assert_eq!(restored.lookup(ids[0]), Some("shared".to_string()));
 }
 
 // ============================================================================
@@ -125,61 +104,27 @@ fn test_relation_storage() {
     let mat_id = db.add_entity("Material", vec![("name", "Steel")]);
     let tool_id = db.add_entity("Tool", vec![("name", "Drill")]);
 
-    let rel_id = db.add_relation("usedWith", tool_id, mat_id, 0.9, vec![]);
-
-    assert!(rel_id > 0 || rel_id == 0); // Just verify it returns something
+    let _rel_id = db.add_relation("usedWith", tool_id, mat_id, 0.9, vec![]);
 }
 
 // ============================================================================
-// PathDB Serialization Tests
+// Detached runtime-copy tests. Durable persistence is covered by the
+// authenticated SQLite `.axpd` materialization suite.
 // ============================================================================
 
 #[test]
-fn test_pathdb_roundtrip() {
+fn test_pathdb_detached_clone() {
     let mut db = PathDB::new();
-
-    // Add data
     let id1 = db.add_entity("Material", vec![("name", "Titanium")]);
     let id2 = db.add_entity("Tool", vec![("name", "EndMill")]);
     db.add_relation("usedWith", id2, id1, 0.95, vec![]);
     db.build_indexes();
 
-    // Serialize
-    let bytes = db.to_bytes().unwrap();
-    assert!(!bytes.is_empty());
-
-    // Deserialize
-    let restored = PathDB::from_bytes(&bytes).unwrap();
-
-    // Verify
-    let entity = restored.get_entity(id1);
-    assert!(entity.is_some());
-    assert_eq!(entity.unwrap().entity_type, "Material");
-}
-
-#[test]
-fn test_pathdb_persistence() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("test.axpd");
-
-    // Write
-    {
-        let mut db = PathDB::new();
-        db.add_entity("Material", vec![("name", "Steel")]);
-        db.build_indexes();
-
-        let bytes = db.to_bytes().unwrap();
-        std::fs::write(&path, bytes).unwrap();
-    }
-
-    // Read
-    {
-        let bytes = std::fs::read(&path).unwrap();
-        let db = PathDB::from_bytes(&bytes).unwrap();
-
-        let materials = db.find_by_type("Material");
-        assert!(materials.is_some());
-    }
+    let cloned = db.detached_clone().unwrap();
+    assert_eq!(cloned.entities.len(), db.entities.len());
+    assert_eq!(cloned.relations.len(), db.relations.len());
+    assert_eq!(cloned.get_entity(id1).unwrap().entity_type, "Material");
+    assert!(cloned.follow_one(id2, "usedWith").contains(id1));
 }
 
 // ============================================================================
@@ -386,15 +331,9 @@ fn test_large_scale() {
     }
     println!("1000 queries in {:?}", start.elapsed());
 
-    // Serialize
     let start = std::time::Instant::now();
-    let bytes = db.to_bytes().unwrap();
-    println!("Serialized {} bytes in {:?}", bytes.len(), start.elapsed());
-
-    // Deserialize
-    let start = std::time::Instant::now();
-    let _ = PathDB::from_bytes(&bytes).unwrap();
-    println!("Deserialized in {:?}", start.elapsed());
+    let _ = db.detached_clone().unwrap();
+    println!("Detached runtime clone in {:?}", start.elapsed());
 }
 
 #[test]

@@ -1,0 +1,16 @@
+{
+  "version": "authoring_workspace_request_v1",
+  "operation": "promotion_review",
+  "axi_path": "examples/software_authoring/ProcessControlDomain.axi",
+  "cq_path": "examples/software_authoring/process_control.cq",
+  "schema": "ProcessControl",
+  "query_ir_v1": {
+    "version": 1,
+    "select_vars": ["batch"],
+    "where_atoms": [
+      { "kind": "type", "term": "?batch", "type": "Batch" }
+    ],
+    "limit": 10
+  },
+  "focus_variable": "batch"
+}

@@ -118,23 +118,19 @@ abbrev compEquiv {α : Sort u} {β : Sort v} {γ : Sort w} (e1 : Equiv α β) (e
 abbrev invEquiv {α : Sort u} {β : Sort v} (e : Equiv α β) : Equiv β α := e.symm
 
 -- =============================================================================
--- Univalence (Axiomatized)
+-- Equality-to-equivalence (constructive direction only)
 -- =============================================================================
 
 /-!
-Lean4 + mathlib do not assume univalence.
-
-We keep univalence isolated as an explicit axiom. The current checker does not
-need univalence to validate shipped certificates.
+Lean4 + mathlib do not assume univalence, and Axiograph does not introduce it
+as an axiom. Equality of types constructively induces an equivalence. The
+converse (`Equiv α β → α = β`) remains an explicit non-claim unless a future
+kernel is built in a foundation that proves or assumes univalence and that
+assumption receives a separate trust review.
 -/
-
-axiom ua {α β : Type u} : (Equiv α β) → α = β
 
 def idToEquiv {α β : Type u} : α = β → Equiv α β
   | rfl => Equiv.refl α
-
-axiom uaTransport {α β : Type u} (e : Equiv α β) (x : α) :
-    transport (fun t => t) (ua e) x = e x
 
 -- =============================================================================
 -- Contractibility and Truncation

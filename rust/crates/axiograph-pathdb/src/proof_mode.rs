@@ -41,9 +41,7 @@ impl ProofMode for NoProof {
     type Proof<P> = ();
 
     #[inline]
-    fn capture<P>(_produce: impl FnOnce() -> P) -> Self::Proof<P> {
-        ()
-    }
+    fn capture<P>(_produce: impl FnOnce() -> P) -> Self::Proof<P> {}
 
     #[inline]
     fn with_mut<P>(_proof: &mut Self::Proof<P>, _f: impl FnOnce(&mut P)) {}
@@ -125,7 +123,7 @@ mod tests {
     #[test]
     fn no_proof_does_not_evaluate_closure() {
         let evaluated = Cell::new(false);
-        let _: <NoProof as ProofMode>::Proof<u32> = NoProof::capture(|| {
+        NoProof::capture(|| {
             evaluated.set(true);
             42
         });
@@ -147,8 +145,7 @@ mod tests {
     fn journal_records_only_with_proofs() {
         let mut none: ProofJournal<NoProof, u32> = ProofJournal::new();
         none.record(|| 1);
-        let entries: <NoProof as ProofMode>::Proof<Vec<u32>> = none.into_entries();
-        let _: () = entries;
+        none.into_entries();
 
         let mut some: ProofJournal<WithProof, u32> = ProofJournal::new();
         some.record(|| 1);

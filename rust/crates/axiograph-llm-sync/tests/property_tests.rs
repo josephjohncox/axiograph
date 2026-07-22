@@ -161,12 +161,9 @@ proptest! {
         let right = p2.compose(p3)
             .and_then(|p23| p1.compose(p23));
 
-        match (left, right) {
-            (Ok(l), Ok(r)) => {
-                prop_assert_eq!(l.len(), r.len());
-                prop_assert!((l.confidence().value() - r.confidence().value()).abs() < 0.0001);
-            }
-            _ => {}
+        if let (Ok(l), Ok(r)) = (left, right) {
+            prop_assert_eq!(l.len(), r.len());
+            prop_assert!((l.confidence().value() - r.confidence().value()).abs() < 0.0001);
         }
     }
 }
@@ -466,7 +463,7 @@ proptest! {
                 fact_type: "Test".to_string(),
                 content: axiograph_llm_sync::StructuredFact::Entity {
                     entity_type: "Test".to_string(),
-                    name: format!("Node{}", i),
+                    name: format!("Node{i}"),
                     attributes: HashMap::new(),
                 },
                 weight: 0.9,

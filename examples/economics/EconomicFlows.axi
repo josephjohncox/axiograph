@@ -40,7 +40,7 @@ schema Economy:
   object Time
 
   -- A flow is a directed transfer between agents
-  relation Flow(from: Agent, to: Agent, flowType: FlowType, amount: Amount, time: Time)
+  relation Flow(from: Agent, to: Agent, flowType: FlowType, amount: Amount, time: Time @temporal)
 
   -- Flow composition: consecutive flows
   relation FlowCompose(f1: FlowType, f2: FlowType, result: FlowType)
@@ -221,8 +221,11 @@ instance SimpleEconomy of Economy:
   Text = {SameNetWorth, FiscalBalance, CircularFlow, SameCashFlows}
 
   PathEquivalence = {
-    -- Both paths end with same net worth change (path independence!)
-    (path1=BorrowInvestRepay, path2=SaveInvestEarn, witness=SameNetWorth)
+    -- Both paths end with same net worth change (path independence!).
+    (path1=BorrowInvestRepay, path2=SaveInvestEarn, witness=SameNetWorth),
+    (path1=SaveInvestEarn, path2=BorrowInvestRepay, witness=SameNetWorth),
+    (path1=BorrowInvestRepay, path2=BorrowInvestRepay, witness=SameNetWorth),
+    (path1=SaveInvestEarn, path2=SaveInvestEarn, witness=SameNetWorth)
   }
 
   -- Financial instruments

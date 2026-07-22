@@ -306,6 +306,12 @@ pub struct FactNode {
     pub weight: f32,
 }
 
+impl Default for VerifiedGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VerifiedGraph {
     pub fn new() -> Self {
         Self {
@@ -343,7 +349,7 @@ impl VerifiedGraph {
         }
 
         // Validate confidence
-        if confidence < 0.0 || confidence > 1.0 {
+        if !(0.0..=1.0).contains(&confidence) {
             return Err(GraphError::InvalidConfidence(confidence));
         }
 

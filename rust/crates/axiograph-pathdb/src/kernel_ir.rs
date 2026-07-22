@@ -7,18 +7,23 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
-use axiograph_dsl::digest::{axi_digest_v1, axi_fact_id_v1};
 use axiograph_dsl::schema_v1::{
     parse_path_expr_v3, CarrierFieldsV1, ConstraintV1, PathExprV3, RewriteRuleV1, RewriteVarTypeV1,
     SchemaV1Instance, SchemaV1Module, SchemaV1Schema, SchemaV1Theory, SetItemV1,
 };
+use axiograph_kernel::{
+    revision_digest_v2, runtime_fact_id_v2, CanonicalCompiler, CanonicalModuleSource,
+    CompiledKernelSnapshot, KernelCompilationRequest, KernelRefV2, RepositoryIdV2, ScopeAxisIr,
+    SnapshotIdV2,
+};
 
 use crate::{
+    axi_module_typecheck::{validate_axi_v1_module, Module},
     migration::{MigrationFunctorKindV1, SchemaMorphismV1},
     AxiDigest, ConstraintId, EquationId, InstanceId, ObjectTypeId, RelationId, RewriteRuleId,
-    RoleId, SchemaId, StableFactId, TheoryId,
+    RoleId, SchemaId, StableFactId, TheoryId, Validated,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,7 +31,21 @@ use crate::{
 pub enum RoleKind {
     Data,
     Context,
+    World,
     Temporal,
+    Parameter,
+    Evidence,
+}
+
+impl RoleKind {
+    pub fn scope_axis(self) -> Option<ScopeAxisIr> {
+        match self {
+            Self::Context => Some(ScopeAxisIr::Context),
+            Self::World => Some(ScopeAxisIr::World),
+            Self::Temporal => Some(ScopeAxisIr::Temporal),
+            Self::Data | Self::Parameter | Self::Evidence => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,44 +114,93 @@ pub struct SubtypeRoleProjectionIr {
     pub fields: Vec<String>,
 }
 
+fn serialize_string_set<S>(value: &HashSet<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    value.iter().collect::<BTreeSet<_>>().serialize(serializer)
+}
+
+fn serialize_string_map<S, V>(value: &HashMap<String, V>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+    V: Serialize,
+{
+    value
+        .iter()
+        .collect::<BTreeMap<_, _>>()
+        .serialize(serializer)
+}
+
+fn serialize_string_set_map<S>(
+    value: &HashMap<String, HashSet<String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    value
+        .iter()
+        .map(|(key, items)| (key, items.iter().collect::<BTreeSet<_>>()))
+        .collect::<BTreeMap<_, _>>()
+        .serialize(serializer)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CompiledSchemaIr {
+pub struct RuntimeSchemaIndex {
     pub schema_id: SchemaId,
+    #[serde(serialize_with = "serialize_string_set")]
     pub object_types: HashSet<String>,
+    #[serde(serialize_with = "serialize_string_map")]
     pub object_type_ids: HashMap<String, ObjectTypeId>,
+    #[serde(serialize_with = "serialize_string_set_map")]
     pub supertypes_of: HashMap<String, HashSet<String>>,
+    #[serde(serialize_with = "serialize_string_set_map")]
     pub subtypes_of: HashMap<String, HashSet<String>>,
+    #[serde(serialize_with = "serialize_string_map")]
     pub relations: HashMap<String, RelationSemanticsIr>,
+    #[serde(serialize_with = "serialize_string_map")]
     pub role_interfaces: HashMap<String, RoleInterfaceIr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct KernelModuleIr {
+pub struct RuntimeModuleIndex {
     pub module_digest: AxiDigest,
-    pub schemas: Vec<CompiledSchemaIr>,
+    pub schemas: Vec<RuntimeSchemaIndex>,
     pub theories: Vec<TheoryIr>,
     pub instances: Vec<InstanceIr>,
+    /// Serialized read-only citations copied from the exact canonical snapshot.
+    /// They cannot mint accepted authority after deserialization.
+    pub canonical_citations: Vec<CanonicalKernelCitationIr>,
+    /// Canonical authority retained by in-process derived consumers. Serialized
+    /// runtime indexes intentionally omit this handle and cannot reconstruct it.
+    #[serde(skip)]
+    canonical_snapshot: Option<CompiledKernelSnapshot>,
 }
 
-pub const KERNEL_SURFACE_VERSION_V1: &str = "kernel_surface_v1";
+pub const RUNTIME_SEMANTIC_INDEX_VERSION: &str = "runtime_semantic_index_v3";
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalKernelCitationIr {
+    #[schemars(with = "serde_json::Value")]
+    pub reference: KernelRefV2,
+    pub label: String,
+}
+
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum KernelRefV1 {
-    Module {
-        module_digest: AxiDigest,
+pub enum RuntimeIrRef {
+    /// Exact typed citation copied from `KernelSnapshotIr::refs`.
+    Canonical {
+        citation: CanonicalKernelCitationIr,
     },
-    Schema {
-        schema_id: SchemaId,
-    },
-    SchemaObject {
-        schema_id: SchemaId,
-        object: SchemaCategoryObjectRefIr,
-    },
-    SchemaArrow {
-        schema_id: SchemaId,
-        arrow: SchemaCategoryArrowRefIr,
-    },
+    /// Runtime-theory diagnostics are execution-plane analysis refs, not
+    /// alternate category objects or accepted semantic identities.
     Theory {
         theory_id: TheoryId,
         schema_id: SchemaId,
@@ -148,14 +216,6 @@ pub enum KernelRefV1 {
         instance_id: InstanceId,
         schema_id: SchemaId,
     },
-    InstanceObjectImage {
-        instance_id: InstanceId,
-        object: SchemaCategoryObjectRefIr,
-    },
-    InstanceArrowImage {
-        instance_id: InstanceId,
-        arrow: SchemaCategoryArrowRefIr,
-    },
     StableFact {
         instance_id: InstanceId,
         fact_id: StableFactId,
@@ -164,23 +224,21 @@ pub enum KernelRefV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct KernelSurfaceV1 {
+pub struct RuntimeSemanticIndex {
     pub version: String,
     pub module_digest: AxiDigest,
-    pub refs: Vec<KernelRefV1>,
-    pub schema_categories: Vec<SchemaCategoryIr>,
-    pub instance_functors: Vec<InstanceFunctorIr>,
+    pub refs: Vec<RuntimeIrRef>,
     pub total_refs: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }
 
-impl KernelSurfaceV1 {
-    pub fn contains_ref(&self, reference: &KernelRefV1) -> bool {
+impl RuntimeSemanticIndex {
+    pub fn contains_ref(&self, reference: &RuntimeIrRef) -> bool {
         self.refs.iter().any(|candidate| candidate == reference)
     }
 
-    pub fn unresolved_refs(&self, references: &[KernelRefV1]) -> Vec<KernelRefV1> {
+    pub fn unresolved_refs(&self, references: &[RuntimeIrRef]) -> Vec<RuntimeIrRef> {
         let declared = self.refs.iter().collect::<BTreeSet<_>>();
         references
             .iter()
@@ -191,41 +249,27 @@ impl KernelSurfaceV1 {
             .collect()
     }
 
-    pub fn validate_refs(&self, references: &[KernelRefV1]) -> Result<(), String> {
+    pub fn validate_refs(&self, references: &[RuntimeIrRef]) -> Result<(), String> {
         let unresolved = self.unresolved_refs(references);
         if unresolved.is_empty() {
             return Ok(());
         }
         Err(format!(
-            "strict semantic report references {} undeclared KernelRefV1 handle(s): {}",
+            "strict semantic report references {} undeclared derived runtime IR ref(s): {}",
             unresolved.len(),
             unresolved
                 .iter()
-                .map(KernelRefV1::stable_label)
+                .map(RuntimeIrRef::stable_label)
                 .collect::<Vec<_>>()
                 .join(", ")
         ))
     }
 }
 
-impl KernelRefV1 {
+impl RuntimeIrRef {
     pub fn stable_label(&self) -> String {
         match self {
-            Self::Module { module_digest } => format!("module:{module_digest}"),
-            Self::Schema { schema_id } => format!("schema:{schema_id}"),
-            Self::SchemaObject { schema_id, object } => {
-                format!("schema_object:{schema_id}:{}", object.name())
-            }
-            Self::SchemaArrow { schema_id, arrow } => match arrow {
-                SchemaCategoryArrowRefIr::RoleProjection {
-                    role_id,
-                    relation_id,
-                    role_name,
-                } => format!("schema_arrow:{schema_id}:role:{relation_id}:{role_id}:{role_name}"),
-                SchemaCategoryArrowRefIr::SubtypeInclusion {
-                    subtype, supertype, ..
-                } => format!("schema_arrow:{schema_id}:subtype:{subtype}:{supertype}"),
-            },
+            Self::Canonical { citation } => citation.reference.stable_label(),
             Self::Theory {
                 theory_id,
                 schema_id,
@@ -240,24 +284,6 @@ impl KernelRefV1 {
                 instance_id,
                 schema_id,
             } => format!("instance:{schema_id}:{instance_id}"),
-            Self::InstanceObjectImage {
-                instance_id,
-                object,
-            } => format!("instance_object_image:{instance_id}:{}", object.name()),
-            Self::InstanceArrowImage { instance_id, arrow } => match arrow {
-                SchemaCategoryArrowRefIr::RoleProjection {
-                    role_id,
-                    relation_id,
-                    role_name,
-                } => format!(
-                    "instance_arrow_image:{instance_id}:role:{relation_id}:{role_id}:{role_name}"
-                ),
-                SchemaCategoryArrowRefIr::SubtypeInclusion {
-                    subtype, supertype, ..
-                } => {
-                    format!("instance_arrow_image:{instance_id}:subtype:{subtype}:{supertype}")
-                }
-            },
             Self::StableFact {
                 instance_id,
                 fact_id,
@@ -265,105 +291,6 @@ impl KernelRefV1 {
             } => format!("stable_fact:{instance_id}:{relation_id}:{fact_id}"),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SchemaCategoryObjectRefIr {
-    ObjectType {
-        object_type_id: ObjectTypeId,
-        name: String,
-    },
-    RelationObject {
-        relation_id: RelationId,
-        name: String,
-    },
-}
-
-impl SchemaCategoryObjectRefIr {
-    pub fn name(&self) -> &str {
-        match self {
-            Self::ObjectType { name, .. } | Self::RelationObject { name, .. } => name,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SchemaCategoryArrowRefIr {
-    RoleProjection {
-        role_id: RoleId,
-        relation_id: RelationId,
-        role_name: String,
-    },
-    SubtypeInclusion {
-        schema_id: SchemaId,
-        subtype: String,
-        supertype: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum SchemaCategoryArrowKindIr {
-    RoleProjection,
-    SubtypeInclusion,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SchemaCategoryObjectIr {
-    pub object: SchemaCategoryObjectRefIr,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SchemaCategoryArrowIr {
-    pub arrow_ref: SchemaCategoryArrowRefIr,
-    pub name: String,
-    pub source: SchemaCategoryObjectRefIr,
-    pub target: SchemaCategoryObjectRefIr,
-    pub kind: SchemaCategoryArrowKindIr,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SchemaCategoryIr {
-    pub schema_id: SchemaId,
-    pub objects: Vec<SchemaCategoryObjectIr>,
-    pub arrows: Vec<SchemaCategoryArrowIr>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstanceObjectImageIr {
-    pub object: SchemaCategoryObjectRefIr,
-    pub elements: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstanceArrowMappingIr {
-    pub source: String,
-    pub target: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstanceArrowImageIr {
-    pub arrow_ref: SchemaCategoryArrowRefIr,
-    pub source: SchemaCategoryObjectRefIr,
-    pub target: SchemaCategoryObjectRefIr,
-    pub mappings: Vec<InstanceArrowMappingIr>,
-    pub total_on_source_elements: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstanceFunctorIr {
-    pub instance_id: InstanceId,
-    pub schema_id: SchemaId,
-    pub object_images: Vec<InstanceObjectImageIr>,
-    pub arrow_images: Vec<InstanceArrowImageIr>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -479,7 +406,9 @@ pub struct TheoryIr {
 
 pub const RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1: &str = "runtime_theory_fragment_summary_v1";
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TheoryObligationKindIr {
     Constraint,
@@ -488,7 +417,9 @@ pub enum TheoryObligationKindIr {
     RewriteRule,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TheoryObligationRefIr {
     Constraint {
@@ -577,7 +508,9 @@ impl TheoryObligationRefIr {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TheorySubjectKindIr {
     Theory,
@@ -585,7 +518,9 @@ pub enum TheorySubjectKindIr {
     Role,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TheorySubjectRefIr {
     Theory {
@@ -1042,7 +977,7 @@ impl RelationSemanticsIr {
     }
 }
 
-impl CompiledSchemaIr {
+impl RuntimeSchemaIndex {
     pub fn relation(&self, name: &str) -> Option<&RelationSemanticsIr> {
         self.relations.get(name)
     }
@@ -1710,7 +1645,7 @@ impl TheoryIr {
 
     pub fn theory_transport_plan(
         &self,
-        compiled_schema: &CompiledSchemaIr,
+        compiled_schema: &RuntimeSchemaIndex,
         morphism: &SchemaMorphismV1,
         operator: MigrationFunctorKindV1,
     ) -> TheoryTransportPlanIr {
@@ -1748,8 +1683,7 @@ impl TheoryIr {
         ];
         if opaque_or_out_of_fragment_obligations > 0 {
             notes.push(format!(
-                "{} obligation(s) remain opaque or outside the current runtime theory fragment",
-                opaque_or_out_of_fragment_obligations
+                "{opaque_or_out_of_fragment_obligations} obligation(s) remain opaque or outside the current runtime theory fragment"
             ));
         }
 
@@ -2342,7 +2276,7 @@ fn runtime_fragment_status_for_constraint(
 }
 
 pub fn build_theory_transport_plan_ir(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &TheoryIr,
     morphism: &SchemaMorphismV1,
     operator: MigrationFunctorKindV1,
@@ -2421,7 +2355,7 @@ pub fn build_theory_transport_plan_ir(
 }
 
 fn theory_transport_item_ir(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &TheoryIr,
     morphism: &SchemaMorphismV1,
     operator: MigrationFunctorKindV1,
@@ -2532,14 +2466,125 @@ fn theory_transport_item_ir(
     }
 }
 
-pub fn compile_kernel_module_ir(
+/// Derive PathDB's non-authoritative runtime index after the canonical compiler
+/// has accepted the exact source bytes. The returned runtime index retains the
+/// immutable canonical snapshot for in-process authority checks; serialization
+/// drops that handle, so deserialized runtime indexes remain citations only.
+pub fn derive_runtime_module_index(
     module: &SchemaV1Module,
     axi_text: &str,
-) -> Result<KernelModuleIr, String> {
+) -> Result<RuntimeModuleIndex, String> {
+    let source = CanonicalModuleSource::parse(axi_text.as_bytes().to_vec()).map_err(|error| {
+        format!("cannot derive runtime index from non-canonical source: {error}")
+    })?;
+    if source.parsed() != module {
+        return Err(
+            "refusing to derive runtime index: supplied AST does not match the canonical .axi source"
+                .to_string(),
+        );
+    }
+    let canonical_snapshot = CanonicalCompiler::compile(KernelCompilationRequest {
+        repository_id: RepositoryIdV2::from_descriptor_bytes(b"axiograph:pathdb-runtime-index"),
+        accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[axi_text.as_bytes()]),
+        root_module: source.parsed().module_name.clone(),
+        modules: vec![source],
+    })
+    .map_err(|error| format!("canonical compiler rejected runtime-index input: {error}"))?;
+
+    let validated = validate_axi_v1_module(module.clone())
+        .map_err(|error| format!("canonical .axi module failed validation: {error}"))?;
+    derive_runtime_index_from_validated(
+        validated.module(),
+        AxiDigest::from_axi_text(axi_text),
+        canonical_snapshot,
+    )
+}
+
+/// Validate a package-shaped adapter AST against an already compiled canonical
+/// snapshot. Exact sources must match every module revision in canonical closure
+/// order; the returned lifecycle witness remains a derived PathDB boundary.
+pub fn validate_runtime_package_adapter(
+    canonical_snapshot: &CompiledKernelSnapshot,
+    sources: &[CanonicalModuleSource],
+) -> Result<Module<Validated>, String> {
+    let mut source_by_name = BTreeMap::new();
+    for source in sources {
+        let name = source.parsed().module_name.clone();
+        if source_by_name.insert(name.clone(), source).is_some() {
+            return Err(format!("duplicate package source `{name}`"));
+        }
+    }
+    let closure = canonical_snapshot.ir().ordered_module_closure();
+    if source_by_name.len() != closure.len() {
+        return Err(format!(
+            "runtime package source count {} does not match canonical closure count {}",
+            source_by_name.len(),
+            closure.len()
+        ));
+    }
+    let root = closure
+        .iter()
+        .find(|module| &module.module_id == canonical_snapshot.ir().root_module_id())
+        .ok_or_else(|| "canonical snapshot root module is absent from its closure".to_string())?;
+    let mut adapter = SchemaV1Module {
+        module_name: root.module_name.clone(),
+        imports: Vec::new(),
+        schemas: Vec::new(),
+        theories: Vec::new(),
+        instances: Vec::new(),
+    };
+    for compiled_module in closure {
+        let source = source_by_name
+            .get(&compiled_module.module_name)
+            .ok_or_else(|| {
+                format!(
+                    "runtime package is missing canonical module `{}`",
+                    compiled_module.module_name
+                )
+            })?;
+        if source.revision() != &compiled_module.revision {
+            return Err(format!(
+                "runtime package module `{}` exact-byte revision does not match canonical snapshot",
+                compiled_module.module_name
+            ));
+        }
+        adapter.schemas.extend(source.parsed().schemas.clone());
+        adapter.theories.extend(source.parsed().theories.clone());
+        adapter.instances.extend(source.parsed().instances.clone());
+    }
+    validate_axi_v1_module(adapter)
+        .map_err(|error| format!("derived runtime package adapter failed validation: {error}"))
+}
+
+/// Derive one runtime citation index from an exact-source canonical package.
+/// This never recompiles or reconstructs semantic authority: the supplied
+/// immutable snapshot licenses the derived adapter and is retained in-process.
+pub fn derive_runtime_package_index(
+    canonical_snapshot: &CompiledKernelSnapshot,
+    sources: &[CanonicalModuleSource],
+) -> Result<RuntimeModuleIndex, String> {
+    let validated = validate_runtime_package_adapter(canonical_snapshot, sources)?;
+    let root_name = validated.module().module_name.as_str();
+    let root_source = sources
+        .iter()
+        .find(|source| source.parsed().module_name == root_name)
+        .ok_or_else(|| format!("runtime package root source `{root_name}` is missing"))?;
+    derive_runtime_index_from_validated(
+        validated.module(),
+        AxiDigest::from_axi_text(root_source.exact_text()),
+        canonical_snapshot.clone(),
+    )
+}
+
+fn derive_runtime_index_from_validated(
+    module: &SchemaV1Module,
+    module_digest: AxiDigest,
+    canonical_snapshot: CompiledKernelSnapshot,
+) -> Result<RuntimeModuleIndex, String> {
     let schemas = module
         .schemas
         .iter()
-        .map(compile_schema_ir)
+        .map(derive_runtime_schema_index)
         .collect::<Vec<_>>();
 
     let schema_by_name = schemas
@@ -2557,7 +2602,7 @@ pub fn compile_kernel_module_ir(
                     theory.name, theory.schema, module.module_name
                 )
             })?;
-            compile_theory_ir(compiled_schema, theory)
+            derive_runtime_theory_index(compiled_schema, theory)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -2581,425 +2626,99 @@ pub fn compile_kernel_module_ir(
                         instance.name, instance.schema, module.module_name
                     )
                 })?;
-            compile_instance_ir(&module.module_name, compiled_schema, schema_ast, instance)
+            derive_runtime_instance_index(
+                &module.module_name,
+                compiled_schema,
+                schema_ast,
+                instance,
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(KernelModuleIr {
-        module_digest: AxiDigest::from_axi_text(axi_text),
+    let canonical_citations = canonical_snapshot
+        .ir()
+        .refs()
+        .iter()
+        .cloned()
+        .map(|reference| CanonicalKernelCitationIr {
+            label: canonical_snapshot
+                .ir()
+                .label_for_ref(&reference)
+                .unwrap_or_else(|| reference.stable_label()),
+            reference,
+        })
+        .collect();
+    Ok(RuntimeModuleIndex {
+        module_digest,
         schemas,
         theories,
         instances,
+        canonical_citations,
+        canonical_snapshot: Some(canonical_snapshot),
     })
 }
 
-impl KernelModuleIr {
-    pub fn kernel_surface_v1(&self) -> KernelSurfaceV1 {
-        build_kernel_surface_v1(self)
+impl RuntimeModuleIndex {
+    /// Canonical authority retained from the exact-byte compilation that
+    /// produced this derived runtime index. `None` means the index came from a
+    /// serialized runtime artifact and must not be treated as authoritative.
+    pub fn canonical_snapshot(&self) -> Option<&CompiledKernelSnapshot> {
+        self.canonical_snapshot.as_ref()
+    }
+
+    pub fn runtime_semantic_index(&self) -> RuntimeSemanticIndex {
+        build_runtime_semantic_index(self)
     }
 }
 
-pub fn build_kernel_surface_v1(module: &KernelModuleIr) -> KernelSurfaceV1 {
-    let mut refs = BTreeSet::new();
-    let mut notes = vec![
-        "kernel surface is a deterministic runtime index over compiled IR; it is not a Lean proof object".to_string(),
-        "semantic authority remains accepted canonical .axi plus compiled IR under explicit anchors".to_string(),
-    ];
-    refs.insert(KernelRefV1::Module {
-        module_digest: module.module_digest.clone(),
-    });
-
-    let mut schema_categories = Vec::new();
-    for schema in &module.schemas {
-        refs.insert(KernelRefV1::Schema {
-            schema_id: schema.schema_id.clone(),
-        });
-        let category = compile_schema_category_ir(schema);
-        for object in &category.objects {
-            refs.insert(KernelRefV1::SchemaObject {
-                schema_id: category.schema_id.clone(),
-                object: object.object.clone(),
-            });
-        }
-        for arrow in &category.arrows {
-            refs.insert(KernelRefV1::SchemaArrow {
-                schema_id: category.schema_id.clone(),
-                arrow: arrow.arrow_ref.clone(),
-            });
-        }
-        schema_categories.push(category);
-    }
-    schema_categories.sort_by(|left, right| left.schema_id.cmp(&right.schema_id));
-
-    for theory in &module.theories {
-        refs.insert(KernelRefV1::Theory {
-            theory_id: theory.theory_id.clone(),
-            schema_id: theory.schema_id.clone(),
-        });
-        for obligation in theory.obligation_refs() {
-            refs.insert(KernelRefV1::TheoryObligation { obligation });
-        }
-        for subject in theory.subject_refs() {
-            refs.insert(KernelRefV1::TheorySubject {
-                theory_id: theory.theory_id.clone(),
-                subject,
-            });
-        }
-    }
-
-    let schemas_by_id = module
-        .schemas
+pub fn build_runtime_semantic_index(module: &RuntimeModuleIndex) -> RuntimeSemanticIndex {
+    let refs = module
+        .canonical_citations
         .iter()
-        .map(|schema| (schema.schema_id.clone(), schema))
-        .collect::<BTreeMap<_, _>>();
-    let mut instance_functors = Vec::new();
-    for instance in &module.instances {
-        refs.insert(KernelRefV1::Instance {
-            instance_id: instance.instance_id.clone(),
-            schema_id: instance.schema_id.clone(),
-        });
-        for fact in &instance.relation_facts {
-            refs.insert(KernelRefV1::StableFact {
-                instance_id: instance.instance_id.clone(),
-                fact_id: fact.fact_id.clone(),
-                relation_id: fact.relation_id.clone(),
-            });
-        }
-        let Some(schema) = schemas_by_id.get(&instance.schema_id) else {
-            notes.push(format!(
-                "instance `{}` references missing schema `{}`; instance functor refs were not emitted",
-                instance.instance_id, instance.schema_id
-            ));
-            continue;
-        };
-        match compile_instance_functor_ir(schema, instance) {
-            Ok(functor) => {
-                for image in &functor.object_images {
-                    refs.insert(KernelRefV1::InstanceObjectImage {
-                        instance_id: functor.instance_id.clone(),
-                        object: image.object.clone(),
-                    });
-                }
-                for image in &functor.arrow_images {
-                    refs.insert(KernelRefV1::InstanceArrowImage {
-                        instance_id: functor.instance_id.clone(),
-                        arrow: image.arrow_ref.clone(),
-                    });
-                }
-                instance_functors.push(functor);
-            }
-            Err(err) => notes.push(format!(
-                "instance `{}` did not lower to InstanceFunctorIr: {err}",
-                instance.instance_id
-            )),
-        }
-    }
-    instance_functors.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
-
-    let refs = refs.into_iter().collect::<Vec<_>>();
-    KernelSurfaceV1 {
-        version: KERNEL_SURFACE_VERSION_V1.to_string(),
+        .cloned()
+        .map(|citation| RuntimeIrRef::Canonical { citation })
+        .collect::<Vec<_>>();
+    RuntimeSemanticIndex {
+        version: RUNTIME_SEMANTIC_INDEX_VERSION.to_string(),
         module_digest: module.module_digest.clone(),
         total_refs: refs.len(),
         refs,
-        schema_categories,
-        instance_functors,
-        notes,
-    }
-}
-
-pub fn compile_schema_category_ir(compiled_schema: &CompiledSchemaIr) -> SchemaCategoryIr {
-    let mut object_names = compiled_schema
-        .object_types
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    object_names.sort();
-
-    let mut objects = object_names
-        .iter()
-        .filter_map(|name| {
-            compiled_schema
-                .object_type_id(name)
-                .cloned()
-                .map(|object_type_id| SchemaCategoryObjectIr {
-                    object: SchemaCategoryObjectRefIr::ObjectType {
-                        object_type_id,
-                        name: name.clone(),
-                    },
-                })
-        })
-        .collect::<Vec<_>>();
-
-    let mut relation_semantics = compiled_schema.relations.values().collect::<Vec<_>>();
-    relation_semantics.sort_by(|a, b| a.name.cmp(&b.name));
-    objects.extend(
-        relation_semantics
-            .iter()
-            .map(|relation| SchemaCategoryObjectIr {
-                object: relation_object_ref(relation),
-            }),
-    );
-    objects.sort_by(|a, b| a.object.cmp(&b.object));
-
-    let mut arrows = Vec::new();
-    for subtype in &object_names {
-        for supertype in compiled_schema.direct_supertypes_of(subtype) {
-            if let (Some(source), Some(target)) = (
-                object_type_ref(compiled_schema, subtype),
-                object_type_ref(compiled_schema, &supertype),
-            ) {
-                arrows.push(SchemaCategoryArrowIr {
-                    arrow_ref: SchemaCategoryArrowRefIr::SubtypeInclusion {
-                        schema_id: compiled_schema.schema_id.clone(),
-                        subtype: subtype.clone(),
-                        supertype: supertype.clone(),
-                    },
-                    name: format!("{subtype}_to_{supertype}"),
-                    source,
-                    target,
-                    kind: SchemaCategoryArrowKindIr::SubtypeInclusion,
-                });
-            }
-        }
-    }
-
-    for relation in relation_semantics {
-        let source = relation_object_ref(relation);
-        for role in relation.roles.iter().cloned() {
-            if let Some(target) = object_type_ref(compiled_schema, &role.target_type) {
-                arrows.push(SchemaCategoryArrowIr {
-                    arrow_ref: SchemaCategoryArrowRefIr::RoleProjection {
-                        role_id: role.role_id.clone(),
-                        relation_id: relation.relation_id.clone(),
-                        role_name: role.name.clone(),
-                    },
-                    name: format!("{}.{}", relation.name, role.name),
-                    source: source.clone(),
-                    target,
-                    kind: SchemaCategoryArrowKindIr::RoleProjection,
-                });
-            }
-        }
-    }
-    arrows.sort_by(|a, b| a.arrow_ref.cmp(&b.arrow_ref));
-
-    SchemaCategoryIr {
-        schema_id: compiled_schema.schema_id.clone(),
-        objects,
-        arrows,
         notes: vec![
-            "schema category uses relation-as-object semantics: relation tuples are objects and relation roles are projection arrows".to_string(),
-            "subtype declarations lower to inclusion arrows; binary graph edges remain derived traversal views".to_string(),
+            "this runtime surface is a read-only citation projection of KernelSnapshotIr::refs; it is not a second category or proof object".to_string(),
+            "serialized citations retain canonical typed references but cannot reconstruct the accepted snapshot handle".to_string(),
         ],
     }
 }
 
-pub fn compile_instance_functor_ir(
-    compiled_schema: &CompiledSchemaIr,
-    instance: &InstanceIr,
-) -> Result<InstanceFunctorIr, String> {
-    if instance.schema_id != compiled_schema.schema_id {
-        return Err(format!(
-            "instance `{}` belongs to schema `{}`, not `{}`",
-            instance.instance_id, instance.schema_id, compiled_schema.schema_id
-        ));
-    }
-
-    let category = compile_schema_category_ir(compiled_schema);
-    let object_members = closed_object_members(compiled_schema, instance);
-    let relation_facts = instance
-        .relation_facts
-        .iter()
-        .map(|fact| {
-            (
-                SchemaCategoryObjectRefIr::RelationObject {
-                    relation_id: fact.relation_id.clone(),
-                    name: fact.relation_name.clone(),
-                },
-                fact.fact_id.as_str().to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let mut object_images = Vec::new();
-    for object in &category.objects {
-        let elements = match &object.object {
-            SchemaCategoryObjectRefIr::ObjectType { name, .. } => object_members
-                .get(name)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<Vec<_>>(),
-            SchemaCategoryObjectRefIr::RelationObject { relation_id, .. } => relation_facts
-                .iter()
-                .filter_map(|(object_ref, fact_id)| match object_ref {
-                    SchemaCategoryObjectRefIr::RelationObject {
-                        relation_id: candidate,
-                        ..
-                    } if candidate == relation_id => Some(fact_id.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-        };
-        object_images.push(InstanceObjectImageIr {
-            object: object.object.clone(),
-            elements,
-        });
-    }
-
-    let mut arrow_images = Vec::new();
-    for arrow in &category.arrows {
-        let (mappings, notes) = match &arrow.arrow_ref {
-            SchemaCategoryArrowRefIr::RoleProjection {
-                role_id,
-                relation_id,
-                ..
-            } => {
-                let mut mappings = Vec::new();
-                for fact in instance
-                    .relation_facts
-                    .iter()
-                    .filter(|fact| &fact.relation_id == relation_id)
-                {
-                    if let Some(value) = fact
-                        .role_values
-                        .iter()
-                        .find(|value| &value.role_id == role_id)
-                    {
-                        mappings.push(InstanceArrowMappingIr {
-                            source: fact.fact_id.as_str().to_string(),
-                            target: value.value.clone(),
-                        });
-                    }
-                }
-                (mappings, Vec::new())
-            }
-            SchemaCategoryArrowRefIr::SubtypeInclusion { subtype, .. } => {
-                let mappings = object_members
-                    .get(subtype)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|member| InstanceArrowMappingIr {
-                        source: member.clone(),
-                        target: member,
-                    })
-                    .collect::<Vec<_>>();
-                (
-                    mappings,
-                    vec![
-                        "subtype inclusion image uses closed object membership, so subtype elements are transported into supertype images by identity".to_string(),
-                    ],
-                )
-            }
-        };
-        let source_size = object_images
-            .iter()
-            .find(|image| image.object == arrow.source)
-            .map(|image| image.elements.len())
-            .unwrap_or_default();
-        let total_on_source_elements = mappings.len() == source_size;
-        arrow_images.push(InstanceArrowImageIr {
-            arrow_ref: arrow.arrow_ref.clone(),
-            source: arrow.source.clone(),
-            target: arrow.target.clone(),
-            mappings,
-            total_on_source_elements,
-            notes,
-        });
-    }
-
-    Ok(InstanceFunctorIr {
-        instance_id: instance.instance_id.clone(),
-        schema_id: instance.schema_id.clone(),
-        object_images,
-        arrow_images,
-        notes: vec![
-            "instance functor interprets object types as closed sets and relation objects as stable fact-id sets".to_string(),
-            "role projection arrows interpret facts as mappings from stable fact ids to typed role values".to_string(),
-        ],
-    })
-}
-
-fn object_type_ref(
-    compiled_schema: &CompiledSchemaIr,
-    name: &str,
-) -> Option<SchemaCategoryObjectRefIr> {
-    compiled_schema
-        .object_type_id(name)
-        .cloned()
-        .map(|object_type_id| SchemaCategoryObjectRefIr::ObjectType {
-            object_type_id,
-            name: name.to_string(),
-        })
-}
-
-fn relation_object_ref(relation: &RelationSemanticsIr) -> SchemaCategoryObjectRefIr {
-    SchemaCategoryObjectRefIr::RelationObject {
-        relation_id: relation.relation_id.clone(),
-        name: relation.tuple_type_name.clone(),
-    }
-}
-
-fn closed_object_members(
-    compiled_schema: &CompiledSchemaIr,
-    instance: &InstanceIr,
-) -> HashMap<String, BTreeSet<String>> {
-    let mut object_members = instance
-        .object_members
-        .iter()
-        .map(|membership| {
-            (
-                membership.object_type_name.clone(),
-                membership.members.iter().cloned().collect::<BTreeSet<_>>(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-
-    for (subtype, supertypes) in &compiled_schema.supertypes_of {
-        let Some(subtype_members) = object_members.get(subtype).cloned() else {
-            continue;
-        };
-        for supertype in supertypes {
-            object_members
-                .entry(supertype.clone())
-                .or_default()
-                .extend(subtype_members.iter().cloned());
-        }
-    }
-
-    object_members
-}
-
-pub fn compile_instance_ir(
+pub fn derive_runtime_instance_index(
     module_name: &str,
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     schema: &SchemaV1Schema,
     instance: &SchemaV1Instance,
 ) -> Result<InstanceIr, String> {
-    let assignment_by_name = instance
-        .assignments
-        .iter()
-        .map(|assignment| (assignment.name.as_str(), &assignment.value))
-        .collect::<HashMap<_, _>>();
-
     let mut object_members = Vec::new();
     for object_name in &schema.objects {
-        let Some(value) = assignment_by_name.get(object_name.as_str()) else {
+        let assignments = instance
+            .assignments
+            .iter()
+            .filter(|assignment| assignment.name == *object_name)
+            .collect::<Vec<_>>();
+        if assignments.is_empty() {
             continue;
-        };
+        }
         let object_type_id = compiled_schema
             .object_type_id(object_name)
             .cloned()
             .ok_or_else(|| format!("compiled schema missing object type `{object_name}`"))?;
-        let members = value
-            .items
+        let members = assignments
             .iter()
+            .flat_map(|assignment| assignment.value.items.iter())
             .filter_map(|item| match item {
                 SetItemV1::Ident { name } => Some(name.clone()),
                 SetItemV1::Tuple { .. } => None,
             })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>();
         object_members.push(ObjectMembershipIr {
             object_type_id,
@@ -3009,10 +2728,8 @@ pub fn compile_instance_ir(
     }
 
     let mut relation_facts = Vec::new();
+    let mut seen_fact_ids = HashMap::new();
     for relation in &schema.relations {
-        let Some(value) = assignment_by_name.get(relation.name.as_str()) else {
-            continue;
-        };
         let relation_ir = compiled_schema
             .relation(&relation.name)
             .ok_or_else(|| format!("compiled schema missing relation `{}`", relation.name))?;
@@ -3022,8 +2739,13 @@ pub fn compile_instance_ir(
             .map(|role| (role.name.as_str(), role))
             .collect::<HashMap<_, _>>();
 
-        for item in &value.items {
-            let SetItemV1::Tuple { fields } = item else {
+        for item in instance
+            .assignments
+            .iter()
+            .filter(|assignment| assignment.name == relation.name)
+            .flat_map(|assignment| assignment.value.items.iter())
+        {
+            let SetItemV1::Tuple { fields, .. } = item else {
                 continue;
             };
             let mut role_values = Vec::new();
@@ -3058,18 +2780,20 @@ pub fn compile_instance_ir(
                 .map(|(field, value)| (field.as_str(), value.as_str()))
                 .collect::<Vec<_>>();
 
-            relation_facts.push(RelationFactIr {
-                fact_id: StableFactId::new(axi_fact_id_v1(
-                    module_name,
-                    &schema.name,
-                    &instance.name,
-                    &relation.name,
-                    &fact_fields,
-                )),
+            let fact_id = StableFactId::new(runtime_fact_id_v2(
+                module_name,
+                &schema.name,
+                &instance.name,
+                &relation.name,
+                &fact_fields,
+            ));
+            let fact = RelationFactIr {
+                fact_id,
                 relation_id: relation_ir.relation_id.clone(),
                 relation_name: relation.name.clone(),
                 role_values,
-            });
+            };
+            insert_relation_fact_v1(&mut seen_fact_ids, &mut relation_facts, fact)?;
         }
     }
 
@@ -3085,7 +2809,26 @@ pub fn compile_instance_ir(
     })
 }
 
-pub fn compile_schema_ir(schema: &SchemaV1Schema) -> CompiledSchemaIr {
+fn insert_relation_fact_v1(
+    seen: &mut HashMap<StableFactId, RelationFactIr>,
+    facts: &mut Vec<RelationFactIr>,
+    fact: RelationFactIr,
+) -> Result<(), String> {
+    if let Some(existing) = seen.get(&fact.fact_id) {
+        if existing != &fact {
+            return Err(format!(
+                "legacy fact id collision `{}`: differing typed payloads must not overwrite or deduplicate",
+                fact.fact_id
+            ));
+        }
+        return Ok(());
+    }
+    seen.insert(fact.fact_id.clone(), fact.clone());
+    facts.push(fact);
+    Ok(())
+}
+
+pub fn derive_runtime_schema_index(schema: &SchemaV1Schema) -> RuntimeSchemaIndex {
     let object_types = collect_object_types(schema);
     let object_type_ids = object_types
         .iter()
@@ -3117,25 +2860,20 @@ pub fn compile_schema_ir(schema: &SchemaV1Schema) -> CompiledSchemaIr {
                         schema.name, rel.name, field.field
                     )),
                     name: field.field.clone(),
-                    target_type: field.ty.clone(),
+                    target_type: field.ty.referenced_name().to_string(),
                     order: idx as u16,
-                    kind: classify_role(
-                        field.field.as_str(),
-                        field.ty.as_str(),
-                        is_context_axis_type(&supertypes_of, field.ty.as_str()),
-                        is_temporal_axis_type(&supertypes_of, field.ty.as_str()),
-                    ),
+                    kind: role_kind_from_decl(field.kind),
                 })
                 .collect::<Vec<_>>();
             (
                 rel.name.clone(),
-                compile_relation_semantics(&schema.name, &rel.name, tuple_type_name, roles),
+                derive_relation_semantics(&schema.name, &rel.name, tuple_type_name, roles),
             )
         })
         .collect();
-    let role_interfaces = compile_role_interfaces(&relations, &subtypes_of);
+    let role_interfaces = derive_role_interfaces(&relations, &subtypes_of);
 
-    CompiledSchemaIr {
+    RuntimeSchemaIndex {
         schema_id: SchemaId::new(schema.name.clone()),
         object_types,
         object_type_ids,
@@ -3146,7 +2884,7 @@ pub fn compile_schema_ir(schema: &SchemaV1Schema) -> CompiledSchemaIr {
     }
 }
 
-pub fn compile_relation_semantics(
+pub fn derive_relation_semantics(
     schema_name: &str,
     relation_name: &str,
     tuple_type_name: String,
@@ -3172,7 +2910,7 @@ pub fn compile_relation_semantics(
     };
 
     RelationSemanticsIr {
-        relation_id: RelationId::new(format!("relation:{}:{}", schema_name, relation_name)),
+        relation_id: RelationId::new(format!("relation:{schema_name}:{relation_name}")),
         name: relation_name.to_string(),
         tuple_type_name,
         roles,
@@ -3181,8 +2919,8 @@ pub fn compile_relation_semantics(
     }
 }
 
-pub fn compile_theory_ir(
-    compiled_schema: &CompiledSchemaIr,
+pub fn derive_runtime_theory_index(
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &SchemaV1Theory,
 ) -> Result<TheoryIr, String> {
     let theory_id = TheoryId::new(format!(
@@ -3196,7 +2934,7 @@ pub fn compile_theory_ir(
         .iter()
         .enumerate()
         .map(|(index, constraint)| {
-            compile_constraint_ir(compiled_schema, theory, &theory_id, index, constraint)
+            derive_constraint_index(compiled_schema, theory, &theory_id, index, constraint)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -3294,7 +3032,7 @@ pub fn compile_theory_ir(
         .rewrite_rules
         .iter()
         .map(|rule| {
-            compile_rewrite_rule_ir(
+            derive_rewrite_rule_index(
                 compiled_schema,
                 theory,
                 &theory_id,
@@ -3314,8 +3052,8 @@ pub fn compile_theory_ir(
     })
 }
 
-fn compile_constraint_ir(
-    compiled_schema: &CompiledSchemaIr,
+fn derive_constraint_index(
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &SchemaV1Theory,
     theory_id: &TheoryId,
     _index: usize,
@@ -3383,12 +3121,12 @@ fn stable_constraint_id(
     ConstraintId::new(format!(
         "constraint:{}:{}",
         theory_id.as_str(),
-        axi_digest_v1(&digest_input)
+        revision_digest_v2(&digest_input)
     ))
 }
 
-fn compile_rewrite_rule_ir(
-    compiled_schema: &CompiledSchemaIr,
+fn derive_rewrite_rule_index(
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &SchemaV1Theory,
     theory_id: &TheoryId,
     rule: &RewriteRuleV1,
@@ -3453,7 +3191,7 @@ fn compile_rewrite_rule_ir(
 }
 
 fn touched_roles_for_relation_refs(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     relation_refs: &[String],
 ) -> Vec<TheoryTouchedRoleIr> {
     let mut roles = Vec::new();
@@ -3558,7 +3296,7 @@ struct EquationTypingEnv {
 }
 
 fn rewrite_typing_env(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &SchemaV1Theory,
     rule: &RewriteRuleV1,
 ) -> Result<RewriteTypingEnv, String> {
@@ -3611,7 +3349,7 @@ fn rewrite_typing_env(
 }
 
 fn infer_rewrite_endpoint(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &SchemaV1Theory,
     rule: &RewriteRuleV1,
     env: &RewriteTypingEnv,
@@ -3755,7 +3493,7 @@ fn collect_path_relations(expr: &PathExprV3, out: &mut Vec<String>) {
 }
 
 fn constraint_field_refs(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     theory: &SchemaV1Theory,
     constraint: &ConstraintV1,
     relation_name: Option<&str>,
@@ -3978,7 +3716,7 @@ fn resolved_carrier_fields(
 }
 
 fn infer_equation_expr_endpoints(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     env: &mut EquationTypingEnv,
     expr: &PathExprV3,
 ) -> Result<(String, String), String> {
@@ -4032,7 +3770,7 @@ fn infer_equation_expr_endpoints(
 }
 
 fn unify_object_requirement(
-    compiled_schema: &CompiledSchemaIr,
+    compiled_schema: &RuntimeSchemaIndex,
     object_vars: &mut HashMap<String, String>,
     variable: &str,
     expected_type: &str,
@@ -4058,8 +3796,7 @@ fn unify_object_requirement(
             Ok(())
         }
         Some(existing) => Err(format!(
-            "variable `{}` is required to have incompatible object types `{}` and `{}`",
-            variable, existing, expected_type
+            "variable `{variable}` is required to have incompatible object types `{existing}` and `{expected_type}`"
         )),
     }
 }
@@ -4077,18 +3814,14 @@ const HOMOTOPY_ROLE_PAIRS: &[(&str, &str)] = &[
 const ENDPOINT_ROLE_PAIRS: &[(&str, &str)] =
     &[("from", "to"), ("source", "target"), ("src", "dst")];
 
-pub fn classify_role(
-    name: &str,
-    target_type: &str,
-    is_context_type: bool,
-    is_temporal_type: bool,
-) -> RoleKind {
-    match name {
-        "ctx" => RoleKind::Context,
-        "time" => RoleKind::Temporal,
-        _ if is_context_type || target_type == "Context" => RoleKind::Context,
-        _ if is_temporal_type || target_type == "Time" => RoleKind::Temporal,
-        _ => RoleKind::Data,
+pub(crate) fn role_kind_from_decl(kind: axiograph_dsl::schema_v1::RoleKindV1) -> RoleKind {
+    match kind {
+        axiograph_dsl::schema_v1::RoleKindV1::Data => RoleKind::Data,
+        axiograph_dsl::schema_v1::RoleKindV1::Context => RoleKind::Context,
+        axiograph_dsl::schema_v1::RoleKindV1::World => RoleKind::World,
+        axiograph_dsl::schema_v1::RoleKindV1::Temporal => RoleKind::Temporal,
+        axiograph_dsl::schema_v1::RoleKindV1::Parameter => RoleKind::Parameter,
+        axiograph_dsl::schema_v1::RoleKindV1::Evidence => RoleKind::Evidence,
     }
 }
 
@@ -4186,11 +3919,6 @@ fn collect_object_types(schema: &SchemaV1Schema) -> HashSet<String> {
         object_types.insert(subtype.sub.clone());
         object_types.insert(subtype.sup.clone());
     }
-    for relation in &schema.relations {
-        for field in &relation.fields {
-            object_types.insert(field.ty.clone());
-        }
-    }
     object_types
 }
 
@@ -4246,7 +3974,7 @@ fn compute_subtypes_closure(
     out
 }
 
-fn compile_role_interfaces(
+fn derive_role_interfaces(
     relations: &HashMap<String, RelationSemanticsIr>,
     subtypes_of: &HashMap<String, HashSet<String>>,
 ) -> HashMap<String, RoleInterfaceIr> {
@@ -4283,1369 +4011,4 @@ fn compile_role_interfaces(
 
 fn scoped_role_name(relation_name: &str, role_name: &str) -> String {
     format!("{relation_name}:{role_name}")
-}
-
-fn is_context_axis_type(supertypes_of: &HashMap<String, HashSet<String>>, ty: &str) -> bool {
-    ty == "Context"
-        || supertypes_of
-            .get(ty)
-            .is_some_and(|supers| supers.contains("Context"))
-}
-
-fn is_temporal_axis_type(supertypes_of: &HashMap<String, HashSet<String>>, ty: &str) -> bool {
-    ty == "Time"
-        || supertypes_of
-            .get(ty)
-            .is_some_and(|supers| supers.contains("Time"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axiograph_dsl::schema_v1::{
-        ConstraintV1, EquationV1, FieldDeclV1, RelationDeclV1, RewriteOrientationV1, RewriteRuleV1,
-        RewriteVarDeclV1, RewriteVarTypeV1, SchemaV1Schema, SchemaV1Theory,
-    };
-
-    fn relation(fields: &[(&str, &str)]) -> RelationDeclV1 {
-        RelationDeclV1 {
-            name: "R".to_string(),
-            fields: fields
-                .iter()
-                .map(|(field, ty)| FieldDeclV1 {
-                    field: (*field).to_string(),
-                    ty: (*ty).to_string(),
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn two_non_axis_roles_preserve_declared_order() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec!["Person".to_string(), "Context".to_string()],
-            subtypes: Vec::new(),
-            relations: vec![RelationDeclV1 {
-                name: "Parent".to_string(),
-                fields: vec![
-                    FieldDeclV1 {
-                        field: "parent".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "child".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "ctx".to_string(),
-                        ty: "Context".to_string(),
-                    },
-                ],
-            }],
-        };
-
-        let ir = compile_schema_ir(&schema);
-        let rel = ir.relation("Parent").expect("relation semantics");
-        assert_eq!(rel.carrier_field_names(), Some(("parent", "child")));
-        assert_eq!(rel.morphism_field_names(), Some(("parent", "child")));
-    }
-
-    #[test]
-    fn equivalence_prefers_path_pair_and_marks_homotopy() {
-        let roles = vec![
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteEquivalence:from"),
-                name: "from".to_string(),
-                target_type: "World".to_string(),
-                order: 0,
-                kind: RoleKind::Data,
-            },
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteEquivalence:to"),
-                name: "to".to_string(),
-                target_type: "World".to_string(),
-                order: 1,
-                kind: RoleKind::Data,
-            },
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteEquivalence:route1"),
-                name: "route1".to_string(),
-                target_type: "Route".to_string(),
-                order: 2,
-                kind: RoleKind::Data,
-            },
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteEquivalence:route2"),
-                name: "route2".to_string(),
-                target_type: "Route".to_string(),
-                order: 3,
-                kind: RoleKind::Data,
-            },
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteEquivalence:ctx"),
-                name: "ctx".to_string(),
-                target_type: "Context".to_string(),
-                order: 4,
-                kind: RoleKind::Context,
-            },
-        ];
-
-        let rel = compile_relation_semantics(
-            "TestSchema",
-            "RouteEquivalence",
-            "RouteEquivalence".to_string(),
-            roles,
-        );
-        assert_eq!(rel.carrier_field_names(), Some(("route1", "route2")));
-        assert_eq!(rel.homotopy_field_names(), Some(("route1", "route2")));
-        assert_eq!(rel.morphism_field_names(), None);
-        assert_eq!(
-            rel.carrier.as_ref().map(|c| c.fiber_roles.clone()),
-            Some(vec![4])
-        );
-    }
-
-    #[test]
-    fn dual_pairs_choose_homotopy_without_name_hint() {
-        let roles = vec![
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteWitness:from"),
-                name: "from".to_string(),
-                target_type: "World".to_string(),
-                order: 0,
-                kind: RoleKind::Context,
-            },
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteWitness:to"),
-                name: "to".to_string(),
-                target_type: "World".to_string(),
-                order: 1,
-                kind: RoleKind::Context,
-            },
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteWitness:route1"),
-                name: "route1".to_string(),
-                target_type: "Route".to_string(),
-                order: 2,
-                kind: RoleKind::Data,
-            },
-            RoleIr {
-                role_id: RoleId::new("role:test:RouteWitness:route2"),
-                name: "route2".to_string(),
-                target_type: "Route".to_string(),
-                order: 3,
-                kind: RoleKind::Data,
-            },
-        ];
-
-        let rel = compile_relation_semantics(
-            "TestSchema",
-            "RouteWitness",
-            "RouteWitness".to_string(),
-            roles,
-        );
-        assert_eq!(rel.carrier_field_names(), Some(("route1", "route2")));
-        assert_eq!(rel.homotopy_field_names(), Some(("route1", "route2")));
-        assert_eq!(
-            rel.carrier.as_ref().map(|carrier| carrier.source),
-            Some(CarrierSource::HomotopyConvention)
-        );
-    }
-
-    #[test]
-    fn exactly_two_non_axis_roles_drive_carrier_even_with_context_and_time() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec![
-                "World".to_string(),
-                "Context".to_string(),
-                "Time".to_string(),
-            ],
-            subtypes: Vec::new(),
-            relations: vec![relation(&[
-                ("from", "World"),
-                ("to", "World"),
-                ("ctx", "Context"),
-                ("time", "Time"),
-            ])],
-        };
-
-        let ir = compile_schema_ir(&schema);
-        let rel = ir.relation("R").expect("relation semantics");
-        assert_eq!(rel.carrier_field_names(), Some(("from", "to")));
-        assert_eq!(
-            rel.carrier.as_ref().map(|c| c.fiber_roles.clone()),
-            Some(vec![2, 3])
-        );
-    }
-
-    #[test]
-    fn extra_data_roles_without_explicit_convention_do_not_get_carrier() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec![
-                "Person".to_string(),
-                "World".to_string(),
-                "Context".to_string(),
-            ],
-            subtypes: Vec::new(),
-            relations: vec![relation(&[
-                ("parent", "Person"),
-                ("child", "Person"),
-                ("scope", "World"),
-                ("ctx", "Context"),
-            ])],
-        };
-
-        let ir = compile_schema_ir(&schema);
-        let rel = ir.relation("R").expect("relation semantics");
-        assert_eq!(rel.carrier_field_names(), None);
-        assert_eq!(rel.morphism_field_names(), None);
-    }
-
-    #[test]
-    fn world_typed_scope_field_remains_data() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec!["Person".to_string(), "World".to_string()],
-            subtypes: Vec::new(),
-            relations: vec![relation(&[
-                ("parent", "Person"),
-                ("child", "Person"),
-                ("scope", "World"),
-            ])],
-        };
-
-        let ir = compile_schema_ir(&schema);
-        let rel = ir.relation("R").expect("relation semantics");
-        assert_eq!(rel.carrier_field_names(), None);
-        assert_eq!(rel.morphism_field_names(), None);
-    }
-
-    #[test]
-    fn subtypes_of_context_and_time_are_treated_as_axes() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec![
-                "Person".to_string(),
-                "Context".to_string(),
-                "ScopedContext".to_string(),
-                "Time".to_string(),
-                "EventTime".to_string(),
-            ],
-            subtypes: vec![
-                axiograph_dsl::schema_v1::SubtypeDeclV1 {
-                    sub: "ScopedContext".to_string(),
-                    sup: "Context".to_string(),
-                    inclusion: None,
-                },
-                axiograph_dsl::schema_v1::SubtypeDeclV1 {
-                    sub: "EventTime".to_string(),
-                    sup: "Time".to_string(),
-                    inclusion: None,
-                },
-            ],
-            relations: vec![relation(&[
-                ("actor", "Person"),
-                ("target", "Person"),
-                ("scope_ref", "ScopedContext"),
-                ("recorded_at", "EventTime"),
-            ])],
-        };
-
-        let ir = compile_schema_ir(&schema);
-        let rel = ir.relation("R").expect("relation semantics");
-        assert_eq!(rel.carrier_field_names(), Some(("actor", "target")));
-        assert_eq!(rel.morphism_field_names(), Some(("actor", "target")));
-        assert_eq!(
-            rel.carrier.as_ref().map(|c| c.fiber_roles.clone()),
-            Some(vec![2, 3])
-        );
-    }
-
-    #[test]
-    fn tuple_type_name_avoids_collision_with_implicit_field_types() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec!["Schema_".to_string(), "Migration".to_string()],
-            subtypes: Vec::new(),
-            relations: vec![
-                RelationDeclV1 {
-                    name: "SchemaEquiv".to_string(),
-                    fields: vec![
-                        FieldDeclV1 {
-                            field: "s1".to_string(),
-                            ty: "Schema_".to_string(),
-                        },
-                        FieldDeclV1 {
-                            field: "s2".to_string(),
-                            ty: "Schema_".to_string(),
-                        },
-                        FieldDeclV1 {
-                            field: "forward".to_string(),
-                            ty: "Migration".to_string(),
-                        },
-                        FieldDeclV1 {
-                            field: "backward".to_string(),
-                            ty: "Migration".to_string(),
-                        },
-                    ],
-                },
-                RelationDeclV1 {
-                    name: "EquivCompose".to_string(),
-                    fields: vec![
-                        FieldDeclV1 {
-                            field: "lhs".to_string(),
-                            ty: "SchemaEquiv".to_string(),
-                        },
-                        FieldDeclV1 {
-                            field: "rhs".to_string(),
-                            ty: "SchemaEquiv".to_string(),
-                        },
-                    ],
-                },
-            ],
-        };
-
-        let ir = compile_schema_ir(&schema);
-        let rel = ir
-            .relation("SchemaEquiv")
-            .expect("schema equivalence relation semantics");
-        assert_eq!(rel.tuple_type_name, "SchemaEquivFact");
-    }
-
-    #[test]
-    fn compile_theory_ir_assigns_deterministic_ids_and_classifies_equations() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec!["Person".to_string()],
-            subtypes: Vec::new(),
-            relations: vec![RelationDeclV1 {
-                name: "Parent".to_string(),
-                fields: vec![
-                    FieldDeclV1 {
-                        field: "from".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "to".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                ],
-            }],
-        };
-
-        let compiled = compile_schema_ir(&schema);
-        let theory = SchemaV1Theory {
-            name: "T".to_string(),
-            schema: "S".to_string(),
-            constraints: vec![ConstraintV1::Functional {
-                relation: "Parent".to_string(),
-                src_field: "from".to_string(),
-                dst_field: "to".to_string(),
-            }],
-            equations: vec![
-                EquationV1 {
-                    name: "parent_path".to_string(),
-                    lhs: "step(x,Parent,x)".to_string(),
-                    rhs: "step(x,Parent,x)".to_string(),
-                },
-                EquationV1 {
-                    name: "opaque_business_rule".to_string(),
-                    lhs: "ParentCompose(a,b,c)".to_string(),
-                    rhs: "c".to_string(),
-                },
-            ],
-            rewrite_rules: vec![RewriteRuleV1 {
-                name: "parent_refl".to_string(),
-                orientation: RewriteOrientationV1::Forward,
-                vars: vec![RewriteVarDeclV1 {
-                    name: "x".to_string(),
-                    ty: RewriteVarTypeV1::Object {
-                        ty: "Person".to_string(),
-                    },
-                }],
-                lhs: PathExprV3::Step {
-                    from: "x".to_string(),
-                    rel: "Parent".to_string(),
-                    to: "x".to_string(),
-                },
-                rhs: PathExprV3::Step {
-                    from: "x".to_string(),
-                    rel: "Parent".to_string(),
-                    to: "x".to_string(),
-                },
-            }],
-        };
-
-        let ir = compile_theory_ir(&compiled, &theory).expect("compile theory ir");
-        assert_eq!(ir.theory_id.as_str(), "theory:S:T");
-        assert_eq!(ir.constraints.len(), 1);
-        assert_eq!(ir.constraints[0].field_refs, vec!["from", "to"]);
-        assert!(ir.constraints[0].param_fields.is_empty());
-        assert_eq!(
-            ir.constraints[0]
-                .field_role_ids
-                .iter()
-                .map(|id| id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["role:S:Parent:from", "role:S:Parent:to"]
-        );
-        assert!(ir.constraints[0].param_role_ids.is_empty());
-        assert_eq!(
-            ir.constraints[0].relation_id.as_ref().map(|id| id.as_str()),
-            Some("relation:S:Parent")
-        );
-        assert_eq!(ir.path_equations.len(), 1);
-        assert_eq!(ir.path_equations[0].relation_refs, vec!["Parent"]);
-        assert_eq!(
-            ir.path_equations[0]
-                .relation_ids
-                .iter()
-                .map(|id| id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["relation:S:Parent"]
-        );
-        assert_eq!(
-            ir.path_equations[0]
-                .touched_roles
-                .iter()
-                .map(|role| role.role_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["from", "to"]
-        );
-        assert_eq!(ir.opaque_equations.len(), 1);
-        assert_eq!(ir.rewrite_rules.len(), 1);
-        assert_eq!(
-            ir.rewrite_rules[0].rule_id.as_str(),
-            "rewrite:theory:S:T:parent_refl"
-        );
-        assert_eq!(ir.rewrite_rules[0].endpoint.from_var, "x");
-        assert_eq!(ir.rewrite_rules[0].endpoint.to_var, "x");
-        assert_eq!(ir.rewrite_rules[0].endpoint.from_type, "Person");
-        assert_eq!(ir.rewrite_rules[0].endpoint.to_type, "Person");
-        assert_eq!(
-            ir.rewrite_rules[0]
-                .relation_ids
-                .iter()
-                .map(|id| id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["relation:S:Parent"]
-        );
-        assert_eq!(
-            ir.rewrite_rules[0]
-                .touched_roles
-                .iter()
-                .map(|role| role.role_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["from", "to"]
-        );
-        let obligation_refs = ir.obligation_refs();
-        assert_eq!(obligation_refs.len(), 4);
-        let constraint_obligation = obligation_refs
-            .iter()
-            .find(|obligation| {
-                matches!(
-                    obligation,
-                    TheoryObligationRefIr::Constraint {
-                        theory_id,
-                        constraint_id,
-                        relation_name,
-                        ..
-                    } if theory_id.as_str() == "theory:S:T"
-                        && constraint_id.as_str().starts_with("constraint:theory:S:T:fnv1a64:")
-                        && relation_name.as_deref() == Some("Parent")
-                )
-            })
-            .cloned()
-            .expect("constraint obligation");
-        assert!(obligation_refs.iter().any(|obligation| matches!(
-            obligation,
-            TheoryObligationRefIr::PathEquation { equation_id, name, .. }
-            if equation_id.as_str() == "equation:theory:S:T:parent_path" && name == "parent_path"
-        )));
-        assert!(obligation_refs.iter().any(|obligation| matches!(
-            obligation,
-            TheoryObligationRefIr::OpaqueEquation { equation_id, name, .. }
-            if equation_id.as_str() == "equation:theory:S:T:opaque_business_rule"
-                && name == "opaque_business_rule"
-        )));
-        let rewrite_obligation = obligation_refs
-            .iter()
-            .find(|obligation| {
-                matches!(
-                    obligation,
-                    TheoryObligationRefIr::RewriteRule { rule_id, name, .. }
-                    if rule_id.as_str() == "rewrite:theory:S:T:parent_refl" && name == "parent_refl"
-                )
-            })
-            .cloned()
-            .expect("rewrite obligation");
-
-        let subject_refs = ir.subject_refs();
-        assert!(subject_refs.iter().any(|subject| matches!(
-            subject,
-            TheorySubjectRefIr::Theory { theory_id } if theory_id.as_str() == "theory:S:T"
-        )));
-        assert!(subject_refs.iter().any(|subject| matches!(
-            subject,
-            TheorySubjectRefIr::Relation { relation_id, relation_name }
-            if relation_id.as_str() == "relation:S:Parent" && relation_name == "Parent"
-        )));
-        assert!(subject_refs.iter().any(|subject| matches!(
-            subject,
-            TheorySubjectRefIr::Role { role_id, relation_name, role_name, .. }
-            if role_id.as_str() == "role:S:Parent:from"
-                && relation_name == "Parent"
-                && role_name == "from"
-        )));
-        assert!(subject_refs.iter().any(|subject| matches!(
-            subject,
-            TheorySubjectRefIr::Role { role_id, relation_name, role_name, .. }
-            if role_id.as_str() == "role:S:Parent:to"
-                && relation_name == "Parent"
-                && role_name == "to"
-        )));
-
-        let constraint_subjects = ir.subject_refs_for_obligation(&constraint_obligation);
-        assert!(constraint_subjects.iter().any(|subject| matches!(
-            subject,
-            TheorySubjectRefIr::Theory { theory_id } if theory_id.as_str() == "theory:S:T"
-        )));
-        assert!(constraint_subjects.iter().any(|subject| matches!(
-            subject,
-            TheorySubjectRefIr::Relation { relation_name, .. } if relation_name == "Parent"
-        )));
-        assert_eq!(
-            constraint_subjects
-                .iter()
-                .filter(|subject| matches!(subject, TheorySubjectRefIr::Role { .. }))
-                .count(),
-            2
-        );
-
-        let relation_subject = TheorySubjectRefIr::Relation {
-            relation_id: RelationId::new("relation:S:Parent"),
-            relation_name: "Parent".to_string(),
-        };
-        let rewrite_subjects = ir.subject_refs_for_obligation(&rewrite_obligation);
-        assert_eq!(
-            rewrite_subjects
-                .iter()
-                .filter(|subject| matches!(subject, TheorySubjectRefIr::Role { .. }))
-                .count(),
-            2
-        );
-        let relation_obligations = ir.obligation_refs_for_subject(&relation_subject);
-        assert!(relation_obligations
-            .iter()
-            .any(|obligation| obligation == &constraint_obligation));
-        assert!(relation_obligations
-            .iter()
-            .any(|obligation| obligation == &rewrite_obligation));
-
-        assert!(constraint_obligation.matches_artifact_id(&constraint_obligation.stable_id()));
-        assert!(!constraint_obligation.matches_artifact_id("constraint:theory:S:T:0"));
-        assert!(obligation_refs.iter().any(|obligation| {
-            matches!(obligation, TheoryObligationRefIr::PathEquation { .. })
-                && obligation.matches_artifact_id("equation:theory:S:T:parent_path")
-        }));
-        assert!(!obligation_refs.iter().any(|obligation| {
-            matches!(obligation, TheoryObligationRefIr::PathEquation { .. })
-                && obligation.matches_artifact_id("equation:theory:S:T:parent_path:0")
-        }));
-        assert!(rewrite_obligation.matches_artifact_id("rewrite:theory:S:T:parent_refl"));
-        assert!(!rewrite_obligation.matches_artifact_id("rewrite:theory:S:T:parent_refl:0"));
-
-        let graph = ir.obligation_graph();
-        assert_eq!(graph.version, THEORY_OBLIGATION_GRAPH_VERSION_V1);
-        assert_eq!(graph.total_obligations, 4);
-        assert!(graph.nodes.iter().any(|node| {
-            node.kind == TheoryObligationGraphNodeKindV1::Theory
-                && node.node_id == "theory_subject:theory:theory:S:T"
-        }));
-        assert!(graph.nodes.iter().any(|node| {
-            node.kind == TheoryObligationGraphNodeKindV1::Obligation
-                && node
-                    .obligation_ref
-                    .as_ref()
-                    .is_some_and(|obligation| obligation == &rewrite_obligation)
-                && node.fragment_status
-                    == Some(RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked)
-        }));
-        assert!(graph.nodes.iter().any(|node| {
-            node.kind == TheoryObligationGraphNodeKindV1::Subject
-                && node.subject_ref.as_ref() == Some(&relation_subject)
-        }));
-        assert!(graph.edges.iter().any(|edge| {
-            edge.kind == TheoryObligationGraphEdgeKindV1::SubjectSupportsObligation
-                && edge.source_node_id == "theory_subject:relation:relation:S:Parent"
-                && edge.target_node_id.starts_with("theory_obligation:")
-        }));
-    }
-
-    #[test]
-    fn theory_transport_plan_classifies_preserved_and_blocked_obligations() {
-        let schema = SchemaV1Schema {
-            name: "Plant".to_string(),
-            objects: vec![
-                "PlantAsset".to_string(),
-                "Context".to_string(),
-                "Time".to_string(),
-            ],
-            subtypes: Vec::new(),
-            relations: vec![RelationDeclV1 {
-                name: "installed_at".to_string(),
-                fields: vec![
-                    FieldDeclV1 {
-                        field: "asset".to_string(),
-                        ty: "PlantAsset".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "site".to_string(),
-                        ty: "PlantAsset".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "ctx".to_string(),
-                        ty: "Context".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "time".to_string(),
-                        ty: "Time".to_string(),
-                    },
-                ],
-            }],
-        };
-        let compiled = compile_schema_ir(&schema);
-        let theory = SchemaV1Theory {
-            name: "PlantRules".to_string(),
-            schema: "Plant".to_string(),
-            constraints: vec![ConstraintV1::Key {
-                relation: "installed_at".to_string(),
-                fields: vec![
-                    "asset".to_string(),
-                    "site".to_string(),
-                    "ctx".to_string(),
-                    "time".to_string(),
-                ],
-            }],
-            equations: vec![EquationV1 {
-                name: "opaque_transport_law".to_string(),
-                lhs: "BusinessPlantRule(x)".to_string(),
-                rhs: "x".to_string(),
-            }],
-            rewrite_rules: Vec::new(),
-        };
-        let theory_ir = compile_theory_ir(&compiled, &theory).expect("compile theory");
-        let morphism = SchemaMorphismV1 {
-            source_schema: "Plant".to_string(),
-            target_schema: "Ops".to_string(),
-            objects: vec![crate::migration::ObjectMappingV1 {
-                source_object: "PlantAsset".to_string(),
-                target_object: "Equipment".to_string(),
-            }],
-            arrows: vec![crate::migration::ArrowMappingV1 {
-                source_arrow: "installed_at".to_string(),
-                target_path: vec!["owned_by".to_string(), "located_at".to_string()],
-            }],
-        };
-
-        let plan =
-            theory_ir.theory_transport_plan(&compiled, &morphism, MigrationFunctorKindV1::DeltaF);
-
-        assert_eq!(plan.version, THEORY_TRANSPORT_PLAN_VERSION_V1);
-        assert_eq!(plan.total_obligations, 2);
-        assert_eq!(plan.blocked_obligations, 2);
-        let constraint_item = plan
-            .items
-            .iter()
-            .find(|item| {
-                matches!(
-                    item.obligation_ref,
-                    TheoryObligationRefIr::Constraint { .. }
-                )
-            })
-            .expect("constraint transport item");
-        assert_eq!(
-            constraint_item.status,
-            TheoryTransportStatusIr::MissingObjectImage
-        );
-        assert_eq!(
-            constraint_item.missing_object_images,
-            vec!["Context".to_string(), "Time".to_string()]
-        );
-        assert!(constraint_item
-            .transport_basis
-            .iter()
-            .any(|basis| basis == "arrow installed_at -> owned_by ; located_at"));
-        assert!(constraint_item.subject_refs.iter().any(|subject| matches!(
-            subject,
-            TheorySubjectRefIr::Role { role_name, .. } if role_name == "ctx"
-        )));
-        assert!(plan.items.iter().any(|item| {
-            matches!(
-                item.obligation_ref,
-                TheoryObligationRefIr::OpaqueEquation { .. }
-            ) && item.status == TheoryTransportStatusIr::OpaqueOrOutOfFragment
-        }));
-    }
-
-    #[test]
-    fn theory_transport_plan_preserves_identity_mapped_theory_fragment() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec!["Person".to_string()],
-            subtypes: Vec::new(),
-            relations: vec![RelationDeclV1 {
-                name: "Parent".to_string(),
-                fields: vec![
-                    FieldDeclV1 {
-                        field: "from".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "to".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                ],
-            }],
-        };
-        let compiled = compile_schema_ir(&schema);
-        let theory = SchemaV1Theory {
-            name: "T".to_string(),
-            schema: "S".to_string(),
-            constraints: vec![ConstraintV1::Functional {
-                relation: "Parent".to_string(),
-                src_field: "from".to_string(),
-                dst_field: "to".to_string(),
-            }],
-            equations: Vec::new(),
-            rewrite_rules: Vec::new(),
-        };
-        let theory_ir = compile_theory_ir(&compiled, &theory).expect("compile theory");
-        let morphism = SchemaMorphismV1 {
-            source_schema: "S".to_string(),
-            target_schema: "S".to_string(),
-            objects: vec![crate::migration::ObjectMappingV1 {
-                source_object: "Person".to_string(),
-                target_object: "Person".to_string(),
-            }],
-            arrows: vec![crate::migration::ArrowMappingV1 {
-                source_arrow: "Parent".to_string(),
-                target_path: vec!["Parent".to_string()],
-            }],
-        };
-
-        let plan = build_theory_transport_plan_ir(
-            &compiled,
-            &theory_ir,
-            &morphism,
-            MigrationFunctorKindV1::DeltaF,
-        );
-
-        assert_eq!(plan.total_obligations, 1);
-        assert_eq!(plan.preserved_obligations, 1);
-        assert_eq!(plan.blocked_obligations, 0);
-        assert_eq!(plan.items[0].status, TheoryTransportStatusIr::Preserved);
-        assert!(!plan.items[0].status.requires_resolver());
-    }
-
-    #[test]
-    fn runtime_theory_fragment_summary_marks_opaque_runtime_gaps_explicitly() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec!["Person".to_string()],
-            subtypes: Vec::new(),
-            relations: vec![RelationDeclV1 {
-                name: "Parent".to_string(),
-                fields: vec![
-                    FieldDeclV1 {
-                        field: "from".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "to".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                ],
-            }],
-        };
-
-        let compiled = compile_schema_ir(&schema);
-        let theory = SchemaV1Theory {
-            name: "T".to_string(),
-            schema: "S".to_string(),
-            constraints: vec![
-                ConstraintV1::Key {
-                    relation: "Parent".to_string(),
-                    fields: vec!["from".to_string(), "to".to_string()],
-                },
-                ConstraintV1::Typing {
-                    relation: "Parent".to_string(),
-                    rule: "from,to : Person".to_string(),
-                },
-            ],
-            equations: vec![
-                EquationV1 {
-                    name: "runtime_path".to_string(),
-                    lhs: "step(x,Parent,y)".to_string(),
-                    rhs: "step(x,Parent,y)".to_string(),
-                },
-                EquationV1 {
-                    name: "opaque_business_rule".to_string(),
-                    lhs: "ParentCompose(a,b,c)".to_string(),
-                    rhs: "c".to_string(),
-                },
-            ],
-            rewrite_rules: vec![RewriteRuleV1 {
-                name: "parent_refl".to_string(),
-                orientation: RewriteOrientationV1::Forward,
-                vars: vec![
-                    RewriteVarDeclV1 {
-                        name: "x".to_string(),
-                        ty: RewriteVarTypeV1::Object {
-                            ty: "Person".to_string(),
-                        },
-                    },
-                    RewriteVarDeclV1 {
-                        name: "y".to_string(),
-                        ty: RewriteVarTypeV1::Object {
-                            ty: "Person".to_string(),
-                        },
-                    },
-                ],
-                lhs: PathExprV3::Step {
-                    from: "x".to_string(),
-                    rel: "Parent".to_string(),
-                    to: "y".to_string(),
-                },
-                rhs: PathExprV3::Step {
-                    from: "x".to_string(),
-                    rel: "Parent".to_string(),
-                    to: "y".to_string(),
-                },
-            }],
-        };
-
-        let ir = compile_theory_ir(&compiled, &theory).expect("compile theory ir");
-        let summary = ir.runtime_fragment_summary();
-        assert_eq!(summary.version, RUNTIME_THEORY_FRAGMENT_SUMMARY_VERSION_V1);
-        assert_eq!(summary.trust_boundary, "outside_trusted_kernel");
-        assert!(summary
-            .completeness_claim
-            .contains("RuntimeTheoryCheckReportV1"));
-        assert!(summary
-            .ontology_closure_claim
-            .contains("RuntimeTheoryCheckReportV1"));
-        assert_eq!(summary.total_obligations, 5);
-        assert_eq!(summary.runtime_checked_obligations, 3);
-        assert_eq!(summary.opaque_or_out_of_fragment_obligations, 2);
-        assert!(matches!(
-            summary.theory_ref,
-            TheorySubjectRefIr::Theory { ref theory_id } if theory_id.as_str() == "theory:S:T"
-        ));
-        assert!(summary.obligation_statuses.iter().any(|status| {
-            matches!(
-                status.obligation_ref,
-                TheoryObligationRefIr::Constraint { ref summary, .. }
-                    if summary == "typing Parent: from,to : Person"
-            ) && status.fragment_status
-                == RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment
-                && status.trust_class == RuntimeTheoryObligationTrustClassV1::RuntimeAdvisory
-                && status.detail.contains("opaque runtime metadata")
-        }));
-        assert!(summary.obligation_statuses.iter().any(|status| {
-            matches!(
-                status.obligation_ref,
-                TheoryObligationRefIr::OpaqueEquation { ref name, .. }
-                    if name == "opaque_business_rule"
-            ) && status.fragment_status
-                == RuntimeTheoryObligationFragmentStatusV1::OpaqueOrOutOfFragment
-                && status.trust_class == RuntimeTheoryObligationTrustClassV1::ReviewOnly
-        }));
-        assert!(summary.obligation_statuses.iter().any(|status| {
-            matches!(
-                status.obligation_ref,
-                TheoryObligationRefIr::Constraint { ref summary, .. }
-                    if summary == "key Parent(from, to)"
-            ) && status.fragment_status == RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked
-                && status.trust_class == RuntimeTheoryObligationTrustClassV1::RuntimeEnforced
-        }));
-        assert!(summary.obligation_statuses.iter().any(|status| {
-            matches!(
-                status.obligation_ref,
-                TheoryObligationRefIr::RewriteRule { ref name, .. }
-                    if name == "parent_refl"
-            ) && status.fragment_status == RuntimeTheoryObligationFragmentStatusV1::RuntimeChecked
-                && status.trust_class == RuntimeTheoryObligationTrustClassV1::RuntimeAdvisory
-        }));
-        assert!(summary
-            .notes
-            .iter()
-            .any(|note| note.contains("outside the trusted-kernel")));
-    }
-
-    #[test]
-    fn compile_theory_ir_rejects_rewrite_rule_with_unknown_relation() {
-        let schema = SchemaV1Schema {
-            name: "S".to_string(),
-            objects: vec!["Person".to_string()],
-            subtypes: Vec::new(),
-            relations: vec![RelationDeclV1 {
-                name: "Parent".to_string(),
-                fields: vec![
-                    FieldDeclV1 {
-                        field: "from".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "to".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                ],
-            }],
-        };
-
-        let compiled = compile_schema_ir(&schema);
-        let theory = SchemaV1Theory {
-            name: "T".to_string(),
-            schema: "S".to_string(),
-            constraints: Vec::new(),
-            equations: Vec::new(),
-            rewrite_rules: vec![RewriteRuleV1 {
-                name: "bad".to_string(),
-                orientation: RewriteOrientationV1::Forward,
-                vars: vec![
-                    RewriteVarDeclV1 {
-                        name: "x".to_string(),
-                        ty: RewriteVarTypeV1::Object {
-                            ty: "Person".to_string(),
-                        },
-                    },
-                    RewriteVarDeclV1 {
-                        name: "y".to_string(),
-                        ty: RewriteVarTypeV1::Object {
-                            ty: "Person".to_string(),
-                        },
-                    },
-                ],
-                lhs: PathExprV3::Step {
-                    from: "x".to_string(),
-                    rel: "Nope".to_string(),
-                    to: "y".to_string(),
-                },
-                rhs: PathExprV3::Step {
-                    from: "x".to_string(),
-                    rel: "Parent".to_string(),
-                    to: "y".to_string(),
-                },
-            }],
-        };
-
-        let err = compile_theory_ir(&compiled, &theory).expect_err("unknown relation should fail");
-        assert!(err.contains("unknown relation `Nope`"));
-    }
-
-    #[test]
-    fn compile_kernel_module_ir_emits_instances_and_stable_fact_ids() {
-        let axi_text = r#"
-module Demo
-
-schema S:
-  object Person
-  object Context
-  relation Parent(child: Person, parent: Person, ctx: Context)
-
-theory T on S:
-  constraint key Parent(child, parent, ctx)
-
-instance I of S:
-  Person = {Alice, Bob}
-  Context = {FamilyTree}
-  Parent = {
-    (child=Alice, parent=Bob, ctx=FamilyTree)
-  }
-"#;
-        let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text).expect("parse module");
-
-        let ir = compile_kernel_module_ir(&module, axi_text).expect("compile kernel module ir");
-        assert!(ir.module_digest.as_str().starts_with("fnv1a64:"));
-        assert_eq!(ir.schemas.len(), 1);
-        assert_eq!(ir.theories.len(), 1);
-        assert_eq!(ir.instances.len(), 1);
-
-        let instance = &ir.instances[0];
-        assert_eq!(instance.instance_id.as_str(), "instance:S:I");
-        assert_eq!(instance.schema_id.as_str(), "S");
-        assert!(instance.object_members.iter().any(|membership| {
-            membership.object_type_name == "Person"
-                && membership.members == vec!["Alice".to_string(), "Bob".to_string()]
-        }));
-        assert!(instance.object_members.iter().any(|membership| {
-            membership.object_type_name == "Context"
-                && membership.members == vec!["FamilyTree".to_string()]
-        }));
-        assert_eq!(instance.relation_facts.len(), 1);
-        let fact = &instance.relation_facts[0];
-        assert_eq!(fact.relation_name, "Parent");
-        assert_eq!(fact.relation_id.as_str(), "relation:S:Parent");
-        assert!(fact.fact_id.as_str().starts_with("factfnv1a64:"));
-        assert_eq!(
-            fact.role_values
-                .iter()
-                .map(|role| (role.role_name.as_str(), role.value.as_str()))
-                .collect::<Vec<_>>(),
-            vec![("child", "Alice"), ("parent", "Bob"), ("ctx", "FamilyTree")]
-        );
-    }
-
-    #[test]
-    fn kernel_surface_v1_indexes_category_theory_instance_and_fact_refs() {
-        let axi_text = r#"
-module Demo
-
-schema S:
-  object Person
-  object Context
-  relation Parent(child: Person, parent: Person, ctx: Context)
-
-theory T on S:
-  constraint key Parent(child, parent, ctx)
-
-instance I of S:
-  Person = {Alice, Bob}
-  Context = {FamilyTree}
-  Parent = {
-    (child=Alice, parent=Bob, ctx=FamilyTree)
-  }
-"#;
-        let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text).expect("parse module");
-        let ir = compile_kernel_module_ir(&module, axi_text).expect("compile kernel module ir");
-        let fact = &ir.instances[0].relation_facts[0];
-
-        let surface = ir.kernel_surface_v1();
-        assert_eq!(surface.version, KERNEL_SURFACE_VERSION_V1);
-        assert_eq!(surface.module_digest, ir.module_digest);
-        assert_eq!(surface.total_refs, surface.refs.len());
-        assert_eq!(surface.schema_categories.len(), 1);
-        assert_eq!(surface.instance_functors.len(), 1);
-        assert!(surface.refs.iter().any(|surface_ref| matches!(
-            surface_ref,
-            KernelRefV1::SchemaObject {
-                object: SchemaCategoryObjectRefIr::ObjectType { name, .. },
-                ..
-            } if name == "Person"
-        )));
-        assert!(surface.refs.iter().any(|surface_ref| matches!(
-            surface_ref,
-            KernelRefV1::SchemaObject {
-                object: SchemaCategoryObjectRefIr::RelationObject { name, .. },
-                ..
-            } if name == "Parent"
-        )));
-        assert!(surface.refs.iter().any(|surface_ref| matches!(
-            surface_ref,
-            KernelRefV1::SchemaArrow {
-                arrow: SchemaCategoryArrowRefIr::RoleProjection { role_name, .. },
-                ..
-            } if role_name == "ctx"
-        )));
-        assert!(surface.refs.iter().any(|surface_ref| matches!(
-            surface_ref,
-            KernelRefV1::TheoryObligation {
-                obligation: TheoryObligationRefIr::Constraint { summary, .. }
-            } if summary == "key Parent(child, parent, ctx)"
-        )));
-        assert!(surface.refs.iter().any(|surface_ref| matches!(
-            surface_ref,
-            KernelRefV1::TheorySubject {
-                subject: TheorySubjectRefIr::Role { role_name, .. },
-                ..
-            } if role_name == "ctx"
-        )));
-        assert!(surface.refs.iter().any(|surface_ref| matches!(
-            surface_ref,
-            KernelRefV1::Instance {
-                instance_id,
-                schema_id,
-            } if instance_id.as_str() == "instance:S:I" && schema_id.as_str() == "S"
-        )));
-        assert!(surface.refs.iter().any(|surface_ref| matches!(
-            surface_ref,
-            KernelRefV1::InstanceObjectImage {
-                object: SchemaCategoryObjectRefIr::RelationObject { name, .. },
-                ..
-            } if name == "Parent"
-        )));
-        assert!(surface.refs.iter().any(|surface_ref| matches!(
-            surface_ref,
-            KernelRefV1::StableFact { fact_id, relation_id, .. }
-                if fact_id == &fact.fact_id && relation_id == &fact.relation_id
-        )));
-        surface
-            .validate_refs(&surface.refs)
-            .expect("all emitted surface refs are declared");
-        let missing = KernelRefV1::Schema {
-            schema_id: SchemaId::new("MissingSchema"),
-        };
-        assert!(!surface.contains_ref(&missing));
-        let err = surface
-            .validate_refs(&[missing])
-            .expect_err("strict reports must reject undeclared kernel refs");
-        assert!(err.contains("undeclared KernelRefV1"));
-    }
-
-    #[test]
-    fn schema_category_and_instance_functor_preserve_relation_objects_and_subtype_transport() {
-        let axi_text = r#"
-module Demo
-
-schema S:
-  object Person
-  object Engineer
-  object Artifact
-  subtype Engineer < Person
-  relation Review(reviewer: Engineer, artifact: Artifact)
-
-instance I of S:
-  Engineer = {Eve}
-  Artifact = {Design}
-  Review = {
-    (reviewer=Eve, artifact=Design)
-  }
-"#;
-        let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text).expect("parse module");
-        let ir = compile_kernel_module_ir(&module, axi_text).expect("compile kernel module ir");
-        let schema = &ir.schemas[0];
-        let instance = &ir.instances[0];
-
-        let category = compile_schema_category_ir(schema);
-        assert!(category.objects.iter().any(|object| matches!(
-            &object.object,
-            SchemaCategoryObjectRefIr::RelationObject { name, .. } if name == "Review"
-        )));
-        assert!(category.arrows.iter().any(|arrow| matches!(
-            &arrow.arrow_ref,
-            SchemaCategoryArrowRefIr::SubtypeInclusion {
-                subtype,
-                supertype,
-                ..
-            } if subtype == "Engineer" && supertype == "Person"
-        )));
-        assert!(category.arrows.iter().any(|arrow| matches!(
-            &arrow.arrow_ref,
-            SchemaCategoryArrowRefIr::RoleProjection { role_name, .. } if role_name == "reviewer"
-        )));
-
-        let functor =
-            compile_instance_functor_ir(schema, instance).expect("compile instance functor ir");
-        let person_image = functor
-            .object_images
-            .iter()
-            .find(|image| {
-                matches!(
-                    &image.object,
-                    SchemaCategoryObjectRefIr::ObjectType { name, .. } if name == "Person"
-                )
-            })
-            .expect("Person image");
-        assert_eq!(person_image.elements, vec!["Eve".to_string()]);
-
-        let review_image = functor
-            .object_images
-            .iter()
-            .find(|image| {
-                matches!(
-                    &image.object,
-                    SchemaCategoryObjectRefIr::RelationObject { name, .. } if name == "Review"
-                )
-            })
-            .expect("Review relation object image");
-        assert_eq!(review_image.elements.len(), 1);
-
-        let reviewer_projection = functor
-            .arrow_images
-            .iter()
-            .find(|image| {
-                matches!(
-                    &image.arrow_ref,
-                    SchemaCategoryArrowRefIr::RoleProjection { role_name, .. } if role_name == "reviewer"
-                )
-            })
-            .expect("reviewer projection image");
-        assert_eq!(
-            reviewer_projection
-                .mappings
-                .iter()
-                .map(|mapping| mapping.target.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Eve"]
-        );
-        assert!(reviewer_projection.total_on_source_elements);
-
-        let subtype_inclusion = functor
-            .arrow_images
-            .iter()
-            .find(|image| {
-                matches!(
-                    &image.arrow_ref,
-                    SchemaCategoryArrowRefIr::SubtypeInclusion {
-                        subtype,
-                        supertype,
-                        ..
-                    } if subtype == "Engineer" && supertype == "Person"
-                )
-            })
-            .expect("subtype inclusion image");
-        assert_eq!(
-            subtype_inclusion.mappings,
-            vec![InstanceArrowMappingIr {
-                source: "Eve".to_string(),
-                target: "Eve".to_string(),
-            }]
-        );
-        assert!(subtype_inclusion.total_on_source_elements);
-    }
-
-    #[test]
-    fn role_interfaces_track_scoped_names_and_admissible_players() {
-        let schema = SchemaV1Schema {
-            name: "Org".to_string(),
-            objects: vec![
-                "Person".to_string(),
-                "Reviewer".to_string(),
-                "Request".to_string(),
-            ],
-            subtypes: vec![axiograph_dsl::schema_v1::SubtypeDeclV1 {
-                sub: "Reviewer".to_string(),
-                sup: "Person".to_string(),
-                inclusion: None,
-            }],
-            relations: vec![RelationDeclV1 {
-                name: "Approval".to_string(),
-                fields: vec![
-                    FieldDeclV1 {
-                        field: "approver".to_string(),
-                        ty: "Person".to_string(),
-                    },
-                    FieldDeclV1 {
-                        field: "request".to_string(),
-                        ty: "Request".to_string(),
-                    },
-                ],
-            }],
-        };
-
-        let compiled = compile_schema_ir(&schema);
-        let approver = compiled
-            .role_interface("Approval", "approver")
-            .expect("role interface");
-        assert_eq!(approver.scoped_role_name, "Approval:approver");
-        assert_eq!(approver.declared_target_type, "Person");
-        assert_eq!(
-            approver.admissible_player_types,
-            vec!["Person".to_string(), "Reviewer".to_string()]
-        );
-    }
-
-    #[test]
-    fn direct_subtype_helpers_surface_immediate_families_and_role_projections() {
-        let schema = SchemaV1Schema {
-            name: "Plant".to_string(),
-            objects: vec![
-                "PlantAsset".to_string(),
-                "Pump".to_string(),
-                "Compressor".to_string(),
-                "SpecialPump".to_string(),
-                "Batch".to_string(),
-                "Context".to_string(),
-            ],
-            subtypes: vec![
-                axiograph_dsl::schema_v1::SubtypeDeclV1 {
-                    sub: "Pump".to_string(),
-                    sup: "PlantAsset".to_string(),
-                    inclusion: None,
-                },
-                axiograph_dsl::schema_v1::SubtypeDeclV1 {
-                    sub: "Compressor".to_string(),
-                    sup: "PlantAsset".to_string(),
-                    inclusion: None,
-                },
-                axiograph_dsl::schema_v1::SubtypeDeclV1 {
-                    sub: "SpecialPump".to_string(),
-                    sup: "Pump".to_string(),
-                    inclusion: None,
-                },
-            ],
-            relations: vec![
-                RelationDeclV1 {
-                    name: "Certification".to_string(),
-                    fields: vec![
-                        FieldDeclV1 {
-                            field: "asset".to_string(),
-                            ty: "Pump".to_string(),
-                        },
-                        FieldDeclV1 {
-                            field: "batch".to_string(),
-                            ty: "Batch".to_string(),
-                        },
-                    ],
-                },
-                RelationDeclV1 {
-                    name: "Maintenance".to_string(),
-                    fields: vec![
-                        FieldDeclV1 {
-                            field: "asset".to_string(),
-                            ty: "Compressor".to_string(),
-                        },
-                        FieldDeclV1 {
-                            field: "ctx".to_string(),
-                            ty: "Context".to_string(),
-                        },
-                    ],
-                },
-            ],
-        };
-
-        let compiled = compile_schema_ir(&schema);
-
-        assert_eq!(
-            compiled.direct_supertypes_of("Pump"),
-            vec!["PlantAsset".to_string()]
-        );
-        assert_eq!(
-            compiled.direct_supertypes_of("SpecialPump"),
-            vec!["Pump".to_string()]
-        );
-        assert!(compiled.is_direct_subtype("Pump", "PlantAsset"));
-        assert!(!compiled.is_direct_subtype("SpecialPump", "PlantAsset"));
-        assert_eq!(
-            compiled.direct_subtypes_of("PlantAsset"),
-            vec!["Compressor".to_string(), "Pump".to_string()]
-        );
-
-        let family = compiled
-            .direct_subtype_families()
-            .into_iter()
-            .find(|family| family.supertype == "PlantAsset")
-            .expect("PlantAsset family");
-        assert_eq!(
-            family.subtypes,
-            vec!["Compressor".to_string(), "Pump".to_string()]
-        );
-
-        let projection = compiled.subtype_role_projection(&family.supertype, &family.subtypes);
-        assert_eq!(
-            projection.relations,
-            vec!["Certification".to_string(), "Maintenance".to_string()]
-        );
-        assert_eq!(
-            projection.fields,
-            vec![
-                "Certification.asset".to_string(),
-                "Maintenance.asset".to_string()
-            ]
-        );
-    }
 }

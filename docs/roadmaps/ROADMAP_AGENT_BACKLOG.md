@@ -15,24 +15,43 @@ Related roadmaps:
 
 ## Highest-Priority Work
 
-- [~] Compile one canonical schema/category IR with deterministic ids for
-  schema, theory, instance, context, relation-objects, projection arrows,
-  rewrite rules, and anchors shared by Rust, Lean, semantic diff, migration
-  preview, backend projection, and certificates. Current first slice includes
-  `SchemaCategoryIr` and `InstanceFunctorIr` in `axiograph_pathdb::kernel_ir`;
-  the remaining work is to make it the universal spine for query, migration,
-  certification, semantic VCS, and Lean export.
+- [x] Route meaning compilation through one exact-byte canonical compiler and
+  immutable compiled-snapshot handle. `CanonicalCompiler` implements
+  `KernelSnapshotIr`, `SchemaPresentationIr`, and validated finite
+  `InstanceModelIr` in `axiograph-kernel`, with ordered import-closure/package
+  identities, relation objects, projection generators, subtype coherence,
+  theories, equations, executable finite saturation, role-indexed dependent
+  witnesses, contexts/worlds, checked lifecycle state, and adversarial Rust/Lean
+  formation parity. In-process `RuntimeModuleIndex` values retain the licensing
+  `CompiledKernelSnapshot`; serialized runtime indexes lose that handle and
+  remain citations only.
+- [ ] Extend the trusted Lean checker from current certificate and formation
+  parity to the complete canonical `KernelSnapshotIr` finite-model fragment.
+  The anchored `category_kernel_v3` slice reconstructs the finite category
+  presentation from exact `.axi`, checks ordered projections, identities,
+  composition, parallel equations and contextual congruence, and replays
+  complete bounded generator saturation. Full instance interpretations, formal
+  groupoid equation lowering, refinements, and transports remain outside that
+  certificate.
 - [~] Make Rust theory checking first-class and useful: current slice adds
   `RuntimeTheoryCheckReportV1`, closure tiers (`finite_fragment`,
   `evidence_weighted`, `global_indexed`), `axiograph check theory`,
   `axiograph discover theory-check`, `/semantic/theory-check`, and
-  `semantic_theory_check`. Remaining work is to feed the report into every
-  behavior-case, CQ, context, migration, reconciliation, merge/rebase, and
+  `semantic_theory_check`. Canonical finite-theory replay now uses one shared
+  `Authoring`/`Query`/`Merge` gate receipt, with AxiStore enforcing the merge
+  receipt during candidate recompilation. Remaining work is to feed the richer
+  runtime-theory report into every behavior-case, context, migration, and
   semantic coverage gate by default.
-- [ ] Make typed authoring and ontology exploration return one preview contract:
-  canonical `.axi` deltas, stable ids, provenance/evidence/context anchors,
-  CQ attachments, trust metadata, structural evolution primitives, directed
-  next actions, and typed repair suggestions.
+- [~] Make typed authoring and ontology exploration return one preview contract.
+  W09 adds `authoring_workspace_request_v1` and
+  `authoring_workspace_report_v1` as the sole CLI/LSP/MCP/HTTP ontology-
+  authoring service: exact workspace import-closure anchors, compiled stable
+  refs, diagnostics, query/olog/CQ holes and shared repairs, prepared-query
+  explanations, finite kernel payload diffs, typed olog evolution previews,
+  runtime-theory validation, directed next actions, and fail-closed promotion
+  review. Remaining work is a canonical `.axi` delta renderer with explicit
+  evidence/context provenance and the separate trusted workflow that turns a
+  reviewed report plus VerifyMain receipt into an AxiStore `PromotionPlan`.
 - [ ] Keep typed query and certification first-class across REPL, server, and
   tooling through `query_ir_v1`, prepared query handles, structured
   diagnostics, anchor-aware answers, trust contracts, and soundness-scoped
@@ -58,19 +77,20 @@ Related roadmaps:
   obligations.
 - [ ] Make CQ-gated evolution the shared mutation-review primitive across
   proposals, promotion, migration preview, semantic merge, and review branches.
-- [ ] Make semantic VCS the reviewable unit of ontology change: refs, branches,
-  ancestry, typed deltas, validation refs, reconciliation, tags, supersession,
-  and retraction.
+- [~] Make semantic VCS the reviewable unit of ontology change. W04 adds the
+  transactional `AxiStore` authority for accepted state, immutable objects,
+  refs/branches/tags, audit lineage, typed deltas, reconciliation, and pinned
+  ancestry. Remaining work is CLI/service cutover plus supersession/retraction
+  workflows over the new store.
 - [~] Make semantic merge/rebase operate through typed slices and a finite
-  runtime merge lattice. Current first slice adds `SemanticSliceManifestV1`,
+  runtime merge lattice. The current slice adds `SemanticSliceManifestV1`,
   `SemanticMergeLatticeV1`, `SemanticMergePlanV1`, conservative auto-join
-  analysis, persisted `sem/slices/` manifests, CLI slice/merge/rebase
-  planning, resolver-step extraction, and MCP/tool surfaces. `sem slice build`
-  now enriches stored manifests from accepted canonical modules compiled to
-  `KernelModuleIr`, including schema/category refs, relation objects, role
-  projections, subtype inclusions, theory obligations, and instance-functor
-  refs. Next work is using those enriched refs as the default input to merge
-  materialization gates and resolver application loops.
+  analysis, resolver-step extraction, and read-only MCP/tool surfaces. Pure
+  builders enrich supplied commit/ref payloads from `RuntimeModuleIndex` with
+  canonical schema/generator, theory, instance, and fact refs. Durable slice
+  and plan artifacts must be immutable AxiStore attachments; the former
+  `sem/slices/`
+  and broad CLI command family were removed.
 - [ ] Make the typed lifecycle useful for co-evolving real engineering systems:
   simulators, optimizers, PLC logic, HMI views, reports, ERP/MRP surfaces, SOPs,
   code, tests, and deployment artifacts.
@@ -86,28 +106,29 @@ Related roadmaps:
   `EmbeddingSidecarManifestV1`, typed relationship-evidence overlays, and
   tool/CLI surfaces that lift vector matches into proposals or refinement
   handles instead of accepted facts.
-- [ ] Keep verification language pinned to accepted `.axi` anchors and the
-  actual checked production `.axpd` path until verified-v2 storage converges.
+- [x] Keep verification language pinned to accepted `.axi` anchors and the
+  actual checked production `.axpd` path. W05 converges production storage on
+  authenticated SQLite with explicit AxiStore receipts and bounded verification.
 - [x] Finish the greenfield example cleanup by rewriting removed-export REPL
-  scripts and `repl_scripts_canonical_smoke` so examples foreground canonical
+  scripts and `repl_scripts_canonical_regression` so examples foreground canonical
   `.axi`, typed reports, certificates, behavior cases, and semantic previews
   instead of requiring every script to emit `*_export_v1.axi`.
-  - Continued cleanup: schema-discovery fixtures no longer teach synthetic
+  - Continued cleanup: schema-discovery inputs no longer teach synthetic
     `Entity` fallback; generated drafts use concrete observed types or
     `TypeHole_*` review obligations, and the proto-theory example uses a
     meaningful `ApiArtifact` umbrella type.
-  - Guardrail: `examples_e2e` checks that the catalog and README keep
-    `PathDBExportV1` debug-only, removed REPL `export_axi` commands fail, and
-    REPL scripts do not emit `*_export_v1.axi` teaching snapshots.
+  - Guardrail: canonical-only input paths reject obsolete derived snapshot
+    modules, removed REPL export commands fail, and teaching scripts do not emit
+    reverse-exported ontology snapshots.
 
 ## Current Slices To Build On
 
-- [x] Typed anchors, lifecycle wrappers, and initial `kernel_ir.rs` compiled
-  semantics scaffolding exist in Rust.
-- [x] First runtime `SchemaCategoryIr` / `InstanceFunctorIr` slice exists for
-  relation-as-object category semantics, role projection arrows, subtype
-  inclusions, closed object memberships, stable fact-id relation objects, and
-  role-value arrow images.
+- [x] Typed anchors, lifecycle wrappers, and the initial `kernel_ir.rs`
+  compiled semantics slice exists in Rust.
+- [x] Canonical `SchemaPresentationIr` is the sole relation-as-object category
+  presentation, and `RuntimeSemanticIndex` exposes only read-only
+  `KernelRefV2` citations. The duplicate runtime `SchemaCategoryIr` /
+  `InstanceFunctorIr` representations were removed.
 - [x] JSON `BehaviorCaseV1` exists as a BDD/DDD/coding-agent wrapper over
   bounded-context reports, CQ coverage, trust contracts, `CaseReceiptV1`, and
   Rust/TypeScript test skeleton previews.
@@ -118,8 +139,8 @@ Related roadmaps:
 - [x] Query trust contracts and query-result certification expose a first
   soundness-scoped trust surface.
 - [x] CQ-gated proposal preview exists for evidence-plane overlays.
-- [x] Accepted-plane code already has `sem/commits`, `sem/refs`,
-  `sem/validations`, and `sem/evidence/proposal_adapter_runs`.
+- [x] AxiStore owns semantic commits, refs, immutable attachments, audit
+  lineage, accepted closures, and authenticated materialization receipts.
 - [x] Migration preview builders emit transport-along-morphism, transported
   path-equation, subtype-collapse, and merge-image primitives.
 - [x] Runtime theory transport plans classify compiled theory obligations under
@@ -138,15 +159,16 @@ Related roadmaps:
 - [x] First semantic merge-lattice runtime contracts exist for typed slices,
   conservative merge/rebase plans, and resolver handles over existing semantic
   VCS dry-runs.
-- [x] CLI-built semantic slice manifests are enriched from accepted
-  `KernelModuleIr` so semantic VCS slicing is grounded in schema/category,
-  theory, and instance-functor handles rather than commit metadata only.
-- [x] Industrial engineering harness split out of `axiograph-cli` into
+- [x] CLI-built semantic slice manifests are enriched from canonical compiled
+  snapshots through the derived `RuntimeModuleIndex`, so semantic VCS slicing
+  is grounded in canonical object, generator, theory, instance, and fact
+  citations rather than commit metadata only.
+- [x] Industrial engineering example runtime split out of `axiograph-cli` into
   `rust/crates/axiograph-example-industrial`, with example docs and a
   standalone teaching binary over canonical `.axi`.
-- [x] Examples now have a teaching catalog, directory guides, a BehaviorCaseV1
-  fixture, and an expanded canonical `.axi` corpus so agents can route examples
-  by feature instead of by historical script names.
+- [x] Examples now have a teaching catalog, directory guides, BehaviorCaseV1
+  examples, and a `fixtures/canonical/corpus.json` conformance corpus so agents
+  can route examples by feature instead of by historical script names.
 - [~] First software-authoring continuous coverage crate exists, but its
   current example still over-embeds DDD/tooling concepts in `.axi`; the next
   slice is the overlay separation refactor.
@@ -155,16 +177,16 @@ Related roadmaps:
 
 - [x] Add `lean/Axiograph/SemanticVCS.lean` and
   `docs/reference/LEAN_THEORY_EVALUATION.md` so semantic merge/lattice/rebase
-  preservation has an explicit Lean scaffold and a precise status matrix.
+  preservation has a finite Lean conformance slice and a precise status matrix.
 - [ ] Port remaining knowledge-graph transport, quotient, equivalence, and
-  migration scaffolding into Lean.
+  migration transport model into Lean.
 - [ ] Finish inverse paths, equivalence congruence, normalization, and
   functoriality proofs, preferably using mathlib groupoid/free-groupoid
   machinery.
 - [ ] Port remaining probability and reconciliation verification modules as
   needed for the trusted checker.
 - [ ] Converge Rust and Lean parsers to a shared `Axiograph.ModuleAST` anchored
-  to `examples/canonical/corpus.json`.
+  to `fixtures/canonical/corpus.json`.
 - [ ] Extend rewrite derivation certificates beyond normalization into
   reconciliation proofs and domain rewrites.
 - [ ] Anchor certificates to canonical `.axi` inputs with stable module hashes
@@ -184,8 +206,8 @@ Related roadmaps:
 - [ ] Introduce first-class workflow types such as `FactId<A>`,
   `TypedFact<S, R, A>`, `ProposalSet<Validated, A>`, `WorldState<A>`,
   `ProposalAdapterRun<A>`, and `CertifiedAnswer<A>`.
-- [x] Lift module kind into the type surface: distinguish canonical `.axi`
-  modules from derived `PathDBExportV1` snapshots.
+- [x] Lift module kind into the type surface: distinguish exact accepted `.axi`
+  modules from derived materialization receipts and runtime handles.
 - [ ] Expose first-class prepared/typechecked query handles so REPL, server,
   LLM, and tool-loop surfaces stop executing from raw query strings or raw ASTs.
 - [ ] Extract a reusable typed CQ/query runner so example crates can exercise
@@ -225,25 +247,27 @@ Related roadmaps:
 
 ## Semantic VCS And Proposal Adapters
 
-- [ ] Evolve the accepted-plane snapshot store into a first-class semantic VCS,
-  not just `HEAD` plus logs.
-- [ ] Add refs beyond `HEAD`: `refs/heads/main`, `refs/heads/review/*`,
-  `refs/heads/evidence/*`, `refs/heads/evidence/proposals/*`, and `refs/tags/*`.
-- [ ] Add semantic commit objects with parentage, author, timestamp, message,
-  policy/reconciliation metadata, accepted modules, evidence overlays,
-  certificates, validation refs, and optional proposal-adapter runs.
+- [x] Replace file-pointer and JSONL accepted authority with SQLite-backed
+  `AxiStore`, immutable exact-byte objects, one audit chain, and one
+  generation-CAS singleton state.
+- [x] Add protected main, review/evidence branches, immutable tags, and a
+  cryptographic digest of the complete ref map in the same catalog transaction.
+- [x] Add semantic commit objects binding repository, ordered parentage,
+  tree/snapshot/build manifest, full typed reindex delta, gates, attachments,
+  provenance, lifecycle events, and exact merge reconciliation.
 - [ ] Add semantic diffs for schema, theory, instance, context/world,
   certificates, rules, CQs, trust, coverage, and implementation obligations.
 - [ ] Define merge as reconciliation with explicit conflict sets, decisions,
   residual obligations, and optional certificates.
 - [ ] Track lifecycle states on facts, modules, proposals, reviews,
   certificates, runs, and projection manifests.
-- [ ] Add semantic VCS CLI verbs for branch, checkout, status, diff, log, merge,
-  tag, promote, supersede, and retract.
+- [ ] Expose narrow CLI/server adapters over typed AxiStore operations only where
+  an operational workflow requires them; do not restore filesystem semantic VCS,
+  compatibility readers, or dual writes.
 - [ ] Make proposal-adapter branches and review branches first-class lifecycle
   surfaces.
-- [ ] Persist proposal/review bundles under `sem/validations/` with stable
-  proposal-set and run anchors.
+- [ ] Persist proposal/review bundles as immutable AxiStore attachments with
+  stable proposal-set and run anchors.
 - [ ] Require CQ-gated review/merge transitions before accepted-plane promotion.
 - [ ] Link committed proposal-adapter runs to semantic commit ids, refs, evaluations,
   planner outcomes, and promotion tags.
@@ -260,33 +284,34 @@ Related roadmaps:
 - [ ] Add SHACL validation as an ingestion/promotion gate that emits typed
   validation reports and optional `.axi` constraint proposals.
 - [ ] Add a certifiable validated-import path for a restricted adapter subset.
-- [ ] Treat property-graph compatibility as a projection layer, with n-ary
-  relations emitted as fact nodes or relationship entities.
-- [ ] Keep TypeDB and TerminusDB Docker-backed smoke tests in repo.
-- [ ] Generate backend pushdown plans directly from compiled IR plus capability
-  profiles, including native read-only query dialects, RDF/SHACL interfaces
-  where real, lifting contracts, and trust caveats.
+- [x] Treat property-graph support as an experimental projection layer, with
+  relation objects and n-ary facts emitted as explicit nodes rather than
+  canonical binary edges.
+- [x] Keep TypeDB and TerminusDB Docker-backed API smoke tests in repo; typed
+  projection/readback semantics are covered separately without containers.
+- [x] Generate capability-declared PathDB, TypeDB, TerminusDB, RDF/OWL, and
+  property-graph projections directly from `CompiledKernelSnapshot`, with
+  finite `KernelRefV2` coverage, semantic-loss reports, native read-only
+  artifacts, evidence-only readback, and Axiograph-only mutation authority.
 
 ## Storage, Verification, And Hardening
 
-- [ ] Converge the live `.axpd` format and the sectioned verified `.axpd` story
-  behind an executable gate: create an actual production checkpoint from
-  accepted canonical `.axi`, serve or reload the checkpoint bytes, and assert
-  the same accepted snapshot id plus canonical module digest. If the sectioned
-  verifier remains separate, scope it as non-production in docs and tests.
-- [ ] Add end-to-end tests over actual production `.axpd` checkpoint bytes, not
-  only exported anchors, `PathDBExportV1` `.axi` roundtrips, or synthetic
-  examples.
-- [ ] Keep accepted-plane snapshots plus PathDB/WAL as the real storage
-  backbone until `axiograph-storage` placeholder behavior is removed. The gate
-  is append-only fact-log and snapshot-manifest behavior: promotion writes a
-  durable manifest and JSONL event before advancing `HEAD`, and rejected derived
-  snapshot exports leave all three unchanged.
+- [x] Converge `.axpd` on one SQLite format under AxiStore. The executable gate
+  builds a deterministic image, authenticates exact/logical digests and semantic
+  anchors, opens read-only under limits, and hydrates PathDB only after receipt
+  verification.
+- [x] Add adversarial tests over production SQLite bytes: insertion-order
+  determinism, semantic-row changes, N/N+1 limits, corruption, truncation,
+  substitution, old-format rejection, recovery, fault injection, deletion, and
+  bounded arbitrary bytes.
+- [x] Remove PathDB/WAL and `axiograph-storage` persistence authority. AxiStore
+  owns accepted objects, refs, audit, and materialization receipts;
+  `axiograph-storage` is process-local evidence staging only.
 - [ ] Prove runtime witness invariants with Verus where tractable.
 - [ ] Fuzz untrusted surfaces with named executable targets: PathDB bytes,
   certificate JSON, Rust `.axi` parsing, CLI/REPL command parsing, and
   adapter/plugin boundaries. A fuzz item is done only after the target exists
-  and has a checked corpus or seed fixture.
+  and has a checked corpus or seed artifact.
 - [ ] Add Miri, Kani, Loom/Shuttle, or Aeneas selectively for small critical
   kernels when they provide concrete value. Each lane needs a target that either
   runs the suite or explicitly reports that the optional tool is unavailable;
@@ -300,8 +325,8 @@ Related roadmaps:
   panels, constraints, rewrite rules, contexts/worlds, provenance, and typed
   program views.
 - [ ] Wire network-analysis results into viz overlays.
-- [ ] Add snapshot diff and graph set operations over `.axpd` and accepted-plane
-  snapshots.
+- [ ] Add semantic snapshot diff over accepted trees and optional execution diff
+  over verified materialization receipts.
 - [ ] Add a competency-question runner for examples and CI.
 - [ ] Keep examples pedagogical: each nontrivial example should document the
   typed, CQ, coverage, VCS, backend, or agent surface it exercises.

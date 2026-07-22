@@ -18,7 +18,7 @@
 # Debug via cargo:
 #   cd rust && cargo run -p axiograph-cli -- repl --script ../examples/repl_scripts/synthetic/proto_import_enterprise_demo.repl
 
-# 1) Generate an enterprise scenario whose service names align with the proto fixture.
+# 1) Generate an enterprise scenario whose service names align with the proto source.
 gen enterprise_large_api 3 3 1
 stats
 
@@ -51,6 +51,3 @@ q select ?ep where name("acme.users.v1.UserService.GetUser") -proto_rpc_http_end
 
 # End-to-end: Team → … → HttpEndpoint
 q select ?ep where name("team_0") -owns/mapsToProtoService/proto_service_has_rpc/proto_rpc_http_endpoint-> ?ep max_hops 10 limit 20
-
-# Save the runnable `.axpd` snapshot.
-save build/enterprise_large_api_proto_import.axpd

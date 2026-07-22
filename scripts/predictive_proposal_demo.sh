@@ -51,7 +51,7 @@ bin/axiograph ingest predictive-proposal examples/Family.axi \
   $ADAPTER_BACKEND_ARGS \
   --proposal-adapter-model "$ADAPTER_MODEL"
 
-echo "== planning/eval harness (3 steps, 2 rollouts)"
+echo "== planning/eval runner (3 steps, 2 rollouts)"
 bin/axiograph tools perf proposal-rollout \
   --input examples/Family.axi \
   $ADAPTER_BACKEND_ARGS \

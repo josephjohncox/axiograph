@@ -29,10 +29,10 @@ make binaries
 ## 1) Run directly from canonical `.axi`
 
 The predictive proposal request is grounded in a canonical `.axi` module. When
-the flow starts from a live snapshot instead of a file, Axiograph first exports
-the selected canonical module and carries typed lineage anchors
-(`axi_digest_v1`, `pathdb_snapshot_id`, `accepted_snapshot_id`) alongside the
-same module text.
+the caller must supply the exact canonical module bytes from the accepted
+AxiStore closure. Typed lineage (`revision_digest_v2`, optional
+`materialization_id`, and `accepted_snapshot_id`) accompanies those same bytes;
+it is never reconstructed from PathDB rows.
 
 ```bash
 bash scripts/predictive_proposal_demo.sh
@@ -61,13 +61,13 @@ bin/axiograph discover training-export examples/Family.axi \
 ```
 
 This export includes full schema, theory, instance, and typed masked targets. It
-is anchored to `axi_digest_v1`.
+is anchored to the exact-byte `revision_digest_v2`.
 
 Grounding rules:
 
 - Use full `.axi` modules as training input: schema, theory, instance, contexts,
   and rewrite rules.
-- PathDB `.axpd` exports are derived query substrates, not canonical training
+- PathDB `.axpd` images are derived query substrates, not canonical training
   truth.
 - Training export metadata is optional derived context. It can help an adapter,
   but it does not replace the canonical `.axi` request input.
@@ -90,15 +90,15 @@ bin/axiograph ingest predictive-proposal examples/Family.axi \
   --proposal-adapter-model "$PREDICTIVE_PROPOSAL_MODEL"
 ```
 
-The adapter input remains canonical `.axi` plus typed optional layers. Do not
-send `PathDBExportV1` as the semantic request contract.
+The adapter input remains exact canonical `.axi` bytes plus typed optional
+layers. Derived SQLite materializations are not semantic request contracts.
 
 ---
 
 ## 4) Run a command adapter
 
 Command adapters are for offline experiments, integration debugging, or
-research prototypes. They read `axiograph_predictive_proposal_v1` JSON from
+optional research adapters. They read `axiograph_predictive_proposal_v1` JSON from
 stdin and write the same protocol response to stdout.
 
 ```bash
@@ -120,15 +120,9 @@ Run guardrails and constraints against the accepted module and proposal overlay:
 bin/axiograph check quality examples/Family.axi --profile fast --plane both
 ```
 
-Preview the proposal overlay as a PathDB WAL commit:
-
-```bash
-bin/axiograph db accept pathdb-commit \
-  --dir build/accepted_plane \
-  --accepted-snapshot head \
-  --proposals build/family_proposals.json \
-  --message "predictive proposal: family candidates"
-```
+Keep `build/family_proposals.json` in the evidence plane. Review and validate
+its typed deltas against exact accepted `.axi`; only a reviewed canonical
+change may be promoted. Do not commit proposal rows directly into PathDB.
 
 ---
 
@@ -168,7 +162,7 @@ candidates, not autonomous execution loops.
 REPL example:
 
 ```text
-axiograph> proposal plan build/bounded_proposal_rollout_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq "has_parent=select ?p where ?p is Person limit 1" --commit-dir build/bounded_proposal_rollout_commits --message "bounded proposal rollout: parent links"
+axiograph> proposal plan build/bounded_proposal_rollout_plan.json --steps 2 --rollouts 2 --goal "predict missing parent links" --axi examples/Family.axi --cq-file examples/competency_questions/family_parent.cq --commit-dir build/bounded_proposal_rollout_commits --message "bounded proposal rollout: parent links"
 ```
 
 Server example:
@@ -191,9 +185,10 @@ bin/axiograph discover draft-module \
   --infer-constraints
 ```
 
-Once proposals pass guardrails and review, promote into the accepted plane. See
-`docs/howto/CANONICAL_SEMANTIC_SPINE.md` and `docs/howto/SNAPSHOT_STORE.md` for
-accepted-plane promotion and derived query snapshots.
+Once proposals pass guardrails and review, construct and promote an AxiStore
+`PromotionPlan`. See `docs/howto/CANONICAL_SEMANTIC_SPINE.md` and
+`docs/howto/SNAPSHOT_STORE.md` for accepted-state promotion and derived SQLite
+materializations.
 
 ---
 
@@ -205,16 +200,7 @@ algebra. This flow uses:
 - `examples/physics/PhysicsOntology.axi`
 - `examples/physics/PhysicsMeasurements.axi`
 
-End-to-end script:
-
-```bash
-export PREDICTIVE_PROPOSAL_BACKEND=openai
-export OPENAI_API_KEY=...
-export PREDICTIVE_PROPOSAL_MODEL=gpt-4o-mini
-./scripts/physics_bounded_proposal_rollout_flow_demo.sh
-```
-
-REPL-only script:
+REPL script:
 
 ```bash
 export PREDICTIVE_PROPOSAL_BACKEND=anthropic
@@ -223,20 +209,11 @@ export PREDICTIVE_PROPOSAL_MODEL=claude-3-5-sonnet-20240620
 ./scripts/physics_bounded_proposal_rollout_repl_demo.sh
 ```
 
-Server + viz demo:
-
-```bash
-export PREDICTIVE_PROPOSAL_BACKEND=ollama
-export OLLAMA_HOST=http://127.0.0.1:11434
-export PREDICTIVE_PROPOSAL_MODEL=llama3.1
-./scripts/physics_bounded_proposal_rollout_server_demo.sh
-```
-
-Generate schema-driven competency questions:
+Generate schema-driven competency questions from exact canonical `.axi`:
 
 ```bash
 bin/axiograph discover competency-questions \
-  build/physics_base.axpd \
+  examples/physics/PhysicsOntology.axi \
   --out build/physics_cq.json \
   --max-questions 120
 ```

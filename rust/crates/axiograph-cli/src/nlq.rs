@@ -37,7 +37,7 @@ pub fn render_axql_query(query: &AxqlQuery) -> String {
     let mut out = String::new();
     out.push_str("select ");
     if query.select_vars.is_empty() {
-        out.push_str("*");
+        out.push('*');
     } else {
         out.push_str(&query.select_vars.join(" "));
     }
@@ -89,12 +89,12 @@ fn try_parse_follow_query(tokens: &[String]) -> Result<Option<AxqlQuery>> {
 
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
 
-    let (start_id, after_start) = if lower.get(0).is_some_and(|t| t == "from") {
+    let (start_id, after_start) = if lower.first().is_some_and(|t| t == "from") {
         let Some(start) = tokens.get(1).and_then(|t| t.parse::<u32>().ok()) else {
             return Err(anyhow!("ask follow: expected `from <start_id>`"));
         };
         (start, 2usize)
-    } else if lower.get(0).is_some_and(|t| t == "follow") {
+    } else if lower.first().is_some_and(|t| t == "follow") {
         if lower.get(1).is_some_and(|t| t == "from") {
             let Some(start) = tokens.get(2).and_then(|t| t.parse::<u32>().ok()) else {
                 return Err(anyhow!("ask follow: expected `follow from <start_id>`"));
@@ -145,7 +145,7 @@ fn try_parse_find_query(tokens: &[String]) -> Result<Option<AxqlQuery>> {
     // - find things [named <name>] ...
 
     let lower: Vec<String> = tokens.iter().map(|s| s.to_ascii_lowercase()).collect();
-    if !matches!(lower.get(0).map(|s| s.as_str()), Some("find" | "list")) {
+    if !matches!(lower.first().map(|s| s.as_str()), Some("find" | "list")) {
         return Ok(None);
     }
 

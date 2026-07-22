@@ -12,8 +12,8 @@ schema Demo:
   object Context
   object Time
 
-  relation Parent(child: Person, parent: Person) @context Context @temporal Time
-  relation Spouse(a: Person, b: Person) @context Context
+  relation Parent(child: Person, parent: Person, ctx: Context @context, time: Time @temporal)
+  relation Spouse(a: Person, b: Person, ctx: Context @context)
 
 theory DemoRules on Demo:
   constraint key Parent(child, parent, ctx, time)

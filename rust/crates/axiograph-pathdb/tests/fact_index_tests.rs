@@ -82,7 +82,7 @@ module FactIndexContextTest
 schema S:
   object Node
   object Context
-  relation Flow(from: Node, to: Node) @context Context
+  relation Flow(from: Node, to: Node, ctx: Context @context)
 
 theory T on S:
   constraint key Flow(from, to, ctx)

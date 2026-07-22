@@ -17,11 +17,9 @@
 //! - Add SHACL-like validation as a certificate-checked ingestion gate.
 //! - Add named-graph / provenance exports (PROV-inspired) as a boundary layer.
 
-pub mod owl;
-
 use anyhow::{anyhow, Result};
-use axiograph_dsl::digest::fnv1a64_digest_bytes;
 use axiograph_ingest_docs::{EvidencePointer, ProposalMetaV1, ProposalV1};
+use axiograph_kernel::object_blob_digest_v2;
 use sophia::api::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -109,18 +107,18 @@ fn sanitize_id_component(s: &str) -> String {
 
 fn rdf_entity_id(iri: &str) -> String {
     let local = sanitize_id_component(&local_name(iri));
-    let digest = fnv1a64_digest_bytes(iri.as_bytes());
+    let digest = object_blob_digest_v2(iri.as_bytes());
     format!("rdf_entity::{local}::{digest}")
 }
 
 fn rdf_bnode_entity_id(bnode: &str, evidence_locator: &str) -> String {
     let text = format!("bnode:{evidence_locator}\n{bnode}");
-    let digest = fnv1a64_digest_bytes(text.as_bytes());
+    let digest = object_blob_digest_v2(text.as_bytes());
     format!("rdf_bnode::{digest}")
 }
 
 fn rdf_context_id(evidence_locator: &str) -> String {
-    let digest = fnv1a64_digest_bytes(evidence_locator.as_bytes());
+    let digest = object_blob_digest_v2(evidence_locator.as_bytes());
     format!("rdf_context::{digest}")
 }
 
@@ -128,12 +126,12 @@ fn rdf_graph_id(graph_name: &RdfNode, evidence_locator: &str) -> String {
     match graph_name {
         RdfNode::Iri(iri) => {
             let local = sanitize_id_component(&local_name(iri));
-            let digest = fnv1a64_digest_bytes(iri.as_bytes());
+            let digest = object_blob_digest_v2(iri.as_bytes());
             format!("rdf_graph::{local}::{digest}")
         }
         RdfNode::BlankNode(bn) => {
             let text = format!("graph_bnode:{evidence_locator}\n{bn}");
-            let digest = fnv1a64_digest_bytes(text.as_bytes());
+            let digest = object_blob_digest_v2(text.as_bytes());
             format!("rdf_graph_bnode::{digest}")
         }
     }
@@ -162,7 +160,7 @@ fn rdf_relation_id(statement: &RdfStatement, evidence_locator: &str, context_id:
         "{evidence_locator}\n{context_id}\n{subject_text}\n{}\n{object_text}\n{}",
         statement.predicate_iri, statement.index
     );
-    let digest = fnv1a64_digest_bytes(text.as_bytes());
+    let digest = object_blob_digest_v2(text.as_bytes());
     format!("rdf_rel::{digest}")
 }
 
@@ -263,11 +261,36 @@ fn parse_node_term_display(term: &str) -> Result<RdfNode> {
 fn compact_predicate_name(iri: &str) -> String {
     let local = local_name(iri);
     if local == iri {
-        let digest = fnv1a64_digest_bytes(iri.as_bytes());
+        let digest = object_blob_digest_v2(iri.as_bytes());
         format!("iri_{digest}")
     } else {
         local
     }
+}
+
+pub const MAX_RDF_INPUT_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_RDF_STATEMENTS: usize = 50_000;
+
+fn push_rdf_statement(
+    out: &mut Vec<RdfStatement>,
+    subject: RdfNode,
+    predicate_iri: String,
+    object: RdfObject,
+    graph_name: Option<RdfNode>,
+) -> std::result::Result<(), RdfIngestSinkError> {
+    if out.len() >= MAX_RDF_STATEMENTS {
+        return Err(RdfIngestSinkError::from(anyhow!(
+            "RDF input exceeds {MAX_RDF_STATEMENTS} statements"
+        )));
+    }
+    out.push(RdfStatement {
+        index: out.len(),
+        subject,
+        predicate_iri,
+        object,
+        graph_name,
+    });
+    Ok(())
 }
 
 fn push_attr_value(attrs: &mut HashMap<String, String>, key: String, value: String) {
@@ -306,14 +329,8 @@ fn parse_rdf_statements_from_bytes_v1(
                     };
                     let object =
                         parse_term_display(&t.o().to_string()).map_err(RdfIngestSinkError::from)?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name: None,
-                    });
+
+                    push_rdf_statement(&mut out, subject, predicate_iri, object, None)?;
                     Ok(())
                 })
                 .map_err(|e| anyhow!("failed to parse N-Triples: {e}"))?;
@@ -333,14 +350,8 @@ fn parse_rdf_statements_from_bytes_v1(
                     };
                     let object =
                         parse_term_display(&t.o().to_string()).map_err(RdfIngestSinkError::from)?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name: None,
-                    });
+
+                    push_rdf_statement(&mut out, subject, predicate_iri, object, None)?;
                     Ok(())
                 })
                 .map_err(|e| anyhow!("failed to parse Turtle: {e}"))?;
@@ -367,14 +378,8 @@ fn parse_rdf_statements_from_bytes_v1(
                                 .map_err(RdfIngestSinkError::from)
                         })
                         .transpose()?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name,
-                    });
+
+                    push_rdf_statement(&mut out, subject, predicate_iri, object, graph_name)?;
                     Ok(())
                 })
                 .map_err(|e| anyhow!("failed to parse N-Quads: {e}"))?;
@@ -401,14 +406,8 @@ fn parse_rdf_statements_from_bytes_v1(
                                 .map_err(RdfIngestSinkError::from)
                         })
                         .transpose()?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name,
-                    });
+
+                    push_rdf_statement(&mut out, subject, predicate_iri, object, graph_name)?;
                     Ok(())
                 })
                 .map_err(|e| anyhow!("failed to parse TriG: {e}"))?;
@@ -428,14 +427,8 @@ fn parse_rdf_statements_from_bytes_v1(
                     };
                     let object =
                         parse_term_display(&t.o().to_string()).map_err(RdfIngestSinkError::from)?;
-                    let index = out.len();
-                    out.push(RdfStatement {
-                        index,
-                        subject,
-                        predicate_iri,
-                        object,
-                        graph_name: None,
-                    });
+
+                    push_rdf_statement(&mut out, subject, predicate_iri, object, None)?;
                     Ok(())
                 })
                 .map_err(|e| anyhow!("failed to parse RDF/XML: {e}"))?;
@@ -468,7 +461,7 @@ pub fn proposals_from_rdf_file_v1(
     evidence_locator: Option<String>,
     schema_hint: Option<String>,
 ) -> Result<Vec<ProposalV1>> {
-    let bytes = std::fs::read(path)?;
+    let bytes = axiograph_security::read_file_bounded(path, MAX_RDF_INPUT_BYTES, "RDF input")?;
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
@@ -492,6 +485,9 @@ pub fn proposals_from_rdf_v1(
     evidence_locator: Option<String>,
     schema_hint: Option<String>,
 ) -> Result<Vec<ProposalV1>> {
+    if bytes.len() > MAX_RDF_INPUT_BYTES {
+        return Err(anyhow!("RDF input exceeds {MAX_RDF_INPUT_BYTES} bytes"));
+    }
     let evidence_locator = evidence_locator.unwrap_or_else(|| "<memory>".to_string());
     let context_id = rdf_context_id(&evidence_locator);
 
@@ -834,6 +830,24 @@ ex:a ex:label "Alice"@en .
                 ..
             } if entity_type == "Context"
         )));
+    }
+
+    #[test]
+    fn rdf_ingest_rejects_oversized_bytes_before_parsing() {
+        let bytes = vec![b' '; MAX_RDF_INPUT_BYTES + 1];
+        let error = proposals_from_rdf_v1(&bytes, RdfFormatV1::NTriples, None, None)
+            .expect_err("oversized RDF input must reject");
+        assert!(error.to_string().contains("RDF input exceeds"));
+    }
+
+    #[test]
+    fn rdf_ingest_rejects_statement_fanout() {
+        let line = "_:a <http://example.org/p> _:b .\n";
+        let input = line.repeat(MAX_RDF_STATEMENTS + 1);
+        assert!(input.len() < MAX_RDF_INPUT_BYTES);
+        let error = parse_rdf_statements_from_bytes_v1(input.as_bytes(), RdfFormatV1::NTriples)
+            .expect_err("RDF statement fanout must reject");
+        assert!(error.to_string().contains("statements"));
     }
 
     #[test]

@@ -4,13 +4,9 @@ error[E0277]: the trait bound `Accepted: WellTypedModuleState` is not satisfied
 6 |     let _boundary: fn(&Module<Accepted>) = require_well_typed::<Accepted>;
   |                                                                 ^^^^^^^^ the trait `WellTypedModuleState` is not implemented for `Accepted`
   |
-help: the following other types implement trait `WellTypedModuleState`
- --> src/axi_module_typecheck.rs
-  |
-  | impl WellTypedModuleState for Validated {}
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Validated`
-  | impl WellTypedModuleState for Reviewed {}
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Reviewed`
+  = help: the following other types implement trait `WellTypedModuleState`:
+            Reviewed
+            Validated
 note: required by a bound in `require_well_typed`
  --> tests/ui/module_state_rejects_non_well_typed.rs:3:26
   |

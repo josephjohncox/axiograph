@@ -106,7 +106,7 @@ fn relation_name(db: &PathDB, rel_type: u32) -> Result<String> {
     db.interner
         .lookup(axiograph_pathdb::StrId::new(rel_type))
         .map(|name| name.to_string())
-        .ok_or_else(|| anyhow!("internal error: missing relation name for {}", rel_type))
+        .ok_or_else(|| anyhow!("internal error: missing relation name for {rel_type}"))
 }
 
 fn identity_confidence() -> FixedPointProbability {
@@ -280,13 +280,9 @@ fn validate_route_chain(db: &PathDB, route: &RouteChainV1) -> Result<()> {
     Ok(())
 }
 
-fn try_anchor_digest(db: &PathDB) -> Option<AxiDigest> {
-    crate::predictive_proposal_input::export_pathdb_predictive_proposal_axi(
-        db,
-        &crate::predictive_proposal_input::PredictiveProposalAxiInputOptionsV1::default(),
-    )
-    .ok()
-    .map(|exported| exported.axi_digest_v1)
+fn try_anchor_digest(_db: &PathDB) -> Option<AxiDigest> {
+    // A derived PathDB cannot reconstruct the exact accepted `.axi` bytes.
+    None
 }
 
 fn preview_trust(
@@ -303,11 +299,11 @@ fn preview_trust(
 
     if anchor_digest.is_some() {
         reasons.push(
-            "a canonical .axi export is available for this snapshot, so anchored certificate availability can be previewed".to_string(),
+            "an explicit canonical `.axi` anchor was supplied, so anchored certificate availability can be previewed".to_string(),
         );
     } else {
         reasons.push(
-            "no canonical .axi export was available for this snapshot, so anchored certificate preview metadata is omitted".to_string(),
+            "no explicit canonical `.axi` bytes and digest were supplied; derived PathDB rows cannot reconstruct the anchor, so certificate preview metadata is omitted".to_string(),
         );
     }
 
@@ -352,7 +348,7 @@ pub fn discover_route_preview_from_request(
     db: &PathDB,
     request: &RoutePreviewRequestV1,
 ) -> Result<DiscoverRoutePreviewReportV1> {
-    let optimizer = ProofProducingOptimizer::default();
+    let optimizer = ProofProducingOptimizer;
     let anchor_digest = try_anchor_digest(db);
 
     let (route, route_expr) = resolve_route(db, &optimizer, &request.route)?;
@@ -364,14 +360,13 @@ pub fn discover_route_preview_from_request(
         match optimizer.path_equiv_v2::<NoProof>(route_expr.clone(), other_expr.clone()) {
             Ok(proved) => {
                 let shared_normalized_route = normalized_route_preview(db, &proved.value)?;
-                let certificate_preview = if let Some(anchor) = anchor_digest.as_ref() {
-                    Some(RouteCertificatePreviewV1 {
-                        kind: "path_equiv_v2".to_string(),
-                        anchor_digest: anchor.clone(),
-                    })
-                } else {
-                    None
-                };
+                let certificate_preview =
+                    anchor_digest
+                        .as_ref()
+                        .map(|anchor| RouteCertificatePreviewV1 {
+                            kind: "path_equiv_v2".to_string(),
+                            anchor_digest: anchor.clone(),
+                        });
                 (
                     Some(other_preview),
                     Some(RouteEquivalencePreviewV1 {
@@ -398,14 +393,12 @@ pub fn discover_route_preview_from_request(
             ),
         }
     } else {
-        let certificate_preview = if let Some(anchor) = anchor_digest.as_ref() {
-            Some(RouteCertificatePreviewV1 {
+        let certificate_preview = anchor_digest
+            .as_ref()
+            .map(|anchor| RouteCertificatePreviewV1 {
                 kind: "normalize_path_v2".to_string(),
                 anchor_digest: anchor.clone(),
-            })
-        } else {
-            None
-        };
+            });
         (None, None, certificate_preview)
     };
 
@@ -430,8 +423,11 @@ pub fn discover_route_preview_from_request_json(
     db: &PathDB,
     request_json: &str,
 ) -> Result<DiscoverRoutePreviewReportV1> {
-    let request: RoutePreviewRequestV1 = serde_json::from_str(request_json)
-        .map_err(|e| anyhow!("failed to parse route preview JSON: {e}"))?;
+    let request: RoutePreviewRequestV1 = crate::security::parse_json_bounded(
+        request_json.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "route preview request",
+    )?;
     discover_route_preview_from_request(db, &request)
 }
 
@@ -505,8 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn route_preview_advertises_anchor_for_identity_route_when_canonical_module_exists(
-    ) -> Result<()> {
+    fn route_preview_does_not_reconstruct_anchor_from_derived_rows() -> Result<()> {
         let axi = r#"
 module Demo
 
@@ -530,17 +525,11 @@ instance I of S:
         })?;
 
         let report = discover_route_preview_from_request_json(&db, &request_json)?;
-        assert!(report.anchor_digest.is_some());
+        assert!(report.anchor_digest.is_none());
         assert_eq!(report.route.normalized.start_entity, a);
         assert_eq!(report.route.normalized.end_entity, a);
         assert!(report.route.normalized.hops.is_empty());
-        assert_eq!(
-            report
-                .certificate_preview
-                .as_ref()
-                .map(|preview| preview.kind.as_str()),
-            Some("normalize_path_v2")
-        );
+        assert!(report.certificate_preview.is_none());
         Ok(())
     }
 

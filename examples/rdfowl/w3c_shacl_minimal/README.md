@@ -1,4 +1,4 @@
-# W3C SHACL Minimal Example (Fixture)
+# W3C SHACL Boundary Example
 
 This folder contains a **focused SHACL + RDF** example used for:
 

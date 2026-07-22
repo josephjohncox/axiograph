@@ -46,6 +46,12 @@ struct TwoHopPath {
     confidence: f32,
 }
 
+impl Default for PathIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PathIndex {
     pub fn new() -> Self {
         Self {
@@ -65,8 +71,8 @@ impl PathIndex {
 
         for node in graph.nodes() {
             let id = node.id;
-            index.forward.entry(id).or_insert_with(Vec::new);
-            index.backward.entry(id).or_insert_with(Vec::new);
+            index.forward.entry(id).or_default();
+            index.backward.entry(id).or_default();
         }
 
         // Build forward and backward indexes
@@ -195,6 +201,10 @@ pub struct OptimizedPathFinder {
     min_confidence: f32,
 }
 
+const MAX_PATH_DEPTH: usize = 64;
+const MAX_BEAM_WIDTH: usize = 1024;
+const MAX_TOP_K_PATHS: usize = 1024;
+
 impl OptimizedPathFinder {
     pub fn new(graph: &VerifiedGraph) -> Self {
         Self {
@@ -208,8 +218,8 @@ impl OptimizedPathFinder {
     pub fn with_params(graph: &VerifiedGraph, max_depth: usize, beam_width: usize) -> Self {
         Self {
             index: PathIndex::from_graph(graph),
-            max_depth,
-            beam_width,
+            max_depth: max_depth.clamp(1, MAX_PATH_DEPTH),
+            beam_width: beam_width.clamp(1, MAX_BEAM_WIDTH),
             min_confidence: 0.01,
         }
     }
@@ -235,11 +245,14 @@ impl OptimizedPathFinder {
 
     /// Find top-k paths using beam search
     pub fn find_top_k_paths(&self, from: Uuid, to: Uuid, k: usize) -> Vec<(Vec<Uuid>, f32)> {
+        if k == 0 {
+            return Vec::new();
+        }
         if from == to {
             return vec![(vec![from], 1.0)];
         }
 
-        self.beam_search(from, to, k)
+        self.beam_search(from, to, k.min(MAX_TOP_K_PATHS))
     }
 
     /// Bidirectional A* search
@@ -280,7 +293,7 @@ impl OptimizedPathFinder {
                 // Check if we've reached a backward-visited node
                 if let Some((back_conf, back_path)) = backward_visited.get(&state.node) {
                     let combined_conf = state.g_score * back_conf;
-                    if best_path.as_ref().map_or(true, |(_, c)| combined_conf > *c) {
+                    if best_path.as_ref().is_none_or(|(_, c)| combined_conf > *c) {
                         let mut full_path = state.path.clone();
                         full_path.extend(back_path.iter().rev().skip(1));
                         best_path = Some((full_path, combined_conf));
@@ -321,7 +334,7 @@ impl OptimizedPathFinder {
                 // Check if we've reached a forward-visited node
                 if let Some((fwd_conf, fwd_path)) = forward_visited.get(&state.node) {
                     let combined_conf = state.g_score * fwd_conf;
-                    if best_path.as_ref().map_or(true, |(_, c)| combined_conf > *c) {
+                    if best_path.as_ref().is_none_or(|(_, c)| combined_conf > *c) {
                         let mut full_path = fwd_path.clone();
                         full_path.extend(state.path.iter().rev().skip(1));
                         best_path = Some((full_path, combined_conf));

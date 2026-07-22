@@ -152,7 +152,8 @@ it currently consumes a report where too much of the software mapping came from
    - Declare required CQs, required generated languages, required code refs,
      required runtime theory status, and strict/fail-open behavior.
 5. **Update behavior-case tooling**
-   - Make `discover behavior-case` accept overlay manifests.
+   - `discover behavior-case` now accepts overlay manifests; keep overlays
+     required for tooling/coverage surfaces.
    - Behavior cases should bind to ontology refs plus overlay refs, not expect
      coverage/tool concepts to be ontology facts.
    - Reports should still include `SemanticSliceSelectorV1`, but selectors

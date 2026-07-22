@@ -23,6 +23,11 @@ use thiserror::Error;
 
 pub type Name = String;
 
+pub const MAX_AXI_SOURCE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_AXI_SOURCE_LINES: usize = 200_000;
+pub const MAX_AXI_SYNTAX_DEPTH: usize = 64;
+pub const MAX_AXI_LINE_BYTES: usize = 1024 * 1024;
+
 // ============================================================================
 // AST
 // ============================================================================
@@ -30,6 +35,8 @@ pub type Name = String;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchemaV1Module {
     pub module_name: Name,
+    /// Ordered imports are part of the exact accepted module closure.
+    pub imports: Vec<Name>,
     pub schemas: Vec<SchemaV1Schema>,
     pub theories: Vec<SchemaV1Theory>,
     pub instances: Vec<SchemaV1Instance>,
@@ -41,6 +48,8 @@ pub struct SchemaV1Schema {
     pub objects: Vec<Name>,
     pub subtypes: Vec<SubtypeDeclV1>,
     pub relations: Vec<RelationDeclV1>,
+    /// Explicit total arrows in the schema presentation.
+    pub generators: Vec<GeneratorDeclV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,10 +70,128 @@ pub struct RelationDeclV1 {
     pub fields: Vec<FieldDeclV1>,
 }
 
+/// Closed, decidable role-type syntax. The compiler resolves names to strict
+/// schema-local object or relation identities.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TypeExprV1 {
+    Object {
+        name: Name,
+    },
+    RelationObject {
+        relation: Name,
+    },
+    Indexed {
+        base: Box<TypeExprV1>,
+        over_roles: Vec<Name>,
+    },
+    Refined {
+        base: Box<TypeExprV1>,
+        predicates: Vec<RefinementPredicateV1>,
+    },
+}
+
+impl TypeExprV1 {
+    pub fn referenced_name(&self) -> &str {
+        match self {
+            Self::Object { name } => name,
+            Self::RelationObject { relation } => relation,
+            Self::Indexed { base, .. } | Self::Refined { base, .. } => base.referenced_name(),
+        }
+    }
+
+    pub fn relation_object_name(&self) -> Option<&str> {
+        match self {
+            Self::RelationObject { relation } => Some(relation),
+            Self::Indexed { base, .. } | Self::Refined { base, .. } => base.relation_object_name(),
+            Self::Object { .. } => None,
+        }
+    }
+}
+
+impl std::fmt::Display for TypeExprV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Object { name } => f.write_str(name),
+            Self::RelationObject { relation } => write!(f, "relation({relation})"),
+            Self::Indexed { base, over_roles } => {
+                write!(f, "indexed({base}; {})", over_roles.join("|"))
+            }
+            Self::Refined { base, predicates } => {
+                let rendered = predicates
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                write!(f, "refined({base}; {rendered})")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RefinementPredicateV1 {
+    Equals { value: Name },
+    MemberOf { values: Vec<Name> },
+    Cardinality { min: u32, max: u32 },
+    Key { roles: Vec<Name> },
+    Enum { values: Vec<Name> },
+    Predicate { name: Name, args: Vec<Name> },
+}
+
+impl std::fmt::Display for RefinementPredicateV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Equals { value } => write!(f, "eq({value})"),
+            Self::MemberOf { values } => write!(f, "in({})", values.join("|")),
+            Self::Cardinality { min, max } => write!(f, "cardinality({min}|{max})"),
+            Self::Key { roles } => write!(f, "key({})", roles.join("|")),
+            Self::Enum { values } => write!(f, "enum({})", values.join("|")),
+            Self::Predicate { name, args } => {
+                if args.is_empty() {
+                    write!(f, "predicate({name})")
+                } else {
+                    write!(f, "predicate({name}|{})", args.join("|"))
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleKindV1 {
+    Data,
+    Context,
+    World,
+    Temporal,
+    Parameter,
+    Evidence,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FieldDeclV1 {
     pub field: Name,
-    pub ty: Name,
+    pub ty: TypeExprV1,
+    /// Role semantics are explicit syntax, never inferred from names.
+    pub kind: RoleKindV1,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratorKindV1 {
+    Aspect,
+    Function,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GeneratorDeclV1 {
+    pub name: Name,
+    pub source: Name,
+    pub target: Name,
+    pub kind: GeneratorKindV1,
+    pub reversible: bool,
 }
 
 /// Carrier-field pair for closure-style constraints (symmetric/transitive).
@@ -217,16 +344,12 @@ pub struct EquationV1 {
 /// If you want the reverse direction, define a second rule explicitly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RewriteOrientationV1 {
+    #[default]
     Forward,
     Backward,
     Bidirectional,
-}
-
-impl Default for RewriteOrientationV1 {
-    fn default() -> Self {
-        Self::Forward
-    }
 }
 
 /// Typed variable declarations for rewrite rules.
@@ -333,8 +456,17 @@ pub struct SetLiteralV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "tag", rename_all = "snake_case")]
 pub enum SetItemV1 {
-    Ident { name: Name },
-    Tuple { fields: Vec<(Name, Name)> },
+    Ident {
+        name: Name,
+    },
+    /// Optional local labels make relation-valued roles refer to real facts.
+    /// Labels are not semantic identities; the compiler replaces references
+    /// with the recomputed stable fact id.
+    Tuple {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<Name>,
+        fields: Vec<(Name, Name)>,
+    },
 }
 
 // ============================================================================
@@ -355,15 +487,126 @@ enum Section {
     Instance(usize),
 }
 
+fn validate_axi_resource_limits(text: &str) -> Result<(), SchemaV1ParseError> {
+    if text.len() > MAX_AXI_SOURCE_BYTES {
+        return Err(SchemaV1ParseError::Line {
+            line: 1,
+            message: format!("source exceeds {MAX_AXI_SOURCE_BYTES} bytes"),
+        });
+    }
+    let mut stack = Vec::with_capacity(MAX_AXI_SYNTAX_DEPTH);
+    let mut quote = None;
+    let mut escaped = false;
+    let mut comment = false;
+    let mut previous_unquoted_dash = false;
+    let mut line = 1_usize;
+    let mut line_bytes = 0_usize;
+    for byte in text.bytes() {
+        if byte == b'\n' {
+            if line_bytes > MAX_AXI_LINE_BYTES {
+                return Err(SchemaV1ParseError::Line {
+                    line,
+                    message: format!("line exceeds {MAX_AXI_LINE_BYTES} bytes"),
+                });
+            }
+            line = line.saturating_add(1);
+            if line > MAX_AXI_SOURCE_LINES {
+                return Err(SchemaV1ParseError::Line {
+                    line,
+                    message: format!("source exceeds {MAX_AXI_SOURCE_LINES} lines"),
+                });
+            }
+            line_bytes = 0;
+            comment = false;
+            previous_unquoted_dash = false;
+            continue;
+        }
+        line_bytes = line_bytes.saturating_add(1);
+        if comment {
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            previous_unquoted_dash = false;
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if byte == b'-' && previous_unquoted_dash {
+            comment = true;
+            previous_unquoted_dash = false;
+            continue;
+        }
+        previous_unquoted_dash = byte == b'-';
+        match byte {
+            b'#' => {
+                comment = true;
+                previous_unquoted_dash = false;
+            }
+            b'"' | b'\'' => quote = Some(byte),
+            b'(' | b'[' | b'{' => {
+                stack.push(byte);
+                if stack.len() > MAX_AXI_SYNTAX_DEPTH {
+                    return Err(SchemaV1ParseError::Line {
+                        line,
+                        message: format!(
+                            "syntax nesting exceeds {MAX_AXI_SYNTAX_DEPTH} delimiters"
+                        ),
+                    });
+                }
+            }
+            b')' if stack.pop() != Some(b'(') => {
+                return Err(SchemaV1ParseError::Line {
+                    line,
+                    message: "unbalanced syntax delimiter".to_string(),
+                });
+            }
+            b']' if stack.pop() != Some(b'[') => {
+                return Err(SchemaV1ParseError::Line {
+                    line,
+                    message: "unbalanced syntax delimiter".to_string(),
+                });
+            }
+            b'}' if stack.pop() != Some(b'{') => {
+                return Err(SchemaV1ParseError::Line {
+                    line,
+                    message: "unbalanced syntax delimiter".to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    if line_bytes > MAX_AXI_LINE_BYTES {
+        return Err(SchemaV1ParseError::Line {
+            line,
+            message: format!("line exceeds {MAX_AXI_LINE_BYTES} bytes"),
+        });
+    }
+    if quote.is_some() || escaped || !stack.is_empty() {
+        return Err(SchemaV1ParseError::Line {
+            line,
+            message: "unbalanced quoted string or syntax delimiter".to_string(),
+        });
+    }
+    Ok(())
+}
+
 pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError> {
+    validate_axi_resource_limits(text)?;
     let mut module = SchemaV1Module {
         module_name: "Unnamed".to_string(),
+        imports: vec![],
         schemas: vec![],
         theories: vec![],
         instances: vec![],
     };
 
     let mut section = Section::None;
+    let mut module_header_line = None;
     let lines: Vec<&str> = text.lines().collect();
 
     let mut i = 0usize;
@@ -379,12 +622,44 @@ pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError>
         // ------------------------------------------------------------------
         // Section headers
         // ------------------------------------------------------------------
-        if let Some(name) = line
-            .strip_prefix("module ")
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            module.module_name = name.to_string();
+        if let Some(rest) = line.strip_prefix("module ").map(str::trim) {
+            let name = parse_module_header(rest).map_err(|message| SchemaV1ParseError::Line {
+                line: line_no,
+                message,
+            })?;
+            if let Some(first_line) = module_header_line {
+                return Err(SchemaV1ParseError::Line {
+                    line: line_no,
+                    message: format!(
+                        "canonical .axi input requires exactly one module header; first header was on line {first_line}"
+                    ),
+                });
+            }
+            module_header_line = Some(line_no);
+            module.module_name = name;
+            section = Section::None;
+            i += 1;
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("import ").map(str::trim) {
+            if module_header_line.is_none() || section != Section::None {
+                return Err(SchemaV1ParseError::Line {
+                    line: line_no,
+                    message: "imports must follow the module header and precede all schema/theory/instance sections".to_string(),
+                });
+            }
+            let import = parse_module_header(rest).map_err(|message| SchemaV1ParseError::Line {
+                line: line_no,
+                message: format!("import expects exactly `import <Module>`: {message}"),
+            })?;
+            if module.imports.contains(&import) {
+                return Err(SchemaV1ParseError::Line {
+                    line: line_no,
+                    message: format!("duplicate import `{import}`"),
+                });
+            }
+            module.imports.push(import);
             i += 1;
             continue;
         }
@@ -402,6 +677,7 @@ pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError>
                 objects: vec![],
                 subtypes: vec![],
                 relations: vec![],
+                generators: vec![],
             });
             section = Section::Schema(module.schemas.len() - 1);
             i += 1;
@@ -484,6 +760,17 @@ pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError>
                     })?;
                     module.schemas[schema_index].relations.push(relation);
                     i = next_index;
+                    continue;
+                }
+
+                if line.starts_with("aspect ") || line.starts_with("function ") {
+                    let generator =
+                        parse_generator_decl(line).map_err(|message| SchemaV1ParseError::Line {
+                            line: line_no,
+                            message,
+                        })?;
+                    module.schemas[schema_index].generators.push(generator);
+                    i += 1;
                     continue;
                 }
 
@@ -640,6 +927,14 @@ pub fn parse_schema_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError>
         }
     }
 
+    if module_header_line.is_none() {
+        return Err(SchemaV1ParseError::Line {
+            line: 1,
+            message: "canonical .axi input requires exactly one explicit `module <Name>` header"
+                .to_string(),
+        });
+    }
+
     Ok(module)
 }
 
@@ -663,6 +958,12 @@ fn parse_ident(input: &str) -> IResult<&str, &str> {
         take_while1(is_ident_start),
         take_while(is_ident_continue),
     )))(input)
+}
+
+fn parse_module_header(rest: &str) -> Result<Name, String> {
+    all_consuming(preceded(multispace0, tuple((parse_ident, multispace0))))(rest)
+        .map(|(_, (name, _))| name.to_string())
+        .map_err(|_| "module header expects exactly `module <Name>`".to_string())
 }
 
 fn parse_theory_header(rest: &str) -> Result<(Name, Name), String> {
@@ -773,87 +1074,272 @@ fn collect_balanced_parens(
 }
 
 fn parse_relation_decl(line: &str) -> Result<RelationDeclV1, String> {
-    fn field_decl(input: &str) -> IResult<&str, FieldDeclV1> {
-        let (input, field) = preceded(multispace0, parse_ident)(input)?;
-        let (input, _) = preceded(multispace0, pchar(':'))(input)?;
-        let (input, _) = multispace0(input)?;
-        let (input, ty) = parse_ident(input)?;
-        Ok((
-            input,
-            FieldDeclV1 {
-                field: field.to_string(),
-                ty: ty.to_string(),
-            },
-        ))
+    let rest = line
+        .trim()
+        .strip_prefix("relation ")
+        .ok_or_else(|| "relation declaration must start with `relation `".to_string())?;
+    let open = rest
+        .find('(')
+        .ok_or_else(|| "relation declaration is missing `(`".to_string())?;
+    let close = rest
+        .rfind(')')
+        .ok_or_else(|| "relation declaration is missing `)`".to_string())?;
+    if close < open || !rest[close + 1..].trim().is_empty() {
+        return Err(
+            "relation expects exactly `relation Name(role: Type @kind, ...)`; relation-level axis shorthands are not canonical"
+                .to_string(),
+        );
     }
-
-    fn annotation(input: &str) -> IResult<&str, (&str, &str)> {
-        let (input, _) = multispace1(input)?;
-        let (input, _) = pchar('@')(input)?;
-        let (input, name) = parse_ident(input)?;
-        let (input, _) = multispace1(input)?;
-        let (input, ty) = parse_ident(input)?;
-        Ok((input, (name, ty)))
+    let name = rest[..open].trim();
+    parse_identifier_text(name, "relation name")?;
+    let inner = rest[open + 1..close].trim();
+    if inner.is_empty() {
+        return Err("relation must declare at least one role".to_string());
     }
+    let fields = split_top_level_commas_nested(inner)
+        .into_iter()
+        .map(parse_field_decl_v1)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RelationDeclV1 {
+        name: name.to_string(),
+        fields,
+    })
+}
 
-    fn parser(input: &str) -> IResult<&str, RelationDeclV1> {
-        let (input, _) = tag("relation")(input)?;
-        let (input, _) = multispace1(input)?;
-        let (input, name) = parse_ident(input)?;
-        let (input, fields) = nom::sequence::delimited(
-            preceded(multispace0, pchar('(')),
-            separated_list1(preceded(multispace0, pchar(',')), field_decl),
-            preceded(multispace0, pchar(')')),
-        )(input)?;
-        let (input, annotations) = nom::multi::many0(annotation)(input)?;
-        let (input, _) = multispace0(input)?;
+fn parse_field_decl_v1(text: &str) -> Result<FieldDeclV1, String> {
+    let Some((field, raw_type)) = text.split_once(':') else {
+        return Err(format!(
+            "relation role expects `name: Type @kind`, got `{text}`"
+        ));
+    };
+    let field = field.trim();
+    parse_identifier_text(field, "role name")?;
+    let (type_text, kind) = split_role_kind_annotation(raw_type.trim())?;
+    Ok(FieldDeclV1 {
+        field: field.to_string(),
+        ty: parse_type_expr_v1(type_text)?,
+        kind,
+    })
+}
 
-        // Accept a small set of relation-role shorthands and immediately
-        // normalize them to explicit roles.
-        //
-        // Canonical authoring style is:
-        //   relation Parent(child: Person, parent: Person, ctx: Context, time: Time)
-        //
-        // Accepted shorthand:
-        //   relation Parent(child: Person, parent: Person) @context Context @temporal Time
-        //
-        // The semantic distinction is recovered later in the compiled IR.
-        let mut expanded_fields = fields;
-        for (ann, ty) in annotations {
-            match ann {
-                "context" => {
-                    if !expanded_fields.iter().any(|f| f.field == "ctx") {
-                        expanded_fields.push(FieldDeclV1 {
-                            field: "ctx".to_string(),
-                            ty: ty.to_string(),
-                        });
-                    }
-                }
-                "temporal" => {
-                    if !expanded_fields.iter().any(|f| f.field == "time") {
-                        expanded_fields.push(FieldDeclV1 {
-                            field: "time".to_string(),
-                            ty: ty.to_string(),
-                        });
-                    }
-                }
-                _ => {}
+fn split_role_kind_annotation(text: &str) -> Result<(&str, RoleKindV1), String> {
+    let annotations = [
+        ("@context", RoleKindV1::Context),
+        ("@world", RoleKindV1::World),
+        ("@temporal", RoleKindV1::Temporal),
+        ("@parameter", RoleKindV1::Parameter),
+        ("@evidence", RoleKindV1::Evidence),
+        ("@data", RoleKindV1::Data),
+    ];
+    for (suffix, kind) in annotations {
+        if let Some(base) = text.strip_suffix(suffix) {
+            let base = base.trim();
+            if base.is_empty() {
+                return Err(format!("role annotation `{suffix}` is missing a type"));
             }
+            return Ok((base, kind));
         }
-        Ok((
-            input,
-            RelationDeclV1 {
-                name: name.to_string(),
-                fields: expanded_fields,
-            },
-        ))
     }
+    if text.contains('@') {
+        return Err(format!("unknown or misplaced role annotation in `{text}`"));
+    }
+    Ok((text, RoleKindV1::Data))
+}
 
-    all_consuming(parser)(line.trim())
-        .map(|(_, v)| v)
-        .map_err(|_| {
-            "relation expects canonical `relation Name(role: Ty, ...)` (accepted shorthand: `@context Ty` / `@temporal Ty`)".to_string()
+pub fn parse_type_expr_v1(text: &str) -> Result<TypeExprV1, String> {
+    let text = text.trim();
+    if let Some(inner) = wrapped_call(text, "relation") {
+        parse_identifier_text(inner, "relation-object type")?;
+        return Ok(TypeExprV1::RelationObject {
+            relation: inner.to_string(),
+        });
+    }
+    if let Some(inner) = wrapped_call(text, "indexed") {
+        let parts = split_top_level_semicolons(inner);
+        if parts.len() != 2 {
+            return Err("indexed type expects `indexed(Base; earlier_role|...)`".to_string());
+        }
+        let base = parse_type_expr_v1(parts[0])?;
+        let over_roles = split_pipe_names(parts[1], "indexed role")?;
+        if over_roles.is_empty() {
+            return Err("indexed type must name at least one earlier role".to_string());
+        }
+        return Ok(TypeExprV1::Indexed {
+            base: Box::new(base),
+            over_roles,
+        });
+    }
+    if let Some(inner) = wrapped_call(text, "refined") {
+        let parts = split_top_level_semicolons(inner);
+        if parts.len() < 2 {
+            return Err("refined type expects `refined(Base; predicate; ...)`".to_string());
+        }
+        let base = parse_type_expr_v1(parts[0])?;
+        let predicates = parts[1..]
+            .iter()
+            .map(|part| parse_refinement_predicate_v1(part))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(TypeExprV1::Refined {
+            base: Box::new(base),
+            predicates,
+        });
+    }
+    parse_identifier_text(text, "object type")?;
+    Ok(TypeExprV1::Object {
+        name: text.to_string(),
+    })
+}
+
+fn parse_refinement_predicate_v1(text: &str) -> Result<RefinementPredicateV1, String> {
+    let text = text.trim();
+    if let Some(inner) = wrapped_call(text, "eq") {
+        parse_identifier_text(inner, "equality value")?;
+        return Ok(RefinementPredicateV1::Equals {
+            value: inner.to_string(),
+        });
+    }
+    if let Some(inner) = wrapped_call(text, "in") {
+        return Ok(RefinementPredicateV1::MemberOf {
+            values: split_pipe_names(inner, "membership value")?,
+        });
+    }
+    if let Some(inner) = wrapped_call(text, "enum") {
+        return Ok(RefinementPredicateV1::Enum {
+            values: split_pipe_names(inner, "enum value")?,
+        });
+    }
+    if let Some(inner) = wrapped_call(text, "key") {
+        return Ok(RefinementPredicateV1::Key {
+            roles: split_pipe_names(inner, "key role")?,
+        });
+    }
+    if let Some(inner) = wrapped_call(text, "cardinality") {
+        let values = inner.split('|').map(str::trim).collect::<Vec<_>>();
+        if values.len() != 2 {
+            return Err("cardinality expects `cardinality(min|max)`".to_string());
+        }
+        let min = values[0]
+            .parse::<u32>()
+            .map_err(|_| "cardinality minimum must be a u32".to_string())?;
+        let max = values[1]
+            .parse::<u32>()
+            .map_err(|_| "cardinality maximum must be a u32".to_string())?;
+        if min > max {
+            return Err("cardinality minimum exceeds maximum".to_string());
+        }
+        return Ok(RefinementPredicateV1::Cardinality { min, max });
+    }
+    if let Some(inner) = wrapped_call(text, "predicate") {
+        let mut names = split_pipe_names(inner, "predicate name or argument")?;
+        if names.is_empty() {
+            return Err("predicate must name a supported predicate".to_string());
+        }
+        let name = names.remove(0);
+        return Ok(RefinementPredicateV1::Predicate { name, args: names });
+    }
+    Err(format!("unsupported refinement predicate `{text}`"))
+}
+
+fn wrapped_call<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    text.strip_prefix(name)?
+        .strip_prefix('(')?
+        .strip_suffix(')')
+        .map(str::trim)
+}
+
+fn split_pipe_names(text: &str, what: &str) -> Result<Vec<Name>, String> {
+    let names = text
+        .split('|')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            parse_identifier_text(name, what)?;
+            Ok(name.to_string())
         })
+        .collect::<Result<Vec<_>, String>>()?;
+    if names.is_empty() {
+        return Err(format!("{what} list must not be empty"));
+    }
+    Ok(names)
+}
+
+fn split_top_level_semicolons(text: &str) -> Vec<&str> {
+    split_at_top_level(text, ';')
+}
+
+fn split_top_level_commas_nested(text: &str) -> Vec<&str> {
+    split_at_top_level(text, ',')
+}
+
+fn split_at_top_level(text: &str, separator: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0i32;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => depth -= 1,
+            _ if ch == separator && depth == 0 => {
+                parts.push(text[start..index].trim());
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].trim());
+    parts
+}
+
+fn parse_identifier_text(text: &str, what: &str) -> Result<(), String> {
+    all_consuming(parse_ident)(text)
+        .map(|_| ())
+        .map_err(|_| format!("{what} must be an identifier, got `{text}`"))
+}
+
+fn parse_value_atom_text(text: &str, what: &str) -> Result<(), String> {
+    if text.is_empty()
+        || text
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, ',' | '(' | ')' | '{' | '}' | '=' | ':'))
+    {
+        return Err(format!("{what} must be a finite atom, got `{text}`"));
+    }
+    Ok(())
+}
+
+fn parse_generator_decl(line: &str) -> Result<GeneratorDeclV1, String> {
+    let (kind, rest) = if let Some(rest) = line.strip_prefix("aspect ") {
+        (GeneratorKindV1::Aspect, rest)
+    } else if let Some(rest) = line.strip_prefix("function ") {
+        (GeneratorKindV1::Function, rest)
+    } else {
+        return Err("generator must start with `aspect` or `function`".to_string());
+    };
+    let reversible = rest.trim_end().ends_with(" @reversible");
+    let rest = rest
+        .trim_end()
+        .strip_suffix(" @reversible")
+        .unwrap_or(rest)
+        .trim();
+    let Some((name, signature)) = rest.split_once(':') else {
+        return Err("generator expects `name: Source -> Target`".to_string());
+    };
+    let name = name.trim();
+    parse_identifier_text(name, "generator name")?;
+    let Some((source, target)) = signature.split_once("->") else {
+        return Err("generator expects `Source -> Target`".to_string());
+    };
+    let source = source.trim();
+    let target = target.trim();
+    parse_identifier_text(source, "generator source")?;
+    parse_identifier_text(target, "generator target")?;
+    Ok(GeneratorDeclV1 {
+        name: name.to_string(),
+        source: source.to_string(),
+        target: target.to_string(),
+        kind,
+        reversible,
+    })
 }
 
 fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
@@ -862,6 +1348,8 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
         On(CarrierFieldsV1),
         Param(Vec<Name>),
     }
+
+    type SplitClosureClausesV1 = (String, Option<CarrierFieldsV1>, Option<Vec<Name>>);
 
     fn peel_closure_clause_suffix(rest: &str) -> Result<Option<(String, ClosureClauseV1)>, String> {
         let trimmed = rest.trim_end();
@@ -931,9 +1419,7 @@ fn parse_constraint(rest: &str) -> Result<ConstraintV1, String> {
         }
     }
 
-    fn split_closure_clauses(
-        rest: &str,
-    ) -> Result<(String, Option<CarrierFieldsV1>, Option<Vec<Name>>), String> {
+    fn split_closure_clauses(rest: &str) -> Result<SplitClosureClausesV1, String> {
         let mut base = rest.trim().to_string();
         let mut carriers: Option<CarrierFieldsV1> = None;
         let mut params: Option<Vec<Name>> = None;
@@ -1278,18 +1764,42 @@ pub fn parse_relation_decl_v1(line: &str) -> Result<RelationDeclV1, String> {
 }
 
 /// Format a relation declaration back into canonical `axi_v1` surface syntax.
-///
-/// Canonical formatting always renders explicit roles. Accepted shorthands such
-/// as `@context` / `@temporal` are lowered to explicit `ctx` / `time` roles by
-/// the parser before formatting.
+/// Role-axis semantics are always rendered explicitly; relation-level
+/// shorthands and role-name inference are not part of the canonical language.
 pub fn format_relation_decl_v1(relation: &RelationDeclV1) -> String {
     let fields = relation
         .fields
         .iter()
-        .map(|field| format!("{}: {}", field.field, field.ty))
+        .map(|field| {
+            let annotation = match field.kind {
+                RoleKindV1::Data => "@data",
+                RoleKindV1::Context => "@context",
+                RoleKindV1::World => "@world",
+                RoleKindV1::Temporal => "@temporal",
+                RoleKindV1::Parameter => "@parameter",
+                RoleKindV1::Evidence => "@evidence",
+            };
+            format!("{}: {} {annotation}", field.field, field.ty)
+        })
         .collect::<Vec<_>>()
         .join(", ");
     format!("relation {}({fields})", relation.name)
+}
+
+pub fn format_generator_decl_v1(generator: &GeneratorDeclV1) -> String {
+    let keyword = match generator.kind {
+        GeneratorKindV1::Aspect => "aspect",
+        GeneratorKindV1::Function => "function",
+    };
+    let reversible = if generator.reversible {
+        " @reversible"
+    } else {
+        ""
+    };
+    format!(
+        "{keyword} {}: {} -> {}{reversible}",
+        generator.name, generator.source, generator.target
+    )
 }
 
 fn split_rel_field(s: &str) -> Result<(Name, Name), String> {
@@ -1368,6 +1878,9 @@ fn is_top_level_keyword(trimmed: &str) -> bool {
             || s.starts_with("theory ")
             || s.starts_with("instance ")
             || s.starts_with("module ")
+            || s.starts_with("import ")
+            || s.starts_with("aspect ")
+            || s.starts_with("function ")
             || s.starts_with("constraint ")
             || s.starts_with("equation ")
             || s.starts_with("rewrite ")
@@ -1765,8 +2278,17 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
 
 fn parse_set_item(item: String) -> Result<SetItemV1, String> {
     let trimmed = item.trim();
-    if trimmed.starts_with('(') && trimmed.ends_with(')') {
-        let inner = trimmed[1..trimmed.len() - 1].trim();
+    let (label, tuple_text) = if trimmed.starts_with('(') {
+        (None, trimmed)
+    } else if let Some((label, tuple)) = trimmed.split_once(':') {
+        let label = label.trim();
+        parse_identifier_text(label, "fact label")?;
+        (Some(label.to_string()), tuple.trim())
+    } else {
+        (None, trimmed)
+    };
+    if tuple_text.starts_with('(') && tuple_text.ends_with(')') {
+        let inner = tuple_text[1..tuple_text.len() - 1].trim();
         let mut fields = Vec::new();
         for part in split_top_level_commas(inner) {
             let part = part.trim();
@@ -1776,10 +2298,18 @@ fn parse_set_item(item: String) -> Result<SetItemV1, String> {
             let Some((k, v)) = part.split_once('=') else {
                 return Err(format!("tuple field missing `=`: `{part}`"));
             };
-            fields.push((k.trim().to_string(), v.trim().to_string()));
+            let key = k.trim();
+            let value = v.trim();
+            parse_identifier_text(key, "tuple role")?;
+            parse_value_atom_text(value, "tuple value")?;
+            fields.push((key.to_string(), value.to_string()));
         }
-        return Ok(SetItemV1::Tuple { fields });
+        return Ok(SetItemV1::Tuple { label, fields });
     }
+    if label.is_some() {
+        return Err("fact label must prefix a relation tuple".to_string());
+    }
+    parse_value_atom_text(trimmed, "set element")?;
     Ok(SetItemV1::Ident {
         name: trimmed.to_string(),
     })
@@ -1825,20 +2355,106 @@ mod tests {
     }
 
     #[test]
-    fn relation_shorthand_formats_back_to_explicit_roles() {
+    fn rejects_missing_or_multiple_module_headers() {
+        let missing = r#"
+schema S:
+  object A
+"#;
+        let err = parse_schema_v1(missing).expect_err("missing module header must reject");
+        assert!(err.to_string().contains("exactly one explicit"));
+
+        let multiple = r#"
+module Left
+schema L:
+  object A
+module Right
+schema R:
+  object B
+"#;
+        let err = parse_schema_v1(multiple).expect_err("multiple module headers must reject");
+        assert!(err.to_string().contains("exactly one module header"));
+        assert!(err.to_string().contains("first header was on line 2"));
+    }
+
+    #[test]
+    fn rejects_non_identifier_module_header() {
+        let err = parse_schema_v1("module Left Right\n")
+            .expect_err("module header must carry exactly one validated identifier");
+        assert!(err.to_string().contains("module header expects exactly"));
+    }
+
+    #[test]
+    fn relation_roles_preserve_explicit_axes_and_type_expressions() {
         let relation = parse_relation_decl_v1(
-            "relation Parent(child: Person, parent: Person) @context Context @temporal Time",
+            "relation Depends(ctx: Context @context, flow: indexed(relation(Flow); ctx) @data)",
         )
         .expect("parse relation declaration");
+        assert_eq!(relation.fields[0].kind, RoleKindV1::Context);
+        assert!(matches!(relation.fields[1].ty, TypeExprV1::Indexed { .. }));
         assert_eq!(
             format_relation_decl_v1(&relation),
-            "relation Parent(child: Person, parent: Person, ctx: Context, time: Time)"
+            "relation Depends(ctx: Context @context, flow: indexed(relation(Flow); ctx) @data)"
         );
+    }
+
+    #[test]
+    fn relation_level_axis_shorthand_is_rejected() {
+        let err = parse_relation_decl_v1(
+            "relation Parent(child: Person, parent: Person) @context Context",
+        )
+        .expect_err("relation-level shorthand must not survive the greenfield grammar");
+        assert!(err.contains("relation-level axis shorthands are not canonical"));
+    }
+
+    #[test]
+    fn parses_imports_generators_refinements_and_fact_labels() {
+        let module = parse_schema_v1(
+            r#"module Root
+import Base
+schema S:
+  object Person
+  object Context
+  relation R(ctx: Context @context, person: refined(indexed(Person; ctx); enum(Alice|Bob)) @data)
+  function owner: Person -> Person @reversible
+instance I of S:
+  Person = {Alice, Bob}
+  Context = {Current}
+  R = { fact1: (ctx=Current, person=Alice) }
+  owner = {(source=Alice, target=Alice), (source=Bob, target=Bob)}
+"#,
+        )
+        .expect("parse full canonical surface");
+        assert_eq!(module.imports, vec!["Base"]);
+        assert_eq!(module.schemas[0].generators.len(), 1);
+        assert!(matches!(
+            module.instances[0].assignments[2].value.items[0],
+            SetItemV1::Tuple { label: Some(_), .. }
+        ));
     }
 
     #[test]
     fn subtype_alias_formats_back_to_canonical_surface() {
         let subtype = parse_subtype_decl_v1("Child <: Parent").expect("parse subtype declaration");
         assert_eq!(format_subtype_decl_v1(&subtype), "subtype Child < Parent");
+    }
+
+    #[test]
+    fn syntax_limit_scan_ignores_canonical_comments() {
+        let module = parse_schema_v1(
+            "module Comments\n-- unmatched comment delimiters ({[\n# unmatched comment quote \\\"\nschema S:\n  object A -- unmatched )]}\n",
+        )
+        .expect("comment contents must not affect syntax-depth validation");
+        assert_eq!(module.module_name, "Comments");
+    }
+
+    #[test]
+    fn syntax_limit_scan_rejects_excessive_nesting_before_parse() {
+        let source = format!(
+            "module Deep\n{}{}\n",
+            "(".repeat(MAX_AXI_SYNTAX_DEPTH + 1),
+            ")".repeat(MAX_AXI_SYNTAX_DEPTH + 1)
+        );
+        let err = parse_schema_v1(&source).expect_err("excessive syntax nesting must reject");
+        assert!(err.to_string().contains("syntax nesting exceeds"));
     }
 }

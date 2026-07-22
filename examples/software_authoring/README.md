@@ -6,8 +6,8 @@ facts and theory only. DDD/fDDD context maps, behavior planning, implementation
 surfaces, code refs, coverage policy, and codegen live in JSON tooling overlays.
 Those JSON files are versioned typed tool payloads such as
 `tooling_overlay_bundle_v1` and `behavior_case_check_request_v1`, not anonymous
-ad hoc snippets. The teaching flow starts from `.axi`, `.cq`, direct weak
-definition prompts, and direct weak coverage flags. Keep JSON here as tool
+ad hoc snippets. The teaching flow starts from `.axi`, `.cq`, direct advisory
+definition prompts, and direct advisory coverage flags. Keep JSON here as tool
 input: user-authored ontology stays in `.axi`, and executable CQs should prefer
 `.cq` text files when they are not embedded in a behavior-case request.
 
@@ -30,7 +30,7 @@ input: user-authored ontology stays in `.axi`, and executable CQs should prefer
   software-authoring/codegen examples.
 - `example_registry.sh` mirrors that suite for shell runners. It exists so the
   examples do not require `jq`, Python, or another JSON-filter helper. When a
-  fixture changes, update both the typed JSON suite and this parser-free shell
+  registry changes, update both the typed JSON suite and this parser-free shell
   registry.
 - `host_integrations/` contains generic stdio launch examples for MCP and LSP
   hosts such as Cursor, Codex, Claude Code, and editor language-client plugins.
@@ -43,9 +43,9 @@ The intended learning path is:
 1. Validate the canonical domain `.axi`.
 2. Check the supported runtime-theory fragment.
 3. Check question-first `.cq` competency questions.
-4. Ask weak definition questions for authoring and planning context.
+4. Ask advisory definition questions for authoring and planning context.
 5. Validate the tooling overlay against compiled IR ids.
-6. Run exploratory coverage and behavior-case reports.
+6. Run advisory coverage and behavior-case reports.
 7. Run software coverage, codegen planning, and continuous advisory/strict/CI
    gates.
 8. Materialize generated skeleton previews only into a review directory.
@@ -57,8 +57,8 @@ Use this order when teaching or debugging the flow:
 | Entrypoint | Use When | Scope |
 | --- | --- | --- |
 | Direct CLI commands below | You are learning, debugging, or building a new domain. | Public front door: `.axi`, `.cq`, weak prompts, overlays, coverage, behavior, codegen. |
-| `authoring run` | You want one compact report for one cataloged example. | Harness entrypoint for agents and CI experiments, not the authoring language. |
-| `run_codegen_examples.sh` | You want to exercise every bundled domain/codegen fixture. | Full suite over order fulfillment, subscription billing, and process control. |
+| `authoring run` | You want one compact walkthrough report for one cataloged example. | Single-command teaching surface over the same `.axi`, `.cq`, overlay, coverage, behavior, and codegen reports. |
+| `run_codegen_examples.sh` | You want to exercise every bundled domain/codegen example. | Full suite over order fulfillment, subscription billing, and process control. |
 | `run_authoring_flow.sh` | You want the detailed order-fulfillment walkthrough with intermediate JSON artifacts. | Pedagogical script for the longest path. |
 
 Run every software-authoring/codegen example in the suite:
@@ -91,15 +91,19 @@ Strict and CI gates are expected to fail closed in some teaching runs; the
 scripts keep going only after confirming the fail-closed report was written.
 
 The shell runners do not require an external JSON parser or adapter script.
-They call the Rust CLI/library surfaces directly, including `authoring tool-specs`,
+They call the Rust CLI/library surfaces directly, including the unified
+`authoring workspace` request, `authoring tool-specs`,
 `authoring lsp-capabilities`, `authoring integration-manifest`, and
 `authoring codegen-plan`. The full flow runs validation, runtime theory checks,
-question-first CQ authoring checks, weak definition queries, overlay validation,
-exploratory coverage queries, behavior-case reporting, software coverage,
+question-first CQ execution and repair, advisory definition lookup, overlay validation,
+advisory coverage queries, behavior-case reporting, software coverage,
 codegen planning, advisory continuous coverage, strict continuous coverage, and
 explicit skeleton materialization. The full flow also runs a CI-profile
 continuous check through the existing `authoring continuous-check` command with
 `--strict-coverage`, `--require-code-refs`, and `--require-runtime-theory`.
+Automation and CI should call the same commands with `strict` or `ci` profiles;
+the compact teaching flow and the enforcement flow differ by policy, not by a
+separate adapter language.
 
 Emit a single combined authoring-suite report for one example:
 
@@ -136,19 +140,20 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   --closure-tier finite_fragment
 ```
 
-Check question-first competency questions against the canonical `.axi` without
-asking the user to write raw AxQL:
+Run question-first CQs, query preparation, diagnostics, repairs, finite evolution
+preview, validation, and promotion review through the same workspace service used
+by LSP, MCP, and HTTP:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  authoring competency-questions \
-  --axi examples/software_authoring/OrderFulfillmentDomain.axi \
-  --cq examples/software_authoring/order_fulfillment.cq \
-  --out build/examples/software_authoring/competency_questions_authoring.json
+  authoring workspace \
+  --workspace . \
+  --request examples/software_authoring/authoring_workspace_request.json \
+  --out build/examples/software_authoring/authoring_workspace_report.json
 ```
 
-Ask a weak definition question. This is useful for discovery and authoring, not
-for correctness gates:
+Ask an advisory definition question. This is useful for discovery and authoring,
+not for correctness gates:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
@@ -167,7 +172,7 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json
 ```
 
-Run an exploratory coverage query:
+Run an advisory coverage query:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
@@ -273,14 +278,14 @@ cargo run --manifest-path rust/Cargo.toml \
   --out build/examples/software_authoring/materialize_skeletons.json
 ```
 
-Run only the weak definition-query pass:
+Run only the advisory definition-query pass:
 
 ```bash
 ./examples/software_authoring/run_definition_queries.sh
 ```
 
 Pass an example id to run a different bundled prompt set without requiring a
-JSON parser in the shell harness:
+JSON parser in the shell runner:
 
 ```bash
 ./examples/software_authoring/run_definition_queries.sh \
@@ -292,13 +297,17 @@ Run the host-integration metadata and local background processes:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  authoring integration-manifest
+  authoring integration-manifest --workspace .
 
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  authoring mcp
+  authoring mcp --workspace .
 
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
-  authoring lsp
+  authoring lsp --workspace . \
+  --axi examples/software_authoring/OrderFulfillmentDomain.axi
+
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring serve --workspace . --listen 127.0.0.1:8787
 ```
 
 The files under `host_integrations/` are intentionally generic. Most MCP hosts
@@ -342,9 +351,9 @@ reports and explicit CLI materialization.
   servers; they do not define a custom JSON-RPC dialect.
 - Multiple codegen examples intentionally share one suite catalog and runner,
   but the reusable authoring surface is still direct: add canonical `.axi`,
-  `.cq` competency questions, direct weak definition/coverage prompts, a typed
+  `.cq` competency questions, direct advisory definition/coverage prompts, a typed
   overlay payload, and behavior-case scenarios. Add a catalog entry only when
-  the new domain should join the bundled regression/teaching harness.
+  the new domain should join the bundled teaching and verification suite.
 
 ## Non-Claims
 

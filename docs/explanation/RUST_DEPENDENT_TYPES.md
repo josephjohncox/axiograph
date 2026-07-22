@@ -193,7 +193,7 @@ High-level correspondence:
 
 - `.axi schema` ⇔ a category presentation (CQL-style).
   - Rust: meta-plane graph + `axi_semantics::MetaPlaneIndex`.
-  - Lean (scaffold): `lean/Axiograph/Topos/Overview.lean`.
+  - Lean support layer: `lean/Axiograph/Topos/Overview.lean`.
 - `.axi instance` ⇔ a functor into finite sets.
   - Rust: PathDB entities + reified fact nodes; field edges act like projections.
   - Lean: the target category is `FintypeCat` (mathlib).
@@ -202,7 +202,7 @@ High-level correspondence:
   - Lean: checked in the trusted gate for certifiable subsets (`axi_constraints_ok_v1`).
 - contexts/worlds ⇔ world-indexed knowledge (presheaf/sheaf intuition).
   - Rust: `ctx` tuple field (from `@context`) plus derived edge `axi_fact_in_context` + context indexes.
-  - Lean: explanation/scaffold only for now; keep certificates snapshot-scoped and avoid closed-world assumptions.
+  - Lean: explanation-level support only for now; keep certificates snapshot-scoped and avoid closed-world assumptions.
 
 The most important rule is: **runtime indexes are optimizations, not semantics**.
 When we need trust, we emit a certificate and Lean checks it against the
@@ -426,6 +426,7 @@ To avoid duplicating implementations, Axiograph uses a **compile-time** switch:
 - `WithProof`: evaluate and return witness payloads
 
 This pattern lives in:
+
 - `rust/crates/axiograph-pathdb/src/proof_mode.rs`
 
 Typical shape:
@@ -496,7 +497,7 @@ The long-term strategy is:
    - now implemented: `axiograph_pathdb::DbBranded<T>` + branded witnesses for
      internal graph operations
    - public proof-carrying query/reachability flows should use canonical
-     `.axi` anchors plus stable `axi_fact_id` / `query_result_v3`, not
+     `.axi` anchors plus stable `axi_fact_id` / `query_result_v4`, not
      relation-id snapshot witnesses
      - normalization/equivalence/reconciliation: `ProofProducingOptimizer::*_branded` variants
 4. Expand certificate v2 into full rewrite/groupoid derivations and make the Rust

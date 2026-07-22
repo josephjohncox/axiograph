@@ -1,276 +1,248 @@
 # Software Authoring Tools
 
-This is the stable map for Axiograph software-authoring and codegen surfaces.
-The domain `.axi` representation stays pure; DDD/fDDD context maps, behavior
-cases, implementation surfaces, coverage policy, code refs, generated skeletons,
-plugins, and editor integrations are tooling overlays that use the ontology.
+**Diátaxis:** Reference
+**Audience:** ontology authors, tool integrators, contributors
 
-## Crates
+Axiograph has one typed ontology-authoring service. CLI, LSP, MCP, and HTTP
+adapters all deserialize `authoring_workspace_request_v1`, call
+`AuthoringWorkspaceService::execute`, and serialize
+`authoring_workspace_report_v1`. The adapters contain no separate authoring
+semantics or report families.
 
-- `axiograph-tooling-overlays`: typed overlay schemas and read-only reports for
-  overlay validation, weak definition queries, coverage queries, codegen plans,
-  and policy-driven coverage. Reports include typed ref summaries, mapped
-  implementation surfaces, codegen language plans, runtime-theory sidecar
-  status, shared authoring-flow profile summaries, and next-action guidance.
-- `axiograph-software-authoring`: reusable library plus CLI for continuous
-  software coverage, generated skeleton materialization, plugin metadata, and
-  LSP/editor capability metadata. Continuous checks read behavior-case reports
-  and verify codegen language coverage, code refs, semantic coverage, CQ status,
-  and optional runtime-theory sidecars. They embed the same
-  `AuthoringFlowReportV1` shape used by overlay-backed software coverage.
-- `axiograph-example-software-authoring`: pedagogical example crate showing how
-  application/domain packages consume the library for continuous semantic
-  coverage checks.
-- `axiograph-cli`: unified `axiograph authoring ...`, `axiograph discover ...`,
-  `axiograph check ...`, MCP, and DB-server surfaces.
+Software coverage and code generation remain tooling overlays. They consume the
+ontology through compiled references; they do not extend canonical `.axi`.
 
-## CLI Surfaces
+## Authority
 
-Primary authoring commands:
+The authoring service reads a workspace-relative canonical `.axi` root and its
+import closure. `CanonicalCompiler` produces the one compiled kernel snapshot.
+The service derives PathDB and runtime indexes from that snapshot for finite
+queries, CQ execution, runtime diagnostics, and repair suggestions.
 
-```bash
-axiograph check validate domain.axi
-axiograph check theory domain.axi --closure-tier finite_fragment
-axiograph authoring competency-questions --axi domain.axi --cq questions.cq --out competency_questions_authoring.json
-axiograph discover define domain.axi --prompt "define this business rule" --include-queries
-axiograph discover coverage-query domain.axi --term "shipment eligibility" --relation OrderEligibleForShipment --max-matches 8
-axiograph discover overlay-check domain.axi --overlay overlay.json
-axiograph discover behavior-case domain.axi --request behavior_case.json --cq-file questions.cq --overlay overlay.json --out behavior_report.json
-axiograph check software-coverage domain.axi --behavior-case behavior_case.json --cq-file questions.cq --overlay overlay.json --out software_coverage.json
-axiograph authoring codegen-plan --overlay overlay.json --out codegen_plan.json
-axiograph authoring materialize-skeletons --behavior-report behavior_report.json --out-dir generated --out materialization.json
-axiograph authoring continuous-check --behavior-report behavior_report.json --repo-root . --out coverage_gate.json
-axiograph authoring tool-specs --out software_authoring_tools.json
-axiograph authoring lsp-capabilities --out software_authoring_lsp.json
-axiograph authoring integration-manifest --out software_authoring_integrations.json
-axiograph authoring lsp
-axiograph authoring mcp
-```
+The authority boundary does not move:
 
-Recommended user flow:
+- canonical accepted `.axi` plus its compiled kernel IR is the meaning plane;
+- PathDB and runtime indexes are derived execution substrates;
+- Rust authoring checks are untrusted operational checks; and
+- only the import closure of `lean/Axiograph/VerifyMain.lean` is the trusted
+  checker.
 
-```bash
-axiograph check validate examples/software_authoring/OrderFulfillmentDomain.axi
-axiograph check theory examples/software_authoring/OrderFulfillmentDomain.axi --closure-tier finite_fragment
-axiograph authoring competency-questions --axi examples/software_authoring/OrderFulfillmentDomain.axi --cq examples/software_authoring/order_fulfillment.cq --out build/examples/software_authoring/competency_questions_authoring.json
-axiograph discover competency-questions --from-cq examples/software_authoring/order_fulfillment.cq --out build/examples/software_authoring/competency_questions.json
-axiograph discover define examples/software_authoring/OrderFulfillmentDomain.axi --prompt "define the shipment eligibility business rule" --include-queries
-axiograph discover overlay-check examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json
-axiograph discover coverage-query examples/software_authoring/OrderFulfillmentDomain.axi --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --term "shipment eligibility" --relation OrderEligibleForShipment --cq-name accepted_order_is_shipment_eligible --surface-hint shipping --max-matches 8
-axiograph discover behavior-case examples/software_authoring/OrderFulfillmentDomain.axi --request examples/software_authoring/order_fulfillment_behavior_case.json --cq-file examples/software_authoring/order_fulfillment.cq --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/behavior_case_report.json
-axiograph check software-coverage examples/software_authoring/OrderFulfillmentDomain.axi --behavior-case examples/software_authoring/order_fulfillment_behavior_case.json --cq-file examples/software_authoring/order_fulfillment.cq --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/software_coverage.json
-axiograph authoring codegen-plan --overlay examples/software_authoring/order_fulfillment_tooling_overlay.json --out build/examples/software_authoring/codegen_plan.json
-axiograph authoring continuous-check --behavior-report build/examples/software_authoring/behavior_case_report.json --repo-root . --out build/examples/software_authoring/continuous_coverage.json
-axiograph authoring continuous-check --behavior-report build/examples/software_authoring/behavior_case_report.json --repo-root . --strict-coverage --out build/examples/software_authoring/enforced_continuous_coverage.json
-axiograph authoring continuous-check --behavior-report build/examples/software_authoring/behavior_case_report.json --repo-root . --strict-coverage --require-code-refs --require-runtime-theory --out build/examples/software_authoring/ci_continuous_coverage.json
-```
+## Unified Request
 
-Competency questions in this flow are authored as `.cq` files with
-`ask`/`about`/`given`/`expect` records. The loader derives executable typed
-queries for simple `expect: exists Schema.Rel(...)` and
-`expect: instance of Schema.Type` forms; unresolved prose-like questions remain
-addressable authoring obligations and cannot satisfy strict gates until lowered.
-For agent/editor workflows, use `axiograph_authoring_competency_questions` to
-draft and validate `.cq` intent against canonical `.axi`, then use
-`semantic_competency_questions` or the CLI behavior-case/CQ runner to evaluate
-the lowered questions against a loaded runtime snapshot.
-
-The CLI reports should always leave users with an obvious next action: resolve
-typed holes, validate overlays, run weak coverage probes, promote accepted
-ontology changes, or materialize generated skeletons through an explicit CLI
-write step.
-
-Report contracts:
-
-- Overlay validation resolves `OverlayRefV1` values against compiled IR ids and
-  returns a ref summary, serialized `KernelRefV1` handles, stable kernel-ref
-  labels, and suggestions for unresolved refs.
-- Codegen plans return per-language file hints, required-by-policy status,
-  mapped implementation surface ids, and ontology-ref labels.
-- Coverage queries stay weak/exploratory even if the request asks for enforced
-  mode; enforcement belongs to software coverage and continuous-check gates.
-- Continuous coverage consumes a generated `BehaviorCaseReportV1`, reports
-  typed refs from receipts/slices/coverage, checks required generated languages,
-  and interprets `RuntimeTheoryCheckSummaryV1` sidecars when present.
-- Overlay software coverage consumes `BehaviorCaseCoverageViewV1`, a typed
-  boundary view over behavior-case reports. CLI/MCP/LSP surfaces may still move
-  JSON over the wire, but coverage builders should not walk arbitrary JSON
-  pointers internally.
-- `AuthoringFlowReportV1` is embedded at `authoring_flow` inside both
-  `overlay_software_coverage_report_v1` and
-  `continuous_software_coverage_report_v1`. It is the shared summary agents
-  should read for source (`continuous_check` or `overlay_software_coverage`),
-  pass/status, coverage gaps, and profile.
-- Coverage profiles are `advisory`, `strict`, and `ci`. `advisory` reports gaps
-  and next actions; `strict` fails closed on explicit strict/enforced policy;
-  `ci` means strict coverage plus required code refs, runtime-theory sidecars,
-  and unresolved-obligation failure.
-- Strict or enforced gates may fail on uncovered semantic rules, missing code
-  refs, missing generated languages, blocking runtime-theory judgments, or
-  residual runtime-theory obligations.
-
-The standalone crate exposes the same production-named tool:
-
-```bash
-axiograph-software-authoring codegen-plan --overlay overlay.json --json
-axiograph-software-authoring competency-questions --axi domain.axi --cq questions.cq --json
-axiograph-software-authoring materialize-skeletons --behavior-report behavior_report.json --out-dir generated --json
-axiograph-software-authoring continuous-check --behavior-report behavior_report.json --json
-axiograph-software-authoring continuous-check --behavior-report behavior_report.json --strict-coverage --require-code-refs --require-runtime-theory --json
-axiograph-software-authoring integration-manifest --json
-axiograph-software-authoring lsp
-axiograph-software-authoring mcp
-```
-
-The example crate is intentionally thin: it demonstrates library consumption
-from an application package, not a separate semantic authority:
-
-```bash
-cargo run --manifest-path rust/Cargo.toml \
-  -p axiograph-example-software-authoring \
-  --bin axiograph-software-authoring-example -- \
-  continuous-check \
-  --behavior-report build/examples/software_authoring/behavior_case_report.json \
-  --repo-root . \
-  --out build/examples/software_authoring/example_crate_continuous_coverage.json
-```
-
-## MCP And Server Surfaces
-
-MCP/tool-loop tools are read-only. They can plan, validate, and report, but do
-not write generated files. For Cursor, Codex, Claude Code, and other MCP-aware
-hosts, run the stdio MCP process as a host-managed background server:
-
-```bash
-axiograph authoring mcp
-```
-
-The standalone binary exposes the same server:
-
-```bash
-axiograph-software-authoring mcp
-```
-
-The MCP server uses the official `rmcp = 1.5.0` Rust SDK with stdio transport
-and MCP stdio framing. It handles the host lifecycle used by MCP clients:
-`initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`,
-and host-managed process exit/stdin close. Its advertised tool names use the
-stable `axiograph_authoring_*` prefix:
-
-MCP tool metadata advertises the embedded `authoring_flow_report_v1` contract
-and the `advisory`/`strict`/`ci` profiles. It does not add a separate write or
-flow command; hosts call the existing read-only coverage tools and inspect the
-`authoring_flow` field.
-
-Any local JSON-RPC dispatcher code is test harness only. Production MCP
-entrypoints are `rmcp`-backed stdio servers.
-
-The main `axiograph mcp` semantic-query server follows the same rule: launched
-stdio MCP uses `rmcp`, while any hand-rolled JSON-RPC helpers are test harnesses
-for semantic tool-shape and dispatch behavior.
-
-- `axiograph_authoring_lsp_capabilities`
-- `axiograph_authoring_integration_manifest`
-- `axiograph_authoring_codegen_plan`
-- `axiograph_authoring_overlay_check`
-- `axiograph_authoring_definition_query`
-- `axiograph_authoring_coverage_query`
-- `axiograph_authoring_competency_questions`
-- `axiograph_authoring_software_coverage`
-
-The in-process semantic tool-loop names remain:
-
-- `semantic_overlay_check`
-- `semantic_behavior_case_plan`
-- `semantic_software_coverage`
-- `semantic_codegen_plan`
-- `semantic_overlay_refs`
-- `semantic_coverage_query`
-- `semantic_weak_coverage_probe`
-- `semantic_definition_query`
-- `semantic_competency_questions`
-
-DB-server read-only endpoints mirror the useful authoring tools:
-
-- `POST /semantic/overlay-check`
-- `POST /semantic/software-coverage`
-- `POST /semantic/codegen-plan`
-- `POST /semantic/coverage-query`
-- `POST /semantic/definition-query`
-
-The DB HTTP server follows the same maintained-crate rule as MCP and LSP:
-`hyper` owns HTTP serving/framing and `http-body-util` owns body collection and
-response bodies. Axiograph-owned code should stay focused on route dispatch,
-request validation, typed reports, and snapshot/query semantics rather than
-generic HTTP parsing.
-
-File materialization stays CLI-only because generated files are reviewable
-workspace mutations, not MCP/server side effects.
-
-## Plugin And Editor/LSP Surfaces
-
-The Rust tool emits editor capability metadata, a host integration manifest, an
-SDK-backed stdio LSP server, and a read-only stdio MCP server:
-
-```bash
-axiograph authoring lsp-capabilities
-axiograph authoring integration-manifest
-axiograph authoring lsp
-axiograph authoring mcp
-axiograph-software-authoring lsp-capabilities --json
-axiograph-software-authoring integration-manifest --json
-axiograph-software-authoring lsp
-axiograph-software-authoring mcp
-```
-
-The LSP server uses `lsp-server = 0.7.9` for stdio transport/framing and
-`lsp-types = 0.97` for protocol capability types. The production server no
-longer owns hand-rolled LSP frame parsing; Axiograph-specific code is limited to
-domain diagnostics, command dispatch, and typed authoring reports. It supports
-`initialize`, `textDocument/didOpen`, `textDocument/didChange`,
-`textDocument/codeAction`, and `workspace/executeCommand`. It emits diagnostics
-for `.axi` parsing, `.cq` authoring/lowering, embedded behavior-case/tooling
-schemas, coverage policy shape, and runtime-theory sidecar presence where the
-host supplies enough context. It exposes read-only commands for overlay
-checking, weak definition queries, competency-question checks, coverage queries,
-software coverage, codegen planning, and capability discovery. It does not write
-files; skeleton materialization remains an explicit CLI action.
-
-MCP and LSP remain read-only planning/checking surfaces. Do not add
-write-capable MCP tools for generated files. Planned read-only additions are
-tracked in `docs/roadmaps/ROADMAP_RUNTIME_THEORY_AND_TYPED_WORKFLOWS.md`:
-refinement-handle listing for unresolved overlay refs, runtime-theory residual
-obligation summaries, and quick links from code actions to the exact CLI
-materialization command.
-
-The integration manifest is the portable launcher contract for editor and agent
-hosts. It declares both commands as stdio, host-managed background processes:
+A request names files relative to one configured workspace root. Absolute paths,
+`..`, paths that resolve outside the workspace, non-regular files, and oversized
+sources are rejected before semantic processing.
 
 ```json
 {
-  "lsp": { "command": "axiograph", "args": ["authoring", "lsp"] },
-  "mcp": { "command": "axiograph", "args": ["authoring", "mcp"] }
+  "version": "authoring_workspace_request_v1",
+  "operation": "promotion_review",
+  "axi_path": "examples/software_authoring/OrderFulfillmentDomain.axi",
+  "baseline_axi_path": "examples/software_authoring/OrderFulfillmentDomain.axi",
+  "cq_path": "examples/software_authoring/order_fulfillment.cq",
+  "schema": "OrderFulfillment",
+  "query_ir_v1": {
+    "version": 1,
+    "select_vars": ["order"],
+    "where_atoms": [
+      { "kind": "type", "term": "?order", "type": "Order" }
+    ],
+    "limit": 10
+  },
+  "focus_variable": "order"
 }
 ```
 
-Hosts may translate that into their local configuration format, but the
-Axiograph contract stays the same: LSP is for editor diagnostics and code
-actions; MCP is for read-only agent tools; CLI is required for file writes.
-The manifest and LSP capability metadata also name `authoring_flow_report_v1`
-so hosts can render one coverage/profile card regardless of whether the payload
-came from overlay software coverage or continuous-check.
+`axi_text`, `baseline_axi_text`, and `cq_text` may replace root-buffer contents
+without writing a file. The compiler still resolves imports beneath the
+workspace root. This is the LSP unsaved-buffer path, not a second compiler.
 
-Generic host examples live in:
+Operations:
 
-- `examples/software_authoring/host_integrations/axiograph_authoring_mcp_stdio.json`
-- `examples/software_authoring/host_integrations/axiograph_authoring_lsp_stdio.json`
+| Operation | Behavior |
+| --- | --- |
+| `inspect` | Runs every applicable read-only check requested by the payload. |
+| `apply_repair` | Applies one emitted query or olog refinement handle and rechecks. |
+| `validate` | Compiles canonical `.axi`, checks finite category formation, and runs finite runtime-theory admissibility. |
+| `promotion_review` | Runs the same checks and returns fail-closed protected-main gate status. It does not mutate AxiStore. |
 
-Primary protocol reference: `https://modelcontextprotocol.io/specification/2025-03-26/basic/transports`
+## Unified Report
+
+Every adapter returns `authoring_workspace_report_v1`. The report contains:
+
+- the workspace-relative source and exact ordered module closure;
+- repository, candidate snapshot, root revision, and compiled IR digests;
+- structured diagnostics;
+- query, olog, and CQ typed holes;
+- one `RuntimeRefinementCandidateV1` repair currency;
+- canonical `CompetencyQuestionV1` records plus finite execution results;
+- `PreparedQueryMetadataV1`, elaborated query IR, plan, exploration, and trust;
+- optional applied query or olog repair results;
+- finite kernel payload diff and typed olog evolution previews;
+- finite runtime-theory admissibility results;
+- a protected-main promotion review; and
+- explicit scope and non-claims.
+
+CQ authoring no longer has a parallel DTO/report family. `.cq` parsing,
+lowering, execution, diagnostics, and repair use the canonical
+`CompetencyQuestionV1` and prepared-query services.
+
+## Finite Evolution Semantics
+
+If a request supplies `baseline_axi_path`, the service compares baseline and
+candidate `KernelSnapshotIr` payload fingerprints. It classifies logical module,
+schema, object, relation-object, role, theory, constraint, path-equation,
+rewrite, instance, and fact ids as preserved, changed, added, or removed.
+
+This is exact equality of encoded finite compiled payloads. It does not prove:
+
+- categorical equivalence or a universal property;
+- naturality or complete functorial transport;
+- univalence, higher-path equality, or general HoTT semantics;
+- termination or confluence of arbitrary rewrite systems; or
+- ontology closure or open-world completeness.
+
+Typed olog checks add the supported finite path fragment: relation objects,
+projection arrows, subtype-compatible role fillers, compositional path
+endpoints, and path-equation endpoint equality. Unsupported higher semantics
+remain explicit residual obligations.
+
+### Primary regulated-shipment authoring request
+
+`examples/regulated_shipment/authoring_request.json` compares the accepted
+baseline with the candidate, runs three CQs, prepares and explains the bounded
+`ShipmentContainsBatch / BatchHasCertificate` query, and emits the finite
+payload evolution preview. Its behavior-case overlay then generates a Rust test
+whose receipt cites the regulated-shipment bounded context and all covered key
+rules. The workflow compiles and executes that generated test; it does not
+pretend that skeleton generation implements the dispatch service.
+
+## Promotion Review
+
+The service fails protected-main review closed. It reports four gate decisions:
+
+1. canonical validation and compiled IR;
+2. competency questions;
+3. finite runtime-theory admissibility; and
+4. trusted checker.
+
+Omitted CQs block the CQ gate. Runtime-theory blockers or residual obligations
+block the theory gate. The trusted-checker gate remains blocked because the
+read-only adapters do not produce or accept a substitute for a VerifyMain
+receipt.
+
+`candidate_reviewable=true` means the finite runtime checks found no blocking
+report diagnostic. It does not mean the candidate is accepted.
+`protected_main_eligible` remains false until a separate trusted workflow builds
+a complete `PromotionPlan` and calls
+`AxiStore::promote(expected_generation, plan)`.
+
+## CLI
+
+Run the checked-in example request:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
+  authoring workspace \
+  --workspace . \
+  --request examples/software_authoring/authoring_workspace_request.json \
+  --out build/examples/software_authoring/authoring_workspace_report.json
+```
+
+Inspect adapter capabilities and launch metadata:
+
+```bash
+axiograph authoring lsp-capabilities --out authoring_capabilities.json
+axiograph authoring integration-manifest --workspace . --out authoring_integrations.json
+```
+
+The remaining software-overlay commands are separate from ontology authoring:
+
+```bash
+axiograph authoring codegen-plan --overlay overlay.json --out codegen_plan.json
+axiograph authoring materialize-skeletons \
+  --behavior-report behavior_report.json \
+  --out-dir generated \
+  --out materialization.json
+axiograph authoring continuous-check \
+  --behavior-report behavior_report.json \
+  --repo-root . \
+  --strict-coverage \
+  --require-code-refs \
+  --require-runtime-theory \
+  --out coverage_gate.json
+```
+
+## LSP
+
+```bash
+axiograph authoring lsp \
+  --workspace . \
+  --axi examples/software_authoring/OrderFulfillmentDomain.axi
+```
+
+The LSP publishes `.axi` diagnostics from the unified report. If `--axi` is
+set, it also checks unsaved `.cq` buffers against that workspace-relative root.
+`workspace/executeCommand` accepts one `authoring_workspace_request_v1` under
+`axiograph.authoring.workspace`. Code actions invoke that same command.
+
+The LSP is read-only.
+
+## MCP
+
+```bash
+axiograph authoring mcp --workspace .
+```
+
+The rmcp server publishes one read-only tool:
+
+```text
+axiograph_authoring_workspace
+```
+
+Its input schema is `authoring_workspace_request_v1`; its structured result is
+`authoring_workspace_report_v1`. The former per-feature authoring MCP tools were
+removed rather than retained as compatibility shims.
+
+## HTTP
+
+```bash
+axiograph authoring serve --workspace . --listen 127.0.0.1:8787
+```
+
+Endpoints:
+
+- `GET /healthz`
+- `GET /authoring/capabilities`
+- `POST /authoring`
+
+`POST /authoring` accepts the same request used by CLI, LSP, and MCP. The server
+is read-only and enforces a 1 MiB request-body limit.
+
+## Standalone Software-Authoring Crate
+
+`axiograph-software-authoring` now contains only software coverage, overlay
+codegen planning, and explicit skeleton materialization:
+
+```bash
+axiograph-software-authoring codegen-plan --overlay overlay.json --json
+axiograph-software-authoring continuous-check --behavior-report report.json --json
+axiograph-software-authoring materialize-skeletons \
+  --behavior-report report.json --out-dir generated --json
+axiograph-software-authoring tool-specs --json
+```
+
+Its duplicate CQ, LSP, MCP, capability, and integration-manifest commands were
+deleted. Use the main `axiograph authoring` workspace service for ontology
+authoring and editor/agent/server integration.
 
 ## Non-Claims
 
-- Generated skeletons are implementation obligations and review artifacts, not
-  accepted code, proofs, or completeness claims.
-- Weak definition and coverage queries help authoring and agent planning, but
-  cannot satisfy promotion gates.
-- Runtime authoring diagnostics are not Lean certification.
+- Diagnostics and repair handles are runtime guidance, not proof terms.
+- Prepared-query certifiability is metadata, not a certificate.
+- CQ satisfaction covers the supplied finite questions and data only.
+- Evolution previews are finite structural comparisons, not general semantic
+  equivalence proofs.
+- Promotion review is read-only and cannot advance accepted state.
+- Generated skeletons are implementation obligations, not accepted code or
+  proofs.

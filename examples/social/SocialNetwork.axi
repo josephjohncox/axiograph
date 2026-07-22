@@ -139,7 +139,9 @@ instance SocialExample of SocialGraph:
   -- Current relationships
   Relationship = {
     (from=Alice, to=Bob, relType=Friend),
+    (from=Bob, to=Alice, relType=Friend),
     (from=Alice, to=Carol, relType=Colleague),
+    (from=Carol, to=Alice, relType=Colleague),
     (from=Bob, to=Carol, relType=Acquaintance),
     (from=Carol, to=Dave, relType=Mentor)
   }
@@ -183,7 +185,7 @@ instance SocialExample of SocialGraph:
   -- Trust paths (with witnesses)
   TrustPath = {
     (from=Alice, to=Bob, level=High, witnesses=BookClub),
-    (from=Bob, to=Carol, level=Medium, witnesses=TechCorp),
+    (from=Bob, to=Carol, level=Medium, witnesses=Neighborhood),
     (from=Alice, to=Carol, level=Low, witnesses=MakerSpace)
   }
 
@@ -203,6 +205,18 @@ instance SocialExample of SocialGraph:
     -- Both paths end at "colleague-friend" state
     (from=Alice, to=Carol,
      path1=WorkThenFriend,
+     path2=FriendThenWork,
+     witness=SameFriendship),
+    (from=Carol, to=Alice,
+     path1=FriendThenWork,
+     path2=WorkThenFriend,
+     witness=SameFriendship),
+    (from=Alice, to=Alice,
+     path1=WorkThenFriend,
+     path2=WorkThenFriend,
+     witness=SameFriendship),
+    (from=Carol, to=Carol,
+     path1=FriendThenWork,
      path2=FriendThenWork,
      witness=SameFriendship)
   }

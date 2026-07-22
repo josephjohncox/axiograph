@@ -1,4 +1,4 @@
-use std::{env, fs};
+use std::env;
 
 use axiograph_dsl::axi_v1::parse_axi_v1;
 
@@ -13,13 +13,16 @@ fn main() {
         std::process::exit(2);
     }
 
-    let text = match fs::read_to_string(&path) {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("failed to read `{path}`: {err}");
-            std::process::exit(2);
-        }
-    };
+    const MAX_AXI_BYTES: usize = 4 * 1024 * 1024;
+    let text = axiograph_security::read_utf8_file_bounded(
+        std::path::Path::new(&path),
+        MAX_AXI_BYTES,
+        "canonical .axi input",
+    )
+    .unwrap_or_else(|error| {
+        eprintln!("failed to read `{path}`: {error}");
+        std::process::exit(2);
+    });
 
     match parse_axi_v1(&text) {
         Ok(module_ast) => {

@@ -2,14 +2,20 @@
 name = "axiograph-dsl"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Axiograph DSL types and parser"
 
+[lints]
+workspace = true
+
 [dependencies]
+axiograph-security = { path = "../axiograph-security" }
 thiserror.workspace = true
 serde.workspace = true
 nom.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true

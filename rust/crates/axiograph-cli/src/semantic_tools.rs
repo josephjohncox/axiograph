@@ -19,8 +19,7 @@ pub(crate) const SEMANTIC_OVERLAY_REFS_TOOL_NAME: &str = "semantic_overlay_refs"
 pub(crate) const SEMANTIC_COVERAGE_QUERY_TOOL_NAME: &str = "semantic_coverage_query";
 pub(crate) const SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME: &str = "semantic_weak_coverage_probe";
 pub(crate) const SEMANTIC_DEFINITION_QUERY_TOOL_NAME: &str = "semantic_definition_query";
-pub(crate) const SEMANTIC_COMPETENCY_QUESTIONS_TOOL_NAME: &str =
-    "semantic_competency_questions";
+pub(crate) const SEMANTIC_COMPETENCY_QUESTIONS_TOOL_NAME: &str = "semantic_competency_questions";
 pub(crate) const SEMANTIC_SLICE_BUILD_TOOL_NAME: &str = "semantic_slice_build";
 pub(crate) const SEMANTIC_SLICE_SHOW_TOOL_NAME: &str = "semantic_slice_show";
 pub(crate) const SEMANTIC_SLICE_DIFF_TOOL_NAME: &str = "semantic_slice_diff";
@@ -53,7 +52,7 @@ const SEMANTIC_SLICE_DIFF_TOOL_VERSION: &str = "axiograph_semantic_slice_diff_v1
 const SEMANTIC_MERGE_PLAN_TOOL_VERSION: &str = "axiograph_semantic_merge_plan_v1";
 const SEMANTIC_REBASE_PLAN_TOOL_VERSION: &str = "axiograph_semantic_rebase_plan_v1";
 const SEMANTIC_RESOLVER_STEPS_TOOL_VERSION: &str = "axiograph_semantic_resolver_steps_v1";
-const SEMANTIC_KERNEL_SURFACE_TOOL_VERSION: &str = "axiograph_semantic_kernel_surface_v1";
+const SEMANTIC_KERNEL_INDEX_TOOL_VERSION: &str = "axiograph_semantic_kernel_index_v2";
 const SEMANTIC_THEORY_GRAPH_TOOL_VERSION: &str = "axiograph_semantic_theory_graph_v1";
 const SEMANTIC_THEORY_CHECK_TOOL_VERSION: &str = "axiograph_semantic_theory_check_v1";
 
@@ -227,7 +226,7 @@ pub(crate) struct SemanticCompetencyQuestionsArgs {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SemanticSliceBuildArgs {
-    pub ref_view: crate::accepted_plane::SemRefViewV1,
+    pub ref_view: crate::semantic_model::SemRefViewV1,
     #[serde(default)]
     pub selector: crate::semantic_merge_lattice::SemanticSliceSelectorV1,
 }
@@ -245,7 +244,7 @@ pub(crate) struct SemanticSliceDiffArgs {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SemanticMergePlanArgs {
-    pub dry_run: crate::accepted_plane::SemMergeDryRunResultV1,
+    pub dry_run: crate::semantic_model::SemanticMergeDryRunV2,
     #[serde(default)]
     pub source_selector: crate::semantic_merge_lattice::SemanticSliceSelectorV1,
     #[serde(default)]
@@ -395,9 +394,9 @@ pub(crate) struct SemanticResolverStepsToolResultV1 {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct SemanticKernelSurfaceToolResultV1 {
+pub(crate) struct SemanticKernelIndexToolResultV2 {
     pub version: &'static str,
-    pub surface: axiograph_pathdb::kernel_ir::KernelSurfaceV1,
+    pub surface: axiograph_pathdb::kernel_ir::RuntimeSemanticIndex,
     pub trust_boundary: String,
     pub completeness_claim: String,
     pub ontology_closure_claim: String,
@@ -551,7 +550,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_OVERLAY_CHECK_TOOL_NAME,
-            description: "Validate a typed DDD/fDDD/software tooling overlay against canonical .axi text and return resolvable refs plus diagnostics.",
+            description: "Validate a typed DDD/fDDD/software tooling overlay against reviewable .axi module text and return resolvable refs plus diagnostics.",
             input_schema: json!({
                 "type": "object",
                 "required": ["axi_text", "overlay"],
@@ -563,7 +562,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_BEHAVIOR_CASE_PLAN_TOOL_NAME,
-            description: "Plan/check BehaviorCaseV1 from canonical .axi plus ToolingOverlayBundleV1, returning typed receipt and codegen preview data.",
+            description: "Plan/check BehaviorCaseV1 from reviewable .axi module text plus ToolingOverlayBundleV1, returning typed receipt and codegen preview data.",
             input_schema: json!({
                 "type": "object",
                 "required": ["behavior_case", "overlay"],
@@ -604,7 +603,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_OVERLAY_REFS_TOOL_NAME,
-            description: "List resolvable overlay refs and missing bindings against canonical .axi text.",
+            description: "List resolvable overlay refs and missing bindings against reviewable .axi module text.",
             input_schema: json!({
                 "type": "object",
                 "required": ["axi_text", "overlay"],
@@ -616,7 +615,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_COVERAGE_QUERY_TOOL_NAME,
-            description: "Run a loose coverage query over ontology refs, optional overlay refs, code refs, CQ names, relation names, and surface hints.",
+            description: "Run an advisory coverage lookup over ontology refs, optional overlay refs, code refs, CQ names, relation names, and surface hints. Results do not satisfy gates or correctness claims.",
             input_schema: json!({
                 "type": "object",
                 "required": ["axi_text", "query"],
@@ -629,7 +628,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_NAME,
-            description: "Best-effort advisory coverage probe; never satisfies enforced gates or accepted correctness claims.",
+            description: "Advisory coverage probe for incomplete inputs; never satisfies enforced gates or accepted correctness claims.",
             input_schema: json!({
                 "type": "object",
                 "required": ["axi_text", "probe"],
@@ -642,7 +641,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_DEFINITION_QUERY_TOOL_NAME,
-            description: "Weak definition query for prompts like 'define this process/function/business rule' with candidates, caveats, and suggested AxQL.",
+            description: "Advisory definition lookup for prompts like 'define this process/function/business rule' with candidates, caveats, and suggested AxQL. Results do not satisfy gates or correctness claims.",
             input_schema: json!({
                 "type": "object",
                 "required": ["axi_text", "query"],
@@ -749,7 +748,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_KERNEL_SURFACE_TOOL_NAME,
-            description: "Compile canonical .axi text and return KernelSurfaceV1, the shared runtime index over schema/category, theory, instance-functor, and stable fact refs.",
+            description: "Inspect the derived runtime semantic index for a canonically compiled snapshot; this index is not meaning authority.",
             input_schema: json!({
                 "type": "object",
                 "required": ["axi_text"],
@@ -760,7 +759,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_THEORY_GRAPH_TOOL_NAME,
-            description: "Compile canonical .axi text and return runtime theory-obligation graphs for type-directed exploration, CQ repair, migration, and reconciliation planning.",
+            description: "Compile reviewable .axi module text and return runtime theory-obligation graphs for type-directed exploration, CQ repair, migration, and reconciliation planning.",
             input_schema: json!({
                 "type": "object",
                 "required": ["axi_text"],
@@ -772,7 +771,7 @@ pub(crate) fn semantic_tool_specs() -> Vec<SemanticToolSpecV1> {
         },
         SemanticToolSpecV1 {
             name: SEMANTIC_THEORY_CHECK_TOOL_NAME,
-            description: "Compile canonical .axi text and return runtime theory-check closure/completeness reports for CQ gates, fDDD invariants, and semantic merge planning.",
+            description: "Compile reviewable .axi module text and return runtime theory-check reports. Closure and completeness claims are scoped to the declared closure tier, world assumptions, evidence policy, ref filters, and supported fragment.",
             input_schema: json!({
                 "type": "object",
                 "required": ["axi_text"],
@@ -1131,7 +1130,7 @@ pub(crate) fn call_semantic_overlay_check(
 ) -> Result<SemanticOverlayCheckToolResultV1> {
     let args: SemanticOverlayCheckArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_overlay_check: invalid args: {err}"))?;
-    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+    let kernel = axiograph_tooling_overlays::derive_runtime_index_from_axi_text(&args.axi_text)
         .map_err(|err| anyhow!("semantic_overlay_check: {err}"))?;
     let report = axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &args.overlay);
     Ok(SemanticOverlayCheckToolResultV1 {
@@ -1175,7 +1174,7 @@ pub(crate) fn call_semantic_overlay_refs(
 ) -> Result<SemanticOverlayRefsToolResultV1> {
     let args: SemanticOverlayRefsArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_overlay_refs: invalid args: {err}"))?;
-    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+    let kernel = axiograph_tooling_overlays::derive_runtime_index_from_axi_text(&args.axi_text)
         .map_err(|err| anyhow!("semantic_overlay_refs: {err}"))?;
     let report = axiograph_tooling_overlays::validate_overlay_bundle(&kernel, &args.overlay);
     Ok(SemanticOverlayRefsToolResultV1 {
@@ -1190,13 +1189,13 @@ pub(crate) fn call_semantic_coverage_query(
 ) -> Result<SemanticCoverageQueryToolResultV1> {
     let args: SemanticCoverageQueryArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_coverage_query: invalid args: {err}"))?;
-    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+    let kernel = axiograph_tooling_overlays::derive_runtime_index_from_axi_text(&args.axi_text)
         .map_err(|err| anyhow!("semantic_coverage_query: {err}"))?;
     let report = axiograph_tooling_overlays::coverage_query_report(
         &kernel,
         args.overlay.as_ref(),
         &args.query,
-    );
+    )?;
     Ok(SemanticCoverageQueryToolResultV1 {
         version: SEMANTIC_COVERAGE_QUERY_TOOL_VERSION,
         report,
@@ -1208,7 +1207,7 @@ pub(crate) fn call_semantic_weak_coverage_probe(
 ) -> Result<SemanticCoverageQueryToolResultV1> {
     let args: SemanticWeakCoverageProbeArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_weak_coverage_probe: invalid args: {err}"))?;
-    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+    let kernel = axiograph_tooling_overlays::derive_runtime_index_from_axi_text(&args.axi_text)
         .map_err(|err| anyhow!("semantic_weak_coverage_probe: {err}"))?;
     let query = axiograph_tooling_overlays::CoverageQueryV1 {
         version: Some(axiograph_tooling_overlays::COVERAGE_QUERY_VERSION_V1.to_string()),
@@ -1222,7 +1221,7 @@ pub(crate) fn call_semantic_weak_coverage_probe(
         max_matches: Some(8),
     };
     let report =
-        axiograph_tooling_overlays::coverage_query_report(&kernel, args.overlay.as_ref(), &query);
+        axiograph_tooling_overlays::coverage_query_report(&kernel, args.overlay.as_ref(), &query)?;
     Ok(SemanticCoverageQueryToolResultV1 {
         version: SEMANTIC_WEAK_COVERAGE_PROBE_TOOL_VERSION,
         report,
@@ -1234,13 +1233,13 @@ pub(crate) fn call_semantic_definition_query(
 ) -> Result<SemanticDefinitionQueryToolResultV1> {
     let args: SemanticDefinitionQueryArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_definition_query: invalid args: {err}"))?;
-    let kernel = axiograph_tooling_overlays::compile_kernel_from_axi_text(&args.axi_text)
+    let kernel = axiograph_tooling_overlays::derive_runtime_index_from_axi_text(&args.axi_text)
         .map_err(|err| anyhow!("semantic_definition_query: {err}"))?;
     let report = axiograph_tooling_overlays::definition_query_report(
         &kernel,
         args.overlay.as_ref(),
         &args.query,
-    );
+    )?;
     Ok(SemanticDefinitionQueryToolResultV1 {
         version: SEMANTIC_DEFINITION_QUERY_TOOL_VERSION,
         report,
@@ -1278,10 +1277,11 @@ pub(crate) fn call_semantic_competency_questions(
     let unresolved_questions = questions.len().saturating_sub(executable_questions);
     let evaluate = args.evaluate.unwrap_or(true);
     let evaluation = if evaluate {
-        Some(crate::competency_questions::evaluate_competency_questions_with_trust(
-            context.db,
-            &questions,
-        )?)
+        Some(
+            crate::competency_questions::evaluate_competency_questions_with_trust(
+                context.db, &questions,
+            )?,
+        )
     } else {
         None
     };
@@ -1405,20 +1405,20 @@ pub(crate) fn call_semantic_resolver_steps(
 
 pub(crate) fn call_semantic_kernel_surface(
     arguments: Value,
-) -> Result<SemanticKernelSurfaceToolResultV1> {
+) -> Result<SemanticKernelIndexToolResultV2> {
     let args: SemanticKernelSurfaceArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_kernel_surface: invalid args: {err}"))?;
     let canonical = crate::axi_input::require_canonical_axi_text(&args.axi_text)
-        .map_err(|err| anyhow!("semantic_kernel_surface: expected canonical .axi text: {err}"))?;
+        .map_err(|err| anyhow!("semantic_kernel_surface: expected reviewable .axi text: {err}"))?;
     let kernel =
-        axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), &args.axi_text)
+        axiograph_pathdb::derive_runtime_module_index(canonical.module().module(), &args.axi_text)
             .map_err(|err| {
-                anyhow!("semantic_kernel_surface: failed to compile KernelModuleIr: {err}")
+                anyhow!("semantic_kernel_surface: failed to derive RuntimeModuleIndex: {err}")
             })?;
-    Ok(SemanticKernelSurfaceToolResultV1 {
-        version: SEMANTIC_KERNEL_SURFACE_TOOL_VERSION,
-        surface: kernel.kernel_surface_v1(),
-        trust_boundary: "rust_runtime_operational_not_lean_certificate".to_string(),
+    Ok(SemanticKernelIndexToolResultV2 {
+        version: SEMANTIC_KERNEL_INDEX_TOOL_VERSION,
+        surface: kernel.runtime_semantic_index(),
+        trust_boundary: "Runtime checked in Rust; not Lean verified.".to_string(),
         completeness_claim: "not_claimed".to_string(),
         ontology_closure_claim: "not_claimed".to_string(),
     })
@@ -1430,11 +1430,11 @@ pub(crate) fn call_semantic_theory_graph(
     let args: SemanticTheoryGraphArgs = serde_json::from_value(arguments)
         .map_err(|err| anyhow!("semantic_theory_graph: invalid args: {err}"))?;
     let canonical = crate::axi_input::require_canonical_axi_text(&args.axi_text)
-        .map_err(|err| anyhow!("semantic_theory_graph: expected canonical .axi text: {err}"))?;
+        .map_err(|err| anyhow!("semantic_theory_graph: expected reviewable .axi text: {err}"))?;
     let kernel =
-        axiograph_pathdb::compile_kernel_module_ir(canonical.module().module(), &args.axi_text)
+        axiograph_pathdb::derive_runtime_module_index(canonical.module().module(), &args.axi_text)
             .map_err(|err| {
-                anyhow!("semantic_theory_graph: failed to compile KernelModuleIr: {err}")
+                anyhow!("semantic_theory_graph: failed to derive RuntimeModuleIndex: {err}")
             })?;
     let mut graphs = kernel
         .theories
@@ -1452,7 +1452,7 @@ pub(crate) fn call_semantic_theory_graph(
         })
         .map(axiograph_pathdb::kernel_ir::TheoryIr::obligation_graph)
         .collect::<Vec<_>>();
-    graphs.sort_by(|a, b| a.theory_ref.stable_id().cmp(&b.theory_ref.stable_id()));
+    graphs.sort_by_key(|a| a.theory_ref.stable_id());
     if graphs.is_empty() {
         return Err(anyhow!(
             "semantic_theory_graph: no compiled theories matched{}",
@@ -1466,7 +1466,7 @@ pub(crate) fn call_semantic_theory_graph(
         version: SEMANTIC_THEORY_GRAPH_TOOL_VERSION,
         module_digest: canonical.digest().to_string(),
         graphs,
-        trust_boundary: "rust_runtime_operational_not_lean_certificate".to_string(),
+        trust_boundary: "Runtime checked in Rust; not Lean verified.".to_string(),
         completeness_claim: "not_claimed".to_string(),
         ontology_closure_claim: "not_claimed".to_string(),
         notes: vec![
@@ -1802,9 +1802,10 @@ question family_parent_lookup:
         assert_eq!(evaluation.total, 1);
         assert_eq!(evaluation.satisfied, 1);
         assert_eq!(
-            evaluation.questions[0].prepared_query.as_ref().map(|meta| {
-                meta.prepared_query_id.starts_with("prepared_query_v1:")
-            }),
+            evaluation.questions[0]
+                .prepared_query
+                .as_ref()
+                .map(|meta| { meta.prepared_query_id.starts_with("prepared_query_v1:") }),
             Some(true)
         );
         Ok(())
@@ -1961,6 +1962,47 @@ question vague_policy_gap:
     }
 
     #[test]
+    fn semantic_context_map_tool_returns_customer_supplier_contract_hint() -> Result<()> {
+        let source_context = crate::context_report::BoundedContextV1 {
+            context_id: crate::context_report::DomainContextId::new("domain:billing_source"),
+            label: "Billing source".to_string(),
+            summary: None,
+            scopes: vec![crate::semantic_claim::RuntimeRuleScopeV1::relation(
+                "Billing", "invoice",
+            )],
+            surfaces: Vec::new(),
+            edges: Vec::new(),
+            competency_questions: Vec::new(),
+            notes: Vec::new(),
+        };
+        let target_context = crate::context_report::BoundedContextV1 {
+            context_id: crate::context_report::DomainContextId::new("domain:revenue_target"),
+            label: "Revenue target".to_string(),
+            summary: None,
+            scopes: vec![crate::semantic_claim::RuntimeRuleScopeV1::relation(
+                "Revenue",
+                "recognition",
+            )],
+            surfaces: Vec::new(),
+            edges: Vec::new(),
+            competency_questions: Vec::new(),
+            notes: Vec::new(),
+        };
+
+        let out = call_semantic_context_map(json!({
+            "source": source_context,
+            "target": target_context,
+            "relationship": "customer_supplier"
+        }))?;
+
+        assert_eq!(
+            out.context_map.merge_policy_hint,
+            "prefer_target_contract_with_source_contract_review"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn semantic_theory_graph_tool_returns_runtime_obligation_graphs() -> Result<()> {
         let axi = r#"
 module Family
@@ -2015,20 +2057,25 @@ instance FamilyInst of Family:
             "axi_text": axi
         }))?;
 
-        assert_eq!(out.version, SEMANTIC_KERNEL_SURFACE_TOOL_VERSION);
+        assert_eq!(out.version, SEMANTIC_KERNEL_INDEX_TOOL_VERSION);
         assert_eq!(
             out.surface.version,
-            axiograph_pathdb::KERNEL_SURFACE_VERSION_V1
+            axiograph_pathdb::RUNTIME_SEMANTIC_INDEX_VERSION
         );
         assert!(out.surface.total_refs > 0);
         assert!(out.surface.refs.iter().any(|reference| {
             matches!(
                 reference,
-                axiograph_pathdb::KernelRefV1::TheoryObligation { .. }
+                axiograph_pathdb::RuntimeIrRef::Canonical { citation }
+                    if matches!(&citation.reference, axiograph_pathdb::KernelRefV2::Constraint { .. })
             )
         }));
         assert!(out.surface.refs.iter().any(|reference| {
-            matches!(reference, axiograph_pathdb::KernelRefV1::StableFact { .. })
+            matches!(
+                reference,
+                axiograph_pathdb::RuntimeIrRef::Canonical { citation }
+                    if matches!(&citation.reference, axiograph_pathdb::KernelRefV2::Fact { .. })
+            )
         }));
         assert_eq!(out.completeness_claim, "not_claimed");
         assert!(is_semantic_tool(SEMANTIC_KERNEL_SURFACE_TOOL_NAME));
@@ -2036,7 +2083,7 @@ instance FamilyInst of Family:
     }
 
     #[test]
-    fn semantic_theory_check_tool_returns_runtime_closure_report() -> Result<()> {
+    fn semantic_theory_check_tool_returns_runtime_admissibility_report() -> Result<()> {
         let axi = r#"
 module Family
 
@@ -2060,12 +2107,30 @@ theory FamilyTheory on Family:
         assert_eq!(out.report.reports.len(), 1);
         assert_eq!(out.report.blocking_errors, 0);
         assert_eq!(out.report.reports[0].checked_obligations, 1);
-        assert!(out.report.reports[0].closure.complete);
-        assert!(out.report.reports[0].closure.steps.iter().any(|step| {
-            step.kind == axiograph_pathdb::RuntimeTheoryClosureStepKindV1::CheckedSeed
-        }));
-        assert_eq!(out.report.summary.closure_trace.checked_seed_steps, 1);
-        assert_eq!(out.report.summary.closure_trace.fixpoint_reached_steps, 1);
+        assert!(!out.report.reports[0]
+            .admissibility_scan
+            .residual_obligations
+            .iter()
+            .any(|residual| residual == "closure_engine_not_implemented"));
+        assert!(out.report.reports[0]
+            .non_claims
+            .iter()
+            .any(|claim| claim.code == "closure_engine_not_implemented"));
+        assert!(out.report.reports[0]
+            .admissibility_scan
+            .steps
+            .iter()
+            .any(|step| {
+                step.kind == axiograph_pathdb::RuntimeTheoryClosureStepKindV1::CheckedSeed
+            }));
+        assert_eq!(out.report.summary.admissibility_trace.checked_seed_steps, 1);
+        assert_eq!(
+            out.report
+                .summary
+                .admissibility_trace
+                .admissibility_scan_complete_steps,
+            1
+        );
         assert_eq!(
             out.report
                 .summary

@@ -209,8 +209,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
                 continue;
             }
             endpoint_holes.insert(format!(
-                "relation `{}` references missing endpoint `{}`; bind it to a typed object before promotion",
-                rel_type, endpoint
+                "relation `{rel_type}` references missing endpoint `{endpoint}`; bind it to a typed object before promotion"
             ));
         }
 
@@ -361,7 +360,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
 
     writeln!(
         &mut out,
-        "-- Draft `.axi` module generated from `proposals.json`.\n--\n-- This output is *untrusted* (evidence-plane). Review before promotion.\n--\n-- Design notes:\n-- - Entities become object inhabitants.\n-- - Relations become binary tuples: `Rel(from, to)`.\n-- - If proposals include a `context` attribute on relations, we preserve it:\n--     - relation decls gain `@context Context`\n--     - tuples add `ctx=...`\n-- - Missing or heterogeneous endpoint types become explicit `TypeHole_*` review obligations.\n-- - Optional constraints are inferred *extensionally* from current tuples.\n"
+        "-- Draft `.axi` module generated from `proposals.json`.\n--\n-- This output is *untrusted* (evidence-plane). Review before promotion.\n--\n-- Design notes:\n-- - Entities become object inhabitants.\n-- - Relations become binary tuples: `Rel(from, to)`.\n-- - If proposals include a `context` attribute on relations, we preserve it:\n--     - relation decls gain an explicit `ctx: Context @context` role\n--     - tuples add `ctx=...`\n-- - Missing or heterogeneous endpoint types become explicit `TypeHole_*` review obligations.\n-- - Optional constraints are inferred *extensionally* from current tuples.\n"
     )?;
 
     writeln!(&mut out, "module {}", options.module_name)?;
@@ -470,7 +469,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
                 let mut r = r.replace('\n', " ");
                 if r.len() > 160 {
                     r.truncate(160);
-                    r.push_str("…");
+                    r.push('…');
                 }
                 writeln!(&mut out, "  -- {r}")?;
             }
@@ -519,10 +518,13 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
         if rel_has_context.contains(rel) {
             writeln!(
                 &mut out,
-                "  relation {rel}(from: {from_ty}, to: {to_ty}) @context Context"
+                "  relation {rel}(from: {from_ty} @data, to: {to_ty} @data, ctx: Context @context)"
             )?;
         } else {
-            writeln!(&mut out, "  relation {rel}(from: {from_ty}, to: {to_ty})")?;
+            writeln!(
+                &mut out,
+                "  relation {rel}(from: {from_ty} @data, to: {to_ty} @data)"
+            )?;
         }
     }
 
@@ -571,7 +573,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
                 let mut r = r.replace('\n', " ");
                 if r.len() > 160 {
                     r.truncate(160);
-                    r.push_str("…");
+                    r.push('…');
                 }
                 writeln!(&mut out, "  -- {r}")?;
             }
@@ -832,7 +834,9 @@ mod tests {
         assert!(axi.contains("object TypeHole_governs_from"));
         assert!(axi.contains("subtype Account < TypeHole_governs_from"));
         assert!(axi.contains("subtype Order < TypeHole_governs_from"));
-        assert!(axi.contains("relation governs(from: TypeHole_governs_from, to: Policy)"));
+        assert!(
+            axi.contains("relation governs(from: TypeHole_governs_from @data, to: Policy @data)")
+        );
         assert!(!axi.contains("Entity"));
     }
 }

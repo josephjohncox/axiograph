@@ -135,8 +135,9 @@ slice without making embedding scores authoritative:
 
 - `build_embedding_sidecar_manifest_v1` converts an `EmbeddingsFileV1` into an
   `EmbeddingSidecarManifestV1`.
-- `embedding_file_digest_v1` computes a stable FNV digest over the vector
-  sidecar payload, including vector bits and sorted metadata.
+- `embedding_file_digest_v1` computes a domain-separated SHA-256
+  `ObjectBlobIdV2` commitment over the vector sidecar payload, including vector
+  bits and sorted metadata.
 - `discover_embedding_evidence_overlay_v1` performs deterministic pairwise
   cosine discovery over tiny vector sidecars and emits an
   `EmbeddingEvidenceOverlayV1`.
@@ -158,6 +159,22 @@ The relationship discovery function is intentionally simple and exact:
 This is suitable for tests, demos, and small evidence sidecars. Larger stores
 should use a vector backend for retrieval, then lower selected candidates into
 the same overlay shape.
+
+## Projection And Readback Evidence
+
+`axiograph-projections` uses the same one-way authority boundary for PathDB,
+TypeDB, TerminusDB, RDF/OWL, and property graphs. A
+`ProjectionManifestV1` is a derived view of one immutable compiled snapshot.
+Backend readback is wrapped in `ExternalEvidenceEnvelopeV1`, whose authority
+has only the `EvidenceOnly` variant and whose `accepted_state_change` field is
+always false.
+
+An exact `(record_id, payload_fingerprint)` match is evidence that one finite
+transport bundle round-tripped without detected record drift. It is not
+accepted provenance, a proof that backend inference is sound, a completeness
+result, or a promotion event. Unexpected backend records and changed payloads
+stay in the evidence plane and must enter the same typed proposal, review,
+CQ/trust, reconciliation, and promotion pipeline as embedding-derived claims.
 
 ## Retrieval Semantics
 
@@ -240,7 +257,7 @@ They can support:
 
 - evidence discovery,
 - candidate ontology creation,
-- weak definition queries,
+- advisory definition lookup,
 - software coverage exploration,
 - agent planning,
 - semantic search,

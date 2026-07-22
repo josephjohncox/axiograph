@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use axiograph_dsl::schema_v1::{SchemaV1Module, SchemaV1Schema};
 use axiograph_pathdb::certificate::AxiWellTypedProofV1;
 use axiograph_pathdb::kernel_ir::{
-    CompiledSchemaIr, KernelModuleIr, RelationSemanticsIr, RoleKind, TheoryIr,
+    RelationSemanticsIr, RoleKind, RuntimeModuleIndex, RuntimeSchemaIndex, TheoryIr,
 };
 use axiograph_pathdb::SchemaId;
 
@@ -30,7 +30,7 @@ pub struct TypedAuthoringSummaryV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub axi_well_typed_proof_v1: Option<AxiWellTypedProofV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kernel_module_ir: Option<KernelModuleIr>,
+    pub kernel_module_ir: Option<RuntimeModuleIndex>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -222,7 +222,7 @@ pub fn draft_typed_authoring_summary_from_axi_text(axi_text: &str) -> TypedAutho
     match axiograph_dsl::schema_v1::parse_schema_v1(axi_text) {
         Ok(module) => {
             let compiled_kernel_module_ir =
-                axiograph_pathdb::compile_kernel_module_ir(&module, axi_text);
+                axiograph_pathdb::derive_runtime_module_index(&module, axi_text);
             match axiograph_pathdb::validate_axi_v1_module(module) {
                 Ok(validated) => {
                     let proof = validated.proof().clone();
@@ -314,7 +314,7 @@ fn warning(
 }
 
 fn candidate_boxes_for_types(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     object_boxes: &HashMap<String, String>,
     acceptable_types: &[String],
 ) -> Vec<String> {
@@ -416,7 +416,7 @@ fn local_name(raw: &str) -> &str {
 }
 
 fn relation_subject_refs_for_theory_candidate(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     relation_name: &str,
     role_name: Option<&str>,
 ) -> Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr> {
@@ -454,7 +454,7 @@ fn relation_subject_refs_for_theory_candidate(
 }
 
 fn theory_handles_for_relation_role(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     theories: &[axiograph_pathdb::kernel_ir::TheoryIr],
     relation_name: Option<&str>,
     role_name: Option<&str>,
@@ -502,7 +502,7 @@ fn primary_theory_subject_ref(
 
 fn enrich_olog_refinement_candidate_with_compiled_theory(
     candidate: &mut crate::typed_refinement::RuntimeRefinementCandidateV1,
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     theories: &[axiograph_pathdb::kernel_ir::TheoryIr],
 ) {
     if candidate.theory_obligation_ref.is_some() || !candidate.theory_subject_refs.is_empty() {
@@ -522,7 +522,7 @@ fn enrich_olog_refinement_candidate_with_compiled_theory(
 
 fn enrich_olog_hole_with_compiled_theory(
     hole: &mut OlogTypedHoleV1,
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     theories: &[axiograph_pathdb::kernel_ir::TheoryIr],
 ) {
     if hole.theory_obligation_ref.is_some() || !hole.theory_subject_refs.is_empty() {
@@ -543,14 +543,14 @@ fn enrich_olog_hole_with_compiled_theory(
 fn compile_theories_for_schema(
     module: &SchemaV1Module,
     schema: &SchemaV1Schema,
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
 ) -> Vec<axiograph_pathdb::kernel_ir::TheoryIr> {
     let mut theories = module
         .theories
         .iter()
         .filter(|theory| theory.schema == schema.name)
         .filter_map(|theory| {
-            axiograph_pathdb::kernel_ir::compile_theory_ir(compiled_ir, theory).ok()
+            axiograph_pathdb::kernel_ir::derive_runtime_theory_index(compiled_ir, theory).ok()
         })
         .collect::<Vec<_>>();
     theories.sort_by(|left, right| left.theory_id.cmp(&right.theory_id));
@@ -559,7 +559,7 @@ fn compile_theories_for_schema(
 
 fn enrich_checked_olog_fragment_with_compiled_theory(
     checked: &mut CheckedOlogFragmentV1,
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     theories: &[axiograph_pathdb::kernel_ir::TheoryIr],
 ) {
     if theories.is_empty() {
@@ -733,7 +733,7 @@ fn evaluate_path(
 }
 
 fn evaluate_olog_fragment(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     fragment: &OlogFragmentV1,
 ) -> (Vec<OlogDiagnosticV1>, Vec<OlogTypedHoleV1>) {
     let mut diagnostics = Vec::new();
@@ -925,13 +925,16 @@ fn evaluate_olog_fragment(
                     false,
                 );
                 let hint = match role.kind {
-                    RoleKind::Context => {
-                        "bind the context role explicitly so world/context scope is not implicit"
+                    RoleKind::Context | RoleKind::World => {
+                        "bind the context/world role explicitly so scope is not implicit"
                     }
                     RoleKind::Temporal => {
                         "bind the temporal role explicitly so time scope is not implicit"
                     }
-                    RoleKind::Data => {
+                    RoleKind::Evidence => {
+                        "bind the evidence role explicitly so provenance remains inspectable"
+                    }
+                    RoleKind::Data | RoleKind::Parameter => {
                         "bind every declared role so the n-ary relation remains complete"
                     }
                 };
@@ -1175,8 +1178,7 @@ fn evaluate_olog_fragment(
                                 .iter()
                                 .map(|box_id| {
                                     format!(
-                                        "bind role `{}` on relation box `{}` to box `{}`",
-                                        role, relation_box, box_id
+                                        "bind role `{role}` on relation box `{relation_box}` to box `{box_id}`"
                                     )
                                 })
                                 .collect()
@@ -1333,8 +1335,9 @@ fn path_endpoints(
     Some((start, current_end))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn role_target_refinement_primitives(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     relation_name: &str,
     role_name: &str,
     expected_type: &str,
@@ -1375,7 +1378,7 @@ fn role_target_refinement_primitives(
 }
 
 fn relation_binding_specialization_primitives(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     relation_box_id: &str,
     relation: &RelationSemanticsIr,
     bindings: &[OlogRoleBindingV1],
@@ -1410,7 +1413,7 @@ fn relation_binding_specialization_primitives(
 }
 
 fn fragment_relation_split_primitives(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     fragment: &OlogFragmentV1,
     object_boxes: &HashMap<String, String>,
 ) -> Vec<crate::evolution_preview::EvolutionPrimitiveV1> {
@@ -1452,11 +1455,10 @@ fn fragment_relation_split_primitives(
             crate::evolution_preview::EvolutionPrimitiveV1::SplitTypeIntoSubtypes {
                 source: source_type.clone(),
                 subtypes: subtypes.into_iter().collect(),
-                discriminator: Some(format!("{}.{}", relation_name, role_name)),
+                discriminator: Some(format!("{relation_name}.{role_name}")),
                 affected_subject_refs: Vec::new(),
                 rationale: Some(format!(
-                    "typed olog authoring bound `{}` across multiple direct subtypes for `{}`; review whether `{}` should split explicitly along this role",
-                    role_name, relation_name, source_type
+                    "typed olog authoring bound `{role_name}` across multiple direct subtypes for `{relation_name}`; review whether `{source_type}` should split explicitly along this role"
                 )),
             },
         );
@@ -1465,7 +1467,7 @@ fn fragment_relation_split_primitives(
 }
 
 fn aspect_specialization_primitives(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     fragment: &OlogFragmentV1,
 ) -> Vec<crate::evolution_preview::EvolutionPrimitiveV1> {
     let object_boxes = fragment
@@ -1566,7 +1568,7 @@ fn aspect_specialization_primitives(
 }
 
 pub fn olog_fragment_typed_change_summary(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     fragment: &OlogFragmentV1,
 ) -> crate::evolution_preview::TypedChangeSummaryV1 {
     let object_boxes = fragment
@@ -1767,7 +1769,7 @@ fn proposal_trust_from_typed_authoring(
 }
 
 pub fn build_olog_fragment_evolution_preview(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     checked: &CheckedOlogFragmentV1,
 ) -> crate::evolution_preview::EvolutionPreviewV1 {
     let typed_change = checked
@@ -1812,7 +1814,7 @@ pub fn build_olog_fragment_evolution_preview_against_axi_text(
 ) -> Option<crate::evolution_preview::EvolutionPreviewV1> {
     let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text).ok()?;
     let schema = select_schema(&module, schema_name).ok()?;
-    let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+    let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
     let theories = compile_theories_for_schema(&module, schema, &compiled_ir);
     build_olog_fragment_evolution_preview_against_compiled_semantics_ir(
         &compiled_ir,
@@ -1821,18 +1823,8 @@ pub fn build_olog_fragment_evolution_preview_against_axi_text(
     )
 }
 
-pub fn build_compiled_ir_exploration_preview_against_axi_text(
-    axi_text: &str,
-    schema_name: Option<&str>,
-) -> Option<crate::evolution_preview::EvolutionPreviewV1> {
-    let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text).ok()?;
-    let schema = select_schema(&module, schema_name).ok()?;
-    let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
-    Some(crate::evolution_preview::build_compiled_ir_exploration_evolution_preview_v1(&compiled_ir))
-}
-
 pub fn check_olog_fragment_against_compiled_schema_ir(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     fragment: OlogFragmentV1,
 ) -> CheckedOlogFragmentV1 {
     let (diagnostics, typed_holes) = evaluate_olog_fragment(compiled_ir, &fragment);
@@ -1882,7 +1874,7 @@ pub fn check_olog_fragment_against_compiled_schema_ir(
 }
 
 pub fn check_olog_fragment_against_compiled_semantics_ir(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     fragment: OlogFragmentV1,
 ) -> CheckedOlogFragmentV1 {
@@ -1922,7 +1914,7 @@ pub fn check_olog_fragment_against_compiled_semantics_ir(
 }
 
 pub fn build_olog_fragment_evolution_preview_against_compiled_semantics_ir(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     checked: &CheckedOlogFragmentV1,
 ) -> Option<crate::evolution_preview::EvolutionPreviewV1> {
@@ -2005,7 +1997,7 @@ pub fn check_olog_fragment_against_axi_text(
         }
     };
 
-    let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+    let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
     let theories = compile_theories_for_schema(&module, schema, &compiled_ir);
     let mut checked =
         check_olog_fragment_against_compiled_semantics_ir(&compiled_ir, &theories, fragment);
@@ -2081,10 +2073,28 @@ pub struct OlogRefinementApplyResultV1 {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_runtime_refinement_handle_to_olog_fragment_against_compiled_schema_ir(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     fragment: &OlogFragmentV1,
     handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
 ) -> anyhow::Result<OlogRefinementApplyResultV1> {
+    let current = check_olog_fragment_against_compiled_schema_ir(compiled_ir, fragment.clone());
+    let emitted = current
+        .refinement_candidates
+        .iter()
+        .find(|candidate| candidate.handle.id == handle.id)
+        .map(|candidate| &candidate.handle)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "olog refinement handle `{}` was not emitted for this compiled schema and fragment",
+                handle.id
+            )
+        })?;
+    if emitted != handle {
+        return Err(anyhow::anyhow!(
+            "olog refinement handle `{}` payload differs from the current candidate",
+            handle.id
+        ));
+    }
     let refined_fragment = crate::typed_refinement::apply_olog_refinement_handle(fragment, handle)?;
     let checked_fragment =
         check_olog_fragment_against_compiled_schema_ir(compiled_ir, refined_fragment.clone());
@@ -2098,11 +2108,30 @@ pub fn apply_runtime_refinement_handle_to_olog_fragment_against_compiled_schema_
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_runtime_refinement_handle_to_olog_fragment_against_compiled_semantics_ir(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     fragment: &OlogFragmentV1,
     handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
 ) -> anyhow::Result<OlogRefinementApplyResultV1> {
+    let current =
+        check_olog_fragment_against_compiled_semantics_ir(compiled_ir, theories, fragment.clone());
+    let emitted = current
+        .refinement_candidates
+        .iter()
+        .find(|candidate| candidate.handle.id == handle.id)
+        .map(|candidate| &candidate.handle)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "olog refinement handle `{}` was not emitted for this compiled theory and fragment",
+                handle.id
+            )
+        })?;
+    if emitted != handle {
+        return Err(anyhow::anyhow!(
+            "olog refinement handle `{}` payload differs from the current candidate",
+            handle.id
+        ));
+    }
     let refined_fragment = crate::typed_refinement::apply_olog_refinement_handle(fragment, handle)?;
     let checked_fragment = check_olog_fragment_against_compiled_semantics_ir(
         compiled_ir,
@@ -2119,7 +2148,7 @@ pub fn apply_runtime_refinement_handle_to_olog_fragment_against_compiled_semanti
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_runtime_refinement_by_id_to_olog_fragment_against_compiled_schema_ir(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     checked: &CheckedOlogFragmentV1,
     handle_id: &str,
 ) -> anyhow::Result<OlogRefinementApplyResultV1> {
@@ -2138,7 +2167,7 @@ pub fn apply_runtime_refinement_by_id_to_olog_fragment_against_compiled_schema_i
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_runtime_refinement_by_id_to_olog_fragment_against_compiled_semantics_ir(
-    compiled_ir: &CompiledSchemaIr,
+    compiled_ir: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     checked: &CheckedOlogFragmentV1,
     handle_id: &str,
@@ -2168,7 +2197,7 @@ pub fn apply_runtime_refinement_by_id_to_olog_fragment_against_axi_text(
     let module = axiograph_dsl::schema_v1::parse_schema_v1(axi_text)
         .map_err(|err| anyhow::anyhow!("failed to parse canonical .axi draft: {err}"))?;
     let schema = select_schema(&module, schema_name).map_err(|err| anyhow::anyhow!(err))?;
-    let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+    let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
     let theories = compile_theories_for_schema(&module, schema, &compiled_ir);
     apply_runtime_refinement_by_id_to_olog_fragment_against_compiled_semantics_ir(
         &compiled_ir,
@@ -2224,7 +2253,7 @@ schema S:
   object Team
   object Context
   relation Parent(parent: Person, child: Person)
-  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+  relation WorksFor(employee: Person, employer: Team, ctx: Context @context)
 
 instance I of S:
   Person = {Alice, Bob}
@@ -2243,7 +2272,7 @@ schema S:
   object Person
   object Team
   object Context
-  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+  relation WorksFor(employee: Person, employer: Team, ctx: Context @context)
 
 theory T on S:
   constraint functional WorksFor.employee -> WorksFor.employer
@@ -2647,7 +2676,7 @@ instance I of S:
 "#;
         let module = axiograph_dsl::schema_v1::parse_schema_v1(axi).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let checked = check_olog_fragment_against_compiled_schema_ir(
             &compiled_ir,
             OlogFragmentV1 {
@@ -2693,7 +2722,7 @@ schema S:
 "#;
         let module = axiograph_dsl::schema_v1::parse_schema_v1(axi).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let checked = check_olog_fragment_against_compiled_schema_ir(
             &compiled_ir,
             OlogFragmentV1 {
@@ -2769,11 +2798,11 @@ schema S:
   object Team
   object Context
   subtype Employee < Person
-  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+  relation WorksFor(employee: Person, employer: Team, ctx: Context @context)
 "#;
         let module = axiograph_dsl::schema_v1::parse_schema_v1(axi).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let checked = check_olog_fragment_against_compiled_schema_ir(
             &compiled_ir,
             OlogFragmentV1 {
@@ -2849,7 +2878,7 @@ schema S:
         let module =
             axiograph_dsl::schema_v1::parse_schema_v1(sample_axi_with_theory()).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let theories = compile_theories_for_schema(&module, schema, &compiled_ir);
 
         let checked = check_olog_fragment_against_compiled_semantics_ir(
@@ -3232,11 +3261,11 @@ schema S:
   object Person
   object Team
   object Context
-  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+  relation WorksFor(employee: Person, employer: Team, ctx: Context @context)
 "#;
         let module = axiograph_dsl::schema_v1::parse_schema_v1(axi).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let checked = check_olog_fragment_against_compiled_schema_ir(
             &compiled_ir,
             OlogFragmentV1 {
@@ -3339,11 +3368,11 @@ schema S:
   object Team
   object Context
   subtype Employee < Person
-  relation WorksFor(employee: Person, employer: Team, ctx: Context)
+  relation WorksFor(employee: Person, employer: Team, ctx: Context @context)
 "#;
         let module = axiograph_dsl::schema_v1::parse_schema_v1(axi).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let checked = check_olog_fragment_against_compiled_schema_ir(
             &compiled_ir,
             OlogFragmentV1 {
@@ -3416,7 +3445,7 @@ schema S:
         let module =
             axiograph_dsl::schema_v1::parse_schema_v1(sample_axi_with_theory()).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let theories = compile_theories_for_schema(&module, schema, &compiled_ir);
         let checked = check_olog_fragment_against_compiled_semantics_ir(
             &compiled_ir,
@@ -3651,7 +3680,7 @@ schema S:
     fn olog_fragment_typed_change_summary_emits_relation_family_and_path_primitives() {
         let module = axiograph_dsl::schema_v1::parse_schema_v1(sample_axi()).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let fragment = OlogFragmentV1 {
             boxes: vec![
                 OlogBoxV1 {
@@ -3757,7 +3786,7 @@ schema S:
         let module =
             axiograph_dsl::schema_v1::parse_schema_v1(sample_axi_with_role_split()).expect("parse");
         let schema = select_schema(&module, Some("S")).expect("schema");
-        let compiled_ir = axiograph_pathdb::kernel_ir::compile_schema_ir(schema);
+        let compiled_ir = axiograph_pathdb::kernel_ir::derive_runtime_schema_index(schema);
         let fragment = OlogFragmentV1 {
             boxes: vec![
                 OlogBoxV1 {
