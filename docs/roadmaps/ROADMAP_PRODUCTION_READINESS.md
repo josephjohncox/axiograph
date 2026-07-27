@@ -180,10 +180,10 @@ Last updated: 2026-04-28.
   - Pass when certificate JSON, anchors, canonical snapshots, accepted-plane
     manifests, and trust contracts reject floating-point fields or encode them
     through fixed-point/domain-specific types.
-- [ ] Gate: deterministic certificate JSON golden bytes.
-  - Pass when fixed typecheck, constraints, and query-certificate inputs emit
-    byte-identical JSON across repeated runs. Tests must compare exact bytes,
-    not only parsed JSON.
+- [x] Gate: deterministic certificate JSON golden bytes.
+  - Fixed typecheck, constraints, and `query_result_v4` inputs emit
+    byte-identical JSON across repeated runs. Tests compare exact bytes and the
+    query certificate digest, not only parsed JSON.
 - [ ] Gate: same inputs imply same outputs.
   - Pass when CLI and server certificate emitters, semantic previews, accepted
     snapshot manifests, and SQLite `.axpd` materialization run twice from the

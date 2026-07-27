@@ -4149,6 +4149,24 @@ instance I of S:
             emitted.certificate().proof.answer_digest_v1,
             *emitted.answer_digest_v1()
         );
+
+        let mut repeated_prepared = q.compile_with_meta(&db, Some(&meta))?;
+        let repeated_answer = repeated_prepared.execute_answer(&db, Some(&meta))?;
+        let repeated_emitted = repeated_prepared.certify_answer_with_anchors(
+            repeated_answer,
+            &db,
+            Some(&meta),
+            RevisionDigestV2::from_accepted_text(&axi_text),
+        )?;
+        assert_eq!(
+            emitted.certificate_text(),
+            repeated_emitted.certificate_text(),
+            "query_result_v4 bytes must be deterministic for identical accepted inputs",
+        );
+        assert_eq!(
+            emitted.certificate_digest_v2(),
+            repeated_emitted.certificate_digest_v2(),
+        );
         Ok(())
     }
 

@@ -7798,8 +7798,12 @@ fn tool_propose_axi_patch(args: &serde_json::Value) -> Result<serde_json::Value>
         "CLI input",
     )
     .map_err(|e| anyhow!("propose_axi_patch: failed to read {}: {e}", path.display()))?;
-    let file: axiograph_ingest_docs::ProposalsFileV1 = serde_json::from_str(&text)
-        .map_err(|e| anyhow!("propose_axi_patch: invalid proposals.json: {e}"))?;
+    let file: axiograph_ingest_docs::ProposalsFileV1 = crate::security::parse_json_bounded(
+        text.as_bytes(),
+        crate::security::MAX_TEXT_INPUT_BYTES,
+        "propose_axi_patch proposals",
+    )
+    .map_err(|e| anyhow!("propose_axi_patch: invalid proposals.json: {e}"))?;
 
     let opts = crate::schema_discovery::DraftAxiModuleOptions {
         module_name: a.module_name.unwrap_or_else(|| "DraftModule".to_string()),

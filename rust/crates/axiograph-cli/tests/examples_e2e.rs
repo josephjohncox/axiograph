@@ -1179,6 +1179,7 @@ fn typecheck_cert_regression() {
 
     let run_dir = unique_run_dir(&repo_root, "typecheck_cert");
     let cert_path = run_dir.join("build/typecheck_cert.json");
+    let repeated_cert_path = run_dir.join("build/typecheck_cert_repeated.json");
 
     let input = repo_root.join("examples/Family.axi");
     let status = Command::new(&bin)
@@ -1196,8 +1197,24 @@ fn typecheck_cert_regression() {
         "typecheck-cert failed (exit={})",
         status.code().unwrap_or(-1)
     );
+    let repeated_status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("cert")
+        .arg("typecheck")
+        .arg(&input)
+        .arg("--out")
+        .arg(&repeated_cert_path)
+        .status()
+        .expect("repeat axiograph cert typecheck");
+    assert!(repeated_status.success(), "repeated typecheck-cert failed");
 
-    let cert_text = fs::read_to_string(&cert_path).expect("read typecheck cert json");
+    let cert_bytes = fs::read(&cert_path).expect("read typecheck cert bytes");
+    let repeated_bytes = fs::read(&repeated_cert_path).expect("read repeated typecheck cert bytes");
+    assert_eq!(
+        cert_bytes, repeated_bytes,
+        "typecheck certificate bytes drifted"
+    );
+    let cert_text = String::from_utf8(cert_bytes).expect("typecheck certificate must be UTF-8");
     let cert: CertificateV2 = serde_json::from_str(&cert_text).expect("parse typecheck cert json");
 
     assert_eq!(cert.version, 2);
@@ -1227,6 +1244,7 @@ fn constraints_cert_regression() {
 
     let run_dir = unique_run_dir(&repo_root, "constraints_cert");
     let cert_path = run_dir.join("build/constraints_cert.json");
+    let repeated_cert_path = run_dir.join("build/constraints_cert_repeated.json");
 
     let input = repo_root.join("examples/ontology/OntologyRewrites.axi");
     let status = Command::new(&bin)
@@ -1244,8 +1262,28 @@ fn constraints_cert_regression() {
         "constraints-cert failed (exit={})",
         status.code().unwrap_or(-1)
     );
+    let repeated_status = Command::new(&bin)
+        .current_dir(&run_dir)
+        .arg("cert")
+        .arg("constraints")
+        .arg(&input)
+        .arg("--out")
+        .arg(&repeated_cert_path)
+        .status()
+        .expect("repeat axiograph cert constraints");
+    assert!(
+        repeated_status.success(),
+        "repeated constraints-cert failed"
+    );
 
-    let cert_text = fs::read_to_string(&cert_path).expect("read constraints cert json");
+    let cert_bytes = fs::read(&cert_path).expect("read constraints cert bytes");
+    let repeated_bytes =
+        fs::read(&repeated_cert_path).expect("read repeated constraints cert bytes");
+    assert_eq!(
+        cert_bytes, repeated_bytes,
+        "constraints certificate bytes drifted"
+    );
+    let cert_text = String::from_utf8(cert_bytes).expect("constraints certificate must be UTF-8");
     let cert: CertificateV2 =
         serde_json::from_str(&cert_text).expect("parse constraints cert json");
 

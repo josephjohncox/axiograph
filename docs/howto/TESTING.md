@@ -179,8 +179,11 @@ image/receipt fault points, exact cache bindings, deterministic deletion/rebuild
 and bounded arbitrary-byte inputs.
 
 Additional hardening gates belong in executable targets before they count as
-finished. Certificate determinism and Rust/Lean parity remain separate from the
-`.axpd` contract: a verified materialization is still not a Lean proof.
+finished. The CLI E2E suite emits typecheck and constraint certificates twice
+and compares exact bytes; the query lifecycle test does the same for
+`query_result_v4` and its certificate digest. Certificate determinism and
+Rust/Lean parity remain separate from the `.axpd` contract: a verified
+materialization is still not a Lean proof.
 
 ## Test Categories
 

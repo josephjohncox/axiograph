@@ -249,8 +249,12 @@ pub fn discover_behavior_case_report_from_request_json(
     accepted_snapshot_id: Option<AcceptedSnapshotId>,
     request_json: &str,
 ) -> Result<BehaviorCaseReportV1> {
-    let request: BehaviorCaseCheckRequestV1 = serde_json::from_str(request_json)
-        .map_err(|err| anyhow!("failed to parse behavior case request JSON: {err}"))?;
+    let request: BehaviorCaseCheckRequestV1 = crate::security::parse_json_bounded(
+        request_json.as_bytes(),
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "behavior case request",
+    )
+    .map_err(|err| anyhow!("failed to parse behavior case request JSON: {err}"))?;
     build_behavior_case_report_from_request(db, meta, accepted_snapshot_id, request)
 }
 
@@ -1162,6 +1166,18 @@ instance I of Family:
             report.context_report.matched_scope_ids,
             vec!["schema/family/relation/parent".to_string()]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn behavior_case_request_rejects_excessive_json_nesting() -> Result<()> {
+        let (db, meta) = sample_db_and_meta()?;
+        let depth = axiograph_security::MAX_JSON_NESTING_DEPTH + 1;
+        let request_json = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let error =
+            discover_behavior_case_report_from_request_json(&db, Some(&meta), None, &request_json)
+                .expect_err("deeply nested behavior-case JSON must reject before deserialization");
+        assert!(error.to_string().contains("nesting"));
         Ok(())
     }
 }
