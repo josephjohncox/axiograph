@@ -34,10 +34,7 @@ make binaries
 
 AXIOGRAPH="$PROJECT_ROOT/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  AXIOGRAPH="$PROJECT_ROOT/bin/axiograph-cli"
-fi
-if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $PROJECT_ROOT/bin/axiograph or $PROJECT_ROOT/bin/axiograph-cli"
+  echo "error: expected executable at $PROJECT_ROOT/bin/axiograph"
   exit 2
 fi
 

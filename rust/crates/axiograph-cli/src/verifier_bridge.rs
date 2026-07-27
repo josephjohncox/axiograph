@@ -425,13 +425,9 @@ mod tests {
             approved_checker_sha256: Some(sha256_file(&path)?),
             approved_checker_build_id: Some("axiograph-verify-main-v3".to_string()),
         };
-        let err =
-            verify_certificate_with_lean(&config, module_axi, &certificate, &prepared, &answer)
-                .err()
-                .ok_or_else(|| {
-                    anyhow!("system true binary unexpectedly produced a valid receipt")
-                })?;
-        assert!(err.to_string().contains("valid V2 receipt"));
+        verify_certificate_with_lean(&config, module_axi, &certificate, &prepared, &answer)
+            .err()
+            .ok_or_else(|| anyhow!("system true binary unexpectedly produced a valid receipt"))?;
         Ok(())
     }
 

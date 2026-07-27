@@ -26,12 +26,9 @@ echo ""
 echo "-- Build (via Makefile)"
 make binaries
 
-AXIOGRAPH="$ROOT_DIR/bin/axiograph-cli"
+AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  AXIOGRAPH="$ROOT_DIR/bin/axiograph"
-fi
-if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph-cli or $ROOT_DIR/bin/axiograph"
+  echo "error: expected executable at $ROOT_DIR/bin/axiograph"
   exit 2
 fi
 

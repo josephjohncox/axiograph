@@ -82,9 +82,8 @@ all: dirs rust lean binaries
 	@echo "║              AXIOGRAPH BUILD COMPLETE                        ║"
 	@echo "╚══════════════════════════════════════════════════════════════╝"
 	@echo ""
-	@echo "Binaries available in $(BIN_DIR)/"
+	@echo "Binary available in $(BIN_DIR)/"
 	@echo "  - axiograph          : Main CLI tool"
-	@echo "  - axiograph-cli      : Compatibility alias (same binary)"
 	@echo ""
 	@echo "Run 'make demo' to see end-to-end example"
 
@@ -580,7 +579,6 @@ verify-lean-e2e-suite: verify-lean-e2e-category-kernel-v3 verify-lean-e2e-axi-we
 binaries: rust
 	@echo "━━━ Creating binaries ━━━"
 	cp $(RUST_DIR)/target/release/axiograph $(BIN_DIR)/axiograph
-	cp $(RUST_DIR)/target/release/axiograph $(BIN_DIR)/axiograph-cli
 	@echo "✓ Binaries installed to $(BIN_DIR)/"
 
 install: binaries
