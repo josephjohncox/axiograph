@@ -3,8 +3,8 @@
   "source": {
     "anchor": {
       "accepted_ref": "heads/review/simulation-safety",
-      "accepted_snapshot_id": "fnv1a64:plant-simulation",
-      "kernel_ir_digest": "fnv1a64:plant-kernel-simulation",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:3d8d1ab71667f3439aee1e50a6448bf3fb56d2b8cd86049bb31b2f6c61f96234",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:252eefd980a59ea00248d05a014c6f753f5d3671b43414dbbdbf6f41c4688fe2",
       "context_id": "plant-simulation",
       "world_id": "review"
     },
@@ -22,8 +22,8 @@
   "onto": {
     "anchor": {
       "accepted_ref": "heads/main",
-      "accepted_snapshot_id": "fnv1a64:plant-procurement",
-      "kernel_ir_digest": "fnv1a64:plant-kernel-procurement",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:66bdec2a2ca77f5064d7d4e294dacea270f14b9087b5f2b3ff952ebf45355c58",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:8a8f46c360b57c290ed888a776d8ba5450f218e349d9f7dd48053701879fec86",
       "context_id": "plant-procurement",
       "world_id": "accepted"
     },
@@ -41,8 +41,8 @@
   "result": {
     "anchor": {
       "accepted_ref": "heads/review/simulation-safety",
-      "accepted_snapshot_id": "fnv1a64:plant-rebase-clean",
-      "kernel_ir_digest": "fnv1a64:plant-kernel-rebase-clean",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:aa3090f5d79a2d27f456abea5ca9ca3509220822f435fd6a7311c87711cc80ea",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:121ce28ab226ae3b33ad37fa507d5d27e781f2d53adf56da5a0907d136bf90cf",
       "context_id": "plant-simulation",
       "world_id": "review"
     },

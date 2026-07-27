@@ -18,8 +18,13 @@ Scope (today)
 
 We focus on the core witness kinds that appear in end-to-end flows:
 
-* normalization / rewrite witnesses (`normalize_path_v2`, `rewrite_derivation_v2`)
+* normalization and path-equivalence witnesses (`normalize_path_v2`,
+  `path_equiv_v2`)
+* internal builtin `RewriteDerivationProofV2` replay helpers used by path equivalence
 * reconciliation decisions (`resolution_v2`)
+
+Anchored domain-rule steps in `rewrite_derivation_v3` are outside these
+free-groupoid soundness theorems.
 
 This file does **not** aim to prove completeness of any algorithm (“all answers”),
 only soundness-style invariants (“these witnesses are internally consistent and
@@ -89,6 +94,7 @@ namespace RewriteInvariants
 
 open Axiograph.PathNormalization
 open Axiograph.RewriteDerivation
+open Axiograph.PathEquivalence
 open Axiograph.Certificate.PathRewriteSoundness
 open Axiograph.HoTT
 
@@ -194,10 +200,8 @@ we get a semantic statement “input and normalized denote the same morphism” 
 reducing to `runDerivation_preserves_denotation`.
 -/
 
-theorem verifyNormalizePathProofV2_sound_of_derivation
+theorem verifyNormalizePathProofV2_sound
     (proof : NormalizePathProofV2)
-    (steps : Array PathRewriteStepV2)
-    (hDerivation : proof.derivation? = some steps)
     (result : NormalizePathResultV2)
     (hVerify : verifyNormalizePathProofV2 proof = .ok result)
     {a b : Nat}
@@ -206,54 +210,53 @@ theorem verifyNormalizePathProofV2_sound_of_derivation
     ∃ typedNormalized : PathExpr a b,
       toTyped proof.normalized = .ok ⟨a, b, typedNormalized⟩ ∧
       denote typedInput = denote typedNormalized := by
-  have hReplay : runDerivation proof.input steps = .ok proof.normalized := by
+  have hReplay : runDerivation proof.input proof.derivation = .ok proof.normalized := by
     unfold verifyNormalizePathProofV2 at hVerify
     cases hInputEndpoints : endpoints proof.input with
     | error msg =>
         have : False := by
-            simp [hInputEndpoints] at hVerify
+          simp [hInputEndpoints] at hVerify
         exact False.elim this
     | ok inputEnds =>
         rcases inputEnds with ⟨inputStart, inputEnd⟩
         cases hNormEndpoints : endpoints proof.normalized with
         | error msg =>
             have : False := by
-                simp [hInputEndpoints, hNormEndpoints] at hVerify
+              simp [hInputEndpoints, hNormEndpoints] at hVerify
             exact False.elim this
         | ok normEnds =>
             rcases normEnds with ⟨normStart, normEnd⟩
             cases hEndpointsMismatch : (inputStart != normStart || inputEnd != normEnd) with
             | true =>
                 have : False := by
-                    simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch] at hVerify
+                  simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch] at hVerify
                 exact False.elim this
             | false =>
-                -- Reduce the optional derivation branch using `hDerivation`, then analyze `runDerivation`.
-                cases hRun : runDerivation proof.input steps with
+                cases hRun : runDerivation proof.input proof.derivation with
                 | error msg =>
                     have : False := by
-                        simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
-                          hDerivation, hRun] at hVerify
+                      simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch, hRun] at hVerify
                     exact False.elim this
                 | ok derived =>
                     cases hMismatch : (derived != proof.normalized) with
                     | true =>
                         have : False := by
-                            simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
-                              hDerivation, hRun, hMismatch] at hVerify
+                          simp [hInputEndpoints, hNormEndpoints, hEndpointsMismatch,
+                            hRun, hMismatch] at hVerify
                         exact False.elim this
-                      | false =>
-                          have hEq : derived = proof.normalized :=
-                            (bne_eq_false_iff_eq).1 hMismatch
-                          simp [hEq]
-  exact runDerivation_preserves_denotation proof.input steps proof.normalized hReplay hTyped
+                    | false =>
+                        have hEq : derived = proof.normalized :=
+                          (bne_eq_false_iff_eq).1 hMismatch
+                        exact congrArg Except.ok hEq
+  exact runDerivation_preserves_denotation proof.input proof.derivation proof.normalized hReplay hTyped
 
 /-!
-## Soundness of `rewrite_derivation_v2` certificates
+## Soundness of internal builtin replay payloads
 
-This is the generic certificate kind for replayable derivations. The verifier
-accepts iff replay succeeds and produces the claimed output; the semantic
-soundness follows from the free-groupoid rule soundness.
+`RewriteDerivationProofV2` is the builtin payload reused by normalization and
+path-equivalence checking. The verifier accepts iff replay succeeds and
+produces the claimed output; semantic soundness follows from the free-groupoid
+rule soundness. This theorem does not cover V3 anchored domain rules.
 -/
 
 theorem verifyRewriteDerivationProofV2_sound
@@ -306,6 +309,64 @@ theorem verifyRewriteDerivationProofV2_sound
                             (bne_eq_false_iff_eq).1 hMismatch
                           simp [hEq]
   exact runDerivation_preserves_denotation proof.input proof.derivation proof.output hReplay hTyped
+
+/-!
+## Soundness of accepted path-equivalence certificates
+
+`verifyPathEquivProofV2` checks two mandatory rewrite traces to one shared normal
+form. Each accepted trace preserves free-groupoid denotation, so acceptance
+implies denotational equality of the endpoint-indexed inputs. Confidence is not
+part of this equality statement.
+-/
+theorem verifyPathEquivProofV2_sound
+    (proof : PathEquivProofV2)
+    (result : PathEquivResultV2)
+    (hVerify : verifyPathEquivProofV2 proof = .ok result)
+    {a b : Nat}
+    {typedLeft typedRight : PathExpr a b}
+    (hTypedLeft : toTyped proof.left = .ok ⟨a, b, typedLeft⟩)
+    (hTypedRight : toTyped proof.right = .ok ⟨a, b, typedRight⟩) :
+    denote typedLeft = denote typedRight := by
+  cases hLeftReplay : verifyRewriteDerivationProofV2
+      (Axiograph.PathEquivalence.leftRewriteProof proof) with
+  | error msg =>
+      have impossible : (Except.error msg : Except String PathEquivResultV2) = .ok result := by
+        simp [verifyPathEquivProofV2, hLeftReplay] at hVerify
+      cases impossible
+  | ok leftResult =>
+      cases hRightReplay : verifyRewriteDerivationProofV2
+          (Axiograph.PathEquivalence.rightRewriteProof proof) with
+      | error msg =>
+          have impossible : (Except.error msg : Except String PathEquivResultV2) = .ok result := by
+            simp [verifyPathEquivProofV2, hLeftReplay, hRightReplay] at hVerify
+          cases impossible
+      | ok rightResult =>
+          rcases verifyRewriteDerivationProofV2_sound
+              (Axiograph.PathEquivalence.leftRewriteProof proof)
+              leftResult hLeftReplay
+              (by simpa [Axiograph.PathEquivalence.leftRewriteProof] using hTypedLeft) with
+            ⟨typedNormalizedLeft, hTypedNormalizedLeft, hDenoteLeft⟩
+          rcases verifyRewriteDerivationProofV2_sound
+              (Axiograph.PathEquivalence.rightRewriteProof proof)
+              rightResult hRightReplay
+              (by simpa [Axiograph.PathEquivalence.rightRewriteProof] using hTypedRight) with
+            ⟨typedNormalizedRight, hTypedNormalizedRight, hDenoteRight⟩
+          have hNormalizedType : typedNormalizedLeft = typedNormalizedRight := by
+            have hOk :
+                (Except.ok (ε := String)
+                  (⟨a, b, typedNormalizedLeft⟩ : TypedSigma)) =
+                .ok (⟨a, b, typedNormalizedRight⟩ : TypedSigma) :=
+              hTypedNormalizedLeft.symm.trans hTypedNormalizedRight
+            have hSigma :
+                (⟨a, b, typedNormalizedLeft⟩ : TypedSigma) =
+                (⟨a, b, typedNormalizedRight⟩ : TypedSigma) :=
+              Except.ok.inj hOk
+            cases hSigma
+            rfl
+          calc
+            denote typedLeft = denote typedNormalizedLeft := hDenoteLeft
+            _ = denote typedNormalizedRight := by rw [hNormalizedType]
+            _ = denote typedRight := hDenoteRight.symm
 
 end RewriteInvariants
 

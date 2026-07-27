@@ -2314,13 +2314,18 @@ fn validate_typed_candidate_compilation(
         modules: sources,
     })
     .map_err(|error| invalid(format!("candidate canonical compilation failed: {error}")))?;
-    compiled
+    let finite_theory_gate = compiled
         .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Merge)
         .map_err(|error| {
             invalid(format!(
                 "candidate finite-theory merge gate failed: {error}"
             ))
         })?;
+    if finite_theory_gate != candidate.finite_theory_gate {
+        return Err(invalid(
+            "typed candidate finite-theory scope, coverage, residual, or non-claim receipt differs from canonical recompilation",
+        ));
+    }
     let ir_bytes = serde_json::to_vec(compiled.ir())?;
     if blob_id(ImmutableObjectKind::KernelIr, &ir_bytes) != candidate.kernel_ir_digest {
         return Err(invalid(

@@ -23,6 +23,11 @@ Current implemented slice (2026-04):
   `Module<Validated>` / `Module<Reviewed>` plus `ReviewStamp`, and
   `axiograph_pathdb::axi_module_import` accepts only `Module<S>` where
   `S: WellTypedModuleState`.
+- canonical finite instances now carry `ObjectMembershipWitnessIr`,
+  `RoleIndexedWitnessIr`, `TypedConstraintWitnessIr`, `ScopeWitnessIr`, and
+  `DependentContextIr` payloads under `CheckedLifecycleStateIr`; replay rejects
+  forged membership, constraint-procedure, context, role, lifecycle, or
+  residual data.
 - the validated-module boundary now includes a first real theory slice, not
   only schema/instance checks:
   - structured constraints are checked against declared relation/field/param
@@ -36,6 +41,10 @@ Current implemented slice (2026-04):
   families for engineering usefulness:
   `BusinessRuleApplicabilityReportV1`, `ImplementationSurfaceRuleReportV1`,
   `CoverageReportV1`, `AgentTaskRefV1`, and `AgentEngineeringReportV1`.
+- the authoring workspace exposes non-checked runtime-theory judgments as
+  lifecycle-indexed theory holes with exact obligation/subject refs and
+  deterministic `TheoryAuthoring` refinement handles. Those handles are
+  runtime repair directions, not Lean certificates.
 - prepared query exploration now carries both human-readable typed holes and
   machine-applicable refinement candidates:
   `PreparedQueryExplorationV1`,

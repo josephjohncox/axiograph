@@ -23,8 +23,11 @@ exact accepted canonical .axi bytes
 There is no direct emission-only query-certificate command. Query
 certification is exposed only where the caller can bind exact accepted `.axi`
 bytes, the compiled query digest, the exact answer digest, and an approved Lean
-checker receipt. Semantic MCP `verify` / `require_verified` is the public bound
-route; the Rust verifier bridge is the internal route.
+checker receipt. Semantic MCP `verify` / `require_verified` is the service
+route. `axiograph check finite-query` is the file-oriented bound route used by
+the regulated-shipment acceptance fixture; it always invokes the approved
+checker and returns one report that distinguishes certifiable shape,
+certificate emission, and an accepted receipt bound to the exact answer.
 
 ## Active Families
 
@@ -38,10 +41,11 @@ story.
 | `axi_well_typed_v1` | Canonical module type gate | The anchored `.axi` module satisfies the supported well-typedness decision procedure. |
 | `axi_constraints_ok_v1` | Conservative theory-constraint gate | The anchored `.axi` module satisfies the supported key, functional, at-most, symmetry/transitivity closure, and builtin typing constraints. |
 | `query_result_v4` in envelope V3 | Query-and-answer-bound exact finite witness | Lean checks every row witness and proves equality with the declared bounded finite denotation under the exact accepted `.axi` bytes. The claim is `finite_exact_complete`; ontology closure and all out-of-fragment completeness claims remain excluded. |
+| `category_kernel_v3` in envelope V3 | Anchored finite category/groupoid presentation | Lean reconstructs the indexed presentation from exact `.axi`, checks endpoint-aware contextual equation congruence, syntactically replays both formal inverse-law cancellation traces for every generator, and checks bounded generator-reachability closure. This is decision procedure plus replay, not a wire-path denotation theorem. |
 | `reachability_v3` | Low-level canonical path witness | A path witness is valid against stable canonical `axi_fact_id` facts. Public verified query surfaces use `query_result_v4`. |
 | `rewrite_derivation_v3` | Anchored rewrite trace | Rewrite steps are replayable using builtin rules or rewrite rules declared in the anchored `.axi` module. |
-| `normalize_path_v2` | Groupoid path normalization | The normalized path expression is replayable/recomputable for the supported groupoid fragment. |
-| `path_equiv_v2` | Path equivalence | Two path expressions normalize to the same supported form. |
+| `normalize_path_v2` | Groupoid path normalization | A mandatory endpoint-preserving rewrite trace reaches the checker-computed normal form; for the endpoint-retyped input, accepted replay preserves free-groupoid denotation. |
+| `path_equiv_v2` | Path equivalence | Mandatory traces take two endpoint-retyped expressions to one normal form; accepted replay implies equal free-groupoid denotation. Confidence is not part of this equality. |
 | `resolution_v2` | Fixed-point resolution decision | Lean recomputes the reconciliation decision from fixed-point inputs. |
 | `delta_f_v1` | Functorial pullback | Lean recomputes a finite `Delta_F` pullback for the supported schema/instance payload. |
 
@@ -54,8 +58,8 @@ tool outputs.
 Envelope versions are semantic protocol versions, not aliases:
 
 - envelope V2 hosts the non-query certificate families that still have V2 wire contracts;
-- envelope V3 requires `CertificateAnchorV2 { revision_digest_v2 }` and hosts only
-  `query_result_v4`;
+- envelope V3 requires `CertificateAnchorV2 { revision_digest_v2 }` and hosts
+  `query_result_v4` or `category_kernel_v3`;
 - a V2 payload, a missing anchor, an unknown field, or a changed version cannot
   satisfy a V3 check.
 
@@ -237,6 +241,30 @@ Each step references either a builtin rule or an `.axi` rule:
 Lean resolves the rule against the anchored module, replays each step, checks
 endpoints, and rejects derivations that do not produce the claimed output.
 
+`normalize_path_v2` and `path_equiv_v2` use a closed builtin groupoid rewrite
+vocabulary. Their traces are mandatory. The parser rejects missing traces,
+unknown fields, non-composable endpoints, invalid positions, and injected
+confidence fields. `Certificate.Invariants`, imported by `VerifyMain`, proves
+that accepted builtin traces preserve denotation after endpoint retyping in
+mathlib's free groupoid.
+Fixed-point confidence remains a separate syntax-directed fold because rounding
+at each multiplication is not associative.
+
+`category_kernel_v3` additionally carries exact-byte-anchored signed generator
+words. Rust emits one deterministic cancellation trace for `g ; g⁻¹` and one
+for `g⁻¹ ; g` for every presented generator. Lean reconstructs the same indexed
+presentation and requires exact coverage before accepting the certificate. It
+also requires one one-step forward congruence witness per equation and checks
+the equation's source and target at the replacement offset, so `id(A)` cannot
+be applied at `id(B)`.
+
+The V3 category anchor covers one exact defining module. Export rejects a schema
+whose forward equations were added by an importing module; the current envelope
+does not pretend to bind an ordered import closure. The cancellation replay is
+not connected to `GroupoidPath.denote` by an acceptance theorem, so this family
+is replay-only. A different valid reachability explanation for the same typed
+endpoint pair may be accepted; invalid or incomplete explanations reject.
+
 Useful targets:
 
 ```bash
@@ -244,6 +272,8 @@ make verify-lean-e2e-rewrite-derivation-v3
 make verify-lean-e2e-normalize-path-v2
 make verify-lean-e2e-path-equiv-v2
 make verify-lean-e2e-path-equiv-congr-v2
+make verify-lean-indexed-path-theory
+make verify-lean-e2e-category-kernel-v3
 ```
 
 ## Reconciliation And Migration Families
@@ -287,7 +317,8 @@ ontology/query claims.
 A Lean-accepted certificate does not prove:
 
 - that source facts are true,
-- that a query answer is complete,
+- query completeness outside the explicit bounded finite denotation of an
+  accepted `query_result_v4`,
 - that the full Rust runtime is correct,
 - that external graph DB projections are authoritative,
 - that embedding/LLM evidence is accepted ontology truth,

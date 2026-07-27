@@ -132,7 +132,7 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   check validate examples/software_authoring/OrderFulfillmentDomain.axi
 ```
 
-Check theory closure for the supported runtime fragment:
+Inspect runtime-theory admissibility for the supported finite fragment:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
@@ -234,10 +234,9 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
 ```
 
 The same command can emit the CI profile without changing command names.
-Use `--require-runtime-theory` only after the behavior-case report is generated
-with a `RuntimeTheoryCheckSummaryV1` sidecar. Without that sidecar, the command
-is expected to fail closed, which is useful as a teaching check but not as the
-first successful quickstart.
+`discover behavior-case` computes and embeds `RuntimeTheoryCheckSummaryV1`
+from the canonical `.axi` input. `--require-runtime-theory` therefore checks the
+same anchored summary rather than relying on a separately copied sidecar.
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
@@ -250,9 +249,10 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   --out build/examples/software_authoring/ci_continuous_coverage.json
 ```
 
-When the sidecar is present, the continuous gate reports the declared closure
-tier, residual obligations, blocking judgments, scoped completeness claims, and
-explicit ontology-closure non-claims. It does not claim global ontology closure.
+The continuous gate preserves the summary's nested finite scope, admissibility
+trace, transport counts, residual ids, and structured non-claims. Review-only,
+evidence-excluded, residual, blocked, resolver-required, or malformed summary
+states fail closed. No completeness or ontology-closure field is synthesized.
 
 Run the same generated behavior report through the pedagogical example crate:
 
@@ -357,7 +357,7 @@ reports and explicit CLI materialization.
 
 ## Non-Claims
 
-- Runtime theory closure is not Lean certification.
+- Runtime theory admissibility is not Lean certification or a closure claim.
 - Definition-query output is not a correctness claim.
 - Missing code refs are warnings under the example policy; strict CI can set
   `strict_coverage`, `require_code_refs`, and `require_runtime_theory`.

@@ -73,8 +73,13 @@ Every adapter returns `authoring_workspace_report_v1`. The report contains:
 - the workspace-relative source and exact ordered module closure;
 - repository, candidate snapshot, root revision, and compiled IR digests;
 - structured diagnostics;
-- query, olog, and CQ typed holes;
-- one `RuntimeRefinementCandidateV1` repair currency;
+- query, olog, CQ, and runtime-theory typed holes;
+- finite dependent-refinement summaries covering object membership,
+  role-indexed witnesses, checked finite constraints, contexts, residuals, and
+  lifecycle state;
+- one `RuntimeRefinementCandidateV2` repair currency, including deterministic
+  source-artifact/theory-obligation handles bound to exact lifecycle,
+  obligation, and subject refs;
 - canonical `CompetencyQuestionV1` records plus finite execution results;
 - `PreparedQueryMetadataV1`, elaborated query IR, plan, exploration, and trust;
 - optional applied query or olog repair results;
@@ -105,7 +110,11 @@ This is exact equality of encoded finite compiled payloads. It does not prove:
 Typed olog checks add the supported finite path fragment: relation objects,
 projection arrows, subtype-compatible role fillers, compositional path
 endpoints, and path-equation endpoint equality. Unsupported higher semantics
-remain explicit residual obligations.
+remain explicit residual obligations. Theory-hole diagnostics identify their
+runtime status, exact subjects, lifecycle, residuals, and repair handle ids.
+They also state `untrusted_rust_runtime_admissibility` and `not_certified`
+explicitly: a repair handle is source-directed runtime guidance, not a proof
+term or a `VerifyMain` receipt.
 
 ### Primary regulated-shipment authoring request
 
@@ -126,8 +135,9 @@ The service fails protected-main review closed. It reports four gate decisions:
 3. finite runtime-theory admissibility; and
 4. trusted checker.
 
-Omitted CQs block the CQ gate. Runtime-theory blockers or residual obligations
-block the theory gate. The trusted-checker gate remains blocked because the
+Omitted CQs block the CQ gate. Every non-checked runtime-theory status blocks the theory gate: review-only,
+evidence-excluded, residual, blocked, resolver-required transport, or nonempty
+residual-id state. The trusted-checker gate remains blocked because the
 read-only adapters do not produce or accept a substitute for a VerifyMain
 receipt.
 
@@ -155,6 +165,12 @@ Inspect adapter capabilities and launch metadata:
 axiograph authoring lsp-capabilities --out authoring_capabilities.json
 axiograph authoring integration-manifest --workspace . --out authoring_integrations.json
 ```
+
+`discover behavior-case` computes `RuntimeTheoryCheckSummaryV1` from the same
+canonical input and embeds its nested scope, trace, transport summary,
+residual ids, and structured non-claims. It rejects request-supplied replacement
+summaries. Continuous coverage consumes this shared current shape and fails
+closed on every non-checked status.
 
 The remaining software-overlay commands are separate from ontology authoring:
 

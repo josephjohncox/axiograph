@@ -1024,7 +1024,7 @@ instance I of Family:
         crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1 {
             version: "runtime_theory_check_summary_v1".to_string(),
             report_version: "runtime_theory_check_report_v1".to_string(),
-            module_digest: "fnv1a64:behavior-test".to_string(),
+            module_digest: axiograph_kernel::revision_digest_v2("behavior-test"),
             theory_count: 1,
             checked_obligations: 1,
             review_only_obligations: 0,
@@ -1032,12 +1032,19 @@ instance I of Family:
             blocked_obligations: 0,
             excluded_by_evidence: 0,
             blocking_errors: 0,
-            admissibility_scopes: vec!["finite_fragment".to_string()],
+            scope: crate::runtime_theory_check::RuntimeTheoryScopeSummaryV1 {
+                fragments: vec!["finite_fragment".to_string()],
+                ..Default::default()
+            },
             admissibility_trace: Default::default(),
             transport_summary: Default::default(),
-            completeness_claim: "not_claimed_for_all_obligations".to_string(),
-            ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
             residual_obligation_ids: vec!["behavior/theory/residual".to_string()],
+            non_claims: vec![
+                crate::runtime_theory_check::RuntimeTheoryNonClaimSummaryV1 {
+                    code: "closure_engine_not_implemented".to_string(),
+                    message: "test runtime report is admissibility-only".to_string(),
+                },
+            ],
             notes: vec!["test runtime theory sidecar".to_string()],
         }
     }

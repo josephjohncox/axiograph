@@ -16,7 +16,9 @@ use thiserror::Error;
 
 pub const CATEGORY_FORMATION_IR_VERSION: &str = "category_formation_ir_v3";
 pub const FINITE_SATURATION_ALGORITHM: &str = "finite_floyd_warshall_v2";
-pub const FINITE_THEORY_GATE_VERSION: &str = "finite_theory_gate_v2";
+pub const FINITE_THEORY_GATE_VERSION: &str = "finite_theory_gate_v3";
+pub const FORMAL_GROUPOID_NORMALIZATION_NON_CLAIM: &str =
+    "free-groupoid normalization is formal proof syntax; it does not make a non-reversible runtime projection executable";
 pub const MAX_FINITE_CATEGORY_OBJECTS: usize = 64;
 pub const MAX_FINITE_CATEGORY_ARROWS: usize = 4_096;
 
@@ -813,6 +815,27 @@ fn equation<'a>(
         .ok_or_else(|| FiniteTheoryError::UnknownEquation(equation_id.clone()))
 }
 
+fn path_object_at_offset(
+    schema: &SchemaPresentationIr,
+    path: &SchemaPathIr,
+    offset: usize,
+) -> Result<SchemaObjectRefIr, FiniteTheoryError> {
+    if offset > path.steps.len() {
+        return Err(FiniteTheoryError::CongruenceMismatch);
+    }
+    let mut cursor = path.source.clone();
+    for generator_ref in path.steps.iter().take(offset) {
+        let generator = schema
+            .generator(generator_ref)
+            .ok_or_else(|| FiniteTheoryError::UnknownGenerator(generator_ref.clone()))?;
+        if generator.source != cursor {
+            return Err(FiniteTheoryError::EndpointMismatch);
+        }
+        cursor = generator.target.clone();
+    }
+    Ok(cursor)
+}
+
 fn apply_equation_step(
     schema: &SchemaPresentationIr,
     path: &SchemaPathIr,
@@ -826,7 +849,11 @@ fn apply_equation_step(
     };
     let start = step.offset as usize;
     let end = start.saturating_add(from.steps.len());
-    if end > path.steps.len() || path.steps[start..end] != from.steps {
+    if end > path.steps.len()
+        || path.steps[start..end] != from.steps
+        || path_object_at_offset(schema, path, start)? != from.source
+        || path_object_at_offset(schema, path, end)? != from.target
+    {
         return Err(FiniteTheoryError::CongruenceMismatch);
     }
     let mut steps = path.steps[..start].to_vec();
@@ -973,8 +1000,22 @@ pub struct FormalGroupoidEquationIr {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct FormalGroupoidRewriteStepIr {
+    /// Zero-based offset in the current signed generator word.
+    pub offset: u32,
+    /// Generator expected at `offset` and `offset + 1`.
+    pub generator: SchemaGeneratorRefIr,
+    /// Direction of the first step; the second must have the opposite direction.
+    pub first_direction: FormalDirectionIr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FormalNormalizationCertificateIr {
     pub input: FormalGroupoidPathIr,
+    /// Deterministic leftmost cancellation trace. Every step removes one
+    /// adjacent `g ; g⁻¹` or `g⁻¹ ; g` pair from the current word.
+    pub rewrite_trace: Vec<FormalGroupoidRewriteStepIr>,
     pub normalized: FormalGroupoidPathIr,
     pub lifecycle: CheckedLifecycleStateIr,
     pub non_claim: String,
@@ -1010,6 +1051,68 @@ impl SchemaPresentationIr {
             return Err(FiniteTheoryError::EndpointMismatch);
         }
         Ok(())
+    }
+
+    pub fn formal_identity(
+        &self,
+        object: SchemaObjectRefIr,
+    ) -> Result<FormalGroupoidPathIr, FiniteTheoryError> {
+        if !self.object_refs().contains(&object) {
+            return Err(FiniteTheoryError::UnknownObject(object));
+        }
+        Ok(FormalGroupoidPathIr {
+            schema_id: self.schema_id.clone(),
+            source: object.clone(),
+            target: object,
+            steps: Vec::new(),
+        })
+    }
+
+    pub fn formal_generator_path(
+        &self,
+        generator_ref: &SchemaGeneratorRefIr,
+        direction: FormalDirectionIr,
+    ) -> Result<FormalGroupoidPathIr, FiniteTheoryError> {
+        let generator = self
+            .generator(generator_ref)
+            .ok_or_else(|| FiniteTheoryError::UnknownGenerator(generator_ref.clone()))?;
+        let (source, target) = match direction {
+            FormalDirectionIr::Forward => (generator.source.clone(), generator.target.clone()),
+            FormalDirectionIr::Inverse => (generator.target.clone(), generator.source.clone()),
+        };
+        let path = FormalGroupoidPathIr {
+            schema_id: self.schema_id.clone(),
+            source,
+            target,
+            steps: vec![FormalGeneratorStepIr {
+                generator: generator_ref.clone(),
+                direction,
+            }],
+        };
+        self.verify_formal_path(&path)?;
+        Ok(path)
+    }
+
+    pub fn compose_formal_paths(
+        &self,
+        left: &FormalGroupoidPathIr,
+        right: &FormalGroupoidPathIr,
+    ) -> Result<FormalGroupoidPathIr, FiniteTheoryError> {
+        self.verify_formal_path(left)?;
+        self.verify_formal_path(right)?;
+        if left.schema_id != right.schema_id || left.target != right.source {
+            return Err(FiniteTheoryError::EndpointMismatch);
+        }
+        let mut steps = left.steps.clone();
+        steps.extend(right.steps.clone());
+        let composed = FormalGroupoidPathIr {
+            schema_id: self.schema_id.clone(),
+            source: left.source.clone(),
+            target: right.target.clone(),
+            steps,
+        };
+        self.verify_formal_path(&composed)?;
+        Ok(composed)
     }
 
     pub fn formal_inverse(
@@ -1048,34 +1151,72 @@ impl SchemaPresentationIr {
         }))
     }
 
+    fn apply_formal_rewrite_step(
+        &self,
+        path: &FormalGroupoidPathIr,
+        step: &FormalGroupoidRewriteStepIr,
+    ) -> Result<FormalGroupoidPathIr, FiniteTheoryError> {
+        self.verify_formal_path(path)?;
+        let offset = step.offset as usize;
+        let Some(first) = path.steps.get(offset) else {
+            return Err(FiniteTheoryError::MalformedCertificate(format!(
+                "formal rewrite offset {} is out of range",
+                step.offset
+            )));
+        };
+        let Some(second) = path.steps.get(offset.saturating_add(1)) else {
+            return Err(FiniteTheoryError::MalformedCertificate(format!(
+                "formal rewrite offset {} has no adjacent step",
+                step.offset
+            )));
+        };
+        if first.generator != step.generator
+            || first.direction != step.first_direction
+            || second.generator != step.generator
+            || second.direction != step.first_direction.opposite()
+        {
+            return Err(FiniteTheoryError::MalformedCertificate(
+                "formal rewrite step does not cite an adjacent inverse pair".to_string(),
+            ));
+        }
+        let mut steps = path.steps.clone();
+        steps.drain(offset..offset + 2);
+        let rewritten = FormalGroupoidPathIr {
+            schema_id: path.schema_id.clone(),
+            source: path.source.clone(),
+            target: path.target.clone(),
+            steps,
+        };
+        self.verify_formal_path(&rewritten)?;
+        Ok(rewritten)
+    }
+
     pub fn normalize_formal_path(
         &self,
         input: FormalGroupoidPathIr,
     ) -> Result<FormalNormalizationCertificateIr, FiniteTheoryError> {
         self.verify_formal_path(&input)?;
-        let mut stack = Vec::<FormalGeneratorStepIr>::new();
-        for step in &input.steps {
-            if stack.last().is_some_and(|previous| {
-                previous.generator == step.generator
-                    && previous.direction == step.direction.opposite()
-            }) {
-                stack.pop();
-            } else {
-                stack.push(step.clone());
-            }
+        let mut current = input.clone();
+        let mut rewrite_trace = Vec::new();
+        while let Some(offset) = current.steps.windows(2).position(|pair| {
+            pair[0].generator == pair[1].generator
+                && pair[0].direction == pair[1].direction.opposite()
+        }) {
+            let first = current.steps[offset].clone();
+            let step = FormalGroupoidRewriteStepIr {
+                offset: offset as u32,
+                generator: first.generator,
+                first_direction: first.direction,
+            };
+            current = self.apply_formal_rewrite_step(&current, &step)?;
+            rewrite_trace.push(step);
         }
-        let normalized = FormalGroupoidPathIr {
-            schema_id: input.schema_id.clone(),
-            source: input.source.clone(),
-            target: input.target.clone(),
-            steps: stack,
-        };
-        self.verify_formal_path(&normalized)?;
         Ok(FormalNormalizationCertificateIr {
             input,
-            normalized,
+            rewrite_trace,
+            normalized: current,
             lifecycle: CheckedLifecycleStateIr::ExplanationVerified,
-            non_claim: "free-groupoid normalization is formal proof syntax; it does not make a non-reversible runtime projection executable".to_string(),
+            non_claim: FORMAL_GROUPOID_NORMALIZATION_NON_CLAIM.to_string(),
         })
     }
 }
@@ -1090,10 +1231,25 @@ impl FormalNormalizationCertificateIr {
                 "formal normalization certificate is not explanation-verified".to_string(),
             ));
         }
-        let expected = schema.normalize_formal_path(self.input.clone())?;
-        if expected.normalized != self.normalized {
+        if self.non_claim != FORMAL_GROUPOID_NORMALIZATION_NON_CLAIM {
+            return Err(FiniteTheoryError::Lifecycle(
+                "formal normalization non-claim drifted".to_string(),
+            ));
+        }
+        schema.verify_formal_path(&self.input)?;
+        let mut current = self.input.clone();
+        for step in &self.rewrite_trace {
+            current = schema.apply_formal_rewrite_step(&current, step)?;
+        }
+        if current != self.normalized {
             return Err(FiniteTheoryError::MalformedCertificate(
-                "formal normal form does not replay".to_string(),
+                "formal rewrite trace does not produce the declared normal form".to_string(),
+            ));
+        }
+        let expected = schema.normalize_formal_path(self.input.clone())?;
+        if expected.rewrite_trace != self.rewrite_trace || expected.normalized != self.normalized {
+            return Err(FiniteTheoryError::MalformedCertificate(
+                "formal rewrite trace is not the deterministic leftmost normalization".to_string(),
             ));
         }
         Ok(self.normalized.clone())
@@ -1678,6 +1834,9 @@ pub(crate) fn build_object_membership_witnesses(
 ) -> Vec<ObjectMembershipWitnessIr> {
     let mut witnesses = Vec::new();
     for carrier in carriers {
+        if matches!(carrier.object, SchemaObjectRefIr::RelationObject { .. }) {
+            continue;
+        }
         for member in &carrier.elements {
             witnesses.push(ObjectMembershipWitnessIr {
                 instance_id: instance_id.clone(),
@@ -1843,8 +2002,7 @@ pub(crate) fn build_typed_constraint_witnesses(
                 decision_procedure: constraint_decision_procedure(&constraint.source).to_string(),
                 non_claims: vec![
                     "successful Rust finite-model checking is not Lean certification".to_string(),
-                    "the witness covers this exact finite instance and constraint only"
-                        .to_string(),
+                    "the witness covers this exact finite instance and constraint only".to_string(),
                 ],
             });
         }
@@ -1887,36 +2045,38 @@ pub(crate) fn build_dependent_contexts(
     }
     grouped
         .into_iter()
-        .map(|((axis, object, wire_value), (membership, scope_witnesses))| {
-            let digest_input = serde_json::to_string(&(
-                instance_id,
-                axis,
-                &object,
-                &wire_value,
-                &scope_witnesses,
-            ))
-            .map_err(|error| FiniteTheoryError::Lifecycle(error.to_string()))?;
-            Ok(DependentContextIr {
-                context_id: format!(
-                    "dependent-context:{}",
-                    crate::revision_digest_v2(&digest_input)
-                ),
-                instance_id: instance_id.clone(),
-                axis,
-                object,
-                value: membership.member.clone(),
-                membership,
-                scope_witnesses,
-                lifecycle: CheckedLifecycleStateIr::ExplanationVerified,
-                residual_obligations: Vec::new(),
-                non_claims: vec![
+        .map(
+            |((axis, object, wire_value), (membership, scope_witnesses))| {
+                let digest_input = serde_json::to_string(&(
+                    instance_id,
+                    axis,
+                    &object,
+                    &wire_value,
+                    &scope_witnesses,
+                ))
+                .map_err(|error| FiniteTheoryError::Lifecycle(error.to_string()))?;
+                Ok(DependentContextIr {
+                    context_id: format!(
+                        "dependent-context:{}",
+                        crate::revision_digest_v2(&digest_input)
+                    ),
+                    instance_id: instance_id.clone(),
+                    axis,
+                    object,
+                    value: membership.member.clone(),
+                    membership,
+                    scope_witnesses,
+                    lifecycle: CheckedLifecycleStateIr::ExplanationVerified,
+                    residual_obligations: Vec::new(),
+                    non_claims: vec![
                     "context visibility is exact only for the compiled finite instance"
                         .to_string(),
                     "no sheaf condition, global context closure, or Lean transport proof is claimed"
                         .to_string(),
                 ],
-            })
-        })
+                })
+            },
+        )
         .collect()
 }
 
@@ -2067,6 +2227,37 @@ pub struct CategoryKernelPathV3 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct CategoryKernelFormalStepV3 {
+    pub arrow: u32,
+    pub direction: FormalDirectionIr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryKernelFormalPathV3 {
+    pub source: u32,
+    pub target: u32,
+    pub steps: Vec<CategoryKernelFormalStepV3>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryKernelFormalRewriteStepV3 {
+    pub offset: u32,
+    pub arrow: u32,
+    pub first_direction: FormalDirectionIr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CategoryKernelFormalNormalizationV3 {
+    pub input: CategoryKernelFormalPathV3,
+    pub rewrite_trace: Vec<CategoryKernelFormalRewriteStepV3>,
+    pub normalized: CategoryKernelFormalPathV3,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CategoryKernelEquationV3 {
     pub name: String,
     pub lhs: CategoryKernelPathV3,
@@ -2128,6 +2319,68 @@ fn category_kernel_path_v3(
         source,
         target,
         arrows,
+    })
+}
+
+fn category_kernel_formal_path_v3(
+    schema: &SchemaPresentationIr,
+    path: &FormalGroupoidPathIr,
+    objects: &BTreeMap<SchemaObjectRefIr, u32>,
+    arrows: &BTreeMap<SchemaGeneratorRefIr, u32>,
+) -> Result<CategoryKernelFormalPathV3, FiniteTheoryError> {
+    schema.verify_formal_path(path)?;
+    Ok(CategoryKernelFormalPathV3 {
+        source: objects
+            .get(&path.source)
+            .copied()
+            .ok_or_else(|| FiniteTheoryError::UnknownObject(path.source.clone()))?,
+        target: objects
+            .get(&path.target)
+            .copied()
+            .ok_or_else(|| FiniteTheoryError::UnknownObject(path.target.clone()))?,
+        steps: path
+            .steps
+            .iter()
+            .map(|step| {
+                Ok(CategoryKernelFormalStepV3 {
+                    arrow: arrows.get(&step.generator).copied().ok_or_else(|| {
+                        FiniteTheoryError::UnknownGenerator(step.generator.clone())
+                    })?,
+                    direction: step.direction,
+                })
+            })
+            .collect::<Result<Vec<_>, FiniteTheoryError>>()?,
+    })
+}
+
+fn category_kernel_formal_normalization_v3(
+    schema: &SchemaPresentationIr,
+    certificate: &FormalNormalizationCertificateIr,
+    objects: &BTreeMap<SchemaObjectRefIr, u32>,
+    arrows: &BTreeMap<SchemaGeneratorRefIr, u32>,
+) -> Result<CategoryKernelFormalNormalizationV3, FiniteTheoryError> {
+    certificate.replay(schema)?;
+    Ok(CategoryKernelFormalNormalizationV3 {
+        input: category_kernel_formal_path_v3(schema, &certificate.input, objects, arrows)?,
+        rewrite_trace: certificate
+            .rewrite_trace
+            .iter()
+            .map(|step| {
+                Ok(CategoryKernelFormalRewriteStepV3 {
+                    offset: step.offset,
+                    arrow: arrows.get(&step.generator).copied().ok_or_else(|| {
+                        FiniteTheoryError::UnknownGenerator(step.generator.clone())
+                    })?,
+                    first_direction: step.first_direction,
+                })
+            })
+            .collect::<Result<Vec<_>, FiniteTheoryError>>()?,
+        normalized: category_kernel_formal_path_v3(
+            schema,
+            &certificate.normalized,
+            objects,
+            arrows,
+        )?,
     })
 }
 
@@ -2289,6 +2542,40 @@ impl SchemaPresentationIr {
             })
             .collect()
     }
+
+    /// Emit exact, index-based cancellation traces for both formal inverse
+    /// words of every presented generator. These are untrusted wire-replay
+    /// inputs; they do not assert executable inverse traversal or a Lean
+    /// denotation theorem.
+    pub fn category_kernel_groupoid_normalizations_v3(
+        &self,
+    ) -> Result<Vec<CategoryKernelFormalNormalizationV3>, FiniteTheoryError> {
+        self.category_formation.verify(self)?;
+        let objects = object_index(&self.object_refs());
+        let arrows = self
+            .generators
+            .iter()
+            .enumerate()
+            .map(|(index, generator)| (generator.generator_ref.clone(), index as u32))
+            .collect::<BTreeMap<_, _>>();
+        let mut certificates = Vec::with_capacity(self.generators.len().saturating_mul(2));
+        for generator in &self.generators {
+            for first_direction in [FormalDirectionIr::Forward, FormalDirectionIr::Inverse] {
+                let left = self.formal_generator_path(&generator.generator_ref, first_direction)?;
+                let right = self
+                    .formal_generator_path(&generator.generator_ref, first_direction.opposite())?;
+                let input = self.compose_formal_paths(&left, &right)?;
+                let certificate = self.normalize_formal_path(input)?;
+                certificates.push(category_kernel_formal_normalization_v3(
+                    self,
+                    &certificate,
+                    &objects,
+                    &arrows,
+                )?);
+            }
+        }
+        Ok(certificates)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2307,7 +2594,40 @@ pub struct SchemaTheoryReceiptIr {
     pub object_count: u32,
     pub generator_count: u32,
     pub equation_count: u32,
-    pub reachability_entry_count: u32,
+    pub identity_path_count: u32,
+    pub path_explanation_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saturation_algorithm: Option<String>,
+}
+
+/// Typed scope for the finite runtime replay. This is deliberately a scope,
+/// not a synthetic category-closure or ontology-completeness claim.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FiniteTheoryScopeIr {
+    pub fragment: String,
+    pub category_object_bound: u32,
+    pub category_generator_bound: u32,
+    pub accepted_schema_count: u32,
+    pub explicit_instance_count: u32,
+}
+
+/// Coverage actually replayed by one gate consumer. Counts are exact for the
+/// compiled snapshot named by the enclosing receipt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FiniteTheoryCoverageIr {
+    pub category_formations_replayed: u32,
+    pub saturated_presentations: u32,
+    pub identity_paths_replayed: u32,
+    pub path_explanations_replayed: u32,
+    pub object_memberships_replayed: u32,
+    pub dependent_role_witnesses_replayed: u32,
+    pub finite_refinement_predicates_replayed: u32,
+    pub finite_constraint_witnesses_replayed: u32,
+    pub dependent_contexts_replayed: u32,
+    pub identity_scope_transports_replayed: u32,
+    pub non_identity_scope_transports_certified: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2318,6 +2638,8 @@ pub struct FiniteTheoryGateReceiptIr {
     pub accepted_snapshot_id: crate::SnapshotIdV2,
     pub kernel_ir_digest: crate::ObjectBlobIdV2,
     pub passed: bool,
+    pub scope: FiniteTheoryScopeIr,
+    pub coverage: FiniteTheoryCoverageIr,
     pub schema_receipts: Vec<SchemaTheoryReceiptIr>,
     pub instance_count: u32,
     pub object_membership_witness_count: u32,
@@ -2339,9 +2661,24 @@ impl CompiledKernelSnapshot {
         let ir = self.ir();
         let mut schema_receipts = Vec::new();
         let mut residual_obligations = Vec::new();
+        let mut saturated_presentations = 0_u32;
+        let mut identity_paths_replayed = 0_u32;
+        let mut path_explanations_replayed = 0_u32;
         for schema in ir.schemas() {
             schema.category_formation.verify(schema)?;
             residual_obligations.extend(schema.category_formation.residual_obligations.clone());
+            let identity_path_count = schema.category_formation.identities.len() as u32;
+            let path_explanation_count = schema
+                .category_formation
+                .saturation
+                .as_ref()
+                .map_or(0, |certificate| certificate.entries.len() as u32);
+            if schema.category_formation.saturation.is_some() {
+                saturated_presentations = saturated_presentations.saturating_add(1);
+            }
+            identity_paths_replayed = identity_paths_replayed.saturating_add(identity_path_count);
+            path_explanations_replayed =
+                path_explanations_replayed.saturating_add(path_explanation_count);
             schema_receipts.push(SchemaTheoryReceiptIr {
                 schema_id: schema.schema_id.clone(),
                 lifecycle: schema.category_formation.lifecycle,
@@ -2352,11 +2689,13 @@ impl CompiledKernelSnapshot {
                     .len()
                     .saturating_add(schema.formal_groupoid_equations.len())
                     as u32,
-                reachability_entry_count: schema
+                identity_path_count,
+                path_explanation_count,
+                saturation_algorithm: schema
                     .category_formation
                     .saturation
                     .as_ref()
-                    .map_or(0, |certificate| certificate.entries.len() as u32),
+                    .map(|certificate| certificate.algorithm.clone()),
             });
         }
         let schemas = ir
@@ -2368,6 +2707,8 @@ impl CompiledKernelSnapshot {
         let mut role_witness_count = 0_u32;
         let mut typed_constraint_witness_count = 0_u32;
         let mut dependent_context_count = 0_u32;
+        let mut refinement_predicate_witness_count = 0_u32;
+        let mut identity_scope_transport_count = 0_u32;
         let mut context_witness_count = 0_u32;
         let mut world_witness_count = 0_u32;
         let mut temporal_witness_count = 0_u32;
@@ -2405,14 +2746,29 @@ impl CompiledKernelSnapshot {
             {
                 return Err(FiniteTheoryError::WitnessMismatch(instance.label.clone()));
             }
-            object_membership_witness_count = object_membership_witness_count
-                .saturating_add(memberships.len() as u32);
+            object_membership_witness_count =
+                object_membership_witness_count.saturating_add(memberships.len() as u32);
             role_witness_count = role_witness_count.saturating_add(roles.len() as u32);
+            refinement_predicate_witness_count = refinement_predicate_witness_count.saturating_add(
+                roles
+                    .iter()
+                    .map(|witness| witness.fiber.refinements.len() as u32)
+                    .sum::<u32>(),
+            );
             typed_constraint_witness_count =
                 typed_constraint_witness_count.saturating_add(constraints.len() as u32);
-            dependent_context_count =
-                dependent_context_count.saturating_add(contexts.len() as u32);
+            dependent_context_count = dependent_context_count.saturating_add(contexts.len() as u32);
             for scope in scopes {
+                let transport = scope.identity_transport(schema, &theories, instance)?;
+                if transport.lifecycle != CheckedLifecycleStateIr::ExplanationVerified
+                    || !transport.residual_obligations.is_empty()
+                    || transport.basis != "identity_transport"
+                {
+                    return Err(FiniteTheoryError::Lifecycle(
+                        "identity scope transport did not replay".to_string(),
+                    ));
+                }
+                identity_scope_transport_count = identity_scope_transport_count.saturating_add(1);
                 match scope.axis {
                     ScopeAxisIr::Context => {
                         context_witness_count = context_witness_count.saturating_add(1)
@@ -2432,6 +2788,26 @@ impl CompiledKernelSnapshot {
             accepted_snapshot_id: ir.accepted_snapshot_id().clone(),
             kernel_ir_digest: ir.ir_digest().clone(),
             passed: residual_obligations.is_empty(),
+            scope: FiniteTheoryScopeIr {
+                fragment: "explicit_finite_category_instance_replay_v1".to_string(),
+                category_object_bound: MAX_FINITE_CATEGORY_OBJECTS as u32,
+                category_generator_bound: MAX_FINITE_CATEGORY_ARROWS as u32,
+                accepted_schema_count: ir.schemas().len() as u32,
+                explicit_instance_count: ir.instances().len() as u32,
+            },
+            coverage: FiniteTheoryCoverageIr {
+                category_formations_replayed: ir.schemas().len() as u32,
+                saturated_presentations,
+                identity_paths_replayed,
+                path_explanations_replayed,
+                object_memberships_replayed: object_membership_witness_count,
+                dependent_role_witnesses_replayed: role_witness_count,
+                finite_refinement_predicates_replayed: refinement_predicate_witness_count,
+                finite_constraint_witnesses_replayed: typed_constraint_witness_count,
+                dependent_contexts_replayed: dependent_context_count,
+                identity_scope_transports_replayed: identity_scope_transport_count,
+                non_identity_scope_transports_certified: 0,
+            },
             schema_receipts,
             instance_count: ir.instances().len() as u32,
             object_membership_witness_count,
@@ -2445,6 +2821,12 @@ impl CompiledKernelSnapshot {
             non_claims: vec![
                 "the Rust receipt is replay evidence, not a trusted Lean proof".to_string(),
                 "the gate covers the explicit finite decidable fragment, not ontology closure"
+                    .to_string(),
+                "path explanation coverage is exact generator reachability, not fact or rewrite closure"
+                    .to_string(),
+                "only identity scope transports are replayed; non-identity transport remains uncertified"
+                    .to_string(),
+                "finite refinement counts cover closed predicates on this exact compiled instance only"
                     .to_string(),
             ],
         })
@@ -2471,7 +2853,8 @@ impl CompiledKernelSnapshot {
     /// Emit the sole anchored category-kernel certificate accepted by the
     /// trusted `VerifyMain` import closure. Lean reconstructs the presentation
     /// from the exact `.axi` bytes before checking formation, congruence, and
-    /// bounded generator reachability.
+    /// bounded generator reachability. The current anchor names one module, so
+    /// export rejects forward equations contributed by importing modules.
     pub fn category_kernel_certificate_json(
         &self,
         schema_label: &str,
@@ -2486,6 +2869,25 @@ impl CompiledKernelSnapshot {
                     "unknown schema `{schema_label}` for category-kernel certificate"
                 ))
             })?;
+        for equation in &schema.equations {
+            let theory = self
+                .ir()
+                .theories()
+                .iter()
+                .find(|theory| theory.theory_id == equation.theory_id)
+                .ok_or_else(|| {
+                    FiniteTheoryError::GateBlocked(format!(
+                        "category equation `{}` has no compiled theory owner",
+                        equation.label
+                    ))
+                })?;
+            if theory.module_id != schema.module_id {
+                return Err(FiniteTheoryError::GateBlocked(format!(
+                    "category_kernel_v3 anchors one exact module; schema `{}` has forward equation `{}` from module `{}` in its import closure",
+                    schema.label, equation.label, theory.module_name
+                )));
+            }
+        }
         schema.category_formation.verify(schema)?;
         let certificate = schema
             .category_formation
@@ -2506,6 +2908,7 @@ impl CompiledKernelSnapshot {
                 "schema_name": schema.label,
                 "presentation": schema.category_kernel_presentation_v3()?,
                 "congruence_certificates": schema.category_kernel_congruence_v3()?,
+                "groupoid_normalizations": schema.category_kernel_groupoid_normalizations_v3()?,
                 "certificate": {
                     "presentation_object_count": certificate.presentation_object_count,
                     "presentation_arrow_count": certificate.presentation_arrow_count,
@@ -2572,6 +2975,16 @@ instance I of S:
             assert_eq!(receipt.typed_constraint_witness_count, 1);
             assert_eq!(receipt.dependent_context_count, 1);
             assert_eq!(receipt.context_witness_count, 1);
+            assert_eq!(
+                receipt.scope.fragment,
+                "explicit_finite_category_instance_replay_v1"
+            );
+            assert_eq!(receipt.coverage.category_formations_replayed, 1);
+            assert_eq!(receipt.coverage.saturated_presentations, 1);
+            assert_eq!(receipt.coverage.identity_paths_replayed, 4);
+            assert!(receipt.coverage.path_explanations_replayed >= 4);
+            assert_eq!(receipt.coverage.identity_scope_transports_replayed, 1);
+            assert_eq!(receipt.coverage.non_identity_scope_transports_certified, 0);
         }
         let schema = &compiled.ir().schemas()[0];
         assert_eq!(schema.category_formation.identities.len(), 4);
@@ -2668,6 +3081,65 @@ instance I of S:
         };
         let normalized = schema.normalize_formal_path(path).unwrap();
         assert!(normalized.replay(schema).unwrap().steps.is_empty());
+        assert_eq!(
+            normalized.rewrite_trace,
+            vec![FormalGroupoidRewriteStepIr {
+                offset: 0,
+                generator: generator.generator_ref.clone(),
+                first_direction: FormalDirectionIr::Forward,
+            }]
+        );
+
+        let forward = schema
+            .formal_generator_path(&generator.generator_ref, FormalDirectionIr::Forward)
+            .unwrap();
+        let inverse = schema.formal_inverse(&forward).unwrap();
+        let source_identity = schema.formal_identity(forward.source.clone()).unwrap();
+        let target_identity = schema.formal_identity(forward.target.clone()).unwrap();
+        assert_eq!(
+            schema
+                .compose_formal_paths(&source_identity, &forward)
+                .unwrap(),
+            forward
+        );
+        assert_eq!(
+            schema
+                .compose_formal_paths(&forward, &target_identity)
+                .unwrap(),
+            forward
+        );
+        let first = schema
+            .compose_formal_paths(&source_identity, &forward)
+            .unwrap();
+        let left_assoc = schema.compose_formal_paths(&first, &inverse).unwrap();
+        let second = schema.compose_formal_paths(&forward, &inverse).unwrap();
+        let right_assoc = schema
+            .compose_formal_paths(&source_identity, &second)
+            .unwrap();
+        assert_eq!(left_assoc, right_assoc);
+        assert!(schema
+            .normalize_formal_path(left_assoc)
+            .unwrap()
+            .replay(schema)
+            .unwrap()
+            .steps
+            .is_empty());
+
+        let mut tampered_trace = normalized.clone();
+        tampered_trace.rewrite_trace[0].offset = 1;
+        assert!(matches!(
+            tampered_trace.replay(schema),
+            Err(FiniteTheoryError::MalformedCertificate(_))
+        ));
+        let mut tampered_output = normalized.clone();
+        tampered_output
+            .normalized
+            .steps
+            .push(FormalGeneratorStepIr {
+                generator: generator.generator_ref.clone(),
+                direction: FormalDirectionIr::Forward,
+            });
+        assert!(tampered_output.replay(schema).is_err());
 
         let projection = schema
             .generators
@@ -2763,15 +3235,21 @@ instance I of S:
         let mut membership_tampered = instance.clone();
         membership_tampered.object_membership_witnesses[0].lifecycle =
             CheckedLifecycleStateIr::Residual;
-        assert!(crate::validate_instance_model_ir(schema, &theories, &membership_tampered).is_err());
+        assert!(
+            crate::validate_instance_model_ir(schema, &theories, &membership_tampered).is_err()
+        );
 
         let mut constraint_tampered = instance.clone();
         constraint_tampered.typed_constraint_witnesses[0].decision_procedure =
             "claimed_by_string".to_string();
-        assert!(crate::validate_instance_model_ir(schema, &theories, &constraint_tampered).is_err());
+        assert!(
+            crate::validate_instance_model_ir(schema, &theories, &constraint_tampered).is_err()
+        );
 
         let mut context_tampered = instance.clone();
-        context_tampered.dependent_contexts[0].scope_witnesses.clear();
+        context_tampered.dependent_contexts[0]
+            .scope_witnesses
+            .clear();
         assert!(crate::validate_instance_model_ir(schema, &theories, &context_tampered).is_err());
     }
 
@@ -2799,6 +3277,87 @@ theory T on S:
             error,
             crate::KernelCompileError::InvalidSchemaEquation { .. }
         ));
+    }
+
+    #[test]
+    fn identity_congruence_is_bound_to_the_equation_object() {
+        let axi = r#"
+module IdentityCongruence
+schema S:
+  object A
+  object B
+
+theory T on S:
+  equation identity:
+    id(A) = id(A)
+"#;
+        let compiled = CanonicalCompiler::compile(KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"identity-congruence"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[axi.as_bytes()]),
+            root_module: "IdentityCongruence".to_string(),
+            modules: vec![CanonicalModuleSource::parse(axi.as_bytes().to_vec()).unwrap()],
+        })
+        .expect("identity equations are valid forward equations");
+        let schema = &compiled.ir().schemas()[0];
+        assert_eq!(schema.equations.len(), 1);
+        assert!(schema.formal_groupoid_equations.is_empty());
+        let equation = &schema.equations[0];
+        let object_b = schema
+            .objects
+            .iter()
+            .find(|object| object.label == "B")
+            .map(|object| SchemaObjectRefIr::ObjectType {
+                object_type_id: object.object_type_id.clone(),
+            })
+            .unwrap();
+        let wrong_identity = schema.identity_path(object_b).unwrap();
+        let error = schema
+            .equation_congruence_certificate(
+                wrong_identity,
+                vec![EquationCongruenceStepIr {
+                    equation_id: equation.equation_id.clone(),
+                    direction: EquationDirectionIr::Forward,
+                    offset: 0,
+                }],
+            )
+            .expect_err("id(A) must not rewrite an identity at B");
+        assert_eq!(error, FiniteTheoryError::CongruenceMismatch);
+    }
+
+    #[test]
+    fn category_certificate_export_rejects_imported_forward_theory_extensions() {
+        let base = r#"module Base
+
+schema Shared:
+  object A
+  function f: A -> A
+"#;
+        let extension = r#"module Extension
+import Base
+
+theory Extended on Shared:
+  equation f_identity:
+    f = id(A)
+"#;
+        let compiled = CanonicalCompiler::compile(KernelCompilationRequest {
+            repository_id: RepositoryIdV2::from_descriptor_bytes(b"imported-theory-certificate"),
+            accepted_snapshot_id: SnapshotIdV2::from_canonical_fields(&[
+                base.as_bytes(),
+                extension.as_bytes(),
+            ]),
+            root_module: "Extension".to_string(),
+            modules: vec![
+                CanonicalModuleSource::parse(extension.as_bytes().to_vec()).unwrap(),
+                CanonicalModuleSource::parse(base.as_bytes().to_vec()).unwrap(),
+            ],
+        })
+        .expect("imported schema extensions are legal canonical packages");
+        let error = compiled
+            .category_kernel_certificate_json("Shared")
+            .expect_err("one-module certificate anchors cannot cover imported equations");
+        assert!(
+            matches!(error, FiniteTheoryError::GateBlocked(message) if message.contains("import closure"))
+        );
     }
 
     #[test]
@@ -2848,6 +3407,12 @@ theory T on S:
         let congruence = schema.category_kernel_congruence_v3().unwrap();
         assert_eq!(congruence.len(), 1);
         assert_eq!(congruence[0].steps[0].offset, 1);
+        let groupoid_normalizations = schema.category_kernel_groupoid_normalizations_v3().unwrap();
+        assert_eq!(groupoid_normalizations.len(), presentation.arrows.len() * 2);
+        assert!(groupoid_normalizations
+            .iter()
+            .all(|certificate| certificate.rewrite_trace.len() == 1
+                && certificate.normalized.steps.is_empty()));
         let dispatch_manifest = presentation
             .relations
             .iter()
@@ -2957,6 +3522,13 @@ theory T on S:
                 .unwrap()
                 .len(),
             1
+        );
+        assert_eq!(
+            envelope["proof"]["groupoid_normalizations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            compiled().ir().schemas()[0].generators.len() * 2
         );
     }
 }

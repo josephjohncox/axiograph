@@ -69,7 +69,7 @@ theory FamilyTheory on Family:
 "#,
     );
 
-    assert!(err.contains("rewrite rule `bad_var`"));
+    assert!(err.contains("theory `FamilyTheory` rewrite `bad_var`"));
     assert!(err.contains("unbound object variable `b`"));
 }
 

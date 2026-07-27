@@ -904,6 +904,9 @@ pub struct TypedCandidatePayloadV2 {
     pub accepted_tree_id: TreeIdV2,
     pub root_module_id: ModuleIdV2,
     pub kernel_ir_digest: ObjectBlobIdV2,
+    /// Typed finite category/refinement/context gate for the exact compiled
+    /// candidate. AxiStore independently recompiles and reproduces this receipt.
+    pub finite_theory_gate: axiograph_kernel::FiniteTheoryGateReceiptIr,
     pub payloads: Vec<KernelPayloadFingerprintV2>,
 }
 
@@ -913,6 +916,7 @@ impl TypedCandidatePayloadV2 {
         accepted_tree_id: TreeIdV2,
         root_module_id: ModuleIdV2,
         kernel_ir_digest: ObjectBlobIdV2,
+        finite_theory_gate: axiograph_kernel::FiniteTheoryGateReceiptIr,
         mut payloads: Vec<KernelPayloadFingerprintV2>,
     ) -> ModelResult<Self> {
         payloads.sort();
@@ -921,6 +925,7 @@ impl TypedCandidatePayloadV2 {
             accepted_tree_id,
             root_module_id,
             kernel_ir_digest,
+            finite_theory_gate,
             payloads,
         };
         candidate.validate()?;
@@ -928,6 +933,16 @@ impl TypedCandidatePayloadV2 {
     }
 
     fn validate(&self) -> ModelResult<()> {
+        if !self.finite_theory_gate.passed
+            || self.finite_theory_gate.consumer
+                != axiograph_kernel::FiniteTheoryGateConsumerIr::Merge
+            || self.finite_theory_gate.accepted_snapshot_id != self.accepted_snapshot_id
+            || !self.finite_theory_gate.residual_obligations.is_empty()
+        {
+            return Err(invalid(
+                "typed candidate requires a passing residual-free Merge finite-theory gate bound to its exact snapshot",
+            ));
+        }
         if self.payloads.len() > MAX_RECONCILIATION_PAYLOADS_V2 {
             return Err(invalid(format!(
                 "candidate payload count exceeds finite bound {MAX_RECONCILIATION_PAYLOADS_V2}"

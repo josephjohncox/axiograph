@@ -179,7 +179,23 @@ fn prepare_web_output_dir(out_dir: &Path, overwrite: bool) -> Result<()> {
                     out_dir.display()
                 ));
             }
-            let mut entries = fs::read_dir(out_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+            const OWNED_NAMES: [&str; 5] = [
+                "pages",
+                "manifest.jsonl",
+                "chunks.json",
+                "facts.json",
+                "proposals.json",
+            ];
+            let mut entries = Vec::with_capacity(OWNED_NAMES.len());
+            for entry in fs::read_dir(out_dir)? {
+                if entries.len() >= OWNED_NAMES.len() {
+                    return Err(anyhow!(
+                        "web output directory contains more than {} top-level artifacts",
+                        OWNED_NAMES.len()
+                    ));
+                }
+                entries.push(entry?);
+            }
             if !entries.is_empty() && !overwrite {
                 return Err(anyhow!(
                     "web output directory `{}` is not empty; pass --overwrite only for a prior Axiograph web-ingest directory",
@@ -187,13 +203,6 @@ fn prepare_web_output_dir(out_dir: &Path, overwrite: bool) -> Result<()> {
                 ));
             }
             if overwrite {
-                const OWNED_NAMES: [&str; 5] = [
-                    "pages",
-                    "manifest.jsonl",
-                    "chunks.json",
-                    "facts.json",
-                    "proposals.json",
-                ];
                 entries.sort_by_key(|entry| entry.file_name());
                 for entry in entries {
                     let name = entry.file_name();
@@ -220,7 +229,7 @@ fn prepare_web_output_dir(out_dir: &Path, overwrite: bool) -> Result<()> {
                                 entry.path().display()
                             ));
                         }
-                        fs::remove_dir_all(entry.path())?;
+                        remove_web_pages_dir_bounded(&entry.path())?;
                     } else if metadata.file_type().is_file() {
                         fs::remove_file(entry.path())?;
                     } else {
@@ -237,6 +246,47 @@ fn prepare_web_output_dir(out_dir: &Path, overwrite: bool) -> Result<()> {
         }
         Err(error) => return Err(error.into()),
     }
+    Ok(())
+}
+
+fn remove_web_pages_dir_bounded(pages_dir: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(pages_dir)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(anyhow!("web pages artifact must be a real directory"));
+    }
+    let mut entries = 0_usize;
+    for entry in fs::read_dir(pages_dir)? {
+        entries = entries.saturating_add(1);
+        if entries > MAX_WEB_PAGES {
+            return Err(anyhow!("web pages artifact exceeds {MAX_WEB_PAGES} files"));
+        }
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| anyhow!("web pages artifact contains a non-UTF-8 filename"))?;
+        let page_id = name
+            .strip_suffix(".html")
+            .and_then(|value| value.strip_prefix("axi:object-blob:v2:sha256:"));
+        if page_id.is_none_or(|hex| {
+            hex.len() != 64
+                || !hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }) {
+            return Err(anyhow!(
+                "refusing --overwrite because `{name}` is not an Axiograph web page artifact"
+            ));
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(anyhow!(
+                "web pages artifact must contain regular files only"
+            ));
+        }
+        fs::remove_file(entry.path())?;
+    }
+    fs::remove_dir(pages_dir)?;
     Ok(())
 }
 
@@ -495,7 +545,7 @@ fn cmd_web_ingest(
         if store_html {
             if let Some(html) = &html_text {
                 let path = pages_dir.join(format!("{page_id}.html"));
-                crate::security::write_output_bounded(&path, html.as_bytes(), "CLI output").ok();
+                crate::security::write_output_bounded(&path, html.as_bytes(), "CLI output")?;
                 stored_path = Some(path);
             }
         }
@@ -1294,6 +1344,40 @@ mod tests {
         let error =
             prepare_web_output_dir(&link, true).expect_err("symlink output directory must reject");
         assert!(error.to_string().contains("not a symlink"));
+        Ok(())
+    }
+
+    #[test]
+    fn web_overwrite_is_bounded_and_deletes_only_canonical_flat_page_artifacts() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let output = directory.path().join("output");
+        fs::create_dir(&output)?;
+        for index in 0..6 {
+            fs::write(output.join(format!("unknown-{index}")), b"x")?;
+        }
+        let error = prepare_web_output_dir(&output, true)
+            .expect_err("excess top-level output entries must reject");
+        assert!(error.to_string().contains("more than 5"));
+
+        let bounded = directory.path().join("bounded");
+        let pages = bounded.join("pages");
+        fs::create_dir_all(&pages)?;
+        fs::create_dir(pages.join("nested"))?;
+        let error = prepare_web_output_dir(&bounded, true)
+            .expect_err("nested web page artifacts must reject");
+        assert!(error
+            .to_string()
+            .contains("not an Axiograph web page artifact"));
+        assert!(pages.join("nested").is_dir());
+
+        let valid = directory.path().join("valid");
+        let valid_pages = valid.join("pages");
+        fs::create_dir_all(&valid_pages)?;
+        let page_id = axiograph_kernel::object_blob_digest_v2(b"https://example.com/");
+        fs::write(valid_pages.join(format!("{page_id}.html")), b"page")?;
+        fs::write(valid.join("manifest.jsonl"), b"{}\n")?;
+        prepare_web_output_dir(&valid, true)?;
+        assert!(fs::read_dir(&valid)?.next().is_none());
         Ok(())
     }
 

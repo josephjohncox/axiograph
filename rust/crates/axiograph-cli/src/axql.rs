@@ -583,7 +583,7 @@ pub struct AxqlExplorationSuggestionV1 {
     pub refinement_candidates: Vec<AxqlRefinementCandidateV1>,
 }
 
-pub const AXQL_REFINEMENT_HANDLE_V1_VERSION: u32 = 1;
+pub const AXQL_REFINEMENT_HANDLE_V2_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -674,25 +674,56 @@ impl AxqlRefinementOpV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AxqlRefinementHandleV1 {
+pub struct AxqlRefinementContextV2 {
+    /// Digest of the exact elaborated runtime query artifact that emitted this
+    /// repair. This is runtime provenance, not an accepted-snapshot anchor.
+    pub source_artifact_digest: String,
+    pub obligation_id: String,
+    pub expected_lifecycle: axiograph_kernel::CheckedLifecycleStateIr,
+}
+
+impl AxqlRefinementContextV2 {
+    pub fn residual(
+        source_artifact_digest: impl Into<String>,
+        obligation_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            source_artifact_digest: source_artifact_digest.into(),
+            obligation_id: obligation_id.into(),
+            expected_lifecycle: axiograph_kernel::CheckedLifecycleStateIr::Residual,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AxqlRefinementHandleV2 {
     pub version: u32,
     pub id: String,
+    pub context: AxqlRefinementContextV2,
     pub scope: AxqlRefinementApplicationScopeV1,
     pub op: AxqlRefinementOpV1,
 }
 
-impl AxqlRefinementHandleV1 {
-    pub fn new(scope: AxqlRefinementApplicationScopeV1, op: AxqlRefinementOpV1) -> Self {
+impl AxqlRefinementHandleV2 {
+    pub fn new(
+        context: AxqlRefinementContextV2,
+        scope: AxqlRefinementApplicationScopeV1,
+        op: AxqlRefinementOpV1,
+    ) -> Self {
         let id = format!(
-            "axql_refine_v1:{}",
+            "axql_refine_v2:{}",
             axiograph_kernel::revision_digest_v2(&format!(
-                "{scope:?}:{}",
+                "{}:{}:{:?}:{scope:?}:{}",
+                context.source_artifact_digest,
+                context.obligation_id,
+                context.expected_lifecycle,
                 op.stable_digest_input()
             ))
         );
         Self {
-            version: AXQL_REFINEMENT_HANDLE_V1_VERSION,
+            version: AXQL_REFINEMENT_HANDLE_V2_VERSION,
             id,
+            context,
             scope,
             op,
         }
@@ -703,14 +734,24 @@ impl AxqlRefinementHandleV1 {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.version != AXQL_REFINEMENT_HANDLE_V1_VERSION {
+        if self.version != AXQL_REFINEMENT_HANDLE_V2_VERSION {
             return Err(anyhow!(
                 "unsupported AxQL refinement handle version {}; expected {}",
                 self.version,
-                AXQL_REFINEMENT_HANDLE_V1_VERSION
+                AXQL_REFINEMENT_HANDLE_V2_VERSION
             ));
         }
-        let expected = Self::new(self.scope.clone(), self.op.clone());
+        if self.context.source_artifact_digest.trim().is_empty()
+            || self.context.obligation_id.trim().is_empty()
+            || self.context.expected_lifecycle
+                != axiograph_kernel::CheckedLifecycleStateIr::Residual
+        {
+            return Err(anyhow!(
+                "AxQL refinement handle {} has an invalid source context or lifecycle",
+                self.id
+            ));
+        }
+        let expected = Self::new(self.context.clone(), self.scope.clone(), self.op.clone());
         if self.id != expected.id {
             return Err(anyhow!(
                 "invalid AxQL refinement handle id {}; expected {} for this payload",
@@ -726,7 +767,7 @@ impl AxqlRefinementHandleV1 {
 pub struct AxqlRefinementCandidateV1 {
     pub kind: AxqlRefinementCandidateKindV1,
     pub summary: String,
-    pub handle: AxqlRefinementHandleV1,
+    pub handle: AxqlRefinementHandleV2,
     pub preview_fragment: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relation: Option<String>,
@@ -4617,7 +4658,9 @@ impl LoweredQuery {
             (&a.relation, &a.variable, &a.summary).cmp(&(&b.relation, &b.variable, &b.summary))
         });
         report.typed_holes.dedup();
-        populate_type_directed_exploration(meta, &mut report);
+        let source_artifact_digest =
+            axiograph_kernel::revision_digest_v2(&self.render_as_axql()).to_string();
+        populate_type_directed_exploration(meta, &source_artifact_digest, &mut report);
         Ok(report)
     }
 
@@ -6987,7 +7030,11 @@ fn format_schema_qualified_type_guard(
     guards
 }
 
-fn populate_type_directed_exploration(meta: &MetaPlaneIndex, report: &mut AxqlElaborationReport) {
+fn populate_type_directed_exploration(
+    meta: &MetaPlaneIndex,
+    source_artifact_digest: &str,
+    report: &mut AxqlElaborationReport,
+) {
     const MAX_SUGGESTIONS_PER_BUCKET: usize = 8;
 
     for (variable, inferred_types) in &report.inferred_types {
@@ -6995,6 +7042,10 @@ fn populate_type_directed_exploration(meta: &MetaPlaneIndex, report: &mut AxqlEl
             continue;
         }
 
+        let refinement_context = AxqlRefinementContextV2::residual(
+            source_artifact_digest,
+            format!("axql-variable:{variable}"),
+        );
         let mut suggestion = AxqlExplorationSuggestionV1 {
             variable: variable.clone(),
             inferred_types: inferred_types.clone(),
@@ -7012,7 +7063,8 @@ fn populate_type_directed_exploration(meta: &MetaPlaneIndex, report: &mut AxqlEl
                     .split_once(" is ")
                     .map(|(_, ty)| ty.to_string())
                     .unwrap_or_else(|| inferred_type.clone());
-                let handle = AxqlRefinementHandleV1::new(
+                let handle = AxqlRefinementHandleV2::new(
+                    refinement_context.clone(),
                     AxqlRefinementApplicationScopeV1::SingleConjunction,
                     AxqlRefinementOpV1::AddTypeGuard {
                         term: AxqlRefinementTermV1::ExistingVariable {
@@ -7053,7 +7105,8 @@ fn populate_type_directed_exploration(meta: &MetaPlaneIndex, report: &mut AxqlEl
                         .iter()
                         .any(|ty| schema.is_subtype(ty, dst_role.target_type.as_str()));
                     if source_match {
-                        let handle = AxqlRefinementHandleV1::new(
+                        let handle = AxqlRefinementHandleV2::new(
+                            refinement_context.clone(),
                             AxqlRefinementApplicationScopeV1::SingleConjunction,
                             AxqlRefinementOpV1::AddEdgeAtom {
                                 left: AxqlRefinementTermV1::ExistingVariable {
@@ -7087,7 +7140,8 @@ fn populate_type_directed_exploration(meta: &MetaPlaneIndex, report: &mut AxqlEl
                         );
                     }
                     if target_match {
-                        let handle = AxqlRefinementHandleV1::new(
+                        let handle = AxqlRefinementHandleV2::new(
+                            refinement_context.clone(),
                             AxqlRefinementApplicationScopeV1::SingleConjunction,
                             AxqlRefinementOpV1::AddEdgeAtom {
                                 left: AxqlRefinementTermV1::SuggestedVariable {
@@ -7146,7 +7200,8 @@ fn populate_type_directed_exploration(meta: &MetaPlaneIndex, report: &mut AxqlEl
                             (candidate_role.name.clone(), term)
                         })
                         .collect::<BTreeMap<_, _>>();
-                    let handle = AxqlRefinementHandleV1::new(
+                    let handle = AxqlRefinementHandleV2::new(
+                        refinement_context.clone(),
                         AxqlRefinementApplicationScopeV1::SingleConjunction,
                         AxqlRefinementOpV1::AddFactAtom {
                             fact: Some(AxqlRefinementTermV1::SuggestedVariable {
@@ -8571,6 +8626,22 @@ instance I2 of S2:
                 && candidate.role.as_deref() == Some("to")
                 && candidate.handle.validate().is_ok()
         }));
+        let emitted = &suggestion.refinement_candidates[0].handle;
+        assert!(emitted.id.starts_with("axql_refine_v2:"));
+        assert!(!emitted.context.source_artifact_digest.is_empty());
+        assert_eq!(
+            emitted.context.expected_lifecycle,
+            axiograph_kernel::CheckedLifecycleStateIr::Residual
+        );
+        let mut source_tampered = emitted.clone();
+        source_tampered
+            .context
+            .source_artifact_digest
+            .push_str("-other-query");
+        assert!(source_tampered.validate().is_err());
+        let mut obsolete_version = emitted.clone();
+        obsolete_version.version = 1;
+        assert!(obsolete_version.validate().is_err());
         Ok(())
     }
 

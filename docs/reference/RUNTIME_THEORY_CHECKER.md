@@ -34,11 +34,14 @@ report.
 
 `admissibility_scan` records evidence-propagation iterations, considered and
 excluded inputs, blockers, residuals, assumptions, and typed scan steps. The
-final step is `admissibility_scan_complete`. CLI/module summaries expose
-`admissibility_scopes` and `admissibility_trace`; their shared trust-contract
-strings use `not_claimed_runtime_admissibility_only` for completeness and
-ontology closure. `closure_engine_not_implemented` is always an explicit
-residual/non-claim.
+final step is `admissibility_scan_complete`. CLI/module summaries expose a
+structured `scope` (fragments, worlds, evidence policies, and imports), typed
+coverage counts, `admissibility_trace`, `transport_summary`, residual ids, and
+structured `non_claims`. They no longer carry synthetic completeness or
+ontology-closure claim strings. `closure_engine_not_implemented` is an explicit
+non-claim, not a residual obligation. Residual IDs, counts, diagnostics, and
+authoring gates are derived only from unresolved judgments or declared
+assumptions.
 
 ## Judgment Form
 
@@ -76,9 +79,11 @@ classification. In particular:
 - `functional`, `at_most`, and `key` may be runtime-enforced;
 - `symmetric_where_in`, `symmetric`, and `transitive` remain review-only until
   an actual executor/certificate checks their finite fiber semantics;
-- path equations and rewrite rules receive runtime endpoint/axis admissibility
-  checks, but remain outside Lean certification unless a separate certificate
-  is accepted; and
+- relation-path equations and rewrite rules receive runtime endpoint/axis
+  admissibility checks; named-generator equations accepted by canonical
+  `SchemaPresentationIr` carry that canonical formation citation instead of
+  becoming false opaque residuals, but remain outside Lean certification unless
+  a separate certificate is accepted; and
 - opaque equations remain explicit review residuals.
 
 Evidence filtering never erases a semantic residual. A low-weight opaque,
@@ -92,7 +97,7 @@ Every obligation may expose:
 - stable theory/obligation/subject `RuntimeIrRef` citations;
 - path-expression and path-step refs;
 - variable and typed endpoint refs;
-- context/temporal axis refs;
+- context/world/temporal axis refs;
 - transport-item refs;
 - structured admissibility diagnostics; and
 - residual obligations and non-claims.
@@ -104,7 +109,8 @@ accepted snapshot authority, or substitutes for canonical `.axi` bytes.
 ## Contexts And Transport
 
 Context, world, temporal, parameter, and evidence roles survive compiled IR as
-typed subjects. Rewrites that drop context or temporal axes block. Transport
+typed subjects. Rewrites that drop context, world, or temporal axes block.
+Transport
 plans attach one of:
 
 - `preserved`;
@@ -206,17 +212,29 @@ canonical workspace import closure compiles. It embeds the module report in
 
 - no compiled theories produces an explicit empty finite gate;
 - blocking judgments block promotion review;
+- review-only judgments, evidence exclusions, resolver-required transports,
+  and residual ids remain inadmissible and block the runtime-theory gate;
 - residual obligations block promotion review rather than becoming warnings;
+- every non-checked judgment emits a typed theory hole plus a deterministic
+  `RuntimeRefinementCandidateV2` next-action handle; review-only and residual
+  judgments block promotion but remain reviewable warnings rather than making
+  the whole authoring report unparsable or unsuccessful;
 - CQ, query, olog, LSP, MCP, and HTTP adapters do not reimplement theory rules;
 - authoring stores a canonical `Authoring` finite-theory receipt;
 - prepared-query metadata stores a `Query` receipt when it has the accepted
   snapshot; and
 - AxiStore candidate recompilation requires a `Merge` receipt.
 
-These three receipts replay the canonical Rust IR and remain operational. The
-separate anchored `category_kernel_v3` certificate is the trusted Lean category
-claim, with the narrower scope above. Runtime admissibility does not become a
-theorem merely because both checks pass.
+These three receipts replay the canonical Rust IR and remain operational. Each
+receipt now carries typed finite scope and exact coverage for category
+formation, identities, saturation explanations, object memberships, dependent
+role/refinement witnesses, finite constraints, contexts, and identity scope
+transports. Residuals and non-claims are explicit; non-identity transports have
+certified coverage zero. The same receipt is embedded in authoring and prepared
+query reports and in every `TypedCandidatePayloadV2` accepted by the merge
+checker. The separate anchored `category_kernel_v3` certificate is the trusted
+Lean category claim, with the narrower scope above. Runtime admissibility does
+not become a theorem merely because both checks pass.
 
 ## Explicit Non-Claims
 

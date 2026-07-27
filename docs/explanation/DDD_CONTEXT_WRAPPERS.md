@@ -191,7 +191,7 @@ The wrapper layer should be built on top of existing contracts such as:
 - `CoverageReportV1`
 - `AgentEngineeringReportV1`
 - `EvolutionPreviewV1`
-- `RuntimeRefinementCandidateV1`
+- `RuntimeRefinementCandidateV2`
 - semantic refs/commits/validations in semantic VCS
 - `SemanticSliceSelectorV1`
 - `SemanticMergePlanV1`

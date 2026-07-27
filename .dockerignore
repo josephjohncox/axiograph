@@ -9,6 +9,7 @@ rust/target
 rust/.cargo
 **/*.axpd
 **/*.axi
+!fixtures/verification/query_result_v4_exact.axi
 **/*.jsonl
 **/*.pdf
 **/*.png

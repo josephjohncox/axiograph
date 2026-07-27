@@ -26,6 +26,7 @@
 	verify-axi-parse-e2e \
 	verify-verus \
 	verify-lean-resolution-v2 verify-lean-normalize-path-v2 verify-lean-path-equiv-v2 verify-lean-delta-f-v1 \
+	verify-lean-indexed-path-theory \
 	verify-lean-e2e-axi-well-typed-v1 \
 	verify-lean-e2e-axi-constraints-ok-v1 \
 	verify-lean-e2e-query-result-module-v4 \
@@ -312,6 +313,7 @@ verify-lean-theory: dirs
 	cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) exe axiograph_finite_theory_tests
 	cd $(RUST_DIR) && $(CARGO) test -p axiograph-kernel --locked
 	$(MAKE) verify-lean-e2e-category-kernel-v3
+	$(MAKE) verify-lean-indexed-path-theory
 	cd $(RUST_DIR) && $(CARGO) test -p axiograph-pathdb --test runtime_theory_checker_tests --locked
 	cd $(RUST_DIR) && $(CARGO) test -p axiograph-cli runtime_theory --locked
 	@echo "✓ Finite typed theory accepted positive witnesses and rejected adversarial projections, equations, refinements, bounds, and explanations"
@@ -328,7 +330,7 @@ verify-lean-e2e-category-kernel-v3: dirs
 		$(EXAMPLES_DIR)/regulated_shipment/RegulatedShipment.axi \
 		$(BUILD_DIR)/category-kernel/regulated-shipment.json
 	@set -e; \
-	for _tamper in saturation presentation congruence; do \
+	for _tamper in saturation presentation congruence groupoid; do \
 		$(CARGO) run --quiet --manifest-path $(RUST_DIR)/Cargo.toml -p axiograph-kernel \
 			--example emit_category_kernel_certificate --locked -- \
 			$(EXAMPLES_DIR)/regulated_shipment/RegulatedShipment.axi RegulatedShipment \
@@ -343,7 +345,7 @@ verify-lean-e2e-category-kernel-v3: dirs
 			exit 1; \
 		fi; \
 	done
-	@echo "✓ Rust and Lean agreed on the category corpus and formation; Lean rejected saturation, presentation, and congruence tampering"
+	@echo "✓ Rust and Lean agreed on indexed category/groupoid paths; Lean rejected saturation, presentation, congruence, and normalization-trace tampering"
 
 verify-lean-semantic-vcs: dirs
 	@echo "━━━ Verifying semantic VCS plan contracts against Lean theory ━━━"
@@ -426,7 +428,7 @@ verify-regulated-shipment: dirs
 	@echo "━━━ Verifying the primary regulated-shipment usefulness workflow ━━━"
 	@run_dir="$$(mktemp -d "$(BUILD_DIR)/regulated-shipment.XXXXXX")"; \
 		./examples/regulated_shipment/run_regulated_shipment_workflow.sh "$$run_dir"
-	@echo "✓ Regulated shipment validated category/dependent/path/query, persistence, evolution, merge, projection, and generated-test surfaces"
+	@echo "✓ Regulated shipment bound exact finite-query receipts into typed category/refinement/transport/merge gates"
 
 verify-axi-parse-e2e: lean
 	@echo "━━━ Parsing canonical .axi corpus (Rust ↔ Lean, axi_v1) ━━━"
@@ -506,7 +508,7 @@ verify-lean-e2e-normalize-path-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (normalize_path v2) ━━━"
 	@ if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_normalize_path_cert_v2 > ../$(BUILD_DIR)/normalize_path_from_rust_v2.json ) && \
-			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/normalize_path_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build axiograph_verify && $(LEAN_ENV) .lake/build/bin/axiograph_verify ../$(BUILD_DIR)/normalize_path_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (normalize_path v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -536,7 +538,7 @@ verify-lean-e2e-path-equiv-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (path_equiv v2) ━━━"
 	@ if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_path_equiv_cert_v2 > ../$(BUILD_DIR)/path_equiv_from_rust_v2.json ) && \
-			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/path_equiv_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build axiograph_verify && $(LEAN_ENV) .lake/build/bin/axiograph_verify ../$(BUILD_DIR)/path_equiv_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (path_equiv v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
@@ -546,11 +548,18 @@ verify-lean-e2e-path-equiv-congr-v2: dirs
 	@echo "━━━ Rust → Lean certificate check (path_equiv congruence v2) ━━━"
 	@ if command -v $(LAKE) >/dev/null 2>&1; then \
 		( cd $(RUST_DIR) && $(CARGO) run -p axiograph-pathdb --example emit_path_equiv_congr_cert_v2 > ../$(BUILD_DIR)/path_equiv_congr_from_rust_v2.json ) && \
-			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build Axiograph && $(LEAN_ENV) $(LAKE) env lean --run Axiograph/VerifyMain.lean ../$(BUILD_DIR)/path_equiv_congr_from_rust_v2.json ) && \
+			( cd $(LEAN_DIR) && $(LEAN_ENV) $(LAKE) build axiograph_verify && $(LEAN_ENV) .lake/build/bin/axiograph_verify ../$(BUILD_DIR)/path_equiv_congr_from_rust_v2.json ) && \
 		echo "✓ Rust → Lean certificate verified (path_equiv congruence v2)"; \
 	else \
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
+
+verify-lean-indexed-path-theory: verify-lean-e2e-normalize-path-v2 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2
+	@echo "━━━ Verifying endpoint-indexed path laws and fail-closed traces ━━━"
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-pathdb --lib normalize_path_v2_tests --locked
+	cd $(RUST_DIR) && $(CARGO) test -p axiograph-pathdb --test path_expr_property_tests --locked
+	python3 scripts/check_indexed_path_certificate_rejections.py
+	@echo "✓ Indexed path certificates have Rust/Lean parity and reject malformed traces"
 
 verify-lean-e2e-delta-f-v1: dirs
 	@echo "━━━ Rust → Lean certificate check (delta_f v1) ━━━"
@@ -562,7 +571,7 @@ verify-lean-e2e-delta-f-v1: dirs
 		echo "⚠️  lake (Lean) not found - cannot run checker"; \
 	fi
 
-verify-lean-e2e-suite: verify-lean-e2e-category-kernel-v3 verify-lean-e2e-axi-well-typed-v1 verify-lean-e2e-axi-constraints-ok-v1 verify-lean-e2e-query-result-module-v4 verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-rewrite-derivation-v3 verify-lean-e2e-ontology-rewrites-v3 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1
+verify-lean-e2e-suite: verify-lean-e2e-category-kernel-v3 verify-lean-e2e-axi-well-typed-v1 verify-lean-e2e-axi-constraints-ok-v1 verify-lean-e2e-query-result-module-v4 verify-lean-e2e-resolution-v2 verify-lean-indexed-path-theory verify-lean-e2e-rewrite-derivation-v3 verify-lean-e2e-ontology-rewrites-v3 verify-lean-e2e-delta-f-v1
 
 # ============================================================================
 # Binaries

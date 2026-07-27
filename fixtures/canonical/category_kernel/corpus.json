@@ -3,9 +3,12 @@
   "description": "Exact-source Rust/Lean conformance for the finite category-kernel presentation.",
   "cases": [
     {"path":"fixtures/canonical/category_kernel/valid_category_kernel.axi","schema":"Logistics","compile":true},
+    {"path":"fixtures/canonical/category_kernel/valid_identity_equation.axi","schema":"S","compile":true},
     {"path":"fixtures/canonical/category_kernel/reject_duplicate_arrow_name.axi","schema":"S","compile":false},
     {"path":"fixtures/canonical/category_kernel/reject_subtype_cycle.axi","schema":"S","compile":false},
     {"path":"fixtures/canonical/category_kernel/reject_unknown_role_index.axi","schema":"S","compile":false},
+    {"path":"fixtures/canonical/category_kernel/reject_repeated_role_index.axi","schema":"S","compile":false},
+    {"path":"fixtures/canonical/category_kernel/reject_indexed_fiber_projection_mismatch.axi","schema":"S","compile":false},
     {"path":"fixtures/canonical/category_kernel/reject_role_key_refinement.axi","schema":"S","compile":false},
     {"path":"fixtures/canonical/category_kernel/reject_duplicate_category_equation.axi","schema":"S","compile":false},
     {"path":"fixtures/canonical/category_kernel/reject_noncomposable_equation.axi","schema":"S","compile":false}

@@ -39,11 +39,7 @@ pub enum GithubCommands {
         #[arg(long)]
         clone_dir: Option<PathBuf>,
 
-        /// Shallow clone (faster; may not support arbitrary refs).
-        #[arg(long, default_value_t = true)]
-        shallow: bool,
-
-        /// Optional git ref to checkout (branch/tag/commit).
+        /// Optional branch or tag to checkout. Remote imports are always depth-one clones.
         #[arg(long)]
         r#ref: Option<String>,
 
@@ -87,7 +83,6 @@ pub fn cmd_github(command: GithubCommands) -> Result<()> {
             repo,
             out_dir,
             clone_dir,
-            shallow,
             r#ref,
             no_repo_index,
             no_proto,
@@ -100,7 +95,6 @@ pub fn cmd_github(command: GithubCommands) -> Result<()> {
             &repo,
             &out_dir,
             clone_dir.as_ref(),
-            shallow,
             r#ref.as_deref(),
             !no_repo_index,
             !no_proto,
@@ -118,7 +112,6 @@ fn cmd_github_import(
     repo: &str,
     out_dir: &PathBuf,
     clone_dir: Option<&PathBuf>,
-    shallow: bool,
     git_ref: Option<&str>,
     do_repo_index: bool,
     do_proto: bool,
@@ -130,7 +123,7 @@ fn cmd_github_import(
 ) -> Result<()> {
     fs::create_dir_all(out_dir)?;
 
-    let repo_path = prepare_repo_checkout(repo, out_dir, clone_dir, shallow, git_ref)?;
+    let repo_path = prepare_repo_checkout(repo, out_dir, clone_dir, git_ref)?;
     println!(
         "{} {}",
         "GitHub import repo".green().bold(),
@@ -262,7 +255,6 @@ fn prepare_repo_checkout(
     repo: &str,
     out_dir: &Path,
     clone_dir: Option<&PathBuf>,
-    shallow: bool,
     git_ref: Option<&str>,
 ) -> Result<PathBuf> {
     // Local path mode (fully offline).
@@ -272,6 +264,11 @@ fn prepare_repo_checkout(
             return Err(anyhow!("local repository path must not be a symlink"));
         }
         if metadata.file_type().is_dir() {
+            if git_ref.is_some() {
+                return Err(anyhow!(
+                    "local repository mode does not accept --ref; provide the exact checked-out directory"
+                ));
+            }
             return Ok(as_path);
         }
     }
@@ -281,23 +278,15 @@ fn prepare_repo_checkout(
         validate_git_ref(git_ref)?;
     }
 
-    if let Ok(metadata) = fs::symlink_metadata(&clone_dir) {
-        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+    match fs::symlink_metadata(&clone_dir) {
+        Ok(_) => {
             return Err(anyhow!(
-                "existing clone path must be a real directory, not a symlink"
+                "clone destination `{}` already exists; GitHub import requires a fresh directory so repository-local config cannot execute during checkout",
+                clone_dir.display()
             ));
         }
-        let git_metadata = fs::symlink_metadata(clone_dir.join(".git"))
-            .context("existing clone path is not a complete Git checkout")?;
-        if git_metadata.file_type().is_symlink() || !git_metadata.file_type().is_dir() {
-            return Err(anyhow!(
-                "existing clone .git entry must be a real directory"
-            ));
-        }
-        if let Some(git_ref) = git_ref {
-            checkout_repository(&clone_dir, git_ref)?;
-        }
-        return Ok(clone_dir);
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
 
     let url = normalize_github_repo_spec(repo)?;
@@ -348,9 +337,12 @@ fn prepare_repo_checkout(
         .arg(format!("http.curloptResolve=github.com:443:{pinned}"))
         .arg("clone")
         .arg("--no-checkout")
-        .arg("--no-recurse-submodules");
-    if shallow && git_ref.is_none() {
-        cmd.arg("--depth").arg("1");
+        .arg("--no-recurse-submodules")
+        .arg("--depth")
+        .arg("1")
+        .arg("--single-branch");
+    if let Some(git_ref) = git_ref {
+        cmd.arg("--branch").arg(git_ref);
     }
     cmd.arg(&url).arg(&clone_dir);
 
@@ -522,9 +514,7 @@ fn validate_git_ref(git_ref: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/'))
     {
-        return Err(anyhow!(
-            "Git ref is not a canonical option-safe ref or object id"
-        ));
+        return Err(anyhow!("Git branch/tag is not a canonical option-safe ref"));
     }
     Ok(())
 }
@@ -590,32 +580,41 @@ fn ingest_proto_to_artifacts(
     Vec<axiograph_ingest_docs::Chunk>,
     axiograph_ingest_docs::ProposalsFileV1,
 )> {
-    let descriptor_path = if let Some(p) = descriptor {
-        resolve_maybe_relative(repo_root, p)
+    let (descriptor_bytes, descriptor_locator) = if let Some(p) = descriptor {
+        let descriptor_path = resolve_maybe_relative(repo_root, p);
+        (
+            crate::security::read_file_bounded(
+                &descriptor_path,
+                crate::security::MAX_BINARY_INPUT_BYTES,
+                "protobuf descriptor set",
+            )?,
+            descriptor_path.display().to_string(),
+        )
     } else {
-        // Default: treat repo root as a buf module if it contains `buf.yaml`,
-        // otherwise skip with a good error (caller can disable proto ingestion).
+        // Default: treat repo root as a buf module if it contains a regular
+        // no-follow `buf.yaml`. Buf output is staged outside the untrusted repo.
         let root = buf_root.map(|p| resolve_maybe_relative(repo_root, p));
         let buf_root = root.unwrap_or_else(|| repo_root.to_path_buf());
-        if !buf_root.join("buf.yaml").is_file() {
-            return Err(anyhow!(
-                "proto ingest: missing descriptor and no buf.yaml found (pass --proto-descriptor or --buf-root)"
-            ));
+        let config = buf_root.join("buf.yaml");
+        let config_metadata = fs::symlink_metadata(&config).with_context(|| {
+            "proto ingest: missing regular buf.yaml (pass --proto-descriptor or --buf-root)"
+        })?;
+        if config_metadata.file_type().is_symlink() || !config_metadata.file_type().is_file() {
+            return Err(anyhow!("proto ingest: buf.yaml must be a regular file"));
         }
-        let out = repo_root.join("build/axiograph_github_import_descriptor.binpb");
-        crate::proto::build_descriptor_set_binpb(&buf_root, &out, false, false)?;
-        out
+        let staging = tempfile::tempdir()?;
+        let out = staging
+            .path()
+            .join("axiograph_github_import_descriptor.binpb");
+        (
+            crate::proto::build_descriptor_set_binpb(&buf_root, &out, false, false)?,
+            format!("buf:{}", buf_root.display()),
+        )
     };
-
-    let descriptor_bytes = crate::security::read_file_bounded(
-        &descriptor_path,
-        crate::security::MAX_BINARY_INPUT_BYTES,
-        "protobuf descriptor set",
-    )?;
 
     let ingest = axiograph_ingest_proto::ingest_descriptor_set_bytes(
         &descriptor_bytes,
-        Some(descriptor_path.display().to_string()),
+        Some(descriptor_locator.clone()),
         Some("proto_api".to_string()),
     )?;
 
@@ -629,7 +628,7 @@ fn ingest_proto_to_artifacts(
         generated_at,
         source: axiograph_ingest_docs::ProposalSourceV1 {
             source_type: "proto".to_string(),
-            locator: descriptor_path.display().to_string(),
+            locator: descriptor_locator,
         },
         schema_hint: Some("proto_api".to_string()),
         proposals: ingest.proposals,
@@ -707,7 +706,7 @@ mod tests {
 
     #[test]
     fn git_ref_rejects_option_and_revision_expression_injection() {
-        for valid in ["main", "release/v1.2.3", "0123456789abcdef"] {
+        for valid in ["main", "release/v1.2.3", "v2.0.0"] {
             assert!(validate_git_ref(valid).is_ok(), "rejected {valid}");
         }
         for invalid in [
@@ -725,18 +724,18 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_existing_clone_is_rejected_without_network() {
+    fn existing_clone_and_local_ref_modes_are_rejected_without_network() {
         let temp = tempfile::tempdir().unwrap();
         let clone_dir = temp.path().join("repo");
         fs::create_dir(&clone_dir).unwrap();
-        let error = prepare_repo_checkout(
-            "axiograph/example",
-            temp.path(),
-            Some(&clone_dir),
-            true,
-            None,
-        )
-        .expect_err("empty directory is not a completed clone");
-        assert!(error.to_string().contains("complete Git checkout"));
+        let error = prepare_repo_checkout("axiograph/example", temp.path(), Some(&clone_dir), None)
+            .expect_err("existing clone directory must never be reused");
+        assert!(error.to_string().contains("requires a fresh directory"));
+
+        let local = temp.path().join("local");
+        fs::create_dir(&local).unwrap();
+        let error = prepare_repo_checkout(local.to_str().unwrap(), temp.path(), None, Some("main"))
+            .expect_err("local mode must not silently ignore a requested ref");
+        assert!(error.to_string().contains("does not accept --ref"));
     }
 }

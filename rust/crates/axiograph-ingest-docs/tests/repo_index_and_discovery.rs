@@ -18,6 +18,27 @@ fn repo_index_rejects_unbounded_configuration() {
     std::fs::remove_dir_all(root).ok();
 }
 
+#[cfg(unix)]
+#[test]
+fn repo_index_rejects_symlinked_root() {
+    use std::os::unix::fs::symlink;
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let parent = std::env::temp_dir().join(format!("axiograph_repo_symlink_test_{unique}"));
+    let real = parent.join("real");
+    let linked = parent.join("linked");
+    std::fs::create_dir_all(&real).unwrap();
+    symlink(&real, &linked).unwrap();
+
+    let error = axiograph_ingest_docs::index_repo(&linked, &Default::default())
+        .expect_err("repository symlink root must reject");
+    assert!(error.to_string().contains("real directory"));
+    std::fs::remove_dir_all(parent).ok();
+}
+
 #[test]
 fn repo_index_extracts_edges_and_suggests_links() {
     let unique = SystemTime::now()

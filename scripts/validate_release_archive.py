@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ MAX_CHECKSUM_BYTES = 1024
 READ_CHUNK = 1024 * 1024
 EXPECTED_ENTRY_COUNT = 5
 MAX_JSON_DEPTH = 64
+MAX_TAR_STREAM_BYTES = MAX_TOTAL_BYTES + 1024 * 1024
 HEX64 = re.compile(r"[0-9a-f]{64}")
 SEMVER_CORE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 EXACT_TOOLCHAIN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
@@ -220,6 +222,34 @@ def _validate_entries(entries: list[ArchivedFile]) -> dict[str, ArchivedFile]:
     return by_name
 
 
+def validate_single_gzip_member(stream: BinaryIO) -> None:
+    """Reject concatenated/trailing gzip data and bound the raw tar expansion."""
+    stream.seek(0)
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    expanded = 0
+    while chunk := stream.read(READ_CHUNK):
+        pending = chunk
+        while pending:
+            output = decoder.decompress(pending, READ_CHUNK)
+            expanded += len(output)
+            if expanded > MAX_TAR_STREAM_BYTES:
+                raise fail(f"tar stream expands beyond {MAX_TAR_STREAM_BYTES} bytes")
+            if decoder.unused_data:
+                raise fail(
+                    "tar.gz must contain exactly one gzip member with no trailing data"
+                )
+            pending = decoder.unconsumed_tail
+        if decoder.eof:
+            if stream.read(1):
+                raise fail(
+                    "tar.gz must contain exactly one gzip member with no trailing data"
+                )
+            break
+    if not decoder.eof:
+        raise fail("tar.gz gzip member is truncated")
+    stream.seek(0)
+
+
 def validate_tar(stream: BinaryIO, suffix: str) -> dict[str, ArchivedFile]:
     stream.seek(0)
     header = stream.read(10)
@@ -227,7 +257,7 @@ def validate_tar(stream: BinaryIO, suffix: str) -> dict[str, ArchivedFile]:
         raise fail("tar.gz has an invalid gzip header")
     if header[3] != 0 or header[4:8] != b"\0\0\0\0":
         raise fail("tar.gz gzip header must have no optional fields and zero mtime")
-    stream.seek(0)
+    validate_single_gzip_member(stream)
     expected = expected_files(suffix)
     entries: list[ArchivedFile] = []
     with tarfile.open(fileobj=stream, mode="r|gz") as archive:
@@ -488,8 +518,9 @@ def extract_validated(entries: dict[str, ArchivedFile], destination: Path) -> No
         metadata = os.fstat(directory)
         if not stat.S_ISDIR(metadata.st_mode):
             raise fail("extraction destination must be a real directory")
-        if os.listdir(directory):
-            raise fail("extraction destination must be empty")
+        with os.scandir(directory) as children:
+            if next(children, None) is not None:
+                raise fail("extraction destination must be empty")
         for name, entry in sorted(entries.items()):
             descriptor = os.open(
                 name,

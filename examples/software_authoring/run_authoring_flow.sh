@@ -67,11 +67,6 @@ printf 'Flow: unified typed workspace authoring -> definitions -> overlay -> cov
 
 run "${AXIOGRAPH_CMD[@]}" check validate "${AXI}"
 
-run "${AXIOGRAPH_CMD[@]}" check theory "${AXI}" \
-	--closure-tier finite_fragment \
-	--json \
-	--out "${OUT_DIR}/theory_check.json"
-
 run "${AXIOGRAPH_CMD[@]}" authoring tool-specs \
 	--out "${OUT_DIR}/tool_specs.json"
 

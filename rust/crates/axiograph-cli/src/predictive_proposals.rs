@@ -28,6 +28,14 @@ use axiograph_pathdb::{Module, WellTypedModuleState};
 pub const PREDICTIVE_PROPOSAL_PROTOCOL_V1: &str = "axiograph_predictive_proposal_v1";
 pub const COMPETENCY_QUESTION_BUNDLE_VERSION_V1: &str = "competency_question_bundle_v1";
 const MAX_COMPETENCY_QUESTIONS: usize = 10_000;
+pub(crate) const MAX_PROPOSAL_ROLLOUT_HORIZON: usize = 16;
+pub(crate) const MAX_PROPOSAL_ROLLOUTS: usize = 16;
+const MAX_PROPOSAL_ROLLOUT_ATTEMPTS: usize = 64;
+const MAX_PROPOSAL_PLAN_GOALS: usize = 256;
+const MAX_PROPOSAL_PLAN_TASK_COSTS: usize = 1_024;
+const MAX_PROPOSAL_PLAN_NEW_PROPOSALS: usize = 10_000;
+const MAX_PROPOSAL_PLAN_TEXT_BYTES: usize = 1024 * 1024;
+const MAX_PROPOSAL_COST_COMPONENT: f64 = 1_000_000.0;
 
 fn now_unix_secs() -> u64 {
     SystemTime::now()
@@ -1981,18 +1989,95 @@ pub fn run_proposal_rollout_plan(
     base_input: &PredictiveProposalInputV1,
     options: &BoundedProposalPlanOptionsV1,
 ) -> Result<BoundedProposalPlanReportV1> {
-    if options.horizon_steps == 0 {
+    if !(1..=MAX_PROPOSAL_ROLLOUT_HORIZON).contains(&options.horizon_steps) {
         return Err(anyhow!(
-            "bounded proposal rollout: horizon_steps must be > 0"
+            "bounded proposal rollout: horizon_steps must be in 1..={MAX_PROPOSAL_ROLLOUT_HORIZON}"
         ));
     }
-    if options.rollouts == 0 {
-        return Err(anyhow!("bounded proposal rollout: rollouts must be > 0"));
+    if !(1..=MAX_PROPOSAL_ROLLOUTS).contains(&options.rollouts) {
+        return Err(anyhow!(
+            "bounded proposal rollout: rollouts must be in 1..={MAX_PROPOSAL_ROLLOUTS}"
+        ));
+    }
+    let attempts = options
+        .horizon_steps
+        .checked_mul(options.rollouts)
+        .ok_or_else(|| anyhow!("bounded proposal rollout: attempt count overflow"))?;
+    if attempts > MAX_PROPOSAL_ROLLOUT_ATTEMPTS {
+        return Err(anyhow!(
+            "bounded proposal rollout: horizon*rollouts exceeds {MAX_PROPOSAL_ROLLOUT_ATTEMPTS} adapter attempts"
+        ));
+    }
+    if options.max_new_proposals > MAX_PROPOSAL_PLAN_NEW_PROPOSALS {
+        return Err(anyhow!(
+            "bounded proposal rollout: max_new_proposals exceeds {MAX_PROPOSAL_PLAN_NEW_PROPOSALS}"
+        ));
+    }
+    if options.goals.len() > MAX_PROPOSAL_PLAN_GOALS {
+        return Err(anyhow!(
+            "bounded proposal rollout: goal count exceeds {MAX_PROPOSAL_PLAN_GOALS}"
+        ));
+    }
+    if options.task_costs.len() > MAX_PROPOSAL_PLAN_TASK_COSTS {
+        return Err(anyhow!(
+            "bounded proposal rollout: task-cost count exceeds {MAX_PROPOSAL_PLAN_TASK_COSTS}"
+        ));
+    }
+    if options.competency_questions.len() > MAX_COMPETENCY_QUESTIONS {
+        return Err(anyhow!(
+            "bounded proposal rollout: competency-question count exceeds {MAX_COMPETENCY_QUESTIONS}"
+        ));
+    }
+    let text_bytes = options
+        .goals
+        .iter()
+        .map(String::len)
+        .chain(options.task_costs.iter().map(|cost| {
+            cost.name
+                .len()
+                .saturating_add(cost.unit.len())
+                .saturating_add(cost.notes.as_deref().map(str::len).unwrap_or(0))
+        }))
+        .try_fold(0_usize, |total, length| total.checked_add(length))
+        .ok_or_else(|| anyhow!("bounded proposal rollout: text byte count overflow"))?;
+    if text_bytes > MAX_PROPOSAL_PLAN_TEXT_BYTES {
+        return Err(anyhow!(
+            "bounded proposal rollout: goal/task text exceeds {MAX_PROPOSAL_PLAN_TEXT_BYTES} bytes"
+        ));
+    }
+    for task in &options.task_costs {
+        for (label, value) in [("value", task.value), ("weight", task.weight)] {
+            if !value.is_finite() || !(0.0..=MAX_PROPOSAL_COST_COMPONENT).contains(&value) {
+                return Err(anyhow!(
+                    "bounded proposal rollout: task-cost {label} must be finite and in 0..={MAX_PROPOSAL_COST_COMPONENT}"
+                ));
+            }
+        }
+    }
+    for value in [
+        options.guardrail_weights.quality_error,
+        options.guardrail_weights.quality_warning,
+        options.guardrail_weights.quality_info,
+        options.guardrail_weights.axi_fact_error,
+        options.guardrail_weights.rewrite_rule_error,
+        options.guardrail_weights.context_error,
+        options.guardrail_weights.modal_error,
+    ] {
+        if !value.is_finite() || !(0.0..=MAX_PROPOSAL_COST_COMPONENT).contains(&value) {
+            return Err(anyhow!(
+                "bounded proposal rollout: guardrail weights must be finite and in 0..={MAX_PROPOSAL_COST_COMPONENT}"
+            ));
+        }
     }
 
     let mut planning_db = clone_db(db)?;
     let mut steps: Vec<BoundedProposalPlanStepV1> = Vec::new();
     let task_cost_total: f64 = options.task_costs.iter().map(|t| t.value * t.weight).sum();
+    if !task_cost_total.is_finite() {
+        return Err(anyhow!(
+            "bounded proposal rollout: aggregate task cost is not finite"
+        ));
+    }
     let plan_trace = default_trace_id();
 
     for step in 0..options.horizon_steps {
@@ -2446,7 +2531,10 @@ instance I of S:
                 b"proposal-test-materialization-snapshot",
             ])),
             accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:snap")),
-            proposals_digest: Some(ProposalDigest::new("fnv1a64:proposals")),
+            proposals_digest: Some(ProposalDigest::new(
+                axiograph_kernel::ProposalIdV2::from_canonical_fields(&[b"proposals"])
+                    .to_string(),
+            )),
             guardrail_total_cost: Some(1.25),
             guardrail_profile: Some("fast".to_string()),
             guardrail_plane: Some("both".to_string()),
@@ -2492,7 +2580,7 @@ instance I of S:
             meta.metadata
                 .get("axiograph_proposals_digest")
                 .map(String::as_str),
-            Some("fnv1a64:proposals")
+            prov.proposals_digest.as_ref().map(ProposalDigest::as_str)
         );
         assert!(meta.metadata.contains_key("axiograph_guardrail_total_cost"));
     }
@@ -2654,7 +2742,10 @@ instance I of S:
                 b"proposal-test-materialization-55",
             ])),
             accepted_snapshot_id: Some(AcceptedSnapshotId::new("accepted:21")),
-            proposals_digest: Some(ProposalDigest::new("fnv1a64:proposals-typed")),
+            proposals_digest: Some(ProposalDigest::new(
+                axiograph_kernel::ProposalIdV2::from_canonical_fields(&[b"proposals-typed"])
+                    .to_string(),
+            )),
             guardrail_total_cost: Some(1.25),
             guardrail_profile: Some("fast".to_string()),
             guardrail_plane: Some("both".to_string()),
@@ -2693,7 +2784,7 @@ instance I of S:
         );
         assert_eq!(
             lineage.proposals_digest.as_ref().map(|id| id.as_str()),
-            Some("fnv1a64:proposals-typed")
+            prov.proposals_digest.as_ref().map(ProposalDigest::as_str)
         );
         assert_eq!(lineage.guardrail_total_cost, Some(1.25));
         assert_eq!(lineage.guardrail_profile.as_deref(), Some("fast"));
@@ -2794,6 +2885,64 @@ instance I of S:
         assert!(err
             .to_string()
             .contains("requires `revision_digest_v2` anchored to the canonical `.axi` input"));
+    }
+
+    fn bounded_plan_options() -> BoundedProposalPlanOptionsV1 {
+        BoundedProposalPlanOptionsV1 {
+            horizon_steps: 1,
+            rollouts: 1,
+            max_new_proposals: 1,
+            seed: None,
+            goals: Vec::new(),
+            task_costs: Vec::new(),
+            competency_questions: Vec::new(),
+            guardrail_profile: "off".to_string(),
+            guardrail_plane: "both".to_string(),
+            guardrail_weights: GuardrailCostWeightsV1::defaults(),
+            include_guardrail: false,
+            validation_profile: "fast".to_string(),
+            validation_plane: "both".to_string(),
+        }
+    }
+
+    #[test]
+    fn proposal_rollout_rejects_denial_of_service_bounds_before_adapter_execution() {
+        let db = PathDB::new();
+        let adapter = ProposalAdapterState::default();
+        let input = PredictiveProposalInputV1 {
+            revision_digest_v2: None,
+            axi_module_text: None,
+            semantic_input: PredictiveProposalSemanticInputV1::default(),
+            notes: Vec::new(),
+        };
+
+        let mut options = bounded_plan_options();
+        options.horizon_steps = MAX_PROPOSAL_ROLLOUT_HORIZON + 1;
+        assert!(run_proposal_rollout_plan(&db, &adapter, &input, &options)
+            .unwrap_err()
+            .to_string()
+            .contains("horizon_steps"));
+
+        let mut options = bounded_plan_options();
+        options.horizon_steps = 16;
+        options.rollouts = 16;
+        assert!(run_proposal_rollout_plan(&db, &adapter, &input, &options)
+            .unwrap_err()
+            .to_string()
+            .contains("adapter attempts"));
+
+        let mut options = bounded_plan_options();
+        options.task_costs.push(ProposalTaskCostV1 {
+            name: "infinite".to_string(),
+            value: f64::INFINITY,
+            weight: 1.0,
+            unit: String::new(),
+            notes: None,
+        });
+        assert!(run_proposal_rollout_plan(&db, &adapter, &input, &options)
+            .unwrap_err()
+            .to_string()
+            .contains("must be finite"));
     }
 
     #[test]

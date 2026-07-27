@@ -81,7 +81,7 @@ pub(crate) fn compile_canonical_axi_path(
     input: &Path,
     search_roots: &[PathBuf],
 ) -> Result<CanonicalAxiPackage> {
-    let input = fs::canonicalize(input)?;
+    let input = canonical_regular_file_path(input, "canonical .axi module")?;
     let exact_bytes = crate::security::read_file_bounded(
         &input,
         crate::security::MAX_AXI_MODULE_BYTES,
@@ -111,7 +111,7 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
             "canonical .axi search roots exceed {MAX_AXI_SEARCH_ROOTS}"
         ));
     }
-    let input = fs::canonicalize(input)?;
+    let input = canonical_regular_file_path(input, "canonical .axi module")?;
     let root_source = CanonicalModuleSource::parse(exact_bytes)?;
     reject_obsolete_pathdb_snapshot_module(root_source.parsed())?;
     let root_module = root_source.parsed().module_name.clone();
@@ -178,6 +178,44 @@ pub(crate) fn compile_canonical_axi_path_with_root_bytes(
     })
 }
 
+fn canonical_regular_file_path(path: &Path, label: &str) -> Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("{label} path has no filename"))?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = fs::canonicalize(parent)
+        .with_context(|| format!("canonicalize {label} parent `{}`", parent.display()))?;
+    let parent_metadata = fs::symlink_metadata(&parent)?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+        return Err(anyhow!("{label} parent must be a real directory"));
+    }
+    let canonical_parent_candidate = parent.join(file_name);
+    let metadata = fs::symlink_metadata(&canonical_parent_candidate)
+        .with_context(|| format!("inspect {label} `{}`", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(anyhow!(
+            "{label} `{}` must be a regular file, not a symlink or special file",
+            path.display()
+        ));
+    }
+    Ok(canonical_parent_candidate)
+}
+
+fn canonical_real_directory(path: &Path, label: &str) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspect {label} `{}`", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(anyhow!(
+            "{label} `{}` must be a real directory, not a symlink or special file",
+            path.display()
+        ));
+    }
+    fs::canonicalize(path).with_context(|| format!("canonicalize {label} `{}`", path.display()))
+}
+
 fn resolve_import_source(
     root_input: &Path,
     import: &str,
@@ -198,11 +236,10 @@ fn resolve_import_source(
         allowed_roots.insert(fs::canonicalize(parent)?);
     }
     for root in search_roots {
-        allowed_roots.insert(
-            fs::canonicalize(root).with_context(|| {
-                format!("invalid canonical .axi search root `{}`", root.display())
-            })?,
-        );
+        allowed_roots.insert(canonical_real_directory(
+            root,
+            "canonical .axi search root",
+        )?);
     }
 
     let mut candidate_paths = BTreeSet::new();
@@ -245,15 +282,14 @@ fn resolve_import_source(
         if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
             continue;
         }
-        let path = fs::canonicalize(&candidate)?;
-        if !allowed_roots.iter().any(|root| path.starts_with(root)) {
+        if !allowed_roots.iter().any(|root| candidate.starts_with(root)) {
             return Err(anyhow!(
                 "canonical .axi import `{}` escapes configured search roots",
-                path.display()
+                candidate.display()
             ));
         }
         let bytes = crate::security::read_file_bounded(
-            &path,
+            &candidate,
             crate::security::MAX_AXI_MODULE_BYTES,
             "imported canonical .axi module",
         )?;
@@ -261,7 +297,7 @@ fn resolve_import_source(
             continue;
         };
         if source.parsed().module_name == import {
-            matches.push((path, source));
+            matches.push((candidate, source));
         }
     }
     match matches.len() {
@@ -423,7 +459,7 @@ schema R:
 
     #[cfg(unix)]
     #[test]
-    fn canonical_import_resolution_does_not_follow_symlink_files() {
+    fn canonical_paths_do_not_follow_root_import_or_search_root_symlinks() {
         let temp = tempfile::tempdir().expect("tempdir");
         let outside = tempfile::tempdir().expect("outside tempdir");
         let root_path = temp.path().join("Root.axi");
@@ -440,12 +476,25 @@ schema R:
             "CLI output",
         )
         .expect("write outside import");
+
+        let root_link = temp.path().join("RootLink.axi");
+        std::os::unix::fs::symlink(&root_path, &root_link).expect("create root symlink");
+        let error =
+            compile_canonical_axi_path(&root_link, &[]).expect_err("symlink root must reject");
+        assert!(error.to_string().contains("regular file"));
+
         std::os::unix::fs::symlink(&outside_base, temp.path().join("Base.axi"))
             .expect("create import symlink");
-
         let error = compile_canonical_axi_path(&root_path, &[temp.path().to_path_buf()])
             .expect_err("symlink import must reject");
         assert!(error.to_string().contains("cannot resolve imported module"));
+
+        let search_root_link = temp.path().join("search-root-link");
+        std::os::unix::fs::symlink(outside.path(), &search_root_link)
+            .expect("create search-root symlink");
+        let error = compile_canonical_axi_path(&root_path, &[search_root_link])
+            .expect_err("symlink search root must reject");
+        assert!(error.to_string().contains("search root"));
     }
 
     #[test]

@@ -88,7 +88,7 @@ pub struct OlogTypedHoleV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theory_subject_ref: Option<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
+    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV2>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,7 +170,7 @@ pub struct CheckedOlogFragmentV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub typed_holes: Vec<OlogTypedHoleV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
+    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV2>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -345,7 +345,7 @@ fn olog_bind_role_refinement_candidates(
     target_type: &str,
     candidate_boxes: &[String],
     retarget: bool,
-) -> Vec<crate::typed_refinement::RuntimeRefinementCandidateV1> {
+) -> Vec<crate::typed_refinement::RuntimeRefinementCandidateV2> {
     candidate_boxes
         .iter()
         .map(|target_box| {
@@ -362,11 +362,11 @@ fn olog_bind_role_refinement_candidates(
                     target_box: target_box.clone(),
                 }
             };
-            crate::typed_refinement::RuntimeRefinementCandidateV1::new_olog(
+            crate::typed_refinement::RuntimeRefinementCandidateV2::new_olog(
                 if retarget {
-                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::RetargetRelationRole
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV2::RetargetRelationRole
                 } else {
-                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::BindRelationRole
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV2::BindRelationRole
                 },
                 if retarget {
                     format!(
@@ -501,7 +501,7 @@ fn primary_theory_subject_ref(
 }
 
 fn enrich_olog_refinement_candidate_with_compiled_theory(
-    candidate: &mut crate::typed_refinement::RuntimeRefinementCandidateV1,
+    candidate: &mut crate::typed_refinement::RuntimeRefinementCandidateV2,
     compiled_ir: &RuntimeSchemaIndex,
     theories: &[axiograph_pathdb::kernel_ir::TheoryIr],
 ) {
@@ -2065,7 +2065,7 @@ pub fn check_olog_fragment_against_axi_text(
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OlogRefinementApplyResultV1 {
-    pub handle: crate::typed_refinement::RuntimeRefinementHandleV1,
+    pub handle: crate::typed_refinement::RuntimeRefinementHandleV2,
     pub base_fragment: OlogFragmentV1,
     pub refined_fragment: OlogFragmentV1,
     pub checked_fragment: CheckedOlogFragmentV1,
@@ -2075,7 +2075,7 @@ pub struct OlogRefinementApplyResultV1 {
 pub fn apply_runtime_refinement_handle_to_olog_fragment_against_compiled_schema_ir(
     compiled_ir: &RuntimeSchemaIndex,
     fragment: &OlogFragmentV1,
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
 ) -> anyhow::Result<OlogRefinementApplyResultV1> {
     let current = check_olog_fragment_against_compiled_schema_ir(compiled_ir, fragment.clone());
     let emitted = current
@@ -2111,7 +2111,7 @@ pub fn apply_runtime_refinement_handle_to_olog_fragment_against_compiled_semanti
     compiled_ir: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     fragment: &OlogFragmentV1,
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
 ) -> anyhow::Result<OlogRefinementApplyResultV1> {
     let current =
         check_olog_fragment_against_compiled_semantics_ir(compiled_ir, theories, fragment.clone());
@@ -2864,11 +2864,11 @@ schema S:
             .expect("expected olog refinement candidate");
         assert!(matches!(
             candidate.kind,
-            crate::typed_refinement::RuntimeRefinementCandidateKindV1::BindRelationRole
+            crate::typed_refinement::RuntimeRefinementCandidateKindV2::BindRelationRole
         ));
         assert!(matches!(
             candidate.handle.domain(),
-            crate::typed_refinement::RuntimeRefinementDomainV1::OlogAuthoring
+            crate::typed_refinement::RuntimeRefinementDomainV2::OlogAuthoring
         ));
         assert_eq!(candidate.target_box.as_deref(), Some("team"));
     }

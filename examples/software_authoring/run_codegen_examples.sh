@@ -104,10 +104,6 @@ run_example() {
 	printf 'Flow: unified typed workspace authoring -> definitions -> overlay -> coverage -> behavior -> codegen -> continuous gates\n'
 
 	run "${AXIOGRAPH_CMD[@]}" check validate "${axi}"
-	run "${AXIOGRAPH_CMD[@]}" check theory "${axi}" \
-		--closure-tier finite_fragment \
-		--json \
-		--out "${out_dir}/theory_check.json"
 	run "${AXIOGRAPH_CMD[@]}" authoring workspace \
 		--workspace "${REPO_ROOT}" \
 		--request "${authoring_request}" \

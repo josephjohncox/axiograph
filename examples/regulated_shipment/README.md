@@ -49,6 +49,8 @@ The output includes:
 - unified authoring reports, including a finite compiled-payload evolution diff;
 - `axi_well_typed_v1`, `axi_constraints_ok_v1`, and anchored
   `category_kernel_v3` certificates plus actual `Axiograph.VerifyMain` outputs;
+- baseline and candidate `finite_query_verification_report_v1` files containing
+  the exact `query_result_v4` certificate and accepted answer-bound V2 receipt;
 - overlay, behavior-case, and software-coverage reports;
 - a generated Rust behavior test that is compiled and executed;
 - TypeDB and PathDB projection manifests/artifacts;
@@ -59,8 +61,10 @@ The output includes:
 The gate also requires both adversarial `.axi` modules to fail, requires the
 shared Rust/Lean category formation corpus to agree, requires Lean's finite
 presentation/explanation tests to accept the valid shipment model, requires the
-exported category certificate to reject presentation, congruence, and saturation
-tampering, and requires `query_result_v4` to reject a missing-row answer.
+exported category certificate to reject presentation, congruence, signed
+groupoid-normalization-trace, and saturation tampering, and requires
+`query_result_v4` to reject a missing-row answer. The AxiStore scenario rejects
+a placeholder query-receipt identity before protected main can advance.
 
 ## What Is Actually Proved
 
@@ -68,13 +72,19 @@ The strongest trusted result is the `query_result_v4` receipt emitted by the
 `VerifyMain` import closure. For this fixture, it proves that the one returned
 certificate (`CoA_RX_42`) is the exact answer to the declared finite bounded
 path query over the accepted candidate bytes. It checks both soundness and
-missing/extra-row completeness for that denotation.
+missing/extra-row completeness for that denotation. The workflow parses the
+strict `CertificateV3` payload, stages the independently approved checker bytes
+whose SHA-256 was supplied by the operator, reruns that checker with a fresh
+nonce, and checks the returned revision/query/answer/certificate identities
+before using the immutable evidence digest as the reviewed-candidate and merge
+gate.
 
 The same `VerifyMain` closure checks an independent second claim. Rust emits an
 exact-byte-anchored `category_kernel_v3` certificate; Lean reconstructs the
 candidate schema as 23 category objects and 43 arrows, checks identities, the
-parallel path equation and contextual congruence, then replays all 70 reachable
-endpoint explanations and checks exact finite closure.
+parallel path equation and contextual congruence, replays 86 exact formal
+inverse-law normalization traces, then replays all 70 reachable endpoint
+explanations and checks exact finite closure.
 
 The Lean finite-theory executable also checks the broader matching finite
 presentation:
@@ -90,11 +100,17 @@ presentation:
   lifecycle.
 
 Only anchored finite category formation, the forward schema equation and its
-contextual congruence, and generator saturation dispatch through `VerifyMain`.
+contextual congruence, formal inverse-law normalization, and generator
+saturation dispatch through `VerifyMain`.
 Reviewer refinement, context transport, Rust's relation-span groupoid equation,
 the complete `InstanceModelIr`, AxiStore merge, SQLite authentication, restart,
 PathDB hydration, evolution diffing, projection, and code generation remain
-theorem support or Rust operational evidence as marked.
+theorem support or Rust operational evidence as marked. The shared runtime
+finite-theory receipt reports exact coverage for the candidate: 23 identities,
+70 saturation explanations, finite refinement predicates, dependent role and
+context witnesses, and identity scope transports. Its non-identity transport
+certification count is zero, and the receipt is reproduced by AxiStore during
+merge validation; it is not a Lean proof.
 
 ## Non-Claims
 
@@ -116,6 +132,7 @@ This workflow does **not** prove:
 | `RegulatedShipmentBaseline.axi` | Accepted baseline used by evolution and merge |
 | `RegulatedShipment.axi` | Canonical candidate and query anchor |
 | `regulated_shipment.cq` | Three finite competency questions |
+| `release_certificate_query.json` | Exact bounded query used by the trusted merge gate |
 | `authoring_baseline_request.json` | Baseline query/CQ report request |
 | `authoring_request.json` | Candidate query/CQ/evolution report request |
 | `regulated_shipment_behavior_case.json` | Dispatch behavior case |

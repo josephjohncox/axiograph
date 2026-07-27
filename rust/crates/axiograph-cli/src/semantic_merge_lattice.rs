@@ -220,7 +220,7 @@ pub struct SemanticMergePlanV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<SemanticMergeConflictV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub resolver_steps: Vec<crate::typed_refinement::RuntimeRefinementHandleV1>,
+    pub resolver_steps: Vec<crate::typed_refinement::RuntimeRefinementHandleV2>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blockers: Vec<SemanticMergeBlockerV1>,
     pub can_materialize: bool,
@@ -279,7 +279,7 @@ pub struct SemanticRebasePlanV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_transports: Vec<SemanticTransportRefV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub resolver_steps: Vec<crate::typed_refinement::RuntimeRefinementHandleV1>,
+    pub resolver_steps: Vec<crate::typed_refinement::RuntimeRefinementHandleV2>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blockers: Vec<SemanticMergeBlockerV1>,
     pub can_materialize: bool,
@@ -311,7 +311,7 @@ pub struct SemanticResolverStepsReportV1 {
     pub version: String,
     pub plan_id: AxiDigest,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub resolver_steps: Vec<crate::typed_refinement::RuntimeRefinementHandleV1>,
+    pub resolver_steps: Vec<crate::typed_refinement::RuntimeRefinementHandleV2>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub residual_obligations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -614,7 +614,7 @@ pub fn semantic_merge_plan_from_dry_run(
     let resolver_steps = conflicts
         .iter()
         .map(|conflict| {
-            crate::typed_refinement::RuntimeRefinementHandleV1::new_reconciliation(
+            crate::typed_refinement::RuntimeRefinementHandleV2::new_reconciliation(
                 crate::typed_refinement::ReconciliationRefinementOpV1::ResolveConflictByDecision {
                     reconciliation_id: dry_run
                         .reconciliation
@@ -970,7 +970,7 @@ fn lean_ref_json(kind: &str, id: &str) -> serde_json::Value {
 }
 
 fn lean_resolver_step_json(
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
 ) -> serde_json::Value {
     serde_json::json!({
         "handle_id": handle.id,
@@ -1457,7 +1457,7 @@ fn runtime_theory_blockers(
 fn semantic_merge_blockers_from_preview(
     preview: &crate::evolution_preview::EvolutionPreviewV1,
     conflicts: &[SemanticMergeConflictV1],
-    resolver_steps: &[crate::typed_refinement::RuntimeRefinementHandleV1],
+    resolver_steps: &[crate::typed_refinement::RuntimeRefinementHandleV2],
 ) -> Vec<SemanticMergeBlockerV1> {
     let mut blockers = Vec::new();
     if !preview.ok {
@@ -2043,12 +2043,19 @@ mod tests {
             blocked_obligations: 1,
             excluded_by_evidence: 0,
             blocking_errors: 1,
-            admissibility_scopes: vec!["finite_fragment".to_string()],
+            scope: crate::runtime_theory_check::RuntimeTheoryScopeSummaryV1 {
+                fragments: vec!["finite_fragment".to_string()],
+                ..Default::default()
+            },
             admissibility_trace: Default::default(),
             transport_summary: Default::default(),
-            completeness_claim: "not_claimed_for_all_obligations".to_string(),
-            ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
             residual_obligation_ids: vec!["theory:refund:coverage".to_string()],
+            non_claims: vec![
+                crate::runtime_theory_check::RuntimeTheoryNonClaimSummaryV1 {
+                    code: "closure_engine_not_implemented".to_string(),
+                    message: "test runtime report is admissibility-only".to_string(),
+                },
+            ],
             notes: Vec::new(),
         }
     }

@@ -314,10 +314,11 @@ fn semantic_merge_example_keeps_ci_safe_contract() {
         theory["version"],
         serde_json::json!("runtime_theory_check_module_report_v1")
     );
-    assert_eq!(
-        theory["summary"]["ontology_closure_claim"],
-        serde_json::json!("not_claimed_runtime_admissibility_only")
-    );
+    assert!(theory["summary"]["non_claims"]
+        .as_array()
+        .is_some_and(|claims| claims.iter().any(|claim| {
+            claim["code"] == serde_json::json!("closure_engine_not_implemented")
+        })));
     assert!(theory["reports"]
         .as_array()
         .expect("runtime theory reports array")
@@ -338,9 +339,9 @@ fn semantic_merge_example_keeps_ci_safe_contract() {
         }));
     assert_eq!(theory["summary"]["blocking_errors"], serde_json::json!(0));
     assert!(
-        theory["summary"]["admissibility_scopes"]
+        theory["summary"]["scope"]["fragments"]
             .as_array()
-            .expect("admissibility_scopes array")
+            .expect("runtime-theory scope fragments array")
             .iter()
             .any(|tier| tier == "finite_fragment"),
         "semantic-merge base should keep the finite runtime-theory check contract"
@@ -807,7 +808,6 @@ fn software_authoring_script_runs_authoring_flow() {
     );
 
     for file in [
-        "theory_check.json",
         "overlay_validation.json",
         "coverage_query.json",
         "behavior_case_report.json",
@@ -823,6 +823,21 @@ fn software_authoring_script_runs_authoring_flow() {
             out_dir.join(file).display()
         );
     }
+
+    let behavior_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(out_dir.join("behavior_case_report.json"))
+            .expect("read scripted behavior report"),
+    )
+    .expect("parse scripted behavior report");
+    assert_eq!(
+        behavior_json["runtime_theory_check"]["version"],
+        serde_json::json!("runtime_theory_check_summary_v1")
+    );
+    assert!(behavior_json["runtime_theory_check"]["scope"]["fragments"]
+        .as_array()
+        .is_some_and(|fragments| fragments
+            .iter()
+            .any(|fragment| fragment == "finite_fragment")));
 
     let coverage_json: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(out_dir.join("software_coverage.json"))
@@ -886,7 +901,6 @@ fn software_authoring_codegen_suite_runs_new_examples() {
         let example_out = out_root.join(example_id);
         for file in [
             "authoring_workspace_report.json",
-            "theory_check.json",
             "overlay_validation.json",
             "coverage_query.json",
             "behavior_case_report.json",

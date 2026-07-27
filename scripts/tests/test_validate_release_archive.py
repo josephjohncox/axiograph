@@ -231,6 +231,29 @@ class ReleaseArchiveValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ArchiveValidationError, "host does not match"):
                 validate_archive(substituted)
 
+    def test_rejects_concatenated_gzip_and_nonempty_extraction_destination(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            valid = build_valid_bundle(root, "x86_64-unknown-linux-gnu", "valid")
+            concatenated = root / "concatenated" / valid.name
+            concatenated.parent.mkdir()
+            concatenated.write_bytes(
+                valid.read_bytes() + gzip.compress(b"hidden second member", mtime=0)
+            )
+            with self.assertRaisesRegex(
+                ArchiveValidationError, "exactly one gzip member"
+            ):
+                validate_archive(concatenated)
+
+            destination = root / "nonempty"
+            destination.mkdir()
+            (destination / "sentinel").write_bytes(b"do not replace")
+            with self.assertRaisesRegex(ArchiveValidationError, "must be empty"):
+                validate_archive(valid, destination)
+            self.assertEqual((destination / "sentinel").read_bytes(), b"do not replace")
+
     def test_rejects_noncanonical_gzip_zip_encoding_wrong_mode_and_truncation(
         self,
     ) -> None:

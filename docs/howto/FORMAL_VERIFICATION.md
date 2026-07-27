@@ -64,6 +64,8 @@ The shipped verifier path is centered on:
 - `lean/Axiograph/VerifyMain.lean`
 - `lean/Axiograph/Certificate/Format.lean`
 - `lean/Axiograph/Certificate/Check.lean`
+- `lean/Axiograph/Certificate/Invariants.lean`
+- `lean/Axiograph/Certificate/PathRewriteSoundness.lean`
 - `lean/Axiograph/Theory/Finite.lean`
 - `lean/Axiograph/HoTT/FreeGroupoid.lean`
 - `lean/Axiograph/Axi/AxiV1.lean`
@@ -80,10 +82,15 @@ Main checked families:
 - `reachability_v3`: low-level canonical path witness over stable `axi_fact_id`.
 - `category_kernel_v3`: exact-byte-anchored category reconstruction with typed
   objects, relation objects, ordered projections, identities, composable
-  arrows, parallel equations, contextual congruence, and complete bounded
+  arrows, parallel equations, contextual congruence, exact signed cancellation
+  traces for both formal inverse laws of every generator, and complete bounded
   generator-reachability saturation.
 - `rewrite_derivation_v3`: `.axi`-anchored rewrite trace.
-- `normalize_path_v2` and `path_equiv_v2`: supported groupoid path fragments.
+- `normalize_path_v2` and `path_equiv_v2`: endpoint-indexed groupoid path
+  fragments with mandatory traces; imported Lean theorems show that accepted
+  replay preserves denotation after endpoint retyping. Fixed-point confidence
+  is a separate non-associative fold and is not transported through path
+  equality.
 - `resolution_v2`: fixed-point reconciliation decision.
 - `delta_f_v1`: finite array-level transport recompute parity, not a general
   functorial pullback theorem.
@@ -93,8 +100,12 @@ ordered role projections, indexed paths/free-groupoid laws, dependent
 role/refinement/context/transport witnesses, checked typed-hole lifecycles, and
 explanation-certified finite generator reachability. `VerifyMain` imports it
 for `category_kernel_v3`. The dispatched certificate checks exact presentation
-reconstruction, equation congruence, and bounded generator saturation; broader
-interpretation, refinement, and transport definitions remain theorem support.
+reconstruction, endpoint-aware equation congruence, formal inverse-law
+normalization traces, and bounded generator saturation; broader interpretation,
+refinement, and transport definitions remain theorem support. The V3 wire
+checker is decision procedure plus replay: no theorem currently retypes its
+index words as `GroupoidPath` or derives denotation preservation from
+acceptance.
 
 Semantic VCS has separate external checkers:
 
@@ -149,10 +160,17 @@ Run only the anchored category-kernel certificate slice:
 make verify-lean-e2e-category-kernel-v3
 ```
 
-The target checks the shared positive/rejection formation corpus, writes the
+That target checks the shared positive/rejection formation corpus, writes the
 regulated-shipment certificate under `build/category-kernel/`, and succeeds
 only if Lean accepts the exact presentation and rejects presentation,
-congruence, and saturation tampering.
+congruence, groupoid-normalization-trace, and saturation tampering.
+
+Run the generic endpoint-indexed path normalization/equivalence parity and
+rejection slice:
+
+```bash
+make verify-lean-indexed-path-theory
+```
 
 Semantic VCS finite merge/rebase conformance:
 
@@ -219,7 +237,8 @@ make verify-lean-cert AXI=examples/ontology/OntologyRewrites.axi CERT=build/axi_
 
 Typed query witness. Prefer `.cq`/question-first authoring for humans. The
 direct emission-only query command was removed; exercise the bound V4 checker
-through the semantic MCP route or the focused Rust/Lean gate:
+through the semantic MCP route, `axiograph check finite-query`, or the focused
+Rust/Lean gate:
 
 ```bash
 axiograph discover competency-questions examples/manufacturing/SupplyChainHoTT.axi \
@@ -250,16 +269,20 @@ same thing as proving that every runtime report is certified.
 It classifies typed obligations, evidence scope, transport status, blockers, and
 residuals. It does not saturate equations/rewrites or claim a theory fixpoint,
 completeness, or ontology closure. Legacy closure/claim fields were removed;
-`admissibility_scan` carries the `closure_engine_not_implemented` residual.
+`admissibility_scan` records unresolved judgments; the structured
+`closure_engine_not_implemented` entry is a non-claim, not a residual.
 
 `Axiograph.Theory.Finite` does perform finite saturation, but only for generator
-reachability and only under its explicit object bound. Its explanation
-certificate is replayable proof data. It is theorem support, not a shipped
-`VerifyMain` certificate family.
+reachability and only under its explicit object and generator bounds. Its
+explanation certificate is replayable proof data. The `category_kernel_v3`
+projection of that data is dispatched by `VerifyMain`; the broader finite
+instance, refinement, context, and transport definitions remain theorem support.
 
-Runtime reports remain promotion-sensitive engineering artifacts. A product
-proof claim requires an anchored payload dispatched through the supported Lean
-verifier boundary.
+Runtime reports remain promotion-sensitive engineering artifacts. Their module
+summary uses typed scope, coverage counts, transport classifications, residual
+ids, and structured non-claims; it does not expose synthetic completeness or
+ontology-closure claim fields. A product proof claim requires an anchored
+payload dispatched through the supported Lean verifier boundary.
 
 ## Rust-Side Verification
 

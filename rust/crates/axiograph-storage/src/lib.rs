@@ -431,82 +431,95 @@ impl UnifiedStorage {
     /// Load a finite set of bounded regular `.axi` files from one directory.
     fn load_axi_files(dir: &PathBuf) -> anyhow::Result<AxiSchemaIndex> {
         const MAX_AXI_FILES: usize = 10_000;
+        const MAX_AXI_SCAN_ENTRIES: usize = 100_000;
         const MAX_AXI_FILE_BYTES: usize = 4 * 1024 * 1024;
         const MAX_AXI_TOTAL_BYTES: usize = 64 * 1024 * 1024;
         let mut entity_types: BTreeSet<String> = BTreeSet::new();
         let mut relation_types: BTreeSet<String> = BTreeSet::new();
         let mut constraints: BTreeSet<String> = BTreeSet::new();
         let mut files = 0_usize;
+        let mut entries_scanned = 0_usize;
         let mut total_bytes = 0_usize;
 
-        if dir.exists() {
-            let directory_metadata = std::fs::symlink_metadata(dir)?;
-            if directory_metadata.file_type().is_symlink()
-                || !directory_metadata.file_type().is_dir()
-            {
-                anyhow::bail!(".axi input root must be a real directory, not a symlink");
+        match std::fs::symlink_metadata(dir) {
+            Ok(directory_metadata) => {
+                if directory_metadata.file_type().is_symlink()
+                    || !directory_metadata.file_type().is_dir()
+                {
+                    anyhow::bail!(".axi input root must be a real directory, not a symlink");
+                }
             }
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().is_none_or(|extension| extension != "axi") {
-                    continue;
-                }
-                files = files.saturating_add(1);
-                if files > MAX_AXI_FILES {
-                    anyhow::bail!(".axi input directory exceeds {MAX_AXI_FILES} files");
-                }
-                let metadata = std::fs::symlink_metadata(&path)?;
-                if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-                    anyhow::bail!(".axi input must be a regular file, not a symlink");
-                }
-                let length = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
-                if length > MAX_AXI_FILE_BYTES {
-                    anyhow::bail!(".axi input exceeds {MAX_AXI_FILE_BYTES} bytes");
-                }
-                let bytes = axiograph_security::read_file_bounded(
-                    &path,
-                    MAX_AXI_FILE_BYTES,
-                    ".axi storage input",
-                )?;
-                total_bytes = total_bytes
-                    .checked_add(bytes.len())
-                    .ok_or_else(|| anyhow::anyhow!(".axi input byte count overflow"))?;
-                if total_bytes > MAX_AXI_TOTAL_BYTES {
-                    anyhow::bail!(".axi input closure exceeds {MAX_AXI_TOTAL_BYTES} bytes");
-                }
-                let contents = String::from_utf8(bytes)?;
-                match dsl::axi_v1::parse_axi_v1(&contents) {
-                    Ok(module) => {
-                        for schema in &module.schemas {
-                            for obj in &schema.objects {
-                                entity_types.insert(obj.clone());
-                            }
-                            for rel in &schema.relations {
-                                relation_types.insert(rel.name.clone());
-                            }
-                            for subtype in &schema.subtypes {
-                                constraints
-                                    .insert(format!("subtype {} <: {}", subtype.sub, subtype.sup));
-                            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(AxiSchemaIndex::default());
+            }
+            Err(error) => return Err(error.into()),
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            entries_scanned = entries_scanned.saturating_add(1);
+            if entries_scanned > MAX_AXI_SCAN_ENTRIES {
+                anyhow::bail!(
+                    ".axi input directory exceeds {MAX_AXI_SCAN_ENTRIES} filesystem entries"
+                );
+            }
+            let path = entry.path();
+            if path.extension().is_none_or(|extension| extension != "axi") {
+                continue;
+            }
+            files = files.saturating_add(1);
+            if files > MAX_AXI_FILES {
+                anyhow::bail!(".axi input directory exceeds {MAX_AXI_FILES} files");
+            }
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                anyhow::bail!(".axi input must be a regular file, not a symlink");
+            }
+            let length = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+            if length > MAX_AXI_FILE_BYTES {
+                anyhow::bail!(".axi input exceeds {MAX_AXI_FILE_BYTES} bytes");
+            }
+            let bytes = axiograph_security::read_file_bounded(
+                &path,
+                MAX_AXI_FILE_BYTES,
+                ".axi storage input",
+            )?;
+            total_bytes = total_bytes
+                .checked_add(bytes.len())
+                .ok_or_else(|| anyhow::anyhow!(".axi input byte count overflow"))?;
+            if total_bytes > MAX_AXI_TOTAL_BYTES {
+                anyhow::bail!(".axi input closure exceeds {MAX_AXI_TOTAL_BYTES} bytes");
+            }
+            let contents = String::from_utf8(bytes)?;
+            match dsl::axi_v1::parse_axi_v1(&contents) {
+                Ok(module) => {
+                    for schema in &module.schemas {
+                        for obj in &schema.objects {
+                            entity_types.insert(obj.clone());
                         }
+                        for rel in &schema.relations {
+                            relation_types.insert(rel.name.clone());
+                        }
+                        for subtype in &schema.subtypes {
+                            constraints
+                                .insert(format!("subtype {} <: {}", subtype.sub, subtype.sup));
+                        }
+                    }
 
-                        for theory in &module.theories {
-                            for constraint in &theory.constraints {
-                                constraints.insert(Self::schema_constraint_display(constraint));
-                            }
-                            for eq in &theory.equations {
-                                constraints.insert(format!("equation {}", eq.name));
-                            }
+                    for theory in &module.theories {
+                        for constraint in &theory.constraints {
+                            constraints.insert(Self::schema_constraint_display(constraint));
+                        }
+                        for eq in &theory.equations {
+                            constraints.insert(format!("equation {}", eq.name));
                         }
                     }
-                    Err(err) => {
-                        tracing::warn!(
-                            path = %path.display(),
-                            error = %err,
-                            "failed to parse .axi while building schema index"
-                        );
-                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "failed to parse .axi while building schema index"
+                    );
                 }
             }
         }

@@ -10,6 +10,7 @@ candidate="$root/examples/regulated_shipment/RegulatedShipment.axi"
 cq="$root/examples/regulated_shipment/regulated_shipment.cq"
 overlay="$root/examples/regulated_shipment/regulated_shipment_tooling_overlay.json"
 behavior="$root/examples/regulated_shipment/regulated_shipment_behavior_case.json"
+query="$root/examples/regulated_shipment/release_certificate_query.json"
 
 mkdir -p "$out/certificates" "$out/generated"
 
@@ -26,6 +27,7 @@ elif [ ! -x "$verifier" ]; then
 	echo "error: AXIOGRAPH_VERIFY_BIN is not executable: $verifier" >&2
 	exit 1
 fi
+verifier_sha256="$(shasum -a 256 "$verifier" | awk '{print $1}')"
 
 "$axiograph" check validate "$baseline"
 "$axiograph" check validate "$candidate"
@@ -60,6 +62,12 @@ for phase in baseline candidate; do
 		"$verifier" "$axi" "$out/certificates/${phase}_constraints.json"
 		"$verifier" "$axi" "$out/certificates/${phase}_category_kernel.json"
 	} >"$out/certificates/${phase}_verification_receipt.txt"
+	"$axiograph" check finite-query "$axi" \
+		--query "$query" \
+		--verify-bin "$verifier" \
+		--verify-sha256 "$verifier_sha256" \
+		--verify-build-id axiograph-verify-main-v3 \
+		--out "$out/certificates/${phase}_query_verification.json"
 done
 
 for tamper in saturation presentation congruence; do
@@ -110,6 +118,12 @@ cargo run --quiet --manifest-path "$root/rust/Cargo.toml" \
 	--candidate-theory-report "$out/candidate_theory.json" \
 	--baseline-verification-receipt "$out/certificates/baseline_verification_receipt.txt" \
 	--candidate-verification-receipt "$out/certificates/candidate_verification_receipt.txt" \
+	--baseline-query-verification "$out/certificates/baseline_query_verification.json" \
+	--candidate-query-verification "$out/certificates/candidate_query_verification.json" \
+	--verify-bin "$verifier" \
+	--verify-sha256 "$verifier_sha256" \
+	--verify-build-id axiograph-verify-main-v3 \
+	--verify-timeout-secs 30 \
 	--store-dir "$out/store" \
 	--out "$out/usefulness_report.json"
 

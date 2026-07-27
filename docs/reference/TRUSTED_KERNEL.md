@@ -81,6 +81,8 @@ Today that means the code path centered on:
 - `lean/Axiograph/VerifyMain.lean`
 - `lean/Axiograph/Certificate/Format.lean`
 - `lean/Axiograph/Certificate/Check.lean`
+- `lean/Axiograph/Certificate/Invariants.lean`
+- `lean/Axiograph/Certificate/PathRewriteSoundness.lean`
 - `lean/Axiograph/Theory/Finite.lean`
 - `lean/Axiograph/HoTT/FreeGroupoid.lean`
 - `lean/Axiograph/Prob/Verified.lean`
@@ -111,10 +113,12 @@ They cannot mint accepted handles or redefine schema meaning. A successful Rust
 finite-model check is not a Lean certificate, a completeness claim, or a global
 ontology-closure claim. The compiler exports one anchored
 `category_kernel_v3` certificate containing its finite presentation,
-contextual equation-congruence witnesses, and generator-reachability
+contextual equation-congruence witnesses, both formal inverse-law
+normalization traces for every generator, and generator-reachability
 explanations. Lean reconstructs the presentation from the exact `.axi` schema,
 requires exact equality with the compiler projection, and replays the witnesses;
-it does not trust the serialized Rust IR.
+it does not trust the serialized Rust IR. Formal inverses are proof syntax, not
+claims that a non-reversible ontology relation can be traversed backward.
 
 ## Merge Trust Boundary
 
@@ -221,9 +225,14 @@ reviewer refinement, checked hole lifecycle, saturation, and explanation replay.
 regulated-shipment category certificate; `VerifyMain` reconstructs its 23
 objects, 43 arrows, identities, and one parallel equation, replays contextual
 congruence and all 70 reachable endpoint explanations, and rejects presentation,
-congruence, and saturation tampering. This trusted claim does not include Rust's
-complete `InstanceModelIr`, relation-span equation lowering, merge plan, or
-backend projection. Those remain operational evidence.
+congruence, and saturation tampering. The workflow also runs `axiograph check
+finite-query` for baseline and candidate. Its report carries an accepted V2
+verifier receipt bound to the exact revision, prepared query, answer, and
+certificate. That parsed report is the trust-gate object cited by the reviewed
+candidate and merged protected-main commit. Placeholder or cross-answer receipt
+identities reject before AxiStore is initialized. This trusted claim does not
+include Rust's complete `InstanceModelIr`, relation-span equation lowering,
+merge plan, or backend projection. Those remain operational evidence.
 
 Release packaging does not enlarge the kernel. `make release-gate` is the
 single binary/container publication decision, but archive hashes, executable
@@ -243,7 +252,9 @@ These modules participate directly in shipped certificate/module verification.
 | `Axiograph.VerifyMain` | CLI/runtime verifier entrypoint | runtime kernel |
 | `Axiograph.Certificate.Format` | certificate syntax and versioned shapes | runtime kernel |
 | `Axiograph.Certificate.Check` | certificate replay / checking | runtime kernel |
-| `Axiograph.Theory.Finite` | anchored finite category reconstruction, equation congruence, and explanation-certified generator saturation | runtime kernel for `category_kernel_v3`; broader definitions are theorem support |
+| `Axiograph.Certificate.Invariants` | acceptance-to-semantics theorems for path normalization, rewrite replay, path equivalence, and resolution | runtime-kernel theorem closure |
+| `Axiograph.Certificate.PathRewriteSoundness` | endpoint retyping and free-groupoid denotation preservation for every builtin path rewrite | runtime-kernel theorem closure through `Certificate.Invariants` |
+| `Axiograph.Theory.Finite` | anchored finite category reconstruction, equation congruence, exact formal inverse-law normalization traces, and explanation-certified generator saturation | runtime kernel for `category_kernel_v3`; broader definitions are theorem support |
 | `Axiograph.HoTT.FreeGroupoid` | constructive free-groupoid denotation used by the finite module | runtime-kernel import closure; no full HoTT claim |
 | `Axiograph.Prob.Verified` | bounded fixed-point probability arithmetic | runtime kernel |
 | `Axiograph.Axi.AxiV1` | canonical `.axi` parser for trusted gates | runtime kernel |
@@ -259,8 +270,7 @@ they are distinct from the runtime kernel boundary unless imported by
 
 | Module | Role | Trust class |
 | --- | --- | --- |
-| `Axiograph.Certificate.PathRewriteSoundness` | rewrite preservation via typed retyping | theorem support |
-| `Axiograph.HoTT.PathCongruence` | congruence support for path equalities | theorem support |
+| `Axiograph.HoTT.PathCongruence` | additional congruence support for path equalities | theorem support |
 | `Axiograph.SemanticVCS` | finite semantic-slice join/meet, merge/rebase materialization, and preservation model for the external conformance slice | theorem support / external conformance |
 | `Axiograph.SemanticVCS.Json` | JSON contract for Lean-checked merge/rebase plan exports consumed by `CheckMain` | theorem support / external conformance |
 | `Axiograph.SemanticVCS.CheckMain` | executable checker for reduced finite merge/rebase payloads | conformance checker / not `VerifyMain` trusted boundary |
@@ -289,7 +299,7 @@ the trusted kernel unless they reduce to an accepted anchor and a checked
 certificate/gate:
 
 - Canonical schema/category/theory IR: `docs/reference/KERNEL_IR.md`.
-- Runtime theory checker reports and closure tiers:
+- Runtime theory checker reports and finite admissibility scopes:
   `docs/reference/RUNTIME_THEORY_CHECKER.md`.
 - Software-authoring/codegen and continuous coverage reports:
   `docs/reference/SOFTWARE_AUTHORING_TOOLS.md`.
@@ -382,10 +392,13 @@ over compiled IR, not a new kernel claim.
 across CLI, LSP, MCP, and HTTP. Its canonical-compilation status, typed holes,
 repairs, finite CQ results, prepared-query explanation, payload-fingerprint
 diff, olog path checks, runtime-theory report, and promotion review remain
-outside the trusted checker. `candidate_reviewable=true` is a finite operational
-status. `protected_main_eligible` remains false until a separate VerifyMain
-receipt and complete `AxiStore::PromotionPlan` exist. No transport adapter can
-turn the report into a trusted receipt.
+outside the trusted checker. Its embedded finite-theory receipt exposes typed
+scope, exact coverage, residuals, and non-claims for category formation,
+refinements, saturation explanations, contexts, and identity transports.
+`candidate_reviewable=true` is a finite operational status; review-only theory
+obligations still block promotion. `protected_main_eligible` remains false until
+a separate VerifyMain receipt and complete `AxiStore::PromotionPlan` exist. No
+transport adapter can turn the report into a trusted receipt.
 
 The finite payload diff establishes equality or change of encoded compiled IR
 payloads under stable typed ids. It does not establish categorical equivalence,
@@ -426,10 +439,17 @@ Each certificate kind should be classified using one of these statuses:
 `category_kernel_v3` is dispatched by `VerifyMain` under an exact-byte accepted
 `.axi` anchor. That dispatch covers exact presentation reconstruction, ordered
 projections and identities, typed composition, parallel equations, contextual
-congruence, and complete bounded generator reachability. The broader
+congruence, both endpoint-indexed inverse-law normalization traces for every
+generator, and complete bounded generator reachability. The broader
 interpretation, refinement, context, hole, and transport definitions in
 `Axiograph.Theory.Finite` remain theorem support unless a certificate family
 invokes them.
+
+The semantic laws proved for dependent `GroupoidPath` values do not yet lift
+`category_kernel_v3` acceptance into a denotational proposition. The wire
+checker uses separate index-based path data. Until a wire-to-`GroupoidPath`
+retyping theorem and cancellation-preservation theorem are imported through the
+acceptance path, this family is replay-only.
 
 Current target classification:
 
@@ -438,11 +458,11 @@ Current target classification:
 | `axi_well_typed_v1` | decision-procedure | conservative `.axi` module gate |
 | `axi_constraints_ok_v1` | decision-procedure | conservative certifiable subset only |
 | `query_result_v4` | decision-procedure + witness replay / query-and-answer-bound | exact completeness for the declared bounded finite UCQ/RPQ denotation under accepted revision, prepared-query, and answer digests; no ontology-closure claim |
-| `category_kernel_v3` | decision-procedure + replay / finite category presentation | reconstructs one bounded schema presentation from exact `.axi`, checks identities, typed composition, equations and contextual congruence, and requires exact generator-reachability closure; no fact closure or arbitrary rewrite claim |
+| `category_kernel_v3` | decision-procedure + replay-only / finite category presentation | reconstructs one bounded schema presentation from exact `.axi`, checks identities, typed composition, equations and contextual congruence, syntactically replays both formal inverse cancellations for every generator, and requires exact generator-reachability closure; the wire paths are not retyped as `GroupoidPath`, so acceptance currently has no denotation-preservation theorem and makes no data-level reversibility, fact-closure, or rewrite-closure claim |
 | `reachability_v3` | replay-only | canonical `.axi`-anchored reachability with stable fact ids |
 | `rewrite_derivation_v3` | replay-only moving toward theorem-backed | should consume checked rewrite rules |
-| `normalize_path_v2` | replay-only | valid narrow kernel slice |
-| `path_equiv_v2` | replay-only | narrow typed path equality slice |
+| `normalize_path_v2` | theorem-backed | mandatory endpoint-preserving rewrite trace; for the endpoint-retyped input, accepted replay preserves free-groupoid denotation |
+| `path_equiv_v2` | theorem-backed | mandatory traces to one normal form; for endpoint-retyped inputs, accepted replay implies equal free-groupoid denotation |
 | `resolution_v2` | recomputed-witness | finite fixed-point reconciliation decision |
 | `delta_f_v1` | recomputed-witness | narrow finite transport check, not full migration semantics |
 

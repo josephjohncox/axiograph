@@ -158,8 +158,11 @@ enum CheckCommands {
         input: PathBuf,
     },
 
-    /// Check compiled theory obligations, closure tier, and runtime completeness claims.
+    /// Classify compiled theory obligations under an explicit runtime scope.
     Theory(CheckTheoryArgs),
+
+    /// Execute and Lean-verify one exact finite query against canonical `.axi` bytes.
+    FiniteQuery(CheckFiniteQueryArgs),
 
     /// Check behavior-case software coverage against a typed tooling overlay.
     SoftwareCoverage(CheckSoftwareCoverageArgs),
@@ -268,6 +271,36 @@ struct CheckTheoryArgs {
     json: bool,
 
     /// Output JSON path.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct CheckFiniteQueryArgs {
+    /// Exact canonical `.axi` module and finite instance used as the query anchor.
+    input: PathBuf,
+
+    /// JSON-encoded `query_ir_v1` request.
+    #[arg(long)]
+    query: PathBuf,
+
+    /// Approved Lean verifier executable.
+    #[arg(long)]
+    verify_bin: PathBuf,
+
+    /// SHA-256 of the approved verifier executable.
+    #[arg(long)]
+    verify_sha256: String,
+
+    /// Approved stdio V2 checker build id.
+    #[arg(long, default_value = "axiograph-verify-main-v3")]
+    verify_build_id: String,
+
+    /// Verifier timeout in seconds.
+    #[arg(long, default_value_t = 30)]
+    verify_timeout_secs: u64,
+
+    /// Output verification report. Defaults to stdout.
     #[arg(short, long)]
     out: Option<PathBuf>,
 }
@@ -1825,6 +1858,9 @@ fn main() -> Result<()> {
                 }
                 CheckCommands::Theory(args) => {
                     cmd_check_theory(&args)?;
+                }
+                CheckCommands::FiniteQuery(args) => {
+                    cmd_check_finite_query(&args)?;
                 }
                 CheckCommands::SoftwareCoverage(args) => {
                     cmd_check_software_coverage(&args)?;
@@ -3466,6 +3502,162 @@ fn cmd_check_theory(args: &CheckTheoryArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct FiniteQueryVerificationScopeV1 {
+    revision_digest_v2: axiograph_kernel::RevisionDigestV2,
+    accepted_snapshot_id: axiograph_kernel::SnapshotIdV2,
+    kernel_ir_digest: axiograph_kernel::ObjectBlobIdV2,
+    prepared_query_digest_v1: axiograph_kernel::QueryIdV2,
+    answer_digest_v1: axiograph_kernel::AnswerIdV2,
+    certificate_digest_v2: axiograph_kernel::CertificateIdV2,
+    claim_kind: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FiniteQueryVerificationCoverageV1 {
+    selected_row_count: usize,
+    row_witness_count: usize,
+    runtime_truncated: bool,
+    query_shape_certifiable: bool,
+    certificate_emitted: bool,
+    accepted_receipt_bound_to_exact_answer: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct FiniteQueryVerificationReportV1 {
+    version: String,
+    decision: String,
+    scope: FiniteQueryVerificationScopeV1,
+    coverage: FiniteQueryVerificationCoverageV1,
+    finite_theory_gate: axiograph_kernel::FiniteTheoryGateReceiptIr,
+    prepared_query: crate::query_ir::PreparedQueryMetadataV2,
+    certificate: axiograph_pathdb::CertificateV3,
+    certificate_text: String,
+    verifier_receipt_v2: crate::verifier_bridge::VerifierReceiptV2,
+    verified_rows: Vec<axiograph_pathdb::certificate::StableSelectedRowV1>,
+    residual_obligations: Vec<String>,
+    non_claims: Vec<String>,
+}
+
+fn cmd_check_finite_query(args: &CheckFiniteQueryArgs) -> Result<()> {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let package = crate::axi_input::compile_canonical_axi_path(
+        &args.input,
+        std::slice::from_ref(&repository_root),
+    )?;
+    let exact_axi = package.root_source().exact_text().to_string();
+    let revision_digest_v2 = axiograph_kernel::RevisionDigestV2::from_accepted_text(&exact_axi);
+    let sources = package.ordered_sources();
+    let kernel = axiograph_pathdb::derive_runtime_package_index(package.snapshot(), &sources)
+        .map_err(|error| anyhow!("derive runtime package index: {error}"))?;
+    let finite_theory_gate = package
+        .snapshot()
+        .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Query)?;
+
+    let mut db = axiograph_pathdb::PathDB::new();
+    for source in &sources {
+        let module = crate::axi_input::require_canonical_axi_text(source.exact_text())?;
+        module.import_into_pathdb(&mut db)?;
+    }
+    db.build_indexes();
+    let meta = axiograph_pathdb::axi_semantics::MetaPlaneIndex::from_db(&db).ok();
+    let query_bytes = crate::security::read_file_bounded(
+        &args.query,
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "finite query JSON",
+    )?;
+    let query_ir: crate::query_ir::QueryIrV1 = crate::security::parse_json_bounded(
+        &query_bytes,
+        crate::security::MAX_JSON_INPUT_BYTES,
+        "finite query JSON",
+    )?;
+    let mut prepared = query_ir.compile_with_meta(&db, meta.as_ref())?;
+    if !prepared.certifiability().is_certifiable() {
+        return Err(anyhow!(
+            "finite-query verification requires a fully certifiable query shape"
+        ));
+    }
+    let prepared_query = prepared.metadata_v2_with_meta_and_kernel(meta.as_ref(), &kernel)?;
+    let validated = prepared.execute_answer(&db, meta.as_ref())?;
+    let emitted = prepared.certify_answer_with_anchors(
+        validated,
+        &db,
+        meta.as_ref(),
+        revision_digest_v2.clone(),
+    )?;
+    let prepared_digest = emitted
+        .prepared_query_digest_v1()
+        .cloned()
+        .ok_or_else(|| anyhow!("certifiable query omitted its prepared-query digest"))?;
+    let answer_digest = emitted.answer_digest_v1().clone();
+    let certificate_digest = emitted.certificate_digest_v2().clone();
+    let certificate = emitted.certificate().clone();
+    let certificate_text = emitted.certificate_text().to_string();
+    let row_witness_count = certificate
+        .proof
+        .rows
+        .iter()
+        .map(|row| row.witnesses.len())
+        .sum();
+    let verifier_receipt_v2 = crate::verifier_bridge::verify_certificate_with_lean(
+        &crate::verifier_bridge::CertVerifyConfig {
+            verifier_bin: Some(args.verify_bin.clone()),
+            timeout: Some(Duration::from_secs(args.verify_timeout_secs)),
+            approved_checker_sha256: Some(args.verify_sha256.clone()),
+            approved_checker_build_id: Some(args.verify_build_id.clone()),
+        },
+        &exact_axi,
+        emitted.certificate_text(),
+        &prepared_digest,
+        &answer_digest,
+    )?;
+    if !verifier_receipt_v2.accepted() {
+        return Err(anyhow!(
+            "trusted finite-query checker rejected the exact answer"
+        ));
+    }
+    let verified = emitted.into_lean_verified(verifier_receipt_v2.clone())?;
+    let verified_rows = verified.selected_rows_v1().to_vec();
+    let report = FiniteQueryVerificationReportV1 {
+        version: "finite_query_verification_report_v1".to_string(),
+        decision: "accepted".to_string(),
+        scope: FiniteQueryVerificationScopeV1 {
+            revision_digest_v2,
+            accepted_snapshot_id: package.snapshot().ir().accepted_snapshot_id().clone(),
+            kernel_ir_digest: package.snapshot().ir().ir_digest().clone(),
+            prepared_query_digest_v1: prepared_digest,
+            answer_digest_v1: answer_digest,
+            certificate_digest_v2: certificate_digest,
+            claim_kind: "finite_exact_complete".to_string(),
+        },
+        coverage: FiniteQueryVerificationCoverageV1 {
+            selected_row_count: verified_rows.len(),
+            row_witness_count,
+            runtime_truncated: verified.runtime_truncated(),
+            query_shape_certifiable: true,
+            certificate_emitted: true,
+            accepted_receipt_bound_to_exact_answer: true,
+        },
+        finite_theory_gate,
+        prepared_query,
+        certificate,
+        certificate_text,
+        verifier_receipt_v2,
+        verified_rows,
+        residual_obligations: Vec::new(),
+        non_claims: vec![
+            "exact completeness is limited to the declared bounded finite query denotation"
+                .to_string(),
+            "the query receipt does not establish ontology closure, evidence exhaustiveness, or backend completeness"
+                .to_string(),
+            "the attached finite-theory gate is Rust replay evidence; only the query_result_v4 receipt is accepted by VerifyMain"
+                .to_string(),
+            "non-identity dependent transport is outside this query certificate".to_string(),
+        ],
+    };
+    write_json_output(&report, args.out.as_ref())
 }
 
 fn cmd_check_software_coverage(args: &CheckSoftwareCoverageArgs) -> Result<()> {
@@ -5851,6 +6043,7 @@ pub(crate) fn discover_transport_preview_from_inputs(
     Ok(
         crate::evolution_preview::build_migration_evolution_preview_from_compiled_theory_v1(
             None,
+            canonical.digest().as_str(),
             candidate_label,
             &morphism,
             &source_schema,
@@ -6130,8 +6323,27 @@ fn parse_embedding_relationship_kind(
 }
 
 fn cmd_discover_behavior_case(args: &DiscoverBehaviorCaseArgs) -> Result<()> {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let package = crate::axi_input::compile_canonical_axi_path(&args.input, &[repository_root])?;
     let db = load_pathdb_for_cli(&args.input)?;
     let mut request = load_behavior_case_request(&args.request)?;
+    if request.runtime_theory_check.is_some() || request.runtime_theory_check_input.is_some() {
+        return Err(anyhow!(
+            "discover behavior-case computes runtime theory from the canonical input; request-side theory summaries are not accepted"
+        ));
+    }
+    if !package.snapshot().ir().theories().is_empty() {
+        request.runtime_theory_check = Some(
+            crate::runtime_theory_check::runtime_theory_check_reports_from_package(
+                &package,
+                None,
+                axiograph_pathdb::RuntimeTheoryClosureTierV1::FiniteFragment,
+                axiograph_pathdb::default_world_assumption_v1(),
+                axiograph_pathdb::default_evidence_policy_v1(),
+            )?
+            .summary,
+        );
+    }
     attach_behavior_case_cq_files(&mut request, &args.cq_files)?;
     if let Some(overlay_path) = args.overlay.as_deref() {
         let overlay = load_tooling_overlay(overlay_path)?;
@@ -6883,6 +7095,13 @@ fn cmd_ingest_dir(
         out_dir.display()
     );
 
+    let root_metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("inspect ingest root `{}`", root.display()))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.file_type().is_dir() {
+        return Err(anyhow!(
+            "directory ingest root must be a real directory, not a symlink or special file"
+        ));
+    }
     let root = root
         .canonicalize()
         .with_context(|| format!("canonicalize ingest root `{}`", root.display()))?;
@@ -7710,7 +7929,7 @@ theory PlantTransport on Plant:
             "--schema",
             "Plant",
             "--apply-refinement-handle-id",
-            "migration_refine_v1:demo",
+            "migration_refine_v2:demo",
             "--out",
             "/tmp/preview.json",
         ])
@@ -7725,7 +7944,7 @@ theory PlantTransport on Plant:
                 assert_eq!(args.schema.as_deref(), Some("Plant"));
                 assert_eq!(
                     args.apply_refinement_handle_id.as_deref(),
-                    Some("migration_refine_v1:demo")
+                    Some("migration_refine_v2:demo")
                 );
                 assert_eq!(args.out, Some(PathBuf::from("/tmp/preview.json")));
             }

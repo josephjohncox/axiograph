@@ -105,7 +105,7 @@ theorem vMult_not_associative_regression :
       (ofNat 382_808 (by decide))) = 16_178 ∧
     toNat (vMult (ofNat 98_781 (by decide))
       (vMult (ofNat 427_863 (by decide)) (ofNat 382_808 (by decide)))) = 16_179 := by
-  native_decide
+  decide
 
 /-| Safe multiplication that also returns the (trivial) bound witness. -/
 def vMultSafe (leftProbability rightProbability : VProb) :

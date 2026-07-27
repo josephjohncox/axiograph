@@ -143,6 +143,13 @@ pub fn index_repo(root: &Path, options: &RepoIndexOptions) -> Result<RepoIndexRe
             "repository include/exclude rule count exceeds {MAX_REPO_EXTENSION_RULES}"
         ));
     }
+    let root_metadata = std::fs::symlink_metadata(root)
+        .with_context(|| format!("inspect repository root `{}`", root.display()))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.file_type().is_dir() {
+        return Err(anyhow!(
+            "repository root must be a real directory, not a symlink or special file"
+        ));
+    }
     let root = root
         .canonicalize()
         .with_context(|| format!("canonicalize repository root `{}`", root.display()))?;

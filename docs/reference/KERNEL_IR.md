@@ -108,12 +108,22 @@ Forward `SchemaPathIr` uses an endpoint-checked flat generator sequence: the
 empty sequence is identity, concatenation is composition, and associativity and
 unit normalization are structural. `PathCongruenceCertificateIr` replays a
 presented equation inside a prefix/suffix context. `FormalGroupoidPathIr` adds
-signed generators; normalization cancels adjacent inverse pairs. A formal
-inverse is runtime-executable only when the generator is explicitly reversible.
+signed generators plus checked identity, generator, inverse, and composition
+constructors. Normalization emits a deterministic leftmost `rewrite_trace`; each
+step cites the current offset, generator, and first direction of an adjacent
+inverse pair. Replay rechecks endpoints after every cancellation and requires
+the exact canonical trace and normal form. A formal inverse is
+runtime-executable only when the generator is explicitly reversible.
 Canonical `step(from, Relation, to)` equations compile to two role projections
 (an inverse source projection followed by a target projection) in
 `formal_groupoid_equations`. Rust checks their endpoints but does not claim that
 formation proves rewrite termination, confluence, or model satisfaction.
+An equation accepted as a forward `SchemaEquationIr` is not duplicated in
+`formal_groupoid_equations`; this includes `id(A) = id(A)`, which Rust and Lean
+both accept as one typed category equation.
+Confidence is deliberately absent from category/groupoid equality:
+fixed-point multiplication rounds at every call and is non-associative, so it
+belongs to syntax-directed evidence folds rather than path equivalence.
 
 ### Exact-byte Rust/Lean category boundary
 
@@ -126,49 +136,92 @@ contains:
 - role-projection, subtype, aspect, and function arrows with typed endpoints;
 - one explicit empty identity path per object;
 - forward parallel-path equations;
-- one contextual congruence replay witness per equation; and
+- one contextual congruence replay witness per equation;
+- exact index-based cancellation traces for both formal inverse laws of every
+  presented generator; and
 - complete bounded generator-reachability explanations.
 
 `VerifyMain` loads the anchored `.axi` bytes, Lean parses those exact bytes,
 `compileAxiSchemaPresentation` forms the same relation-as-object presentation,
 and `categoryKernelPresentationV3` exports Lean's deterministic name/index
 view. Verification requires literal equality with the Rust payload before it
-replays congruence and saturation. A changed object order, role order, arrow
-kind, endpoint, identity, equation side, congruence offset, lifecycle, or
-reachability explanation rejects.
+replays congruence, formal groupoid normalization, and saturation. A changed
+object order, role order, arrow kind, endpoint, identity, equation side,
+congruence offset, signed direction, cancellation offset, normalization output,
+or lifecycle rejects. Invalid or incomplete reachability explanations reject;
+a different typed explanation tree for the same reachable endpoint may verify.
+
+The V3 anchor covers one exact defining module, not an ordered import closure.
+If an importing module contributes a forward equation to an imported schema,
+Rust rejects category-certificate export explicitly. Such packages remain legal
+canonical IR; certifying them requires a future import-closure anchor. Imported
+relation-span formal equations remain outside the V3 payload.
+
+The wire cancellation checker is currently a decision procedure plus replay.
+It does not retype wire words as dependent `GroupoidPath` values and has no
+acceptance-to-denotation theorem. The denotational groupoid laws elsewhere in
+`Finite.lean` therefore do not make this certificate theorem-backed.
 
 Run `make verify-lean-e2e-category-kernel-v3` for the regulated-shipment
-positive path plus formation, congruence, and saturation tamper rejections. The
-broader finite-theory regression suite remains `make verify-lean-theory`.
+positive path plus formation, congruence, formal-normalization-trace, and
+saturation tamper rejections. The broader finite-theory regression suite
+remains `make verify-lean-theory`.
 
-Every `InstanceModelIr` reifies each tuple field as a
-`RoleIndexedWitnessIr`, including the role id, declared order, target type, role
-kind, and typed value. Context and world roles also appear as
-`ScopeWitnessIr`. The implemented transport fragment is identity transport,
-and issuing it revalidates the complete instance plus exact scope-witness
-membership. Non-identity transport without a declared rule returns a typed
-`UnsupportedTransport` error. Typed path holes bind schema, endpoints, and
-the typed-hole residual; they stay in `Residual` until a caller selects and
+Every `InstanceModelIr` reifies object-type elements and relation facts as
+`ObjectMembershipWitnessIr` values tied to the exact `InstanceIdV2`. Each tuple
+field is a `RoleIndexedWitnessIr`, including the role id, declared order, target
+carrier, exact earlier-role value bindings, refinements, role kind, and typed
+value. For relation-valued indexed roles, formation requires matching target
+projections and instance checking requires the referenced fact's projection
+values to equal the local bindings. Every
+finite-model constraint that actually ran and passed has a
+`TypedConstraintWitnessIr` naming the exact theory, constraint, relation, role
+subjects, decision procedure, and checked lifecycle state. Unsupported or
+review-only constraints do not receive this witness.
+
+Context, world, and temporal roles also appear as `ScopeWitnessIr` and are
+grouped into `DependentContextIr` values backed by exact object-membership
+witnesses. The implemented transport fragment is identity transport, and
+issuing it revalidates the complete instance plus exact scope-witness
+membership. Non-identity transport without a declared rule remains a typed
+`UnsupportedTransport` residual and cannot enter an explanation-verified
+lifecycle state. Typed path holes bind schema, endpoints, candidate handles,
+and the typed-hole residual; they stay in `Residual` until a caller selects and
 rechecks a matching candidate.
 
+All of these instance witnesses are Rust decision-procedure evidence. They are
+included in finite gate receipts and independently replayed by Rust, but they
+are not covered by the current `category_kernel_v3` Lean certificate.
+
 `CompiledKernelSnapshot::finite_theory_gate_receipt` is the shared untrusted
-runtime gate seam. Authoring validation stores an `Authoring` receipt,
-prepared-query metadata stores a `Query` receipt, and AxiStore canonical
-candidate recompilation requires a passing `Merge` receipt before payload
-comparison or protected-main materialization. The sole trusted category wire
-format is anchored `category_kernel_v3`: it carries the compiler's finite
-name/index projection, exact identities, parallel equations, contextual
-congruence witnesses, and bounded saturation explanations for independent Lean
-reconstruction and replay.
+runtime gate seam. Its typed scope records the explicit finite fragment and
+bounds. Its coverage records exactly how many category formations, identities,
+saturation explanations, memberships, dependent role/refinement witnesses,
+finite constraints, contexts, and identity scope transports were replayed.
+Residuals and structured non-claims replace synthetic closure fields, and
+non-identity transport certification is explicitly zero. Authoring validation
+stores an `Authoring` receipt, prepared-query metadata stores a `Query` receipt,
+and every AxiStore `TypedCandidatePayloadV2` stores a `Merge` receipt. AxiStore
+recompiles and requires exact receipt equality before payload comparison or
+protected-main materialization. The sole trusted category wire format is
+anchored `category_kernel_v3`: it carries the compiler's finite name/index
+projection, exact identities, parallel equations, contextual congruence
+witnesses, exact formal inverse-law cancellation traces, and bounded saturation
+explanations for independent Lean reconstruction and replay.
 
 Finite instance compilation rejects duplicate assignments and fact ids,
-missing or repeated role projections, relation-object references to undeclared
+missing or repeated role projections, repeated dependent index roles,
+relation-object references to undeclared
 fact labels, out-of-codomain values, partial or non-functional generator maps,
 non-injective subtype inclusions, violated equations, failed finite
-refinements, and unsupported constraint claims. Call
-`validate_instance_model_ir` after transporting or loading a finite model to
-repeat the executable checks. This Rust validation is a decision procedure,
-not a Lean proof.
+refinements, and violated supported constraints. Unsupported constraints remain
+typed review obligations and receive no `TypedConstraintWitnessIr`. Call
+`validate_instance_model_ir(schema, theories, model)` after transporting or
+loading a finite model to repeat exact identity/version, carrier, generator,
+fact-id, fiber, refinement, equation, supported-constraint, witness, residual,
+and lifecycle checks. Malformed transported models return typed errors rather
+than taking semantic `expect` paths. This Rust validation is a decision
+procedure, not a Lean proof.
 
 PathDB's `RuntimeModuleIndex`, `RuntimeSchemaIndex`, and
 `RuntimeSemanticIndex` are derived execution/query indexes. They are not an
@@ -277,23 +330,23 @@ not define a second category presentation:
   - `RuntimeTheoryCheckReportV1`
   - `RuntimeTheoryJudgmentV1`
   - `RuntimeTheoryClosureTierV1::{FiniteFragment, EvidenceWeighted, GlobalIndexed}`
-  - `CompletenessClaimV1`
-  - `OntologyClosureClaimV1`
   - `RuntimeTheoryAdmissibilityDiagnosticV1`
   - `RuntimeTheoryAssumptionDiagnosticV1`
   - `axiograph check theory <module.axi> --json`
   - `axiograph discover theory-check <module.axi>`
   - `semantic_theory_check`
-  This checker now makes scoped runtime claims only about typed admissibility,
-  review status, blockers, and residuals. It does not derive obligations,
-  saturate rewrites, prove termination, reach a theory fixpoint, or claim
-  completeness/ontology closure. It remains outside the Lean trusted checker.
+  This checker now reports typed scope, coverage, admissibility, review status,
+  blockers, residuals, transports, and structured non-claims. It does not derive
+  obligations, saturate rewrites, prove termination, reach a theory fixpoint, or
+  claim completeness/ontology closure. It remains outside the Lean trusted
+  checker.
   See `docs/reference/RUNTIME_THEORY_CHECKER.md`.
 - Lean now has `Axiograph.Theory.Finite`, a narrow finite
   category/dependent/groupoid semantics module:
   - relations are objects with checked role-projection arrows,
   - paths are endpoint-indexed,
-  - free-groupoid laws are proved by mathlib denotation,
+  - free-groupoid unit, inverse, associativity, composition-congruence, and
+    inverse-congruence laws are proved by mathlib denotation,
   - finite interpretations carry dependent role/refinement/context/transport
     witnesses,
   - typed path holes preserve expected endpoints, and
@@ -302,7 +355,8 @@ not define a second category presentation:
   `Certificate.Format` imports this module, and `VerifyMain` dispatches the
   anchored `category_kernel_v3` family through it. That checked family covers
   exact presentation reconstruction, identities, typed composition, parallel
-  equations, contextual congruence replay, and bounded generator reachability;
+  equations, contextual congruence replay, exact formal inverse-law
+  normalization traces, and bounded generator reachability;
   broader interpretation, refinement, and transport definitions remain theorem
   support.
   Neither slice makes a general rewrite, ontology-closure, univalence, HIT, or
@@ -340,8 +394,12 @@ not define a second category presentation:
   - parseable path equations validate against compiled carrier semantics,
   - parseable path equations now retain compiled relation ids and touched role
     refs,
-  - rewrite rules validate declared vars, referenced relations, and endpoint
-    typing against the same compiled schema slice and retain touched role refs.
+  - rewrite rules reject duplicate or undeclared variables, unknown variable
+    types, incompatible relation carriers, non-composable terms, and unequal
+    LHS/RHS endpoint variables; accepted rules retain touched role refs.
+  - named-generator equations that the canonical presentation accepts are
+    carried into the derived runtime checker only as a canonical `KernelRefV2`
+    formation citation, not as a duplicate runtime category presentation.
 - `.axi` import and meta-plane schema semantics now consult this compiled slice
   for carrier inference and witness-view selection instead of repeating
   endpoint heuristics locally.

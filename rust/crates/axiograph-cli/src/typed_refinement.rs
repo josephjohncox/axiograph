@@ -3,12 +3,12 @@ use serde::{Deserialize, Serialize};
 
 use axiograph_pathdb::MigrationFunctorKindV1;
 
-pub const RUNTIME_REFINEMENT_HANDLE_V1_VERSION: u32 = 1;
+pub const RUNTIME_REFINEMENT_HANDLE_V2_VERSION: u32 = 2;
 
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeRefinementDomainV1 {
+pub enum RuntimeRefinementDomainV2 {
     Query,
     OlogAuthoring,
     TheoryAuthoring,
@@ -19,7 +19,7 @@ pub enum RuntimeRefinementDomainV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeRefinementCandidateKindV1 {
+pub enum RuntimeRefinementCandidateKindV2 {
     AddTypeGuard,
     ExtendOutgoingPath,
     ExtendIncomingPath,
@@ -187,6 +187,8 @@ fn primary_theory_subject_ref(
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TheoryRefinementOpV1 {
     AddressRuntimeTheoryObligation {
+        source_artifact_digest: String,
+        expected_lifecycle: axiograph_kernel::CheckedLifecycleStateIr,
         obligation_ref: axiograph_pathdb::kernel_ir::TheoryObligationRefIr,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         subject_refs: Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
@@ -371,9 +373,9 @@ impl ReconciliationRefinementOpV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "domain", rename_all = "snake_case")]
-pub enum RuntimeRefinementPayloadV1 {
+pub enum RuntimeRefinementPayloadV2 {
     Query {
-        handle: crate::axql::AxqlRefinementHandleV1,
+        handle: crate::axql::AxqlRefinementHandleV2,
     },
     OlogAuthoring {
         op: OlogRefinementOpV1,
@@ -389,127 +391,127 @@ pub enum RuntimeRefinementPayloadV1 {
     },
     CompetencyQuestionRepair {
         question_name: String,
-        handle: crate::axql::AxqlRefinementHandleV1,
+        handle: crate::axql::AxqlRefinementHandleV2,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeRefinementHandleV1 {
+pub struct RuntimeRefinementHandleV2 {
     pub version: u32,
     pub id: String,
-    pub payload: RuntimeRefinementPayloadV1,
+    pub payload: RuntimeRefinementPayloadV2,
 }
 
-impl RuntimeRefinementHandleV1 {
-    pub fn from_query(handle: crate::axql::AxqlRefinementHandleV1) -> Self {
+impl RuntimeRefinementHandleV2 {
+    pub fn from_query(handle: crate::axql::AxqlRefinementHandleV2) -> Self {
         Self {
-            version: RUNTIME_REFINEMENT_HANDLE_V1_VERSION,
+            version: RUNTIME_REFINEMENT_HANDLE_V2_VERSION,
             id: handle.id.clone(),
-            payload: RuntimeRefinementPayloadV1::Query { handle },
+            payload: RuntimeRefinementPayloadV2::Query { handle },
         }
     }
 
     pub fn new_olog(op: OlogRefinementOpV1) -> Self {
         let id = format!(
-            "olog_refine_v1:{}",
+            "olog_refine_v2:{}",
             axiograph_kernel::revision_digest_v2(&op.stable_digest_input())
         );
         Self {
-            version: RUNTIME_REFINEMENT_HANDLE_V1_VERSION,
+            version: RUNTIME_REFINEMENT_HANDLE_V2_VERSION,
             id,
-            payload: RuntimeRefinementPayloadV1::OlogAuthoring { op },
+            payload: RuntimeRefinementPayloadV2::OlogAuthoring { op },
         }
     }
 
     pub fn new_theory(op: TheoryRefinementOpV1) -> Self {
         let id = format!(
-            "theory_refine_v1:{}",
+            "theory_refine_v2:{}",
             axiograph_kernel::revision_digest_v2(&op.stable_digest_input())
         );
         Self {
-            version: RUNTIME_REFINEMENT_HANDLE_V1_VERSION,
+            version: RUNTIME_REFINEMENT_HANDLE_V2_VERSION,
             id,
-            payload: RuntimeRefinementPayloadV1::TheoryAuthoring { op },
+            payload: RuntimeRefinementPayloadV2::TheoryAuthoring { op },
         }
     }
 
     pub fn new_migration(op: MigrationRefinementOpV1) -> Self {
         let id = format!(
-            "migration_refine_v1:{}",
+            "migration_refine_v2:{}",
             axiograph_kernel::revision_digest_v2(&op.stable_digest_input())
         );
         Self {
-            version: RUNTIME_REFINEMENT_HANDLE_V1_VERSION,
+            version: RUNTIME_REFINEMENT_HANDLE_V2_VERSION,
             id,
-            payload: RuntimeRefinementPayloadV1::MigrationAuthoring { op },
+            payload: RuntimeRefinementPayloadV2::MigrationAuthoring { op },
         }
     }
 
     pub fn new_reconciliation(op: ReconciliationRefinementOpV1) -> Self {
         let id = format!(
-            "reconcile_refine_v1:{}",
+            "reconcile_refine_v2:{}",
             axiograph_kernel::revision_digest_v2(&op.stable_digest_input())
         );
         Self {
-            version: RUNTIME_REFINEMENT_HANDLE_V1_VERSION,
+            version: RUNTIME_REFINEMENT_HANDLE_V2_VERSION,
             id,
-            payload: RuntimeRefinementPayloadV1::ReconciliationReview { op },
+            payload: RuntimeRefinementPayloadV2::ReconciliationReview { op },
         }
     }
 
     pub fn new_competency_question_repair(
         question_name: impl Into<String>,
-        handle: crate::axql::AxqlRefinementHandleV1,
+        handle: crate::axql::AxqlRefinementHandleV2,
     ) -> Self {
         let question_name = question_name.into();
-        let payload = RuntimeRefinementPayloadV1::CompetencyQuestionRepair {
+        let payload = RuntimeRefinementPayloadV2::CompetencyQuestionRepair {
             question_name: question_name.clone(),
             handle,
         };
         let id = format!(
-            "cq_refine_v1:{}",
+            "cq_refine_v2:{}",
             axiograph_kernel::revision_digest_v2(&stable_payload_input(
                 &payload,
                 question_name.as_str()
             ))
         );
         Self {
-            version: RUNTIME_REFINEMENT_HANDLE_V1_VERSION,
+            version: RUNTIME_REFINEMENT_HANDLE_V2_VERSION,
             id,
             payload,
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn domain(&self) -> RuntimeRefinementDomainV1 {
+    pub fn domain(&self) -> RuntimeRefinementDomainV2 {
         match &self.payload {
-            RuntimeRefinementPayloadV1::Query { .. } => RuntimeRefinementDomainV1::Query,
-            RuntimeRefinementPayloadV1::OlogAuthoring { .. } => {
-                RuntimeRefinementDomainV1::OlogAuthoring
+            RuntimeRefinementPayloadV2::Query { .. } => RuntimeRefinementDomainV2::Query,
+            RuntimeRefinementPayloadV2::OlogAuthoring { .. } => {
+                RuntimeRefinementDomainV2::OlogAuthoring
             }
-            RuntimeRefinementPayloadV1::TheoryAuthoring { .. } => {
-                RuntimeRefinementDomainV1::TheoryAuthoring
+            RuntimeRefinementPayloadV2::TheoryAuthoring { .. } => {
+                RuntimeRefinementDomainV2::TheoryAuthoring
             }
-            RuntimeRefinementPayloadV1::MigrationAuthoring { .. } => {
-                RuntimeRefinementDomainV1::MigrationAuthoring
+            RuntimeRefinementPayloadV2::MigrationAuthoring { .. } => {
+                RuntimeRefinementDomainV2::MigrationAuthoring
             }
-            RuntimeRefinementPayloadV1::ReconciliationReview { .. } => {
-                RuntimeRefinementDomainV1::ReconciliationReview
+            RuntimeRefinementPayloadV2::ReconciliationReview { .. } => {
+                RuntimeRefinementDomainV2::ReconciliationReview
             }
-            RuntimeRefinementPayloadV1::CompetencyQuestionRepair { .. } => {
-                RuntimeRefinementDomainV1::CompetencyQuestionRepair
+            RuntimeRefinementPayloadV2::CompetencyQuestionRepair { .. } => {
+                RuntimeRefinementDomainV2::CompetencyQuestionRepair
             }
         }
     }
 
     pub fn preview_fragment(&self) -> String {
         match &self.payload {
-            RuntimeRefinementPayloadV1::Query { handle } => handle.preview_fragment(),
-            RuntimeRefinementPayloadV1::OlogAuthoring { op } => op.preview_fragment(),
-            RuntimeRefinementPayloadV1::TheoryAuthoring { op } => op.preview_fragment(),
-            RuntimeRefinementPayloadV1::MigrationAuthoring { op } => op.preview_fragment(),
-            RuntimeRefinementPayloadV1::ReconciliationReview { op } => op.preview_fragment(),
-            RuntimeRefinementPayloadV1::CompetencyQuestionRepair {
+            RuntimeRefinementPayloadV2::Query { handle } => handle.preview_fragment(),
+            RuntimeRefinementPayloadV2::OlogAuthoring { op } => op.preview_fragment(),
+            RuntimeRefinementPayloadV2::TheoryAuthoring { op } => op.preview_fragment(),
+            RuntimeRefinementPayloadV2::MigrationAuthoring { op } => op.preview_fragment(),
+            RuntimeRefinementPayloadV2::ReconciliationReview { op } => op.preview_fragment(),
+            RuntimeRefinementPayloadV2::CompetencyQuestionRepair {
                 question_name,
                 handle,
             } => format!(
@@ -520,15 +522,15 @@ impl RuntimeRefinementHandleV1 {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.version != RUNTIME_REFINEMENT_HANDLE_V1_VERSION {
+        if self.version != RUNTIME_REFINEMENT_HANDLE_V2_VERSION {
             return Err(anyhow!(
                 "unsupported runtime refinement handle version {}; expected {}",
                 self.version,
-                RUNTIME_REFINEMENT_HANDLE_V1_VERSION
+                RUNTIME_REFINEMENT_HANDLE_V2_VERSION
             ));
         }
         match &self.payload {
-            RuntimeRefinementPayloadV1::Query { handle } => {
+            RuntimeRefinementPayloadV2::Query { handle } => {
                 handle.validate()?;
                 if self.id != handle.id {
                     return Err(anyhow!(
@@ -538,7 +540,7 @@ impl RuntimeRefinementHandleV1 {
                     ));
                 }
             }
-            RuntimeRefinementPayloadV1::OlogAuthoring { op } => {
+            RuntimeRefinementPayloadV2::OlogAuthoring { op } => {
                 let expected = Self::new_olog(op.clone());
                 if self.id != expected.id {
                     return Err(anyhow!(
@@ -548,7 +550,32 @@ impl RuntimeRefinementHandleV1 {
                     ));
                 }
             }
-            RuntimeRefinementPayloadV1::TheoryAuthoring { op } => {
+            RuntimeRefinementPayloadV2::TheoryAuthoring { op } => {
+                let TheoryRefinementOpV1::AddressRuntimeTheoryObligation {
+                    source_artifact_digest,
+                    expected_lifecycle,
+                    status,
+                    required_action,
+                    ..
+                } = op;
+                let lifecycle_matches = match status {
+                    axiograph_pathdb::RuntimeTheoryCheckStatusV1::Blocked => {
+                        *expected_lifecycle == axiograph_kernel::CheckedLifecycleStateIr::Rejected
+                    }
+                    axiograph_pathdb::RuntimeTheoryCheckStatusV1::ReviewOnly
+                    | axiograph_pathdb::RuntimeTheoryCheckStatusV1::ResidualObligation => {
+                        *expected_lifecycle == axiograph_kernel::CheckedLifecycleStateIr::Residual
+                    }
+                    axiograph_pathdb::RuntimeTheoryCheckStatusV1::Checked => false,
+                };
+                if source_artifact_digest.trim().is_empty()
+                    || required_action.trim().is_empty()
+                    || !lifecycle_matches
+                {
+                    return Err(anyhow!(
+                        "theory refinement handle has an invalid source digest, action, status, or lifecycle"
+                    ));
+                }
                 let expected = Self::new_theory(op.clone());
                 if self.id != expected.id {
                     return Err(anyhow!(
@@ -558,7 +585,7 @@ impl RuntimeRefinementHandleV1 {
                     ));
                 }
             }
-            RuntimeRefinementPayloadV1::MigrationAuthoring { op } => {
+            RuntimeRefinementPayloadV2::MigrationAuthoring { op } => {
                 let expected = Self::new_migration(op.clone());
                 if self.id != expected.id {
                     return Err(anyhow!(
@@ -568,7 +595,7 @@ impl RuntimeRefinementHandleV1 {
                     ));
                 }
             }
-            RuntimeRefinementPayloadV1::ReconciliationReview { op } => {
+            RuntimeRefinementPayloadV2::ReconciliationReview { op } => {
                 let expected = Self::new_reconciliation(op.clone());
                 if self.id != expected.id {
                     return Err(anyhow!(
@@ -578,7 +605,7 @@ impl RuntimeRefinementHandleV1 {
                     ));
                 }
             }
-            RuntimeRefinementPayloadV1::CompetencyQuestionRepair {
+            RuntimeRefinementPayloadV2::CompetencyQuestionRepair {
                 question_name,
                 handle,
             } => {
@@ -599,10 +626,10 @@ impl RuntimeRefinementHandleV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeRefinementCandidateV1 {
-    pub kind: RuntimeRefinementCandidateKindV1,
+pub struct RuntimeRefinementCandidateV2 {
+    pub kind: RuntimeRefinementCandidateKindV2,
     pub summary: String,
-    pub handle: RuntimeRefinementHandleV1,
+    pub handle: RuntimeRefinementHandleV2,
     pub preview_fragment: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relation: Option<String>,
@@ -630,26 +657,26 @@ pub struct RuntimeRefinementCandidateV1 {
     pub theory_subject_ref: Option<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
 }
 
-impl RuntimeRefinementCandidateV1 {
+impl RuntimeRefinementCandidateV2 {
     pub fn from_axql(candidate: crate::axql::AxqlRefinementCandidateV1) -> Self {
         Self {
             kind: match candidate.kind {
                 crate::axql::AxqlRefinementCandidateKindV1::AddTypeGuard => {
-                    RuntimeRefinementCandidateKindV1::AddTypeGuard
+                    RuntimeRefinementCandidateKindV2::AddTypeGuard
                 }
                 crate::axql::AxqlRefinementCandidateKindV1::ExtendOutgoingPath => {
-                    RuntimeRefinementCandidateKindV1::ExtendOutgoingPath
+                    RuntimeRefinementCandidateKindV2::ExtendOutgoingPath
                 }
                 crate::axql::AxqlRefinementCandidateKindV1::ExtendIncomingPath => {
-                    RuntimeRefinementCandidateKindV1::ExtendIncomingPath
+                    RuntimeRefinementCandidateKindV2::ExtendIncomingPath
                 }
                 crate::axql::AxqlRefinementCandidateKindV1::BindFactRelation => {
-                    RuntimeRefinementCandidateKindV1::BindFactRelation
+                    RuntimeRefinementCandidateKindV2::BindFactRelation
                 }
             },
             summary: candidate.summary,
             preview_fragment: candidate.preview_fragment,
-            handle: RuntimeRefinementHandleV1::from_query(candidate.handle),
+            handle: RuntimeRefinementHandleV2::from_query(candidate.handle),
             relation: candidate.relation,
             schema: candidate.schema,
             role: candidate.role,
@@ -684,7 +711,7 @@ impl RuntimeRefinementCandidateV1 {
     }
 
     pub fn new_olog(
-        kind: RuntimeRefinementCandidateKindV1,
+        kind: RuntimeRefinementCandidateKindV2,
         summary: String,
         op: OlogRefinementOpV1,
         relation: Option<String>,
@@ -692,7 +719,7 @@ impl RuntimeRefinementCandidateV1 {
         target_type: Option<String>,
         target_box: Option<String>,
     ) -> Self {
-        let handle = RuntimeRefinementHandleV1::new_olog(op);
+        let handle = RuntimeRefinementHandleV2::new_olog(op);
         let preview_fragment = handle.preview_fragment();
         Self {
             kind,
@@ -714,6 +741,36 @@ impl RuntimeRefinementCandidateV1 {
         }
     }
 
+    pub fn new_theory(
+        summary: String,
+        op: TheoryRefinementOpV1,
+        obligation_ref: axiograph_pathdb::kernel_ir::TheoryObligationRefIr,
+        theory_subject_refs: Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
+    ) -> Self {
+        let obligation_id = obligation_ref.stable_id();
+        let handle = RuntimeRefinementHandleV2::new_theory(op);
+        let preview_fragment = handle.preview_fragment();
+        let theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
+        Self {
+            kind: RuntimeRefinementCandidateKindV2::AddressTheoryObligation,
+            summary,
+            handle,
+            preview_fragment,
+            relation: None,
+            schema: None,
+            role: None,
+            target_type: None,
+            target_box: None,
+            question_name: None,
+            obligation_id: Some(obligation_id),
+            artifact_id: None,
+            resolution: None,
+            theory_obligation_ref: Some(obligation_ref),
+            theory_subject_refs,
+            theory_subject_ref,
+        }
+    }
+
     pub fn new_migration(
         summary: String,
         op: MigrationRefinementOpV1,
@@ -721,11 +778,11 @@ impl RuntimeRefinementCandidateV1 {
         theory_obligation_ref: Option<axiograph_pathdb::kernel_ir::TheoryObligationRefIr>,
         theory_subject_refs: Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
     ) -> Self {
-        let handle = RuntimeRefinementHandleV1::new_migration(op);
+        let handle = RuntimeRefinementHandleV2::new_migration(op);
         let preview_fragment = handle.preview_fragment();
         let theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
         Self {
-            kind: RuntimeRefinementCandidateKindV1::AddressTransportObligation,
+            kind: RuntimeRefinementCandidateKindV2::AddressTransportObligation,
             summary,
             handle,
             preview_fragment,
@@ -752,11 +809,11 @@ impl RuntimeRefinementCandidateV1 {
         theory_obligation_ref: Option<axiograph_pathdb::kernel_ir::TheoryObligationRefIr>,
         theory_subject_refs: Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
     ) -> Self {
-        let handle = RuntimeRefinementHandleV1::new_reconciliation(op);
+        let handle = RuntimeRefinementHandleV2::new_reconciliation(op);
         let preview_fragment = handle.preview_fragment();
         let theory_subject_ref = primary_theory_subject_ref(&theory_subject_refs);
         Self {
-            kind: RuntimeRefinementCandidateKindV1::ResolveConflict,
+            kind: RuntimeRefinementCandidateKindV2::ResolveConflict,
             summary,
             handle,
             preview_fragment,
@@ -779,10 +836,10 @@ impl RuntimeRefinementCandidateV1 {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_olog_refinement_handle(
     fragment: &crate::typed_authoring::OlogFragmentV1,
-    handle: &RuntimeRefinementHandleV1,
+    handle: &RuntimeRefinementHandleV2,
 ) -> Result<crate::typed_authoring::OlogFragmentV1> {
     handle.validate()?;
-    let RuntimeRefinementPayloadV1::OlogAuthoring { op } = &handle.payload else {
+    let RuntimeRefinementPayloadV2::OlogAuthoring { op } = &handle.payload else {
         return Err(anyhow!(
             "runtime refinement handle `{}` is not an olog authoring refinement",
             handle.id

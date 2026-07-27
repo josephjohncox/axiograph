@@ -7,22 +7,33 @@
 //! `Axiograph.VerifyMain` executable when this is run through the documented
 //! workflow.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use axiograph_kernel::{
-    CanonicalCompiler, CanonicalModuleSource, CommitIdV2, CompiledKernelSnapshot,
-    KernelCompilationRequest, ObjectBlobIdV2, RepositoryIdV2, SchemaGeneratorKindIr, ScopeAxisIr,
-    SnapshotIdV2, TypeExprIr,
+    AnswerIdV2, CanonicalCompiler, CanonicalModuleSource, CertificateIdV2, CommitIdV2,
+    CompiledKernelSnapshot, KernelCompilationRequest, ObjectBlobIdV2, QueryIdV2, RepositoryIdV2,
+    RevisionDigestV2, SchemaGeneratorKindIr, ScopeAxisIr, SnapshotIdV2, TypeExprIr,
 };
 use axiograph_pathdb::materialization::load_verified_pathdb;
+use axiograph_pathdb::{CertificateV3, RuntimeTheoryCheckReportV1, RuntimeTheoryCheckStatusV1};
 use axiograph_store::*;
 use serde::{Deserialize, Serialize};
 
 pub const REGULATED_SHIPMENT_USEFULNESS_REPORT_VERSION: &str =
     "regulated_shipment_usefulness_report_v2";
 const MODULE_NAME: &str = "RegulatedShipment";
+
+#[derive(Debug, Clone)]
+pub struct ApprovedQueryVerifierConfig {
+    pub verifier_bin: PathBuf,
+    pub approved_checker_sha256: String,
+    pub approved_checker_build_id: String,
+    pub timeout: Duration,
+}
 
 #[derive(Debug, Clone)]
 pub struct RegulatedShipmentWorkflowInputs {
@@ -34,6 +45,9 @@ pub struct RegulatedShipmentWorkflowInputs {
     pub candidate_theory_report: PathBuf,
     pub baseline_verification_receipt: PathBuf,
     pub candidate_verification_receipt: PathBuf,
+    pub baseline_query_verification: PathBuf,
+    pub candidate_query_verification: PathBuf,
+    pub query_verifier: ApprovedQueryVerifierConfig,
     pub store_dir: PathBuf,
 }
 
@@ -50,8 +64,24 @@ pub struct RegulatedShipmentCategoryEvidence {
     pub refined_role_types: usize,
     pub finite_reachability_entries: usize,
     pub role_indexed_witnesses: usize,
+    pub finite_refinement_predicates: usize,
     pub context_witnesses: usize,
     pub world_witnesses: usize,
+    pub identity_scope_transports: usize,
+    pub non_identity_scope_transports_certified: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegulatedShipmentQueryEvidence {
+    pub claim_kind: String,
+    pub decision: String,
+    pub revision_digest_v2: String,
+    pub prepared_query_digest_v1: String,
+    pub answer_digest_v1: String,
+    pub certificate_digest_v2: String,
+    pub verified_rows: usize,
+    pub path_witnesses: usize,
+    pub receipt_bound_to_exact_answer: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +117,7 @@ pub struct RegulatedShipmentUsefulnessReport {
     pub kernel_ir_digest: String,
     pub canonical_revision_digest: String,
     pub category: RegulatedShipmentCategoryEvidence,
+    pub finite_query: RegulatedShipmentQueryEvidence,
     pub merge: RegulatedShipmentMergeEvidence,
     pub persistence: RegulatedShipmentPersistenceEvidence,
     pub trusted_receipt_inputs: Vec<String>,
@@ -99,6 +130,199 @@ struct EvidenceBytes {
     authoring: Vec<u8>,
     theory: Vec<u8>,
     verification: Vec<u8>,
+    query_verification: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredFiniteQueryScopeV1 {
+    revision_digest_v2: axiograph_kernel::RevisionDigestV2,
+    accepted_snapshot_id: axiograph_kernel::SnapshotIdV2,
+    kernel_ir_digest: axiograph_kernel::ObjectBlobIdV2,
+    prepared_query_digest_v1: axiograph_kernel::QueryIdV2,
+    answer_digest_v1: axiograph_kernel::AnswerIdV2,
+    certificate_digest_v2: axiograph_kernel::CertificateIdV2,
+    claim_kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredFiniteQueryCoverageV1 {
+    selected_row_count: usize,
+    row_witness_count: usize,
+    runtime_truncated: bool,
+    query_shape_certifiable: bool,
+    certificate_emitted: bool,
+    accepted_receipt_bound_to_exact_answer: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct StoredVerifierReceiptV2 {
+    version: String,
+    nonce: String,
+    checker_sha256: String,
+    checker_build_id: String,
+    revision_digest_v2: RevisionDigestV2,
+    certificate_digest_v2: CertificateIdV2,
+    prepared_query_digest_v1: QueryIdV2,
+    answer_digest_v1: AnswerIdV2,
+    certificate_kind: String,
+    claim_kind: String,
+    decision: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryVerifierRequestV2<'a> {
+    version: &'static str,
+    nonce: &'a str,
+    checker_sha256: &'a str,
+    module_axi: &'a str,
+    certificate_json: &'a str,
+    expected_prepared_query_digest: &'a QueryIdV2,
+    expected_answer_digest: &'a AnswerIdV2,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredFiniteQueryVerificationReportV1 {
+    version: String,
+    decision: String,
+    scope: StoredFiniteQueryScopeV1,
+    coverage: StoredFiniteQueryCoverageV1,
+    finite_theory_gate: axiograph_kernel::FiniteTheoryGateReceiptIr,
+    prepared_query: serde_json::Value,
+    certificate: serde_json::Value,
+    certificate_text: String,
+    verifier_receipt_v2: StoredVerifierReceiptV2,
+    verified_rows: Vec<serde_json::Value>,
+    residual_obligations: Vec<String>,
+    non_claims: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct StoredRuntimeTheoryModuleReportV1 {
+    version: String,
+    module_digest: String,
+    summary: axiograph_tooling_overlays::RuntimeTheoryCheckSummaryV1,
+    reports: Vec<RuntimeTheoryCheckReportV1>,
+    blocking_errors: usize,
+    trust_boundary: String,
+    #[serde(default)]
+    non_claims: Vec<axiograph_tooling_overlays::RuntimeTheoryNonClaimSummaryV1>,
+    #[serde(default)]
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAuthoringModuleAnchorV1 {
+    module_name: String,
+    module_id: String,
+    revision_digest: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAuthoringSourceAnchorV1 {
+    workspace_relative_path: String,
+    root_module: String,
+    repository_id: String,
+    compiled_snapshot_id: String,
+    kernel_ir_digest: String,
+    exact_root_axi_digest: String,
+    ordered_module_closure: Vec<StoredAuthoringModuleAnchorV1>,
+    runtime_ir_ref_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAuthoringValidationV1 {
+    canonical_axi_valid: bool,
+    compiled_kernel_ir_valid: bool,
+    finite_category_fragment_valid: bool,
+    finite_theory_gate: Option<axiograph_kernel::FiniteTheoryGateReceiptIr>,
+    runtime_theory_gate: String,
+    runtime_theory: Option<StoredRuntimeTheoryModuleReportV1>,
+    scope: String,
+    non_claims: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAuthoringCompetencyV1 {
+    #[serde(default)]
+    questions: Vec<serde_json::Value>,
+    evaluation: Option<serde_json::Value>,
+    #[serde(default)]
+    unresolved_question_names: Vec<String>,
+    promotion_gate: String,
+    #[serde(default)]
+    non_claims: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAuthoringPromotionGateV1 {
+    gate: String,
+    decision: String,
+    detail: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAuthoringPromotionV1 {
+    candidate_reviewable: bool,
+    protected_main_eligible: bool,
+    gates: Vec<StoredAuthoringPromotionGateV1>,
+    blockers: Vec<String>,
+    required_write_authority: String,
+    scope: String,
+    non_claims: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct StoredAuthoringWorkspaceReportV1 {
+    version: String,
+    operation: String,
+    #[serde(default)]
+    workspace_root: String,
+    ok: bool,
+    source: Option<StoredAuthoringSourceAnchorV1>,
+    #[serde(default)]
+    diagnostics: Vec<serde_json::Value>,
+    validation: StoredAuthoringValidationV1,
+    #[serde(default)]
+    typed_holes: serde_json::Value,
+    #[serde(default)]
+    dependent_refinements: Vec<serde_json::Value>,
+    #[serde(default)]
+    repairs: Vec<serde_json::Value>,
+    competency_questions: Option<StoredAuthoringCompetencyV1>,
+    #[serde(default)]
+    prepared_query: Option<serde_json::Value>,
+    #[serde(default)]
+    query_explanation: Option<serde_json::Value>,
+    #[serde(default)]
+    applied_query_repair: Option<serde_json::Value>,
+    #[serde(default)]
+    checked_olog: Option<serde_json::Value>,
+    #[serde(default)]
+    applied_olog_repair: Option<serde_json::Value>,
+    #[serde(default)]
+    evolution_previews: Vec<serde_json::Value>,
+    promotion: StoredAuthoringPromotionV1,
+    #[serde(default)]
+    stable_runtime_refs: Vec<serde_json::Value>,
+    #[serde(default)]
+    next_actions: Vec<String>,
+    #[serde(default)]
+    trust: serde_json::Value,
 }
 
 #[derive(Debug)]
@@ -112,34 +336,176 @@ fn read(path: &Path, label: &str) -> Result<Vec<u8>> {
     axiograph_security::read_file_bounded(path, MAX_EVIDENCE_BYTES, label)
 }
 
-fn evidence(
-    authoring: &Path,
-    theory: &Path,
-    verification: &Path,
+fn validate_runtime_theory_report(
+    report: &StoredRuntimeTheoryModuleReportV1,
+    expected_revision: &axiograph_kernel::RevisionDigestV2,
     label: &str,
-) -> Result<EvidenceBytes> {
-    let authoring = read(authoring, &format!("{label} authoring report"))?;
-    let theory = read(theory, &format!("{label} theory report"))?;
-    let verification = read(verification, &format!("{label} VerifyMain receipt"))?;
-    if authoring.is_empty() || theory.is_empty() || verification.is_empty() {
+) -> Result<()> {
+    if report.version != "runtime_theory_check_module_report_v1"
+        || report.module_digest != expected_revision.as_str()
+        || report.summary.module_digest != expected_revision.as_str()
+        || report.summary.theory_count != report.reports.len()
+        || report.blocking_errors != 0
+        || report.trust_boundary.trim().is_empty()
+        || report.non_claims.is_empty()
+    {
         return Err(anyhow!(
-            "{label} evidence inputs must be non-empty authoring, theory, and VerifyMain outputs"
+            "{label} runtime-theory module report has invalid version, anchor, counts, or trust boundary"
         ));
     }
-    let authoring_json: serde_json::Value = axiograph_security::parse_json_bounded(
-        &authoring,
-        16 * 1024 * 1024,
-        "regulated-shipment authoring report",
-    )
-    .with_context(|| format!("parse {label} authoring report"))?;
-    if authoring_json
-        .get("ok")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
-        return Err(anyhow!("{label} authoring report is not successful"));
+    let blockers = report.summary.gate_blockers();
+    if !blockers.is_empty() {
+        return Err(anyhow!(
+            "{label} runtime-theory report is not fully checked: {}",
+            blockers.join("; ")
+        ));
     }
-    let evaluation = &authoring_json["competency_questions"]["evaluation"];
+    let checked = report
+        .reports
+        .iter()
+        .map(|theory| theory.checked_obligations)
+        .sum::<usize>();
+    let review_only = report
+        .reports
+        .iter()
+        .map(|theory| theory.review_only_obligations)
+        .sum::<usize>();
+    let residual = report
+        .reports
+        .iter()
+        .map(|theory| theory.residual_obligations)
+        .sum::<usize>();
+    let blocked = report
+        .reports
+        .iter()
+        .map(|theory| theory.blocked_obligations)
+        .sum::<usize>();
+    let excluded = report
+        .reports
+        .iter()
+        .map(|theory| theory.excluded_by_evidence)
+        .sum::<usize>();
+    if checked != report.summary.checked_obligations
+        || review_only != report.summary.review_only_obligations
+        || residual != report.summary.residual_obligations
+        || blocked != report.summary.blocked_obligations
+        || excluded != report.summary.excluded_by_evidence
+        || report
+            .summary
+            .admissibility_trace
+            .admissibility_scan_complete_steps
+            != report.reports.len()
+    {
+        return Err(anyhow!(
+            "{label} runtime-theory summary does not equal its typed report judgments"
+        ));
+    }
+    for theory in &report.reports {
+        if theory.version != "runtime_theory_check_report_v1"
+            || theory.total_obligations != theory.judgments.len()
+            || theory.checked_obligations != theory.total_obligations
+            || theory.review_only_obligations != 0
+            || theory.residual_obligations != 0
+            || theory.blocked_obligations != 0
+            || theory.excluded_by_evidence != 0
+            || theory.admissibility_scan.blocked_obligations != 0
+            || !theory.admissibility_scan.residual_obligations.is_empty()
+            || theory.judgments.iter().any(|judgment| {
+                judgment.status != RuntimeTheoryCheckStatusV1::Checked
+                    || !judgment.admissible
+                    || !judgment.residual_obligations.is_empty()
+            })
+        {
+            return Err(anyhow!(
+                "{label} runtime-theory report contains a non-checked judgment"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_authoring_report(
+    report: &StoredAuthoringWorkspaceReportV1,
+    expected_revision: &axiograph_kernel::RevisionDigestV2,
+    label: &str,
+) -> Result<()> {
+    let source = report
+        .source
+        .as_ref()
+        .ok_or_else(|| anyhow!("{label} authoring report omits its source anchor"))?;
+    if report.version != "authoring_workspace_report_v1"
+        || report.operation != "promotion_review"
+        || !report.ok
+        || source.root_module != MODULE_NAME
+        || source.exact_root_axi_digest != expected_revision.as_str()
+        || source.ordered_module_closure.len() != 1
+        || source.ordered_module_closure[0].module_name != MODULE_NAME
+        || source.ordered_module_closure[0].revision_digest != expected_revision.as_str()
+        || source.ordered_module_closure[0].module_id.trim().is_empty()
+        || source.repository_id.trim().is_empty()
+        || source.compiled_snapshot_id.trim().is_empty()
+        || source.kernel_ir_digest.trim().is_empty()
+        || source.workspace_relative_path.trim().is_empty()
+        || source.runtime_ir_ref_count == 0
+    {
+        return Err(anyhow!(
+            "{label} authoring report has an invalid version, operation, or exact-module anchor"
+        ));
+    }
+    if report.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .get("severity")
+            .and_then(serde_json::Value::as_str)
+            == Some("error")
+    }) {
+        return Err(anyhow!(
+            "{label} authoring report contains an error diagnostic"
+        ));
+    }
+    let validation = &report.validation;
+    let finite_gate = validation
+        .finite_theory_gate
+        .as_ref()
+        .ok_or_else(|| anyhow!("{label} authoring report omits its finite-theory receipt"))?;
+    if !validation.canonical_axi_valid
+        || !validation.compiled_kernel_ir_valid
+        || !validation.finite_category_fragment_valid
+        || validation.runtime_theory_gate != "passed"
+        || validation.scope.trim().is_empty()
+        || validation.non_claims.is_empty()
+        || !finite_gate.passed
+        || finite_gate.consumer != axiograph_kernel::FiniteTheoryGateConsumerIr::Authoring
+        || !finite_gate.residual_obligations.is_empty()
+        || finite_gate.accepted_snapshot_id.as_str() != source.compiled_snapshot_id
+        || finite_gate.kernel_ir_digest.as_str() != source.kernel_ir_digest
+    {
+        return Err(anyhow!(
+            "{label} authoring validation did not pass every canonical and runtime-theory gate"
+        ));
+    }
+    let theory = validation
+        .runtime_theory
+        .as_ref()
+        .ok_or_else(|| anyhow!("{label} authoring report omits its runtime-theory report"))?;
+    validate_runtime_theory_report(theory, expected_revision, label)?;
+    if report
+        .typed_holes
+        .get("theory")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|holes| !holes.is_empty())
+    {
+        return Err(anyhow!(
+            "{label} authoring report retains unresolved runtime-theory holes"
+        ));
+    }
+    let competency = report
+        .competency_questions
+        .as_ref()
+        .ok_or_else(|| anyhow!("{label} authoring report omits competency questions"))?;
+    let evaluation = competency
+        .evaluation
+        .as_ref()
+        .ok_or_else(|| anyhow!("{label} authoring report omits CQ evaluation"))?;
     let satisfied = evaluation
         .get("satisfied")
         .and_then(serde_json::Value::as_u64)
@@ -148,37 +514,290 @@ fn evidence(
         .get("total")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| anyhow!("{label} authoring report omits CQ total"))?;
-    if total == 0 || satisfied != total {
+    if total == 0
+        || satisfied != total
+        || competency.promotion_gate != "passed"
+        || !competency.unresolved_question_names.is_empty()
+        || competency.questions.is_empty()
+        || competency.non_claims.is_empty()
+    {
         return Err(anyhow!(
-            "{label} authoring report does not satisfy every declared CQ ({satisfied}/{total})"
+            "{label} authoring report does not pass every declared competency question"
         ));
     }
-    let theory_json: serde_json::Value = axiograph_security::parse_json_bounded(
+    let promotion = &report.promotion;
+    let mut gates = BTreeMap::new();
+    for gate in &promotion.gates {
+        if gate.detail.trim().is_empty()
+            || gates
+                .insert(gate.gate.as_str(), gate.decision.as_str())
+                .is_some()
+        {
+            return Err(anyhow!("{label} authoring promotion gate set is malformed"));
+        }
+    }
+    let expected_gates = BTreeMap::from([
+        ("canonical_validation", "passed"),
+        ("competency_questions", "passed"),
+        ("runtime_theory", "passed"),
+        ("trusted_checker", "blocked"),
+    ]);
+    if !promotion.candidate_reviewable
+        || promotion.protected_main_eligible
+        || gates != expected_gates
+        || promotion.required_write_authority.trim().is_empty()
+        || promotion.scope.trim().is_empty()
+        || promotion.non_claims.is_empty()
+        || promotion.blockers.iter().any(|blocker| {
+            blocker.contains("canonical validation")
+                || blocker.contains("competency")
+                || blocker.contains("runtime finite-fragment theory")
+        })
+    {
+        return Err(anyhow!(
+            "{label} authoring promotion review did not preserve the fail-closed gate decisions"
+        ));
+    }
+    Ok(())
+}
+
+fn rerun_approved_query_verifier(
+    config: &ApprovedQueryVerifierConfig,
+    module_axi: &str,
+    certificate_json: &str,
+    expected_prepared_query_digest: &QueryIdV2,
+    expected_answer_digest: &AnswerIdV2,
+) -> Result<StoredVerifierReceiptV2> {
+    const MAX_VERIFIER_EXECUTABLE_BYTES: usize = 256 * 1024 * 1024;
+    const MAX_VERIFIER_INPUT_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_VERIFIER_OUTPUT_BYTES: usize = 1024 * 1024;
+    const VERIFIER_PROTOCOL_V2: &str = "axiograph-verifier-stdio-v2";
+
+    if config.approved_checker_build_id.trim().is_empty() {
+        return Err(anyhow!(
+            "approved query verifier build id must be non-empty"
+        ));
+    }
+    let staged = axiograph_security::stage_approved_executable(
+        &config.verifier_bin,
+        &config.approved_checker_sha256,
+        MAX_VERIFIER_EXECUTABLE_BYTES,
+        if cfg!(windows) {
+            "axiograph_verify.exe"
+        } else {
+            "axiograph_verify"
+        },
+        "regulated-shipment query verifier",
+    )?;
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let request = serde_json::to_vec(&QueryVerifierRequestV2 {
+        version: VERIFIER_PROTOCOL_V2,
+        nonce: &nonce,
+        checker_sha256: &config.approved_checker_sha256,
+        module_axi,
+        certificate_json,
+        expected_prepared_query_digest,
+        expected_answer_digest,
+    })?;
+    let limits = axiograph_security::ProcessLimits::new(
+        config.timeout,
+        MAX_VERIFIER_INPUT_BYTES,
+        MAX_VERIFIER_OUTPUT_BYTES,
+        MAX_VERIFIER_OUTPUT_BYTES,
+    )?;
+    let mut command = Command::new(staged.executable());
+    command.arg("--stdio-v2");
+    let output = axiograph_security::run_command_bounded(
+        command,
+        &request,
+        limits,
+        "regulated-shipment approved query verifier",
+    )?;
+    let receipt: StoredVerifierReceiptV2 = axiograph_security::parse_json_bounded(
+        &output.stdout,
+        MAX_VERIFIER_OUTPUT_BYTES,
+        "regulated-shipment verifier receipt",
+    )
+    .with_context(|| {
+        format!(
+            "approved query verifier did not return a strict receipt (stderr: {})",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    })?;
+    let expected_revision = RevisionDigestV2::from_accepted_text(module_axi);
+    let expected_certificate =
+        CertificateIdV2::from_canonical_fields(&[certificate_json.as_bytes()]);
+    if !output.status.success()
+        || receipt.version != VERIFIER_PROTOCOL_V2
+        || receipt.nonce != nonce
+        || receipt.checker_sha256 != config.approved_checker_sha256
+        || receipt.checker_build_id != config.approved_checker_build_id
+        || receipt.revision_digest_v2 != expected_revision
+        || receipt.certificate_digest_v2 != expected_certificate
+        || receipt.prepared_query_digest_v1 != *expected_prepared_query_digest
+        || receipt.answer_digest_v1 != *expected_answer_digest
+        || receipt.certificate_kind != "query_result_v4"
+        || receipt.claim_kind != "finite_exact_complete"
+        || receipt.decision != "accepted"
+        || receipt.message.trim().is_empty()
+    {
+        return Err(anyhow!(
+            "approved query verifier did not accept the exact anchored certificate and answer"
+        ));
+    }
+    Ok(receipt)
+}
+
+fn evidence(
+    authoring: &Path,
+    theory: &Path,
+    verification: &Path,
+    query_verification: &Path,
+    verifier: &ApprovedQueryVerifierConfig,
+    exact_axi: &[u8],
+    label: &str,
+) -> Result<EvidenceBytes> {
+    let authoring = read(authoring, &format!("{label} authoring report"))?;
+    let theory = read(theory, &format!("{label} theory report"))?;
+    let verification = read(
+        verification,
+        &format!("{label} VerifyMain category receipt"),
+    )?;
+    let query_verification = read(
+        query_verification,
+        &format!("{label} bound finite-query verification report"),
+    )?;
+    if authoring.is_empty()
+        || theory.is_empty()
+        || verification.is_empty()
+        || query_verification.is_empty()
+    {
+        return Err(anyhow!(
+            "{label} evidence inputs must be non-empty authoring, theory, category, and finite-query verification outputs"
+        ));
+    }
+    let module_axi = std::str::from_utf8(exact_axi).context("canonical .axi is not UTF-8")?;
+    let expected_revision = RevisionDigestV2::from_accepted_text(module_axi);
+    let authoring_report: StoredAuthoringWorkspaceReportV1 =
+        axiograph_security::parse_json_bounded(
+            &authoring,
+            16 * 1024 * 1024,
+            "regulated-shipment authoring report",
+        )
+        .with_context(|| format!("parse {label} authoring report"))?;
+    validate_authoring_report(&authoring_report, &expected_revision, label)?;
+    let theory_report: StoredRuntimeTheoryModuleReportV1 = axiograph_security::parse_json_bounded(
         &theory,
         16 * 1024 * 1024,
         "regulated-shipment runtime-theory report",
     )
     .with_context(|| format!("parse {label} runtime-theory report"))?;
-    if theory_json
-        .get("blocking_errors")
-        .and_then(serde_json::Value::as_u64)
-        != Some(0)
-    {
-        return Err(anyhow!("{label} runtime-theory report has blocking errors"));
+    validate_runtime_theory_report(&theory_report, &expected_revision, label)?;
+    let authoring_theory = authoring_report
+        .validation
+        .runtime_theory
+        .as_ref()
+        .expect("validated authoring report has runtime theory");
+    if authoring_theory.summary != theory_report.summary {
+        return Err(anyhow!(
+            "{label} standalone and authoring runtime-theory summaries do not match"
+        ));
     }
-    if theory_json
-        .get("completeness_claim")
-        .and_then(serde_json::Value::as_str)
-        != Some("not_claimed_runtime_admissibility_only")
+
+    let query_report: StoredFiniteQueryVerificationReportV1 =
+        axiograph_security::parse_json_bounded(
+            &query_verification,
+            16 * 1024 * 1024,
+            "regulated-shipment finite-query verification report",
+        )
+        .with_context(|| format!("parse {label} finite-query verification report"))?;
+    let historical_receipt = &query_report.verifier_receipt_v2;
+    let certificate: CertificateV3 = axiograph_security::parse_json_bounded(
+        query_report.certificate_text.as_bytes(),
+        16 * 1024 * 1024,
+        "regulated-shipment strict query_result_v4 certificate",
+    )
+    .context("finite-query report certificate_text is not a strict CertificateV3")?;
+    let certificate_from_text = serde_json::to_value(&certificate)?;
+    let recomputed_certificate_digest =
+        CertificateIdV2::from_canonical_fields(&[query_report.certificate_text.as_bytes()]);
+    let certificate_witness_count = certificate
+        .proof
+        .rows
+        .iter()
+        .map(|row| row.witnesses.len())
+        .sum::<usize>();
+    let actual_receipt = rerun_approved_query_verifier(
+        verifier,
+        module_axi,
+        &query_report.certificate_text,
+        &query_report.scope.prepared_query_digest_v1,
+        &query_report.scope.answer_digest_v1,
+    )?;
+    if query_report.version != "finite_query_verification_report_v1"
+        || query_report.decision != "accepted"
+        || query_report.scope.revision_digest_v2 != expected_revision
+        || query_report.scope.claim_kind != "finite_exact_complete"
+        || query_report.coverage.selected_row_count != query_report.verified_rows.len()
+        || query_report.coverage.selected_row_count != certificate.proof.rows.len()
+        || query_report.coverage.selected_row_count == 0
+        || query_report.coverage.row_witness_count != certificate_witness_count
+        || query_report.coverage.row_witness_count == 0
+        || query_report.coverage.runtime_truncated
+        || !query_report.coverage.query_shape_certifiable
+        || !query_report.coverage.certificate_emitted
+        || !query_report.coverage.accepted_receipt_bound_to_exact_answer
+        || !query_report.residual_obligations.is_empty()
+        || query_report.non_claims.is_empty()
+        || certificate_from_text != query_report.certificate
+        || recomputed_certificate_digest != query_report.scope.certificate_digest_v2
+        || !query_report.finite_theory_gate.passed
+        || query_report.finite_theory_gate.consumer
+            != axiograph_kernel::FiniteTheoryGateConsumerIr::Query
+        || query_report.finite_theory_gate.accepted_snapshot_id
+            != query_report.scope.accepted_snapshot_id
+        || query_report.finite_theory_gate.kernel_ir_digest != query_report.scope.kernel_ir_digest
+        || !query_report
+            .finite_theory_gate
+            .residual_obligations
+            .is_empty()
+        || query_report.prepared_query["certified_prepared_query_digest_v1"].as_str()
+            != Some(query_report.scope.prepared_query_digest_v1.as_str())
+        || certificate.anchor.revision_digest_v2 != expected_revision
+        || certificate.proof.prepared_query_digest_v1 != query_report.scope.prepared_query_digest_v1
+        || certificate.proof.answer_digest_v1 != query_report.scope.answer_digest_v1
+        || historical_receipt.version != "axiograph-verifier-stdio-v2"
+        || uuid::Uuid::parse_str(&historical_receipt.nonce).is_err()
+        || historical_receipt.checker_sha256 != verifier.approved_checker_sha256
+        || historical_receipt.checker_build_id != verifier.approved_checker_build_id
+        || historical_receipt.revision_digest_v2 != expected_revision
+        || historical_receipt.certificate_digest_v2 != query_report.scope.certificate_digest_v2
+        || historical_receipt.prepared_query_digest_v1
+            != query_report.scope.prepared_query_digest_v1
+        || historical_receipt.answer_digest_v1 != query_report.scope.answer_digest_v1
+        || historical_receipt.certificate_kind != "query_result_v4"
+        || historical_receipt.claim_kind != "finite_exact_complete"
+        || historical_receipt.decision != "accepted"
+        || historical_receipt.message.trim().is_empty()
+        || actual_receipt.checker_sha256 != historical_receipt.checker_sha256
+        || actual_receipt.checker_build_id != historical_receipt.checker_build_id
+        || actual_receipt.revision_digest_v2 != historical_receipt.revision_digest_v2
+        || actual_receipt.certificate_digest_v2 != historical_receipt.certificate_digest_v2
+        || actual_receipt.prepared_query_digest_v1 != historical_receipt.prepared_query_digest_v1
+        || actual_receipt.answer_digest_v1 != historical_receipt.answer_digest_v1
+        || actual_receipt.certificate_kind != historical_receipt.certificate_kind
+        || actual_receipt.claim_kind != historical_receipt.claim_kind
+        || actual_receipt.decision != historical_receipt.decision
     {
         return Err(anyhow!(
-            "{label} runtime-theory report omitted the required completeness non-claim"
+            "{label} finite-query trust gate is not an accepted exact-answer-bound query_result_v4 receipt"
         ));
     }
     Ok(EvidenceBytes {
         authoring,
         theory,
         verification,
+        query_verification,
     })
 }
 
@@ -212,6 +831,8 @@ fn typed_candidate(plan: &ScenarioPlan) -> Result<TypedCandidatePayloadV2> {
         plan.promotion.tree.tree_id.clone(),
         plan.compiled.ir().root_module_id().clone(),
         plan.promotion.manifest.kernel_ir_digest.clone(),
+        plan.compiled
+            .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Merge)?,
         plan.compiled.payload_fingerprints()?,
     )?)
 }
@@ -366,7 +987,7 @@ fn build_plan(
         ImmutableBlob::new(ImmutableObjectKind::TheoryReport, evidence.theory.clone())?,
         ImmutableBlob::new(
             ImmutableObjectKind::VerificationReceipt,
-            evidence.verification.clone(),
+            evidence.query_verification.clone(),
         )?,
     ];
     let validation = blob(&objects, ImmutableObjectKind::ValidationReport);
@@ -395,6 +1016,7 @@ fn build_plan(
         tree.tree_id.clone(),
         compiled.ir().root_module_id().clone(),
         manifest.kernel_ir_digest.clone(),
+        compiled.require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Merge)?,
         compiled.payload_fingerprints()?,
     )?;
     let reconciliation = if let Some((base, left_plan, right_plan)) = reconciliation_parents {
@@ -536,6 +1158,9 @@ fn count_type_wrappers(type_expr: &TypeExprIr) -> (usize, usize) {
 
 fn category_evidence(compiled: &CompiledKernelSnapshot) -> RegulatedShipmentCategoryEvidence {
     let ir = compiled.ir();
+    let gate = compiled
+        .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Merge)
+        .expect("scenario candidate passed the typed merge gate");
     let object_types = ir.schemas().iter().map(|schema| schema.objects.len()).sum();
     let relation_objects = ir
         .schemas()
@@ -617,9 +1242,34 @@ fn category_evidence(compiled: &CompiledKernelSnapshot) -> RegulatedShipmentCate
         refined_role_types,
         finite_reachability_entries,
         role_indexed_witnesses,
+        finite_refinement_predicates: gate.coverage.finite_refinement_predicates_replayed as usize,
         context_witnesses,
         world_witnesses,
+        identity_scope_transports: gate.coverage.identity_scope_transports_replayed as usize,
+        non_identity_scope_transports_certified: gate
+            .coverage
+            .non_identity_scope_transports_certified
+            as usize,
     }
+}
+
+fn finite_query_evidence(bytes: &[u8]) -> Result<RegulatedShipmentQueryEvidence> {
+    let report: StoredFiniteQueryVerificationReportV1 = axiograph_security::parse_json_bounded(
+        bytes,
+        16 * 1024 * 1024,
+        "regulated-shipment finite-query verification report",
+    )?;
+    Ok(RegulatedShipmentQueryEvidence {
+        claim_kind: report.scope.claim_kind,
+        decision: report.decision,
+        revision_digest_v2: report.scope.revision_digest_v2.to_string(),
+        prepared_query_digest_v1: report.scope.prepared_query_digest_v1.to_string(),
+        answer_digest_v1: report.scope.answer_digest_v1.to_string(),
+        certificate_digest_v2: report.scope.certificate_digest_v2.to_string(),
+        verified_rows: report.coverage.selected_row_count,
+        path_witnesses: report.coverage.row_witness_count,
+        receipt_bound_to_exact_answer: report.coverage.accepted_receipt_bound_to_exact_answer,
+    })
 }
 
 pub fn run_workflow(
@@ -637,12 +1287,18 @@ pub fn run_workflow(
         &inputs.baseline_authoring_report,
         &inputs.baseline_theory_report,
         &inputs.baseline_verification_receipt,
+        &inputs.baseline_query_verification,
+        &inputs.query_verifier,
+        &baseline_axi,
         "baseline",
     )?;
     let candidate_evidence = evidence(
         &inputs.candidate_authoring_report,
         &inputs.candidate_theory_report,
         &inputs.candidate_verification_receipt,
+        &inputs.candidate_query_verification,
+        &inputs.query_verifier,
+        &candidate_axi,
         "candidate",
     )?;
 
@@ -766,6 +1422,7 @@ pub fn run_workflow(
             .revision_digest
             .to_string(),
         category: category_evidence(&merge.compiled),
+        finite_query: finite_query_evidence(&candidate_evidence.query_verification)?,
         merge: RegulatedShipmentMergeEvidence {
             operation: "reviewed_finite_typed_replacement_merge".to_string(),
             ordered_parent_count: merge.promotion.commit.ordered_parents.len(),
@@ -787,14 +1444,8 @@ pub fn run_workflow(
             shipment_rx_1007_present_after_restart: shipment_present,
         },
         trusted_receipt_inputs: vec![
-            inputs
-                .baseline_verification_receipt
-                .display()
-                .to_string(),
-            inputs
-                .candidate_verification_receipt
-                .display()
-                .to_string(),
+            inputs.baseline_query_verification.display().to_string(),
+            inputs.candidate_query_verification.display().to_string(),
         ],
         checked_runtime_scope: vec![
             "canonical compiler over exact baseline and candidate bytes".to_string(),
@@ -814,6 +1465,11 @@ pub fn run_workflow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axiograph_pathdb::certificate::{
+        answer_digest_v1, CertificateAnchorV2, FiniteQueryAtomV4, FiniteQueryAtomWitnessV4,
+        FiniteQueryBindingV4, FiniteQueryRowV4, FiniteQueryTermV4, FiniteQueryV4,
+        PreparedQueryBindingV1, QueryResultProofV4,
+    };
     use axiograph_projections::{
         check_readback_v1, manifest_readback_fixture_v1, project_snapshot_v1, ProjectionBackendV1,
         ReadbackTransportStatusV1,
@@ -821,6 +1477,68 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    fn fixture_query_verifier(root: &Path) -> ApprovedQueryVerifierConfig {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = root.join("approved-query-verifier.py");
+        let script = r#"#!/usr/bin/env python3
+import hashlib
+import json
+import struct
+import sys
+
+
+def identity(domain, field):
+    domain_bytes = domain.encode("utf-8")
+    preimage = (
+        b"AXIOGRAPH-ID"
+        + struct.pack(">H", 2)
+        + struct.pack(">H", len(domain_bytes))
+        + domain_bytes
+        + struct.pack(">I", 1)
+        + struct.pack(">Q", len(field))
+        + field
+    )
+    return "axi:" + domain + ":v2:sha256:" + hashlib.sha256(preimage).hexdigest()
+
+
+request = json.load(sys.stdin)
+certificate_bytes = request["certificate_json"].encode("utf-8")
+module_bytes = request["module_axi"].encode("utf-8")
+print(json.dumps({
+    "version": "axiograph-verifier-stdio-v2",
+    "nonce": request["nonce"],
+    "checker_sha256": request["checker_sha256"],
+    "checker_build_id": "axiograph-test-verifier-v1",
+    "revision_digest_v2": identity("revision", module_bytes),
+    "certificate_digest_v2": identity("certificate", certificate_bytes),
+    "prepared_query_digest_v1": request["expected_prepared_query_digest"],
+    "answer_digest_v1": request["expected_answer_digest"],
+    "certificate_kind": "query_result_v4",
+    "claim_kind": "finite_exact_complete",
+    "decision": "accepted",
+    "message": "test verifier accepted exact request"
+}))
+"#;
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o500)).unwrap();
+        let approved_checker_sha256 =
+            axiograph_security::sha256_file_bounded(&path, 1024 * 1024, "test query verifier")
+                .unwrap();
+        ApprovedQueryVerifierConfig {
+            verifier_bin: path,
+            approved_checker_sha256,
+            approved_checker_build_id: "axiograph-test-verifier-v1".to_string(),
+            timeout: Duration::from_secs(10),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn fixture_query_verifier(_root: &Path) -> ApprovedQueryVerifierConfig {
+        panic!("regulated-shipment approved-executable fixture currently requires Unix")
+    }
 
     fn fixture_inputs(root: &Path, store_dir: PathBuf) -> RegulatedShipmentWorkflowInputs {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
@@ -832,22 +1550,134 @@ mod tests {
             fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
             path
         };
-        let authoring_report = serde_json::json!({
-            "ok": true,
-            "competency_questions": {
-                "evaluation": {"satisfied": 3, "total": 3}
-            },
-            "scope": "test fixture"
-        });
-        let baseline_authoring = write_fixture("baseline-authoring.json", authoring_report.clone());
-        let candidate_authoring = write_fixture("candidate-authoring.json", authoring_report);
-        let theory_report = serde_json::json!({
-            "blocking_errors": 0,
-            "completeness_claim": "not_claimed_runtime_admissibility_only",
-            "scope": "runtime only"
-        });
-        let baseline_theory = write_fixture("baseline-theory.json", theory_report.clone());
-        let candidate_theory = write_fixture("candidate-theory.json", theory_report);
+        let write_runtime_evidence = |prefix: &str, axi_path: &Path| {
+            let exact_axi = fs::read(axi_path).unwrap();
+            let source = CanonicalModuleSource::parse(exact_axi.clone()).unwrap();
+            let revision = source.revision().clone();
+            let repository_id = RepositoryIdV2::from_descriptor_bytes(prefix.as_bytes());
+            let snapshot_id = SnapshotIdV2::from_canonical_fields(&[prefix.as_bytes()]);
+            let compiled = CanonicalCompiler::compile(KernelCompilationRequest {
+                repository_id: repository_id.clone(),
+                accepted_snapshot_id: snapshot_id.clone(),
+                root_module: MODULE_NAME.to_string(),
+                modules: vec![source.clone()],
+            })
+            .unwrap();
+            let runtime =
+                axiograph_pathdb::derive_runtime_package_index(&compiled, &[source]).unwrap();
+            let mut reports = runtime
+                .theories
+                .iter()
+                .map(|theory| {
+                    let schema = runtime
+                        .schemas
+                        .iter()
+                        .find(|schema| schema.schema_id == theory.schema_id)
+                        .unwrap();
+                    axiograph_pathdb::check_runtime_theory_v1(schema, theory)
+                })
+                .collect::<Vec<_>>();
+            reports.sort_by_key(|report| report.theory_ref.stable_id());
+            let blocking_errors = reports
+                .iter()
+                .flat_map(|report| report.judgments.iter())
+                .filter(|judgment| judgment.status == RuntimeTheoryCheckStatusV1::Blocked)
+                .count();
+            let notes = vec![
+                "runtime theory check reports are typed operational artifacts, not Lean certificates"
+                    .to_string(),
+                "blocking judgments should fail promotion/check gates; review-only judgments remain explicit weak claims"
+                    .to_string(),
+            ];
+            let summary = axiograph_tooling_overlays::runtime_theory_check_summary_v1(
+                revision.as_str(),
+                &reports,
+                blocking_errors,
+                notes.clone(),
+            );
+            let theory_report = serde_json::json!({
+                "version": "runtime_theory_check_module_report_v1",
+                "module_digest": revision,
+                "summary": summary,
+                "reports": reports,
+                "blocking_errors": blocking_errors,
+                "trust_boundary": "Runtime checked in Rust; not Lean verified.",
+                "non_claims": summary.non_claims,
+                "notes": notes
+            });
+            let finite_gate = compiled
+                .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Authoring)
+                .unwrap();
+            let authoring_report = serde_json::json!({
+                "version": "authoring_workspace_report_v1",
+                "operation": "promotion_review",
+                "workspace_root": ".",
+                "ok": true,
+                "source": {
+                    "workspace_relative_path": axi_path.file_name().unwrap().to_string_lossy(),
+                    "root_module": MODULE_NAME,
+                    "repository_id": repository_id,
+                    "compiled_snapshot_id": snapshot_id,
+                    "kernel_ir_digest": compiled.ir().ir_digest(),
+                    "exact_root_axi_digest": revision,
+                    "ordered_module_closure": [{
+                        "module_name": MODULE_NAME,
+                        "module_id": compiled.ir().root_module_id(),
+                        "revision_digest": revision
+                    }],
+                    "runtime_ir_ref_count": compiled.ir().refs().len()
+                },
+                "diagnostics": [],
+                "validation": {
+                    "canonical_axi_valid": true,
+                    "compiled_kernel_ir_valid": true,
+                    "finite_category_fragment_valid": true,
+                    "finite_theory_gate": finite_gate,
+                    "runtime_theory_gate": "passed",
+                    "runtime_theory": theory_report,
+                    "scope": "exact finite canonical fixture",
+                    "non_claims": ["Rust authoring validation is not Lean certification"]
+                },
+                "typed_holes": {"theory": []},
+                "dependent_refinements": [],
+                "repairs": [],
+                "competency_questions": {
+                    "questions": [{"name":"one"},{"name":"two"},{"name":"three"}],
+                    "evaluation": {"satisfied": 3, "total": 3},
+                    "unresolved_question_names": [],
+                    "promotion_gate": "passed",
+                    "non_claims": ["finite competency fixture"]
+                },
+                "evolution_previews": [],
+                "promotion": {
+                    "candidate_reviewable": true,
+                    "protected_main_eligible": false,
+                    "gates": [
+                        {"gate":"canonical_validation","decision":"passed","detail":"compiled"},
+                        {"gate":"competency_questions","decision":"passed","detail":"checked"},
+                        {"gate":"runtime_theory","decision":"passed","detail":"checked"},
+                        {"gate":"trusted_checker","decision":"blocked","detail":"separate receipt required"}
+                    ],
+                    "blockers": [
+                        "no trusted-checker receipt from the VerifyMain import closure is attached",
+                        "read-only authoring adapters do not construct or execute an AxiStore PromotionPlan"
+                    ],
+                    "required_write_authority": "AxiStore::promote",
+                    "scope": "read-only authoring review",
+                    "non_claims": ["not a protected-main mutation"]
+                },
+                "stable_runtime_refs": [],
+                "next_actions": [],
+                "trust": {}
+            });
+            (
+                write_fixture(&format!("{prefix}-authoring.json"), authoring_report),
+                write_fixture(&format!("{prefix}-theory.json"), theory_report),
+            )
+        };
+        let (baseline_authoring, baseline_theory) = write_runtime_evidence("baseline", &baseline);
+        let (candidate_authoring, candidate_theory) =
+            write_runtime_evidence("candidate", &candidate);
         let write_receipt = |name: &str, axi_path: &Path| {
             let axi_text = fs::read_to_string(axi_path).unwrap();
             let revision = axiograph_kernel::RevisionDigestV2::from_accepted_text(&axi_text);
@@ -858,7 +1688,7 @@ mod tests {
                     "ok: loaded axi module revision={revision}\n\
                      ok: axi_well_typed module=RegulatedShipment schemas=1 instances=1\n\
                      ok: axi_constraints_ok module=RegulatedShipment constraints=1 checks=1\n\
-                     ok: category_kernel_v3 schema=RegulatedShipment objects=1 arrows=1 equations=0 congruence=0 reachability=1 lifecycle=explanationVerified\n"
+                     ok: category_kernel_v3 schema=RegulatedShipment objects=1 arrows=1 equations=0 congruence=0 groupoid_normalizations=2 reachability=1 lifecycle=explanationVerified\n"
                 ),
             )
             .unwrap();
@@ -866,6 +1696,112 @@ mod tests {
         };
         let baseline_verification = write_receipt("baseline-verification.txt", &baseline);
         let candidate_verification = write_receipt("candidate-verification.txt", &candidate);
+        let query_verifier = fixture_query_verifier(root);
+        let write_query_verification = |name: &str, axi_path: &Path| {
+            let exact_axi = fs::read(axi_path).unwrap();
+            let revision = axiograph_kernel::RevisionDigestV2::from_accepted_text(
+                std::str::from_utf8(&exact_axi).unwrap(),
+            );
+            let repository_id = RepositoryIdV2::from_descriptor_bytes(name.as_bytes());
+            let snapshot_id = SnapshotIdV2::from_canonical_fields(&[name.as_bytes()]);
+            let compiled = compile(&repository_id, &snapshot_id, &exact_axi).unwrap();
+            let finite_gate = compiled
+                .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Query)
+                .unwrap();
+            let binding = PreparedQueryBindingV1::new(
+                FiniteQueryV4 {
+                    select_vars: vec!["?shipment".to_string()],
+                    disjuncts: vec![vec![FiniteQueryAtomV4::Type {
+                        term: FiniteQueryTermV4::Var {
+                            name: "?shipment".to_string(),
+                        },
+                        type_name: "Shipment".to_string(),
+                    }]],
+                    max_hops: None,
+                    min_confidence_fp: None,
+                },
+                1,
+            );
+            let rows = vec![FiniteQueryRowV4 {
+                disjunct: 0,
+                bindings: vec![FiniteQueryBindingV4 {
+                    var: "?shipment".to_string(),
+                    entity: "Shipment_RX_1007".to_string(),
+                }],
+                witnesses: vec![FiniteQueryAtomWitnessV4::Type {
+                    entity: "Shipment_RX_1007".to_string(),
+                    type_name: "Shipment".to_string(),
+                }],
+            }];
+            let prepared = binding.digest_v1().unwrap();
+            let answer = answer_digest_v1(&binding, &prepared, &rows, false).unwrap();
+            let proof = QueryResultProofV4 {
+                binding,
+                prepared_query_digest_v1: prepared.clone(),
+                rows,
+                runtime_truncated: false,
+                answer_digest_v1: answer.clone(),
+            };
+            let strict_certificate =
+                CertificateV3::query_result_v4(CertificateAnchorV2::new(revision.clone()), proof)
+                    .unwrap();
+            let certificate_payload = serde_json::to_value(&strict_certificate).unwrap();
+            let certificate_text = serde_json::to_string_pretty(&strict_certificate).unwrap();
+            let certificate = axiograph_kernel::CertificateIdV2::from_canonical_fields(&[
+                certificate_text.as_bytes(),
+            ]);
+            write_fixture(
+                name,
+                serde_json::json!({
+                    "version": "finite_query_verification_report_v1",
+                    "decision": "accepted",
+                    "scope": {
+                        "revision_digest_v2": revision,
+                        "accepted_snapshot_id": snapshot_id,
+                        "kernel_ir_digest": compiled.ir().ir_digest(),
+                        "prepared_query_digest_v1": prepared,
+                        "answer_digest_v1": answer,
+                        "certificate_digest_v2": certificate,
+                        "claim_kind": "finite_exact_complete"
+                    },
+                    "coverage": {
+                        "selected_row_count": 1,
+                        "row_witness_count": 1,
+                        "runtime_truncated": false,
+                        "query_shape_certifiable": true,
+                        "certificate_emitted": true,
+                        "accepted_receipt_bound_to_exact_answer": true
+                    },
+                    "finite_theory_gate": finite_gate,
+                    "prepared_query": {
+                        "certified_prepared_query_digest_v1": prepared
+                    },
+                    "certificate": certificate_payload,
+                    "certificate_text": certificate_text,
+                    "verifier_receipt_v2": {
+                        "version": "axiograph-verifier-stdio-v2",
+                        "nonce": "00000000-0000-4000-8000-000000000001",
+                        "checker_sha256": query_verifier.approved_checker_sha256,
+                        "checker_build_id": query_verifier.approved_checker_build_id,
+                        "revision_digest_v2": revision,
+                        "certificate_digest_v2": certificate,
+                        "prepared_query_digest_v1": prepared,
+                        "answer_digest_v1": answer,
+                        "certificate_kind": "query_result_v4",
+                        "claim_kind": "finite_exact_complete",
+                        "decision": "accepted",
+                        "message": "exact finite query answer verified"
+                    },
+                    "verified_rows": [{"certificate": "CoA_RX_42"}],
+                    "residual_obligations": [],
+                    "non_claims": ["finite fixture only"]
+                }),
+            )
+        };
+        let baseline_query_verification =
+            write_query_verification("baseline-query-verification.json", &baseline);
+        let candidate_query_verification =
+            write_query_verification("candidate-query-verification.json", &candidate);
         RegulatedShipmentWorkflowInputs {
             baseline_axi: baseline,
             candidate_axi: candidate,
@@ -875,6 +1811,9 @@ mod tests {
             candidate_theory_report: candidate_theory,
             baseline_verification_receipt: baseline_verification,
             candidate_verification_receipt: candidate_verification,
+            baseline_query_verification,
+            candidate_query_verification,
+            query_verifier,
             store_dir,
         }
     }
@@ -896,7 +1835,15 @@ mod tests {
         assert_eq!(report.category.refined_role_types, 1);
         assert!(report.category.finite_reachability_entries > 0);
         assert!(report.category.role_indexed_witnesses > 0);
+        assert!(report.category.finite_refinement_predicates > 0);
         assert!(report.category.context_witnesses > 0);
+        assert!(report.category.identity_scope_transports > 0);
+        assert_eq!(report.category.non_identity_scope_transports_certified, 0);
+        assert_eq!(report.finite_query.claim_kind, "finite_exact_complete");
+        assert_eq!(report.finite_query.decision, "accepted");
+        assert_eq!(report.finite_query.verified_rows, 1);
+        assert!(report.finite_query.path_witnesses > 0);
+        assert!(report.finite_query.receipt_bound_to_exact_answer);
         assert!(report.persistence.entity_rows > 0);
         assert!(report.persistence.relation_fact_rows > 0);
         assert!(report.persistence.shipment_rx_1007_present_after_restart);
@@ -977,6 +1924,71 @@ mod tests {
         assert!(error
             .to_string()
             .contains("VerifyMain receipt for axi:revision:v2:sha256:"));
+    }
+
+    #[test]
+    fn review_only_runtime_theory_gate_is_rejected_before_protected_main_advances() {
+        let temp = tempdir().unwrap();
+        let inputs = fixture_inputs(temp.path(), temp.path().join("store"));
+        let mut report: serde_json::Value =
+            serde_json::from_slice(&fs::read(&inputs.candidate_authoring_report).unwrap()).unwrap();
+        report["validation"]["runtime_theory_gate"] =
+            serde_json::Value::String("blocked".to_string());
+        report["validation"]["runtime_theory"]["summary"]["review_only_obligations"] =
+            serde_json::json!(1);
+        report["validation"]["runtime_theory"]["summary"]["residual_obligation_ids"] =
+            serde_json::json!(["equation:review-only"]);
+        report["promotion"]["gates"][2]["decision"] =
+            serde_json::Value::String("blocked".to_string());
+        fs::write(
+            &inputs.candidate_authoring_report,
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+        let error = run_workflow(&inputs).expect_err("review-only theory must fail closed");
+        assert!(error.to_string().contains("authoring validation"));
+        assert!(!inputs.store_dir.exists());
+    }
+
+    #[test]
+    fn placeholder_query_receipt_is_rejected_before_protected_main_advances() {
+        let temp = tempdir().unwrap();
+        let inputs = fixture_inputs(temp.path(), temp.path().join("store"));
+        let mut report: serde_json::Value =
+            serde_json::from_slice(&fs::read(&inputs.candidate_query_verification).unwrap())
+                .unwrap();
+        report["verifier_receipt_v2"]["certificate_digest_v2"] =
+            serde_json::Value::String("placeholder-witness".to_string());
+        fs::write(
+            &inputs.candidate_query_verification,
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+        let error = run_workflow(&inputs).expect_err("placeholder receipt must fail closed");
+        assert!(error
+            .to_string()
+            .contains("finite-query verification report"));
+        assert!(!inputs.store_dir.exists());
+    }
+
+    #[test]
+    fn echoed_checker_hash_cannot_forge_approved_verifier_provenance() {
+        let temp = tempdir().unwrap();
+        let inputs = fixture_inputs(temp.path(), temp.path().join("store"));
+        for path in [
+            &inputs.baseline_query_verification,
+            &inputs.candidate_query_verification,
+        ] {
+            let mut report: serde_json::Value =
+                serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            report["verifier_receipt_v2"]["checker_sha256"] = serde_json::Value::String(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            );
+            fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
+        let error = run_workflow(&inputs).expect_err("echoed checker identity must fail closed");
+        assert!(error.to_string().contains("finite-query trust gate"));
+        assert!(!inputs.store_dir.exists());
     }
 
     #[test]

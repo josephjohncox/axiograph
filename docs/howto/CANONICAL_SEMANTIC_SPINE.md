@@ -43,10 +43,12 @@ make verify-regulated-shipment
 
 This is the documented starting point. One canonical pharmaceutical-shipment
 slice exercises the compiler and finite category IR, indexed/refined roles,
-path equations and explanations, exact finite `query_result_v4` checking,
-compiled-payload evolution, reviewed AxiStore merge, authenticated SQLite
-materialization and restart, TypeDB/PathDB projection, and a generated Rust test
-that is compiled and run.
+identity scope transports, path equations and explanation replay, exact finite
+`query_result_v4` checking, compiled-payload evolution, reviewed AxiStore merge,
+authenticated SQLite materialization and restart, TypeDB/PathDB projection, and
+a generated Rust test that is compiled and run. The exact query receipt is the
+trust gate stored with the reviewed baseline, candidate, and merged result; it
+is no longer an adjacent test.
 
 Read `examples/regulated_shipment/README.md` for the evidence map and exact
 non-claims. The strongest product-trusted result in this flow is exact answer
@@ -65,7 +67,7 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
 Use `check validate` as the first gate. Public semantic flows accept canonical
 modules, not derived storage snapshots.
 
-## 2. Check Runtime Theory Closure
+## 2. Inspect Runtime Theory Admissibility
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
@@ -75,16 +77,19 @@ cargo run --manifest-path rust/Cargo.toml -p axiograph-cli -- \
   --out build/examples/software_authoring/theory_check.json
 ```
 
-The runtime checker claims only scoped operational facts:
+Read this as an admissibility report, not a closure computation. The report
+contains typed:
 
-- `well_typed`: refs resolve and endpoints/contexts are admissible.
-- `admissible`: supported equations, rewrites, paths, and transports satisfy
-  the runtime fragment.
-- `closed`: supported in-scope obligations reached the declared closure tier.
-- `complete`: every in-scope obligation was checked or explicitly residual.
+- `summary.scope`: finite fragment, world, evidence-policy, and import scope;
+- checked, review-only, residual, blocked, and evidence-excluded coverage counts;
+- `transport_summary`: preserved, transported, missing-image, opaque, and
+  resolver-required classifications;
+- `residual_obligation_ids`; and
+- structured `non_claims`, including `closure_engine_not_implemented`.
 
-Unsupported higher-order/dependent cases remain addressable residual
-obligations. They are not silently accepted.
+The checker does not derive obligations, saturate rewrites, reach a theory
+fixpoint, or claim completeness or ontology closure. Unsupported cases remain
+addressable residuals rather than being silently accepted.
 
 ## 3. Inspect The Derived Runtime Index
 
@@ -130,6 +135,21 @@ Certificate policies:
 Server request parsing accepts only the `certificate_policy` field for query
 certificate behavior. Boolean-style request fields are not part of the public
 contract.
+
+For a file-oriented CI gate that cannot return an emission-only result, use:
+
+```bash
+axiograph check finite-query path/to/module.axi \
+  --query path/to/query_ir_v1.json \
+  --verify-bin path/to/axiograph_verify \
+  --verify-sha256 <approved-lowercase-sha256> \
+  --verify-build-id axiograph-verify-main-v3 \
+  --out build/finite_query_verification.json
+```
+
+The report separates query-shape certifiability, certificate emission, and an
+accepted receipt bound to the exact answer. It also carries the untrusted
+`Query` finite-theory scope/coverage receipt used by authoring and merge review.
 
 ## 5. Use Software-Authoring Overlays
 

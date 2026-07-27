@@ -78,6 +78,9 @@ fn candidate_from_plan(plan: &PromotionPlan) -> TypedCandidatePayloadV2 {
         plan.tree.tree_id.clone(),
         compiled.ir().root_module_id().clone(),
         plan.manifest.kernel_ir_digest.clone(),
+        compiled
+            .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Merge)
+            .unwrap(),
         compiled.payload_fingerprints().unwrap(),
     )
     .unwrap()
@@ -224,6 +227,9 @@ fn build_plan(
         tree.tree_id.clone(),
         compiled.ir().root_module_id().clone(),
         manifest.kernel_ir_digest.clone(),
+        compiled
+            .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Merge)
+            .unwrap(),
         compiled.payload_fingerprints().unwrap(),
     )
     .unwrap();
@@ -1017,6 +1023,40 @@ fn merge_rejects_stale_source_ref_forged_payloads_and_wrong_trust_gate() {
         )
         .expect_err("review attestation cannot forge compiled payload fingerprints");
     assert!(error.to_string().contains("payload fingerprints"));
+
+    let mut forged_gate_merged = original.merged.clone();
+    forged_gate_merged
+        .candidate
+        .finite_theory_gate
+        .coverage
+        .path_explanations_replayed += 1;
+    let forged_gate_reconciliation = SemReconciliationV2::new(
+        repository_id.clone(),
+        original.base_commit_id.clone(),
+        original.left.clone(),
+        original.right.clone(),
+        forged_gate_merged.clone(),
+        union_decisions(&original.left, &original.right, &forged_gate_merged),
+        original.preview_digest.clone(),
+        ReconciliationOutcomeV2::Materialized,
+    )
+    .unwrap();
+    let mut forged_gate_plan = merge.clone();
+    forged_gate_plan.commit = rebuild_commit(
+        &forged_gate_plan,
+        Some(forged_gate_reconciliation.reconciliation_id.clone()),
+        forged_gate_plan.commit.gates.clone(),
+    );
+    forged_gate_plan.reconciliation = Some(forged_gate_reconciliation);
+    let error = store
+        .materialize_merge(
+            status.state.generation,
+            "heads/review/source",
+            &source.commit.commit_id,
+            &forged_gate_plan,
+        )
+        .expect_err("merge must reproduce typed finite-theory scope and coverage");
+    assert!(error.to_string().contains("finite-theory scope"));
 
     let mut wrong_gates = merge.commit.gates.clone();
     wrong_gates

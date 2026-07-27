@@ -69,8 +69,11 @@ The trusted boundary is the import closure of
 - conservative `.axi` parsing and checking gates used by the verifier, and
 - `category_kernel_v3`: anchored reconstruction of the finite relation-object
   category presentation, including ordered projections, identities, typed
-  composition, parallel equations, contextual congruence, and exact bounded
-  generator-saturation explanation replay.
+  composition, parallel equations, contextual congruence, exact signed
+  normalization traces for both formal inverse laws of every generator, and
+  exact bounded generator-saturation explanation replay. This category wire
+  path is decision procedure plus replay; it has no acceptance-to-denotation
+  theorem yet.
 
 HoTT, topos, presheaf, sheaf, and univalence-related material outside that
 verifier boundary is design/spec support until wired into the checker. Keep
@@ -91,17 +94,22 @@ Current useful Rust surfaces include:
 - canonical `SchemaPresentationIr` plus its derived `category_formation`
   evidence, including typed and relation objects, ordered role projections,
   identities, explicit generators, parallel equations, contextual congruence,
-  bounded saturation, and replayable explanations;
-- canonical `InstanceModelIr` role-indexed and context/world witnesses with
-  checked lifecycle/residual state;
+  formal signed paths with deterministic cancellation traces, bounded
+  saturation, and replayable explanations;
+- canonical `InstanceModelIr` object-membership, role-indexed,
+  finite-constraint, and context/world/temporal witnesses with checked
+  lifecycle/residual state;
 - derived `kernel_ir.rs` execution indexes whose `RuntimeSemanticIndex`
   contains read-only canonical `KernelRefV2` citations; the former duplicate
   `SchemaCategoryIr` and `InstanceFunctorIr` representations have been removed;
-- runtime theory checking through `RuntimeTheoryCheckReportV1` with explicit
-  finite/evidence/global-indexed admissibility scopes and scoped
-  completeness/closure non-claims;
-- typed query elaboration, trust contracts, typed holes, refinement handles,
-  and canonical `Authoring`/`Query`/`Merge` finite-theory gate receipts;
+- runtime theory checking through `RuntimeTheoryCheckReportV1` with typed
+  finite/evidence/global-indexed scope, coverage counts, transport summaries,
+  residual ids, and structured non-claims instead of synthetic closure fields;
+- typed query elaboration, trust contracts, query/olog/CQ/theory holes,
+  refinement handles bound to exact theory obligations and subjects, and
+  canonical `Authoring`/`Query`/`Merge` finite-theory gate receipts whose exact
+  coverage spans category formation, refinements, saturation explanations,
+  contexts, and identity transports;
 - typed olog checks and shared refinement handles across query/authoring,
   migration preview, reconciliation review, and CQ repair.
 
@@ -170,7 +178,9 @@ The Rust runtime checker should be useful before Lean certification is available
 `make verify-regulated-shipment` is the executable bar: one canonical scenario
 must cross finite typed theory, exact query checking, explanation, evolution,
 reviewed merge, restart, projection, and generated-test surfaces without
-blurring their trust classes.
+blurring their trust classes. Its accepted `query_result_v4` report is parsed
+and bound into the reviewed candidate and merge trust gates; placeholder receipt
+identities reject before protected main advances.
 
 It should answer operational questions under explicit anchors:
 

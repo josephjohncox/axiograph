@@ -601,7 +601,7 @@ pub struct EvolutionPreviewV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub residual_obligations: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
+    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV2>,
     pub ok: bool,
 }
 
@@ -624,7 +624,7 @@ pub struct MigrationTransportObligationV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct MigrationTransportRefinementApplyResultV1 {
-    pub handle: crate::typed_refinement::RuntimeRefinementHandleV1,
+    pub handle: crate::typed_refinement::RuntimeRefinementHandleV2,
     pub base_transport_obligations: Vec<MigrationTransportObligationV1>,
     pub resolved_transport_obligation: MigrationTransportObligationV1,
     pub remaining_transport_obligations: Vec<MigrationTransportObligationV1>,
@@ -1222,7 +1222,7 @@ where
 
 fn migration_refinement_candidates(
     transport_obligations: &[MigrationTransportObligationV1],
-) -> Vec<crate::typed_refinement::RuntimeRefinementCandidateV1> {
+) -> Vec<crate::typed_refinement::RuntimeRefinementCandidateV2> {
     transport_obligations
         .iter()
         .map(|obligation| {
@@ -1242,7 +1242,7 @@ fn migration_refinement_candidates(
                         obligation.obligation_id, obligation.subject_ref
                     )
                 });
-            crate::typed_refinement::RuntimeRefinementCandidateV1::new_migration(
+            crate::typed_refinement::RuntimeRefinementCandidateV2::new_migration(
                 summary,
                 crate::typed_refinement::MigrationRefinementOpV1::AddressTransportObligation {
                     operator: obligation.operator.clone(),
@@ -1264,10 +1264,10 @@ fn migration_refinement_candidates(
 #[allow(dead_code)]
 pub fn apply_runtime_refinement_handle_to_migration_transport_obligations(
     transport_obligations: &[MigrationTransportObligationV1],
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
 ) -> anyhow::Result<MigrationTransportRefinementApplyResultV1> {
     handle.validate()?;
-    let crate::typed_refinement::RuntimeRefinementPayloadV1::MigrationAuthoring { op } =
+    let crate::typed_refinement::RuntimeRefinementPayloadV2::MigrationAuthoring { op } =
         &handle.payload
     else {
         return Err(anyhow!(
@@ -1397,7 +1397,7 @@ pub fn apply_runtime_refinement_handle_to_migration_preview_v1(
     morphism: &SchemaMorphismV1,
     source_schema: &SchemaV1,
     transport_obligations: &[MigrationTransportObligationV1],
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
 ) -> anyhow::Result<MigrationAuthoringApplyResultV1> {
     let transport_apply = apply_runtime_refinement_handle_to_migration_transport_obligations(
         transport_obligations,
@@ -1783,6 +1783,7 @@ pub fn enrich_reconciliation_with_compiled_theory_v1(
 #[allow(dead_code)]
 pub fn build_migration_evolution_preview_from_compiled_theory_v1(
     base_snapshot_id: Option<AcceptedSnapshotId>,
+    source_module_digest: &str,
     candidate_label: String,
     morphism: &SchemaMorphismV1,
     source_schema: &SchemaV1,
@@ -1802,6 +1803,7 @@ pub fn build_migration_evolution_preview_from_compiled_theory_v1(
         &transport_obligations,
     );
     preview.runtime_theory_check = runtime_theory_check_summary_for_compiled_theories_v1(
+        source_module_digest,
         compiled_schema,
         theories,
         Some(morphism),
@@ -1813,6 +1815,7 @@ pub fn build_migration_evolution_preview_from_compiled_theory_v1(
 #[allow(dead_code)]
 pub fn build_reconciliation_evolution_preview_from_compiled_theory_v1(
     base_snapshot_id: Option<AcceptedSnapshotId>,
+    source_module_digest: &str,
     compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     reconciliation: &crate::semantic_model::UntrustedMergeReviewV2,
@@ -1821,6 +1824,7 @@ pub fn build_reconciliation_evolution_preview_from_compiled_theory_v1(
         enrich_reconciliation_with_compiled_theory_v1(compiled_schema, theories, reconciliation);
     let mut preview = build_reconciliation_evolution_preview_v1(base_snapshot_id, &enriched);
     preview.runtime_theory_check = runtime_theory_check_summary_for_compiled_theories_v1(
+        source_module_digest,
         compiled_schema,
         theories,
         None,
@@ -1830,6 +1834,7 @@ pub fn build_reconciliation_evolution_preview_from_compiled_theory_v1(
 }
 
 fn runtime_theory_check_summary_for_compiled_theories_v1(
+    source_module_digest: &str,
     compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
     morphism: Option<&SchemaMorphismV1>,
@@ -1875,7 +1880,7 @@ fn runtime_theory_check_summary_for_compiled_theories_v1(
         .count();
     Some(
         crate::runtime_theory_check::runtime_theory_check_summary_from_reports(
-            compiled_schema.schema_id.as_ref(),
+            source_module_digest,
             &reports,
             blocking_errors,
             vec![
@@ -1889,7 +1894,7 @@ fn runtime_theory_check_summary_for_compiled_theories_v1(
 
 fn reconciliation_refinement_candidates(
     reconciliation: &crate::semantic_model::UntrustedMergeReviewV2,
-) -> Vec<crate::typed_refinement::RuntimeRefinementCandidateV1> {
+) -> Vec<crate::typed_refinement::RuntimeRefinementCandidateV2> {
     let mut candidates = Vec::new();
     for conflict in &reconciliation.conflicts {
         let decided = reconciliation.decisions.iter().any(|decision| {
@@ -1901,7 +1906,7 @@ fn reconciliation_refinement_candidates(
         }
         for resolution in ["prefer_left", "prefer_right", "manual_review"] {
             candidates.push(
-                crate::typed_refinement::RuntimeRefinementCandidateV1::new_reconciliation(
+                crate::typed_refinement::RuntimeRefinementCandidateV2::new_reconciliation(
                     format!(
                         "resolve {} `{}` via `{}`",
                         conflict.artifact.artifact_kind, conflict.artifact.artifact_id, resolution
@@ -2755,12 +2760,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn test_snapshot(label: &str) -> AcceptedSnapshotId {
+        AcceptedSnapshotId::new(
+            axiograph_kernel::SnapshotIdV2::from_canonical_fields(&[label.as_bytes()]).to_string(),
+        )
+    }
+
+    fn test_revision(label: &str) -> String {
+        axiograph_kernel::revision_digest_v2(label)
+    }
+
+    fn test_proposal(label: &str) -> String {
+        axiograph_kernel::ProposalIdV2::from_canonical_fields(&[label.as_bytes()]).to_string()
+    }
+
     #[test]
     fn sem_gate_summary_from_evolution_preview_is_compact_and_eq_safe() {
         let preview = build_evolution_preview_v1(
             "proposal_review",
             None,
-            "fnv1a64:proposal-set".to_string(),
+            test_proposal("proposal-set"),
             TypedChangeSummaryV1 {
                 kind: "proposal_delta".to_string(),
                 instance: TypedChangeBucketV1 {
@@ -2870,11 +2889,11 @@ mod tests {
     fn build_evolution_preview_derives_semantic_delta_and_rule_sidecars() {
         let preview = build_evolution_preview_v1(
             "proposal_review",
-            Some(AcceptedSnapshotId::new("fnv1a64:base")),
+            Some(test_snapshot("base")),
             "candidate".to_string(),
             TypedChangeSummaryV1 {
                 kind: "proposal_delta".to_string(),
-                subjects: vec!["fnv1a64:proposal".to_string()],
+                subjects: vec![test_proposal("proposal")],
                 schema: TypedChangeBucketV1 {
                     added: 2,
                     ..TypedChangeBucketV1::default()
@@ -2979,7 +2998,7 @@ mod tests {
     fn structural_evolution_primitives_drive_semantic_delta_layers() {
         let preview = build_evolution_preview_v1(
             "typed_authoring_review",
-            Some(AcceptedSnapshotId::new("fnv1a64:base")),
+            Some(test_snapshot("base")),
             "olog-fragment".to_string(),
             TypedChangeSummaryV1 {
                 kind: "schema_refinement".to_string(),
@@ -3398,8 +3417,10 @@ theory PlantTransport on Plant:
         let (source_schema, morphism, compiled_schema, theories) =
             compiled_theory_migration_fixture();
 
+        let source_digest = test_revision("module Plant");
         let preview = build_migration_evolution_preview_from_compiled_theory_v1(
-            Some(AcceptedSnapshotId::new("fnv1a64:base")),
+            Some(test_snapshot("base")),
+            &source_digest,
             "Plant->Ops".to_string(),
             &morphism,
             &source_schema,
@@ -3461,7 +3482,7 @@ theory PlantTransport on Plant:
         assert_eq!(preview.refinement_candidates.len(), 1);
         assert!(matches!(
             preview.refinement_candidates[0].handle.domain(),
-            crate::typed_refinement::RuntimeRefinementDomainV1::MigrationAuthoring
+            crate::typed_refinement::RuntimeRefinementDomainV2::MigrationAuthoring
         ));
         assert!(preview.refinement_candidates[0]
             .obligation_id
@@ -3489,8 +3510,10 @@ theory PlantTransport on Plant:
     fn migration_refinement_apply_by_id_resolves_pending_transport_obligation() {
         let (source_schema, morphism, compiled_schema, theories) =
             compiled_theory_migration_fixture();
+        let source_digest = test_revision("module Plant");
         let preview = build_migration_evolution_preview_from_compiled_theory_v1(
-            Some(AcceptedSnapshotId::new("fnv1a64:base")),
+            Some(test_snapshot("base")),
+            &source_digest,
             "Plant->Ops".to_string(),
             &morphism,
             &source_schema,
@@ -3500,7 +3523,7 @@ theory PlantTransport on Plant:
         let handle_id = preview.refinement_candidates[0].handle.id.clone();
 
         let applied = apply_runtime_refinement_by_id_to_migration_preview_from_compiled_theory_v1(
-            Some(AcceptedSnapshotId::new("fnv1a64:base")),
+            Some(test_snapshot("base")),
             "Plant->Ops".to_string(),
             &compiled_schema,
             &theories,
@@ -3559,7 +3582,7 @@ theory PlantTransport on Plant:
             .next()
             .expect("migration refinement candidate");
         let weakened_op = match candidate.handle.payload.clone() {
-            crate::typed_refinement::RuntimeRefinementPayloadV1::MigrationAuthoring { mut op } => {
+            crate::typed_refinement::RuntimeRefinementPayloadV2::MigrationAuthoring { mut op } => {
                 match &mut op {
                     crate::typed_refinement::MigrationRefinementOpV1::AddressTransportObligation {
                         theory_subject_refs,
@@ -3571,7 +3594,7 @@ theory PlantTransport on Plant:
             payload => panic!("unexpected payload for migration candidate: {payload:?}"),
         };
         let weakened_handle =
-            crate::typed_refinement::RuntimeRefinementHandleV1::new_migration(weakened_op);
+            crate::typed_refinement::RuntimeRefinementHandleV2::new_migration(weakened_op);
 
         let err = apply_runtime_refinement_handle_to_migration_transport_obligations(
             &transport_obligations,
@@ -3669,8 +3692,10 @@ theory DemoRules on Demo:
             certificate_refs: Vec::new(),
         };
 
+        let source_digest = test_revision("module Plant");
         let preview = build_reconciliation_evolution_preview_from_compiled_theory_v1(
-            Some(AcceptedSnapshotId::new("fnv1a64:base")),
+            Some(test_snapshot("base")),
+            &source_digest,
             &compiled_schema,
             &theories,
             &reconciliation,
@@ -3703,7 +3728,7 @@ theory DemoRules on Demo:
             .iter()
             .all(|candidate| matches!(
                 candidate.handle.domain(),
-                crate::typed_refinement::RuntimeRefinementDomainV1::ReconciliationReview
+                crate::typed_refinement::RuntimeRefinementDomainV2::ReconciliationReview
             )));
         assert!(preview.refinement_candidates.iter().any(|candidate| {
             candidate.artifact_id.as_deref() == Some("WorksFor")
@@ -3720,7 +3745,7 @@ theory DemoRules on Demo:
             candidate.artifact_id.as_deref() == Some("WorksFor")
                 && matches!(
                     candidate.handle.payload,
-                    crate::typed_refinement::RuntimeRefinementPayloadV1::ReconciliationReview {
+                    crate::typed_refinement::RuntimeRefinementPayloadV2::ReconciliationReview {
                         op: crate::typed_refinement::ReconciliationRefinementOpV1::ResolveConflictByDecision {
                             theory_subject_ref: Some(TheorySubjectRefIr::Relation { ref relation_name, .. }),
                             ..

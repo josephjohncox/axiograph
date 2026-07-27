@@ -11,6 +11,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+use walkdir::WalkDir;
+
+const MAX_PROTO_SOURCE_ENTRIES: usize = 100_000;
+const MAX_PROTO_SOURCE_FILES: usize = 10_000;
+const MAX_PROTO_SOURCE_DEPTH: usize = 32;
+const MAX_PROTO_SOURCE_FILE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PROTO_SOURCE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Subcommand)]
 pub enum ProtoCommands {
@@ -65,7 +73,7 @@ pub fn cmd_proto(command: ProtoCommands) -> Result<()> {
             exclude_imports,
             exclude_source_info,
         } => {
-            build_descriptor_set_binpb(&root, &out, exclude_imports, exclude_source_info)?;
+            let _ = build_descriptor_set_binpb(&root, &out, exclude_imports, exclude_source_info)?;
             println!("  {} {}", "→".cyan(), out.display());
             Ok(())
         }
@@ -108,9 +116,15 @@ fn cmd_proto_ingest(
         root.display()
     );
 
-    let descriptor_path_owned;
-    let descriptor_path = if let Some(path) = descriptor_in {
-        path
+    let (descriptor_bytes, descriptor_locator) = if let Some(path) = descriptor_in {
+        (
+            crate::security::read_file_bounded(
+                path,
+                crate::security::MAX_BINARY_INPUT_BYTES,
+                "protobuf descriptor set",
+            )?,
+            path.display().to_string(),
+        )
     } else {
         let default_out = out
             .parent()
@@ -118,20 +132,15 @@ fn cmd_proto_ingest(
             .join("descriptor.binpb");
         let out_path = descriptor_out.unwrap_or(&default_out);
         fs::create_dir_all(out_path.parent().unwrap_or(Path::new(".")))?;
-        build_descriptor_set_binpb(root, out_path, exclude_imports, exclude_source_info)?;
-        descriptor_path_owned = out_path.clone();
-        &descriptor_path_owned
+        (
+            build_descriptor_set_binpb(root, out_path, exclude_imports, exclude_source_info)?,
+            out_path.display().to_string(),
+        )
     };
-
-    let descriptor_bytes = crate::security::read_file_bounded(
-        descriptor_path,
-        crate::security::MAX_BINARY_INPUT_BYTES,
-        "protobuf descriptor set",
-    )?;
 
     let ingest = axiograph_ingest_proto::ingest_descriptor_set_bytes(
         &descriptor_bytes,
-        Some(descriptor_path.display().to_string()),
+        Some(descriptor_locator.clone()),
         Some(schema_hint.to_string()),
     )?;
 
@@ -142,7 +151,7 @@ fn cmd_proto_ingest(
     fs::create_dir_all(chunks_path.parent().unwrap_or(Path::new(".")))?;
     let json = axiograph_ingest_docs::chunks_to_json_for_chunks(
         "proto_descriptor",
-        descriptor_path.display().to_string(),
+        descriptor_locator,
         ingest.chunks.clone(),
     )?;
     crate::security::write_output_bounded(&chunks_path, &json, "CLI output")?;
@@ -189,13 +198,31 @@ pub(crate) fn build_descriptor_set_binpb(
     out: &PathBuf,
     exclude_imports: bool,
     exclude_source_info: bool,
-) -> Result<()> {
+) -> Result<Vec<u8>> {
+    let root = validate_buf_source_tree(root)?;
+    let parent = out.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    let parent_metadata = fs::symlink_metadata(parent)?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.file_type().is_dir() {
+        return Err(anyhow!(
+            "protobuf descriptor output parent must be a real directory"
+        ));
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".axiograph-buf-output-")
+        .tempdir_in(parent)?;
+    let staged_output = staging.path().join("descriptor.binpb");
+    let cache = tempfile::Builder::new()
+        .prefix(".axiograph-buf-cache-")
+        .tempdir_in(parent)?;
+
     let mut cmd = Command::new("buf");
     cmd.arg("build")
-        .arg(root)
+        .arg(&root)
+        .arg("--disable-symlinks")
         .arg("--as-file-descriptor-set")
         .arg("-o")
-        .arg(out);
+        .arg(&staged_output);
 
     if exclude_imports {
         cmd.arg("--exclude-imports");
@@ -203,12 +230,20 @@ pub(crate) fn build_descriptor_set_binpb(
     if exclude_source_info {
         cmd.arg("--exclude-source-info");
     }
-
-    // In sandboxed environments, Buf may not be able to write to `$HOME/.cache`.
-    // Default to a workspace-local cache to keep `buf build` working.
-    let cache_dir = PathBuf::from("build/buf_cache");
-    let _ = fs::create_dir_all(&cache_dir);
-    cmd.env("XDG_CACHE_HOME", cache_dir);
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "BUF_TOKEN",
+    ] {
+        cmd.env_remove(name);
+    }
+    cmd.env("XDG_CACHE_HOME", cache.path());
 
     let limits = crate::security::ProcessLimits::plugin(std::time::Duration::from_secs(300))?;
     let output = crate::security::run_command_bounded(cmd, b"", limits, "buf build")?;
@@ -216,11 +251,123 @@ pub(crate) fn build_descriptor_set_binpb(
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow!("buf build failed:\n{stderr}"));
     }
-    const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024 * 1024;
-    let _ = crate::security::read_file_bounded(
-        out,
+    let descriptor = crate::security::read_file_bounded(
+        &staged_output,
         MAX_DESCRIPTOR_BYTES,
         "generated protobuf descriptor",
     )?;
-    Ok(())
+    axiograph_security::write_file_atomic_bounded(
+        out,
+        &descriptor,
+        MAX_DESCRIPTOR_BYTES,
+        "generated protobuf descriptor",
+    )?;
+    Ok(descriptor)
+}
+
+fn validate_buf_source_tree(root: &Path) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(root)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(anyhow!(
+            "Buf source root must be a real directory, not a symlink or special file"
+        ));
+    }
+    let root = root.canonicalize()?;
+    let mut entries = 0_usize;
+    let mut files = 0_usize;
+    let mut total_bytes = 0_usize;
+    for entry in WalkDir::new(&root)
+        .follow_links(false)
+        .max_depth(MAX_PROTO_SOURCE_DEPTH)
+        .into_iter()
+        .filter_entry(|entry| entry.depth() == 0 || entry.file_name() != ".git")
+    {
+        let entry = entry?;
+        entries = entries.saturating_add(1);
+        if entries > MAX_PROTO_SOURCE_ENTRIES {
+            return Err(anyhow!(
+                "Buf source tree exceeds {MAX_PROTO_SOURCE_ENTRIES} filesystem entries"
+            ));
+        }
+        if entry.depth() == 0 {
+            continue;
+        }
+        let file_type = entry.file_type();
+        if file_type.is_symlink() {
+            return Err(anyhow!(
+                "Buf source tree must not contain symlinks: `{}`",
+                entry.path().display()
+            ));
+        }
+        if file_type.is_dir() {
+            continue;
+        }
+        if !file_type.is_file() {
+            return Err(anyhow!(
+                "Buf source tree contains a special file: `{}`",
+                entry.path().display()
+            ));
+        }
+        let name = entry.file_name().to_string_lossy();
+        let relevant = entry
+            .path()
+            .extension()
+            .is_some_and(|value| value == "proto")
+            || matches!(name.as_ref(), "buf.yaml" | "buf.work.yaml" | "buf.lock");
+        if !relevant {
+            continue;
+        }
+        files = files.saturating_add(1);
+        if files > MAX_PROTO_SOURCE_FILES {
+            return Err(anyhow!(
+                "Buf source tree exceeds {MAX_PROTO_SOURCE_FILES} files"
+            ));
+        }
+        let bytes = crate::security::read_file_bounded(
+            entry.path(),
+            MAX_PROTO_SOURCE_FILE_BYTES,
+            "Buf source file",
+        )?;
+        total_bytes = total_bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| anyhow!("Buf source byte count overflow"))?;
+        if total_bytes > MAX_PROTO_SOURCE_TOTAL_BYTES {
+            return Err(anyhow!(
+                "Buf source tree exceeds {MAX_PROTO_SOURCE_TOTAL_BYTES} bytes"
+            ));
+        }
+    }
+    Ok(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn buf_source_validation_rejects_root_and_nested_symlinks() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("module");
+        fs::create_dir(&root)?;
+        fs::write(root.join("buf.yaml"), b"version: v2\n")?;
+        fs::write(root.join("service.proto"), b"syntax = \"proto3\";\n")?;
+        assert!(validate_buf_source_tree(&root).is_ok());
+
+        let root_link = parent.path().join("module-link");
+        symlink(&root, &root_link)?;
+        let error =
+            validate_buf_source_tree(&root_link).expect_err("symlinked Buf root must reject");
+        assert!(error.to_string().contains("real directory"));
+
+        let outside = parent.path().join("outside.proto");
+        fs::write(&outside, b"syntax = \"proto3\";\n")?;
+        symlink(&outside, root.join("linked.proto"))?;
+        let error =
+            validate_buf_source_tree(&root).expect_err("nested Buf source symlink must reject");
+        assert!(error.to_string().contains("must not contain symlinks"));
+        Ok(())
+    }
 }

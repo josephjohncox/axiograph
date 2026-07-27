@@ -270,7 +270,7 @@ pub struct CompetencyQuestionEvaluationV1 {
     pub prepared_query: Option<crate::query_ir::PreparedQueryMetadataV1>,
     pub trust: CompetencyQuestionTrustV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
+    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV2>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -295,11 +295,11 @@ pub struct CompetencyQuestionRefinementApplyResultV1 {
 
 fn runtime_query_refinement_handle_for_competency_question(
     question: &CompetencyQuestionV1,
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
-) -> Result<crate::typed_refinement::RuntimeRefinementHandleV1> {
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
+) -> Result<crate::typed_refinement::RuntimeRefinementHandleV2> {
     handle.validate()?;
     match &handle.payload {
-        crate::typed_refinement::RuntimeRefinementPayloadV1::CompetencyQuestionRepair {
+        crate::typed_refinement::RuntimeRefinementPayloadV2::CompetencyQuestionRepair {
             question_name,
             handle,
         } => {
@@ -311,9 +311,9 @@ fn runtime_query_refinement_handle_for_competency_question(
                     question.name
                 ));
             }
-            Ok(crate::typed_refinement::RuntimeRefinementHandleV1::from_query(handle.clone()))
+            Ok(crate::typed_refinement::RuntimeRefinementHandleV2::from_query(handle.clone()))
         }
-        crate::typed_refinement::RuntimeRefinementPayloadV1::Query { .. } => Ok(handle.clone()),
+        crate::typed_refinement::RuntimeRefinementPayloadV2::Query { .. } => Ok(handle.clone()),
         _ => Err(anyhow!(
             "runtime refinement handle `{}` is not a competency-question/query refinement",
             handle.id
@@ -323,9 +323,9 @@ fn runtime_query_refinement_handle_for_competency_question(
 
 fn wrap_runtime_refinement_candidate_for_competency_question(
     question_name: &str,
-    candidate: crate::typed_refinement::RuntimeRefinementCandidateV1,
-) -> Result<crate::typed_refinement::RuntimeRefinementCandidateV1> {
-    let crate::typed_refinement::RuntimeRefinementCandidateV1 {
+    candidate: crate::typed_refinement::RuntimeRefinementCandidateV2,
+) -> Result<crate::typed_refinement::RuntimeRefinementCandidateV2> {
+    let crate::typed_refinement::RuntimeRefinementCandidateV2 {
         kind,
         summary,
         handle,
@@ -343,17 +343,17 @@ fn wrap_runtime_refinement_candidate_for_competency_question(
         theory_subject_refs,
         theory_subject_ref,
     } = candidate;
-    let crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } = handle.payload
+    let crate::typed_refinement::RuntimeRefinementPayloadV2::Query { handle } = handle.payload
     else {
         return Err(anyhow!(
             "runtime refinement candidate `{summary}` is not query-scoped"
         ));
     };
-    let handle = crate::typed_refinement::RuntimeRefinementHandleV1::new_competency_question_repair(
+    let handle = crate::typed_refinement::RuntimeRefinementHandleV2::new_competency_question_repair(
         question_name.to_string(),
         handle,
     );
-    Ok(crate::typed_refinement::RuntimeRefinementCandidateV1 {
+    Ok(crate::typed_refinement::RuntimeRefinementCandidateV2 {
         kind,
         summary: format!("repair competency question `{question_name}`: {summary}"),
         preview_fragment: handle.preview_fragment(),
@@ -378,7 +378,7 @@ pub fn apply_runtime_refinement_handle_to_competency_question_result(
     db: &PathDB,
     meta: Option<&MetaPlaneIndex>,
     question: &CompetencyQuestionV1,
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
 ) -> Result<CompetencyQuestionRefinementApplyResultV1> {
     let runtime_query_handle =
         runtime_query_refinement_handle_for_competency_question(question, handle)?;
@@ -401,7 +401,7 @@ pub fn apply_runtime_refinement_handle_to_competency_question_result_with_theory
     db: &PathDB,
     meta: Option<&MetaPlaneIndex>,
     question: &CompetencyQuestionV1,
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
     compiled_schema: &RuntimeSchemaIndex,
     theories: &[TheoryIr],
 ) -> Result<CompetencyQuestionRefinementApplyResultV1> {
@@ -432,7 +432,7 @@ pub fn apply_runtime_refinement_handle_to_competency_question(
     db: &PathDB,
     meta: Option<&MetaPlaneIndex>,
     question: &CompetencyQuestionV1,
-    handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+    handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
 ) -> Result<CompetencyQuestionV1> {
     Ok(
         apply_runtime_refinement_handle_to_competency_question_result(db, meta, question, handle)?
@@ -832,7 +832,7 @@ mod tests {
             .iter()
             .all(|candidate| matches!(
                 candidate.handle.domain(),
-                crate::typed_refinement::RuntimeRefinementDomainV1::CompetencyQuestionRepair
+                crate::typed_refinement::RuntimeRefinementDomainV2::CompetencyQuestionRepair
             )));
         Ok(())
     }
@@ -884,10 +884,10 @@ instance I of Demo:
             .find(|candidate| {
                 matches!(
                     candidate.handle.domain(),
-                    crate::typed_refinement::RuntimeRefinementDomainV1::CompetencyQuestionRepair
+                    crate::typed_refinement::RuntimeRefinementDomainV2::CompetencyQuestionRepair
                 ) && matches!(
                     candidate.kind,
-                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::AddTypeGuard
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV2::AddTypeGuard
                 ) && candidate.target_type.as_deref() == Some("Demo.Supplier")
             })
             .expect("expected CQ repair candidate");
@@ -1078,7 +1078,7 @@ instance I of Demo:
             .find(|candidate| {
                 matches!(
                     candidate.kind,
-                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::BindFactRelation
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV2::BindFactRelation
                 )
             })
             .expect("expected CQ repair candidate");

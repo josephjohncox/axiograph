@@ -11,7 +11,7 @@
 --
 -- These rules are intended to be referenced by certificates as:
 --
---   axi:fnv1a64:<hex>:OrgFamilySemantics:<rule_name>
+--   axi:rewrite:v2:sha256:<64-lowercase-hex>
 --
 -- so that the trusted Lean checker can load the anchored `.axi` and validate
 -- that each rewrite step is a correct application of the accepted ontology

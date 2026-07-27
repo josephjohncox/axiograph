@@ -3,8 +3,8 @@
   "base": {
     "anchor": {
       "accepted_ref": "heads/main",
-      "accepted_snapshot_id": "fnv1a64:plant-base",
-      "kernel_ir_digest": "fnv1a64:plant-kernel-base",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:4933c9acf67d0e4b039129ee9b07bf2b17454924c211208e8c605757b8eed183",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:c161589a3d2b97b488cb637b896e66f88d7c506d0476fca98bbddcf6054fd57e",
       "context_id": "plant-ops",
       "world_id": "accepted"
     },
@@ -22,8 +22,8 @@
   "left": {
     "anchor": {
       "accepted_ref": "heads/review/procurement-lot-refactor",
-      "accepted_snapshot_id": "fnv1a64:plant-procurement-lot-refactor",
-      "kernel_ir_digest": "fnv1a64:plant-kernel-procurement-refactor",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:58a804eb9fcbd1ede03fd2ba8dfea4724296042209e3fbaf399778d2f92730ec",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:fd9a71209d5e72525acc9f5d14fd51f8e2bc3b36dc38ed4141dec47d9db459e7",
       "context_id": "plant-procurement",
       "world_id": "review"
     },
@@ -45,8 +45,8 @@
   "right": {
     "anchor": {
       "accepted_ref": "heads/review/simulation-lot-state",
-      "accepted_snapshot_id": "fnv1a64:plant-simulation-lot-state",
-      "kernel_ir_digest": "fnv1a64:plant-kernel-simulation-lot-state",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:c3cefe731d0178a0bd4e192b96d580a315b3b9551bc05ef8d53cb7a9d1f6d4ae",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:f3f05b42139193a510fcadfb31e1b0ababb7f4affa188333d8944eb0662a88f4",
       "context_id": "plant-simulation",
       "world_id": "review"
     },
@@ -68,8 +68,8 @@
   "result": {
     "anchor": {
       "accepted_ref": "heads/main",
-      "accepted_snapshot_id": "fnv1a64:plant-conflict",
-      "kernel_ir_digest": "fnv1a64:plant-kernel-conflict",
+      "accepted_snapshot_id": "axi:snapshot:v2:sha256:a6c86ffa053b2e86f5da55ffba22d9cf8e447541fc97aa594be14c8a9ce2a5d9",
+      "kernel_ir_digest": "axi:object-blob:v2:sha256:cec38901c56b6f92ff8eaa158562e339b8212b8d94130ccedddfe49fd62274df",
       "context_id": "plant-ops",
       "world_id": "review"
     },

@@ -1444,8 +1444,15 @@ pub fn semantic_coverage_report(
             );
         }
         notes.push(format!(
-            "runtime theory check summary attached: completeness={}, ontology_closure={}",
-            summary.completeness_claim, summary.ontology_closure_claim
+            "runtime theory admissibility summary attached: fragments=[{}], residuals={}, non_claims=[{}]",
+            summary.scope.fragments.join(", "),
+            summary.residual_obligation_ids.len(),
+            summary
+                .non_claims
+                .iter()
+                .map(|non_claim| non_claim.code.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
 
@@ -1633,8 +1640,15 @@ pub fn agent_engineering_report(
     }
     if let Some(summary) = runtime_theory_check.as_ref() {
         notes.push(format!(
-            "runtime theory check is attached for agent planning: completeness={}, ontology_closure={}",
-            summary.completeness_claim, summary.ontology_closure_claim
+            "runtime theory admissibility is attached for agent planning: fragments=[{}], residuals={}, non_claims=[{}]",
+            summary.scope.fragments.join(", "),
+            summary.residual_obligation_ids.len(),
+            summary
+                .non_claims
+                .iter()
+                .map(|non_claim| non_claim.code.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
 
@@ -1882,7 +1896,7 @@ mod tests {
         crate::runtime_theory_check::RuntimeTheoryCheckSummaryV1 {
             version: "runtime_theory_check_summary_v1".to_string(),
             report_version: "runtime_theory_check_report_v1".to_string(),
-            module_digest: "fnv1a64:test".to_string(),
+            module_digest: axiograph_kernel::revision_digest_v2("semantic-claim-test"),
             theory_count: 1,
             checked_obligations: 2,
             review_only_obligations: 0,
@@ -1890,12 +1904,19 @@ mod tests {
             blocked_obligations: 0,
             excluded_by_evidence: 0,
             blocking_errors: 0,
-            admissibility_scopes: vec!["finite_fragment".to_string()],
+            scope: crate::runtime_theory_check::RuntimeTheoryScopeSummaryV1 {
+                fragments: vec!["finite_fragment".to_string()],
+                ..Default::default()
+            },
             admissibility_trace: Default::default(),
             transport_summary: Default::default(),
-            completeness_claim: "not_claimed_for_all_obligations".to_string(),
-            ontology_closure_claim: "not_claimed_for_all_obligations".to_string(),
             residual_obligation_ids: vec!["theory:family/residual/path".to_string()],
+            non_claims: vec![
+                crate::runtime_theory_check::RuntimeTheoryNonClaimSummaryV1 {
+                    code: "closure_engine_not_implemented".to_string(),
+                    message: "test runtime report is admissibility-only".to_string(),
+                },
+            ],
             notes: vec!["test sidecar".to_string()],
         }
     }
@@ -2369,7 +2390,7 @@ theory FamilyTheory on Family:
         assert!(coverage
             .notes
             .iter()
-            .any(|item| item.contains("runtime theory check summary attached")));
+            .any(|item| item.contains("runtime theory admissibility summary attached")));
     }
 
     #[test]

@@ -61,7 +61,7 @@ Those suggestions must lower through typed proposal or authoring surfaces:
 
 - `ProposalSet<Validated, A>` for candidate facts/relations,
 - `TypedAuthoringDelta<S, A>` for candidate schema/theory edits,
-- `RuntimeRefinementHandleV1` for typed repair/apply steps,
+- `RuntimeRefinementHandleV2` for source-bound typed repair/apply steps,
 - `EvolutionPreviewV1` for CQ/trust/coverage impact,
 - semantic VCS review/promotion for accepted state.
 

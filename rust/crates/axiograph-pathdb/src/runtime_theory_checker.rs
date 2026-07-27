@@ -587,13 +587,13 @@ pub fn check_runtime_theory_with_options_v1(
     }
     if residual_obligations > 0 || review_only_obligations > 0 {
         notes.push(format!(
-            "{} obligation(s) require review or residual resolver work before strong closure can be claimed",
+            "{} obligation(s) remain outside the checked runtime-admissibility coverage",
             residual_obligations + review_only_obligations
         ));
     }
     if !assumption_residuals.is_empty() {
         notes.push(format!(
-            "{} declared assumption(s) block or leave residual closure claims",
+            "{} declared assumption(s) narrow coverage or remain residual",
             assumption_residuals.len()
         ));
     }
@@ -809,28 +809,50 @@ fn judgment_for_obligation(
                 }
             }
         }
-        TheoryObligationRefIr::OpaqueEquation { .. } => {
-            status = RuntimeTheoryCheckStatusV1::ReviewOnly;
-            severity = RuntimeTheoryCheckSeverityV1::Warning;
-            admissible = false;
-            residual_obligations.push(
-                "opaque equation is addressable but outside the runtime closure fragment"
-                    .to_string(),
-            );
-            non_claims.push(RuntimeTheoryNonClaimV1 {
-                code: "opaque_equation_not_closed".to_string(),
-                message: "opaque equation is not runtime-certifiable or closed in this fragment"
-                    .to_string(),
-            });
-            admissibility_diagnostics.push(admissibility_diagnostic(
-                "opaque_equation_addressable_review_only",
-                severity,
-                false,
-                "opaque equation keeps a stable obligation handle but has no runtime path endpoint proof",
-                &subject_refs,
-                Vec::new(),
-            ));
-            message = "opaque equation preserved as a typed review obligation".to_string();
+        TheoryObligationRefIr::OpaqueEquation { equation_id, .. } => {
+            let canonical_formation = theory
+                .opaque_equations
+                .iter()
+                .find(|equation| &equation.equation_id == equation_id)
+                .and_then(|equation| equation.canonical_formation_ref.as_ref());
+            if canonical_formation.is_some() {
+                admissibility_diagnostics.push(admissibility_diagnostic(
+                    "canonical_forward_equation_formation_checked",
+                    RuntimeTheoryCheckSeverityV1::Info,
+                    true,
+                    "the canonical SchemaPresentationIr accepted this named-generator equation as a typed parallel path",
+                    &subject_refs,
+                    Vec::new(),
+                ));
+                non_claims.push(RuntimeTheoryNonClaimV1 {
+                    code: "canonical_formation_not_runtime_execution".to_string(),
+                    message: "typed canonical equation formation does not execute closure or prove model satisfaction"
+                        .to_string(),
+                });
+                message = "canonical forward equation formation is cited without duplicating the category presentation".to_string();
+            } else {
+                status = RuntimeTheoryCheckStatusV1::ReviewOnly;
+                severity = RuntimeTheoryCheckSeverityV1::Warning;
+                admissible = false;
+                residual_obligations.push(
+                    "opaque equation is addressable but outside the runtime admissibility fragment"
+                        .to_string(),
+                );
+                non_claims.push(RuntimeTheoryNonClaimV1 {
+                    code: "opaque_equation_not_checked".to_string(),
+                    message: "opaque equation has neither runtime endpoint formation nor a canonical forward-equation citation"
+                        .to_string(),
+                });
+                admissibility_diagnostics.push(admissibility_diagnostic(
+                    "opaque_equation_addressable_review_only",
+                    severity,
+                    false,
+                    "opaque equation keeps a stable obligation handle but has no typed endpoint formation",
+                    &subject_refs,
+                    Vec::new(),
+                ));
+                message = "opaque equation is preserved as a typed review obligation".to_string();
+            }
         }
         TheoryObligationRefIr::RewriteRule { rule_id, .. } => {
             match theory
@@ -1106,9 +1128,6 @@ fn build_admissibility_scan_steps(
         })
         .map(|judgment| judgment.obligation_ref.stable_id())
         .chain(assumption_residuals.iter().cloned())
-        .chain(std::iter::once(
-            "closure_engine_not_implemented".to_string(),
-        ))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -1865,7 +1884,7 @@ theory FamilyTheory on Family:
         assert!(report.judgments[0]
             .non_claims
             .iter()
-            .any(|claim| claim.code == "opaque_equation_not_closed"));
+            .any(|claim| claim.code == "opaque_equation_not_checked"));
     }
 
     #[test]
@@ -2162,6 +2181,36 @@ theory FamilyTheory on Family:
             .admissibility_diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "rewrite_axis_roles_dropped"));
+    }
+
+    #[test]
+    fn named_generator_equation_uses_canonical_formation_without_a_second_presentation() {
+        let (schema, theory) = compiled_fixture(
+            r#"
+module NamedEquation
+
+schema S:
+  object A
+  function first: A -> A
+  function second: A -> A
+  function direct: A -> A
+
+theory T on S:
+  equation factorization:
+    first;second = direct
+"#,
+        );
+        let report = check_runtime_theory_v1(&schema, &theory);
+        assert_eq!(report.checked_obligations, 1);
+        assert_eq!(report.review_only_obligations, 0);
+        assert_eq!(
+            report.judgments[0].status,
+            RuntimeTheoryCheckStatusV1::Checked
+        );
+        assert!(report.judgments[0]
+            .admissibility_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "canonical_forward_equation_formation_checked"));
     }
 
     #[test]

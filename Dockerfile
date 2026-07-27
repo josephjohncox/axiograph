@@ -36,7 +36,7 @@ RUN curl -fsSL \
 COPY lean/ /app/lean/
 COPY release/fixtures.json /app/release/fixtures.json
 COPY fixtures/verification/ /app/fixtures/verification/
-COPY scripts/run_release_fixture_suite.py /app/scripts/run_release_fixture_suite.py
+COPY scripts/bounded_io.py scripts/bounded_subprocess.py scripts/run_release_fixture_suite.py /app/scripts/
 WORKDIR /app/lean
 RUN lake exe cache get \
     && lake build axiograph_verify \

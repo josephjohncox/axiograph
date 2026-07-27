@@ -75,7 +75,7 @@ Manual CLI QA result:
 
 - `kind=reachability_v3`
 - `proof_type=step`
-- `anchor=fnv1a64:d2ebd953ac74464f`
+- The retired run used a non-cryptographic anchor that is no longer accepted by any reader.
 
 ### Read-only bounded-context report tranche
 

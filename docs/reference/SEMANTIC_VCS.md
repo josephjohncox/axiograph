@@ -85,10 +85,15 @@ compiled canonical modules rather than synthetic empty images:
 The adversarial test appends bytes to the immutable image and requires restart
 verification to reject it. The merge claim remains finite payload accounting,
 not an arbitrary categorical pushout, general dependent transport, or Lean
-proof. The type/constraint receipts attached to the candidate are actual
-`VerifyMain` outputs. Exact query completeness is checked separately in the
-same gate through `query_result_v4`; AxiStore does not acquire proof authority
-by storing adjacent receipts.
+proof. The type/constraint/category checks are actual `VerifyMain` outputs. Baseline
+and candidate also pass `axiograph check finite-query`, which emits one parsed
+`finite_query_verification_report_v1` containing the certificate and accepted
+V2 verifier receipt. The report is bound to the exact candidate revision,
+prepared query, answer, and certificate digest, and its immutable object digest
+is the candidate and merge trust gate. Placeholder identities or a receipt for
+a different answer reject before protected main advances. AxiStore still does
+not acquire proof authority: it binds the checked receipt and independently
+replays the Rust finite merge contract.
 
 ## Identity
 
@@ -217,7 +222,11 @@ covered exactly once and every merged payload must be produced exactly once.
 The checker caps each candidate at 131,072 payloads and the reconciliation at
 393,216 decisions. An exact keep requires both ref and fingerprint equality.
 Drops and introductions are explicit. A transport changes the typed payload and
-requires an immutable witness commitment.
+requires an immutable witness commitment. Every `TypedCandidatePayloadV2` also
+carries the exact residual-free `Merge` finite-theory receipt. AxiStore
+recompiles the candidate and compares typed scope, coverage, residuals, and
+non-claims, including category saturation explanations, finite refinements,
+contexts, and identity transports.
 
 Before writing accepted state, AxiStore recompiles all three candidates from
 the exact stored `.axi` closures through `CanonicalCompiler`, reproduces the

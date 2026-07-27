@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 use process_wrap::std::{ChildWrapper, CommandWrap};
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
 
 pub const MAX_JSON_NESTING_DEPTH: usize = 128;
 pub const MAX_CHILD_RUNTIME: Duration = Duration::from_secs(10 * 60);
@@ -137,6 +138,74 @@ pub fn read_file_bounded(path: &Path, limit: usize, label: &str) -> Result<Vec<u
         ));
     }
     Ok(bytes)
+}
+
+/// Private copy of an approved executable. The configured source pathname is
+/// read and hashed once; callers execute this exact staged byte image rather
+/// than reopening the mutable source path.
+pub struct StagedApprovedExecutable {
+    _directory: tempfile::TempDir,
+    executable: PathBuf,
+}
+
+impl StagedApprovedExecutable {
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+}
+
+pub fn sha256_file_bounded(path: &Path, limit: usize, label: &str) -> Result<String> {
+    let bytes = read_file_bounded(path, limit, label)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+pub fn stage_approved_executable(
+    source: &Path,
+    approved_sha256: &str,
+    limit: usize,
+    executable_name: &str,
+    label: &str,
+) -> Result<StagedApprovedExecutable> {
+    if approved_sha256.len() != 64
+        || !approved_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(anyhow!(
+            "approved {label} SHA-256 must be 64 lowercase hexadecimal characters"
+        ));
+    }
+    if executable_name.trim().is_empty() || Path::new(executable_name).components().count() != 1 {
+        return Err(anyhow!(
+            "staged {label} executable name must be one path component"
+        ));
+    }
+
+    let bytes = read_file_bounded(source, limit, label)?;
+    let actual_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    if actual_sha256 != approved_sha256 {
+        return Err(anyhow!(
+            "{label} SHA-256 mismatch: expected {approved_sha256}, got {actual_sha256}"
+        ));
+    }
+
+    let directory = tempfile::Builder::new()
+        .prefix("axiograph-approved-executable-")
+        .tempdir()
+        .with_context(|| format!("failed to create private {label} staging directory"))?;
+    let executable = directory.path().join(executable_name);
+    write_file_atomic_bounded(&executable, &bytes, limit, label)
+        .with_context(|| format!("failed to stage approved {label} bytes"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o500))
+            .with_context(|| format!("failed to mark staged {label} executable"))?;
+    }
+    Ok(StagedApprovedExecutable {
+        _directory: directory,
+        executable,
+    })
 }
 
 pub fn read_utf8_file_bounded(path: &Path, limit: usize, label: &str) -> Result<String> {
@@ -636,6 +705,22 @@ mod tests {
         assert_eq!(expected_size, bytes.len() as u64);
         assert_eq!(bytes, b"authenticated image");
         assert_eq!(std::fs::read(&input)?, b"attacker replacement");
+        Ok(())
+    }
+
+    #[test]
+    fn approved_executable_stages_the_exact_hashed_bytes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let source = directory.path().join("checker");
+        let approved = b"approved checker bytes";
+        std::fs::write(&source, approved)?;
+        let digest = sha256_file_bounded(&source, 1024, "test checker")?;
+        let staged = stage_approved_executable(&source, &digest, 1024, "checker", "test checker")?;
+        std::fs::write(&source, b"replacement bytes")?;
+        assert_eq!(std::fs::read(staged.executable())?, approved);
+        assert!(
+            stage_approved_executable(&source, &digest, 1024, "checker", "test checker").is_err()
+        );
         Ok(())
     }
 

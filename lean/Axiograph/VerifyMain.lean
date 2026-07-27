@@ -1,5 +1,6 @@
 import Std
 import Axiograph.Certificate.Check
+import Axiograph.Certificate.Invariants
 import Axiograph.Identity
 import Axiograph.Util.Sha256
 import Axiograph.Axi.AxiV1
@@ -152,7 +153,7 @@ def printResult (res : CertificateResult) : IO Unit := do
       IO.println
         s!"ok: start={r.start} end={r.end_} len={r.pathLen} conf={conf} conf_fp={Prob.toNat r.confidence}"
   | .categoryKernelV3 r =>
-      IO.println s!"ok: category_kernel_v3 schema={r.schemaName} objects={r.objectCount} arrows={r.arrowCount} equations={r.equationCount} congruence={r.congruenceCertificateCount} reachability={r.reachabilityEntryCount} lifecycle={reprStr r.lifecycle}"
+      IO.println s!"ok: category_kernel_v3 schema={r.schemaName} objects={r.objectCount} arrows={r.arrowCount} equations={r.equationCount} congruence={r.congruenceCertificateCount} groupoid_normalizations={r.groupoidNormalizationCount} reachability={r.reachabilityEntryCount} lifecycle={reprStr r.lifecycle}"
   | .resolutionV2 r =>
       IO.println
         s!"ok: resolution={reprStr r.decision} first_fp={Prob.toNat r.firstConfidence} second_fp={Prob.toNat r.secondConfidence} threshold_fp={Prob.toNat r.threshold}"
@@ -164,8 +165,6 @@ def printResult (res : CertificateResult) : IO Unit := do
       IO.println s!"ok: query_result_v4 rows={r.rowCount} exact_complete={r.exactComplete} prepared={r.preparedQueryDigest} answer={r.answerDigest}"
   | .normalizePathV2 r =>
       IO.println s!"ok: normalized path start={r.start} end={r.end_}"
-  | .rewriteDerivationV2 r =>
-      IO.println s!"ok: rewrite_derivation start={r.start} end={r.end_}"
   | .rewriteDerivationV3 r =>
       IO.println s!"ok: rewrite_derivation_v3 start={r.start} end={r.end_}"
   | .pathEquivV2 r =>

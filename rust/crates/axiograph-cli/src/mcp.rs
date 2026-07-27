@@ -328,7 +328,7 @@ impl SemanticMcpServer {
             args.query_ir_v1,
             args.limit,
             self.tool_max_rows,
-        ))?;
+        )?)?;
         let report = prepared.elaboration_report();
         let trust = prepared.trust_contract_with_meta(self.runtime.meta.as_ref());
 
@@ -369,7 +369,7 @@ impl SemanticMcpServer {
             args.query_ir_v1,
             args.limit,
             self.tool_max_rows,
-        ))?;
+        )?)?;
         let query = prepared.query_ir_v1().to_axql_text()?;
         let elaborated = prepared.elaborated_query_text();
         let report = prepared.elaboration_report().clone();
@@ -607,13 +607,37 @@ fn with_bounded_limit(
     mut query_ir_v1: crate::query_ir::QueryIrV1,
     limit: Option<usize>,
     tool_max_rows: usize,
-) -> crate::query_ir::QueryIrV1 {
-    if let Some(limit) = limit {
-        query_ir_v1.limit = Some(limit.clamp(1, tool_max_rows));
-    } else if let Some(existing) = query_ir_v1.limit {
-        query_ir_v1.limit = Some(existing.clamp(1, tool_max_rows));
+) -> Result<crate::query_ir::QueryIrV1> {
+    if !(1..=crate::axql::MAX_QUERY_RESULT_ROWS).contains(&tool_max_rows) {
+        return Err(anyhow!(
+            "MCP tool row limit must be in 1..={} rows",
+            crate::axql::MAX_QUERY_RESULT_ROWS
+        ));
     }
-    query_ir_v1
+    if let Some(existing) = query_ir_v1.limit {
+        if !(1..=crate::axql::MAX_QUERY_RESULT_ROWS).contains(&existing) {
+            return Err(anyhow!(
+                "query_ir_v1.limit must be in 1..={} rows",
+                crate::axql::MAX_QUERY_RESULT_ROWS
+            ));
+        }
+        if limit.is_none() && existing > tool_max_rows {
+            return Err(anyhow!(
+                "query_ir_v1.limit {existing} exceeds MCP tool maximum {tool_max_rows}"
+            ));
+        }
+    }
+    if let Some(limit) = limit {
+        if !(1..=tool_max_rows).contains(&limit) {
+            return Err(anyhow!(
+                "MCP request limit must be in 1..={tool_max_rows} rows"
+            ));
+        }
+        query_ir_v1.limit = Some(limit);
+    } else if query_ir_v1.limit.is_none() {
+        query_ir_v1.limit = Some(tool_max_rows);
+    }
+    Ok(query_ir_v1)
 }
 
 #[cfg(test)]
@@ -656,6 +680,31 @@ mod tests {
             approved_checker_sha256: None,
             approved_checker_build_id: None,
         }
+    }
+
+    fn minimal_query(limit: Option<usize>) -> crate::query_ir::QueryIrV1 {
+        serde_json::from_value(json!({
+            "version": 1,
+            "select_vars": ["?x"],
+            "where_all": [{"kind": "type", "term": "?x", "type": "Person"}],
+            "limit": limit
+        }))
+        .expect("minimal query IR")
+    }
+
+    #[test]
+    fn mcp_limits_reject_instead_of_silently_clamping() {
+        assert!(with_bounded_limit(minimal_query(None), Some(0), 25).is_err());
+        assert!(with_bounded_limit(minimal_query(None), Some(26), 25).is_err());
+        assert!(with_bounded_limit(minimal_query(Some(26)), None, 25).is_err());
+        assert!(with_bounded_limit(minimal_query(Some(201)), Some(10), 25).is_err());
+
+        let defaulted = with_bounded_limit(minimal_query(None), None, 25)
+            .expect("missing row limit should receive the operator maximum");
+        assert_eq!(defaulted.limit, Some(25));
+        let explicit = with_bounded_limit(minimal_query(Some(20)), Some(10), 25)
+            .expect("bounded outer limit may narrow a valid query limit");
+        assert_eq!(explicit.limit, Some(10));
     }
 
     fn test_server(accepted_axi_anchor: Option<AcceptedAxiAnchor>) -> SemanticMcpServer {

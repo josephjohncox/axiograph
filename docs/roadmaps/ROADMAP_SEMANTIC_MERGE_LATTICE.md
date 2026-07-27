@@ -21,7 +21,7 @@ The implementation already has the pieces to make semantic merge operational:
 - `EvolutionPreviewV1`: the shared mutation-review payload for authoring,
   migration, reconciliation, and promotion.
 - AxiStore semantic commits/reconciliations plus filesystem-free CLI review DTOs.
-- `RuntimeRefinementHandleV1`: typed resolver handles shared by query,
+- `RuntimeRefinementHandleV2`: source-bound typed resolver handles shared by query,
   olog authoring, migration, reconciliation review, and CQ repair.
 
 The next runtime work is to make these objects drive slice selection,
@@ -194,7 +194,7 @@ boolean flag: residual obligations, conflicts, resolver handles, preview
 non-ok state, runtime-theory blockers, or typed blockers make the plan
 non-materializable.
 
-Resolver steps reuse `RuntimeRefinementHandleV1`; no second resolver protocol is
+Resolver steps reuse `RuntimeRefinementHandleV2`; no second resolver protocol is
 allowed.
 
 ### Rebase as transport
@@ -269,7 +269,7 @@ actions come next.
    - Persist failed plans as immutable AxiStore review attachments.
 
 4. Add resolver application loops.
-   - Reuse `RuntimeRefinementHandleV1`.
+   - Reuse `RuntimeRefinementHandleV2`.
    - Persist resolver state in reconciliation records.
    - Make resolved plans produce typed semantic commits.
 

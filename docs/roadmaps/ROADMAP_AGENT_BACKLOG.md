@@ -20,16 +20,18 @@ Related roadmaps:
   `KernelSnapshotIr`, `SchemaPresentationIr`, and validated finite
   `InstanceModelIr` in `axiograph-kernel`, with ordered import-closure/package
   identities, relation objects, projection generators, subtype coherence,
-  theories, equations, executable finite saturation, role-indexed dependent
-  witnesses, contexts/worlds, checked lifecycle state, and adversarial Rust/Lean
-  formation parity. In-process `RuntimeModuleIndex` values retain the licensing
+  theories, equations, executable finite saturation, object-membership and
+  role-indexed witnesses, finite-constraint witnesses, dependent
+  contexts/worlds/temporal scopes, checked lifecycle state, and adversarial
+  Rust/Lean formation parity. In-process `RuntimeModuleIndex` values retain the licensing
   `CompiledKernelSnapshot`; serialized runtime indexes lose that handle and
   remain citations only.
 - [ ] Extend the trusted Lean checker from current certificate and formation
   parity to the complete canonical `KernelSnapshotIr` finite-model fragment.
   The anchored `category_kernel_v3` slice reconstructs the finite category
   presentation from exact `.axi`, checks ordered projections, identities,
-  composition, parallel equations and contextual congruence, and replays
+  composition, parallel equations and contextual congruence, replays both
+  formal inverse-law normalization traces for every generator, and replays
   complete bounded generator saturation. Full instance interpretations, formal
   groupoid equation lowering, refinements, and transports remain outside that
   certificate.
@@ -37,11 +39,14 @@ Related roadmaps:
   `RuntimeTheoryCheckReportV1`, closure tiers (`finite_fragment`,
   `evidence_weighted`, `global_indexed`), `axiograph check theory`,
   `axiograph discover theory-check`, `/semantic/theory-check`, and
-  `semantic_theory_check`. Canonical finite-theory replay now uses one shared
-  `Authoring`/`Query`/`Merge` gate receipt, with AxiStore enforcing the merge
-  receipt during candidate recompilation. Remaining work is to feed the richer
-  runtime-theory report into every behavior-case, context, migration, and
-  semantic coverage gate by default.
+  `semantic_theory_check`. Module summaries now use typed scope, coverage,
+  transport, residual, and non-claim fields rather than synthetic closure
+  claims. Canonical finite-theory replay uses one shared
+  `Authoring`/`Query`/`Merge` gate receipt with exact category/refinement/
+  explanation/context/identity-transport coverage; AxiStore stores and
+  reproduces the merge receipt during candidate recompilation. Remaining work
+  is to feed the richer runtime-theory report into every behavior-case, context,
+  migration, and semantic coverage gate by default.
 - [~] Make typed authoring and ontology exploration return one preview contract.
   W09 adds `authoring_workspace_request_v1` and
   `authoring_workspace_report_v1` as the sole CLI/LSP/MCP/HTTP ontology-
@@ -52,10 +57,13 @@ Related roadmaps:
   review. Remaining work is a canonical `.axi` delta renderer with explicit
   evidence/context provenance and the separate trusted workflow that turns a
   reviewed report plus VerifyMain receipt into an AxiStore `PromotionPlan`.
-- [ ] Keep typed query and certification first-class across REPL, server, and
+- [~] Keep typed query and certification first-class across REPL, server, and
   tooling through `query_ir_v1`, prepared query handles, structured
   diagnostics, anchor-aware answers, trust contracts, and soundness-scoped
-  certificates.
+  certificates. `axiograph check finite-query` now provides a bound
+  file-oriented route, and the regulated-shipment merge stores its exact
+  accepted answer receipt as the trust gate; remaining query surfaces must use
+  the same lifecycle distinction.
 - [~] Prefer maintained Rust crates over custom protocol/core infrastructure
   where Axiograph semantics do not require custom logic. Current choices:
   `rmcp` for MCP stdio servers, `lsp-server`/`lsp-types` for LSP/editor
@@ -137,7 +145,8 @@ Related roadmaps:
   context maps can feed semantic merge/rebase planning without a parallel DDD
   merge system.
 - [x] Query trust contracts and query-result certification expose a first
-  soundness-scoped trust surface.
+  soundness-scoped trust surface, including separate certifiability, emission,
+  and exact-answer-bound receipt status in the regulated-shipment gate.
 - [x] CQ-gated proposal preview exists for evidence-plane overlays.
 - [x] AxiStore owns semantic commits, refs, immutable attachments, audit
   lineage, accepted closures, and authenticated materialization receipts.
@@ -180,9 +189,12 @@ Related roadmaps:
   preservation has a finite Lean conformance slice and a precise status matrix.
 - [ ] Port remaining knowledge-graph transport, quotient, equivalence, and
   migration transport model into Lean.
-- [ ] Finish inverse paths, equivalence congruence, normalization, and
-  functoriality proofs, preferably using mathlib groupoid/free-groupoid
-  machinery.
+- [x] Finish endpoint-indexed identity/composition/inverse paths, unit/inverse/
+  associativity/congruence laws, mandatory normalization traces, and
+  Rust/Lean rejection parity using mathlib free-groupoid denotation.
+- [ ] Extend the proved finite path fragment into broader functoriality and
+  migration-transport theorems without treating rounded confidence as path
+  equality.
 - [ ] Port remaining probability and reconciliation verification modules as
   needed for the trusted checker.
 - [ ] Converge Rust and Lean parsers to a shared `Axiograph.ModuleAST` anchored

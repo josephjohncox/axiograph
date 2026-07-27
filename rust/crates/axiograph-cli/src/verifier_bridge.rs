@@ -1,15 +1,12 @@
 //! Fail-closed, typed bridge to the approved Lean certificate checker.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
-use sha2::{Digest, Sha256};
-
 use axiograph_pathdb::{AnswerIdV2, CertificateIdV2, CertificateV3, QueryIdV2, RevisionDigestV2};
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 
 pub(crate) const VERIFIER_PROTOCOL_V2: &str = "axiograph-verifier-stdio-v2";
 const MAX_VERIFIER_INPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -136,62 +133,32 @@ pub(crate) fn resolve_verifier_bin(config: &CertVerifyConfig) -> Option<PathBuf>
 
 #[cfg(test)]
 pub(crate) fn sha256_file(path: &Path) -> Result<String> {
-    let bytes = crate::security::read_file_bounded(
+    axiograph_security::sha256_file_bounded(
         path,
         MAX_VERIFIER_EXECUTABLE_BYTES,
         "verifier executable",
-    )?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
-}
-
-struct StagedVerifier {
-    _directory: tempfile::TempDir,
-    executable: PathBuf,
+    )
 }
 
 /// Copy the bytes that were actually hashed into a private execution directory.
 /// The configured pathname is never reopened by `Command`, closing the
 /// hash-then-exec replacement window.
-fn stage_approved_verifier(source: &Path, approved_sha: &str) -> Result<StagedVerifier> {
-    let bytes = crate::security::read_file_bounded(
-        source,
-        MAX_VERIFIER_EXECUTABLE_BYTES,
-        "verifier executable",
-    )?;
-    let actual_sha = format!("{:x}", Sha256::digest(&bytes));
-    if actual_sha != approved_sha {
-        return Err(anyhow!(
-            "verifier executable SHA-256 mismatch: expected {approved_sha}, got {actual_sha}"
-        ));
-    }
-
-    let directory = tempfile::Builder::new()
-        .prefix("axiograph-approved-verifier-")
-        .tempdir()
-        .context("failed to create private verifier staging directory")?;
+fn stage_approved_verifier(
+    source: &Path,
+    approved_sha: &str,
+) -> Result<axiograph_security::StagedApprovedExecutable> {
     let executable_name = if cfg!(windows) {
         "axiograph_verify.exe"
     } else {
         "axiograph_verify"
     };
-    let executable = directory.path().join(executable_name);
-    axiograph_security::write_file_atomic_bounded(
-        &executable,
-        &bytes,
+    axiograph_security::stage_approved_executable(
+        source,
+        approved_sha,
         MAX_VERIFIER_EXECUTABLE_BYTES,
-        "approved verifier executable",
+        executable_name,
+        "verifier executable",
     )
-    .context("failed to stage approved verifier bytes")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o500))
-            .context("failed to mark staged verifier executable")?;
-    }
-    Ok(StagedVerifier {
-        _directory: directory,
-        executable,
-    })
 }
 
 fn run_stdio_with_timeout(
@@ -280,8 +247,11 @@ pub(crate) fn verify_certificate_with_lean(
         expected_prepared_query_digest,
         expected_answer_digest,
     })?;
-    let (status, stdout, stderr) =
-        run_stdio_with_timeout(&staged_verifier.executable, &request, timeout)?;
+    let (status, stdout, stderr) = run_stdio_with_timeout(
+        &staged_verifier.executable().to_path_buf(),
+        &request,
+        timeout,
+    )?;
     if stdout.len() > MAX_VERIFIER_OUTPUT_BYTES || stderr.len() > MAX_VERIFIER_OUTPUT_BYTES {
         return Err(anyhow!("verifier output exceeded configured cap"));
     }
@@ -406,10 +376,10 @@ mod tests {
         let source = directory.path().join("checker");
         let approved_bytes = b"approved checker bytes";
         crate::security::write_output_bounded(&source, approved_bytes, "CLI output")?;
-        let approved_sha = format!("{:x}", Sha256::digest(approved_bytes));
+        let approved_sha = sha256_file(&source)?;
         let staged = stage_approved_verifier(&source, &approved_sha)?;
         crate::security::write_output_bounded(&source, b"replacement checker bytes", "CLI output")?;
-        assert_eq!(std::fs::read(staged.executable)?, approved_bytes);
+        assert_eq!(std::fs::read(staged.executable())?, approved_bytes);
         Ok(())
     }
 

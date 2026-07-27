@@ -20,7 +20,7 @@ use std::marker::PhantomData;
 use crate::axql::CompiledFiniteQueryPlan;
 use crate::axql::{
     parse_axql_path_expr, AxqlAtom, AxqlContextSpec, AxqlElaborationReport, AxqlQuery,
-    AxqlRefinementApplicationScopeV1, AxqlRefinementHandleV1, AxqlRefinementOpV1,
+    AxqlRefinementApplicationScopeV1, AxqlRefinementHandleV2, AxqlRefinementOpV1,
     AxqlRefinementTermV1, AxqlResult, AxqlTerm, PreparedQueryIntrospection, QueryCertifiability,
 };
 use crate::trust_contract::{
@@ -174,7 +174,7 @@ pub struct PreparedQueryMetadataV1 {
     pub trust: QueryTrustContract,
     pub non_claims: QueryNonClaimsV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refinement_handles: Vec<crate::typed_refinement::RuntimeRefinementHandleV1>,
+    pub refinement_handles: Vec<crate::typed_refinement::RuntimeRefinementHandleV2>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kernel_refs: Vec<RuntimeIrRef>,
     /// Canonical finite-theory evidence required by query preparation paths
@@ -210,7 +210,7 @@ pub struct PreparedQueryExplorationV1 {
     pub typed_holes: Vec<crate::axql::AxqlTypedHoleV1>,
     pub exploration_suggestions: Vec<crate::axql::AxqlExplorationSuggestionV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
+    pub refinement_candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV2>,
     pub semantic_claims: Vec<crate::trust_contract::SemanticClaimSummaryV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_coverage: Option<crate::trust_contract::SemanticCoverageSummaryV1>,
@@ -219,7 +219,7 @@ pub struct PreparedQueryExplorationV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryRefinementApplyResultV1 {
-    pub handle: AxqlRefinementHandleV1,
+    pub handle: AxqlRefinementHandleV2,
     pub base_prepared_query: PreparedQueryMetadataV1,
     pub refined_prepared_query: PreparedQueryMetadataV1,
     pub base_query_ir_v1: QueryIrV1,
@@ -649,7 +649,7 @@ impl QueryIrV1 {
     /// future protocol version carries explicit disjunct targeting.
     pub(crate) fn apply_refinement_handle(
         &self,
-        handle: &AxqlRefinementHandleV1,
+        handle: &AxqlRefinementHandleV2,
     ) -> Result<QueryIrV1> {
         handle.validate()?;
         match handle.scope {
@@ -861,7 +861,7 @@ fn query_ir_v1_from_prepared_binding(binding: &PreparedQueryBindingV1) -> QueryI
 
 fn runtime_refinement_handles_from_report(
     report: &AxqlElaborationReport,
-) -> Vec<crate::typed_refinement::RuntimeRefinementHandleV1> {
+) -> Vec<crate::typed_refinement::RuntimeRefinementHandleV2> {
     let mut seen = BTreeSet::new();
     let mut handles = Vec::new();
     for handle in report
@@ -869,7 +869,7 @@ fn runtime_refinement_handles_from_report(
         .iter()
         .flat_map(|suggestion| suggestion.refinement_candidates.iter())
         .map(|candidate| {
-            crate::typed_refinement::RuntimeRefinementHandleV1::from_query(candidate.handle.clone())
+            crate::typed_refinement::RuntimeRefinementHandleV2::from_query(candidate.handle.clone())
         })
     {
         if seen.insert(handle.id.clone()) {
@@ -1287,7 +1287,7 @@ impl CompiledFiniteQuery {
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-        handle: &AxqlRefinementHandleV1,
+        handle: &AxqlRefinementHandleV2,
         theory_graph: Option<(&RuntimeSchemaIndex, &[TheoryIr])>,
     ) -> Result<QueryRefinementApplyResultV1> {
         let current = self
@@ -1702,7 +1702,7 @@ impl CompiledFiniteQuery {
                 None => true,
             })
             .flat_map(|suggestion| suggestion.refinement_candidates.clone().into_iter())
-            .map(crate::typed_refinement::RuntimeRefinementCandidateV1::from_axql)
+            .map(crate::typed_refinement::RuntimeRefinementCandidateV2::from_axql)
             .collect();
 
         PreparedQueryExplorationV1 {
@@ -1760,7 +1760,7 @@ impl CompiledFiniteQuery {
             })
             .flat_map(|suggestion| suggestion.refinement_candidates.clone().into_iter())
             .map(|candidate| {
-                crate::typed_refinement::RuntimeRefinementCandidateV1::from_axql_with_theory(
+                crate::typed_refinement::RuntimeRefinementCandidateV2::from_axql_with_theory(
                     candidate,
                     compiled_schema,
                     theories,
@@ -1787,7 +1787,7 @@ impl CompiledFiniteQuery {
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-        handle: &AxqlRefinementHandleV1,
+        handle: &AxqlRefinementHandleV2,
     ) -> Result<QueryRefinementApplyResultV1> {
         self.apply_refinement_handle_internal(db, meta, handle, None)
     }
@@ -1798,7 +1798,7 @@ impl CompiledFiniteQuery {
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-        handle: &AxqlRefinementHandleV1,
+        handle: &AxqlRefinementHandleV2,
         compiled_schema: &RuntimeSchemaIndex,
         theories: &[TheoryIr],
     ) -> Result<QueryRefinementApplyResultV1> {
@@ -1840,7 +1840,7 @@ impl CompiledFiniteQuery {
             .into_iter()
             .find(|candidate| candidate.handle.id == handle_id)
             .map(|candidate| match candidate.handle.payload {
-                crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } => handle,
+                crate::typed_refinement::RuntimeRefinementPayloadV2::Query { handle } => handle,
                 _ => unreachable!("query exploration must only emit query-domain candidates"),
             })
             .ok_or_else(|| anyhow!("unknown refinement handle `{handle_id}`"))?;
@@ -1854,10 +1854,10 @@ impl CompiledFiniteQuery {
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-        handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+        handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
     ) -> Result<QueryRefinementApplyResultV1> {
         handle.validate()?;
-        let crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } = &handle.payload
+        let crate::typed_refinement::RuntimeRefinementPayloadV2::Query { handle } = &handle.payload
         else {
             return Err(anyhow!(
                 "runtime refinement handle `{}` is not a query refinement",
@@ -1873,12 +1873,12 @@ impl CompiledFiniteQuery {
         &self,
         db: &axiograph_pathdb::PathDB,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-        handle: &crate::typed_refinement::RuntimeRefinementHandleV1,
+        handle: &crate::typed_refinement::RuntimeRefinementHandleV2,
         compiled_schema: &RuntimeSchemaIndex,
         theories: &[TheoryIr],
     ) -> Result<QueryRefinementApplyResultV1> {
         handle.validate()?;
-        let crate::typed_refinement::RuntimeRefinementPayloadV1::Query { handle } = &handle.payload
+        let crate::typed_refinement::RuntimeRefinementPayloadV2::Query { handle } = &handle.payload
         else {
             return Err(anyhow!(
                 "runtime refinement handle `{}` is not a query refinement",
@@ -2801,7 +2801,7 @@ fn query_term_from_refinement_term(
 }
 
 fn query_atom_from_refinement_handle(
-    handle: &AxqlRefinementHandleV1,
+    handle: &AxqlRefinementHandleV2,
     used: &mut BTreeSet<String>,
 ) -> Result<QueryAtomIrV1> {
     let mut suggested_names: BTreeMap<String, String> = BTreeMap::new();
@@ -2846,6 +2846,13 @@ fn query_atom_from_refinement_handle(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    fn refinement_context(label: &str) -> crate::axql::AxqlRefinementContextV2 {
+        crate::axql::AxqlRefinementContextV2::residual(
+            axiograph_kernel::revision_digest_v2(label).to_string(),
+            format!("query-test:{label}"),
+        )
+    }
 
     #[test]
     fn query_certificate_policy_v1_require_verified_preconditions_fail_closed() -> Result<()> {
@@ -3133,7 +3140,7 @@ instance I of Demo:
         }));
         assert!(full.refinement_candidates.iter().any(|candidate| matches!(
             candidate.handle.domain(),
-            crate::typed_refinement::RuntimeRefinementDomainV1::Query
+            crate::typed_refinement::RuntimeRefinementDomainV2::Query
         )));
         assert!(!full.semantic_claims.is_empty());
         assert!(full.semantic_coverage.is_some());
@@ -3220,7 +3227,7 @@ instance I of Demo:
             handle.validate().is_ok()
                 && matches!(
                     handle.domain(),
-                    crate::typed_refinement::RuntimeRefinementDomainV1::Query
+                    crate::typed_refinement::RuntimeRefinementDomainV2::Query
                 )
         }));
 
@@ -3486,7 +3493,7 @@ instance I of Demo:
             .find(|candidate| {
                 matches!(
                     candidate.kind,
-                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::BindFactRelation
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV2::BindFactRelation
                 )
             })
             .map(|candidate| candidate.handle.id)
@@ -3598,7 +3605,8 @@ instance I of Demo:
             }"#,
         )?;
 
-        let handle = AxqlRefinementHandleV1::new(
+        let handle = AxqlRefinementHandleV2::new(
+            refinement_context("freshen-suggested-variable"),
             AxqlRefinementApplicationScopeV1::SingleConjunction,
             AxqlRefinementOpV1::AddEdgeAtom {
                 left: AxqlRefinementTermV1::SuggestedVariable {
@@ -3751,7 +3759,7 @@ instance I of Demo:
             .find(|candidate| {
                 matches!(
                     candidate.kind,
-                    crate::typed_refinement::RuntimeRefinementCandidateKindV1::BindFactRelation
+                    crate::typed_refinement::RuntimeRefinementCandidateKindV2::BindFactRelation
                 )
             })
             .map(|candidate| candidate.handle.id)
@@ -3761,7 +3769,8 @@ instance I of Demo:
         assert_eq!(applied.handle.id, handle_id);
         assert!(!applied.refined_exploration.refinement_candidates.is_empty());
 
-        let forged_but_internally_valid = AxqlRefinementHandleV1::new(
+        let forged_but_internally_valid = AxqlRefinementHandleV2::new(
+            refinement_context("forged-handle"),
             AxqlRefinementApplicationScopeV1::SingleConjunction,
             AxqlRefinementOpV1::AddTypeGuard {
                 term: AxqlRefinementTermV1::ExistingVariable {
@@ -3792,7 +3801,8 @@ instance I of Demo:
               "limit": 5
             }"#,
         )?;
-        let handle = AxqlRefinementHandleV1::new(
+        let handle = AxqlRefinementHandleV2::new(
+            refinement_context("reject-disjunction"),
             AxqlRefinementApplicationScopeV1::SingleConjunction,
             AxqlRefinementOpV1::AddTypeGuard {
                 term: AxqlRefinementTermV1::ExistingVariable {

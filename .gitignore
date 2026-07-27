@@ -161,5 +161,6 @@ bin/
 *.stderr
 !rust/crates/axiograph-pathdb/tests/ui/*.stderr
 
-# Local multi-agent review artifacts
+# Local agent indexes and review artifacts
+.codebase-index/
 .pi-subagents/

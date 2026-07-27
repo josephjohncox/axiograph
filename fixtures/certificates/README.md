@@ -7,7 +7,8 @@ Use them when the feature being tested is the certificate checker itself:
 
 - `normalize_path_v2*.json` exercises path normalization and groupoid laws.
 - `path_equiv_v2.json` exercises path-equivalence witnesses.
-- `rewrite_derivation_v2.json` exercises replayable rewrite steps.
+- generic rewrites are tested by `make verify-lean-e2e-rewrite-derivation-v3`,
+  which emits a V3 derivation anchored to the exact `.axi` rule corpus.
 - `resolution_v2.json` exercises deterministic evidence/conflict decisions.
 - `delta_f_v1.json` exercises the current migration recompute fixture.
 

@@ -363,6 +363,11 @@ pub struct OpaqueEquationIr {
     pub name: String,
     pub lhs: String,
     pub rhs: String,
+    /// Canonical citation when the sole `SchemaPresentationIr` accepted this
+    /// source as a typed forward generator equation. The runtime parser does
+    /// not duplicate that category presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_formation_ref: Option<KernelRefV2>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2576,6 +2581,52 @@ pub fn derive_runtime_package_index(
     )
 }
 
+fn attach_canonical_equation_formation_refs(
+    source_theory: &SchemaV1Theory,
+    runtime_theory: &mut TheoryIr,
+    canonical_snapshot: &CompiledKernelSnapshot,
+) {
+    let matching_schemas = canonical_snapshot
+        .ir()
+        .schemas()
+        .iter()
+        .filter(|schema| schema.label == source_theory.schema)
+        .collect::<Vec<_>>();
+    let [schema] = matching_schemas.as_slice() else {
+        return;
+    };
+    let matching_theories = canonical_snapshot
+        .ir()
+        .theories()
+        .iter()
+        .filter(|theory| theory.schema_id == schema.schema_id && theory.label == source_theory.name)
+        .collect::<Vec<_>>();
+    let [canonical_theory] = matching_theories.as_slice() else {
+        return;
+    };
+    for opaque in &mut runtime_theory.opaque_equations {
+        let Some(equation) = canonical_theory
+            .equations
+            .iter()
+            .find(|equation| equation.label == opaque.name && equation.schema_equation.is_some())
+        else {
+            continue;
+        };
+        opaque.canonical_formation_ref = canonical_snapshot
+            .ir()
+            .refs()
+            .iter()
+            .find(|reference| {
+                matches!(
+                    reference,
+                    KernelRefV2::Equation { equation_id, .. }
+                        if equation_id == &equation.equation_id
+                )
+            })
+            .cloned();
+    }
+}
+
 fn derive_runtime_index_from_validated(
     module: &SchemaV1Module,
     module_digest: AxiDigest,
@@ -2602,9 +2653,15 @@ fn derive_runtime_index_from_validated(
                     theory.name, theory.schema, module.module_name
                 )
             })?;
-            derive_runtime_theory_index(compiled_schema, theory)
+            let mut runtime_theory = derive_runtime_theory_index(compiled_schema, theory)?;
+            attach_canonical_equation_formation_refs(
+                theory,
+                &mut runtime_theory,
+                &canonical_snapshot,
+            );
+            Ok(runtime_theory)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, String>>()?;
 
     let instances = module
         .instances
@@ -3023,6 +3080,7 @@ pub fn derive_runtime_theory_index(
                 name: equation.name.clone(),
                 lhs: equation.lhs.clone(),
                 rhs: equation.rhs.clone(),
+                canonical_formation_ref: None,
             }),
         }
     }

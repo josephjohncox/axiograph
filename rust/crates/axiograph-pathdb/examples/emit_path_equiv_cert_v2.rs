@@ -38,8 +38,12 @@ fn main() {
         }),
     };
 
-    let (left_norm, left_derivation) = left.normalize_with_derivation();
-    let (right_norm, right_derivation) = right.normalize_with_derivation();
+    let (left_norm, left_derivation) = left
+        .normalize_with_derivation()
+        .expect("left path must produce a replay trace");
+    let (right_norm, right_derivation) = right
+        .normalize_with_derivation()
+        .expect("right path must produce a replay trace");
     assert_eq!(
         left_norm, right_norm,
         "expected left and right to normalize to the same form"

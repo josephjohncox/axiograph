@@ -121,7 +121,9 @@ Two different operations must not be conflated:
   compiled obligation list. It does not saturate arbitrary theory rules.
 - `category_kernel_v3` reconstructs a finite category presentation and performs
   bounded generator-reachability saturation over at most 64 objects and 4,096
-  arrows, with equations, congruence, and explanations checked by Lean.
+  arrows, with equations, congruence, exact formal inverse-law cancellation
+  traces, and explanations checked by Lean. Certificate bytes remain subject to
+  the verifier's global size and JSON-nesting limits.
 
 AxQL, prepared-query, HTTP query, and certified query paths have hard limits on
 query text and structure, path repetition, assignments, concurrency, and result

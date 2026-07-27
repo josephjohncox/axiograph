@@ -45,9 +45,12 @@ That boundary currently checks:
 - `category_kernel_v3` reconstruction of relation-object category
   presentations from exact anchored `.axi`, including ordered projections,
   identities, typed composition, parallel equations, contextual congruence,
-  and exact-closure checking for bounded finite generator reachability;
+  exact signed cancellation traces for both formal inverse laws of every
+  generator, and exact-closure checking for bounded finite generator reachability;
 - `rewrite_derivation_v3` replay against canonical `.axi` rewrite rules;
-- `normalize_path_v2` and `path_equiv_v2` path witnesses;
+- `normalize_path_v2` and `path_equiv_v2` mandatory rewrite traces, with
+  acceptance-to-free-groupoid-denotation theorems imported through
+  `Axiograph.Certificate.Invariants`;
 - `delta_f_v1` migration certificate that checks recomputed parity over the
   supported fragment.
 
@@ -76,11 +79,11 @@ claim; they do not extend what Lean proves.
 | Fixed-point probability | In verifier boundary | Used by certs and evidence scoring | Deterministic checked arithmetic where certificates use it |
 | Reachability v3 | In verifier boundary | Used as the path-witness syntax inside V4 | Replay soundness for anchored canonical facts |
 | Query result v4 | In verifier boundary with `ensureExactFiniteCompletenessV4_sound` | `CompiledFiniteQuery` is the only executable/certifiable family | Exact completeness for bounded finite type/derived-attribute/RPQ UCQs; no open-world ontology-closure claim |
-| Path normalization/equivalence | In verifier boundary for v2 certs | Runtime path/rewrite checks exist | Narrow path witness replay |
+| Path normalization/equivalence | In verifier boundary with mandatory traces and endpoint-retyped replay-soundness theorems | Runtime uses the same endpoint and rewrite vocabulary | Denotational equality in the supported free-groupoid syntax after endpoint retyping; no ontology-fact or confidence-equality claim |
 | Rewrite derivation v3 | In verifier boundary | Runtime rewrite admissibility exists | Replay against accepted canonical rules |
 | Delta-F migration | In verifier boundary as recomputed witness | Runtime transport plans exist | Narrow recompute parity, not full functorial migration theory |
 | Runtime theory checker | Not in verifier boundary | `RuntimeTheoryCheckReportV1` is an admissibility scan | Typed admissibility/residual report only; no saturation, fixpoint, completeness, or closure claim |
-| Finite category/dependent/groupoid theory | `Axiograph.Theory.Finite` is in `VerifyMain` through strict `category_kernel_v3` dispatch | Canonical IR stores the presentation, executable saturation, formal equations, dependent witnesses, holes, lifecycle states, and shared gate receipts | Trusted anchored presentation reconstruction, equation congruence, and exact bounded generator reachability; broader finite interpretation/transport and Rust gate claims remain untrusted |
+| Finite category/dependent/groupoid theory | `Axiograph.Theory.Finite` is in `VerifyMain` through strict `category_kernel_v3` dispatch | Canonical IR stores the presentation, executable saturation, formal equations, traced normalization, dependent witnesses, holes, lifecycle states, and shared gate receipts | Trusted anchored presentation reconstruction plus finite decision procedures and wire replay for equation congruence, formal inverse cancellation, and bounded generator reachability; no category-wire denotation theorem, and broader finite interpretation/transport and Rust gate claims remain untrusted |
 | `RuntimeSemanticIndex` / `RuntimeIrRef` | Not encoded fully | Derived runtime citation surface exists after canonical compilation | Typed runtime citation, not Lean proof or semantic authority |
 | Semantic slices and merge lattice | Finite Lean conformance slice exists outside verifier | Runtime merge lattice exists | Finite operational preservation slice only |
 | Semantic rebase transport | Finite Lean conformance slice exists outside verifier | Runtime rebase transport plans exist | Runtime transport classification, not certified rebase yet |
@@ -145,24 +148,29 @@ a general theorem that the implementation cannot support.
 It provides:
 
 - finite objects and arrows, with relation objects and role projections checked
-  against source/target types and exact zero-based declaration order;
+  against source/target types, exact zero-based declaration order, and unique
+  earlier-role names in every dependent index;
   `compileAxiSchemaPresentation` derives this
   slice from Lean's canonical `.axi` schema AST rather than inventing a second
   authoring authority;
 - endpoint-indexed category paths and parallel-path presentation equations;
-- free-groupoid completion whose identity, associativity, and inverse laws are
-  proved by denotation into mathlib's `Quiver.FreeGroupoid`;
+- free-groupoid completion whose unit, inverse, associativity, composition
+  congruence, and inverse congruence laws are proved by denotation into
+  mathlib's `Quiver.FreeGroupoid`;
 - finite-set interpretations, dependent role witnesses, equality/membership
   refinements, context-indexed values, context transports, and a theorem that
   typed paths preserve declared context visibility;
-- typed path holes with explicit `Residual → ExplanationVerified` selection
-  lifecycle and explicit residual-obligation kinds; and
+- typed path holes whose selection requires the `Residual` lifecycle plus a
+  matching nonempty typed-hole obligation before producing
+  `ExplanationVerified`; and
 - deterministic finite reachability saturation with replayable explanation
   certificates under the same fixed bounds used by Rust.
 
 The explanation checker verifies seed inclusion, typed replay, and closure under
 composition. Since every explanation is built only from identities, declared
-generators, and composition, accepted entries cannot invent a path. The
+generators, and composition, accepted entries cannot invent an endpoint pair.
+It accepts any valid typed explanation tree for that pair; it does not require
+literal equality with Rust's chosen tree. The
 certificate is exact only for that finite reachability relation. Equations do
 not create endpoints; arbitrary rewrite application, termination, confluence,
 ontology fact closure, and open-world completeness remain non-claims. Surface
@@ -175,13 +183,31 @@ The module is imported by `lean/Axiograph.lean`, exercised by
 `axiograph_finite_theory_tests`, and imported into `VerifyMain` through
 `Certificate.Format`. Envelope V3 kind `category_kernel_v3` carries the
 compiler's finite name/index presentation, contextual congruence certificates,
-and strict saturation certificate under a V2 exact-byte revision anchor.
+exact signed cancellation traces for both inverse laws of every generator, and
+a strict saturation certificate under a V2 exact-byte revision anchor.
 `Certificate.Check` independently reconstructs the schema presentation from the
 anchored `.axi`, requires exact equality with the compiler projection, replays
-all equation replacements and reachability explanations, and enforces exact
-identity/generator/composition closure under the 64-object/4,096-arrow bounds.
+all equation replacements, formal inverse cancellations, and reachability
+explanations, and enforces exact identity/generator/composition closure under
+the 64-object/4,096-arrow bounds. Congruence also checks the selected equation's
+source and target at the replacement offset, including empty identity paths,
+and requires one one-step forward witness per equation.
+
+This V3 path is a decision procedure plus replay, not theorem-backed replay.
+Its wire words are not retyped as dependent `GroupoidPath` values, and no
+acceptance theorem connects successful cancellation replay to
+`GroupoidPath.denote` or `PathEquiv`. The denotational laws proved earlier in the
+module apply to the dependent path type, not automatically to this wire format.
+The exact-byte anchor names one defining module. Rust refuses V3 export when a
+forward equation on that schema comes from an importing module, because Lean
+cannot reconstruct that extension from the single anchored file. Import-closure
+certification requires a future closure anchor.
+
 It does not deserialize the complete Rust `KernelSnapshotIr` or certify full
-instances, refinements, transports, or relation-span groupoid equations.
+instances, `ObjectMembershipWitnessIr`, `RoleIndexedWitnessIr`,
+`TypedConstraintWitnessIr`, `DependentContextIr`, non-identity transports, or
+relation-span groupoid equations. Those payloads are replayable Rust
+finite-decision evidence with explicit non-claims, not trusted proof terms.
 
 The finite executable also contains a regulated-shipment presentation with
 three relation objects (`ShipmentContainsBatch`, `BatchHasCertificate`, and
@@ -201,23 +227,29 @@ make verify-lean-e2e-category-kernel-v3
 
 The first target runs the broader finite-theory regressions. The second checks
 Rust/Lean exact-presentation equality for the canonical regulated-shipment
-schema and proves that formation, congruence, and saturation tampering rejects.
+schema and proves that formation, congruence, signed normalization-trace, and
+saturation tampering rejects.
 
 The theory gate also runs Rust regressions proving that `RuntimeTheoryCheckReportV1`
-never synthesizes completeness/closure/fixpoint claims, never reports checked
-obligations as derived obligations, preserves evidence-filtered semantic
-residuals, and keeps transitivity review-only without an executor.
+uses typed scope, coverage, residual, transport, and non-claim fields rather
+than synthetic completeness/closure/fixpoint claims; never reports checked
+obligations as derived obligations; preserves evidence-filtered semantic
+residuals; and keeps transitivity review-only without an executor.
 
 `authoring_workspace_report_v1` exposes the matching Rust finite fragment to
 CLI, LSP, MCP, and HTTP: compiled relation objects/projections, typed
 refinements, endpoint-safe paths, finite CQ/query execution, exact compiled
-payload fingerprints, and an `Authoring` finite-theory gate receipt. Prepared
-query metadata carries a separate `Query` receipt when the accepted snapshot is
-available. AxiStore requires the same checker module with a `Merge` consumer
-before accepted candidate comparison. These Rust receipts are not Lean
-encodings. The separate anchored `category_kernel_v3` certificate covers only
-the finite category presentation, contextual equation congruence, and generator
-saturation; neither it nor the Rust gate receipts establish category
+payload fingerprints, and an `Authoring` finite-theory gate receipt. The receipt
+contains typed scope and exact replay coverage for category formation,
+identities, saturation explanations, refinements, contexts, and identity
+transports, plus residuals and non-claims. Prepared query metadata carries a
+separate `Query` receipt when the accepted snapshot is available. Every
+AxiStore typed candidate carries a `Merge` receipt that is reproduced during
+canonical recompilation. These Rust receipts are not Lean encodings. The
+separate anchored `category_kernel_v3` certificate covers only
+the finite category presentation, contextual equation congruence, formal
+inverse-law normalization, and generator saturation; neither it nor the Rust
+gate receipts establish category
 equivalence between arbitrary presentations, naturality, univalence,
 higher-path equality, rewrite confluence, or ontology closure.
 

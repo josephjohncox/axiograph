@@ -123,4 +123,28 @@ theorem denote_inv_right {a b : Nat} (p : PathExpr a b) :
     denote (.trans (.inv p) p) = denote (.refl b) := by
   simp [denote]
 
+theorem denote_inv_refl (a : Nat) :
+    denote (.inv (.refl a)) = denote (.refl a) := by
+  simp [denote]
+
+theorem denote_inv_inv {a b : Nat} (p : PathExpr a b) :
+    denote (.inv (.inv p)) = denote p := by
+  simp [denote]
+
+theorem denote_inv_trans {a b c : Nat} (p : PathExpr a b) (q : PathExpr b c) :
+    denote (.inv (.trans p q)) = denote (.trans (.inv q) (.inv p)) := by
+  simp [denote]
+
+theorem denote_congr_trans {a b c : Nat} {p p' : PathExpr a b}
+    {q q' : PathExpr b c} (hp : denote p = denote p') (hq : denote q = denote q') :
+    denote (.trans p q) = denote (.trans p' q') := by
+  simp only [denote]
+  rw [hp, hq]
+
+theorem denote_congr_inv {a b : Nat} {p q : PathExpr a b}
+    (h : denote p = denote q) :
+    denote (.inv p) = denote (.inv q) := by
+  simp only [denote]
+  rw [h]
+
 end Axiograph.HoTT

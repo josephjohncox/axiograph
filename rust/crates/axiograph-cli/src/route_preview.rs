@@ -251,7 +251,7 @@ fn resolve_route(
     }
 
     let expr = route_expr_from_atoms(route.start_entity, atoms);
-    let normalized_expr = optimizer.normalize_path_v2::<NoProof>(expr.clone()).value;
+    let normalized_expr = optimizer.normalize_path_v2::<NoProof>(expr.clone())?.value;
     let normalized = normalized_route_preview(db, &normalized_expr)?;
 
     Ok((

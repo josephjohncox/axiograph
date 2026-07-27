@@ -224,6 +224,21 @@ pub(crate) struct AuthoringCqHoleV1 {
     pub expected_next_form: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct AuthoringTheoryHoleV1 {
+    pub obligation_ref: axiograph_pathdb::kernel_ir::TheoryObligationRefIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject_refs: Vec<axiograph_pathdb::kernel_ir::TheorySubjectRefIr>,
+    pub runtime_status: axiograph_pathdb::RuntimeTheoryCheckStatusV1,
+    pub lifecycle: axiograph_kernel::CheckedLifecycleStateIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub residual_obligations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repair_handle_ids: Vec<String>,
+    pub authority: String,
+    pub lean_certification: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct AuthoringTypedHolesV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -232,6 +247,32 @@ pub(crate) struct AuthoringTypedHolesV1 {
     pub query: Vec<crate::axql::AxqlTypedHoleV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub competency_questions: Vec<AuthoringCqHoleV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub theory: Vec<AuthoringTheoryHoleV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct AuthoringDependentContextSummaryV1 {
+    pub context_id: String,
+    pub axis: axiograph_kernel::ScopeAxisIr,
+    pub object: axiograph_kernel::SchemaObjectRefIr,
+    pub value: axiograph_kernel::TypedValueIr,
+    pub visible_scope_witnesses: usize,
+    pub lifecycle: axiograph_kernel::CheckedLifecycleStateIr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct AuthoringDependentRefinementSummaryV1 {
+    pub instance_id: String,
+    pub object_membership_witnesses: usize,
+    pub role_indexed_witnesses: usize,
+    pub typed_constraint_witnesses: usize,
+    pub contexts: Vec<AuthoringDependentContextSummaryV1>,
+    pub lifecycle: axiograph_kernel::CheckedLifecycleStateIr,
+    pub residual_obligations: Vec<axiograph_kernel::TheoryResidualObligationIr>,
+    pub runtime_authority: String,
+    pub lean_certification: String,
+    pub non_claims: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,7 +364,8 @@ pub(crate) struct AuthoringWorkspaceReportV1 {
     pub diagnostics: Vec<AuthoringDiagnosticV1>,
     pub validation: AuthoringValidationV1,
     pub typed_holes: AuthoringTypedHolesV1,
-    pub repairs: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
+    pub dependent_refinements: Vec<AuthoringDependentRefinementSummaryV1>,
+    pub repairs: Vec<crate::typed_refinement::RuntimeRefinementCandidateV2>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub competency_questions: Option<AuthoringCompetencyReportV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -448,6 +490,7 @@ impl AuthoringWorkspaceService {
             }),
         }
         report.stable_runtime_refs = candidate.kernel.runtime_semantic_index().refs;
+        report.dependent_refinements = dependent_refinement_summaries(&candidate);
 
         if candidate.kernel.theories.is_empty() {
             report.validation.runtime_theory_gate = AuthoringGateDecisionV1::Passed;
@@ -471,8 +514,14 @@ impl AuthoringWorkspaceService {
                         AuthoringGateDecisionV1::Passed
                     };
                     if blocked {
+                        let hard_failure = theory.summary.blocking_errors > 0
+                            || theory.summary.blocked_obligations > 0;
                         report.diagnostics.push(AuthoringDiagnosticV1 {
-                            severity: AuthoringDiagnosticSeverityV1::Error,
+                            severity: if hard_failure {
+                                AuthoringDiagnosticSeverityV1::Error
+                            } else {
+                                AuthoringDiagnosticSeverityV1::Warning
+                            },
                             code: "authoring_runtime_theory_blocked".to_string(),
                             message: format!(
                                 "runtime finite-fragment theory review has {} blocker(s), {} review-only obligation(s), {} residual obligation(s), and unresolved ids [{}]",
@@ -495,10 +544,61 @@ impl AuthoringWorkspaceService {
                         .iter()
                         .flat_map(|module| module.judgments.iter())
                         .filter(|judgment| {
-                            judgment.status
-                                != axiograph_pathdb::RuntimeTheoryCheckStatusV1::Checked
+                            judgment.status != axiograph_pathdb::RuntimeTheoryCheckStatusV1::Checked
                         })
                     {
+                        let required_action = match judgment.status {
+                            axiograph_pathdb::RuntimeTheoryCheckStatusV1::Blocked => {
+                                "repair the canonical .axi endpoints, roles, or scope axes and recompile"
+                            }
+                            axiograph_pathdb::RuntimeTheoryCheckStatusV1::ReviewOnly => {
+                                "replace the review-only source with a supported finite obligation or obtain a separate accepted certificate"
+                            }
+                            axiograph_pathdb::RuntimeTheoryCheckStatusV1::ResidualObligation => {
+                                "supply the missing typed scope/transport evidence or retain the obligation explicitly on a review branch"
+                            }
+                            axiograph_pathdb::RuntimeTheoryCheckStatusV1::Checked => {
+                                "no repair required"
+                            }
+                        }
+                        .to_string();
+                        let lifecycle = if judgment.status
+                            == axiograph_pathdb::RuntimeTheoryCheckStatusV1::Blocked
+                        {
+                            axiograph_kernel::CheckedLifecycleStateIr::Rejected
+                        } else {
+                            axiograph_kernel::CheckedLifecycleStateIr::Residual
+                        };
+                        let repair = crate::typed_refinement::RuntimeRefinementCandidateV2::new_theory(
+                            format!(
+                                "address runtime theory obligation `{}`",
+                                judgment.obligation_ref.stable_id()
+                            ),
+                            crate::typed_refinement::TheoryRefinementOpV1::AddressRuntimeTheoryObligation {
+                                source_artifact_digest: candidate.package.snapshot().ir().ir_digest().to_string(),
+                                expected_lifecycle: lifecycle,
+                                obligation_ref: judgment.obligation_ref.clone(),
+                                subject_refs: judgment.subject_refs.clone(),
+                                status: judgment.status,
+                                residual_obligations: judgment.residual_obligations.clone(),
+                                required_action,
+                            },
+                            judgment.obligation_ref.clone(),
+                            judgment.subject_refs.clone(),
+                        );
+                        let repair_handle_id = repair.handle.id.clone();
+                        report.typed_holes.theory.push(AuthoringTheoryHoleV1 {
+                            obligation_ref: judgment.obligation_ref.clone(),
+                            subject_refs: judgment.subject_refs.clone(),
+                            runtime_status: judgment.status,
+                            lifecycle,
+                            residual_obligations: judgment.residual_obligations.clone(),
+                            repair_handle_ids: vec![repair_handle_id.clone()],
+                            authority: "untrusted_rust_runtime_admissibility".to_string(),
+                            lean_certification: "not_certified; VerifyMain acceptance requires a separate supported certificate"
+                                .to_string(),
+                        });
+                        extend_unique_repairs(&mut report.repairs, vec![repair]);
                         report.diagnostics.push(AuthoringDiagnosticV1 {
                             severity: match judgment.status {
                                 axiograph_pathdb::RuntimeTheoryCheckStatusV1::Blocked => {
@@ -512,11 +612,21 @@ impl AuthoringWorkspaceService {
                                     AuthoringDiagnosticSeverityV1::Information
                                 }
                             },
-                            code: format!(
-                                "authoring_runtime_theory_{:?}",
-                                judgment.status
-                            )
-                            .to_lowercase(),
+                            code: match judgment.status {
+                                axiograph_pathdb::RuntimeTheoryCheckStatusV1::Checked => {
+                                    "authoring_runtime_theory_checked"
+                                }
+                                axiograph_pathdb::RuntimeTheoryCheckStatusV1::ReviewOnly => {
+                                    "authoring_runtime_theory_review_only"
+                                }
+                                axiograph_pathdb::RuntimeTheoryCheckStatusV1::ResidualObligation => {
+                                    "authoring_runtime_theory_residual_obligation"
+                                }
+                                axiograph_pathdb::RuntimeTheoryCheckStatusV1::Blocked => {
+                                    "authoring_runtime_theory_blocked_obligation"
+                                }
+                            }
+                            .to_string(),
                             message: format!(
                                 "theory obligation `{}` ({}) is {:?}: {}",
                                 judgment.obligation_ref.stable_id(),
@@ -527,7 +637,7 @@ impl AuthoringWorkspaceService {
                             path: Some(request.axi_path.clone()),
                             line: None,
                             repair_hint: Some(format!(
-                                "inspect typed subjects [{}] and resolve residuals [{}] before requesting promotion",
+                                "apply or inspect repair handle `{repair_handle_id}` over typed subjects [{}] and residuals [{}] before requesting promotion; this handle is runtime guidance, not Lean certification",
                                 judgment
                                     .subject_refs
                                     .iter()
@@ -1040,6 +1150,7 @@ fn empty_report(
             non_claims: authoring_non_claims(),
         },
         typed_holes: AuthoringTypedHolesV1::default(),
+        dependent_refinements: Vec::new(),
         repairs: Vec::new(),
         competency_questions: None,
         prepared_query: None,
@@ -1071,6 +1182,44 @@ fn empty_report(
             non_claims: authoring_non_claims(),
         },
     }
+}
+
+fn dependent_refinement_summaries(
+    candidate: &CompiledWorkspaceSource,
+) -> Vec<AuthoringDependentRefinementSummaryV1> {
+    candidate
+        .package
+        .snapshot()
+        .ir()
+        .instances()
+        .iter()
+        .map(|instance| AuthoringDependentRefinementSummaryV1 {
+            instance_id: instance.instance_id.to_string(),
+            object_membership_witnesses: instance.object_membership_witnesses.len(),
+            role_indexed_witnesses: instance.role_witnesses.len(),
+            typed_constraint_witnesses: instance.typed_constraint_witnesses.len(),
+            contexts: instance
+                .dependent_contexts
+                .iter()
+                .map(|context| AuthoringDependentContextSummaryV1 {
+                    context_id: context.context_id.clone(),
+                    axis: context.axis,
+                    object: context.object.clone(),
+                    value: context.value.clone(),
+                    visible_scope_witnesses: context.scope_witnesses.len(),
+                    lifecycle: context.lifecycle,
+                })
+                .collect(),
+            lifecycle: instance.lifecycle,
+            residual_obligations: instance.residual_obligations.clone(),
+            runtime_authority: "canonical_compiler_finite_decision_procedure".to_string(),
+            lean_certification: "not_certified_by_category_kernel_v3".to_string(),
+            non_claims: vec![
+                "object membership, role fibers, finite constraints, and contexts are replayable Rust witnesses, not Lean proofs".to_string(),
+                "the summary covers only the exact compiled finite instance".to_string(),
+            ],
+        })
+        .collect()
 }
 
 fn source_anchor(
@@ -1239,8 +1388,8 @@ fn kernel_ref_logical_key(reference: &KernelRefV2) -> (String, String) {
 }
 
 fn extend_unique_repairs(
-    target: &mut Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
-    candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV1>,
+    target: &mut Vec<crate::typed_refinement::RuntimeRefinementCandidateV2>,
+    candidates: Vec<crate::typed_refinement::RuntimeRefinementCandidateV2>,
 ) {
     let mut ids = target
         .iter()
@@ -2477,11 +2626,17 @@ mod tests {
             .is_some_and(|receipt| {
                 receipt.passed
                     && receipt.consumer == axiograph_kernel::FiniteTheoryGateConsumerIr::Authoring
+                    && receipt.coverage.category_formations_replayed == 1
+                    && receipt.coverage.saturated_presentations == 1
+                    && receipt.coverage.identity_paths_replayed > 0
+                    && receipt.coverage.path_explanations_replayed > 0
+                    && receipt.coverage.non_identity_scope_transports_certified == 0
             }));
         assert!(report.prepared_query.as_ref().is_some_and(|metadata| {
             metadata.finite_theory_gate.as_ref().is_some_and(|receipt| {
                 receipt.passed
                     && receipt.consumer == axiograph_kernel::FiniteTheoryGateConsumerIr::Query
+                    && receipt.coverage.path_explanations_replayed > 0
             })
         }));
         assert!(report.query_explanation.is_some());
@@ -2558,7 +2713,8 @@ instance I of S:
             diagnostic.code == "authoring_runtime_theory_blocked"
                 && diagnostic.message.contains("review-only obligation")
         }));
-        assert!(!report.promotion.candidate_reviewable);
+        assert!(report.promotion.candidate_reviewable);
+        assert!(!report.promotion.protected_main_eligible);
         Ok(())
     }
 
@@ -2627,6 +2783,107 @@ instance I of S:
         assert!(!report.repairs.is_empty());
         assert!(!report.promotion.candidate_reviewable);
         assert!(!report.promotion.protected_main_eligible);
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_theory_holes_expose_bound_repairs_without_claiming_lean_certification() -> Result<()>
+    {
+        let (_temp, service) = write_workspace()?;
+        let mut request = request();
+        request.operation = AuthoringWorkspaceOperationV1::Validate;
+        request.axi_text = Some(
+            r#"module TheoryDraft
+schema S:
+  object Person
+  relation Link(left: Person, right: Person)
+
+theory T on S:
+  constraint functional Link.left -> Link.right
+  equation narrative:
+    review route = approved route
+
+instance I of S:
+  Person = {Alice, Bob}
+  Link = {l: (left=Alice, right=Bob)}
+"#
+            .to_string(),
+        );
+        request.baseline_axi_path = None;
+        request.cq_path = None;
+        request.query_ir_v1 = None;
+
+        let report = service.execute(request)?;
+        assert_eq!(
+            report.validation.runtime_theory_gate,
+            AuthoringGateDecisionV1::Blocked
+        );
+        assert_eq!(report.typed_holes.theory.len(), 1);
+        let hole = &report.typed_holes.theory[0];
+        assert_eq!(
+            hole.runtime_status,
+            axiograph_pathdb::RuntimeTheoryCheckStatusV1::ReviewOnly
+        );
+        assert_eq!(
+            hole.lifecycle,
+            axiograph_kernel::CheckedLifecycleStateIr::Residual
+        );
+        assert_eq!(hole.repair_handle_ids.len(), 1);
+        assert!(hole.authority.contains("runtime"));
+        assert!(hole.lean_certification.contains("not_certified"));
+
+        let repair = report
+            .repairs
+            .iter()
+            .find(|repair| repair.handle.id == hole.repair_handle_ids[0])
+            .expect("theory hole must cite an emitted repair");
+        assert_eq!(
+            repair.kind,
+            crate::typed_refinement::RuntimeRefinementCandidateKindV2::AddressTheoryObligation
+        );
+        assert_eq!(
+            repair.handle.domain(),
+            crate::typed_refinement::RuntimeRefinementDomainV2::TheoryAuthoring
+        );
+        repair.handle.validate()?;
+        assert_eq!(repair.handle.version, 2);
+        assert!(repair.handle.id.starts_with("theory_refine_v2:"));
+        assert_eq!(
+            repair.theory_obligation_ref.as_ref(),
+            Some(&hole.obligation_ref)
+        );
+        let mut forged = repair.handle.clone();
+        forged.id.push_str(":forged");
+        assert!(forged.validate().is_err());
+        let mut obsolete_version = repair.handle.clone();
+        obsolete_version.version = 1;
+        assert!(obsolete_version.validate().is_err());
+        let mut unbound_op = match repair.handle.payload.clone() {
+            crate::typed_refinement::RuntimeRefinementPayloadV2::TheoryAuthoring { op } => op,
+            _ => unreachable!("theory repair must carry theory-authoring payload"),
+        };
+        let crate::typed_refinement::TheoryRefinementOpV1::AddressRuntimeTheoryObligation {
+            source_artifact_digest,
+            ..
+        } = &mut unbound_op;
+        source_artifact_digest.clear();
+        let unbound = crate::typed_refinement::RuntimeRefinementHandleV2::new_theory(unbound_op);
+        assert!(unbound.validate().is_err());
+
+        assert_eq!(report.dependent_refinements.len(), 1);
+        let refinements = &report.dependent_refinements[0];
+        assert_eq!(refinements.object_membership_witnesses, 3);
+        assert_eq!(refinements.role_indexed_witnesses, 2);
+        assert_eq!(refinements.typed_constraint_witnesses, 1);
+        assert_eq!(
+            refinements.lean_certification,
+            "not_certified_by_category_kernel_v3"
+        );
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.repair_hint.as_deref().is_some_and(|hint| {
+                hint.contains(&repair.handle.id) && hint.contains("not Lean certification")
+            })
+        }));
         Ok(())
     }
 

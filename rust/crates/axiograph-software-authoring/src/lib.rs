@@ -133,7 +133,7 @@ pub struct ContinuousSoftwareCoverageReportV1 {
     pub missing_code_refs: Vec<String>,
     pub coverage: CoverageSummary,
     pub competency: CompetencySummary,
-    pub runtime_theory: RuntimeTheoryPresence,
+    pub runtime_theory: Option<axiograph_tooling_overlays::RuntimeTheoryCheckSummaryV1>,
     pub failures: Vec<String>,
     pub warnings: Vec<String>,
     pub next_actions: Vec<String>,
@@ -200,25 +200,6 @@ pub struct CodegenLanguageStatus {
     pub language: String,
     pub present: bool,
     pub file_hints: Vec<String>,
-}
-
-#[derive(Debug, Default, Serialize)]
-pub struct RuntimeTheoryPresence {
-    pub present: bool,
-    pub module_digest: Option<String>,
-    pub closure_tiers: Vec<String>,
-    pub checked_obligations: Option<u64>,
-    pub review_only_obligations: Option<u64>,
-    pub ontology_closed: Option<bool>,
-    pub complete: Option<bool>,
-    pub blocking_judgments: Option<u64>,
-    pub residual_obligations: Option<u64>,
-    pub blocked_obligations: Option<u64>,
-    pub blocking_errors: Option<u64>,
-    pub completeness_claim: Option<String>,
-    pub ontology_closure_claim: Option<String>,
-    pub residual_obligation_ids: Vec<String>,
-    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -497,56 +478,12 @@ pub fn build_continuous_software_coverage_report(
             missing_code_refs.len()
         ));
     }
-    if options.require_runtime_theory && !runtime_theory.present {
-        failures
-            .push("behavior report does not include a runtime theory-check summary".to_string());
-    } else if !runtime_theory.present {
-        warnings.push(
-            "behavior report has no embedded runtime theory-check summary; run `axiograph check theory` beside this gate"
-                .to_string(),
-        );
-    }
-    if runtime_theory.ontology_closed == Some(false) {
-        failures.push("runtime theory closure is present but ontology_closed=false".to_string());
-    }
-    if runtime_theory.complete == Some(false) {
-        failures.push("runtime theory completeness is present but complete=false".to_string());
-    }
-    if runtime_theory.blocking_judgments.unwrap_or(0) > 0 {
-        failures.push(format!(
-            "{} blocking runtime-theory judgment(s) are present",
-            runtime_theory.blocking_judgments.unwrap_or(0)
-        ));
-    }
-    if options.strict_coverage && runtime_theory.residual_obligations.unwrap_or(0) > 0 {
-        failures.push(format!(
-            "{} runtime-theory obligation(s) remain residual",
-            runtime_theory.residual_obligations.unwrap_or(0)
-        ));
-    } else if runtime_theory.residual_obligations.unwrap_or(0) > 0 {
-        warnings.push(format!(
-            "{} runtime-theory obligation(s) remain residual",
-            runtime_theory.residual_obligations.unwrap_or(0)
-        ));
-    }
-    if runtime_theory
-        .completeness_claim
-        .as_deref()
-        .is_some_and(|claim| !claim.starts_with("claimed_under_"))
-    {
-        warnings.push(
-            "runtime theory sidecar does not claim completeness for all obligations".to_string(),
-        );
-    }
-    if runtime_theory
-        .ontology_closure_claim
-        .as_deref()
-        .is_some_and(|claim| !claim.starts_with("claimed_under_"))
-    {
-        warnings.push(
-            "runtime theory sidecar does not claim ontology closure for all obligations"
-                .to_string(),
-        );
+    match runtime_theory.as_ref() {
+        None if options.require_runtime_theory => failures
+            .push("behavior report does not include a runtime theory-check summary".to_string()),
+        None => warnings
+            .push("behavior report has no embedded runtime theory-check summary".to_string()),
+        Some(summary) => failures.extend(summary.gate_blockers()),
     }
 
     let mut next_actions = coverage.next_actions.clone();
@@ -562,15 +499,17 @@ pub fn build_continuous_software_coverage_report(
                 .to_string(),
         );
     }
-    if !runtime_theory.present {
+    if runtime_theory.is_none() {
         next_actions.push(
-            "attach the RuntimeTheoryCheckReportV1 summary to this behavior-case gate".to_string(),
-        );
-    }
-    if runtime_theory.residual_obligations.unwrap_or(0) > 0 {
-        next_actions.push(
-            "resolve residual runtime-theory obligations or keep the continuous gate advisory"
+            "generate the behavior report from canonical `.axi` so it carries RuntimeTheoryCheckSummaryV1"
                 .to_string(),
+        );
+    } else if runtime_theory
+        .as_ref()
+        .is_some_and(|summary| !summary.gate_blockers().is_empty())
+    {
+        next_actions.push(
+            "resolve every review-only, residual, or blocked runtime-theory obligation".to_string(),
         );
     }
     dedup_strings(&mut next_actions);
@@ -617,9 +556,17 @@ pub fn build_continuous_software_coverage_report(
             required_codegen_languages: required_codegen_languages.clone(),
             present_codegen_languages: present_codegen_languages.clone(),
             missing_codegen_languages: missing_codegen_languages.clone(),
-            runtime_theory_present: runtime_theory.present,
-            runtime_theory_residual_obligations: runtime_theory.residual_obligations,
-            runtime_theory_blocking_obligations: runtime_theory.blocking_judgments,
+            runtime_theory_present: runtime_theory.is_some(),
+            runtime_theory_residual_obligations: runtime_theory
+                .as_ref()
+                .map(|summary| summary.residual_obligations as u64),
+            runtime_theory_blocking_obligations: runtime_theory.as_ref().map(|summary| {
+                summary
+                    .review_only_obligations
+                    .saturating_add(summary.residual_obligations)
+                    .saturating_add(summary.blocked_obligations)
+                    .saturating_add(summary.blocking_errors) as u64
+            }),
         },
         pass,
         failures.clone(),
@@ -700,14 +647,18 @@ fn print_human_continuous_report(report: &ContinuousSoftwareCoverageReportV1) {
         report.existing_code_refs.len(),
         report.missing_code_refs.len()
     );
-    println!(
-        "  runtime_theory: present={} ontology_closed={:?} complete={:?} residual={:?} blocking={:?}",
-        report.runtime_theory.present,
-        report.runtime_theory.ontology_closed,
-        report.runtime_theory.complete,
-        report.runtime_theory.residual_obligations,
-        report.runtime_theory.blocking_judgments
-    );
+    if let Some(summary) = report.runtime_theory.as_ref() {
+        println!(
+            "  runtime_theory: present=true fragments=[{}] checked={} review_only={} residual={} blocked={}",
+            summary.scope.fragments.join(", "),
+            summary.checked_obligations,
+            summary.review_only_obligations,
+            summary.residual_obligations,
+            summary.blocked_obligations.saturating_add(summary.blocking_errors)
+        );
+    } else {
+        println!("  runtime_theory: present=false");
+    }
     for failure in &report.failures {
         println!("  failure: {failure}");
     }
@@ -802,7 +753,7 @@ struct BehaviorCaseAuthoringReportV1 {
     #[serde(default)]
     context_report: BehaviorCaseAuthoringContextReportViewV1,
     #[serde(default)]
-    runtime_theory_check: Option<axiograph_tooling_overlays::RuntimeTheorySidecarSummaryV1>,
+    runtime_theory_check: Option<axiograph_tooling_overlays::RuntimeTheoryCheckSummaryV1>,
     #[serde(default)]
     codegen_previews: Vec<CodegenPreview>,
     #[serde(default)]
@@ -860,7 +811,7 @@ struct BehaviorCaseAuthoringContextReportViewV1 {
     #[serde(default)]
     competency_coverage: Option<CompetencyCoverageViewV1>,
     #[serde(default)]
-    runtime_theory_check: Option<axiograph_tooling_overlays::RuntimeTheorySidecarSummaryV1>,
+    runtime_theory_check: Option<axiograph_tooling_overlays::RuntimeTheoryCheckSummaryV1>,
     #[serde(default)]
     anchors: Vec<String>,
     #[serde(default)]
@@ -1119,40 +1070,13 @@ fn codegen_coverage_summary(
     }
 }
 
-fn runtime_theory_presence(report: &BehaviorCaseAuthoringReportV1) -> RuntimeTheoryPresence {
-    let Some(mut theory) = report
+fn runtime_theory_presence(
+    report: &BehaviorCaseAuthoringReportV1,
+) -> Option<axiograph_tooling_overlays::RuntimeTheoryCheckSummaryV1> {
+    report
         .runtime_theory_check
         .clone()
         .or_else(|| report.context_report.runtime_theory_check.clone())
-    else {
-        return RuntimeTheoryPresence::default();
-    };
-    theory.present = true;
-    let completeness_claim = theory.completeness_claim.clone();
-    let ontology_closure_claim = theory.ontology_closure_claim.clone();
-    let blocking_judgments =
-        Some(theory.blocked_obligations.unwrap_or(0) + theory.blocking_errors.unwrap_or(0));
-    RuntimeTheoryPresence {
-        present: true,
-        module_digest: theory.module_digest,
-        closure_tiers: theory.closure_tiers,
-        checked_obligations: theory.checked_obligations,
-        review_only_obligations: theory.review_only_obligations,
-        ontology_closed: ontology_closure_claim
-            .as_deref()
-            .map(|claim| claim.starts_with("claimed_under_")),
-        complete: completeness_claim
-            .as_deref()
-            .map(|claim| claim.starts_with("claimed_under_")),
-        blocking_judgments,
-        residual_obligations: theory.residual_obligations,
-        blocked_obligations: theory.blocked_obligations,
-        blocking_errors: theory.blocking_errors,
-        completeness_claim,
-        ontology_closure_claim,
-        residual_obligation_ids: theory.residual_obligation_ids,
-        notes: theory.notes,
-    }
 }
 
 fn normalize_languages(languages: &[String]) -> BTreeSet<String> {
@@ -1317,16 +1241,23 @@ mod tests {
             },
             "runtime_theory_check": {
                 "version": "runtime_theory_check_summary_v1",
-                "module_digest": "fnv1a64:test",
+                "report_version": "runtime_theory_check_report_v1",
+                "module_digest": "axi:revision:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "theory_count": 1,
                 "checked_obligations": 1,
-                "review_only_obligations": 0,
+                "review_only_obligations": 1,
                 "residual_obligations": 1,
                 "blocked_obligations": 0,
+                "excluded_by_evidence": 0,
                 "blocking_errors": 0,
-                "closure_tiers": ["finite_fragment"],
-                "completeness_claim": "not_claimed_for_all_obligations",
-                "ontology_closure_claim": "not_claimed_for_all_obligations",
-                "residual_obligation_ids": ["runtime/theory/residual"]
+                "scope": {"fragments": ["finite_fragment"]},
+                "admissibility_trace": {},
+                "transport_summary": {},
+                "residual_obligation_ids": ["runtime/theory/residual"],
+                "non_claims": [{
+                    "code": "closure_engine_not_implemented",
+                    "message": "admissibility scan only"
+                }]
             },
             "codegen_previews": [
                 {"language": "rust", "file_hint": "tests/case.rs", "content": "#[test] fn case() {}\n"}
@@ -1347,18 +1278,24 @@ mod tests {
             coverage.authoring_flow.profile.profile,
             axiograph_tooling_overlays::AuthoringCoverageProfileV1::Strict
         );
+        let runtime = coverage.runtime_theory.as_ref().expect("runtime summary");
         assert_eq!(
-            coverage.runtime_theory.module_digest.as_deref(),
-            Some("fnv1a64:test")
+            runtime.module_digest,
+            "axi:revision:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
         assert_eq!(
-            coverage.runtime_theory.residual_obligation_ids,
+            runtime.residual_obligation_ids,
             vec!["runtime/theory/residual".to_string()]
         );
+        assert_eq!(runtime.scope.fragments, vec!["finite_fragment"]);
+        assert!(runtime
+            .non_claims
+            .iter()
+            .any(|claim| claim.code == "closure_engine_not_implemented"));
         assert!(coverage
             .failures
             .iter()
-            .any(|failure| failure.contains("runtime-theory obligation")));
+            .any(|failure| failure.contains("review-only")));
     }
 
     #[test]

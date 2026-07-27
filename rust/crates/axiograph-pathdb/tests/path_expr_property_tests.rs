@@ -159,13 +159,17 @@ proptest! {
     #[test]
     fn normalize_with_proof_has_consistent_payload(p in path_expr_v2_strategy()) {
         let opt = ProofProducingOptimizer;
-        let proved = opt.normalize_path_v2::<WithProof>(p.clone());
+        let proved = opt
+            .normalize_path_v2::<WithProof>(p.clone())
+            .expect("well-typed generated path must normalize");
         prop_assert_eq!(&proved.value, &proved.proof.normalized);
         prop_assert_eq!(&proved.value, &p.normalize());
-        if let Some(steps) = proved.proof.derivation.as_ref() {
-            let replayed = proved.proof.input.apply_derivation_v2(steps).expect("derivation replay must apply");
-            prop_assert_eq!(&replayed, &proved.proof.normalized);
-        }
+        let replayed = proved
+            .proof
+            .input
+            .apply_derivation_v2(&proved.proof.derivation)
+            .expect("derivation replay must apply");
+        prop_assert_eq!(&replayed, &proved.proof.normalized);
     }
 
     #[test]

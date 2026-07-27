@@ -66,15 +66,32 @@ This certificate kind supports §3 of `docs/explanation/BOOK.md` (“paths, grou
 
 * Rust provides an input path expression (`input`).
 * Rust provides the normalized form (`normalized`).
-* Rust may also provide an explicit rewrite derivation (`derivation`) as a list of
+* Rust must provide an explicit rewrite derivation (`derivation`) as a list of
   `(rule, position)` steps.
 
-Lean always re-computes normalization and checks the claimed result, and additionally
-replays the explicit derivation when present.
+Lean replays the mandatory derivation, re-computes normalization, and checks the
+claimed result.
 
 The expression language is intentionally small: identity, generator edge,
 composition, and formal inverse.
 -/
+
+private def parseUInt32Nat (j : Json) : Except String Nat := do
+  let value ← j.getNat?
+  if value ≤ 4_294_967_295 then pure value
+  else throw s!"wire unsigned integer exceeds the u32 domain: {value}"
+
+private def requireExactPathFields (j : Json) (allowed required : List String) :
+    Except String Unit := do
+  match j with
+  | .obj fields =>
+      for (field, _) in fields.toList do
+        if !allowed.contains field then
+          throw s!"unknown indexed-path field `{field}`"
+      for field in required do
+        if !(fields.contains field) then
+          throw s!"missing indexed-path field `{field}`"
+  | _ => throw "indexed-path value must be a JSON object"
 
 inductive PathExprV2 where
   | reflexive (entity : Nat)
@@ -87,18 +104,23 @@ partial def parsePathExprV2 (j : Json) : Except String PathExprV2 := do
   let ty ← (← j.getObjVal? "type").getStr?
   match ty with
   | "reflexive" =>
-      let entity ← (← j.getObjVal? "entity").getNat?
+      requireExactPathFields j ["type", "entity"] ["type", "entity"]
+      let entity ← parseUInt32Nat (← j.getObjVal? "entity")
       pure (.reflexive entity)
   | "step" =>
-      let src ← (← j.getObjVal? "from").getNat?
-      let relType ← (← j.getObjVal? "rel_type").getNat?
-      let dst ← (← j.getObjVal? "to").getNat?
+      requireExactPathFields j ["type", "from", "rel_type", "to"]
+        ["type", "from", "rel_type", "to"]
+      let src ← parseUInt32Nat (← j.getObjVal? "from")
+      let relType ← parseUInt32Nat (← j.getObjVal? "rel_type")
+      let dst ← parseUInt32Nat (← j.getObjVal? "to")
       pure (.step src relType dst)
   | "trans" =>
+      requireExactPathFields j ["type", "left", "right"] ["type", "left", "right"]
       let left ← parsePathExprV2 (← j.getObjVal? "left")
       let right ← parsePathExprV2 (← j.getObjVal? "right")
       pure (.trans left right)
   | "inv" =>
+      requireExactPathFields j ["type", "path"] ["type", "path"]
       let path ← parsePathExprV2 (← j.getObjVal? "path")
       pure (.inv path)
   | other =>
@@ -147,43 +169,34 @@ structure PathRewriteStepV2 where
   deriving Repr, DecidableEq
 
 partial def parsePathRewriteStepV2 (j : Json) : Except String PathRewriteStepV2 := do
+  requireExactPathFields j ["pos", "rule"] ["pos", "rule"]
   let ruleTag ← (← j.getObjVal? "rule").getStr?
   let rule ← PathRewriteRuleV2.parse ruleTag
   let posJson ← j.getObjVal? "pos"
   let posArr ← posJson.getArr?
   let mut pos : Array Nat := #[]
   for p in posArr do
-    pos := pos.push (← p.getNat?)
+    pos := pos.push (← parseUInt32Nat p)
   pure { pos, rule }
 
 structure NormalizePathProofV2 where
   input : PathExprV2
   normalized : PathExprV2
-  /--
-  Optional explicit rewrite derivation.
-
-  When present, Lean can validate that `normalized` is reachable from `input`
-  by applying the listed rewrite steps (congruence-aware via positions).
-
-  When absent, Lean uses the current compact payload mode: recompute
-  normalization and compare.
-  -/
-  derivation? : Option (Array PathRewriteStepV2)
+  /-- Mandatory explicit rewrite derivation. The checker replays every step;
+  there is no trace-free normalization certificate mode. -/
+  derivation : Array PathRewriteStepV2
   deriving Repr
 
 partial def parseNormalizePathProofV2 (j : Json) : Except String NormalizePathProofV2 := do
+  requireExactPathFields j ["input", "normalized", "derivation"]
+    ["input", "normalized", "derivation"]
   let input ← parsePathExprV2 (← j.getObjVal? "input")
   let normalized ← parsePathExprV2 (← j.getObjVal? "normalized")
-  let derivation? : Option (Array PathRewriteStepV2) ←
-    match (j.getObjVal? "derivation").toOption with
-    | none => pure none
-    | some d => do
-        let arr ← d.getArr?
-        let mut steps : Array PathRewriteStepV2 := #[]
-        for s in arr do
-          steps := steps.push (← parsePathRewriteStepV2 s)
-        pure (some steps)
-  pure { input, normalized, derivation? }
+  let arr ← (← j.getObjVal? "derivation").getArr?
+  let mut derivation : Array PathRewriteStepV2 := #[]
+  for step in arr do
+    derivation := derivation.push (← parsePathRewriteStepV2 step)
+  pure { input, normalized, derivation }
 
 /-!
 ## v2: replayable rewrite derivations
@@ -195,14 +208,10 @@ This certificate kind generalizes the “rule + position” proof pattern used i
 * provide an `output` expression,
 * provide a `derivation` (a list of rewrite steps to replay).
 
-This is intended to be the common format for:
-
-* domain rewrites (unit conversions, schema rewrites, etc.),
-* reconciliation explanations (why two statements were merged/rewritten),
-* and optimization traces (e-graph extractions, normalization passes).
-
-For now the rule vocabulary is the groupoid/path rewrite rules (`PathRewriteRuleV2`).
-Domain-specific rule vocabularies should be added as new, versioned kinds on top.
+This is an internal helper reused by `path_equiv_v2`; it is not a standalone
+wire kind. Its fixed vocabulary is the groupoid/path rewrite rules
+(`PathRewriteRuleV2`). Anchored generic rewrite certificates use
+`rewrite_derivation_v3` below.
 -/
 
 structure RewriteDerivationProofV2 where
@@ -212,6 +221,8 @@ structure RewriteDerivationProofV2 where
   deriving Repr
 
 partial def parseRewriteDerivationProofV2 (j : Json) : Except String RewriteDerivationProofV2 := do
+  requireExactPathFields j ["input", "output", "derivation"]
+    ["input", "output", "derivation"]
   let input ← parsePathExprV2 (← j.getObjVal? "input")
   let output ← parsePathExprV2 (← j.getObjVal? "output")
   let stepsJson ← (← j.getObjVal? "derivation").getArr?
@@ -223,17 +234,16 @@ partial def parseRewriteDerivationProofV2 (j : Json) : Except String RewriteDeri
 /-!
 ## v3: rewrite derivations with first-class rule references
 
-`rewrite_derivation_v2` uses a *fixed enum* (`PathRewriteRuleV2`) for rewrite rules
-(the groupoid normalization kernel).
-
-For ontology/domain semantics, we want **first-class rules**:
+The internal V2 replay helper uses a fixed `PathRewriteRuleV2` enum for the
+groupoid normalization kernel. The public generic rewrite family needs
+**first-class rules**:
 
 * rules are declared in canonical `.axi` theories,
 * imported into PathDB's meta-plane, and
 * referenced by certificates via a stable `(module_digest, theory, rule)` key.
 
-This certificate kind keeps the replayable “rule + position” idea from v2 but
-replaces the rule enum with a `rule_ref` string:
+`rewrite_derivation_v3` keeps the replayable “rule + position” shape but
+replaces the builtin-only enum with a `rule_ref` string:
 
 * `builtin:<tag>` where `<tag>` is a v2 builtin like `id_left`
 * `axi:<axi_digest_v1>:<theory_name>:<rule_name>`
@@ -279,7 +289,7 @@ partial def parsePathRewriteStepV3 (j : Json) : Except String PathRewriteStepV3 
   let posArr ← posJson.getArr?
   let mut pos : Array Nat := #[]
   for p in posArr do
-    pos := pos.push (← p.getNat?)
+    pos := pos.push (← parseUInt32Nat p)
   pure { pos, ruleRef }
 
 structure RewriteDerivationProofV3 where
@@ -304,12 +314,12 @@ This certificate kind is a reusable building block for §3 of `docs/explanation/
 
 * Two path expressions are considered equivalent if they normalize to the same
   normal form.
-* Rust may optionally attach explicit rewrite derivations showing:
+* Rust must attach explicit rewrite derivations showing:
   - `left  ↦ normalized`
   - `right ↦ normalized`
 
-This shape is intentionally redundant at first: the trusted checker always
-recomputes normalization, but derivations are useful to:
+The trusted checker both replays the derivations and recomputes normalization.
+The redundant evidence is useful to:
 
 * audit *why* two derivations are equivalent,
 * reuse the same mechanism for domain rewrites and reconciliation explanations,
@@ -321,36 +331,28 @@ structure PathEquivProofV2 where
   left : PathExprV2
   right : PathExprV2
   normalized : PathExprV2
-  leftDerivation? : Option (Array PathRewriteStepV2)
-  rightDerivation? : Option (Array PathRewriteStepV2)
+  /-- Mandatory traces from each endpoint-indexed path to the shared normal form. -/
+  leftDerivation : Array PathRewriteStepV2
+  rightDerivation : Array PathRewriteStepV2
   deriving Repr
 
 partial def parsePathEquivProofV2 (j : Json) : Except String PathEquivProofV2 := do
+  requireExactPathFields j
+    ["left", "right", "normalized", "left_derivation", "right_derivation"]
+    ["left", "right", "normalized", "left_derivation", "right_derivation"]
   let left ← parsePathExprV2 (← j.getObjVal? "left")
   let right ← parsePathExprV2 (← j.getObjVal? "right")
   let normalized ← parsePathExprV2 (← j.getObjVal? "normalized")
 
-  let leftDerivation? : Option (Array PathRewriteStepV2) ←
-    match (j.getObjVal? "left_derivation").toOption with
-    | none => pure none
-    | some d => do
-        let arr ← d.getArr?
-        let mut steps : Array PathRewriteStepV2 := #[]
-        for s in arr do
-          steps := steps.push (← parsePathRewriteStepV2 s)
-        pure (some steps)
+  let mut leftDerivation : Array PathRewriteStepV2 := #[]
+  for step in (← (← j.getObjVal? "left_derivation").getArr?) do
+    leftDerivation := leftDerivation.push (← parsePathRewriteStepV2 step)
 
-  let rightDerivation? : Option (Array PathRewriteStepV2) ←
-    match (j.getObjVal? "right_derivation").toOption with
-    | none => pure none
-    | some d => do
-        let arr ← d.getArr?
-        let mut steps : Array PathRewriteStepV2 := #[]
-        for s in arr do
-          steps := steps.push (← parsePathRewriteStepV2 s)
-        pure (some steps)
+  let mut rightDerivation : Array PathRewriteStepV2 := #[]
+  for step in (← (← j.getObjVal? "right_derivation").getArr?) do
+    rightDerivation := rightDerivation.push (← parsePathRewriteStepV2 step)
 
-  pure { left, right, normalized, leftDerivation?, rightDerivation? }
+  pure { left, right, normalized, leftDerivation, rightDerivation }
 
 /-!
 ## v2: functorial data migration (Δ_F / pullback)
@@ -991,6 +993,7 @@ structure CategoryKernelProofV3 where
   schemaName : String
   presentation : Theory.Finite.CategoryKernelPresentationV3
   congruenceCertificates : Array Theory.Finite.CategoryKernelCongruenceCertificateV3
+  groupoidNormalizations : Array Theory.Finite.CategoryKernelFormalNormalizationV3
   certificate : Theory.Finite.SaturationCertificate
   deriving Repr
 
@@ -1025,6 +1028,13 @@ private def parseCategoryKernelDirectionV3 (value : String) :
   | "forward" => pure .forward
   | "reverse" => pure .reverse
   | other => throw s!"unknown category-kernel equation direction: {other}"
+
+private def parseCategoryKernelFormalDirectionV3 (value : String) :
+    Except String Theory.Finite.CategoryKernelFormalDirectionV3 :=
+  match value with
+  | "forward" => pure .forward
+  | "inverse" => pure .inverse
+  | other => throw s!"unknown category-kernel formal direction: {other}"
 
 partial def parseCategoryKernelPathV3 (j : Json) :
     Except String Theory.Finite.CategoryKernelPathV3 := do
@@ -1089,6 +1099,43 @@ partial def parseCategoryKernelPresentationV3 (j : Json) :
     }
   pure { objectNames, arrows, relations, identityObjects, equations }
 
+partial def parseCategoryKernelFormalPathV3 (j : Json) :
+    Except String Theory.Finite.CategoryKernelFormalPathV3 := do
+  requireExactFields j ["source", "target", "steps"] ["source", "target", "steps"]
+  let mut steps : Array Theory.Finite.CategoryKernelFormalStepV3 := #[]
+  for step in (← (← j.getObjVal? "steps").getArr?) do
+    requireExactFields step ["arrow", "direction"] ["arrow", "direction"]
+    steps := steps.push {
+      arrow := ← (← step.getObjVal? "arrow").getNat?
+      direction := ← parseCategoryKernelFormalDirectionV3
+        (← (← step.getObjVal? "direction").getStr?)
+    }
+  pure {
+    source := ← (← j.getObjVal? "source").getNat?
+    target := ← (← j.getObjVal? "target").getNat?
+    steps
+  }
+
+partial def parseCategoryKernelFormalNormalizationV3 (j : Json) :
+    Except String Theory.Finite.CategoryKernelFormalNormalizationV3 := do
+  requireExactFields j ["input", "rewrite_trace", "normalized"]
+    ["input", "rewrite_trace", "normalized"]
+  let mut rewriteTrace : Array Theory.Finite.CategoryKernelFormalRewriteStepV3 := #[]
+  for step in (← (← j.getObjVal? "rewrite_trace").getArr?) do
+    requireExactFields step ["offset", "arrow", "first_direction"]
+      ["offset", "arrow", "first_direction"]
+    rewriteTrace := rewriteTrace.push {
+      offset := ← (← step.getObjVal? "offset").getNat?
+      arrow := ← (← step.getObjVal? "arrow").getNat?
+      firstDirection := ← parseCategoryKernelFormalDirectionV3
+        (← (← step.getObjVal? "first_direction").getStr?)
+    }
+  pure {
+    input := ← parseCategoryKernelFormalPathV3 (← j.getObjVal? "input")
+    rewriteTrace
+    normalized := ← parseCategoryKernelFormalPathV3 (← j.getObjVal? "normalized")
+  }
+
 partial def parseCategoryKernelCongruenceV3 (j : Json) :
     Except String Theory.Finite.CategoryKernelCongruenceCertificateV3 := do
   requireExactFields j ["input", "steps", "output"] ["input", "steps", "output"]
@@ -1126,8 +1173,11 @@ partial def parseCategoryKernelExplanationV3 (j : Json) :
   | other => throw s!"unknown category-kernel explanation type: {other}"
 
 partial def parseCategoryKernelProofV3 (j : Json) : Except String CategoryKernelProofV3 := do
-  requireExactFields j ["schema_name", "presentation", "congruence_certificates", "certificate"]
-    ["schema_name", "presentation", "congruence_certificates", "certificate"]
+  requireExactFields j
+    ["schema_name", "presentation", "congruence_certificates", "groupoid_normalizations",
+      "certificate"]
+    ["schema_name", "presentation", "congruence_certificates", "groupoid_normalizations",
+      "certificate"]
   let schemaName ← (← j.getObjVal? "schema_name").getStr?
   let presentation ← parseCategoryKernelPresentationV3 (← j.getObjVal? "presentation")
   let mut congruenceCertificates :
@@ -1135,6 +1185,11 @@ partial def parseCategoryKernelProofV3 (j : Json) : Except String CategoryKernel
   for certificate in (← (← j.getObjVal? "congruence_certificates").getArr?) do
     congruenceCertificates := congruenceCertificates.push
       (← parseCategoryKernelCongruenceV3 certificate)
+  let mut groupoidNormalizations :
+      Array Theory.Finite.CategoryKernelFormalNormalizationV3 := #[]
+  for certificate in (← (← j.getObjVal? "groupoid_normalizations").getArr?) do
+    groupoidNormalizations := groupoidNormalizations.push
+      (← parseCategoryKernelFormalNormalizationV3 certificate)
   let certificateJson ← j.getObjVal? "certificate"
   requireExactFields certificateJson
     ["presentation_object_count", "presentation_arrow_count", "entries", "algorithm"]
@@ -1158,6 +1213,7 @@ partial def parseCategoryKernelProofV3 (j : Json) : Except String CategoryKernel
     schemaName
     presentation
     congruenceCertificates
+    groupoidNormalizations
     certificate := { presentationObjectCount, presentationArrowCount, entries, algorithm }
   }
 
@@ -1169,7 +1225,6 @@ inductive Certificate where
   | axiConstraintsOkV1 (proof : AxiConstraintsOkProofV1)
   | queryResultV4 (proof : QueryResultProofV4)
   | normalizePathV2 (proof : NormalizePathProofV2)
-  | rewriteDerivationV2 (proof : RewriteDerivationProofV2)
   | rewriteDerivationV3 (proof : RewriteDerivationProofV3)
   | pathEquivV2 (proof : PathEquivProofV2)
   | deltaFV1 (proof : Migration.DeltaFMigrationProofV1)
@@ -1257,13 +1312,10 @@ def parseCertificate (j : Json) : Except String Certificate := do
   | "normalize_path_v2" =>
       if version != 2 then
         throw s!"unsupported normalize_path_v2 certificate version: {version}"
+      requireExactPathFields j ["version", "kind", "anchor", "proof"]
+        ["version", "kind", "proof"]
       let proof ← parseNormalizePathProofV2 (← j.getObjVal? "proof")
       pure (.normalizePathV2 proof)
-  | "rewrite_derivation_v2" =>
-      if version != 2 then
-        throw s!"unsupported rewrite_derivation_v2 certificate version: {version}"
-      let proof ← parseRewriteDerivationProofV2 (← j.getObjVal? "proof")
-      pure (.rewriteDerivationV2 proof)
   | "rewrite_derivation_v3" =>
       if version != 2 then
         throw s!"unsupported rewrite_derivation_v3 certificate version: {version}"
@@ -1272,6 +1324,8 @@ def parseCertificate (j : Json) : Except String Certificate := do
   | "path_equiv_v2" =>
       if version != 2 then
         throw s!"unsupported path_equiv_v2 certificate version: {version}"
+      requireExactPathFields j ["version", "kind", "anchor", "proof"]
+        ["version", "kind", "proof"]
       let proof ← parsePathEquivProofV2 (← j.getObjVal? "proof")
       pure (.pathEquivV2 proof)
   | "delta_f_v1" =>
@@ -1295,6 +1349,9 @@ def parseCertificateEnvelope (j : Json) : Except String CertificateEnvelope := d
   if version == 3 then
     requireExactFields j ["version", "kind", "anchor", "proof"]
       ["version", "kind", "anchor", "proof"]
+  else if version == 2 then
+    requireExactFields j ["version", "kind", "anchor", "proof"]
+      ["version", "kind", "proof"]
   let cert ← parseCertificate j
   match version, cert, anchor? with
   | 3, .queryResultV4 _, some (CertificateAnchor.v2 _) => pure ()

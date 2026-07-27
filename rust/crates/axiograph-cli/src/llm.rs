@@ -98,6 +98,11 @@ const DEFAULT_LLM_MAX_STEPS: usize = 12;
 // `AXIOGRAPH_LLM_MAX_STEPS_CAP` when you intentionally want longer multi-step
 // tool use (e.g. ontology engineering workflows).
 const DEFAULT_LLM_MAX_STEPS_CAP: usize = 64;
+const MAX_LLM_TOOL_STEPS: usize = 64;
+const MAX_LLM_TOOL_ROWS: usize = 200;
+const MAX_LLM_TOOL_DOC_CHUNKS: usize = 50;
+const MIN_LLM_TOOL_DOC_CHARS: usize = 32;
+const MAX_LLM_TOOL_DOC_CHARS: usize = 8_000;
 const DEFAULT_LLM_MAX_OUTPUT_TOKENS: u32 = 1200;
 const DEFAULT_LLM_CHAT_MAX_MESSAGES: usize = 24;
 const DEFAULT_LLM_PROMPT_MAX_TRANSCRIPT_ITEMS: usize = 12;
@@ -129,16 +134,27 @@ pub(crate) fn llm_default_max_steps() -> Result<usize> {
         Ok(v) => {
             let v = v.trim();
             if v.is_empty() {
-                return Ok(DEFAULT_LLM_MAX_STEPS);
+                return require_bounded_usize(
+                    DEFAULT_LLM_MAX_STEPS,
+                    1,
+                    llm_max_steps_cap()?,
+                    AXIOGRAPH_LLM_MAX_STEPS_ENV,
+                );
             }
             let n = v.parse::<usize>().map_err(|_| {
                 anyhow!(
                     "invalid {AXIOGRAPH_LLM_MAX_STEPS_ENV}={v:?} (expected integer tool-loop step bound)"
                 )
             })?;
-            Ok(n.max(1))
+            let cap = llm_max_steps_cap()?;
+            require_bounded_usize(n, 1, cap, AXIOGRAPH_LLM_MAX_STEPS_ENV)
         }
-        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_LLM_MAX_STEPS),
+        Err(std::env::VarError::NotPresent) => require_bounded_usize(
+            DEFAULT_LLM_MAX_STEPS,
+            1,
+            llm_max_steps_cap()?,
+            AXIOGRAPH_LLM_MAX_STEPS_ENV,
+        ),
         Err(e) => Err(anyhow!("failed to read {AXIOGRAPH_LLM_MAX_STEPS_ENV}: {e}")),
     }
 }
@@ -154,7 +170,7 @@ pub(crate) fn llm_max_steps_cap() -> Result<usize> {
         AXIOGRAPH_LLM_MAX_STEPS_CAP_ENV,
         DEFAULT_LLM_MAX_STEPS_CAP,
         1,
-        10_000,
+        MAX_LLM_TOOL_STEPS,
     )
 }
 
@@ -179,11 +195,12 @@ pub(crate) fn llm_max_output_tokens() -> Result<u32> {
                     "invalid {AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV}={v:?} (expected integer tokens, e.g. 1200)"
                 )
             })?;
-            if parsed == 0 {
-                Ok(DEFAULT_LLM_MAX_OUTPUT_TOKENS)
-            } else {
-                Ok(parsed.min(32_000))
+            if !(1..=32_000).contains(&parsed) {
+                return Err(anyhow!(
+                    "{AXIOGRAPH_LLM_MAX_OUTPUT_TOKENS_ENV} must be in 1..=32000"
+                ));
             }
+            Ok(parsed)
         }
         Err(std::env::VarError::NotPresent) => Ok(DEFAULT_LLM_MAX_OUTPUT_TOKENS),
         Err(e) => Err(anyhow!(
@@ -240,19 +257,26 @@ Invalid response (truncated):
     )
 }
 
+fn require_bounded_usize(value: usize, min: usize, max: usize, label: &str) -> Result<usize> {
+    if !(min..=max).contains(&value) {
+        return Err(anyhow!("{label} must be in {min}..={max}"));
+    }
+    Ok(value)
+}
+
 fn llm_env_usize(name: &str, default: usize, min: usize, max: usize) -> Result<usize> {
     match std::env::var(name) {
         Ok(v) => {
             let v = v.trim();
             if v.is_empty() {
-                return Ok(default);
+                return require_bounded_usize(default, min, max, name);
             }
             let parsed = v
                 .parse::<usize>()
                 .map_err(|_| anyhow!("invalid {name}={v:?} (expected integer)"))?;
-            Ok(parsed.clamp(min, max))
+            require_bounded_usize(parsed, min, max, name)
         }
-        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotPresent) => require_bounded_usize(default, min, max, name),
         Err(e) => Err(anyhow!("failed to read {name}: {e}")),
     }
 }
@@ -2718,6 +2742,32 @@ instance FamilyInst of Family:
     }
 
     #[test]
+    fn tool_loop_parser_rejects_unbounded_options_and_batched_calls() {
+        let mut invalid = super::ToolLoopOptions::default();
+        invalid.max_steps = 0;
+        let error = super::parse_tool_loop_response_json(
+            r#"{"final_answer":{"answer":"Done.","citations":[],"queries":[],"notes":[]}}"#,
+            invalid,
+        )
+        .expect_err("zero tool-loop steps must reject rather than clamp");
+        assert!(error.to_string().contains("max_steps"));
+
+        let calls = (0..super::ToolLoopOptions::default().max_steps + 1)
+            .map(|_| json!({"name": "db_summary", "args": {}}))
+            .collect::<Vec<_>>();
+        let response = json!({"tool_calls": calls}).to_string();
+        let error =
+            super::parse_tool_loop_response_json(&response, super::ToolLoopOptions::default())
+                .expect_err("oversized tool-call batch must reject");
+        assert!(error.to_string().contains("tool_calls"));
+
+        let db = axiograph_pathdb::PathDB::new();
+        let error = super::tool_lookup_entity(&db, &json!({"name": "Alice", "limit": 0}))
+            .expect_err("invalid tool argument must reject rather than clamp");
+        assert!(error.to_string().contains("lookup_entity.limit"));
+    }
+
+    #[test]
     fn tool_loop_parser_accepts_strict_final_answer_contract() {
         let parsed = super::parse_tool_loop_response_json(
             r#"{"final_answer":{"answer":"Done.","citations":[],"queries":[],"notes":[]}}"#,
@@ -3494,6 +3544,36 @@ pub(crate) struct ToolLoopOptions {
     pub max_doc_chars: usize,
 }
 
+impl ToolLoopOptions {
+    fn validate(self) -> Result<Self> {
+        require_bounded_usize(
+            self.max_steps,
+            1,
+            llm_max_steps_cap()?,
+            "LLM tool-loop max_steps",
+        )?;
+        require_bounded_usize(
+            self.max_rows,
+            1,
+            MAX_LLM_TOOL_ROWS,
+            "LLM tool-loop max_rows",
+        )?;
+        require_bounded_usize(
+            self.max_doc_chunks,
+            1,
+            MAX_LLM_TOOL_DOC_CHUNKS,
+            "LLM tool-loop max_doc_chunks",
+        )?;
+        require_bounded_usize(
+            self.max_doc_chars,
+            MIN_LLM_TOOL_DOC_CHARS,
+            MAX_LLM_TOOL_DOC_CHARS,
+            "LLM tool-loop max_doc_chars",
+        )?;
+        Ok(self)
+    }
+}
+
 impl Default for ToolLoopOptions {
     fn default() -> Self {
         Self {
@@ -3983,6 +4063,13 @@ pub(crate) fn run_tool_loop_with_meta(
     question: &str,
     options: ToolLoopOptions,
 ) -> Result<ToolLoopOutcome> {
+    let options = options.validate()?;
+    if question.len() > crate::security::MAX_TEXT_INPUT_BYTES {
+        return Err(anyhow!(
+            "LLM question exceeds {} bytes",
+            crate::security::MAX_TEXT_INPUT_BYTES
+        ));
+    }
     let schema = match meta {
         Some(m) => SchemaContextV1::from_db_with_meta(db, m),
         None => SchemaContextV1::from_db(db),
@@ -4204,7 +4291,7 @@ pub(crate) fn run_tool_loop_with_meta(
         }
     }
 
-    let mut remaining_steps = options.max_steps.max(1);
+    let mut remaining_steps = options.max_steps;
     while remaining_steps > 0 {
         let resp = llm.tool_loop_step(
             db,
@@ -5401,8 +5488,18 @@ fn tool_proposal_rollout_plan(
     let guardrail_weights = a
         .guardrail_weights
         .unwrap_or_else(crate::predictive_proposals::GuardrailCostWeightsV1::defaults);
-    let horizon_steps = a.horizon_steps.unwrap_or(2).max(1);
-    let rollouts = a.rollouts.unwrap_or(2).max(1);
+    let horizon_steps = require_bounded_usize(
+        a.horizon_steps.unwrap_or(2),
+        1,
+        crate::predictive_proposals::MAX_PROPOSAL_ROLLOUT_HORIZON,
+        "proposal_rollout_plan.horizon_steps",
+    )?;
+    let rollouts = require_bounded_usize(
+        a.rollouts.unwrap_or(2),
+        1,
+        crate::predictive_proposals::MAX_PROPOSAL_ROLLOUTS,
+        "proposal_rollout_plan.rollouts",
+    )?;
     let max_new_proposals = a.max_new_proposals.unwrap_or(0);
 
     let mut base_input: crate::predictive_proposals::PredictiveProposalInputV1 =
@@ -5457,7 +5554,7 @@ fn tool_lookup_entity(db: &PathDB, args: &serde_json::Value) -> Result<serde_jso
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("lookup_entity: invalid args: {e}"))?;
 
-    let limit = a.limit.unwrap_or(10).clamp(1, 50);
+    let limit = require_bounded_usize(a.limit.unwrap_or(10), 1, 50, "lookup_entity.limit")?;
     let name = a.name.trim();
     if name.is_empty() {
         return Err(anyhow!("lookup_entity: name must be non-empty"));
@@ -5700,10 +5797,22 @@ pub(crate) fn describe_entity_v1(
         return Err(anyhow!("describe_entity: no entity with id {entity_id}"));
     };
 
-    let max_attrs = a.max_attrs.unwrap_or(40).min(200);
-    let max_rel_types = a.max_rel_types.unwrap_or(12).clamp(1, 50);
-    let out_limit = a.out_limit.unwrap_or(6).min(50);
-    let in_limit = a.in_limit.unwrap_or(6).min(50);
+    let max_attrs = require_bounded_usize(
+        a.max_attrs.unwrap_or(40),
+        0,
+        200,
+        "describe_entity.max_attrs",
+    )?;
+    let max_rel_types = require_bounded_usize(
+        a.max_rel_types.unwrap_or(12),
+        1,
+        50,
+        "describe_entity.max_rel_types",
+    )?;
+    let out_limit =
+        require_bounded_usize(a.out_limit.unwrap_or(6), 0, 50, "describe_entity.out_limit")?;
+    let in_limit =
+        require_bounded_usize(a.in_limit.unwrap_or(6), 0, 50, "describe_entity.in_limit")?;
 
     fn has_virtual_type(db: &PathDB, entity_id: u32, type_name: &str) -> bool {
         db.interner
@@ -6380,7 +6489,7 @@ fn tool_lookup_rewrite_rule(
         .as_deref()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
-    let limit = a.limit.unwrap_or(20).clamp(1, 50);
+    let limit = require_bounded_usize(a.limit.unwrap_or(20), 1, 50, "lookup_rewrite_rule.limit")?;
 
     let Some(meta) = meta else {
         return Err(anyhow!(
@@ -6481,9 +6590,20 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("db_summary: invalid args: {e}"))?;
 
-    let max_types = a.max_types.unwrap_or(12).clamp(1, 50);
-    let max_relations = a.max_relations.unwrap_or(12).clamp(1, 50);
-    let max_relation_samples = a.max_relation_samples.unwrap_or(4).clamp(0, 10);
+    let max_types =
+        require_bounded_usize(a.max_types.unwrap_or(12), 1, 50, "db_summary.max_types")?;
+    let max_relations = require_bounded_usize(
+        a.max_relations.unwrap_or(12),
+        1,
+        50,
+        "db_summary.max_relations",
+    )?;
+    let max_relation_samples = require_bounded_usize(
+        a.max_relation_samples.unwrap_or(4),
+        0,
+        10,
+        "db_summary.max_relation_samples",
+    )?;
 
     let name_key_id = db.interner.id_of("name");
     let context_type_id = db.interner.id_of("Context");
@@ -6851,8 +6971,18 @@ fn tool_semantic_search(
         return Err(anyhow!("semantic_search: query must be non-empty"));
     }
 
-    let entity_limit = a.entity_limit.unwrap_or(12).clamp(1, 50);
-    let chunk_limit = a.chunk_limit.unwrap_or(options.max_doc_chunks).clamp(1, 50);
+    let entity_limit = require_bounded_usize(
+        a.entity_limit.unwrap_or(12),
+        1,
+        50,
+        "semantic_search.entity_limit",
+    )?;
+    let chunk_limit = require_bounded_usize(
+        a.chunk_limit.unwrap_or(options.max_doc_chunks),
+        1,
+        50,
+        "semantic_search.chunk_limit",
+    )?;
 
     // Deterministic token-hash retrieval (always-on).
     let qv = token_hash_embed_text(query);
@@ -7244,7 +7374,12 @@ fn tool_fts_chunks(
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("fts_chunks: invalid args: {e}"))?;
 
-    let limit = a.limit.unwrap_or(options.max_doc_chunks).clamp(1, 50);
+    let limit = require_bounded_usize(
+        a.limit.unwrap_or(options.max_doc_chunks),
+        1,
+        50,
+        "fts_chunks.limit",
+    )?;
     let query = a.query.trim();
     if query.is_empty() {
         return Err(anyhow!("fts_chunks: query must be non-empty"));
@@ -7296,7 +7431,12 @@ fn tool_docchunk_get(
     let a: Args = serde_json::from_value(args.clone())
         .map_err(|e| anyhow!("docchunk_get: invalid args: {e}"))?;
 
-    let max_chars = a.max_chars.unwrap_or(2_000).clamp(32, 8_000);
+    let max_chars = require_bounded_usize(
+        a.max_chars.unwrap_or(2_000),
+        MIN_LLM_TOOL_DOC_CHARS,
+        MAX_LLM_TOOL_DOC_CHARS,
+        "docchunk_get.max_chars",
+    )?;
 
     let resolve_by_id = |id: u32| -> Result<u32> {
         let Some(view) = db.get_entity(id) else {
@@ -7466,8 +7606,8 @@ fn tool_axql_run(
     args: &serde_json::Value,
     options: ToolLoopOptions,
 ) -> Result<serde_json::Value> {
-    // Safety: cap row count.
-    let cap = options.max_rows.clamp(1, 200);
+    // `run_tool_loop_with_meta` validates this operator-owned bound once.
+    let cap = options.max_rows;
 
     // Always run the full prepare pipeline (meta-plane typecheck/elaboration +
     // plan) so the REPL/UI can show what was inferred and how the engine ran.
@@ -7541,7 +7681,7 @@ fn tool_viz_render(
         return Ok(serde_json::json!({ "error": format!("no entity named `{focus}`") }));
     };
 
-    let hops = a.hops.unwrap_or(2).min(6);
+    let hops = require_bounded_usize(a.hops.unwrap_or(2), 0, 6, "viz_render.hops")?;
     let plane = a
         .plane
         .unwrap_or_else(|| "both".to_string())
@@ -7557,8 +7697,18 @@ fn tool_viz_render(
         }
     };
 
-    let max_nodes = a.max_nodes.unwrap_or(320).clamp(10, 5_000);
-    let max_edges = a.max_edges.unwrap_or(8_000).clamp(10, 50_000);
+    let max_nodes = require_bounded_usize(
+        a.max_nodes.unwrap_or(320),
+        10,
+        5_000,
+        "viz_render.max_nodes",
+    )?;
+    let max_edges = require_bounded_usize(
+        a.max_edges.unwrap_or(8_000),
+        10,
+        50_000,
+        "viz_render.max_edges",
+    )?;
 
     let options = crate::viz::VizOptions {
         focus_ids: vec![focus_id],
@@ -9081,6 +9231,7 @@ fn parse_tool_loop_response_json(
     content: &str,
     options: ToolLoopOptions,
 ) -> Result<ToolLoopModelResponseV1> {
+    let options = options.validate()?;
     // Strict tool_specs_v1 response contract. The model must return exactly one
     // current wrapper:
     // - { "tool_call": { "name": "...", "args": {...} } }
@@ -9148,7 +9299,7 @@ fn parse_tool_loop_response_json(
             // Ensure we always apply the tool-loop row limit safety valve.
             if let Some(obj) = call.args.as_object_mut() {
                 obj.entry("limit".to_string())
-                    .or_insert_with(|| serde_json::json!(options.max_rows.clamp(1, 200)));
+                    .or_insert_with(|| serde_json::json!(options.max_rows));
             }
         }
         Ok(call)
@@ -9158,6 +9309,13 @@ fn parse_tool_loop_response_json(
     if let Some(calls_v) = v.get("tool_calls").and_then(|x| x.as_array()) {
         if calls_v.is_empty() {
             return Err(anyhow!("tool-loop `tool_calls` must not be empty"));
+        }
+        if calls_v.len() > options.max_steps {
+            return Err(anyhow!(
+                "tool-loop `tool_calls` count {} exceeds remaining configured step bound {}",
+                calls_v.len(),
+                options.max_steps
+            ));
         }
         let mut calls: Vec<ToolCallV1> = Vec::new();
         for c in calls_v {

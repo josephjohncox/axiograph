@@ -229,10 +229,12 @@ dependencies = [
  "axiograph-projections",
  "axiograph-security",
  "axiograph-store",
+ "axiograph-tooling-overlays",
  "clap",
  "serde",
  "serde_json",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]
@@ -386,6 +388,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
 ]
 

@@ -62,8 +62,9 @@ finite bounds, and tampered explanations.
 The resulting saturation claim is intentionally narrow: finite generator
 reachability. It does not execute arbitrary ontology rewrites, prove
 termination/confluence, close an open world, or establish unrestricted HoTT or
-topos semantics. The module is theorem support outside `VerifyMain` until a
-versioned anchored certificate family is reviewed and dispatched there.
+topos semantics. The finite theory module is inside the `VerifyMain` import closure. Only its
+versioned, anchored certificate dispatches are trusted runtime decisions;
+standalone theorem-support definitions do not enlarge the accepted wire claim.
 
 ## 1) Proof-irrelevant exploration (REPL)
 

@@ -1496,21 +1496,25 @@ fn inline_viz_script(html: &str, dist_root: &std::path::Path) -> Result<String> 
     Ok(out)
 }
 
+const MAX_VIZ_COPY_DEPTH: usize = 16;
+const MAX_VIZ_COPY_ENTRIES: usize = 4_096;
+const MAX_VIZ_COPY_FILES: usize = 1_024;
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    let mut entries = 0_usize;
     let mut files = 0_usize;
     let mut bytes = 0_usize;
-    copy_dir_recursive_bounded(src, dst, 0, &mut files, &mut bytes)
+    copy_dir_recursive_bounded(src, dst, 0, &mut entries, &mut files, &mut bytes)
 }
 
 fn copy_dir_recursive_bounded(
     src: &std::path::Path,
     dst: &std::path::Path,
     depth: usize,
+    entries: &mut usize,
     files: &mut usize,
     total_bytes: &mut usize,
 ) -> Result<()> {
-    const MAX_VIZ_COPY_DEPTH: usize = 16;
-    const MAX_VIZ_COPY_FILES: usize = 1_024;
     if depth > MAX_VIZ_COPY_DEPTH {
         return Err(anyhow!(
             "viz asset directory depth exceeds {MAX_VIZ_COPY_DEPTH}"
@@ -1527,6 +1531,14 @@ fn copy_dir_recursive_bounded(
     }
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        *entries = entries
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("viz asset entry count overflow"))?;
+        if *entries > MAX_VIZ_COPY_ENTRIES {
+            return Err(anyhow!(
+                "viz asset entry count exceeds {MAX_VIZ_COPY_ENTRIES}"
+            ));
+        }
         let path = entry.path();
         let target = dst.join(entry.file_name());
         let metadata = std::fs::symlink_metadata(&path)?;
@@ -1534,7 +1546,7 @@ fn copy_dir_recursive_bounded(
             return Err(anyhow!("viz asset source must not contain symlinks"));
         }
         if metadata.file_type().is_dir() {
-            copy_dir_recursive_bounded(&path, &target, depth + 1, files, total_bytes)?;
+            copy_dir_recursive_bounded(&path, &target, depth + 1, entries, files, total_bytes)?;
         } else if metadata.file_type().is_file() {
             *files = files
                 .checked_add(1)
@@ -1616,6 +1628,29 @@ instance DemoInst of Demo:
             .expect("import demo axi module");
         db.build_indexes();
         db
+    }
+
+    #[test]
+    fn viz_asset_copy_rejects_entry_fanout_before_copying() -> Result<()> {
+        let source = tempfile::tempdir()?;
+        let destination = tempfile::tempdir()?;
+        std::fs::write(source.path().join("asset.js"), b"asset")?;
+        let mut entries = MAX_VIZ_COPY_ENTRIES;
+        let mut files = 0;
+        let mut bytes = 0;
+        let error = copy_dir_recursive_bounded(
+            source.path(),
+            &destination.path().join("copy"),
+            0,
+            &mut entries,
+            &mut files,
+            &mut bytes,
+        )
+        .expect_err("viz asset entry overflow must reject");
+        assert!(error.to_string().contains("entry count"));
+        assert_eq!(files, 0);
+        assert_eq!(bytes, 0);
+        Ok(())
     }
 
     #[test]

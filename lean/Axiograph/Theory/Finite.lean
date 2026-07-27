@@ -125,6 +125,39 @@ structure CategoryKernelPathV3 where
   arrows : Array Nat
   deriving Repr, DecidableEq
 
+inductive CategoryKernelFormalDirectionV3 where
+  | forward
+  | inverse
+  deriving Repr, DecidableEq
+
+def CategoryKernelFormalDirectionV3.opposite : CategoryKernelFormalDirectionV3 →
+    CategoryKernelFormalDirectionV3
+  | .forward => .inverse
+  | .inverse => .forward
+
+structure CategoryKernelFormalStepV3 where
+  arrow : Nat
+  direction : CategoryKernelFormalDirectionV3
+  deriving Repr, DecidableEq
+
+structure CategoryKernelFormalPathV3 where
+  source : Nat
+  target : Nat
+  steps : Array CategoryKernelFormalStepV3
+  deriving Repr, DecidableEq
+
+structure CategoryKernelFormalRewriteStepV3 where
+  offset : Nat
+  arrow : Nat
+  firstDirection : CategoryKernelFormalDirectionV3
+  deriving Repr, DecidableEq
+
+structure CategoryKernelFormalNormalizationV3 where
+  input : CategoryKernelFormalPathV3
+  rewriteTrace : Array CategoryKernelFormalRewriteStepV3
+  normalized : CategoryKernelFormalPathV3
+  deriving Repr, DecidableEq
+
 structure CategoryKernelEquationV3 where
   name : String
   lhs : CategoryKernelPathV3
@@ -260,6 +293,31 @@ theorem GroupoidPath.denote_congr_right {p : PresentationCore}
       (GroupoidPath.trans head right).denote := by
   simp only [GroupoidPath.denote]
   rw [equal]
+
+theorem GroupoidPath.denote_congr_inverse {p : PresentationCore}
+    {a b : Fin p.objectNames.size} {left right : GroupoidPath p a b}
+    (equal : left.denote = right.denote) :
+    (GroupoidPath.inverse left).denote = (GroupoidPath.inverse right).denote := by
+  simp only [GroupoidPath.denote]
+  rw [equal]
+
+theorem GroupoidPath.denote_inverse_identity {p : PresentationCore}
+    (object : Fin p.objectNames.size) :
+    (GroupoidPath.inverse (GroupoidPath.identity object)).denote =
+      (GroupoidPath.identity object).denote := by
+  simp [GroupoidPath.denote]
+
+theorem GroupoidPath.denote_inverse_inverse {p : PresentationCore}
+    {a b : Fin p.objectNames.size} (path : GroupoidPath p a b) :
+    (GroupoidPath.inverse (GroupoidPath.inverse path)).denote = path.denote := by
+  simp [GroupoidPath.denote]
+
+theorem GroupoidPath.denote_inverse_trans {p : PresentationCore}
+    {a b c : Fin p.objectNames.size} (left : GroupoidPath p a b)
+    (right : GroupoidPath p b c) :
+    (GroupoidPath.inverse (GroupoidPath.trans left right)).denote =
+      (GroupoidPath.trans (GroupoidPath.inverse right) (GroupoidPath.inverse left)).denote := by
+  simp [GroupoidPath.denote]
 
 theorem GroupoidPath.denote_inverse_right {p : PresentationCore}
     {a b : Fin p.objectNames.size} (path : GroupoidPath p a b) :
@@ -547,22 +605,44 @@ private def compileAxiSchemaPath (core : PresentationCore) (text equationName : 
 
 private partial def validateCategoryTypeExpr
     (schemaName relationName roleName : String)
-    (objects relations earlierRoles : Array String) :
+    (objects : Array String)
+    (relations : Array Axiograph.Axi.SchemaV1.RelationDeclV1)
+    (earlierRoles : Array Axiograph.Axi.SchemaV1.FieldDeclV1) :
     Axiograph.Axi.SchemaV1.TypeExprV1 → Except (Array ResidualObligation) Unit
   | .object target =>
       if objects.contains target then pure ()
       else throw #[residual s!"role:{relationName}:{roleName}" .invalidProjection
         s!"schema `{schemaName}` relation `{relationName}` role `{roleName}` references unknown object `{target}`"]
   | .relationObject target =>
-      if relations.contains target then pure ()
+      if relations.any (fun relation => relation.name == target) then pure ()
       else throw #[residual s!"role:{relationName}:{roleName}" .invalidProjection
         s!"schema `{schemaName}` relation `{relationName}` role `{roleName}` references unknown relation object `{target}`"]
   | .indexed base overRoles => do
       validateCategoryTypeExpr schemaName relationName roleName objects relations earlierRoles base
+      let mut seenRoles : Array String := #[]
       for indexRole in overRoles do
-        if !earlierRoles.contains indexRole then
+        if seenRoles.contains indexRole then
+          throw #[residual s!"role:{relationName}:{roleName}" .invalidProjection
+            s!"schema `{schemaName}` relation `{relationName}` role `{roleName}` repeats index role `{indexRole}`"]
+        seenRoles := seenRoles.push indexRole
+        if !earlierRoles.any (fun role => role.field == indexRole) then
           throw #[residual s!"role:{relationName}:{roleName}" .invalidProjection
             s!"schema `{schemaName}` relation `{relationName}` role `{roleName}` indexes unknown or non-earlier role `{indexRole}`"]
+      if let some targetRelationName := base.relationObjectName? then
+        let some targetRelation := relations.find? (fun relation => relation.name == targetRelationName)
+          | throw #[residual s!"role:{relationName}:{roleName}" .invalidProjection
+              s!"schema `{schemaName}` relation `{relationName}` role `{roleName}` references unknown relation object `{targetRelationName}`"]
+        for indexRole in overRoles do
+          let some localRole := earlierRoles.find? (fun role => role.field == indexRole)
+            | throw #[residual s!"role:{relationName}:{roleName}" .invalidProjection
+                s!"schema `{schemaName}` relation `{relationName}` role `{roleName}` indexes unknown or non-earlier role `{indexRole}`"]
+          let some targetRole := targetRelation.fields.find? (fun role => role.field == localRole.field)
+            | throw #[residual s!"role:{relationName}:{roleName}" .invalidProjection
+                s!"target relation `{targetRelation.name}` has no role named `{localRole.field}` for the indexed fiber"]
+          if targetRole.ty.referencedName != localRole.ty.referencedName ||
+              targetRole.kind != localRole.kind then
+            throw #[residual s!"role:{relationName}:{roleName}" .invalidProjection
+              s!"target relation `{targetRelation.name}.{targetRole.field}` does not match local index role `{localRole.field}` in carrier and role kind"]
   | .refined base predicates => do
       validateCategoryTypeExpr schemaName relationName roleName objects relations earlierRoles base
       for predicate in predicates do
@@ -605,13 +685,12 @@ private def subtypeReachable
 private def validateAxiCategorySchema
     (schema : Axiograph.Axi.SchemaV1.SchemaV1Schema) :
     Except (Array ResidualObligation) Unit := do
-  let relationNames := schema.relations.map (·.name)
   for relation in schema.relations do
-    let mut earlierRoles : Array String := #[]
+    let mut earlierRoles : Array Axiograph.Axi.SchemaV1.FieldDeclV1 := #[]
     for field in relation.fields do
-      validateCategoryTypeExpr schema.name relation.name field.field schema.objects relationNames
+      validateCategoryTypeExpr schema.name relation.name field.field schema.objects schema.relations
         earlierRoles field.ty
-      earlierRoles := earlierRoles.push field.field
+      earlierRoles := earlierRoles.push field
 
   let mut subtypeEdges : Std.HashSet (String × String) := {}
   for subtype in schema.subtypes do
@@ -837,6 +916,140 @@ private def checkCategoryKernelPathV3 (presentation : CategoryKernelPresentation
       "category path does not end at its declared target"
       (some cursor) (some path.target)
 
+private def checkCategoryKernelFormalPathV3
+    (presentation : CategoryKernelPresentationV3)
+    (path : CategoryKernelFormalPathV3) : Except ResidualObligation Unit := do
+  if path.source >= presentation.objectNames.size || path.target >= presentation.objectNames.size then
+    throw <| residualAt "category-kernel:groupoid:endpoint" .malformedExplanation
+      "formal groupoid path endpoint is outside the finite presentation"
+      (some path.source) (some path.target)
+  let mut cursor := path.source
+  for step in path.steps do
+    let some arrow := presentation.arrows[step.arrow]?
+      | throw <| residual "category-kernel:groupoid:arrow" .malformedExplanation
+          s!"formal groupoid path references unknown arrow index {step.arrow}"
+    let (source, target) := match step.direction with
+      | .forward => (arrow.source, arrow.target)
+      | .inverse => (arrow.target, arrow.source)
+    if source != cursor then
+      throw <| residualAt "category-kernel:groupoid:composition" .malformedExplanation
+        s!"formal groupoid path does not compose at arrow index {step.arrow}"
+        (some cursor) (some source)
+    cursor := target
+  if cursor != path.target then
+    throw <| residualAt "category-kernel:groupoid:target" .malformedExplanation
+      "formal groupoid path does not end at its declared target"
+      (some cursor) (some path.target)
+
+private def applyCategoryKernelFormalRewriteStepV3
+    (presentation : CategoryKernelPresentationV3)
+    (path : CategoryKernelFormalPathV3)
+    (step : CategoryKernelFormalRewriteStepV3) :
+    Except ResidualObligation CategoryKernelFormalPathV3 := do
+  checkCategoryKernelFormalPathV3 presentation path
+  let steps := path.steps.toList
+  let some first := steps[step.offset]?
+    | throw <| residual "category-kernel:groupoid:rewrite-offset" .malformedExplanation
+        s!"formal rewrite offset {step.offset} is out of range"
+  let some second := steps[step.offset + 1]?
+    | throw <| residual "category-kernel:groupoid:rewrite-adjacent" .malformedExplanation
+        s!"formal rewrite offset {step.offset} has no adjacent step"
+  if first.arrow != step.arrow || first.direction != step.firstDirection ||
+      second.arrow != step.arrow || second.direction != step.firstDirection.opposite then
+    throw <| residual "category-kernel:groupoid:rewrite-pair" .malformedExplanation
+      "formal rewrite step does not cite an adjacent inverse pair"
+  let rewritten := (steps.take step.offset ++ steps.drop (step.offset + 2)).toArray
+  let result : CategoryKernelFormalPathV3 := {
+    source := path.source
+    target := path.target
+    steps := rewritten
+  }
+  checkCategoryKernelFormalPathV3 presentation result
+  pure result
+
+private def replayCategoryKernelFormalNormalizationV3
+    (presentation : CategoryKernelPresentationV3)
+    (certificate : CategoryKernelFormalNormalizationV3) :
+    Except ResidualObligation Unit := do
+  checkCategoryKernelFormalPathV3 presentation certificate.input
+  checkCategoryKernelFormalPathV3 presentation certificate.normalized
+  let mut current := certificate.input
+  for step in certificate.rewriteTrace do
+    current ← applyCategoryKernelFormalRewriteStepV3 presentation current step
+  if current != certificate.normalized then
+    throw <| residual "category-kernel:groupoid:normalization-output" .malformedExplanation
+      "formal rewrite trace does not produce the declared normal form"
+
+private def canonicalCategoryKernelFormalNormalizationV3
+    (presentation : CategoryKernelPresentationV3)
+    (arrowIndex : Nat)
+    (firstDirection : CategoryKernelFormalDirectionV3) :
+    Except ResidualObligation CategoryKernelFormalNormalizationV3 := do
+  let some arrow := presentation.arrows[arrowIndex]?
+    | throw <| residual "category-kernel:groupoid:canonical-arrow" .malformedExplanation
+        s!"canonical inverse-law witness references unknown arrow index {arrowIndex}"
+  let source := match firstDirection with
+    | .forward => arrow.source
+    | .inverse => arrow.target
+  let input : CategoryKernelFormalPathV3 := {
+    source
+    target := source
+    steps := #[
+      { arrow := arrowIndex, direction := firstDirection },
+      { arrow := arrowIndex, direction := firstDirection.opposite }
+    ]
+  }
+  let normalized : CategoryKernelFormalPathV3 := {
+    source
+    target := source
+    steps := #[]
+  }
+  let certificate : CategoryKernelFormalNormalizationV3 := {
+    input
+    rewriteTrace := #[{ offset := 0, arrow := arrowIndex, firstDirection }]
+    normalized
+  }
+  replayCategoryKernelFormalNormalizationV3 presentation certificate
+  pure certificate
+
+/-- Check exact Rust/Lean parity for the two formal inverse cancellation
+words of every presented generator. This is syntactic wire replay: these values
+are not retyped as `GroupoidPath`, and no acceptance theorem connects this
+function to `GroupoidPath.denote`. It makes no executable inverse claim. -/
+def verifyCategoryKernelGroupoidNormalizationsV3
+    (presentation : CategoryKernelPresentationV3)
+    (certificates : Array CategoryKernelFormalNormalizationV3) :
+    Except ResidualObligation Unit := do
+  let mut expected : Array CategoryKernelFormalNormalizationV3 := #[]
+  for arrowIndex in List.range presentation.arrows.size do
+    expected := expected.push
+      (← canonicalCategoryKernelFormalNormalizationV3 presentation arrowIndex .forward)
+    expected := expected.push
+      (← canonicalCategoryKernelFormalNormalizationV3 presentation arrowIndex .inverse)
+  for certificate in certificates do
+    replayCategoryKernelFormalNormalizationV3 presentation certificate
+  if certificates != expected then
+    throw <| residual "category-kernel:groupoid:coverage" .incompleteCertificate
+      "formal groupoid normalization witnesses do not exactly cover both inverse laws for every arrow"
+
+private def categoryKernelObjectAtOffsetV3
+    (presentation : CategoryKernelPresentationV3)
+    (path : CategoryKernelPathV3)
+    (offset : Nat) : Except ResidualObligation Nat := do
+  if offset > path.arrows.size then
+    throw <| residual "category-kernel:congruence:offset" .malformedExplanation
+      s!"congruence offset {offset} is outside the input path"
+  let mut cursor := path.source
+  for arrowIndex in path.arrows.toList.take offset do
+    let some arrow := presentation.arrows[arrowIndex]?
+      | throw <| residual "category-kernel:congruence:arrow" .malformedExplanation
+          s!"congruence context references unknown arrow index {arrowIndex}"
+    if arrow.source != cursor then
+      throw <| residual "category-kernel:congruence:composition" .malformedExplanation
+        "congruence context is not composable"
+    cursor := arrow.target
+  pure cursor
+
 private def applyCategoryKernelCongruenceStepV3
     (presentation : CategoryKernelPresentationV3)
     (path : CategoryKernelPathV3)
@@ -849,12 +1062,17 @@ private def applyCategoryKernelCongruenceStepV3
   let (fromPath, toPath) := match step.direction with
     | .forward => (equation.lhs, equation.rhs)
     | .reverse => (equation.rhs, equation.lhs)
+  checkCategoryKernelPathV3 presentation fromPath
+  checkCategoryKernelPathV3 presentation toPath
   let pathArrows := path.arrows.toList
   let fromArrows := fromPath.arrows.toList
   let offset := step.offset
   let endOffset := offset + fromArrows.length
+  let segmentSource ← categoryKernelObjectAtOffsetV3 presentation path offset
+  let segmentTarget ← categoryKernelObjectAtOffsetV3 presentation path endOffset
   if endOffset > pathArrows.length ||
-      (pathArrows.drop offset).take fromArrows.length != fromArrows then
+      (pathArrows.drop offset).take fromArrows.length != fromArrows ||
+      segmentSource != fromPath.source || segmentTarget != fromPath.target then
     throw <| residual "category-kernel:congruence:segment" .malformedExplanation
       "congruence step does not match the selected path segment"
   let rewritten :=
@@ -867,8 +1085,8 @@ private def applyCategoryKernelCongruenceStepV3
   checkCategoryKernelPathV3 presentation result
   pure result
 
-/-- Check contextual equation replacement and require exact coverage: every
-forward category equation must be cited by at least one non-empty certificate. -/
+/-- Check contextual equation replacement with the canonical wire coverage:
+certificate `i` contains exactly one forward application of equation `i`. -/
 def verifyCategoryKernelCongruenceV3
     (presentation : CategoryKernelPresentationV3)
     (certificates : Array CategoryKernelCongruenceCertificateV3) :
@@ -876,24 +1094,23 @@ def verifyCategoryKernelCongruenceV3
   if certificates.size != presentation.equations.size then
     throw <| residual "category-kernel:congruence:coverage" .incompleteCertificate
       "congruence certificate count does not equal the presented equation count"
-  let mut seen : Std.HashSet Nat := {}
-  for certificate in certificates do
-    if certificate.steps.isEmpty then
-      throw <| residual "category-kernel:congruence:empty" .incompleteCertificate
-        "congruence certificate must contain at least one equation step"
+  for equationIndex in List.range presentation.equations.size do
+    let some certificate := certificates[equationIndex]?
+      | throw <| residual "category-kernel:congruence:coverage" .incompleteCertificate
+          s!"presented equation {equationIndex} has no congruence replay witness"
+    let some step := certificate.steps[0]?
+      | throw <| residual "category-kernel:congruence:empty" .incompleteCertificate
+          "congruence certificate must contain one equation step"
+    if certificate.steps.size != 1 || step.equation != equationIndex ||
+        step.direction != .forward then
+      throw <| residual "category-kernel:congruence:canonical" .incompleteCertificate
+        s!"congruence certificate {equationIndex} is not the one-step forward witness for equation {equationIndex}"
     checkCategoryKernelPathV3 presentation certificate.input
     checkCategoryKernelPathV3 presentation certificate.output
-    let mut current := certificate.input
-    for step in certificate.steps do
-      current ← applyCategoryKernelCongruenceStepV3 presentation current step
-      seen := seen.insert step.equation
-    if current != certificate.output then
+    let output ← applyCategoryKernelCongruenceStepV3 presentation certificate.input step
+    if output != certificate.output then
       throw <| residual "category-kernel:congruence:output" .malformedExplanation
         "congruence replay output does not match the declared output path"
-  for equation in List.range presentation.equations.size do
-    if !seen.contains equation then
-      throw <| residual s!"category-kernel:congruence:missing:{equation}"
-        .incompleteCertificate "presented equation has no congruence replay witness"
 
 /-- A finite interpretation becomes a model of the presented category only when
 it satisfies every compiled path equation. -/
@@ -1056,9 +1273,15 @@ structure CheckedPathSelection (p : PresentationCore)
 def TypedPathHole.select? {p : PresentationCore}
     {source target : Fin p.objectNames.size}
     (hole : TypedPathHole p source target) (candidate : Nat) :
-    Option (CheckedPathSelection p source target) := do
-  let selected ← hole.candidates[candidate]?
-  pure { holeId := hole.holeId, selected }
+    Option (CheckedPathSelection p source target) :=
+  if hole.lifecycle != .residual || hole.residualObligations.isEmpty ||
+      !hole.residualObligations.all (fun obligation =>
+        obligation.kind == .typedHole && obligation.obligationId == hole.holeId &&
+        obligation.source == some source.val && obligation.target == some target.val) then
+    none
+  else do
+    let selected ← hole.candidates[candidate]?
+    pure { holeId := hole.holeId, selected }
 
 -- =============================================================================
 -- Finite reachability saturation with replayable explanations

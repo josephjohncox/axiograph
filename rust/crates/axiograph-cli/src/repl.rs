@@ -5302,13 +5302,13 @@ mod repl_tokenize_tests {
     #[test]
     fn tokenize_repl_line_preserves_axql_with_refinement_handle_option() {
         let tokens = tokenize_repl_line(
-            r#"q --typecheck --apply-refinement axql_refine_v1:sha256:abc123 select ?x where name("Alice") -Parent-> ?x limit 3"#,
+            r#"q --typecheck --apply-refinement axql_refine_v2:sha256:abc123 select ?x where name("Alice") -Parent-> ?x limit 3"#,
         );
         assert_eq!(tokens.len(), 5);
         assert_eq!(tokens[0], "q");
         assert_eq!(tokens[1], "--typecheck");
         assert_eq!(tokens[2], "--apply-refinement");
-        assert_eq!(tokens[3], "axql_refine_v1:sha256:abc123");
+        assert_eq!(tokens[3], "axql_refine_v2:sha256:abc123");
         assert_eq!(
             tokens[4],
             r#"select ?x where name("Alice") -Parent-> ?x limit 3"#

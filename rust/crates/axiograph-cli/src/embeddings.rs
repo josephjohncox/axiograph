@@ -216,7 +216,7 @@ pub struct EmbeddingRelationshipEvidenceV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub suggested_refinement_handles: Vec<crate::typed_refinement::RuntimeRefinementHandleV1>,
+    pub suggested_refinement_handles: Vec<crate::typed_refinement::RuntimeRefinementHandleV2>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caveats: Vec<String>,
 }
@@ -1052,8 +1052,8 @@ fn embedding_relationship_refinement_handle_v1(
     sidecar_id: &str,
     evidence_id: &str,
     relationship: EmbeddingRelationshipKindV1,
-) -> crate::typed_refinement::RuntimeRefinementHandleV1 {
-    crate::typed_refinement::RuntimeRefinementHandleV1::new_reconciliation(
+) -> crate::typed_refinement::RuntimeRefinementHandleV2 {
+    crate::typed_refinement::RuntimeRefinementHandleV2::new_reconciliation(
         crate::typed_refinement::ReconciliationRefinementOpV1::ResolveConflictByDecision {
             reconciliation_id: format!("embedding_evidence:{sidecar_id}"),
             artifact_kind: "embedding_relationship_evidence".to_string(),
@@ -1532,8 +1532,13 @@ mod tests {
         EmbeddingAcceptedRefV1 {
             accepted_ref: "heads/main".to_string(),
             accepted_axi_anchor: AcceptedAxiAnchor::new(
-                AcceptedSnapshotId::new("accepted:test"),
-                AxiDigest::new("fnv1a64:module"),
+                AcceptedSnapshotId::new(
+                    axiograph_kernel::SnapshotIdV2::from_canonical_fields(&[
+                        b"embedding-test-snapshot",
+                    ])
+                    .to_string(),
+                ),
+                AxiDigest::from_axi_text("module Demo\n"),
             ),
             module_name: Some("Demo".to_string()),
             compiled_ir_digest: Some("sha256:compiled-ir".to_string()),
@@ -1657,21 +1662,27 @@ mod tests {
                         chunk_id: "doc_a".to_string(),
                     },
                     vector: vec![1.0, 0.0],
-                    text_digest: Some("fnv1a64:text-a".to_string()),
+                    text_digest: Some(
+                        axiograph_kernel::object_blob_digest_v2(b"text-a").to_string(),
+                    ),
                 },
                 EmbeddingItemV1 {
                     key: EmbeddingKeyV1::DocChunk {
                         chunk_id: "doc_b".to_string(),
                     },
                     vector: vec![0.96, 0.28],
-                    text_digest: Some("fnv1a64:text-b".to_string()),
+                    text_digest: Some(
+                        axiograph_kernel::object_blob_digest_v2(b"text-b").to_string(),
+                    ),
                 },
                 EmbeddingItemV1 {
                     key: EmbeddingKeyV1::DocChunk {
                         chunk_id: "doc_c".to_string(),
                     },
                     vector: vec![0.0, 1.0],
-                    text_digest: Some("fnv1a64:text-c".to_string()),
+                    text_digest: Some(
+                        axiograph_kernel::object_blob_digest_v2(b"text-c").to_string(),
+                    ),
                 },
             ],
             metadata: HashMap::from([
@@ -1950,9 +1961,10 @@ mod tests {
             value["accepted"]["accepted_ref"].as_str(),
             Some("heads/main")
         );
+        let expected_axi_digest = AxiDigest::from_axi_text("module Demo\n");
         assert_eq!(
             value["accepted"]["accepted_axi_anchor"]["axi_digest"].as_str(),
-            Some("fnv1a64:module")
+            Some(expected_axi_digest.as_str())
         );
         assert_eq!(
             value["source_model"]["model_digest"].as_str(),

@@ -1,4 +1,6 @@
 import Axiograph.Theory.Finite
+import Axiograph.Prob.Verified
+import Axiograph.Certificate.Format
 
 namespace Axiograph.Theory.FiniteTests
 
@@ -36,6 +38,49 @@ private def childTypedRole : TypedRole validCore := {
   target := person
   projection := .generator ⟨0, by decide⟩
 }
+
+private def mentorGroupoid : GroupoidPath validCore person person :=
+  .generator ⟨2, by decide⟩
+
+private theorem indexedGroupoidLeftUnit :
+    (GroupoidPath.trans (.identity (p := validCore) person) mentorGroupoid).denote =
+      mentorGroupoid.denote :=
+  GroupoidPath.denote_id_left mentorGroupoid
+
+private theorem indexedGroupoidRightUnit :
+    (GroupoidPath.trans mentorGroupoid (GroupoidPath.identity (p := validCore) person)).denote = mentorGroupoid.denote :=
+  GroupoidPath.denote_id_right mentorGroupoid
+
+private theorem indexedGroupoidAssociativity :
+    (GroupoidPath.trans (GroupoidPath.trans mentorGroupoid mentorGroupoid)
+      mentorGroupoid).denote =
+    (GroupoidPath.trans mentorGroupoid
+      (GroupoidPath.trans mentorGroupoid mentorGroupoid)).denote :=
+  GroupoidPath.denote_assoc mentorGroupoid mentorGroupoid mentorGroupoid
+
+private theorem indexedGroupoidInverseRight :
+    (GroupoidPath.trans mentorGroupoid (.inverse mentorGroupoid)).denote =
+      (GroupoidPath.identity (p := validCore) person).denote :=
+  GroupoidPath.denote_inverse_right mentorGroupoid
+
+private theorem indexedGroupoidInverseLeft :
+    (GroupoidPath.trans (.inverse mentorGroupoid) mentorGroupoid).denote =
+      (GroupoidPath.identity (p := validCore) person).denote :=
+  GroupoidPath.denote_inverse_left mentorGroupoid
+
+private theorem indexedGroupoidCompositionCongruence :
+    (GroupoidPath.trans
+      (GroupoidPath.trans (.identity (p := validCore) person) mentorGroupoid)
+      mentorGroupoid).denote =
+    (GroupoidPath.trans mentorGroupoid mentorGroupoid).denote :=
+  GroupoidPath.denote_congr_left mentorGroupoid
+    (GroupoidPath.denote_id_left mentorGroupoid)
+
+private theorem indexedGroupoidInverseCongruence :
+    (GroupoidPath.inverse
+      (GroupoidPath.trans (GroupoidPath.identity (p := validCore) person) mentorGroupoid)).denote =
+    (GroupoidPath.inverse mentorGroupoid).denote :=
+  GroupoidPath.denote_congr_inverse (GroupoidPath.denote_id_left mentorGroupoid)
 
 private def validPresentation : Presentation := {
   core := validCore
@@ -103,6 +148,27 @@ private def allVisible : ContextFamily tinyModel := {
 private def ensure (condition : Bool) (message : String) : IO Unit :=
   if condition then pure () else throw (IO.userError message)
 
+private def groupoidLawCertificate
+    (arrowIndex : Nat)
+    (arrow : CategoryKernelArrowV3)
+    (firstDirection : CategoryKernelFormalDirectionV3) :
+    CategoryKernelFormalNormalizationV3 :=
+  let source := match firstDirection with
+    | .forward => arrow.source
+    | .inverse => arrow.target
+  {
+    input := {
+      source
+      target := source
+      steps := #[
+        { arrow := arrowIndex, direction := firstDirection },
+        { arrow := arrowIndex, direction := firstDirection.opposite }
+      ]
+    }
+    rewriteTrace := #[{ offset := 0, arrow := arrowIndex, firstDirection }]
+    normalized := { source, target := source, steps := #[] }
+  }
+
 private def assertValidPresentation : IO Unit := do
   match validatePresentation validPresentation with
   | .ok _ => pure ()
@@ -153,6 +219,79 @@ private def assertCanonicalAxiDerivation : IO Unit := do
     | none => false)
     "canonical category manifest lost explicit function kind"
 
+  let mut groupoidNormalizations : Array CategoryKernelFormalNormalizationV3 := #[]
+  for arrowIndex in List.range manifest.arrows.size do
+    let some arrow := manifest.arrows[arrowIndex]?
+      | throw (IO.userError "category manifest arrow index was out of range")
+    groupoidNormalizations := groupoidNormalizations.push
+      (groupoidLawCertificate arrowIndex arrow .forward)
+    groupoidNormalizations := groupoidNormalizations.push
+      (groupoidLawCertificate arrowIndex arrow .inverse)
+  match verifyCategoryKernelGroupoidNormalizationsV3 manifest groupoidNormalizations with
+  | .ok _ => pure ()
+  | .error err =>
+      throw (IO.userError s!"indexed groupoid normalization rejected: {repr err}")
+  ensure (groupoidNormalizations.size == manifest.arrows.size * 2)
+    "indexed groupoid witnesses did not cover both inverse laws"
+  let some first := groupoidNormalizations[0]?
+    | throw (IO.userError "category manifest omitted groupoid witnesses")
+  let some firstStep := first.rewriteTrace[0]?
+    | throw (IO.userError "groupoid witness omitted its rewrite trace")
+  let tampered := groupoidNormalizations.set! 0 {
+    first with rewriteTrace := #[{ firstStep with offset := 1 }]
+  }
+  match verifyCategoryKernelGroupoidNormalizationsV3 manifest tampered with
+  | .error err =>
+      ensure (err.kind == .malformedExplanation || err.kind == .incompleteCertificate)
+        "tampered groupoid trace had the wrong residual kind"
+  | .ok _ => throw (IO.userError "tampered groupoid rewrite trace was accepted")
+
+private def assertCategoryCongruenceGuards : IO Unit := do
+  let identityA : CategoryKernelPathV3 := { source := 0, target := 0, arrows := #[] }
+  let identityB : CategoryKernelPathV3 := { source := 1, target := 1, arrows := #[] }
+  let identityManifest : CategoryKernelPresentationV3 := {
+    objectNames := #["A", "B"]
+    arrows := #[]
+    relations := #[]
+    identityObjects := #[0, 1]
+    equations := #[{ name := "identity", lhs := identityA, rhs := identityA }]
+  }
+  let wrongObject : CategoryKernelCongruenceCertificateV3 := {
+    input := identityB
+    steps := #[{ equation := 0, direction := .forward, offset := 0 }]
+    output := identityB
+  }
+  match verifyCategoryKernelCongruenceV3 identityManifest #[wrongObject] with
+  | .error _ => pure ()
+  | .ok _ => throw (IO.userError "id(A) equation was applied at id(B)")
+
+  let twoEquationManifest : CategoryKernelPresentationV3 := {
+    objectNames := #["A"]
+    arrows := #[]
+    relations := #[]
+    identityObjects := #[0]
+    equations := #[
+      { name := "first", lhs := identityA, rhs := identityA },
+      { name := "second", lhs := identityA, rhs := identityA }
+    ]
+  }
+  let combined : CategoryKernelCongruenceCertificateV3 := {
+    input := identityA
+    steps := #[
+      { equation := 0, direction := .forward, offset := 0 },
+      { equation := 1, direction := .forward, offset := 0 }
+    ]
+    output := identityA
+  }
+  let duplicate : CategoryKernelCongruenceCertificateV3 := {
+    input := identityA
+    steps := #[{ equation := 0, direction := .forward, offset := 0 }]
+    output := identityA
+  }
+  match verifyCategoryKernelCongruenceV3 twoEquationManifest #[combined, duplicate] with
+  | .error _ => pure ()
+  | .ok _ => throw (IO.userError "congruence coverage accepted non-canonical equation witnesses")
+
 private def assertDependentWitnesses : IO Unit := do
   let relation ←
     match compileRelation validCore parentRelation with
@@ -190,6 +329,39 @@ private def assertDependentWitnesses : IO Unit := do
     | throw (IO.userError "typed hole candidate did not resolve")
   ensure (selected.lifecycle == .explanationVerified)
     "selected typed path did not enter checked lifecycle"
+  let rejectedHole : TypedPathHole validCore person person := {
+    hole with lifecycle := .rejected, residualObligations := #[]
+  }
+  ensure ((rejectedHole.select? 0).isNone)
+    "rejected typed hole bypassed its lifecycle"
+  let emptyResidualHole : TypedPathHole validCore person person := {
+    hole with residualObligations := #[]
+  }
+  ensure ((emptyResidualHole.select? 0).isNone)
+    "typed hole without a residual obligation was promoted"
+
+private def assertV2WireBounds : IO Unit := do
+  let oversized := "{\"version\":2,\"kind\":\"normalize_path_v2\",\"proof\":{\"input\":{\"type\":\"reflexive\",\"entity\":4294967296},\"normalized\":{\"type\":\"reflexive\",\"entity\":4294967296},\"derivation\":[]}}"
+  let json ←
+    match Lean.Json.parse oversized with
+    | .ok json => pure json
+    | .error err => throw (IO.userError s!"oversized wire fixture is invalid JSON: {err}")
+  match Axiograph.parseCertificateEnvelope json with
+  | .error _ => pure ()
+  | .ok _ => throw (IO.userError "Lean accepted a V2 entity outside Rust's u32 domain")
+
+private def assertConfidenceSeparation : IO Unit := do
+  let first := Axiograph.Prob.ofNat 98_781 (by decide)
+  let second := Axiograph.Prob.ofNat 427_863 (by decide)
+  let third := Axiograph.Prob.ofNat 382_808 (by decide)
+  let left := Axiograph.Prob.vMult (Axiograph.Prob.vMult first second) third
+  let right := Axiograph.Prob.vMult first (Axiograph.Prob.vMult second third)
+  ensure (Axiograph.Prob.toNat left == 16_178)
+    "left-associated fixed-point confidence regression drifted"
+  ensure (Axiograph.Prob.toNat right == 16_179)
+    "right-associated fixed-point confidence regression drifted"
+  ensure (left != right)
+    "fixed-point confidence was incorrectly treated as path-associative equality"
 
 private def assertRefinements : IO Unit := do
   match compileRefinement 3 "refinement:ok" (.memberOf #[0, 2]) with
@@ -396,7 +568,10 @@ Any missed rejection exits nonzero. -/
 def run : IO UInt32 := do
   assertValidPresentation
   assertCanonicalAxiDerivation
+  assertCategoryCongruenceGuards
   assertDependentWitnesses
+  assertV2WireBounds
+  assertConfidenceSeparation
   assertRefinements
   assertFiniteSaturation
   assertAdversarialPresentations

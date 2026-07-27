@@ -36,7 +36,7 @@ namespace RewriteDerivation
 /-!
 ### v3 rewrite derivations (`rewrite_derivation_v3`)
 
-This is the `.axi`-anchored successor to `rewrite_derivation_v2`.
+This is the only standalone generic rewrite-derivation certificate family.
 
 Key differences from v2:
 
@@ -1560,7 +1560,9 @@ def applyAt (pos : List Nat) (rule : PathRewriteRuleV2) (expr : PathExprV2) : Ex
                 else
                   runDerivationCore start end_ next rest
 
-  /-- Replay a derivation from an input expression. -/
+  /-- Replay a derivation from an endpoint-indexed input expression. The
+  verifier's global certificate-byte and JSON-depth bounds provide the finite
+  resource boundary; every successful step must preserve the same endpoints. -/
   def runDerivation (input : PathExprV2) (steps : Array PathRewriteStepV2) : Except String PathExprV2 :=
     match endpoints input with
     | .error msg => .error msg
@@ -1582,17 +1584,13 @@ def verifyNormalizePathProofV2 (proof : NormalizePathProofV2) : Except String No
           if inputStart != normStart || inputEnd != normEnd then
             .error s!"normalized endpoints mismatch: input=({inputStart},{inputEnd}) normalized=({normStart},{normEnd})"
           else
-            -- Optional explicit derivation replay.
-            match proof.derivation? with
-            | none => finish inputStart inputEnd
-            | some steps =>
-                match runDerivation proof.input steps with
-                | .error msg => .error msg
-                | .ok derived =>
-                    if derived != proof.normalized then
-                      .error "rewrite derivation does not produce the claimed normalized expression"
-                    else
-                      finish inputStart inputEnd
+            match runDerivation proof.input proof.derivation with
+            | .error msg => .error msg
+            | .ok derived =>
+                if derived != proof.normalized then
+                  .error "rewrite derivation does not produce the claimed normalized expression"
+                else
+                  finish inputStart inputEnd
 where
   finish (inputStart inputEnd : Nat) : Except String NormalizePathResultV2 :=
     let expected := normalize proof.input
@@ -1638,6 +1636,7 @@ end RewriteDerivation
 namespace PathEquivalence
 
 open PathNormalization
+open RewriteDerivation
 
 structure PathEquivResultV2 where
   start : Nat
@@ -1645,25 +1644,26 @@ structure PathEquivResultV2 where
   normalized : PathExprV2
   deriving Repr
 
-def verifyPathEquivProofV2 (proof : PathEquivProofV2) : Except String PathEquivResultV2 := do
-  let (leftStart, leftEnd) ← endpoints proof.left
-  let (rightStart, rightEnd) ← endpoints proof.right
-  if leftStart != rightStart || leftEnd != rightEnd then
-    throw s!"path_equiv: endpoint mismatch: left=({leftStart},{leftEnd}) right=({rightStart},{rightEnd})"
+def PathEquivProofV2.leftRewriteProof (proof : PathEquivProofV2) : RewriteDerivationProofV2 := {
+  input := proof.left
+  output := proof.normalized
+  derivation := proof.leftDerivation
+}
 
-  let (normStart, normEnd) ← endpoints proof.normalized
-  if leftStart != normStart || leftEnd != normEnd then
-    throw s!"path_equiv: normalized endpoints mismatch: input=({leftStart},{leftEnd}) normalized=({normStart},{normEnd})"
+def PathEquivProofV2.rightRewriteProof (proof : PathEquivProofV2) : RewriteDerivationProofV2 := {
+  input := proof.right
+  output := proof.normalized
+  derivation := proof.rightDerivation
+}
 
-  if let some steps := proof.leftDerivation? then
-    let derived ← runDerivation proof.left steps
-    if derived != proof.normalized then
-      throw "path_equiv: left_derivation does not produce the claimed normalized expression"
+abbrev leftRewriteProof := PathEquivProofV2.leftRewriteProof
+abbrev rightRewriteProof := PathEquivProofV2.rightRewriteProof
 
-  if let some steps := proof.rightDerivation? then
-    let derived ← runDerivation proof.right steps
-    if derived != proof.normalized then
-      throw "path_equiv: right_derivation does not produce the claimed normalized expression"
+private def finishPathEquivProofV2
+    (proof : PathEquivProofV2)
+    (leftReplay rightReplay : RewriteDerivationResultV2) : Except String PathEquivResultV2 := do
+  if leftReplay.start != rightReplay.start || leftReplay.end_ != rightReplay.end_ then
+    throw s!"path_equiv: endpoint mismatch: left=({leftReplay.start},{leftReplay.end_}) right=({rightReplay.start},{rightReplay.end_})"
 
   let expectedLeft := normalize proof.left
   let expectedRight := normalize proof.right
@@ -1674,7 +1674,15 @@ def verifyPathEquivProofV2 (proof : PathEquivProofV2) : Except String PathEquivR
   if !(isNormalized proof.normalized) then
     throw "path_equiv: claimed normal form is not normalized"
 
-  pure { start := leftStart, end_ := leftEnd, normalized := proof.normalized }
+  pure { start := leftReplay.start, end_ := leftReplay.end_, normalized := proof.normalized }
+
+def verifyPathEquivProofV2 (proof : PathEquivProofV2) : Except String PathEquivResultV2 :=
+  match verifyRewriteDerivationProofV2 (PathEquivProofV2.leftRewriteProof proof) with
+  | .error msg => .error msg
+  | .ok leftReplay =>
+      match verifyRewriteDerivationProofV2 (PathEquivProofV2.rightRewriteProof proof) with
+      | .error msg => .error msg
+      | .ok rightReplay => finishPathEquivProofV2 proof leftReplay rightReplay
 
 end PathEquivalence
 
@@ -1787,6 +1795,7 @@ structure ResultV3 where
   arrowCount : Nat
   equationCount : Nat
   congruenceCertificateCount : Nat
+  groupoidNormalizationCount : Nat
   reachabilityEntryCount : Nat
   lifecycle : Theory.Finite.CheckedLifecycleState
   deriving Repr
@@ -1819,6 +1828,11 @@ def verifyV3 (module : Axiograph.Axi.AxiV1.AxiV1Module)
   | .ok _ => pure ()
   | .error residual =>
       throw s!"category_kernel_v3: congruence replay failed: {repr residual}"
+  match Theory.Finite.verifyCategoryKernelGroupoidNormalizationsV3
+      expected proof.groupoidNormalizations with
+  | .ok _ => pure ()
+  | .error residual =>
+      throw s!"category_kernel_v3: groupoid normalization replay failed: {repr residual}"
   let checked ←
     match Theory.Finite.checkSaturationCertificate presentation proof.certificate with
     | .ok checked => pure checked
@@ -1830,6 +1844,7 @@ def verifyV3 (module : Axiograph.Axi.AxiV1.AxiV1Module)
     arrowCount := presentation.core.arrows.size
     equationCount := presentation.equations.size
     congruenceCertificateCount := proof.congruenceCertificates.size
+    groupoidNormalizationCount := proof.groupoidNormalizations.size
     reachabilityEntryCount := checked.certificate.entries.size
     lifecycle := checked.lifecycle
   }
@@ -1844,7 +1859,6 @@ inductive CertificateResult where
   | axiConstraintsOkV1 (res : AxiConstraintsOkProofV1)
   | queryResultV4 (res : Query.QueryResultV4)
   | normalizePathV2 (res : PathNormalization.NormalizePathResultV2)
-  | rewriteDerivationV2 (res : RewriteDerivation.RewriteDerivationResultV2)
   | rewriteDerivationV3 (res : RewriteDerivation.RewriteDerivationResultV3)
   | pathEquivV2 (res : PathEquivalence.PathEquivResultV2)
   | deltaFV1 (res : Migration.DeltaFMigrationResultV1)
@@ -1867,9 +1881,6 @@ def verifyCertificate : Certificate → Except String CertificateResult
   | .normalizePathV2 proof => do
       let res ← PathNormalization.verifyNormalizePathProofV2 proof
       pure (.normalizePathV2 res)
-  | .rewriteDerivationV2 proof => do
-      let res ← RewriteDerivation.verifyRewriteDerivationProofV2 proof
-      pure (.rewriteDerivationV2 res)
   | .rewriteDerivationV3 proof => do
       let res ← RewriteDerivation.verifyRewriteDerivationProofV3 proof
       pure (.rewriteDerivationV3 res)

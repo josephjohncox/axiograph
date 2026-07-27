@@ -14,8 +14,8 @@ use axiograph_dsl::{
     axi_v1::parse_axi_v1,
     schema_v1::{
         parse_path_expr_v3, CarrierFieldsV1, ConstraintV1, GeneratorKindV1, PathExprV3,
-        RefinementPredicateV1, RoleKindV1, SchemaV1Instance, SchemaV1Module, SchemaV1Schema,
-        SetItemV1, TypeExprV1,
+        RefinementPredicateV1, RewriteVarTypeV1, RoleKindV1, SchemaV1Instance, SchemaV1Module,
+        SchemaV1Schema, SetItemV1, TypeExprV1,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,7 @@ use thiserror::Error;
 
 pub const KERNEL_SNAPSHOT_IR_VERSION: &str = "kernel_snapshot_ir_v2";
 pub const SCHEMA_PRESENTATION_IR_VERSION: &str = "schema_presentation_ir_v2";
-pub const INSTANCE_MODEL_IR_VERSION: &str = "instance_model_ir_v2";
+pub const INSTANCE_MODEL_IR_VERSION: &str = "instance_model_ir_v3";
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum KernelCompileError {
@@ -113,6 +113,12 @@ pub enum KernelCompileError {
     InvalidSchemaEquation {
         theory: String,
         equation: String,
+        detail: String,
+    },
+    #[error("theory `{theory}` rewrite `{rule}` is not a well-scoped endpoint-preserving typed path: {detail}")]
+    InvalidRewriteRule {
+        theory: String,
+        rule: String,
         detail: String,
     },
     #[error("finite typed-theory compilation/checking failed: {0}")]
@@ -1688,7 +1694,16 @@ fn compile_type_expr(
                 role,
             )?;
             let mut compiled_roles = Vec::new();
+            let mut seen_roles = BTreeSet::new();
             for index_role in over_roles {
+                if !seen_roles.insert(index_role) {
+                    return Err(KernelCompileError::InvalidIndexedFiber {
+                        schema: schema.to_string(),
+                        relation: relation.to_string(),
+                        role: role.to_string(),
+                        detail: format!("index role `{index_role}` is repeated"),
+                    });
+                }
                 let Some(role_id) = earlier_roles.get(index_role) else {
                     return Err(KernelCompileError::InvalidRoleIndex {
                         schema: schema.to_string(),
@@ -1835,6 +1850,17 @@ fn validate_indexed_fiber_formation(
         match expression {
             TypeExprIr::Indexed { base, over_roles } => {
                 check_expression(schema, relation, role, base, relations_by_id)?;
+                let mut unique_roles = BTreeSet::new();
+                for index_role_id in over_roles {
+                    if !unique_roles.insert(index_role_id) {
+                        return Err(KernelCompileError::InvalidIndexedFiber {
+                            schema: schema.to_string(),
+                            relation: relation.label.clone(),
+                            role: role.label.clone(),
+                            detail: format!("index role `{index_role_id}` is repeated"),
+                        });
+                    }
+                }
                 let SchemaObjectRefIr::RelationObject {
                     relation_id: target_relation_id,
                 } = base.carrier()
@@ -2203,20 +2229,23 @@ fn compile_theory(
                 None
             }
         };
-        let formal_groupoid_equation = match (
-            compile_formal_groupoid_source_path(schema, &equation.lhs),
-            compile_formal_groupoid_source_path(schema, &equation.rhs),
-        ) {
-            (Ok(lhs), Ok(rhs)) => {
-                if lhs.source != rhs.source || lhs.target != rhs.target {
-                    return Err(KernelCompileError::InvalidSchemaEquation {
-                        theory: theory.name.clone(),
-                        equation: equation.name.clone(),
-                        detail: "formal groupoid equation has different lhs/rhs endpoints"
-                            .to_string(),
-                    });
-                }
-                let compiled = crate::FormalGroupoidEquationIr {
+        let formal_groupoid_equation = if schema_equation.is_some() {
+            None
+        } else {
+            match (
+                compile_formal_groupoid_source_path(schema, &equation.lhs),
+                compile_formal_groupoid_source_path(schema, &equation.rhs),
+            ) {
+                (Ok(lhs), Ok(rhs)) => {
+                    if lhs.source != rhs.source || lhs.target != rhs.target {
+                        return Err(KernelCompileError::InvalidSchemaEquation {
+                            theory: theory.name.clone(),
+                            equation: equation.name.clone(),
+                            detail: "formal groupoid equation has different lhs/rhs endpoints"
+                                .to_string(),
+                        });
+                    }
+                    let compiled = crate::FormalGroupoidEquationIr {
                     equation_id: equation_id.clone(),
                     theory_id: theory_id.clone(),
                     label: equation.name.clone(),
@@ -2225,10 +2254,11 @@ fn compile_theory(
                     lifecycle: crate::CheckedLifecycleStateIr::FormationChecked,
                     non_claim: "formation proves endpoint-indexed free-groupoid syntax, not rewrite termination or confluence".to_string(),
                 };
-                schema.formal_groupoid_equations.push(compiled.clone());
-                Some(compiled)
+                    schema.formal_groupoid_equations.push(compiled.clone());
+                    Some(compiled)
+                }
+                _ => None,
             }
-            _ => None,
         };
         equations.push(TheoryEquationIr {
             semantic_key: key,
@@ -2254,8 +2284,7 @@ fn compile_theory(
                 scope: format!("{module_name}.{}.{}", theory.schema, theory.name),
             });
         }
-        validate_rewrite_relations(schema, &rule.lhs, theory, &rule.name)?;
-        validate_rewrite_relations(schema, &rule.rhs, theory, &rule.name)?;
+        validate_rewrite_formation(schema, theory, rule)?;
         let key = SemanticKeyV2::derive(
             module_id,
             "rewrite",
@@ -2577,39 +2606,244 @@ fn carrier_names(carriers: Option<&CarrierFieldsV1>) -> impl Iterator<Item = &st
         .flat_map(|carrier| [carrier.left_field.as_str(), carrier.right_field.as_str()])
 }
 
-fn validate_rewrite_relations(
-    schema: &SchemaPresentationIr,
-    expression: &PathExprV3,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RewriteEndpoint {
+    from_var: String,
+    to_var: String,
+    from_type: ObjectTypeIdV2,
+    to_type: ObjectTypeIdV2,
+}
+
+#[derive(Debug, Default)]
+struct RewriteTypingEnvironment {
+    object_vars: BTreeMap<String, ObjectTypeIdV2>,
+    path_vars: BTreeMap<String, (String, String)>,
+}
+
+fn invalid_rewrite(
     theory: &axiograph_dsl::schema_v1::SchemaV1Theory,
-    rule: &str,
-) -> Result<(), KernelCompileError> {
+    rule: &axiograph_dsl::schema_v1::RewriteRuleV1,
+    detail: impl Into<String>,
+) -> KernelCompileError {
+    KernelCompileError::InvalidRewriteRule {
+        theory: theory.name.clone(),
+        rule: rule.name.clone(),
+        detail: detail.into(),
+    }
+}
+
+fn rewrite_object_type(schema: &SchemaPresentationIr, label: &str) -> Option<ObjectTypeIdV2> {
+    schema
+        .objects
+        .iter()
+        .find(|object| object.label == label)
+        .map(|object| object.object_type_id.clone())
+}
+
+fn rewrite_type_matches(
+    schema: &SchemaPresentationIr,
+    actual: &ObjectTypeIdV2,
+    expected: &SchemaObjectRefIr,
+) -> bool {
+    let SchemaObjectRefIr::ObjectType {
+        object_type_id: expected,
+    } = expected
+    else {
+        return false;
+    };
+    actual == expected
+        || schema
+            .subtype_coherence
+            .iter()
+            .any(|coherence| coherence.subtype == *actual && coherence.supertype == *expected)
+}
+
+fn infer_rewrite_endpoint(
+    schema: &SchemaPresentationIr,
+    theory: &axiograph_dsl::schema_v1::SchemaV1Theory,
+    rule: &axiograph_dsl::schema_v1::RewriteRuleV1,
+    environment: &RewriteTypingEnvironment,
+    expression: &PathExprV3,
+) -> Result<RewriteEndpoint, KernelCompileError> {
     match expression {
-        PathExprV3::Step { rel, .. } => {
-            let Some(relation) = schema
+        PathExprV3::Var { name } => {
+            let (from_var, to_var) = environment.path_vars.get(name).ok_or_else(|| {
+                invalid_rewrite(theory, rule, format!("unbound path variable `{name}`"))
+            })?;
+            Ok(RewriteEndpoint {
+                from_var: from_var.clone(),
+                to_var: to_var.clone(),
+                from_type: environment.object_vars[from_var].clone(),
+                to_type: environment.object_vars[to_var].clone(),
+            })
+        }
+        PathExprV3::Reflexive { entity } => {
+            let object_type = environment
+                .object_vars
+                .get(entity)
+                .cloned()
+                .ok_or_else(|| {
+                    invalid_rewrite(theory, rule, format!("unbound object variable `{entity}`"))
+                })?;
+            Ok(RewriteEndpoint {
+                from_var: entity.clone(),
+                to_var: entity.clone(),
+                from_type: object_type.clone(),
+                to_type: object_type,
+            })
+        }
+        PathExprV3::Step { from, rel, to } => {
+            let from_type = environment.object_vars.get(from).cloned().ok_or_else(|| {
+                invalid_rewrite(theory, rule, format!("unbound object variable `{from}`"))
+            })?;
+            let to_type = environment.object_vars.get(to).cloned().ok_or_else(|| {
+                invalid_rewrite(theory, rule, format!("unbound object variable `{to}`"))
+            })?;
+            let relation = schema
                 .relations
                 .iter()
                 .find(|relation| relation.label == *rel)
-            else {
-                return Err(KernelCompileError::UnknownRelationTarget {
-                    schema: schema.label.clone(),
-                    site: format!("theory `{}` rewrite `{rule}`", theory.name),
-                    target: rel.clone(),
-                });
+                .ok_or_else(|| {
+                    invalid_rewrite(theory, rule, format!("unknown relation `{rel}`"))
+                })?;
+            let [source_role, target_role, ..] = relation.roles.as_slice() else {
+                return Err(invalid_rewrite(
+                    theory,
+                    rule,
+                    format!("relation `{rel}` has fewer than two traversal roles"),
+                ));
             };
-            if relation.roles.len() < 2 {
-                return Err(KernelCompileError::InvalidSchemaEquation {
-                    theory: theory.name.clone(),
-                    equation: rule.to_string(),
-                    detail: format!("relation `{rel}` has fewer than two traversal roles"),
-                });
+            if !rewrite_type_matches(schema, &from_type, &source_role.type_expr.carrier()) {
+                return Err(invalid_rewrite(
+                    theory,
+                    rule,
+                    format!(
+                        "`{from}` has an incompatible type; expected subtype of `{:?}` for relation `{rel}` role `{}`",
+                        source_role.type_expr.carrier(),
+                        source_role.label
+                    ),
+                ));
             }
+            if !rewrite_type_matches(schema, &to_type, &target_role.type_expr.carrier()) {
+                return Err(invalid_rewrite(
+                    theory,
+                    rule,
+                    format!(
+                        "`{to}` has an incompatible type; expected subtype of `{:?}` for relation `{rel}` role `{}`",
+                        target_role.type_expr.carrier(),
+                        target_role.label
+                    ),
+                ));
+            }
+            Ok(RewriteEndpoint {
+                from_var: from.clone(),
+                to_var: to.clone(),
+                from_type,
+                to_type,
+            })
         }
         PathExprV3::Trans { left, right } => {
-            validate_rewrite_relations(schema, left, theory, rule)?;
-            validate_rewrite_relations(schema, right, theory, rule)?;
+            let left = infer_rewrite_endpoint(schema, theory, rule, environment, left)?;
+            let right = infer_rewrite_endpoint(schema, theory, rule, environment, right)?;
+            if left.to_var != right.from_var {
+                return Err(invalid_rewrite(
+                    theory,
+                    rule,
+                    format!(
+                        "cannot compose paths because the left path ends at `{}` and the right path starts at `{}`",
+                        left.to_var, right.from_var
+                    ),
+                ));
+            }
+            Ok(RewriteEndpoint {
+                from_var: left.from_var,
+                to_var: right.to_var,
+                from_type: left.from_type,
+                to_type: right.to_type,
+            })
         }
-        PathExprV3::Inv { path } => validate_rewrite_relations(schema, path, theory, rule)?,
-        PathExprV3::Var { .. } | PathExprV3::Reflexive { .. } => {}
+        PathExprV3::Inv { path } => {
+            let path = infer_rewrite_endpoint(schema, theory, rule, environment, path)?;
+            Ok(RewriteEndpoint {
+                from_var: path.to_var,
+                to_var: path.from_var,
+                from_type: path.to_type,
+                to_type: path.from_type,
+            })
+        }
+    }
+}
+
+fn validate_rewrite_formation(
+    schema: &SchemaPresentationIr,
+    theory: &axiograph_dsl::schema_v1::SchemaV1Theory,
+    rule: &axiograph_dsl::schema_v1::RewriteRuleV1,
+) -> Result<(), KernelCompileError> {
+    let mut environment = RewriteTypingEnvironment::default();
+    let mut pending_paths = Vec::new();
+    for variable in &rule.vars {
+        if environment.object_vars.contains_key(&variable.name)
+            || environment.path_vars.contains_key(&variable.name)
+            || pending_paths
+                .iter()
+                .any(|(name, _, _): &(String, String, String)| name == &variable.name)
+        {
+            return Err(invalid_rewrite(
+                theory,
+                rule,
+                format!("duplicate variable `{}`", variable.name),
+            ));
+        }
+        match &variable.ty {
+            RewriteVarTypeV1::Object { ty } => {
+                let object_type = rewrite_object_type(schema, ty).ok_or_else(|| {
+                    invalid_rewrite(
+                        theory,
+                        rule,
+                        format!(
+                            "unknown object type `{ty}` for variable `{}`",
+                            variable.name
+                        ),
+                    )
+                })?;
+                environment
+                    .object_vars
+                    .insert(variable.name.clone(), object_type);
+            }
+            RewriteVarTypeV1::Path { from, to } => {
+                pending_paths.push((variable.name.clone(), from.clone(), to.clone()));
+            }
+        }
+    }
+    for (name, from, to) in pending_paths {
+        if !environment.object_vars.contains_key(&from) {
+            return Err(invalid_rewrite(
+                theory,
+                rule,
+                format!("path variable `{name}` references unknown endpoint `{from}`"),
+            ));
+        }
+        if !environment.object_vars.contains_key(&to) {
+            return Err(invalid_rewrite(
+                theory,
+                rule,
+                format!("path variable `{name}` references unknown endpoint `{to}`"),
+            ));
+        }
+        environment.path_vars.insert(name, (from, to));
+    }
+
+    let lhs = infer_rewrite_endpoint(schema, theory, rule, &environment, &rule.lhs)?;
+    let rhs = infer_rewrite_endpoint(schema, theory, rule, &environment, &rule.rhs)?;
+    if lhs.from_var != rhs.from_var || lhs.to_var != rhs.to_var {
+        return Err(invalid_rewrite(
+            theory,
+            rule,
+            format!(
+                "changes path endpoints (lhs=Path({},{}) rhs=Path({},{}))",
+                lhs.from_var, lhs.to_var, rhs.from_var, rhs.to_var
+            ),
+        ));
     }
     Ok(())
 }
@@ -3456,11 +3690,8 @@ pub fn validate_instance_model_ir(
     }
     validate_constraints(&model.label, schema, theories, &model.facts)?;
 
-    let expected_memberships = crate::build_object_membership_witnesses(
-        &model.instance_id,
-        &model.carriers,
-        &model.facts,
-    );
+    let expected_memberships =
+        crate::build_object_membership_witnesses(&model.instance_id, &model.carriers, &model.facts);
     let (expected_roles, expected_scopes) =
         crate::build_dependent_witnesses(&model.instance_id, schema, &model.facts)
             .map_err(|error| KernelCompileError::FiniteTheory(error.to_string()))?;
@@ -4339,6 +4570,36 @@ instance I of S:
     }
 
     #[test]
+    fn canonical_rewrite_formation_rejects_unbound_typed_and_endpoint_drift() {
+        for (label, body, expected_detail) in [
+            (
+                "unbound",
+                "vars: x: A\n    lhs: step(x, R, y)\n    rhs: refl(x)",
+                "unbound object variable `y`",
+            ),
+            (
+                "wrong_type",
+                "vars: x: B, y: B\n    lhs: step(x, R, y)\n    rhs: step(x, R, y)",
+                "expected subtype",
+            ),
+            (
+                "endpoint_drift",
+                "vars: x: A, y: B\n    lhs: step(x, R, y)\n    rhs: refl(x)",
+                "changes path endpoints",
+            ),
+        ] {
+            let source = format!(
+                "module Rewrite{label}\n\nschema S:\n  object A\n  object B\n  relation R(left: A, right: B)\n\ntheory T on S:\n  rewrite bad:\n    {body}\n"
+            );
+            let error = compile_single(&source).expect_err("ill-typed rewrite must reject");
+            assert!(
+                error.to_string().contains(expected_detail),
+                "{label} produced the wrong diagnostic: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn import_closure_is_depth_first_import_order_then_root() {
         let dep = CanonicalModuleSource::parse(b"module Dep\n\nschema D:\n  object X\n".to_vec())
             .expect("dep");
@@ -4618,6 +4879,28 @@ instance I of S:
                 value: "C1".to_string()
             }
         );
+
+        let theories = compiled
+            .ir()
+            .theories()
+            .iter()
+            .filter(|theory| theory.schema_id == schema.schema_id)
+            .collect::<Vec<_>>();
+        let mut forged_model = compiled.ir().instances()[0].clone();
+        forged_model
+            .role_witnesses
+            .iter_mut()
+            .find(|witness| witness.role_id == base_role.role_id)
+            .expect("indexed witness")
+            .fiber
+            .index_bindings[0]
+            .value = TypedValueIr::ObjectElement {
+            value: "C2".to_string(),
+        };
+        assert!(matches!(
+            validate_instance_model_ir(schema, &theories, &forged_model),
+            Err(KernelCompileError::FiniteTheory(_))
+        ));
     }
 
     #[test]

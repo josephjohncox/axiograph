@@ -93,7 +93,7 @@ LLM- or evidence-derived deltas should follow this lifecycle:
 
 1. Extract or discover evidence.
 2. Ground it to canonical `.axi` refs where possible.
-3. Emit weak candidates, typed holes, or `RuntimeRefinementHandleV1` records.
+3. Emit weak candidates, typed holes, or `RuntimeRefinementHandleV2` records.
 4. Build an `EvolutionPreviewV1` or authoring report.
 5. Run CQ, trust, coverage, runtime-theory, and merge/rebase checks.
 6. Review conflicts and residual obligations.

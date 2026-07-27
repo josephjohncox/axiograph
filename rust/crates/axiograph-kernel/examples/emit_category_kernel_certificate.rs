@@ -9,6 +9,7 @@ enum Tamper {
     Saturation,
     Presentation,
     Congruence,
+    Groupoid,
 }
 
 fn main() -> Result<()> {
@@ -16,7 +17,7 @@ fn main() -> Result<()> {
     let path = args.next().ok_or_else(|| {
         anyhow!(
             "usage: emit_category_kernel_certificate <module.axi> <schema> \
-             [--tamper-saturation|--tamper-presentation|--tamper-congruence]"
+             [--tamper-saturation|--tamper-presentation|--tamper-congruence|--tamper-groupoid]"
         )
     })?;
     let schema = args.next().ok_or_else(|| anyhow!("missing schema name"))?;
@@ -25,6 +26,7 @@ fn main() -> Result<()> {
         Some("--tamper-saturation") => Some(Tamper::Saturation),
         Some("--tamper-presentation") => Some(Tamper::Presentation),
         Some("--tamper-congruence") => Some(Tamper::Congruence),
+        Some("--tamper-groupoid") => Some(Tamper::Groupoid),
         Some(flag) => return Err(anyhow!("unknown argument `{flag}`")),
     };
     if args.next().is_some() {
@@ -88,6 +90,21 @@ fn main() -> Result<()> {
                 .as_u64()
                 .ok_or_else(|| anyhow!("congruence offset is not numeric"))?;
             step["offset"] = serde_json::json!(offset.saturating_add(1));
+        }
+        Some(Tamper::Groupoid) => {
+            let certificates = envelope["proof"]["groupoid_normalizations"]
+                .as_array_mut()
+                .ok_or_else(|| anyhow!("generated certificate has no groupoid array"))?;
+            let first = certificates
+                .first_mut()
+                .ok_or_else(|| anyhow!("generated category presentation has no arrows"))?;
+            let trace = first["rewrite_trace"]
+                .as_array_mut()
+                .ok_or_else(|| anyhow!("generated groupoid certificate has no rewrite trace"))?;
+            let step = trace
+                .first_mut()
+                .ok_or_else(|| anyhow!("generated groupoid rewrite trace is empty"))?;
+            step["offset"] = serde_json::json!(1);
         }
     }
     println!("{}", serde_json::to_string_pretty(&envelope)?);

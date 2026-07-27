@@ -51,8 +51,11 @@ make verify-regulated-shipment
 # Finite category/dependent/groupoid semantics plus runtime non-closure regressions
 make verify-lean-theory
 
-# Focused exact-byte category formation/congruence/saturation parity and rejection
+# Focused exact-byte category/groupoid formation, congruence, trace parity, and rejection
 make verify-lean-e2e-category-kernel-v3
+
+# Generic endpoint-indexed normalization/equivalence Rust-Lean parity and rejection
+make verify-lean-indexed-path-theory
 
 # Rust semantic VCS runtime plans checked against Lean theory
 make verify-lean-semantic-vcs
@@ -88,14 +91,15 @@ cargo run -p axiograph-cli --release -- tools perf scenario --scenario proto_api
 | Gate | Use it for | Notes |
 | --- | --- | --- |
 | `make release-gate` | The only binary/container publication decision | Requires rustc 1.88.0 exactly, then runs catalog validation, Rust formatting, the no-unsafe gate, full locked workspace tests, the CLI feature matrix, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
-| `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint certificates and exact bounded query completeness; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; compiles the generated Rust test; and requires adversarial reviewer, path, query, explanation, and materialization cases to reject. |
+| `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint/category certificates; runs `axiograph check finite-query` for baseline and candidate; binds the accepted exact-answer receipt into each reviewed trust gate; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; compiles the generated Rust test; and requires adversarial reviewer, path, query, placeholder-receipt, explanation, and materialization cases to reject. |
 | `make check-no-unsafe` | First-party Rust safety policy | Verifies every workspace package inherits `unsafe_code = "forbid"`, scans every checked-in Rust source file for the `unsafe` keyword outside comments and literals, then checks all targets and features with the compiler lint enabled. |
 | Focused security commands below | Untrusted I/O, parser, process, network, saturation, and mutation boundaries | Covers no-follow same-handle reads, atomic outputs, JSON/CBOR depth, process descendants and floods, public/loopback peer pinning, Git URL/ref policy, MCP/LSP frames, SQLite substitution/limits, and strict archive extraction. See `docs/reference/SECURITY_BOUNDARIES.md`. |
 | `make verify-canonical-spine` | Current user/agent cleanup across the canonical spine | Runs the no-unsafe gate, Rust formatting, runtime theory checker tests, prepared-query tests, semantic VCS tests, software-authoring examples, embeddings tests, typed projection/readback tests, Lean `SemanticVCS`, `verify-lean-semantic-vcs`, and `git diff --check`. |
 | `make verify-w02-compiler` | Exact-byte canonical compiler changes | Runs canonical compiler unit/property/source-gate tests, including imported-schema visibility, builds Rust and Lean parser/typechecker executables, and checks all W02 positive/adversarial corpus expectations in both implementations. The full workspace suite additionally checks canonical-backed runtime-index retention and import-aware REPL loading. |
 | `make verify-semantics` | Broad Rust + Lean semantic verification | Includes positive certificate fixtures, approved-checker adversarial rejection tests, query-result V4 checks, parser/digest parity, finite merge/rebase conformance, and externally anchored V2 lineage parity/adversarial cases. |
-| `make verify-lean-theory` | Finite category/dependent/groupoid semantics | Builds and runs `axiograph_finite_theory_tests`; runs canonical-kernel tests; checks authoring/query/merge finite-theory receipts; accepts ordered relation-object projections, dependent role/context witnesses, lifecycle-checked holes, refinements, bounded reachability saturation, and explanation replay; rejects malformed projections/order/equations/refinements/bounds/explanations; runs the anchored regulated-shipment Rust-to-Lean certificate; then runs runtime non-closure regressions. |
-| `make verify-lean-e2e-category-kernel-v3` | Focused trusted finite category slice | Rust and Lean must agree on the shared category formation corpus; Rust emits an Envelope V3 certificate for the exact regulated-shipment `.axi`; Lean reconstructs 23 objects, 43 arrows, identities, and one equation, replays congruence plus 70 reachable endpoint explanations, and rejects presentation, congruence, and saturation tampering. |
+| `make verify-lean-theory` | Finite category/dependent/groupoid semantics | Builds and runs `axiograph_finite_theory_tests`; runs canonical-kernel tests; checks endpoint-indexed unit/inverse/associativity/congruence laws, mandatory normalization traces, authoring/query/merge finite-theory receipts, ordered relation-object projections, dependent role/context witnesses, lifecycle-checked holes, refinements, bounded reachability saturation, and explanation replay; rejects malformed paths, trace offsets, projections/order/equations/refinements/bounds/explanations; runs the anchored regulated-shipment Rust-to-Lean certificate; then runs runtime non-closure regressions. |
+| `make verify-lean-e2e-category-kernel-v3` | Focused trusted finite category/groupoid slice | Rust and Lean must agree on the shared category formation corpus, including valid identity equations and rejection of repeated dependent indices; Rust emits an Envelope V3 certificate for the exact regulated-shipment `.axi`; Lean reconstructs 23 objects, 43 arrows, identities, and one equation, replays endpoint-aware one-witness-per-equation congruence, 86 formal inverse cancellation traces, and 70 reachable endpoint explanations, then rejects presentation, congruence, groupoid-trace, and saturation tampering. This wire path is decision procedure plus replay, not a denotation theorem. |
+| `make verify-lean-indexed-path-theory` | Generic endpoint-indexed path certificate slice | Rust emits mandatory normalization/equivalence/congruence traces; Lean accepts all three and rejects missing or tampered traces, non-composable endpoints, invalid positions, and confidence-field injection. |
 | `make verify-lean-semantic-vcs` | Runtime merge/rebase plan conformance against Lean theory | Checks reduced Rust semantic VCS payloads with the Lean `SemanticVCS` checker. |
 | `make verify-lean-e2e-query-result-module-v4` | Query-bound Rust/Lean digest parity | Builds the V2 stdio checker and covers conjunction, disjunction, Boolean, hidden-variable, projection-order, and limit cases. |
 | `cd rust && make test-projections` | Typed projection and readback validation without containers | Exercises PathDB/TypeDB/TerminusDB/RDF/OWL/property-graph manifests generated directly from `CompiledKernelSnapshot`, including semantic loss and adversarial evidence-only readback. |
@@ -236,10 +240,13 @@ Cross-crate integration tests:
 2. Check finite relation objects, role projections, indexed/refined roles, equations, rewrites, and CQs.
 3. Execute ShipmentContainsBatch / BatchHasCertificate with max_hops=2.
 4. Require VerifyMain to accept exactly CoA_RX_42 and reject a missing-row answer.
-5. Review the finite compiled-payload evolution diff.
-6. Publish the candidate on a review ref and materialize an exact-two-parent typed AxiStore merge.
-7. Build an immutable SQLite .axpd image, reopen the store, and hydrate PathDB only after receipt checks.
-8. Emit TypeDB/PathDB projections and compile/run the generated Rust behavior test.
+5. Parse the bound query receipt and make its immutable object the reviewed
+   baseline/candidate/merge trust gate; reject placeholder receipt identities.
+6. Review the finite compiled-payload evolution diff and its typed `Merge`
+   finite-theory scope/coverage receipt.
+7. Publish the candidate on a review ref and materialize an exact-two-parent typed AxiStore merge.
+8. Build an immutable SQLite .axpd image, reopen the store, and hydrate PathDB only after receipt checks.
+9. Emit TypeDB/PathDB projections and compile/run the generated Rust behavior test.
 ```
 
 The exact-completeness theorem is scoped to the bounded finite query denotation.

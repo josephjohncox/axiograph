@@ -16,6 +16,8 @@ pub const PREPARED_QUERY_BINDING_VERSION_V1: u32 = 1;
 
 /// Fixed-point denominator shared with the Lean checker (`Axiograph.Prob.Precision`).
 pub const FIXED_POINT_DENOMINATOR: u32 = 1_000_000;
+/// Explicit finite bound for replayable path-normalization traces.
+pub const MAX_PATH_REWRITE_STEPS_V2: usize = 50_000;
 
 // ============================================================================
 // Certificate v2+: fixed-point probabilities and anchored typed witnesses.
@@ -158,12 +160,13 @@ pub struct CertificateV2 {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CertificateV2Wire {
-    pub version: u32,
+    version: u32,
     #[serde(default)]
-    pub anchor: Option<AxiAnchorV1>,
-    #[serde(flatten)]
-    pub payload: CertificatePayloadV2,
+    anchor: Option<AxiAnchorV1>,
+    kind: String,
+    proof: serde_json::Value,
 }
 
 impl<'de> Deserialize<'de> for CertificateV2 {
@@ -171,17 +174,52 @@ impl<'de> Deserialize<'de> for CertificateV2 {
     where
         D: serde::Deserializer<'de>,
     {
-        let wire = CertificateV2Wire::deserialize(deserializer)?;
-        if wire.version != CERTIFICATE_VERSION_V2 {
+        let CertificateV2Wire {
+            version,
+            anchor,
+            kind,
+            proof,
+        } = CertificateV2Wire::deserialize(deserializer)?;
+        if version != CERTIFICATE_VERSION_V2 {
             return Err(serde::de::Error::custom(format!(
-                "unsupported CertificateV2 version {}, expected {}",
-                wire.version, CERTIFICATE_VERSION_V2
+                "unsupported CertificateV2 version {version}, expected {CERTIFICATE_VERSION_V2}"
             )));
         }
+        let payload = match kind.as_str() {
+            "axi_well_typed_v1" => CertificatePayloadV2::AxiWellTypedV1 {
+                proof: serde_json::from_value(proof).map_err(serde::de::Error::custom)?,
+            },
+            "axi_constraints_ok_v1" => CertificatePayloadV2::AxiConstraintsOkV1 {
+                proof: serde_json::from_value(proof).map_err(serde::de::Error::custom)?,
+            },
+            "reachability_v3" => CertificatePayloadV2::ReachabilityV3 {
+                proof: serde_json::from_value(proof).map_err(serde::de::Error::custom)?,
+            },
+            "resolution_v2" => CertificatePayloadV2::ResolutionV2 {
+                proof: serde_json::from_value(proof).map_err(serde::de::Error::custom)?,
+            },
+            "normalize_path_v2" => CertificatePayloadV2::NormalizePathV2 {
+                proof: serde_json::from_value(proof).map_err(serde::de::Error::custom)?,
+            },
+            "rewrite_derivation_v3" => CertificatePayloadV2::RewriteDerivationV3 {
+                proof: serde_json::from_value(proof).map_err(serde::de::Error::custom)?,
+            },
+            "path_equiv_v2" => CertificatePayloadV2::PathEquivV2 {
+                proof: serde_json::from_value(proof).map_err(serde::de::Error::custom)?,
+            },
+            "delta_f_v1" => CertificatePayloadV2::DeltaFMigrationV1 {
+                proof: serde_json::from_value(proof).map_err(serde::de::Error::custom)?,
+            },
+            _ => {
+                return Err(serde::de::Error::custom(format!(
+                    "unknown CertificateV2 kind `{kind}`"
+                )));
+            }
+        };
         Ok(Self {
-            version: wire.version,
-            anchor: wire.anchor,
-            payload: wire.payload,
+            version,
+            anchor,
+            payload,
         })
     }
 }
@@ -193,6 +231,7 @@ impl<'de> Deserialize<'de> for CertificateV2 {
 /// Revision identity format (shared with Lean `Axiograph.Identity`):
 /// - `revision_digest_v2 = "axi:revision:v2:sha256:<64 lowercase hex digits>"`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AxiAnchorV1 {
     pub revision_digest_v2: AxiDigest,
 }
@@ -274,9 +313,6 @@ pub enum CertificatePayloadV2 {
     NormalizePathV2 {
         proof: NormalizePathProofV2,
     },
-    RewriteDerivationV2 {
-        proof: RewriteDerivationProofV2,
-    },
     RewriteDerivationV3 {
         proof: RewriteDerivationProofV3,
     },
@@ -327,14 +363,6 @@ impl CertificateV2 {
             version: CERTIFICATE_VERSION_V2,
             anchor: None,
             payload: CertificatePayloadV2::NormalizePathV2 { proof },
-        }
-    }
-
-    pub fn rewrite_derivation(proof: RewriteDerivationProofV2) -> Self {
-        Self {
-            version: CERTIFICATE_VERSION_V2,
-            anchor: None,
-            payload: CertificatePayloadV2::RewriteDerivationV2 { proof },
         }
     }
 
@@ -441,7 +469,7 @@ fn decide_resolution_v2(
 /// This mirrors the HoTT-style constructors in the Lean checker (`Axiograph.HoTT.*`),
 /// but keeps the certificate payload independent of any particular graph representation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PathExprV2 {
     Reflexive {
         entity: u32,
@@ -480,6 +508,7 @@ pub enum PathRewriteRuleV2 {
 /// - `1` = `.trans.right`
 /// - `2` = `.inv.path`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PathRewriteStepV2 {
     pub pos: Vec<u32>,
     pub rule: PathRewriteRuleV2,
@@ -498,9 +527,9 @@ pub struct PathRewriteStepV3 {
 
 /// Replayable rewrite derivation with first-class rule references (v3).
 ///
-/// This is the `.axi`-anchored successor to `rewrite_derivation_v2`:
-/// - v2 hardcodes the groupoid normalization rules as an enum,
-/// - v3 allows certificates to reference `.axi`-declared rewrite rules.
+/// This is the only standalone generic rewrite certificate. It references
+/// accepted `.axi` rules while the V2 builtin enum remains internal to path
+/// normalization/equivalence replay.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RewriteDerivationProofV3 {
     pub input: AxiPathExprV3,
@@ -509,6 +538,60 @@ pub struct RewriteDerivationProofV3 {
 }
 
 impl PathExprV2 {
+    /// Validate endpoint indexing and return the unique source/target pair.
+    ///
+    /// Serialized certificate expressions are untrusted trees. Proof-producing
+    /// APIs call this before normalization so an ill-typed composition never
+    /// becomes a path-equality witness.
+    pub fn checked_endpoints(&self) -> Result<(u32, u32), String> {
+        match self {
+            PathExprV2::Reflexive { entity } => Ok((*entity, *entity)),
+            PathExprV2::Step { from, to, .. } => Ok((*from, *to)),
+            PathExprV2::Trans { left, right } => {
+                let (left_start, left_end) = left.checked_endpoints()?;
+                let (right_start, right_end) = right.checked_endpoints()?;
+                if left_end != right_start {
+                    return Err(format!(
+                        "invalid trans endpoints: left.end={left_end} right.start={right_start}"
+                    ));
+                }
+                Ok((left_start, right_end))
+            }
+            PathExprV2::Inv { path } => {
+                let (start, end) = path.checked_endpoints()?;
+                Ok((end, start))
+            }
+        }
+    }
+
+    /// Construct a checked identity path.
+    pub fn identity(entity: u32) -> Self {
+        Self::Reflexive { entity }
+    }
+
+    /// Compose endpoint-indexed paths, rejecting a mismatched middle object.
+    pub fn compose(left: Self, right: Self) -> Result<Self, String> {
+        let (_, left_end) = left.checked_endpoints()?;
+        let (right_start, _) = right.checked_endpoints()?;
+        if left_end != right_start {
+            return Err(format!(
+                "invalid trans endpoints: left.end={left_end} right.start={right_start}"
+            ));
+        }
+        Ok(Self::Trans {
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+    }
+
+    /// Construct the formal inverse of a checked path.
+    pub fn inverse(path: Self) -> Result<Self, String> {
+        path.checked_endpoints()?;
+        Ok(Self::Inv {
+            path: Box::new(path),
+        })
+    }
+
     fn start_entity(&self) -> u32 {
         match self {
             PathExprV2::Reflexive { entity } => *entity,
@@ -782,9 +865,19 @@ impl PathExprV2 {
         &self,
         derivation: &[PathRewriteStepV2],
     ) -> Result<PathExprV2, String> {
+        if derivation.len() > MAX_PATH_REWRITE_STEPS_V2 {
+            return Err(format!(
+                "path rewrite trace exceeds the finite bound {MAX_PATH_REWRITE_STEPS_V2}"
+            ));
+        }
+        let endpoints = self.checked_endpoints()?;
         let mut current = self.clone();
         for step in derivation {
-            current = PathExprV2::apply_at(&current, &step.pos, &step.rule)?;
+            let next = PathExprV2::apply_at(&current, &step.pos, &step.rule)?;
+            if next.checked_endpoints()? != endpoints {
+                return Err("rewrite step changed path endpoints".to_string());
+            }
+            current = next;
         }
         Ok(current)
     }
@@ -855,31 +948,45 @@ impl PathExprV2 {
         }
     }
 
-    pub fn normalize_with_derivation(&self) -> (PathExprV2, Option<Vec<PathRewriteStepV2>>) {
+    /// Normalize a well-typed path and emit the complete replay trace.
+    ///
+    /// Certificate production fails closed if the deterministic rewrite system
+    /// cannot reach the independently computed normal form within the explicit
+    /// finite trace bound. There is no trace-free certificate mode.
+    pub fn normalize_with_derivation(
+        &self,
+    ) -> Result<(PathExprV2, Vec<PathRewriteStepV2>), String> {
+        let endpoints = self.checked_endpoints()?;
         let target = self.normalize();
+        if target.checked_endpoints()? != endpoints {
+            return Err("normalization changed path endpoints".to_string());
+        }
         let mut current = self.clone();
         let mut derivation: Vec<PathRewriteStepV2> = Vec::new();
 
-        const MAX_STEPS: usize = 50_000;
-        for _ in 0..MAX_STEPS {
+        for _ in 0..MAX_PATH_REWRITE_STEPS_V2 {
             if current == target {
-                return (target, Some(derivation));
+                return Ok((target, derivation));
             }
 
             let Some((pos, rule)) = PathExprV2::find_first_rewrite(&current) else {
-                return (target, None);
+                return Err(
+                    "normalization trace got stuck before the canonical normal form".to_string(),
+                );
             };
 
-            let next = match PathExprV2::apply_at(&current, &pos, &rule) {
-                Ok(next) => next,
-                Err(_) => return (target, None),
-            };
+            let next = PathExprV2::apply_at(&current, &pos, &rule)?;
+            if next.checked_endpoints()? != endpoints {
+                return Err("normalization rewrite changed path endpoints".to_string());
+            }
 
             derivation.push(PathRewriteStepV2 { pos, rule });
             current = next;
         }
 
-        (target, None)
+        Err(format!(
+            "normalization trace exceeds the finite bound {MAX_PATH_REWRITE_STEPS_V2}"
+        ))
     }
 
     pub fn normalize(&self) -> PathExprV2 {
@@ -890,19 +997,21 @@ impl PathExprV2 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct NormalizePathProofV2 {
     pub input: PathExprV2,
     pub normalized: PathExprV2,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub derivation: Option<Vec<PathRewriteStepV2>>,
+    /// Mandatory replay trace. A checker never accepts normalization by trusting
+    /// a trace-free runtime claim.
+    pub derivation: Vec<PathRewriteStepV2>,
 }
 
-/// A replayable rewrite derivation (v2).
+/// Internal builtin rewrite replay payload reused by `path_equiv_v2`.
 ///
-/// This is a reusable certificate kind: normalization, reconciliation explanations,
-/// and domain rewrites can all be expressed as “rewrite input into output by applying
-/// these rule-at-position steps”.
+/// There is no standalone `rewrite_derivation_v2` wire kind. Anchored generic
+/// rewrite certificates use `rewrite_derivation_v3` and stable rule references.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RewriteDerivationProofV2 {
     pub input: PathExprV2,
     pub output: PathExprV2,
@@ -914,22 +1023,21 @@ pub struct RewriteDerivationProofV2 {
 /// This kind is a reusable building block for §3 of `docs/explanation/BOOK.md`:
 ///
 /// - Two path expressions are considered equivalent if they normalize to the same normal form.
-/// - Rust may optionally provide explicit rewrite derivations showing `left ↦ normalized`
+/// - Rust must provide explicit rewrite derivations showing `left ↦ normalized`
 ///   and `right ↦ normalized` via local groupoid rules (rule + position).
 ///
-/// Lean checks:
-/// - endpoint well-formedness,
-/// - optional derivation replay for both sides,
-/// - and recomputes normalization to ensure the claimed common normal form is correct.
+/// Lean checks endpoint well-formedness, replays both mandatory derivations,
+/// and recomputes normalization to ensure the claimed common normal form is correct.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PathEquivProofV2 {
     pub left: PathExprV2,
     pub right: PathExprV2,
     pub normalized: PathExprV2,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub left_derivation: Option<Vec<PathRewriteStepV2>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub right_derivation: Option<Vec<PathRewriteStepV2>>,
+    /// Mandatory traces from both endpoint-indexed expressions to the shared
+    /// normal form. Confidence arithmetic is intentionally absent.
+    pub left_derivation: Vec<PathRewriteStepV2>,
+    pub right_derivation: Vec<PathRewriteStepV2>,
 }
 
 // =============================================================================
@@ -1817,6 +1925,94 @@ mod normalize_path_v2_tests {
     }
 
     #[test]
+    fn indexed_path_builders_reject_bad_composition_and_preserve_inverse_endpoints() {
+        let first = PathExprV2::Step {
+            from: 1,
+            rel_type: 10,
+            to: 2,
+        };
+        let second = PathExprV2::Step {
+            from: 2,
+            rel_type: 20,
+            to: 3,
+        };
+        let composed = PathExprV2::compose(first.clone(), second)
+            .expect("matching middle endpoint must compose");
+        assert_eq!(composed.checked_endpoints().unwrap(), (1, 3));
+        assert_eq!(
+            PathExprV2::inverse(composed)
+                .unwrap()
+                .checked_endpoints()
+                .unwrap(),
+            (3, 1)
+        );
+
+        let wrong = PathExprV2::Step {
+            from: 9,
+            rel_type: 30,
+            to: 10,
+        };
+        assert!(PathExprV2::compose(first, wrong).is_err());
+    }
+
+    #[test]
+    fn path_certificates_require_traces_and_reject_unknown_envelope_fields() {
+        let input = PathExprV2::identity(7);
+        let proof = NormalizePathProofV2 {
+            input: input.clone(),
+            normalized: input,
+            derivation: Vec::new(),
+        };
+        let certificate = CertificateV2::normalize_path(proof).with_anchor(AxiAnchorV1::new(
+            AxiDigest::from_axi_text("module WireDomain"),
+        ));
+        let mut value = serde_json::to_value(certificate).unwrap();
+
+        value["proof"].as_object_mut().unwrap().remove("derivation");
+        assert!(serde_json::from_value::<CertificateV2>(value.clone()).is_err());
+
+        value["proof"]["derivation"] = json!([]);
+        value["proof"]["confidence_fp"] = json!(900_000);
+        assert!(serde_json::from_value::<CertificateV2>(value.clone()).is_err());
+        value["proof"]
+            .as_object_mut()
+            .unwrap()
+            .remove("confidence_fp");
+
+        value["confidence_fp"] = json!(900_000);
+        assert!(serde_json::from_value::<CertificateV2>(value.clone()).is_err());
+        value.as_object_mut().unwrap().remove("confidence_fp");
+
+        value["anchor"]["unknown_anchor_field"] = json!(true);
+        assert!(serde_json::from_value::<CertificateV2>(value).is_err());
+    }
+
+    #[test]
+    fn obsolete_unanchored_rewrite_derivation_wire_kind_is_rejected() {
+        let value = json!({
+            "version": 2,
+            "kind": "rewrite_derivation_v2",
+            "proof": {
+                "input": { "type": "reflexive", "entity": 7 },
+                "output": { "type": "reflexive", "entity": 7 },
+                "derivation": []
+            }
+        });
+        assert!(serde_json::from_value::<CertificateV2>(value).is_err());
+    }
+
+    #[test]
+    fn fixed_point_confidence_is_not_path_equality_arithmetic() {
+        let a = FixedPointProbability::try_new(98_781).unwrap();
+        let b = FixedPointProbability::try_new(427_863).unwrap();
+        let c = FixedPointProbability::try_new(382_808).unwrap();
+
+        assert_eq!(a.mul(b).mul(c).numerator(), 16_178);
+        assert_eq!(a.mul(b.mul(c)).numerator(), 16_179);
+        assert_ne!(a.mul(b).mul(c), a.mul(b.mul(c)));
+    }
+
+    #[test]
     fn normalize_with_derivation_replays_to_target() {
         let left_inner = PathExprV2::Trans {
             left: Box::new(PathExprV2::Trans {
@@ -1859,10 +2055,11 @@ mod normalize_path_v2_tests {
         };
 
         let expected = input.normalize();
-        let (normalized, derivation) = input.normalize_with_derivation();
+        let (normalized, steps) = input
+            .normalize_with_derivation()
+            .expect("well-typed path must emit a derivation");
         assert_eq!(normalized, expected);
 
-        let steps = derivation.expect("should emit a derivation for this input");
         let mut current = input.clone();
         for step in steps {
             current = PathExprV2::apply_at(&current, &step.pos, &step.rule)
