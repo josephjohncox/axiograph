@@ -255,4 +255,3 @@ path. It is a reversible storage/debug format only.
 - Guided REPL review script for proto evidence: `examples/repl_scripts/proto_schema_discovery_axi_demo.repl`
 - Shell demo: `scripts/schema_discovery_sql_demo.sh`
 - Shell demo (LLM semantic + structural discovery via Ollama): `scripts/ontology_engineering_ollama_discovery_demo.sh`
-- Ops/reference shell demo (proto evidence evolution over time, LLM augmentation via Ollama): `scripts/ops/ontology_engineering_proto_evolution_ollama_demo.sh`

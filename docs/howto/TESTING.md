@@ -157,6 +157,7 @@ cargo check -p axiograph-llm-sync --all-targets
 cargo check -p axiograph-cli --all-targets
 
 make check-no-unsafe
+make check-greenfield-surface
 make verify-canonical-spine
 make verify-semantics
 make release-gate
@@ -164,6 +165,10 @@ make verify-lean-theory
 make verify-lean-semantic-vcs
 make verify-axi-store
 ```
+
+`make check-greenfield-surface` parses every tracked shell script and rejects
+retired binary aliases, bare `.axpd` loading/materialization commands, immutable
+image mutation commands, and missing scripts advertised by `scripts/ops/README.md`.
 
 The materialization suite checks insertion-order invariance, semantic-row digest
 sensitivity, exact N/N+1 count/string/fanout/page/file limits, SQLite header and

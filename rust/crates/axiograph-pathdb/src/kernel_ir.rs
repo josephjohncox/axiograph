@@ -2850,7 +2850,7 @@ pub fn derive_runtime_instance_index(
                 relation_name: relation.name.clone(),
                 role_values,
             };
-            insert_relation_fact_v1(&mut seen_fact_ids, &mut relation_facts, fact)?;
+            insert_relation_fact(&mut seen_fact_ids, &mut relation_facts, fact)?;
         }
     }
 
@@ -2866,7 +2866,7 @@ pub fn derive_runtime_instance_index(
     })
 }
 
-fn insert_relation_fact_v1(
+fn insert_relation_fact(
     seen: &mut HashMap<StableFactId, RelationFactIr>,
     facts: &mut Vec<RelationFactIr>,
     fact: RelationFactIr,
@@ -2874,7 +2874,7 @@ fn insert_relation_fact_v1(
     if let Some(existing) = seen.get(&fact.fact_id) {
         if existing != &fact {
             return Err(format!(
-                "legacy fact id collision `{}`: differing typed payloads must not overwrite or deduplicate",
+                "fact id collision `{}`: differing typed payloads must not overwrite or deduplicate",
                 fact.fact_id
             ));
         }

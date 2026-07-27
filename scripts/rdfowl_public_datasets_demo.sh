@@ -50,16 +50,13 @@ SOURCE_AXI="$SOURCE_OUT/Discovered_w3c_shacl_minimal.axi"
   --infer-constraints
 
 echo ""
-echo "-- C) Import drafted module into PathDB (.axpd) and run tooling"
-SOURCE_AXPD="$SOURCE_OUT/Discovered_w3c_shacl_minimal.axpd"
-"$AXIOGRAPH" db pathdb materialize-axi "$SOURCE_AXI" --out "$SOURCE_AXPD"
-
-"$AXIOGRAPH" tools analyze network "$SOURCE_AXPD" --plane both --format json --out "$SOURCE_OUT/network.json"
-"$AXIOGRAPH" check quality "$SOURCE_AXPD" --plane both --profile fast --format json --no-fail --out "$SOURCE_OUT/quality.json"
+echo "-- C) Run tooling over process-local state derived from the candidate .axi"
+"$AXIOGRAPH" tools analyze network "$SOURCE_AXI" --plane both --format json --out "$SOURCE_OUT/network.json"
+"$AXIOGRAPH" check quality "$SOURCE_AXI" --plane both --profile fast --format json --no-fail --out "$SOURCE_OUT/quality.json"
 
 echo ""
 echo "-- C2) Viz: meta-plane + typed data-plane overlay"
-"$AXIOGRAPH" tools viz "$SOURCE_AXPD" \
+"$AXIOGRAPH" tools viz "$SOURCE_AXI" \
   --out "$SOURCE_OUT/viz_meta.json" \
   --format json \
   --plane meta \
@@ -67,7 +64,7 @@ echo "-- C2) Viz: meta-plane + typed data-plane overlay"
   --hops 3 \
   --max-nodes 520
 
-"$AXIOGRAPH" tools viz "$SOURCE_AXPD" \
+"$AXIOGRAPH" tools viz "$SOURCE_AXI" \
   --out "$SOURCE_OUT/viz_data_typed.json" \
   --format json \
   --plane data \
@@ -101,7 +98,6 @@ echo "Done."
 echo "Outputs:"
 echo "  $SOURCE_OUT/proposals.json"
 echo "  $SOURCE_AXI"
-echo "  $SOURCE_AXPD"
 echo "  $SOURCE_OUT/network.json"
 echo "  $SOURCE_OUT/quality.json"
 echo "  $SOURCE_OUT/viz_meta.json"

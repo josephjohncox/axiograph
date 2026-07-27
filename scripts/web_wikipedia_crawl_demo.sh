@@ -59,17 +59,14 @@ echo "-- B) Draft a candidate axi_v1 module (untrusted) from proposals"
   --infer-constraints
 
 echo ""
-echo "-- C) Import drafted module into PathDB (.axpd) and run tooling"
-"$AXIOGRAPH" db pathdb materialize-axi "$OUT_DIR/wikipedia_discovered.axi" --out "$OUT_DIR/wikipedia_discovered.axpd"
-
-"$AXIOGRAPH" tools analyze network "$OUT_DIR/wikipedia_discovered.axpd" --plane both --format json --out "$OUT_DIR/network.json"
-"$AXIOGRAPH" check quality "$OUT_DIR/wikipedia_discovered.axpd" --plane both --profile fast --format json --no-fail --out "$OUT_DIR/quality.json"
+echo "-- C) Run tooling over process-local state derived from the candidate .axi"
+"$AXIOGRAPH" tools analyze network "$OUT_DIR/wikipedia_discovered.axi" --plane both --format json --out "$OUT_DIR/network.json"
+"$AXIOGRAPH" check quality "$OUT_DIR/wikipedia_discovered.axi" --plane both --profile fast --format json --no-fail --out "$OUT_DIR/quality.json"
 
 echo ""
 echo "Done."
 echo "Outputs:"
 echo "  $OUT_DIR/ingest/proposals.json"
 echo "  $OUT_DIR/wikipedia_discovered.axi"
-echo "  $OUT_DIR/wikipedia_discovered.axpd"
 echo "  $OUT_DIR/network.json"
 echo "  $OUT_DIR/quality.json"

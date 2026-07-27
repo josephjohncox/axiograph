@@ -143,6 +143,11 @@ check-example-catalog:
 	python3 examples/check_catalog.py
 	@echo "✓ Example catalog is valid"
 
+check-greenfield-surface:
+	@echo "━━━ Rejecting retired commands, aliases, and stale shell workflows ━━━"
+	python3 scripts/check_greenfield_surface.py
+	@echo "✓ Greenfield command surface is internally consistent"
+
 rust-fmt-check:
 	@echo "━━━ Checking Rust formatting ━━━"
 	cd $(RUST_DIR) && $(CARGO) fmt --all --check
@@ -628,7 +633,7 @@ rehearse-release-publication:
 	python3 scripts/rehearse_release_publication.py
 	@echo "✓ Every injected failure and corrupted asset remained unpublished; one audited set committed atomically"
 
-release-gate: check-rust-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-release-packaging verify-release-fixtures verify-semantics
+release-gate: check-rust-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-release-packaging verify-release-fixtures verify-semantics
 	python3 scripts/generate_release_source_manifest.py --check-only >/dev/null
 	git diff --check
 	@echo ""

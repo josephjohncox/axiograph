@@ -13,7 +13,6 @@ OUT_DIR="$ROOT_DIR/build/context_drift_demo"
 mkdir -p "$OUT_DIR"
 
 AXI="$ROOT_DIR/examples/Family.axi"
-AXPD="$OUT_DIR/family.axpd"
 
 echo "== Context drift demo =="
 echo "axi:  $AXI"
@@ -29,13 +28,13 @@ if [ ! -x "$AXIOGRAPH" ]; then
   exit 2
 fi
 
-echo "== A) Import .axi → .axpd =="
-"$AXIOGRAPH" db pathdb materialize-axi "$AXI" --out "$AXPD"
+echo "== A) Validate canonical .axi =="
+"$AXIOGRAPH" check validate "$AXI"
 
 echo ""
-echo "== B) Analyze drift between contexts =="
+echo "== B) Analyze drift over process-local derived query state =="
 echo "(CensusData vs FamilyTree)"
-"$AXIOGRAPH" tools analyze context-drift "$AXPD" \
+"$AXIOGRAPH" tools analyze context-drift "$AXI" \
   --ctx-a CensusData \
   --ctx-b FamilyTree \
   --metric js \

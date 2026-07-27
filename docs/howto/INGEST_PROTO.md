@@ -93,18 +93,15 @@ cargo run -p axiograph-cli --release -- ingest proto ingest /unused/root \
   --out ../build/ingest/your_api/proposals.json
 ```
 
-## End-to-end ontology engineering (Proto, over time)
+## Review and promotion
 
-For a full “evidence extraction → LLM augmentation → draft `.axi` → review gate
-→ derived PathDB + viz” demo across multiple proto services and several
-evolution ticks, run:
-
-```bash
-./scripts/ops/ontology_engineering_proto_evolution_ollama_demo.sh
-```
+Treat Proto extraction, LLM augmentation, and drafted `.axi` as evidence-plane
+outputs. Validate and inspect a candidate with the normal authoring commands,
+then promote only through a typed `AxiStore::promote` transition that closes the
+CQ, trust, and runtime-theory gates and advances the protected accepted ref.
+Copying a draft into an `accepted/` directory is not promotion.
 
 Doc comment chunks remain typed evidence. They may be loaded into process-local
 query state or included as an explicitly ordered, content-digested
-materialization overlay so grounding can cite `DocChunk` evidence. Promotion
-still requires a reviewed canonical `.axi` candidate and the normal
-CQ/trust/runtime-theory gates.
+materialization overlay so grounding can cite `DocChunk` evidence. They do not
+become canonical ontology material by appearing in a derived PathDB image.

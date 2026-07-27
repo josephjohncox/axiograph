@@ -23,7 +23,8 @@ set -euo pipefail
 #
 # Notes:
 # - LLM outputs are untrusted. Everything stays reviewable and quarantined
-#   (`proposals.json` or candidate `.axi`) until you explicitly promote it.
+#   (`proposals.json` or candidate `.axi`) until a typed AxiStore promotion
+#   advances the protected accepted ref.
 # - Lean/lake is optional by default. Set REQUIRE_LEAN=1 to make certificate
 #   verification mandatory.
 
@@ -171,14 +172,13 @@ echo "-- visualize a small neighborhood"
 	--max-nodes 180
 
 echo ""
-echo "-- C) promotion gate (candidate -> accepted) + snapshot outputs"
+echo "-- C) candidate verification (does not promote accepted state)"
 
-ACCEPTED_DIR="$OUT_DIR/accepted"
-mkdir -p "$ACCEPTED_DIR"
+REVIEW_DIR="$OUT_DIR/review"
+mkdir -p "$REVIEW_DIR"
 
 CANDIDATE_AXI="$OUT_DIR/ProtoApi.llm_draft.axi"
-ACCEPTED_AXI="$ACCEPTED_DIR/ProtoApi.accepted.axi"
-TYPECHECK_CERT="$ACCEPTED_DIR/ProtoApi.accepted.typecheck_cert.json"
+TYPECHECK_CERT="$REVIEW_DIR/ProtoApi.candidate.typecheck_cert.json"
 
 echo ""
 echo "-- gate 1/2 (Rust): validate candidate module"
@@ -193,27 +193,17 @@ echo "-- gate 2/2 (Lean): verify typecheck certificate (optional, requires Lean/
 verify_lean_cert_if_available "$CANDIDATE_AXI" "$TYPECHECK_CERT"
 
 echo ""
-echo "-- promote: accept the candidate module (copy into accepted plane)"
-cp "$CANDIDATE_AXI" "$ACCEPTED_AXI"
-echo "accepted: $ACCEPTED_AXI"
-
-echo ""
-echo "-- build a PathDB snapshot (.axpd) from accepted canonical .axi"
-ACCEPTED_AXPD="$ACCEPTED_DIR/ProtoApi.accepted.axpd"
-"$AXIOGRAPH" db pathdb materialize-axi "$ACCEPTED_AXI" --out "$ACCEPTED_AXPD"
-
-echo ""
-echo "-- visualize meta-plane and data-plane (accepted snapshot)"
-"$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
-	--out "$ACCEPTED_DIR/proto_api_meta.json" \
+echo "-- visualize process-local state derived from the reviewed candidate"
+"$AXIOGRAPH" tools viz "$CANDIDATE_AXI" \
+	--out "$REVIEW_DIR/proto_api_meta.json" \
 	--format json \
 	--plane meta \
 	--focus-name ProtoApi \
 	--hops 3 \
 	--max-nodes 340
 
-"$AXIOGRAPH" tools viz "$ACCEPTED_AXPD" \
-	--out "$ACCEPTED_DIR/proto_api_user_service.json" \
+"$AXIOGRAPH" tools viz "$CANDIDATE_AXI" \
+	--out "$REVIEW_DIR/proto_api_user_service.json" \
 	--format json \
 	--plane data \
 	--focus-name UserService \
@@ -221,8 +211,8 @@ echo "-- visualize meta-plane and data-plane (accepted snapshot)"
 	--max-nodes 220
 
 echo ""
-echo "-- query certification requires semantic MCP require_verified with exact accepted .axi bytes"
-echo "-- this CLI demo intentionally makes no query-certificate claim"
+echo "-- no accepted state changed; promotion requires the typed AxiStore workflow"
+echo "-- query certification is available only after exact accepted .axi anchoring"
 
 echo ""
 echo "Done."
@@ -233,9 +223,7 @@ echo "  $OUT_DIR/candidates/"
 echo "Structural discovery outputs:"
 echo "  $OUT_DIR/ProtoApi.llm_draft.axi"
 echo "  $OUT_DIR/proto_api_llm_draft_service.json"
-echo "Accepted (gated) outputs:"
-echo "  $ACCEPTED_AXI"
-echo "  $ACCEPTED_AXPD"
+echo "Review outputs:"
 echo "  $TYPECHECK_CERT"
-echo "  $ACCEPTED_DIR/proto_api_meta.json"
-echo "  $ACCEPTED_DIR/proto_api_user_service.json"
+echo "  $REVIEW_DIR/proto_api_meta.json"
+echo "  $REVIEW_DIR/proto_api_user_service.json"
