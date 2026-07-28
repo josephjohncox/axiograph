@@ -33,30 +33,30 @@ make binaries
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 echo ""
 echo "-- A) Crawl + ingest"
 "$AXIOGRAPH" ingest web ingest \
-  --out-dir "$OUT_DIR/ingest" \
-  --crawl \
-  --seed "https://en.wikipedia.org/wiki/Physics" \
-  --max-pages "$MAX_PAGES" \
-  --max-depth "$MAX_DEPTH" \
-  --delay-ms "$DELAY_MS" \
-  --respect-robots \
-  --same-host \
-  --domain general
+	--out-dir "$OUT_DIR/ingest" \
+	--crawl \
+	--seed "https://en.wikipedia.org/wiki/Physics" \
+	--max-pages "$MAX_PAGES" \
+	--max-depth "$MAX_DEPTH" \
+	--delay-ms "$DELAY_MS" \
+	--respect-robots \
+	--same-host \
+	--domain general
 
 echo ""
 echo "-- B) Draft a candidate axi_v1 module (untrusted) from proposals"
 "$AXIOGRAPH" discover draft-module "$OUT_DIR/ingest/proposals.json" \
-  --out "$OUT_DIR/wikipedia_discovered.axi" \
-  --module "WikipediaDiscovered" \
-  --schema "WikipediaDiscovered" \
-  --infer-constraints
+	--out "$OUT_DIR/wikipedia_discovered.axi" \
+	--module "WikipediaDiscovered" \
+	--schema "WikipediaDiscovered" \
+	--infer-constraints
 
 echo ""
 echo "-- C) Run tooling over process-local state derived from the candidate .axi"

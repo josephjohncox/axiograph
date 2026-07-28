@@ -16,7 +16,7 @@ cd "$ROOT_DIR"
 
 PERF_NATIVE="${PERF_NATIVE:-1}"
 if [ "$PERF_NATIVE" = "1" ]; then
-  export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"
+	export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"
 fi
 export CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO:-thin}"
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:-1}"
@@ -41,22 +41,22 @@ make binaries
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 echo ""
 echo "-- Run: tools perf axql"
 "$AXIOGRAPH" tools perf axql \
-  --entities "$ENTITIES" \
-  --edges-per-entity "$EDGES_PER_ENTITY" \
-  --rel-types "$REL_TYPES" \
-  --index-depth "$INDEX_DEPTH" \
-  --mode "$MODE" \
-  --path-len "$PATH_LEN" \
-  --limit "$LIMIT" \
-  --queries "$QUERIES" \
-  --seed "$SEED"
+	--entities "$ENTITIES" \
+	--edges-per-entity "$EDGES_PER_ENTITY" \
+	--rel-types "$REL_TYPES" \
+	--index-depth "$INDEX_DEPTH" \
+	--mode "$MODE" \
+	--path-len "$PATH_LEN" \
+	--limit "$LIMIT" \
+	--queries "$QUERIES" \
+	--seed "$SEED"
 
 echo ""
 echo "Done."

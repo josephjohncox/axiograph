@@ -23,19 +23,19 @@ make binaries
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 echo ""
 echo "-- draft a candidate .axi module (schema discovery)"
 "$AXIOGRAPH" discover draft-module \
-  "$ROOT_DIR/examples/schema_discovery/inputs/proto_api_proposals.json" \
-  --out "$OUT_DIR/ProtoApi.proposals.axi" \
-  --module ProtoApi_Proposals \
-  --schema ProtoApi \
-  --instance ProtoApiInstance \
-  --infer-constraints
+	"$ROOT_DIR/examples/schema_discovery/inputs/proto_api_proposals.json" \
+	--out "$OUT_DIR/ProtoApi.proposals.axi" \
+	--module ProtoApi_Proposals \
+	--schema ProtoApi \
+	--instance ProtoApiInstance \
+	--infer-constraints
 
 echo ""
 echo "-- validate drafted module parses + typechecks (AST-level)"
@@ -44,30 +44,30 @@ echo "-- validate drafted module parses + typechecks (AST-level)"
 echo ""
 echo "-- visualize the imported schema (meta-plane) and a small neighborhood"
 "$AXIOGRAPH" tools viz "$OUT_DIR/ProtoApi.proposals.axi" \
-  --out "$OUT_DIR/proto_schema_meta.dot" \
-  --format dot \
-  --plane meta \
-  --focus-name ProtoApi \
-  --hops 3 \
-  --max-nodes 260
+	--out "$OUT_DIR/proto_schema_meta.dot" \
+	--format dot \
+	--plane meta \
+	--focus-name ProtoApi \
+	--hops 3 \
+	--max-nodes 260
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/ProtoApi.proposals.axi" \
-  --out "$OUT_DIR/user_service.json" \
-  --format json \
-  --plane data \
-  --focus-name UserService \
-  --hops 2 \
-  --max-nodes 140
+	--out "$OUT_DIR/user_service.json" \
+	--format json \
+	--plane data \
+	--focus-name UserService \
+	--hops 2 \
+	--max-nodes 140
 
 echo ""
 echo "-- import + query in a non-interactive REPL session"
 "$AXIOGRAPH" repl --quiet \
-  --cmd "import_axi $OUT_DIR/ProtoApi.proposals.axi" \
-  --cmd "schema ProtoApi" \
-  --cmd "constraints ProtoApi" \
-  --cmd "validate_axi" \
-  --cmd "q select ?rpc where UserService -proto_service_has_rpc-> ?rpc limit 10" \
-  --cmd "q select ?ep where GetUser -proto_rpc_http_endpoint-> ?ep limit 10"
+	--cmd "import_axi $OUT_DIR/ProtoApi.proposals.axi" \
+	--cmd "schema ProtoApi" \
+	--cmd "constraints ProtoApi" \
+	--cmd "validate_axi" \
+	--cmd "q select ?rpc where UserService -proto_service_has_rpc-> ?rpc limit 10" \
+	--cmd "q select ?ep where GetUser -proto_rpc_http_endpoint-> ?ep limit 10"
 
 echo ""
 echo "Done."

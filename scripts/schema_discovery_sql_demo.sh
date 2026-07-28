@@ -18,7 +18,7 @@ echo "root: $ROOT_DIR"
 echo "out:  $OUT_DIR"
 
 SQL="$OUT_DIR/sample.sql"
-cat > "$SQL" <<'SQL'
+cat >"$SQL" <<'SQL'
 CREATE TABLE Users (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL
@@ -39,8 +39,8 @@ make binaries
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 echo ""
@@ -50,19 +50,19 @@ echo "-- ingest SQL → proposals.json"
 echo ""
 echo "-- (optional) augment proposals (heuristics only; LLM plugins can also be used here)"
 "$AXIOGRAPH" discover augment-proposals \
-  "$OUT_DIR/sql_proposals.json" \
-  --out "$OUT_DIR/sql_proposals.aug.json" \
-  --trace "$OUT_DIR/sql_proposals.aug.trace.json"
+	"$OUT_DIR/sql_proposals.json" \
+	--out "$OUT_DIR/sql_proposals.aug.json" \
+	--trace "$OUT_DIR/sql_proposals.aug.trace.json"
 
 echo ""
 echo "-- draft a candidate .axi module (schema discovery)"
 "$AXIOGRAPH" discover draft-module \
-  "$OUT_DIR/sql_proposals.aug.json" \
-  --out "$OUT_DIR/SqlSchema.proposals.axi" \
-  --module SqlSchema_Proposals \
-  --schema SqlSchema \
-  --instance SqlSchemaInstance \
-  --infer-constraints
+	"$OUT_DIR/sql_proposals.aug.json" \
+	--out "$OUT_DIR/SqlSchema.proposals.axi" \
+	--module SqlSchema_Proposals \
+	--schema SqlSchema \
+	--instance SqlSchemaInstance \
+	--infer-constraints
 
 echo ""
 echo "-- validate drafted module parses + typechecks (AST-level)"
@@ -71,31 +71,31 @@ echo "-- validate drafted module parses + typechecks (AST-level)"
 echo ""
 echo "-- import + query in a non-interactive REPL session"
 "$AXIOGRAPH" repl --quiet \
-  --cmd "import_axi $OUT_DIR/SqlSchema.proposals.axi" \
-  --cmd "schema SqlSchema" \
-  --cmd "constraints SqlSchema" \
-  --cmd "validate_axi" \
-  --cmd "q select ?c where Users -SqlHasColumn-> ?c limit 10" \
-  --cmd "q select ?t where Orders -SqlForeignKey-> ?t limit 10" \
-  --cmd "q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10"
+	--cmd "import_axi $OUT_DIR/SqlSchema.proposals.axi" \
+	--cmd "schema SqlSchema" \
+	--cmd "constraints SqlSchema" \
+	--cmd "validate_axi" \
+	--cmd "q select ?c where Users -SqlHasColumn-> ?c limit 10" \
+	--cmd "q select ?t where Orders -SqlForeignKey-> ?t limit 10" \
+	--cmd "q select ?f where ?f = SqlHasColumn(from=Users, to=Users_id) limit 10"
 
 echo ""
 echo "-- visualize the imported schema (meta-plane) and a small neighborhood"
 "$AXIOGRAPH" tools viz "$OUT_DIR/SqlSchema.proposals.axi" \
-  --out "$OUT_DIR/sql_schema_meta.dot" \
-  --format dot \
-  --plane meta \
-  --focus-name SqlSchema \
-  --hops 3 \
-  --max-nodes 240
+	--out "$OUT_DIR/sql_schema_meta.dot" \
+	--format dot \
+	--plane meta \
+	--focus-name SqlSchema \
+	--hops 3 \
+	--max-nodes 240
 
 "$AXIOGRAPH" tools viz "$OUT_DIR/SqlSchema.proposals.axi" \
-  --out "$OUT_DIR/sql_schema_users.json" \
-  --format json \
-  --plane data \
-  --focus-name Users \
-  --hops 2 \
-  --max-nodes 140
+	--out "$OUT_DIR/sql_schema_users.json" \
+	--format json \
+	--plane data \
+	--focus-name Users \
+	--hops 2 \
+	--max-nodes 140
 
 echo ""
 echo "Done."

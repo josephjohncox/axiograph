@@ -34,8 +34,8 @@ make binaries
 
 AXIOGRAPH="$PROJECT_ROOT/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $PROJECT_ROOT/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $PROJECT_ROOT/bin/axiograph"
+	exit 2
 fi
 
 echo ""
@@ -46,7 +46,7 @@ echo "ok: examples/economics/EconomicFlows.axi"
 echo ""
 echo '-- inspect compiled theory graph from canonical .axi'
 "$AXIOGRAPH" discover theory-graph "$PROJECT_ROOT/examples/ontology/OntologyRewrites.axi" \
-  --out "$RUN_DIR/build/ontology_rewrites_theory_graph.json" >/dev/null
+	--out "$RUN_DIR/build/ontology_rewrites_theory_graph.json" >/dev/null
 echo "wrote: build/ontology_rewrites_theory_graph.json"
 
 echo ""
@@ -57,49 +57,49 @@ cd "$RUN_DIR"
 echo ""
 echo "-- run question-first competency questions from .cq"
 "$AXIOGRAPH" discover competency-questions "$PROJECT_ROOT/examples/manufacturing/SupplyChainHoTT.axi" \
-  --from-cq "$PROJECT_ROOT/examples/competency_questions/supply_chain.cq" \
-  --no-schema \
-  --out "$RUN_DIR/build/supply_chain_competency_questions.json" >/dev/null
+	--from-cq "$PROJECT_ROOT/examples/competency_questions/supply_chain.cq" \
+	--no-schema \
+	--out "$RUN_DIR/build/supply_chain_competency_questions.json" >/dev/null
 echo "wrote: build/supply_chain_competency_questions.json"
 
 echo ""
 echo "-- emit a canonical .axi constraints certificate for Lean"
 "$AXIOGRAPH" cert constraints "$PROJECT_ROOT/examples/ontology/OntologyRewrites.axi" \
-  --out "$RUN_DIR/build/ontology_rewrites_constraints_cert.json" >/dev/null
+	--out "$RUN_DIR/build/ontology_rewrites_constraints_cert.json" >/dev/null
 echo "wrote: build/ontology_rewrites_constraints_cert.json"
 
 echo ""
 echo "-- behavior case: BDD/DDD wrapper over typed ontology surfaces"
 "$AXIOGRAPH" discover behavior-case "$PROJECT_ROOT/examples/industrial/RegulatedProductionLine.axi" \
-  --request "$PROJECT_ROOT/examples/behavior_cases/regulated_ship_release.json" \
-  --cq-file "$PROJECT_ROOT/examples/behavior_cases/regulated_ship_release.cq" \
-  --overlay "$PROJECT_ROOT/examples/behavior_cases/regulated_ship_release_overlay.json" \
-  --out "$RUN_DIR/build/regulated_ship_release_behavior_case_report.json" >/dev/null
+	--request "$PROJECT_ROOT/examples/behavior_cases/regulated_ship_release.json" \
+	--cq-file "$PROJECT_ROOT/examples/behavior_cases/regulated_ship_release.cq" \
+	--overlay "$PROJECT_ROOT/examples/behavior_cases/regulated_ship_release_overlay.json" \
+	--out "$RUN_DIR/build/regulated_ship_release_behavior_case_report.json" >/dev/null
 echo "wrote: build/regulated_ship_release_behavior_case_report.json"
 
 echo ""
 echo '-- regulated production line example crate over reviewable .axi'
 cargo run --manifest-path "$PROJECT_ROOT/rust/Cargo.toml" \
-  -p axiograph-example-industrial \
-  --bin axiograph-industrial-example \
-  -- run-regulated-seed \
-  --axi "$PROJECT_ROOT/examples/industrial/RegulatedProductionLine.axi" \
-  --cache-root "$RUN_DIR/build/industrial" \
-  --run-id demo-industrial-001 \
-  --created-at-unix-secs 1713810000 \
-  --json >/dev/null
+	-p axiograph-example-industrial \
+	--bin axiograph-industrial-example \
+	-- run-regulated-seed \
+	--axi "$PROJECT_ROOT/examples/industrial/RegulatedProductionLine.axi" \
+	--cache-root "$RUN_DIR/build/industrial" \
+	--run-id demo-industrial-001 \
+	--created-at-unix-secs 1713810000 \
+	--json >/dev/null
 echo "wrote: build/industrial/runs/demo-industrial-001"
 
 echo ""
 echo "-- verify in Lean (if lake is installed)"
 if command -v lake >/dev/null 2>&1; then
-  cd "$PROJECT_ROOT/lean"
-  lake env lean --run Axiograph/VerifyMain.lean \
-    "$PROJECT_ROOT/examples/ontology/OntologyRewrites.axi" \
-    "$RUN_DIR/build/ontology_rewrites_constraints_cert.json" >/dev/null
-  echo "ok: Lean verified constraints certificate"
+	cd "$PROJECT_ROOT/lean"
+	lake env lean --run Axiograph/VerifyMain.lean \
+		"$PROJECT_ROOT/examples/ontology/OntologyRewrites.axi" \
+		"$RUN_DIR/build/ontology_rewrites_constraints_cert.json" >/dev/null
+	echo "ok: Lean verified constraints certificate"
 else
-  echo "skip: lake not found (install via elan)"
+	echo "skip: lake not found (install via elan)"
 fi
 
 echo ""

@@ -24,8 +24,8 @@ make binaries
 
 AXIOGRAPH="$ROOT_DIR/bin/axiograph"
 if [ ! -x "$AXIOGRAPH" ]; then
-  echo "error: expected executable at $ROOT_DIR/bin/axiograph"
-  exit 2
+	echo "error: expected executable at $ROOT_DIR/bin/axiograph"
+	exit 2
 fi
 
 echo "== A) Validate canonical .axi =="
@@ -35,11 +35,11 @@ echo ""
 echo "== B) Analyze drift over process-local derived query state =="
 echo "(CensusData vs FamilyTree)"
 "$AXIOGRAPH" tools analyze context-drift "$AXI" \
-  --ctx-a CensusData \
-  --ctx-b FamilyTree \
-  --metric js \
-  --alpha 1.0 \
-  --top 25
+	--ctx-a CensusData \
+	--ctx-b FamilyTree \
+	--metric js \
+	--alpha 1.0 \
+	--top 25
 
 echo ""
 echo "Done."

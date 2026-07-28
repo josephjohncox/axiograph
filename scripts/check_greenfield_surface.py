@@ -39,7 +39,9 @@ def tracked_files() -> list[Path]:
 
 def in_scan_scope(path: Path) -> bool:
     relative = path.relative_to(REPO_ROOT).as_posix()
-    return any(relative == root or relative.startswith(f"{root}/") for root in SCAN_ROOTS)
+    return any(
+        relative == root or relative.startswith(f"{root}/") for root in SCAN_ROOTS
+    )
 
 
 def check_retired_surfaces(paths: list[Path]) -> list[str]:
@@ -73,7 +75,9 @@ def check_shell_syntax(paths: list[Path]) -> list[str]:
             text=True,
         )
         if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "invalid shell syntax"
+            detail = (
+                result.stderr.strip() or result.stdout.strip() or "invalid shell syntax"
+            )
             errors.append(f"{path.relative_to(REPO_ROOT)}: {detail}")
     return errors
 
@@ -91,7 +95,9 @@ def check_ops_readme() -> list[str]:
 
 def main() -> int:
     paths = tracked_files()
-    errors = check_retired_surfaces(paths) + check_shell_syntax(paths) + check_ops_readme()
+    errors = (
+        check_retired_surfaces(paths) + check_shell_syntax(paths) + check_ops_readme()
+    )
     if errors:
         print("greenfield surface check failed:", file=sys.stderr)
         for error in errors:
