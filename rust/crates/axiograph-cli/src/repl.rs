@@ -3,6 +3,7 @@
 //! By default we use `rustyline` for line editing and tab completion.
 //! A minimal stdin-based fallback exists behind `--no-default-features`.
 
+use crate::repl_command::tokenize_repl_line;
 use crate::trust_contract::QueryTrustContractV1;
 use anyhow::{anyhow, Result};
 use axiograph_pathdb::AcceptedSnapshotId;
@@ -4482,118 +4483,6 @@ fn describe_entity(db: &axiograph_pathdb::PathDB, entity_id: u32) -> String {
     }
 
     format!("{entity_id} ({})", view.entity_type)
-}
-
-fn split_command_line(line: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let mut chars = line.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => in_quotes = !in_quotes,
-            '\\' => {
-                if let Some(next) = chars.next() {
-                    current.push(next);
-                }
-            }
-            c if c.is_whitespace() && !in_quotes => {
-                if !current.is_empty() {
-                    out.push(std::mem::take(&mut current));
-                }
-            }
-            _ => current.push(c),
-        }
-    }
-
-    if !current.is_empty() {
-        out.push(current);
-    }
-
-    out
-}
-
-fn tokenize_repl_line(line: &str) -> Vec<String> {
-    let line = line.trim();
-    if line.is_empty() {
-        return Vec::new();
-    }
-
-    // Special-case AxQL: preserve quotes inside the query string.
-    //
-    // The REPL tokenization layer exists mainly to support convenient quoting for
-    // file paths and natural language prompts. For AxQL, however, stripping
-    // quotes changes the meaning (and can make URLs/IRIs unparsable).
-    //
-    // So we parse:
-    //   q [--elaborate|--typecheck] [--apply-refinement <handle>] <raw query...>
-    // as:
-    //   ["q", "--elaborate", "--apply-refinement", "<handle>", "<raw query...>"]
-    //
-    // preserving the query text verbatim after the option prefix.
-    {
-        let mut cmd_end = None;
-        for (i, c) in line.char_indices() {
-            if c.is_whitespace() {
-                cmd_end = Some(i);
-                break;
-            }
-        }
-
-        let (cmd, rest) = match cmd_end {
-            Some(i) => (&line[..i], line[i..].trim_start()),
-            None => (line, ""),
-        };
-
-        if cmd == "q" || cmd == "axql" {
-            let mut out: Vec<String> = vec![cmd.to_string()];
-            if rest.is_empty() {
-                return out;
-            }
-
-            // Identify the option prefix using the standard tokenizer (options
-            // themselves are not quote-sensitive), but slice the raw query from
-            // the original text.
-            let rest_tokens = split_command_line(rest);
-            let mut prefix_token_count = 0usize;
-            while prefix_token_count < rest_tokens.len() {
-                let token = &rest_tokens[prefix_token_count];
-                if !token.starts_with('-') {
-                    break;
-                }
-                prefix_token_count += 1;
-                if matches!(token.as_str(), "--apply-refinement" | "--apply")
-                    && prefix_token_count < rest_tokens.len()
-                {
-                    prefix_token_count += 1;
-                }
-            }
-            out.extend(rest_tokens.iter().take(prefix_token_count).cloned());
-
-            // Skip the option-prefix tokens in the raw `rest` string.
-            let mut i = 0usize;
-            let bytes = rest.as_bytes();
-            let mut skipped = 0usize;
-            while skipped < prefix_token_count {
-                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                skipped += 1;
-            }
-
-            let raw_query = rest[i..].trim_start();
-            if !raw_query.is_empty() {
-                out.push(raw_query.to_string());
-            }
-            return out;
-        }
-    }
-
-    split_command_line(line)
 }
 
 fn cmd_predictive_proposal(state: &mut ReplState, args: &[String]) -> Result<()> {

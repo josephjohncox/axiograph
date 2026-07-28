@@ -1,0 +1,37 @@
+{
+  "version": 3,
+  "kind": "query_result_v4",
+  "anchor": {
+    "revision_digest_v2": "axi:revision:v2:sha256:42bf0963a63ec48bb7386a7f4730985d872a9bbf6a0b79855f4b567b1baf9859"
+  },
+  "proof": {
+    "binding": {
+      "version": 1,
+      "query": {
+        "select_vars": ["?person"],
+        "disjuncts": [[{
+          "type": "type",
+          "term": {"type": "var", "name": "?person"},
+          "type_name": "Person"
+        }]]
+      },
+      "row_limit": 10,
+      "claim_kind": "finite_exact_complete"
+    },
+    "prepared_query_digest_v1": "axi:query:v2:sha256:45f7d434cb08e4f1e0d9377d141822a3954c52e7b368c70b851532e8dc496a9f",
+    "rows": [
+      {
+        "disjunct": 0,
+        "bindings": [{"var": "?person", "entity": "Alice"}],
+        "witnesses": [{"type": "type", "entity": "Alice", "type_name": "Person"}]
+      },
+      {
+        "disjunct": 0,
+        "bindings": [{"var": "?person", "entity": "Bob"}],
+        "witnesses": [{"type": "type", "entity": "Bob", "type_name": "Person"}]
+      }
+    ],
+    "runtime_truncated": false,
+    "answer_digest_v1": "axi:answer:v2:sha256:7e467b07fcf8b9d793730ad2d12f5385acf2ab6e06caf2b0d510ea155f2e1e1b"
+  }
+}

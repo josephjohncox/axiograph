@@ -48,6 +48,7 @@ mod quality;
 mod query_ir;
 mod relation_resolution;
 mod repl;
+mod repl_command;
 mod route_preview;
 mod route_preview_tools;
 mod runtime_theory_check;
