@@ -185,10 +185,12 @@ isolated fuzz lockfiles.
 The gate permits only RUSTSEC-2026-0194 and RUSTSEC-2026-0195 for the
 quick-xml 0.37 parser that Sophia 0.10 reaches through oxrdfxml. Every RDF/XML
 byte sequence first passes quick-xml 0.41 over the exact same bytes. That
-preflight uses checked attribute iteration, the patched namespace declaration
-limit, a depth limit of 128, an event limit of 1,000,000, and the existing 8
-MiB input limit before Sophia can see the input. Adversarial tests cover
-duplicate attributes, namespace floods, and excess depth. No other RustSec
+preflight uses checked attribute iteration, a per-element limit of 64
+attributes, the patched namespace declaration limit, a depth limit of 128, an
+event limit of 1,000,000, and the existing 8 MiB input limit before Sophia can
+see the input. The attribute cap also bounds the older parser's duplicate-check
+work on otherwise unique attributes. Adversarial tests cover duplicate and
+excess attributes, namespace floods, and excess depth. No other RustSec
 vulnerability is allowed. The remaining ttf-parser notice is an informational
 unmaintained warning in pdf-extract's lopdf dependency, not a vulnerability.
 

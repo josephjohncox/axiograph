@@ -214,6 +214,7 @@ pub const MAX_RDF_INPUT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_RDF_STATEMENTS: usize = 50_000;
 pub const MAX_RDF_XML_DEPTH: usize = 128;
 pub const MAX_RDF_XML_EVENTS: usize = 1_000_000;
+pub const MAX_RDF_XML_ATTRIBUTES_PER_ELEMENT: usize = 64;
 
 fn push_rdf_statement(
     out: &mut Vec<RdfStatement>,
@@ -301,7 +302,12 @@ fn validate_rdf_xml_with_patched_parser(bytes: &[u8]) -> Result<()> {
     use quick_xml::events::{BytesStart, Event};
 
     fn validate_attributes(start: &BytesStart<'_>) -> Result<()> {
-        for attribute in start.attributes().with_checks(true) {
+        for (index, attribute) in start.attributes().with_checks(true).enumerate() {
+            if index >= MAX_RDF_XML_ATTRIBUTES_PER_ELEMENT {
+                return Err(anyhow!(
+                    "RDF/XML element exceeds {MAX_RDF_XML_ATTRIBUTES_PER_ELEMENT} attributes"
+                ));
+            }
             attribute.map_err(|error| anyhow!("invalid RDF/XML attribute set: {error}"))?;
         }
         Ok(())
@@ -834,6 +840,15 @@ ex:a ex:label "Alice"@en .
     fn rdf_xml_preflight_rejects_adversarial_attributes_namespaces_and_depth() {
         let duplicate = br#"<root duplicate="a" duplicate="b" />"#;
         assert!(validate_rdf_xml_with_patched_parser(duplicate).is_err());
+
+        let attributes = (0..=MAX_RDF_XML_ATTRIBUTES_PER_ELEMENT)
+            .map(|index| format!("a{index}=\"v{index}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let attribute_flood = format!("<root {attributes} />");
+        let error = validate_rdf_xml_with_patched_parser(attribute_flood.as_bytes())
+            .expect_err("attribute fanout must reject");
+        assert!(error.to_string().contains("attributes"));
 
         let namespaces = (0..=256)
             .map(|index| format!("xmlns:n{index}=\"urn:n{index}\""))
