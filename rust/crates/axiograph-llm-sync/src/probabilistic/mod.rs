@@ -1,23 +1,41 @@
-//! Proper Probabilistic Reasoning with Factor Graphs
+//! Bounded evidence-plane confidence estimation with finite factor graphs.
 //!
-//! Fixes naive probability handling by:
-//! 1. Using factor graphs to model dependencies
-//! 2. Belief propagation for inference
-//! 3. Proper handling of correlated evidence
-//! 4. Calibrated confidence scores
+//! This module supports validated finite unary and binary potentials, optional
+//! observations, loopy belief propagation, and score calibration. Beliefs on
+//! cyclic graphs are approximate and report whether iteration converged. These
+//! scores are non-authoritative evidence: they do not establish path equality,
+//! accepted ontology meaning, or a trusted-kernel theorem.
 
-#![allow(unused_imports, unused_variables)]
-
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 // ============================================================================
 // Factor Graph Core
 // ============================================================================
 
+pub const MAX_FACTOR_DOMAIN_SIZE: usize = 4_096;
+
 /// A variable in the factor graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VariableId(pub Uuid);
+
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum FactorGraphError {
+    #[error("factor-graph variable domains must be non-empty")]
+    EmptyDomain,
+    #[error("factor-graph variable domain {size} exceeds limit {maximum}")]
+    DomainTooLarge { size: usize, maximum: usize },
+    #[error("unknown factor-graph variable {0:?}")]
+    UnknownVariable(VariableId),
+    #[error("observation {value} is outside variable domain 0..{domain_size}")]
+    ObservationOutOfRange { value: usize, domain_size: usize },
+    #[error("invalid factor potential: {reason}")]
+    InvalidPotential { reason: String },
+    #[error("duplicate reconciliation fact id {0}")]
+    DuplicateFact(Uuid),
+    #[error("missing reconciliation fact id {0}")]
+    MissingFact(Uuid),
+}
 
 /// A factor connecting variables
 #[derive(Debug, Clone)]
@@ -34,45 +52,6 @@ pub enum FactorPotential {
     Unary(Vec<f64>),
     /// Binary factor: P(X, Y) as |X| x |Y| matrix
     Binary(Vec<Vec<f64>>),
-    /// General factor: joint distribution over all states
-    General(FactorTable),
-}
-
-/// General factor table for n-ary factors
-#[derive(Debug, Clone)]
-pub struct FactorTable {
-    pub dimensions: Vec<usize>,
-    pub values: Vec<f64>,
-}
-
-impl FactorTable {
-    pub fn new(dimensions: Vec<usize>) -> Self {
-        let size: usize = dimensions.iter().product();
-        Self {
-            dimensions,
-            values: vec![1.0; size],
-        }
-    }
-
-    pub fn get(&self, indices: &[usize]) -> f64 {
-        let idx = self.flat_index(indices);
-        self.values[idx]
-    }
-
-    pub fn set(&mut self, indices: &[usize], value: f64) {
-        let idx = self.flat_index(indices);
-        self.values[idx] = value;
-    }
-
-    fn flat_index(&self, indices: &[usize]) -> usize {
-        let mut idx = 0;
-        let mut stride = 1;
-        for (i, &dim) in self.dimensions.iter().enumerate().rev() {
-            idx += indices[i] * stride;
-            stride *= dim;
-        }
-        idx
-    }
 }
 
 // ============================================================================
@@ -114,13 +93,30 @@ impl FactorGraph {
         }
     }
 
-    /// Add a binary variable
+    /// Add a binary variable.
     pub fn add_variable(&mut self, name: &str) -> VariableId {
-        self.add_variable_with_domain(name, 2)
+        self.insert_variable(name, 2)
     }
 
-    /// Add a variable with arbitrary domain
-    pub fn add_variable_with_domain(&mut self, name: &str, domain_size: usize) -> VariableId {
+    /// Add a variable with an arbitrary, non-empty domain.
+    pub fn add_variable_with_domain(
+        &mut self,
+        name: &str,
+        domain_size: usize,
+    ) -> Result<VariableId, FactorGraphError> {
+        if domain_size == 0 {
+            return Err(FactorGraphError::EmptyDomain);
+        }
+        if domain_size > MAX_FACTOR_DOMAIN_SIZE {
+            return Err(FactorGraphError::DomainTooLarge {
+                size: domain_size,
+                maximum: MAX_FACTOR_DOMAIN_SIZE,
+            });
+        }
+        Ok(self.insert_variable(name, domain_size))
+    }
+
+    fn insert_variable(&mut self, name: &str, domain_size: usize) -> VariableId {
         let id = VariableId(Uuid::new_v4());
         let var = Variable {
             id,
@@ -133,36 +129,84 @@ impl FactorGraph {
         id
     }
 
-    /// Observe a variable (set its value)
-    pub fn observe(&mut self, var: VariableId, value: usize) {
-        if let Some(v) = self.variables.get_mut(&var) {
-            v.observed = Some(value);
+    /// Observe a variable (set its value).
+    pub fn observe(&mut self, var: VariableId, value: usize) -> Result<(), FactorGraphError> {
+        let variable = self
+            .variables
+            .get_mut(&var)
+            .ok_or(FactorGraphError::UnknownVariable(var))?;
+        if value >= variable.domain_size {
+            return Err(FactorGraphError::ObservationOutOfRange {
+                value,
+                domain_size: variable.domain_size,
+            });
         }
+        variable.observed = Some(value);
+        Ok(())
     }
 
-    /// Add a unary factor (prior)
-    pub fn add_prior(&mut self, var: VariableId, probabilities: Vec<f64>) -> Uuid {
+    /// Add a unary factor (prior).
+    pub fn add_prior(
+        &mut self,
+        var: VariableId,
+        probabilities: Vec<f64>,
+    ) -> Result<Uuid, FactorGraphError> {
+        let variable = self
+            .variables
+            .get(&var)
+            .ok_or(FactorGraphError::UnknownVariable(var))?;
+        if probabilities.len() != variable.domain_size {
+            return Err(FactorGraphError::InvalidPotential {
+                reason: format!(
+                    "unary potential has {} values for domain size {}",
+                    probabilities.len(),
+                    variable.domain_size
+                ),
+            });
+        }
+        validate_potential_values(probabilities.iter().copied())?;
         let factor = Factor {
             id: Uuid::new_v4(),
             variables: vec![var],
             potential: FactorPotential::Unary(probabilities),
         };
-        self.add_factor(factor)
+        Ok(self.add_factor(factor))
     }
 
-    /// Add a binary factor (pairwise relationship)
+    /// Add a binary factor (pairwise relationship).
     pub fn add_pairwise(
         &mut self,
         var1: VariableId,
         var2: VariableId,
         potential: Vec<Vec<f64>>,
-    ) -> Uuid {
+    ) -> Result<Uuid, FactorGraphError> {
+        let domain1 = self
+            .variables
+            .get(&var1)
+            .ok_or(FactorGraphError::UnknownVariable(var1))?
+            .domain_size;
+        let domain2 = self
+            .variables
+            .get(&var2)
+            .ok_or(FactorGraphError::UnknownVariable(var2))?
+            .domain_size;
+        if var1 == var2 {
+            return Err(FactorGraphError::InvalidPotential {
+                reason: "binary factor variables must be distinct".to_string(),
+            });
+        }
+        if potential.len() != domain1 || potential.iter().any(|row| row.len() != domain2) {
+            return Err(FactorGraphError::InvalidPotential {
+                reason: format!("binary potential must have shape {domain1}x{domain2}"),
+            });
+        }
+        validate_potential_values(potential.iter().flatten().copied())?;
         let factor = Factor {
             id: Uuid::new_v4(),
             variables: vec![var1, var2],
             potential: FactorPotential::Binary(potential),
         };
-        self.add_factor(factor)
+        Ok(self.add_factor(factor))
     }
 
     fn add_factor(&mut self, factor: Factor) -> Uuid {
@@ -205,6 +249,26 @@ impl FactorGraph {
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
+}
+
+fn validate_potential_values(
+    values: impl IntoIterator<Item = f64>,
+) -> Result<(), FactorGraphError> {
+    let mut has_positive = false;
+    for value in values {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(FactorGraphError::InvalidPotential {
+                reason: "potential values must be finite and in [0, 1]".to_string(),
+            });
+        }
+        has_positive |= value > 0.0;
+    }
+    if !has_positive {
+        return Err(FactorGraphError::InvalidPotential {
+            reason: "a potential must contain at least one positive value".to_string(),
+        });
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -293,7 +357,7 @@ impl BeliefPropagation {
     pub fn run(&mut self) -> bool {
         self.initialize();
 
-        for iter in 0..self.max_iter {
+        for _iteration in 0..self.max_iter {
             let max_diff = self.iterate();
             if max_diff < self.epsilon {
                 self.compute_beliefs();
@@ -407,11 +471,6 @@ impl BeliefPropagation {
                 let mut msg = Message { values };
                 msg.normalize();
                 msg
-            }
-            FactorPotential::General(table) => {
-                // Marginalize over all variables except target
-                // This is simplified - full implementation would be more complex
-                Message::uniform(target.domain_size)
             }
         }
     }
@@ -538,25 +597,32 @@ impl PlattCalibrator {
 /// Build factor graph from knowledge graph facts
 pub fn build_factor_graph_for_reconciliation(
     facts: &[(Uuid, f64, Vec<Uuid>)], // (fact_id, prior, supporting_fact_ids)
-) -> FactorGraph {
+) -> Result<FactorGraph, FactorGraphError> {
     let mut graph = FactorGraph::new();
     let mut fact_vars: HashMap<Uuid, VariableId> = HashMap::new();
 
-    // Create variable for each fact
+    // Create variable for each fact.
     for &(fact_id, prior, _) in facts {
+        if !(0.0..=1.0).contains(&prior) {
+            return Err(FactorGraphError::InvalidPotential {
+                reason: format!("fact {fact_id} prior must be finite and in [0, 1]"),
+            });
+        }
         let var = graph.add_variable(&fact_id.to_string());
-        fact_vars.insert(fact_id, var);
-
-        // Add prior factor
-        graph.add_prior(var, vec![1.0 - prior, prior]);
+        if fact_vars.insert(fact_id, var).is_some() {
+            return Err(FactorGraphError::DuplicateFact(fact_id));
+        }
+        graph.add_prior(var, vec![1.0 - prior, prior])?;
     }
 
-    // Add pairwise factors for support relationships
+    // Add pairwise factors for support relationships.
     for &(fact_id, _, ref supports) in facts {
-        let var1 = fact_vars[&fact_id];
+        let var1 = *fact_vars
+            .get(&fact_id)
+            .ok_or(FactorGraphError::MissingFact(fact_id))?;
         for &support_id in supports {
             if let Some(&var2) = fact_vars.get(&support_id) {
-                // If A supports B, P(B|A) > P(B)
+                // If A supports B, P(B|A) > P(B).
                 graph.add_pairwise(
                     var2,
                     var1,
@@ -564,12 +630,12 @@ pub fn build_factor_graph_for_reconciliation(
                         vec![1.0, 0.5], // A=false: B less likely
                         vec![0.5, 1.0], // A=true: B more likely
                     ],
-                );
+                )?;
             }
         }
     }
 
-    graph
+    Ok(graph)
 }
 
 #[cfg(test)]
@@ -582,8 +648,10 @@ mod tests {
         let x = graph.add_variable("X");
         let y = graph.add_variable("Y");
 
-        graph.add_prior(x, vec![0.3, 0.7]);
-        graph.add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.2, 0.8]]);
+        graph.add_prior(x, vec![0.3, 0.7]).unwrap();
+        graph
+            .add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.2, 0.8]])
+            .unwrap();
 
         assert_eq!(graph.variables().count(), 2);
         assert_eq!(graph.factors().count(), 2);
@@ -595,11 +663,14 @@ mod tests {
         let x = graph.add_variable("X");
         let y = graph.add_variable("Y");
 
-        graph.add_prior(x, vec![0.3, 0.7]);
-        graph.add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.2, 0.8]]);
+        graph.add_prior(x, vec![0.3, 0.7]).unwrap();
+        graph
+            .add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.2, 0.8]])
+            .unwrap();
 
         let mut bp = BeliefPropagation::new(graph);
         let converged = bp.run();
+        assert!(converged);
 
         let x_belief = bp.belief(x).unwrap();
         let y_belief = bp.belief(y).unwrap();
@@ -614,10 +685,12 @@ mod tests {
         let x = graph.add_variable("X");
         let y = graph.add_variable("Y");
 
-        graph.add_prior(x, vec![0.5, 0.5]);
-        graph.add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.1, 0.9]]);
+        graph.add_prior(x, vec![0.5, 0.5]).unwrap();
+        graph
+            .add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.1, 0.9]])
+            .unwrap();
 
-        graph.observe(x, 1); // Observe X = true
+        graph.observe(x, 1).unwrap(); // Observe X = true
 
         let mut bp = BeliefPropagation::new(graph);
         bp.run();
@@ -625,6 +698,53 @@ mod tests {
         // Y should be likely true given X = true
         let y_prob = bp.prob_true(y).unwrap();
         assert!(y_prob > 0.8);
+    }
+
+    #[test]
+    fn invalid_graph_shapes_are_rejected_before_inference() {
+        let mut graph = FactorGraph::new();
+        let x = graph.add_variable("X");
+        let y = graph.add_variable_with_domain("Y", 3).unwrap();
+        let unknown = VariableId(Uuid::new_v4());
+
+        assert_eq!(
+            graph.add_variable_with_domain("empty", 0),
+            Err(FactorGraphError::EmptyDomain)
+        );
+        assert!(matches!(
+            graph.add_variable_with_domain("huge", MAX_FACTOR_DOMAIN_SIZE + 1),
+            Err(FactorGraphError::DomainTooLarge { .. })
+        ));
+        assert!(matches!(
+            graph.observe(unknown, 0),
+            Err(FactorGraphError::UnknownVariable(id)) if id == unknown
+        ));
+        assert!(matches!(
+            graph.observe(y, 3),
+            Err(FactorGraphError::ObservationOutOfRange { .. })
+        ));
+        assert!(graph.add_prior(x, vec![f64::NAN, 1.0]).is_err());
+        assert!(graph.add_prior(y, vec![0.5, 0.5]).is_err());
+        assert!(graph
+            .add_pairwise(x, x, vec![vec![1.0, 0.0], vec![0.0, 1.0]])
+            .is_err());
+        assert!(graph
+            .add_pairwise(x, y, vec![vec![1.0, 0.0], vec![0.0, 1.0]])
+            .is_err());
+    }
+
+    #[test]
+    fn reconciliation_graph_rejects_invalid_and_duplicate_facts() {
+        let fact = Uuid::new_v4();
+        assert!(build_factor_graph_for_reconciliation(&[(fact, f64::NAN, vec![])]).is_err());
+        assert!(matches!(
+            build_factor_graph_for_reconciliation(&[
+                (fact, 0.5, vec![]),
+                (fact, 0.7, vec![])
+            ]),
+            Err(FactorGraphError::DuplicateFact(id)) if id == fact
+        ));
+        assert!(build_factor_graph_for_reconciliation(&[(fact, 0.5, vec![fact])]).is_err());
     }
 
     #[test]
