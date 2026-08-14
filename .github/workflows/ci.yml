@@ -91,7 +91,7 @@ jobs:
         with:
           persist-credentials: false
       # azure/setup-helm pinned to an immutable commit.
-      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2
       - name: Install kubeconform
         run: |
           set -euo pipefail
