@@ -144,6 +144,17 @@ jobs:
             -f deploy/helm/axiograph/values-rwx-sync.yaml
       - name: Render Helm chart
         run: helm template axiograph deploy/helm/axiograph > /tmp/axiograph.yaml
+      - name: Assert hardened workload security contexts
+        run: |
+          for manifest in \
+            deploy/k8s/axiograph-db-statefulset.yaml \
+            /tmp/axiograph.yaml; do
+            grep -q 'runAsNonRoot: true' "$manifest"
+            grep -q 'type: RuntimeDefault' "$manifest"
+            grep -q 'allowPrivilegeEscalation: false' "$manifest"
+            grep -q 'readOnlyRootFilesystem: true' "$manifest"
+            grep -q -- '- ALL' "$manifest"
+          done
       - name: Validate raw manifests
         run: >-
           kubeconform -strict -summary

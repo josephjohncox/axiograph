@@ -1,3 +1,4 @@
+---
 # Example: RWX-backed shared storage for replicas pinned to one immutable
 # materialization id. Populate the complete AxiStore image+receipt family before
 # advancing the configured id.

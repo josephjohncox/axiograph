@@ -18,11 +18,17 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
       securityContext:
+        runAsNonRoot: true
         runAsUser: 10001
-        runAsGroup: 0
-        fsGroup: 0
-      {{- if not .Values.statefulset.persistence.enabled }}
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- if not .Values.statefulset.persistence.enabled }}
         - name: data
           emptyDir: {}
       {{- end }}
@@ -30,6 +36,12 @@ spec:
         - name: axiograph
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           args:
             {{- toYaml .Values.statefulset.args | nindent 12 }}
           {{- if .Values.statefulset.env }}
@@ -54,6 +66,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml .Values.statefulset.resources | nindent 12 }}
   {{- if .Values.statefulset.persistence.enabled }}
