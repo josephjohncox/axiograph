@@ -20,6 +20,7 @@ env:
   RUST_TOOLCHAIN: 1.88.0
   FUZZ_TOOLCHAIN: nightly-2026-07-23
   CARGO_FUZZ_VERSION: 0.13.2
+  CARGO_AUDIT_VERSION: 0.22.2
   KANI_VERSION: 0.67.0
   NODE_VERSION: 24.19.0
   AXIOGRAPH_CLI_VERSION: 0.6.0
@@ -93,6 +94,8 @@ jobs:
           fuzz_cargo="$(rustup which \
             --toolchain "$FUZZ_TOOLCHAIN" cargo)"
           fuzz_bin="$(dirname "$fuzz_cargo")"
+          cargo install \
+            --locked cargo-audit --version "=$CARGO_AUDIT_VERSION"
           PATH="$fuzz_bin:$PATH" cargo install \
             --locked cargo-fuzz --version "=$CARGO_FUZZ_VERSION"
           PATH="$fuzz_bin:$PATH" cargo install \

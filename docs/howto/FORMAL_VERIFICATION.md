@@ -297,6 +297,16 @@ Use it for selected Rust invariants such as probability bounds and low-level
 shape checks. It is complementary to the Lean certificate checker and does not
 replace the trusted semantic boundary.
 
+The exact Rust dependency graph has a separate advisory gate:
+
+```bash
+make verify-rustsec
+```
+
+It pins cargo-audit 0.22.2 and permits only the two documented quick-xml 0.37
+findings behind the patched RDF/XML structural preflight. See
+`docs/reference/SECURITY_BOUNDARIES.md` for the compensating-control scope.
+
 The bounded adversarial parser lane is executable separately:
 
 ```bash

@@ -24,7 +24,7 @@
 	verify-identity-parity \
 	verify-w02-compiler verify-regulated-shipment \
 	verify-axi-parse-e2e \
-	verify-verus verify-fuzz verify-miri verify-miri-required verify-loom \
+	verify-verus verify-rustsec verify-fuzz verify-miri verify-miri-required verify-loom \
 	verify-kani verify-kani-required \
 	verify-lean-resolution-v2 verify-lean-normalize-path-v2 verify-lean-path-equiv-v2 verify-lean-delta-f-v1 \
 	verify-lean-indexed-path-theory \
@@ -62,6 +62,7 @@ CARGO_FEATURES ?=
 RUST_VERSION := $(shell python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
 FUZZ_TOOLCHAIN ?= nightly-2026-07-23
 CARGO_FUZZ_VERSION ?= 0.13.2
+CARGO_AUDIT_VERSION ?= 0.22.2
 KANI_VERSION ?= 0.67.0
 NODE_VERSION := $(shell cat .node-version)
 
@@ -648,7 +649,7 @@ rehearse-release-publication:
 	python3 scripts/rehearse_release_publication.py
 	@echo "✓ Every injected failure and corrupted asset remained unpublished; one audited set committed atomically"
 
-release-gate: check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-viz verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
+release-gate: check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-viz verify-rustsec verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
 	python3 scripts/generate_release_source_manifest.py --check-only >/dev/null
 	git diff --check
 	@echo ""
@@ -687,6 +688,21 @@ verify-viz: check-node-toolchain
 	cd frontend/viz && npm audit --audit-level=moderate
 	cd frontend/viz && npm run build
 	@echo "✓ Visualization dependencies are advisory-clean and the frontend builds"
+
+verify-rustsec:
+	@echo "━━━ Auditing the exact Rust lockfile against RustSec ━━━"
+	@actual="$$(cargo audit --version | awk '{print $$2}')"; \
+	if [ "$$actual" != "$(CARGO_AUDIT_VERSION)" ]; then \
+		echo "error: expected cargo-audit $(CARGO_AUDIT_VERSION), found $$actual"; \
+		exit 1; \
+	fi
+	cd $(RUST_DIR) && cargo audit --file Cargo.lock \
+		--ignore RUSTSEC-2026-0194 \
+		--ignore RUSTSEC-2026-0195
+	cd $(RUST_DIR) && cargo audit --file fuzz/Cargo.lock \
+		--ignore RUSTSEC-2026-0194 \
+		--ignore RUSTSEC-2026-0195
+	@echo "✓ RustSec audits passed with only the documented RDF/XML preflight exceptions"
 
 verify-fuzz:
 	@echo "━━━ Running bounded parser and authenticated-image fuzz targets ━━━"

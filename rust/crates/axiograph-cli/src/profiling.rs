@@ -341,9 +341,12 @@ mod enabled {
             return Ok(Vec::new());
         }
 
-        let need_profile = outputs
-            .iter()
-            .any(|k| matches!(k, OutputKind::Pprof | OutputKind::Folded));
+        let need_profile = outputs.iter().any(|kind| {
+            matches!(
+                kind,
+                OutputKind::Flamegraph | OutputKind::Pprof | OutputKind::Folded
+            )
+        });
         let mut profile: Option<pprof::protos::Profile> = None;
 
         if need_profile {
@@ -363,10 +366,17 @@ mod enabled {
             }
             let bytes = match kind {
                 OutputKind::Flamegraph => {
+                    let profile = profile
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("pprof profile missing (unexpected state)"))?;
+                    let folded = render_folded(profile)?;
                     let mut bytes = Vec::new();
-                    report
-                        .flamegraph(&mut bytes)
-                        .map_err(|e| anyhow!("failed to render flamegraph: {e}"))?;
+                    inferno::flamegraph::from_reader(
+                        &mut inferno::flamegraph::Options::default(),
+                        folded.as_slice(),
+                        &mut bytes,
+                    )
+                    .map_err(|error| anyhow!("failed to render flamegraph: {error}"))?;
                     bytes
                 }
                 OutputKind::Pprof => {

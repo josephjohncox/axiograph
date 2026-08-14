@@ -33,6 +33,8 @@ jobs:
           fuzz_cargo="$(rustup which \
             --toolchain nightly-2026-07-23 cargo)"
           fuzz_bin="$(dirname "$fuzz_cargo")"
+          cargo install \
+            --locked cargo-audit --version '=0.22.2'
           PATH="$fuzz_bin:$PATH" cargo install \
             --locked cargo-fuzz --version '=0.13.2'
           PATH="$fuzz_bin:$PATH" cargo install \

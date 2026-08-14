@@ -170,6 +170,7 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-store --test materializa
 python3 -m unittest scripts.tests.test_validate_release_archive
 make check-no-unsafe
 make verify-viz
+make verify-rustsec
 make verify-fuzz
 make verify-loom
 ```
@@ -178,6 +179,18 @@ make verify-loom
 lifecycle scripts disabled, rejects moderate-or-higher advisories, and builds
 the production bundle. This blocks the release decision on known frontend
 supply-chain findings rather than relying only on default-branch alerts.
+
+`make verify-rustsec` runs cargo-audit 0.22.2 over the exact workspace and
+isolated fuzz lockfiles.
+The gate permits only RUSTSEC-2026-0194 and RUSTSEC-2026-0195 for the
+quick-xml 0.37 parser that Sophia 0.10 reaches through oxrdfxml. Every RDF/XML
+byte sequence first passes quick-xml 0.41 over the exact same bytes. That
+preflight uses checked attribute iteration, the patched namespace declaration
+limit, a depth limit of 128, an event limit of 1,000,000, and the existing 8
+MiB input limit before Sophia can see the input. Adversarial tests cover
+duplicate attributes, namespace floods, and excess depth. No other RustSec
+vulnerability is allowed. The remaining ttf-parser notice is an informational
+unmaintained warning in pdf-extract's lopdf dependency, not a vulnerability.
 
 `make verify-fuzz` uses checked seed corpora and exact nightly/cargo-fuzz
 versions. It exercises canonical `.axi`, strict Certificate V2/V3 JSON,

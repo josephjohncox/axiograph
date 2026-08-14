@@ -19,3 +19,4 @@ anyhow.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 sophia.workspace = true
+quick-xml.workspace = true

@@ -43,6 +43,7 @@ sqlparser.workspace = true
 tokio.workspace = true
 ciborium.workspace = true
 pprof = { workspace = true, optional = true }
+inferno = { workspace = true, optional = true }
 signal-hook = { workspace = true, optional = true }
 hyper = { version = "1.9", features = ["server", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
@@ -72,7 +73,7 @@ repl-rustyline = ["dep:rustyline"]
 llm-ollama = []
 llm-openai = []
 llm-anthropic = []
-profiling = ["dep:pprof", "dep:signal-hook"]
+profiling = ["dep:inferno", "dep:pprof", "dep:signal-hook"]
 proposal-adapter-http = []
 
 [dev-dependencies]
