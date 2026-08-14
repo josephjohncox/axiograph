@@ -18,6 +18,8 @@ permissions:
 
 env:
   RUST_TOOLCHAIN: 1.88.0
+  FUZZ_TOOLCHAIN: nightly-2026-07-23
+  CARGO_FUZZ_VERSION: 0.13.2
   AXIOGRAPH_CLI_VERSION: 0.6.0
   AXIOGRAPH_CHECKER_PROTOCOL: axiograph-verifier-stdio-v2
   AXIOGRAPH_CHECKER_BUILD_ID: axiograph-verify-main-v3
@@ -76,6 +78,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install exact fuzz toolchain and driver
+        run: |
+          rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
+          cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
       # leanprover/lean-action pinned to an immutable commit.
       - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
         with:

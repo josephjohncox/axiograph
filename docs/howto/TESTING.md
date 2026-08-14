@@ -33,7 +33,7 @@ The Axiograph test suite provides comprehensive coverage across all layers:
 ## Quick Start
 
 ```bash
-# From repo root, with rustc 1.88.0: exact publication decision
+# From repo root, with rustc 1.88.0 plus the pinned fuzz tools: publication decision
 make release-gate
 
 # From repo root: focused semantics suite (Rust + Lean)
@@ -69,6 +69,9 @@ cd ..
 # Reject unsafe code in every first-party Rust package and source file
 make check-no-unsafe
 
+# Bounded libFuzzer smoke over .axi, certificates, REPL input, and .axpd bytes
+make verify-fuzz
+
 # Focused untrusted-boundary regressions
 cargo test --manifest-path rust/Cargo.toml -p axiograph-security
 cargo test --manifest-path rust/Cargo.toml -p axiograph-cli --bin axiograph
@@ -90,9 +93,10 @@ cargo run -p axiograph-cli --release -- tools perf scenario --scenario proto_api
 
 | Gate | Use it for | Notes |
 | --- | --- | --- |
-| `make release-gate` | The only binary/container publication decision | Requires rustc 1.88.0 exactly, then runs catalog validation, Rust formatting, the no-unsafe gate, full locked workspace tests, the CLI feature matrix, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
+| `make release-gate` | The only binary/container publication decision | Requires rustc 1.88.0, `nightly-2026-07-23`, and `cargo-fuzz 0.13.2` exactly; then runs catalog validation, Rust formatting, the no-unsafe gate, full locked workspace tests, the CLI feature matrix, bounded fuzz targets, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
 | `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint/category certificates; runs `axiograph check finite-query` for baseline and candidate; binds the accepted exact-answer receipt into each reviewed trust gate; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; compiles the generated Rust test; and requires adversarial reviewer, path, query, placeholder-receipt, explanation, and materialization cases to reject. |
 | `make check-no-unsafe` | First-party Rust safety policy | Verifies every workspace package inherits `unsafe_code = "forbid"`, scans every checked-in Rust source file for the `unsafe` keyword outside comments and literals, then checks all targets and features with the compiler lint enabled. |
+| `make verify-fuzz` | Bounded adversarial parser smoke | Requires pinned `nightly-2026-07-23` and `cargo-fuzz 0.13.2`; copies checked seed corpora into a temporary directory and runs named `.axi`, certificate JSON, REPL-command, and authenticated `.axpd` byte targets with case-time, process-time, input-size, run-count, RSS, and artifact bounds. CI installs and runs the exact tool versions. |
 | Focused security commands below | Untrusted I/O, parser, process, network, saturation, and mutation boundaries | Covers no-follow same-handle reads, atomic outputs, JSON/CBOR depth, process descendants and floods, public/loopback peer pinning, Git URL/ref policy, MCP/LSP frames, SQLite substitution/limits, and strict archive extraction. See `docs/reference/SECURITY_BOUNDARIES.md`. |
 | `make verify-canonical-spine` | Current user/agent cleanup across the canonical spine | Runs the no-unsafe gate, Rust formatting, runtime theory checker tests, prepared-query tests, semantic VCS tests, software-authoring examples, embeddings tests, typed projection/readback tests, Lean `SemanticVCS`, `verify-lean-semantic-vcs`, and `git diff --check`. |
 | `make verify-w02-compiler` | Exact-byte canonical compiler changes | Runs canonical compiler unit/property/source-gate tests, including imported-schema visibility, builds Rust and Lean parser/typechecker executables, and checks all W02 positive/adversarial corpus expectations in both implementations. The full workspace suite additionally checks canonical-backed runtime-index retention and import-aware REPL loading. |
@@ -158,6 +162,7 @@ cargo check -p axiograph-cli --all-targets
 
 make check-no-unsafe
 make check-greenfield-surface
+make verify-fuzz
 make verify-canonical-spine
 make verify-semantics
 make release-gate
@@ -165,6 +170,15 @@ make verify-lean-theory
 make verify-lean-semantic-vcs
 make verify-axi-store
 ```
+
+`make verify-fuzz` requires pinned `nightly-2026-07-23` and `cargo-fuzz
+0.13.2`. It copies each checked seed corpus to a private temporary directory,
+runs with hard input, case-time, process-time, run-count, RSS, and artifact
+bounds, and removes generated corpus entries and artifacts after the run. A
+crash, timeout, output overflow, missing tool or seed, lockfile drift, or
+nonzero fuzzer exit fails the target. The fuzz driver requires POSIX
+process-group containment. Release verification runs it on Ubuntu before any Linux,
+macOS, or Windows bundle job can start.
 
 `make check-greenfield-surface` parses every tracked shell script and rejects
 retired binary aliases, bare `.axpd` loading/materialization commands, immutable

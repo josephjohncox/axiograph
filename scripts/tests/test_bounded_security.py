@@ -52,12 +52,16 @@ class BoundedSecurityTests(unittest.TestCase):
                 max_stderr_bytes=1024,
             )
 
-    def test_timeout_kills_descendant(self) -> None:
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX process groups")
+    def test_timeout_kills_started_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
-            marker = Path(raw_directory) / "descendant-survived"
+            started = Path(raw_directory) / "descendant-started"
+            survived = Path(raw_directory) / "descendant-survived"
             child = (
-                "import pathlib,time; time.sleep(0.4); "
-                f"pathlib.Path({str(marker)!r}).write_text('bad')"
+                "import pathlib,time; "
+                f"pathlib.Path({str(started)!r}).write_text('started'); "
+                "time.sleep(1.5); "
+                f"pathlib.Path({str(survived)!r}).write_text('bad')"
             )
             parent = (
                 "import subprocess,sys,time; "
@@ -67,12 +71,44 @@ class BoundedSecurityTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 run_bounded(
                     [sys.executable, "-c", parent],
-                    timeout_seconds=0.05,
+                    timeout_seconds=1,
                     max_stdout_bytes=1024,
                     max_stderr_bytes=1024,
                 )
-            time.sleep(0.6)
-            self.assertFalse(marker.exists())
+            self.assertTrue(started.exists(), "test must prove the descendant started")
+            time.sleep(0.7)
+            self.assertFalse(survived.exists())
+
+    @unittest.skipIf(sys.platform == "win32", "requires POSIX process groups")
+    def test_successful_parent_cannot_leave_detached_work_in_its_group(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            started = Path(raw_directory) / "descendant-started"
+            survived = Path(raw_directory) / "descendant-survived"
+            child = (
+                "import pathlib,time; "
+                f"pathlib.Path({str(started)!r}).write_text('started'); "
+                "time.sleep(0.5); "
+                f"pathlib.Path({str(survived)!r}).write_text('bad')"
+            )
+            parent = (
+                "import pathlib,subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable,'-c',{child!r}], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL); "
+                f"marker=pathlib.Path({str(started)!r}); "
+                "deadline=time.monotonic()+2; "
+                "exec(\"while not marker.exists() and time.monotonic() < deadline:\\n time.sleep(0.01)\")"
+            )
+            result = run_bounded(
+                [sys.executable, "-c", parent],
+                timeout_seconds=3,
+                max_stdout_bytes=1024,
+                max_stderr_bytes=1024,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(started.exists(), "test must prove the descendant started")
+            time.sleep(0.7)
+            self.assertFalse(survived.exists())
 
 
 if __name__ == "__main__":

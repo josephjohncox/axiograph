@@ -297,6 +297,17 @@ Use it for selected Rust invariants such as probability bounds and low-level
 shape checks. It is complementary to the Lean certificate checker and does not
 replace the trusted semantic boundary.
 
+The bounded adversarial parser lane is executable separately:
+
+```bash
+make verify-fuzz
+```
+
+This lane pins `nightly-2026-07-23` and `cargo-fuzz 0.13.2`, preserves the
+checked seed corpora, and fuzzes `.axi`, Certificate V2/V3 JSON, production REPL
+tokenization, and authenticated `.axpd` image bytes. Fuzz success is runtime
+hardening evidence, not a semantic proof or a change to the Lean trust closure.
+
 ## Hardening Guidance
 
 - Keep the verifier target small and audited.

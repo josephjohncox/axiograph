@@ -19,9 +19,9 @@ class BoundedProcessError(RuntimeError):
 
 
 def _terminate_tree(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
     if os.name == "nt":
+        if process.poll() is not None:
+            return
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -34,6 +34,9 @@ def _terminate_tree(process: subprocess.Popen[bytes]) -> None:
         except (OSError, subprocess.TimeoutExpired):
             process.kill()
     else:
+        # The direct child may have exited after spawning descendants. Its
+        # dedicated process group remains addressable until the last member
+        # exits, so kill the group even when process.poll() is already set.
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
 
@@ -129,6 +132,10 @@ def run_bounded(
             timed_out = True
             _terminate_tree(process)
             break
+    # A successful direct child is not permission to leave background
+    # descendants alive. Close the dedicated process group before draining the
+    # final pipe bytes and returning.
+    _terminate_tree(process)
     try:
         returncode = process.wait(timeout=5)
     except subprocess.TimeoutExpired as timeout_error:

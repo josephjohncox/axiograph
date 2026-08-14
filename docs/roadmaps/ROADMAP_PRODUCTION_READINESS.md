@@ -204,14 +204,15 @@ Last updated: 2026-04-28.
 
 ## 3) Hardening track (parallel, practical)
 
-- [~] Gate: property tests for existing untrusted surfaces.
-  - Current checks include `axi_export_property_tests`,
+- [x] Gate: initial named parser and storage fuzz lane.
+  - Property checks include `axi_export_property_tests`,
     `axi_constraints_ok_property_tests`, `typed_builder_property_tests`,
     `fact_index_property_tests`, `path_expr_property_tests`,
     `follow_path_property_tests`, `reachability_property_tests`, and
     `fixed_prob_property_tests`.
-  - Remaining pass condition: add fuzz targets for Rust `.axi` parsing,
-    certificate JSON parsing, PathDB bytes parsing, and CLI/REPL command parsing.
+  - `make verify-fuzz` runs checked-corpus targets for Rust `.axi` parsing,
+    Certificate V2/V3 JSON, authenticated `.axpd` bytes before PathDB hydration,
+    and the production CLI/REPL tokenizer under explicit resource bounds.
 - [ ] Gate: optional deep-verification lanes are executable.
   - Pass when `make verify-fuzz`, `make verify-miri`, `make verify-kani`, and
     `make verify-loom` or `make verify-shuttle` exist. Each target must either

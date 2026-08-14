@@ -320,10 +320,10 @@ Related roadmaps:
   owns accepted objects, refs, audit, and materialization receipts;
   `axiograph-storage` is process-local evidence staging only.
 - [ ] Prove runtime witness invariants with Verus where tractable.
-- [ ] Fuzz untrusted surfaces with named executable targets: PathDB bytes,
-  certificate JSON, Rust `.axi` parsing, CLI/REPL command parsing, and
-  adapter/plugin boundaries. A fuzz item is done only after the target exists
-  and has a checked corpus or seed artifact.
+- [~] Fuzz untrusted surfaces with named executable targets. Checked-corpus
+  targets now cover authenticated `.axpd` bytes before PathDB hydration,
+  Certificate V2/V3 JSON, Rust `.axi` parsing, and production CLI/REPL command
+  parsing through `make verify-fuzz`. Adapter/plugin boundary targets remain.
 - [ ] Add Miri, Kani, Loom/Shuttle, or Aeneas selectively for small critical
   kernels when they provide concrete value. Each lane needs a target that either
   runs the suite or explicitly reports that the optional tool is unavailable;
