@@ -6969,8 +6969,8 @@ fn cmd_predictive_proposals(args: &PredictiveProposalsArgs) -> Result<()> {
             "predictive proposal adapter input must be exact canonical `.axi` bytes"
         ));
     };
-    if guardrail.is_some() {
-        input.set_guardrail_layer(guardrail.clone().expect("guardrail already checked"));
+    if let Some(guardrail) = guardrail.clone() {
+        input.set_guardrail_layer(guardrail);
     }
     input
         .notes

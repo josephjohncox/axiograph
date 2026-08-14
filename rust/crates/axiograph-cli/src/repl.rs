@@ -488,7 +488,9 @@ fn refresh_completion_data(
         }
     }
 
-    let mut completion_data = data.write().expect("completion lock poisoned");
+    let mut completion_data = data
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     completion_data.commands = vec![
         "help".to_string(),
         "?".to_string(),
@@ -624,7 +626,10 @@ impl rustyline::completion::Completer for ReplLineHelper {
         let prefix_line = &line[..start];
         let tokens: Vec<&str> = prefix_line.split_whitespace().collect();
 
-        let data = self.data.read().expect("completion lock poisoned");
+        let data = self
+            .data
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Completing the first token => command completion.
         if tokens.is_empty() {
@@ -2675,8 +2680,9 @@ fn cmd_describe(state: &ReplState, args: &[String]) -> Result<()> {
                 println!("  …");
                 break;
             }
-            let v = view.attrs.get(k).expect("key present");
-            println!("  {k} = {}", truncate_value(v, max_value_chars));
+            if let Some(value) = view.attrs.get(k) {
+                println!("  {k} = {}", truncate_value(value, max_value_chars));
+            }
         }
     }
 
@@ -4764,8 +4770,8 @@ fn cmd_predictive_proposals_repl(state: &mut ReplState, args: &[String]) -> Resu
     } else {
         Err(anyhow!("exact canonical `.axi` bytes are required; PathDB cannot be reverse-exported into accepted meaning"))?
     };
-    if guardrail.is_some() {
-        input.set_guardrail_layer(guardrail.clone().expect("guardrail already checked"));
+    if let Some(guardrail) = guardrail.clone() {
+        input.set_guardrail_layer(guardrail);
     }
     input
         .notes

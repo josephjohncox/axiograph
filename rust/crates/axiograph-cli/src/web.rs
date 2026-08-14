@@ -1128,7 +1128,9 @@ fn html_to_markdown(html: &str) -> Result<String> {
 fn strip_html_to_text(html: &str) -> String {
     // Conservative fallback: use `scraper` to extract visible-ish text.
     let doc = Html::parse_document(html);
-    let selector = Selector::parse("body").unwrap();
+    let Ok(selector) = Selector::parse("body") else {
+        return String::new();
+    };
     let Some(body) = doc.select(&selector).next() else {
         return String::new();
     };

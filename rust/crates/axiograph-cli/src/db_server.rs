@@ -339,10 +339,9 @@ fn text_response(status: StatusCode, text: &str) -> HttpResponse {
 fn response(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> HttpResponse {
     let mut response = Response::new(Full::new(Bytes::from(body)));
     *response.status_mut() = status;
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        content_type.parse().expect("static content type"),
-    );
+    if let Ok(content_type) = content_type.parse() {
+        response.headers_mut().insert(CONTENT_TYPE, content_type);
+    }
     response
 }
 

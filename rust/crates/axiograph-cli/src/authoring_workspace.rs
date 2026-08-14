@@ -1834,8 +1834,20 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for BoundedLineWriter<W> {
         }
         match Pin::new(&mut self.inner).poll_write(context, bytes) {
             Poll::Ready(Ok(written)) => {
-                self.line_bytes = Self::line_length_after(self.line_bytes, &bytes[..written])
-                    .expect("prechecked MCP output prefix");
+                let Some(written_bytes) = bytes.get(..written) else {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "MCP writer reported more bytes than supplied",
+                    )));
+                };
+                let Some(line_bytes) = Self::line_length_after(self.line_bytes, written_bytes)
+                else {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "MCP response frame exceeds byte limit",
+                    )));
+                };
+                self.line_bytes = line_bytes;
                 Poll::Ready(Ok(written))
             }
             result => result,
@@ -2495,10 +2507,9 @@ fn error_response(status: StatusCode, message: impl ToString) -> HttpResponse {
 fn response(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> HttpResponse {
     let mut response = Response::new(Full::new(Bytes::from(body)));
     *response.status_mut() = status;
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        content_type.parse().expect("static content type"),
-    );
+    if let Ok(content_type) = content_type.parse() {
+        response.headers_mut().insert(CONTENT_TYPE, content_type);
+    }
     response
 }
 

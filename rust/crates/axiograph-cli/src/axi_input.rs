@@ -305,7 +305,12 @@ fn resolve_import_source(
             "cannot resolve imported module `{import}` from `{}`",
             root_input.display()
         )),
-        1 => Ok(matches.pop().expect("one import match").1),
+        1 => {
+            let Some((_, source)) = matches.pop() else {
+                return Err(anyhow!("resolved import disappeared before use"));
+            };
+            Ok(source)
+        }
         _ => Err(anyhow!(
             "imported module `{import}` is ambiguous: {}",
             matches

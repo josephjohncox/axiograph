@@ -5,6 +5,7 @@ use axiograph_projections::{
     ReadbackInventoryV1,
 };
 use clap::{Args, Subcommand, ValueEnum};
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
@@ -123,7 +124,10 @@ fn write_json<T: serde::Serialize>(out: Option<PathBuf>, value: &T) -> Result<()
         crate::security::write_output_bounded(&path, bytes, "CLI output")
             .with_context(|| format!("write {}", path.display()))?;
     } else {
-        print!("{}", String::from_utf8(bytes).expect("JSON is UTF-8"));
+        io::stdout()
+            .lock()
+            .write_all(&bytes)
+            .context("write projection JSON to stdout")?;
     }
     Ok(())
 }
