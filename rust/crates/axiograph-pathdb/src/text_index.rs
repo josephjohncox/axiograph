@@ -19,8 +19,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock, Weak};
+use std::sync::Weak;
 
+use parking_lot::{Mutex, RwLock};
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
@@ -53,11 +54,7 @@ impl Default for TextIndexCache {
 
 impl TextIndexCache {
     pub(crate) fn attach_async_source(&self, source: Weak<PathDB>) {
-        let mut guard = self
-            .async_source
-            .lock()
-            .expect("text index source poisoned");
-        *guard = Some(source);
+        *self.async_source.lock() = Some(source);
     }
 
     pub(crate) fn invalidate(&self) {
@@ -75,7 +72,7 @@ impl TextIndexCache {
         }
         let gen = self.generation.load(Ordering::SeqCst);
         if self.is_ready(attr_key_id, gen) {
-            let guard = self.indexes.read().expect("text index lock poisoned");
+            let guard = self.indexes.read();
             let Some((_, index)) = guard.get(&attr_key_id) else {
                 return RoaringBitmap::new();
             };
@@ -85,7 +82,7 @@ impl TextIndexCache {
             return fallback_any(db, attr_key_id, tokens);
         }
         self.ensure_built_sync(db, attr_key_id, gen);
-        let guard = self.indexes.read().expect("text index lock poisoned");
+        let guard = self.indexes.read();
         let Some((_, index)) = guard.get(&attr_key_id) else {
             return RoaringBitmap::new();
         };
@@ -103,7 +100,7 @@ impl TextIndexCache {
         }
         let gen = self.generation.load(Ordering::SeqCst);
         if self.is_ready(attr_key_id, gen) {
-            let guard = self.indexes.read().expect("text index lock poisoned");
+            let guard = self.indexes.read();
             let Some((_, index)) = guard.get(&attr_key_id) else {
                 return RoaringBitmap::new();
             };
@@ -113,7 +110,7 @@ impl TextIndexCache {
             return fallback_all(db, attr_key_id, tokens);
         }
         self.ensure_built_sync(db, attr_key_id, gen);
-        let guard = self.indexes.read().expect("text index lock poisoned");
+        let guard = self.indexes.read();
         let Some((_, index)) = guard.get(&attr_key_id) else {
             return RoaringBitmap::new();
         };
@@ -121,14 +118,14 @@ impl TextIndexCache {
     }
 
     pub(crate) fn is_ready(&self, attr_key_id: StrId, gen: u64) -> bool {
-        let guard = self.indexes.read().expect("text index lock poisoned");
-        guard
+        self.indexes
+            .read()
             .get(&attr_key_id)
             .is_some_and(|(built, _)| *built == gen)
     }
 
     pub(crate) fn load_indexes(&self, generation: u64, indexes: HashMap<StrId, InvertedIndex>) {
-        let mut guard = self.indexes.write().expect("text index lock poisoned");
+        let mut guard = self.indexes.write();
         for (k, v) in indexes {
             guard.insert(k, (generation, v));
         }
@@ -136,7 +133,7 @@ impl TextIndexCache {
 
     fn schedule_build_async(&self, db: &PathDB, attr_key_id: StrId, gen: u64) -> bool {
         {
-            let guard = self.indexes.read().expect("text index lock poisoned");
+            let guard = self.indexes.read();
             if guard
                 .get(&attr_key_id)
                 .is_some_and(|(built, _)| *built == gen)
@@ -145,24 +142,19 @@ impl TextIndexCache {
             }
         }
 
-        let source = self
-            .async_source
-            .lock()
-            .expect("text index source poisoned")
-            .clone();
-        let Some(source) = source else {
+        let Some(source) = self.async_source.lock().clone() else {
             return false;
         };
 
         {
-            let mut building = self.building.lock().expect("text index build poisoned");
+            let mut building = self.building.lock();
             if building.contains(&attr_key_id) {
                 return true;
             }
             building.insert(attr_key_id);
         }
 
-        std::thread::Builder::new()
+        let spawn = std::thread::Builder::new()
             .name("axiograph_text_index".to_string())
             .spawn(move || {
                 let Some(db) = source.upgrade() else {
@@ -173,18 +165,19 @@ impl TextIndexCache {
                 if cache.generation.load(Ordering::SeqCst) == gen {
                     cache.load_indexes(gen, [(attr_key_id, new_index)].into());
                 }
-                let mut building = cache.building.lock().expect("text index build poisoned");
-                building.remove(&attr_key_id);
-            })
-            .expect("failed to spawn text index build thread");
+                cache.building.lock().remove(&attr_key_id);
+            });
+        if spawn.is_err() {
+            self.building.lock().remove(&attr_key_id);
+            return false;
+        }
 
         true
     }
 
     fn ensure_built_sync(&self, db: &PathDB, attr_key_id: StrId, gen: u64) {
         let new_index = build_inverted_index(db, attr_key_id);
-        let mut guard = self.indexes.write().expect("text index lock poisoned");
-        guard.insert(attr_key_id, (gen, new_index));
+        self.indexes.write().insert(attr_key_id, (gen, new_index));
     }
 }
 

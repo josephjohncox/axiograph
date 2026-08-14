@@ -359,6 +359,7 @@ dependencies = [
  "axiograph-security",
  "axiograph-store",
  "dashmap",
+ "parking_lot",
  "proptest",
  "roaring",
  "schemars",

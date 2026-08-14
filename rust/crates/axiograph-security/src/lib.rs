@@ -671,9 +671,11 @@ pub fn run_command_bounded(
         }
 
         Ok(Output {
-            status: status.expect("bounded child status present"),
-            stdout: stdout_bytes.expect("bounded child stdout present"),
-            stderr: stderr_bytes.expect("bounded child stderr present"),
+            status: status.ok_or_else(|| anyhow!("{context}: child status was not collected"))?,
+            stdout: stdout_bytes
+                .ok_or_else(|| anyhow!("{context}: child stdout was not collected"))?,
+            stderr: stderr_bytes
+                .ok_or_else(|| anyhow!("{context}: child stderr was not collected"))?,
         })
     })
 }

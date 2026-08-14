@@ -26,6 +26,7 @@ roaring.workspace = true
 # Hashing for string interning
 ahash.workspace = true
 dashmap.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
