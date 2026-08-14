@@ -81,7 +81,11 @@ jobs:
       - name: Install exact fuzz toolchain and driver
         run: |
           rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
-          cargo install --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
+          fuzz_cargo="$(rustup which \
+            --toolchain "$FUZZ_TOOLCHAIN" cargo)"
+          fuzz_bin="$(dirname "$fuzz_cargo")"
+          PATH="$fuzz_bin:$PATH" cargo install \
+            --locked cargo-fuzz --version "$CARGO_FUZZ_VERSION"
       # leanprover/lean-action pinned to an immutable commit.
       - uses: leanprover/lean-action@38fbc41a8c28c4cbaec22d7f7de508ec2e7c0dd9
         with:
