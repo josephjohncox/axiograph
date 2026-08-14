@@ -10,6 +10,7 @@ from scripts.generate_release_source_manifest import (
     build_source_manifest,
     canonical_bytes,
     dirty_status_entries,
+    ignored_release_source_candidates,
     validate_source_manifest_bytes,
 )
 from scripts.run_release_fixture_suite import FixtureSuiteError, load_manifest
@@ -74,6 +75,29 @@ class ReleaseManifestTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(SourceManifestError, "non-UTF-8"):
             dirty_status_entries(b"?? \xff\0")
+
+    def test_ignored_release_source_scan_finds_hidden_sources_not_build_outputs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            hidden = root / "rust/crates/demo/src/bin/required.rs"
+            hidden.parent.mkdir(parents=True)
+            hidden.write_text("fn main() {}\n")
+            generated = root / "rust/crates/demo/target/generated.rs"
+            generated.parent.mkdir(parents=True)
+            generated.write_text("generated\n")
+
+            self.assertEqual(
+                ignored_release_source_candidates(
+                    root,
+                    [
+                        "!! rust/crates/demo/src/bin/",
+                        "!! rust/crates/demo/target/",
+                    ],
+                ),
+                ["rust/crates/demo/src/bin/required.rs"],
+            )
 
     def test_checked_in_fixture_manifest_is_complete_and_hash_pinned(self) -> None:
         manifest_path = REPO_ROOT / "release" / "fixtures.json"

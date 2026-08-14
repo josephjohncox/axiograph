@@ -27,6 +27,7 @@ MAX_FILE_COUNT = 100_000
 MAX_SOURCE_FILE_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_SOURCE_BYTES = 512 * 1024 * 1024
 ALLOWED_MODES = {"100644", "100755"}
+RELEASE_SOURCE_SUFFIXES = {".rs", ".lean", ".py", ".sh", ".ts", ".tsx"}
 SCOPE = {
     "authority": "exact canonical Git tree bytes for the recorded commit",
     "generated_from": "git-ls-tree-and-git-cat-file-after-clean-status",
@@ -120,6 +121,74 @@ def dirty_status_entries(status: bytes) -> list[str]:
     return entries
 
 
+def _is_release_source_path(path: Path, repo_root: Path) -> bool:
+    try:
+        relative = path.relative_to(repo_root)
+    except ValueError:
+        return False
+    if path.suffix not in RELEASE_SOURCE_SUFFIXES:
+        return False
+    parts = relative.parts
+    return (
+        (len(parts) >= 5 and parts[:2] == ("rust", "crates") and parts[3] == "src")
+        or (len(parts) >= 3 and parts[:2] == ("rust", "verus") and parts[2] == "src")
+        or (
+            len(parts) >= 3
+            and parts[:2] == ("rust", "fuzz")
+            and parts[2] in {"fuzz_targets", "tests"}
+        )
+        or (len(parts) >= 2 and parts[0] == "lean" and parts[1] == "Axiograph")
+        or (len(parts) >= 2 and parts[0] == "scripts")
+        or (len(parts) >= 3 and parts[:3] == ("frontend", "viz", "src"))
+    )
+
+
+def _ignored_entry_can_contain_release_source(relative: str) -> bool:
+    normalized = relative.rstrip("/")
+    direct_source_prefixes = (
+        "rust/verus/src/",
+        "rust/fuzz/fuzz_targets/",
+        "rust/fuzz/tests/",
+        "lean/Axiograph/",
+        "frontend/viz/src/",
+    )
+    is_crate_source = normalized.startswith("rust/crates/") and "/src/" in (
+        normalized + "/"
+    )
+    is_script_source = (
+        normalized.startswith("scripts/")
+        and "/__pycache__" not in normalized
+        and "/.ruff_cache" not in normalized
+    )
+    return is_crate_source or is_script_source or normalized.startswith(
+        direct_source_prefixes
+    )
+
+
+def ignored_release_source_candidates(
+    repo_root: Path, status_entries: list[str]
+) -> list[str]:
+    candidates: set[str] = set()
+    inspected = 0
+    for entry in status_entries:
+        if not entry.startswith("!! "):
+            continue
+        relative = entry[3:]
+        if not _ignored_entry_can_contain_release_source(relative):
+            continue
+        path = repo_root / relative
+        paths = [path] if not relative.endswith("/") else path.rglob("*")
+        for candidate in paths:
+            inspected += 1
+            if inspected > MAX_FILE_COUNT:
+                raise _fail(
+                    f"ignored release-source scan exceeds {MAX_FILE_COUNT} entries"
+                )
+            if candidate.is_file() and _is_release_source_path(candidate, repo_root):
+                candidates.add(candidate.relative_to(repo_root).as_posix())
+    return sorted(candidates, key=lambda path: path.encode("utf-8"))
+
+
 def assert_clean_checkout(repo_root: Path) -> None:
     status = _git(
         repo_root,
@@ -135,6 +204,31 @@ def assert_clean_checkout(repo_root: Path) -> None:
         suffix = "" if len(entries) <= 8 else f", ... ({len(entries)} entries total)"
         raise _fail(
             "release source manifest requires a clean checkout; dirty entries: "
+            + preview
+            + suffix
+        )
+
+    ignored_status = _git(
+        repo_root,
+        "status",
+        "--porcelain=v1",
+        "--ignored=matching",
+        "--untracked-files=all",
+        "-z",
+    )
+    assert isinstance(ignored_status, bytes)
+    ignored_sources = ignored_release_source_candidates(
+        repo_root, dirty_status_entries(ignored_status)
+    )
+    if ignored_sources:
+        preview = ", ".join(repr(path) for path in ignored_sources[:8])
+        suffix = (
+            ""
+            if len(ignored_sources) <= 8
+            else f", ... ({len(ignored_sources)} entries total)"
+        )
+        raise _fail(
+            "release checkout contains ignored source files that cannot enter the Git manifest: "
             + preview
             + suffix
         )
