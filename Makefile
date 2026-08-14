@@ -696,9 +696,10 @@ verify-fuzz:
 
 verify-miri:
 	@echo "━━━ Running Miri over the pure identity kernel ━━━"
-	@ if ! rustup component list --toolchain "$(FUZZ_TOOLCHAIN)" 2>/dev/null | \
-		grep -Eq '^miri.*\(installed\)'; then \
-		echo "SKIP: miri unavailable for $(FUZZ_TOOLCHAIN)"; \
+	@ components="$$(rustup component list --toolchain "$(FUZZ_TOOLCHAIN)" 2>/dev/null)"; \
+	if ! printf '%s\n' "$$components" | grep -Eq '^miri.*\(installed\)' || \
+		! printf '%s\n' "$$components" | grep -Eq '^rust-src.*\(installed\)'; then \
+		echo "SKIP: miri or rust-src unavailable for $(FUZZ_TOOLCHAIN)"; \
 		exit 0; \
 	fi; \
 	toolchain_bin="$$(dirname "$$(rustup which --toolchain "$(FUZZ_TOOLCHAIN)" cargo)")"; \
@@ -706,9 +707,10 @@ verify-miri:
 		-p axiograph-kernel --lib --locked 'identity::tests'
 
 verify-miri-required:
-	@rustup component list --toolchain "$(FUZZ_TOOLCHAIN)" 2>/dev/null | \
-		grep -Eq '^miri.*\(installed\)' || { \
-		echo "error: release gate requires miri for $(FUZZ_TOOLCHAIN)"; \
+	@components="$$(rustup component list --toolchain "$(FUZZ_TOOLCHAIN)" 2>/dev/null)"; \
+	printf '%s\n' "$$components" | grep -Eq '^miri.*\(installed\)' && \
+		printf '%s\n' "$$components" | grep -Eq '^rust-src.*\(installed\)' || { \
+		echo "error: release gate requires miri and rust-src for $(FUZZ_TOOLCHAIN)"; \
 		exit 1; \
 	}
 	@$(MAKE) verify-miri

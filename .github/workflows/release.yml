@@ -89,7 +89,7 @@ jobs:
         timeout-minutes: 20
         run: |
           rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
-          rustup component add miri --toolchain "$FUZZ_TOOLCHAIN"
+          rustup component add miri rust-src --toolchain "$FUZZ_TOOLCHAIN"
           fuzz_cargo="$(rustup which \
             --toolchain "$FUZZ_TOOLCHAIN" cargo)"
           fuzz_bin="$(dirname "$fuzz_cargo")"

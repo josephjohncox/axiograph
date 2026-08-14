@@ -318,8 +318,9 @@ make verify-miri
 
 This runs exact-byte identity, framing, domain-registry, Rust/Lean parity,
 scoped-reference, and strict ID parsing tests without enabling filesystem or
-network access. `release-gate` uses `verify-miri-required`, which fails rather
-than skipping when the pinned component is absent.
+network access. The pinned nightly must include both Miri and `rust-src`.
+`release-gate` uses `verify-miri-required`, which fails rather than skipping
+when either component is absent.
 
 The child-process concurrency limiter has a separate exhaustive small-state
 model:

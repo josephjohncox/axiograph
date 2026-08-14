@@ -29,7 +29,7 @@ jobs:
         timeout-minutes: 20
         run: |
           rustup toolchain install nightly-2026-07-23 --profile minimal
-          rustup component add miri --toolchain nightly-2026-07-23
+          rustup component add miri rust-src --toolchain nightly-2026-07-23
           fuzz_cargo="$(rustup which \
             --toolchain nightly-2026-07-23 cargo)"
           fuzz_bin="$(dirname "$fuzz_cargo")"
