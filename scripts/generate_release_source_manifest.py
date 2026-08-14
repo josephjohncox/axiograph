@@ -197,7 +197,8 @@ def assert_clean_checkout(repo_root: Path) -> None:
         "--untracked-files=all",
         "-z",
     )
-    assert isinstance(status, bytes)
+    if not isinstance(status, bytes):
+        raise _fail("git status unexpectedly returned text")
     entries = dirty_status_entries(status)
     if entries:
         preview = ", ".join(repr(entry) for entry in entries[:8])
@@ -216,7 +217,8 @@ def assert_clean_checkout(repo_root: Path) -> None:
         "--untracked-files=all",
         "-z",
     )
-    assert isinstance(ignored_status, bytes)
+    if not isinstance(ignored_status, bytes):
+        raise _fail("ignored git status unexpectedly returned text")
     ignored_sources = ignored_release_source_candidates(
         repo_root, dirty_status_entries(ignored_status)
     )
@@ -327,7 +329,8 @@ def generate(repo_root: Path) -> dict[str, object]:
         )
     ).strip()
     raw_tree = _git(repo_root, "ls-tree", "-r", "-z", "--full-tree", "HEAD")
-    assert isinstance(raw_tree, bytes)
+    if not isinstance(raw_tree, bytes):
+        raise _fail("git tree listing unexpectedly returned text")
     entries: list[tuple[str, str, str, bytes]] = []
     total_source_bytes = 0
     for raw_entry in raw_tree.split(b"\0"):
@@ -374,7 +377,8 @@ def generate(repo_root: Path) -> dict[str, object]:
             oid,
             max_stdout_bytes=max(1, size + 1),
         )
-        assert isinstance(blob, bytes)
+        if not isinstance(blob, bytes):
+            raise _fail(f"Git blob unexpectedly returned text for {path}")
         if len(blob) != size:
             raise _fail(f"Git blob size changed while reading {path}")
         entries.append((path, mode_text, oid, blob))
