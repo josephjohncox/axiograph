@@ -697,7 +697,7 @@ fn evidence(
         .validation
         .runtime_theory
         .as_ref()
-        .expect("validated authoring report has runtime theory");
+        .ok_or_else(|| anyhow!("{label} authoring report omitted runtime theory"))?;
     if authoring_theory.summary != theory_report.summary {
         return Err(anyhow!(
             "{label} standalone and authoring runtime-theory summaries do not match"
@@ -816,13 +816,12 @@ fn compile(
     .map_err(anyhow::Error::from)
 }
 
-fn blob(objects: &[ImmutableBlob], kind: ImmutableObjectKind) -> ObjectBlobIdV2 {
+fn blob(objects: &[ImmutableBlob], kind: ImmutableObjectKind) -> Result<ObjectBlobIdV2> {
     objects
         .iter()
         .find(|object| object.kind == kind)
-        .expect("required supporting object")
-        .digest
-        .clone()
+        .map(|object| object.digest.clone())
+        .ok_or_else(|| anyhow!("regulated-shipment plan omitted required {kind:?} object"))
 }
 
 fn typed_candidate(plan: &ScenarioPlan) -> Result<TypedCandidatePayloadV2> {
@@ -990,10 +989,10 @@ fn build_plan(
             evidence.query_verification.clone(),
         )?,
     ];
-    let validation = blob(&objects, ImmutableObjectKind::ValidationReport);
-    let competency = blob(&objects, ImmutableObjectKind::CompetencyQuestionReport);
-    let theory = blob(&objects, ImmutableObjectKind::TheoryReport);
-    let verification = blob(&objects, ImmutableObjectKind::VerificationReceipt);
+    let validation = blob(&objects, ImmutableObjectKind::ValidationReport)?;
+    let competency = blob(&objects, ImmutableObjectKind::CompetencyQuestionReport)?;
+    let theory = blob(&objects, ImmutableObjectKind::TheoryReport)?;
+    let verification = blob(&objects, ImmutableObjectKind::VerificationReceipt)?;
     let manifest = AcceptedBuildManifest {
         format: BUILD_MANIFEST_FORMAT.to_string(),
         version: FORMAT_VERSION,
@@ -1003,8 +1002,8 @@ fn build_plan(
         ordered_module_closure: vec![publication.module.revision_digest.clone()],
         compiler_version: "axiograph-kernel-canonical-compiler".to_string(),
         ir_version: "kernel-snapshot-ir-v2".to_string(),
-        kernel_ir_digest: blob(&objects, ImmutableObjectKind::KernelIr),
-        canonical_fact_log_digest: blob(&objects, ImmutableObjectKind::CanonicalFactLog),
+        kernel_ir_digest: blob(&objects, ImmutableObjectKind::KernelIr)?,
+        canonical_fact_log_digest: blob(&objects, ImmutableObjectKind::CanonicalFactLog)?,
         validation_report_digest: validation.clone(),
         competency_question_report_digest: competency.clone(),
         runtime_theory_report_digest: theory.clone(),
@@ -1156,11 +1155,13 @@ fn count_type_wrappers(type_expr: &TypeExprIr) -> (usize, usize) {
     }
 }
 
-fn category_evidence(compiled: &CompiledKernelSnapshot) -> RegulatedShipmentCategoryEvidence {
+fn category_evidence(
+    compiled: &CompiledKernelSnapshot,
+) -> Result<RegulatedShipmentCategoryEvidence> {
     let ir = compiled.ir();
     let gate = compiled
         .require_finite_theory_gate(axiograph_kernel::FiniteTheoryGateConsumerIr::Merge)
-        .expect("scenario candidate passed the typed merge gate");
+        .context("regulated-shipment candidate failed the typed merge gate")?;
     let object_types = ir.schemas().iter().map(|schema| schema.objects.len()).sum();
     let relation_objects = ir
         .schemas()
@@ -1230,7 +1231,7 @@ fn category_evidence(compiled: &CompiledKernelSnapshot) -> RegulatedShipmentCate
         .flat_map(|instance| &instance.scope_witnesses)
         .filter(|witness| witness.axis == ScopeAxisIr::World)
         .count();
-    RegulatedShipmentCategoryEvidence {
+    Ok(RegulatedShipmentCategoryEvidence {
         object_types,
         relation_objects,
         role_projections,
@@ -1250,7 +1251,7 @@ fn category_evidence(compiled: &CompiledKernelSnapshot) -> RegulatedShipmentCate
             .coverage
             .non_identity_scope_transports_certified
             as usize,
-    }
+    })
 }
 
 fn finite_query_evidence(bytes: &[u8]) -> Result<RegulatedShipmentQueryEvidence> {
@@ -1421,7 +1422,7 @@ pub fn run_workflow(
             .module
             .revision_digest
             .to_string(),
-        category: category_evidence(&merge.compiled),
+        category: category_evidence(&merge.compiled)?,
         finite_query: finite_query_evidence(&candidate_evidence.query_verification)?,
         merge: RegulatedShipmentMergeEvidence {
             operation: "reviewed_finite_typed_replacement_merge".to_string(),
