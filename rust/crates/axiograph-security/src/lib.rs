@@ -445,6 +445,26 @@ impl ProcessLimits {
     }
 }
 
+fn try_reserve_below_limit(
+    maximum: usize,
+    load: impl Fn() -> usize,
+    compare_exchange: impl Fn(usize, usize) -> std::result::Result<usize, usize>,
+) -> bool {
+    loop {
+        let current = load();
+        if current >= maximum {
+            return false;
+        }
+        if compare_exchange(current, current + 1).is_ok() {
+            return true;
+        }
+    }
+}
+
+fn release_reserved_slot(fetch_sub: impl Fn(usize) -> usize) -> usize {
+    fetch_sub(1)
+}
+
 #[derive(Debug)]
 struct ChildLimiter {
     active: AtomicUsize,
@@ -460,21 +480,20 @@ impl ChildLimiter {
     }
 
     fn acquire(&self, context: &str) -> Result<ChildPermit<'_>> {
-        loop {
-            let current = self.active.load(Ordering::Acquire);
-            if current >= self.maximum {
-                return Err(anyhow!(
-                    "{context}: child-process concurrency exceeds {}",
-                    self.maximum
-                ));
-            }
-            if self
-                .active
-                .compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Ok(ChildPermit { limiter: self });
-            }
+        if try_reserve_below_limit(
+            self.maximum,
+            || self.active.load(Ordering::Acquire),
+            |current, next| {
+                self.active
+                    .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+            },
+        ) {
+            Ok(ChildPermit { limiter: self })
+        } else {
+            Err(anyhow!(
+                "{context}: child-process concurrency exceeds {}",
+                self.maximum
+            ))
         }
     }
 }
@@ -486,7 +505,9 @@ struct ChildPermit<'a> {
 
 impl Drop for ChildPermit<'_> {
     fn drop(&mut self) {
-        self.limiter.active.fetch_sub(1, Ordering::AcqRel);
+        let previous =
+            release_reserved_slot(|amount| self.limiter.active.fetch_sub(amount, Ordering::AcqRel));
+        debug_assert!(previous > 0, "child limiter permit underflow");
     }
 }
 
@@ -655,6 +676,60 @@ pub fn run_command_bounded(
             stderr: stderr_bytes.expect("bounded child stderr present"),
         })
     })
+}
+
+#[cfg(all(test, feature = "loom-tests"))]
+mod loom_tests {
+    use super::{release_reserved_slot, try_reserve_below_limit};
+    use loom::sync::atomic::{AtomicUsize, Ordering};
+    use loom::sync::Arc;
+    use loom::thread;
+
+    #[test]
+    fn child_limiter_never_exceeds_maximum_under_contention() {
+        loom::model(|| {
+            let active = Arc::new(AtomicUsize::new(0));
+            let inside = Arc::new(AtomicUsize::new(0));
+            let mut threads = Vec::new();
+
+            for _ in 0..2 {
+                let active = Arc::clone(&active);
+                let inside = Arc::clone(&inside);
+                threads.push(thread::spawn(move || {
+                    let reserved = try_reserve_below_limit(
+                        1,
+                        || active.load(Ordering::Acquire),
+                        |current, next| {
+                            active.compare_exchange(
+                                current,
+                                next,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                        },
+                    );
+                    if reserved {
+                        let prior = inside.fetch_add(1, Ordering::AcqRel);
+                        assert_eq!(prior, 0, "more than one child entered at maximum one");
+                        thread::yield_now();
+                        assert_eq!(inside.fetch_sub(1, Ordering::AcqRel), 1);
+                        assert_eq!(
+                            release_reserved_slot(|amount| {
+                                active.fetch_sub(amount, Ordering::AcqRel)
+                            }),
+                            1
+                        );
+                    }
+                }));
+            }
+
+            for thread in threads {
+                thread.join().expect("modeled child thread must join");
+            }
+            assert_eq!(inside.load(Ordering::Acquire), 0);
+            assert_eq!(active.load(Ordering::Acquire), 0);
+        });
+    }
 }
 
 #[cfg(test)]

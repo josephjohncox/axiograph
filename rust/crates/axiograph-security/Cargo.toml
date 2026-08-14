@@ -8,6 +8,10 @@ license.workspace = true
 description = "Bounded untrusted I/O and child-process primitives for Axiograph"
 publish = false
 
+[features]
+default = []
+loom-tests = []
+
 [lints]
 workspace = true
 
@@ -22,6 +26,9 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+
+[dev-dependencies]
+loom.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "std"] }

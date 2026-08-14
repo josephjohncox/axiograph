@@ -325,10 +325,11 @@ Related roadmaps:
   hydration, Certificate V2/V3 JSON, Rust `.axi` parsing, production CLI/REPL
   command parsing, and the shared predictive-proposal command/HTTP adapter
   response boundary through `make verify-fuzz`.
-- [ ] Add Miri, Kani, Loom/Shuttle, or Aeneas selectively for small critical
-  kernels when they provide concrete value. Each lane needs a target that either
-  runs the suite or explicitly reports that the optional tool is unavailable;
-  silent no-ops do not count.
+- [x] Add Miri, Kani, and Loom selectively for small critical kernels.
+  `make verify-miri` interprets seven pure identity/framing/domain tests,
+  `make verify-loom` exhaustively models the production child-slot reservation
+  loop, and `make verify-kani` proves constructor bounds over every `u32`.
+  Release verification requires the exact applicable tools.
 - [ ] Keep expanding `make verify-semantics` as the must-pass Rust+Lean
   semantics suite.
 

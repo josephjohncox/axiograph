@@ -170,18 +170,24 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-store --test materializa
 python3 -m unittest scripts.tests.test_validate_release_archive
 make check-no-unsafe
 make verify-fuzz
+make verify-loom
 ```
 
 `make verify-fuzz` uses checked seed corpora and exact nightly/cargo-fuzz
 versions. It exercises canonical `.axi`, strict Certificate V2/V3 JSON,
 production REPL tokenization, the unknown-field-strict adapter envelope and
 bounded/validated predictive-proposal payload shared by command and HTTP, and
-authenticated `.axpd` image opening under hard input,
-run-count, per-case time, process time, per-stream output, RSS,
-and single-crash-artifact bounds. The POSIX driver kills the dedicated process
+authenticated `.axpd` image opening. A cold build has its own 600-second
+process-group limit; fuzz execution has hard input, run-count, per-case time,
+process time, per-stream output, RSS, and single-crash-artifact bounds. The
+POSIX driver kills the dedicated process
 group even when the direct child exits first. The working corpus is temporary,
 so a verification run cannot rewrite accepted seed artifacts. Release
 verification runs this lane on Ubuntu before platform bundle jobs start.
+
+`make verify-loom` explores the real atomic child-slot reservation algorithm
+under contention. It checks that concurrent acquisition never exceeds the hard
+maximum and that every successful reservation is released.
 
 The focused suites cover symlinks and special files, unknown-length stream
 overflow, atomic output publication, JSON/CBOR depth and trailing values,

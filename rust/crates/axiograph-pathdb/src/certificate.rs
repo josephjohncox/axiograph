@@ -148,6 +148,19 @@ impl FixedPointProbability {
     }
 }
 
+#[cfg(kani)]
+#[kani::proof]
+fn kani_fixed_point_constructor_enforces_bounds() {
+    let numerator: u32 = kani::any();
+    match FixedPointProbability::try_new(numerator) {
+        Some(probability) => {
+            assert!(numerator <= FIXED_POINT_DENOMINATOR);
+            assert_eq!(probability.numerator(), numerator);
+        }
+        None => assert!(numerator > FIXED_POINT_DENOMINATOR),
+    }
+}
+
 /// Versioned wrapper for v2 certificates (fixed-point probabilities).
 #[derive(Debug, Clone, Serialize)]
 pub struct CertificateV2 {

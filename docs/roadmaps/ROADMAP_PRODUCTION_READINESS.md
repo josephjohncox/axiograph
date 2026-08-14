@@ -214,15 +214,16 @@ Last updated: 2026-04-28.
     Certificate V2/V3 JSON, authenticated `.axpd` bytes before PathDB hydration,
     the production CLI/REPL tokenizer, and the shared predictive-proposal
     command/HTTP envelope plus validated payload under explicit resource bounds.
-- [ ] Gate: optional deep-verification lanes are executable.
-  - Pass when `make verify-fuzz`, `make verify-miri`, `make verify-kani`, and
-    `make verify-loom` or `make verify-shuttle` exist. Each target must either
-    run a named minimal suite or skip with an explicit "tool unavailable"
-    message; silent no-ops do not count.
-- [ ] Gate: concurrency tests only cover real concurrency.
-  - Pass when Loom/Shuttle models are added only for code that actually shares
-    mutable state across threads; otherwise the roadmap entry stays intentionally
-    unimplemented.
+- [x] Gate: optional deep-verification lanes are executable.
+  - `make verify-fuzz`, `make verify-miri`, `make verify-loom`, and
+    `make verify-kani` run named suites. Release verification requires the exact
+    applicable tools rather than accepting skips. The Kani harness covers every
+    `u32` constructor input; silent no-ops do not count.
+- [x] Gate: concurrency tests only cover real concurrency.
+  - `make verify-loom` models the production `ChildLimiter` reservation loop
+    with the same compare/exchange algorithm under two-thread contention. It
+    asserts that the configured maximum is never exceeded and all acquired
+    permits are released.
 
 ---
 

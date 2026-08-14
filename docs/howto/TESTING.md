@@ -72,6 +72,15 @@ make check-no-unsafe
 # Bounded libFuzzer smoke over .axi, certificates, REPL/plugin input, and .axpd bytes
 make verify-fuzz
 
+# Miri over pure identity/framing/domain-separation kernel tests
+make verify-miri
+
+# Loom model over the production child-process concurrency reservation algorithm
+make verify-loom
+
+# Kani proof that all u32 fixed-point construction paths enforce the bound
+make verify-kani
+
 # Focused untrusted-boundary regressions
 cargo test --manifest-path rust/Cargo.toml -p axiograph-security
 cargo test --manifest-path rust/Cargo.toml -p axiograph-cli --bin axiograph
@@ -93,10 +102,13 @@ cargo run -p axiograph-cli --release -- tools perf scenario --scenario proto_api
 
 | Gate | Use it for | Notes |
 | --- | --- | --- |
-| `make release-gate` | The only binary/container publication decision | Requires rustc 1.88.0, `nightly-2026-07-23`, and `cargo-fuzz 0.13.2` exactly; then runs catalog validation, Rust formatting, the no-unsafe gate, full locked workspace tests, the CLI feature matrix, bounded fuzz targets, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
+| `make release-gate` | The only binary/container publication decision | Requires rustc 1.88.0, `nightly-2026-07-23` with Miri, `cargo-fuzz 0.13.2`, and `cargo-kani 0.67.0` exactly; then runs catalog validation, Rust formatting, the no-unsafe gate, full locked workspace tests, the CLI feature matrix, bounded fuzz targets, pure identity-kernel Miri tests, the Loom child-limiter model, the Kani fixed-point-constructor proof, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
 | `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint/category certificates; runs `axiograph check finite-query` for baseline and candidate; binds the accepted exact-answer receipt into each reviewed trust gate; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; compiles the generated Rust test; and requires adversarial reviewer, path, query, placeholder-receipt, explanation, and materialization cases to reject. |
 | `make check-no-unsafe` | First-party Rust safety policy | Verifies every workspace package inherits `unsafe_code = "forbid"`, scans every checked-in Rust source file for the `unsafe` keyword outside comments and literals, then checks all targets and features with the compiler lint enabled. |
-| `make verify-fuzz` | Bounded adversarial parser smoke | Requires pinned `nightly-2026-07-23` and `cargo-fuzz 0.13.2`; copies checked seed corpora into a temporary directory and runs named `.axi`, certificate JSON, REPL-command, predictive-proposal adapter response, and authenticated `.axpd` byte targets with case-time, process-time, output, input-size, run-count, RSS, and single-artifact bounds. CI and release verification install and run the exact tool versions. |
+| `make verify-fuzz` | Bounded adversarial parser smoke | Requires pinned `nightly-2026-07-23` and `cargo-fuzz 0.13.2`; first compiles all five harnesses under a separate 600-second process-group bound, then copies checked seed corpora into a temporary directory and runs named `.axi`, certificate JSON, REPL-command, predictive-proposal adapter response, and authenticated `.axpd` byte targets with case-time, process-time, output, input-size, run-count, RSS, and single-artifact bounds. CI and release verification install and run the exact tool versions. |
+| `make verify-miri` | Interpreter-level identity-kernel hardening | Runs seven pure tests for exact-byte identities, authenticated-field sensitivity, framing, registry closure, Rust/Lean domain parity, scoped semantic refs, and strict ID parsing under Miri. It explicitly reports `SKIP` when the component is unavailable; `release-gate` instead uses `verify-miri-required` and fails if Miri is missing. |
+| `make verify-loom` | Exhaustive small-state concurrency model | Runs the production child-slot reservation algorithm with Loom atomics under two-thread contention and proves the configured maximum is never exceeded and every acquired slot is released. This models real shared mutable state rather than a synthetic concurrency example. |
+| `make verify-kani` | Bounded model checking over the complete constructor input domain | With `cargo-kani 0.67.0`, proves for every `u32` that `FixedPointProbability::try_new` accepts exactly the numerators at or below the shared denominator and preserves accepted values exactly. It explicitly reports `SKIP` when Kani is unavailable; `release-gate` uses `verify-kani-required` and fails if the exact version is missing. |
 | Focused security commands below | Untrusted I/O, parser, process, network, saturation, and mutation boundaries | Covers no-follow same-handle reads, atomic outputs, JSON/CBOR depth, process descendants and floods, public/loopback peer pinning, Git URL/ref policy, MCP/LSP frames, SQLite substitution/limits, and strict archive extraction. See `docs/reference/SECURITY_BOUNDARIES.md`. |
 | `make verify-canonical-spine` | Current user/agent cleanup across the canonical spine | Runs the no-unsafe gate, Rust formatting, runtime theory checker tests, prepared-query tests, semantic VCS tests, software-authoring examples, embeddings tests, typed projection/readback tests, Lean `SemanticVCS`, `verify-lean-semantic-vcs`, and `git diff --check`. |
 | `make verify-w02-compiler` | Exact-byte canonical compiler changes | Runs canonical compiler unit/property/source-gate tests, including imported-schema visibility, builds Rust and Lean parser/typechecker executables, and checks all W02 positive/adversarial corpus expectations in both implementations. The full workspace suite additionally checks canonical-backed runtime-index retention and import-aware REPL loading. |
@@ -172,13 +184,14 @@ make verify-axi-store
 ```
 
 `make verify-fuzz` requires pinned `nightly-2026-07-23` and `cargo-fuzz
-0.13.2`. It copies each checked seed corpus to a private temporary directory,
-runs with hard input, case-time, process-time, run-count, RSS, and artifact
-bounds, and removes generated corpus entries and artifacts after the run. A
-crash, timeout, output overflow, missing tool or seed, lockfile drift, or
-nonzero fuzzer exit fails the target. The fuzz driver requires POSIX
-process-group containment. Release verification runs it on Ubuntu before any Linux,
-macOS, or Windows bundle job can start.
+0.13.2`. It builds all named harnesses under a separate 600-second cold-build
+bound, copies each checked seed corpus to a private temporary directory, runs
+with hard input, case-time, process-time, run-count, RSS, and artifact bounds,
+and removes generated corpus entries and artifacts after the run. A build or
+fuzz timeout, output overflow, missing tool or seed, lockfile drift, crash, or
+nonzero exit fails the target. The fuzz driver requires POSIX process-group
+containment. Release verification runs it on Ubuntu before any Linux, macOS, or
+Windows bundle job can start.
 
 `make check-greenfield-surface` parses every tracked shell script and rejects
 retired binary aliases, bare `.axpd` loading/materialization commands, immutable

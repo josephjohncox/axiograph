@@ -24,7 +24,8 @@
 	verify-identity-parity \
 	verify-w02-compiler verify-regulated-shipment \
 	verify-axi-parse-e2e \
-	verify-verus verify-fuzz \
+	verify-verus verify-fuzz verify-miri verify-miri-required verify-loom \
+	verify-kani verify-kani-required \
 	verify-lean-resolution-v2 verify-lean-normalize-path-v2 verify-lean-path-equiv-v2 verify-lean-delta-f-v1 \
 	verify-lean-indexed-path-theory \
 	verify-lean-e2e-axi-well-typed-v1 \
@@ -61,6 +62,7 @@ CARGO_FEATURES ?=
 RUST_VERSION := $(shell python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
 FUZZ_TOOLCHAIN ?= nightly-2026-07-23
 CARGO_FUZZ_VERSION ?= 0.13.2
+KANI_VERSION ?= 0.67.0
 
 # Lean configuration (optional)
 LAKE := lake
@@ -635,7 +637,7 @@ rehearse-release-publication:
 	python3 scripts/rehearse_release_publication.py
 	@echo "✓ Every injected failure and corrupted asset remained unpublished; one audited set committed atomically"
 
-release-gate: check-rust-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-fuzz verify-release-packaging verify-release-fixtures verify-semantics
+release-gate: check-rust-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
 	python3 scripts/generate_release_source_manifest.py --check-only >/dev/null
 	git diff --check
 	@echo ""
@@ -657,7 +659,7 @@ test-backend-containers:
 	cd $(RUST_DIR) && AXIOGRAPH_RUN_BACKEND_CONTAINER_TESTS=1 $(CARGO) test --test backend_container_tests -- --ignored --nocapture
 
 # ============================================================================
-# Formal Verification (Verus, optional)
+# Formal and adversarial verification
 # ============================================================================
 
 verify-verus:
@@ -673,6 +675,51 @@ verify-fuzz:
 	python3 scripts/run_bounded_fuzz.py \
 		--toolchain "$(FUZZ_TOOLCHAIN)" \
 		--cargo-fuzz-version "$(CARGO_FUZZ_VERSION)"
+
+verify-miri:
+	@echo "━━━ Running Miri over the pure identity kernel ━━━"
+	@ if ! rustup component list --toolchain "$(FUZZ_TOOLCHAIN)" 2>/dev/null | \
+		grep -Eq '^miri.*\(installed\)'; then \
+		echo "SKIP: miri unavailable for $(FUZZ_TOOLCHAIN)"; \
+		exit 0; \
+	fi; \
+	toolchain_bin="$$(dirname "$$(rustup which --toolchain "$(FUZZ_TOOLCHAIN)" cargo)")"; \
+	cd $(RUST_DIR) && PATH="$$toolchain_bin:$$PATH" cargo miri test \
+		-p axiograph-kernel --lib --locked 'identity::tests'
+
+verify-miri-required:
+	@rustup component list --toolchain "$(FUZZ_TOOLCHAIN)" 2>/dev/null | \
+		grep -Eq '^miri.*\(installed\)' || { \
+		echo "error: release gate requires miri for $(FUZZ_TOOLCHAIN)"; \
+		exit 1; \
+	}
+	@$(MAKE) verify-miri
+
+verify-loom:
+	@echo "━━━ Modeling child-limiter contention with Loom ━━━"
+	cd $(RUST_DIR) && $(CARGO) test --locked -p axiograph-security \
+		--features loom-tests child_limiter_never_exceeds_maximum_under_contention
+
+verify-kani:
+	@echo "━━━ Model-checking fixed-point construction with Kani ━━━"
+	@ if ! cargo kani --version >/dev/null 2>&1; then \
+		echo "SKIP: cargo-kani unavailable"; \
+		exit 0; \
+	fi; \
+	actual="$$(cargo kani --version | awk '{print $$2}')"; \
+	if [ "$$actual" != "$(KANI_VERSION)" ]; then \
+		echo "error: expected cargo-kani $(KANI_VERSION), found $$actual"; \
+		exit 1; \
+	fi; \
+	cd $(RUST_DIR) && cargo kani -p axiograph-pathdb \
+		--harness kani_fixed_point_constructor_enforces_bounds
+
+verify-kani-required:
+	@cargo kani --version >/dev/null 2>&1 || { \
+		echo "error: release gate requires cargo-kani $(KANI_VERSION)"; \
+		exit 1; \
+	}
+	@$(MAKE) verify-kani
 
 # ============================================================================
 # Documentation
@@ -753,6 +800,9 @@ help:
 	@echo "  verify-lean-semantic-vcs  Verify Rust merge/rebase plans against Lean theory"
 	@echo "  check-no-unsafe  Reject unsafe code in all first-party Rust targets"
 	@echo "  verify-fuzz  Run corpus-seeded parser/image fuzzing under hard bounds"
+	@echo "  verify-miri  Run pure identity-kernel tests under Miri, or report unavailable"
+	@echo "  verify-loom  Model the real child-process concurrency limiter"
+	@echo "  verify-kani  Model-check fixed-point constructor bounds, or report unavailable"
 	@echo "  verify-release-fixtures  Run the hash-pinned Lean accept/reject release corpus"
 	@echo "  verify-release-packaging  Test manifests, reproducible bundles, corruption, and publication ordering"
 	@echo "  rehearse-release-publication  Run local fail-before-publish failure injection"
@@ -764,5 +814,5 @@ help:
 	@echo ""
 	@echo "Prerequisites:"
 	@echo "  - Rust $(RUST_VERSION) exactly for release-gate"
-	@echo "  - $(FUZZ_TOOLCHAIN) plus cargo-fuzz $(CARGO_FUZZ_VERSION) for release-gate"
+	@echo "  - $(FUZZ_TOOLCHAIN) with Miri, cargo-fuzz $(CARGO_FUZZ_VERSION), and cargo-kani $(KANI_VERSION) for release-gate"
 	@echo "  - Lean4 + Lake (optional for verification)"

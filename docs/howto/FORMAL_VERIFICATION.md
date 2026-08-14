@@ -304,10 +304,44 @@ make verify-fuzz
 ```
 
 This lane pins `nightly-2026-07-23` and `cargo-fuzz 0.13.2`, preserves the
-checked seed corpora, and fuzzes `.axi`, Certificate V2/V3 JSON, production REPL
+checked seed corpora, builds every harness under a separate 600-second
+process-group limit, and fuzzes `.axi`, Certificate V2/V3 JSON, production REPL
 tokenization, the shared command/HTTP predictive-proposal response boundary,
 and authenticated `.axpd` image bytes. Fuzz success is runtime
 hardening evidence, not a semantic proof or a change to the Lean trust closure.
+
+The same pinned nightly supplies Miri for a deliberately pure kernel slice:
+
+```bash
+make verify-miri
+```
+
+This runs exact-byte identity, framing, domain-registry, Rust/Lean parity,
+scoped-reference, and strict ID parsing tests without enabling filesystem or
+network access. `release-gate` uses `verify-miri-required`, which fails rather
+than skipping when the pinned component is absent.
+
+The child-process concurrency limiter has a separate exhaustive small-state
+model:
+
+```bash
+make verify-loom
+```
+
+Loom executes the same reservation loop used by `ChildLimiter` with modeled
+atomics under two-thread contention. The model checks that a maximum of one is
+never exceeded and every acquired slot is released.
+
+Kani checks the fixed-point constructor across its full machine input domain:
+
+```bash
+make verify-kani
+```
+
+The named harness proves for every `u32` that construction accepts exactly the
+values at or below `FIXED_POINT_DENOMINATOR` and preserves accepted numerators.
+Release verification requires `cargo-kani 0.67.0`; this is a bounded runtime
+invariant, not a replacement for Lean certificate checking.
 
 ## Hardening Guidance
 

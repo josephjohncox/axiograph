@@ -112,6 +112,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--toolchain", default="nightly-2026-07-23")
     parser.add_argument("--cargo-fuzz-version", default="0.13.2")
+    parser.add_argument("--build-timeout-seconds", type=int, default=600)
     parser.add_argument("--subprocess-timeout-seconds", type=int, default=180)
     parser.add_argument("--case-timeout-seconds", type=int, default=5)
     parser.add_argument("--rss-limit-mb", type=int, default=2048)
@@ -128,6 +129,7 @@ def main() -> int:
         )
 
     positive_values = (
+        args.build_timeout_seconds,
         args.subprocess_timeout_seconds,
         args.case_timeout_seconds,
         args.rss_limit_mb,
@@ -136,6 +138,8 @@ def main() -> int:
     )
     if any(value <= 0 for value in positive_values):
         parser.error("all resource bounds must be positive")
+    if args.build_timeout_seconds > 900:
+        parser.error("fuzz build timeout must not exceed 900 seconds")
     if args.subprocess_timeout_seconds > 600:
         parser.error("subprocess timeout must not exceed 600 seconds")
     if args.max_output_bytes > 64 * 1024 * 1024:
@@ -186,6 +190,13 @@ def main() -> int:
             env=env,
             cwd=RUST_ROOT,
             timeout_seconds=args.subprocess_timeout_seconds,
+            max_output_bytes=args.max_output_bytes,
+        )
+        run_checked(
+            [str(cargo), "fuzz", "build"],
+            env=env,
+            cwd=RUST_ROOT,
+            timeout_seconds=args.build_timeout_seconds,
             max_output_bytes=args.max_output_bytes,
         )
 
