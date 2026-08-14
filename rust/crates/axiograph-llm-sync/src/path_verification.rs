@@ -413,12 +413,9 @@ impl VerifiedGraph {
     /// Find the best (highest confidence) path
     pub fn best_path(&self, from: Uuid, to: Uuid) -> Option<Path> {
         let paths = self.find_paths(from, to, 5);
-        paths.into_iter().max_by(|a, b| {
-            a.confidence()
-                .value()
-                .partial_cmp(&b.confidence().value())
-                .unwrap()
-        })
+        paths
+            .into_iter()
+            .max_by(|a, b| a.confidence().value().total_cmp(&b.confidence().value()))
     }
 
     /// Check for conflicts along paths

@@ -129,7 +129,7 @@ impl PathIndex {
                 }
             }
             // Keep top-k by confidence
-            two_hops.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+            two_hops.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
             two_hops.truncate(100);
             self.two_hop_cache.insert(*from, two_hops);
         }
@@ -409,7 +409,7 @@ impl OptimizedPathFinder {
             }
 
             // Keep top beam_width candidates
-            candidates.sort_by(|a, b| b.f_score.partial_cmp(&a.f_score).unwrap());
+            candidates.sort_by(|a, b| b.f_score.total_cmp(&a.f_score));
             beam = candidates.into_iter().take(self.beam_width).collect();
 
             if beam.is_empty() {
@@ -425,7 +425,7 @@ impl OptimizedPathFinder {
         }
 
         // Sort by confidence and take top k
-        completed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        completed.sort_by(|a, b| b.1.total_cmp(&a.1));
         completed.truncate(k);
         completed
     }

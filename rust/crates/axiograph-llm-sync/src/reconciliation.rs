@@ -63,8 +63,16 @@ impl<'de> Deserialize<'de> for Weight {
 }
 
 impl Weight {
+    /// Normalize runtime evidence weight conservatively.
+    ///
+    /// Finite values clamp to `[0, 1]`; non-finite values become zero. The wire
+    /// deserializer is stricter and rejects non-finite or out-of-range values.
     pub fn new(w: f32) -> Self {
-        Self(w.clamp(0.0, 1.0))
+        if w.is_finite() {
+            Self(w.clamp(0.0, 1.0))
+        } else {
+            Self(0.0)
+        }
     }
 
     pub fn value(&self) -> f32 {
@@ -932,6 +940,10 @@ mod tests {
 
         let under = Weight::new(-0.5);
         assert!((under.value() - 0.0).abs() < 0.001);
+
+        for non_finite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(Weight::new(non_finite).value(), 0.0);
+        }
     }
 
     #[test]
