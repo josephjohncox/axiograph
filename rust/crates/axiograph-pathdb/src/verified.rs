@@ -69,24 +69,16 @@ impl<'de> Deserialize<'de> for VerifiedProb {
         D: Deserializer<'de>,
     {
         let value = f32::deserialize(deserializer)?;
-        VerifiedProb::try_new(value).ok_or_else(|| {
+        VerifiedProb::new(value).ok_or_else(|| {
             serde::de::Error::custom("VerifiedProb must be a finite float in [0, 1]")
         })
     }
 }
 
 impl VerifiedProb {
-    /// Create a new probability value
-    /// Verus: requires 0.0 <= value <= 1.0
-    /// Verus: ensures result.value == value
-    #[cfg_attr(verus, requires(0.0 <= value && value <= 1.0))]
-    #[cfg_attr(verus, ensures(|result: VerifiedProb| result.value == value))]
-    pub fn new(value: f32) -> Self {
-        Self::try_new(value).expect("VerifiedProb::new: value must be in [0, 1]")
-    }
-
-    /// Try to create a probability, returning None if invalid
-    pub fn try_new(value: f32) -> Option<Self> {
+    /// Create a probability, returning `None` unless the input is finite and in `[0, 1]`.
+    #[must_use]
+    pub fn new(value: f32) -> Option<Self> {
         if !value.is_finite() || !(0.0..=1.0).contains(&value) {
             return None;
         }
@@ -602,17 +594,21 @@ mod tests {
 
     #[test]
     fn test_verified_prob() {
-        let p = VerifiedProb::new(0.7);
+        let p = VerifiedProb::new(0.7).unwrap();
         assert!(p.value() >= 0.0 && p.value() <= 1.0);
 
         let complement = p.complement();
         assert!((complement.value() - 0.3).abs() < 0.001);
+
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.1] {
+            assert_eq!(VerifiedProb::new(invalid), None);
+        }
     }
 
     #[test]
     fn test_verified_prob_algebra() {
-        let p = VerifiedProb::new(0.5);
-        let q = VerifiedProb::new(0.5);
+        let p = VerifiedProb::new(0.5).unwrap();
+        let q = VerifiedProb::new(0.5).unwrap();
 
         let and_result = p.and_independent(&q);
         assert!((and_result.value() - 0.25).abs() < 0.001);
@@ -663,9 +659,9 @@ mod tests {
         let dist = EncodedDistribution {
             var_id: 1,
             outcomes: vec![
-                (0, VerifiedProb::new(0.3)),
-                (1, VerifiedProb::new(0.3)),
-                (2, VerifiedProb::new(0.4)),
+                (0, VerifiedProb::new(0.3).unwrap()),
+                (1, VerifiedProb::new(0.3).unwrap()),
+                (2, VerifiedProb::new(0.4).unwrap()),
             ],
         };
 
@@ -678,12 +674,12 @@ mod tests {
             from: 1,
             rel_type: 10,
             to: 2,
-            rel_confidence: VerifiedProb::new(0.9),
+            rel_confidence: VerifiedProb::new(0.9).unwrap(),
             rest: Box::new(ReachabilityProof::Step {
                 from: 2,
                 rel_type: 11,
                 to: 3,
-                rel_confidence: VerifiedProb::new(0.8),
+                rel_confidence: VerifiedProb::new(0.8).unwrap(),
                 rest: Box::new(ReachabilityProof::Reflexive { entity: 3 }),
             }),
         };

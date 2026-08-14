@@ -159,7 +159,7 @@ let result = frame.diamond_worlds(acc_rel, &p_worlds);
 
 ```rust
 // Verified probability type
-let p = VerifiedProb::new(0.7);  // Verified to be in [0, 1]
+let p = VerifiedProb::new(0.7).expect("literal is in [0, 1]");
 
 // AxQL/PathDB can apply a confidence threshold during querying.
 // (For certified querying, the threshold is recorded in the certificate.)
