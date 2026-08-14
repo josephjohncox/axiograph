@@ -34,13 +34,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
       # actions/setup-node pinned to an immutable commit.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - name: Validate immutable release inputs
         shell: bash
         env:
@@ -137,7 +138,7 @@ jobs:
             archive: zip
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
       # dtolnay/rust-toolchain pinned to an immutable commit.
@@ -293,7 +294,7 @@ jobs:
       contents: write
     steps:
       # Pinned checkout is required for the local composite action.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
       # actions/download-artifact pinned to an immutable commit.

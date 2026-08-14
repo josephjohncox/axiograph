@@ -14,13 +14,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
       # actions/setup-node pinned to an immutable commit.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       # dtolnay/rust-toolchain
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -86,11 +87,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
       # azure/setup-helm pinned to an immutable commit.
-      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a
+      - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a
       - name: Install kubeconform
         run: |
           set -euo pipefail
@@ -179,7 +180,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       # actions/checkout pinned to an immutable commit.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
       # docker/setup-buildx-action pinned to an immutable commit.
