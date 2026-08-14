@@ -1,6 +1,8 @@
 //! Grounding Engine: Build context from KG for LLM generation
 
-use crate::{GroundedFact, GroundingContext, GuardrailContext, SchemaContext};
+use crate::{
+    GroundedFact, GroundingContext, GroundingProvenanceV1, GuardrailContext, SchemaContext,
+};
 use axiograph_pathdb::PathDB;
 use std::collections::HashSet;
 
@@ -54,6 +56,7 @@ impl<'a> GroundingEngine<'a> {
         let suggestions = self.generate_suggestions(query, &facts);
 
         GroundingContext {
+            provenance: GroundingProvenanceV1::evidence("pathdb_process_local_evidence"),
             facts,
             schema_context: schema,
             active_guardrails: guardrails,
@@ -303,6 +306,7 @@ impl<'a> ContextBuilder<'a> {
             }
 
             GroundingContext {
+                provenance: GroundingProvenanceV1::evidence("pathdb_process_local_evidence"),
                 facts,
                 schema_context: None,
                 active_guardrails: vec![],
@@ -310,6 +314,7 @@ impl<'a> ContextBuilder<'a> {
             }
         } else {
             GroundingContext {
+                provenance: GroundingProvenanceV1::evidence("pathdb_process_local_evidence"),
                 facts: vec![],
                 schema_context: None,
                 active_guardrails: vec![],
@@ -343,7 +348,19 @@ mod tests {
             .max_facts(10)
             .build();
 
-        // Empty PathDB, so no facts, but suggestions should exist
+        // Empty PathDB, so no facts, but suggestions should exist.
         assert!(!context.suggested_queries.is_empty());
+        assert_eq!(
+            context.provenance.version,
+            crate::GROUNDING_PROVENANCE_VERSION_V1
+        );
+        assert_eq!(context.provenance.plane, crate::GroundingPlaneV1::Evidence);
+        assert_eq!(context.provenance.source, "pathdb_process_local_evidence");
+
+        let mut wire = serde_json::to_value(&context).expect("serialize grounding context");
+        wire.as_object_mut()
+            .expect("context object")
+            .insert("accepted".to_string(), serde_json::Value::Bool(true));
+        assert!(serde_json::from_value::<GroundingContext>(wire).is_err());
     }
 }

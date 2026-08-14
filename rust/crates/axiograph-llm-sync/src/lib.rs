@@ -202,9 +202,43 @@ pub enum FactStatus {
 // Grounding Context (KG → LLM)
 // ============================================================================
 
-/// Context provided to LLM from knowledge graph
+pub const GROUNDING_PROVENANCE_VERSION_V1: u32 = 1;
+
+/// Authority plane of context supplied to an LLM.
+///
+/// There is intentionally no accepted-plane variant. This crate currently
+/// builds context from process-local PathDB/evidence state and cannot grant
+/// accepted or certificate-backed authority to that context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroundingPlaneV1 {
+    Evidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroundingProvenanceV1 {
+    pub version: u32,
+    pub plane: GroundingPlaneV1,
+    pub source: String,
+}
+
+impl GroundingProvenanceV1 {
+    pub fn evidence(source: impl Into<String>) -> Self {
+        Self {
+            version: GROUNDING_PROVENANCE_VERSION_V1,
+            plane: GroundingPlaneV1::Evidence,
+            source: source.into(),
+        }
+    }
+}
+
+/// Evidence-plane context provided to an LLM from derived graph state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GroundingContext {
+    /// Explicit non-authoritative provenance for every current grounding path.
+    pub provenance: GroundingProvenanceV1,
     /// Relevant facts from KG
     pub facts: Vec<GroundedFact>,
     /// Schema information

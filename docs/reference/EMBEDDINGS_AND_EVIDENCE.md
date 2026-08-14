@@ -198,6 +198,14 @@ Agent-facing retrieval reports should always include:
 - suggested typed queries,
 - suggested proposal or refinement handles.
 
+`axiograph-llm-sync::GroundingContext` makes the current authority limit
+machine-readable. Its `GroundingProvenanceV1` is always version 1 with plane
+`evidence`; the enum intentionally has no accepted/certified variant. Context
+built from process-local PathDB or `UnifiedStorage` state therefore cannot be
+mistaken for an accepted snapshot. A future accepted-derived constructor must
+require a verified materialization and authenticated accepted snapshot rather
+than accepting a caller-supplied label.
+
 ## Relationship Lifting
 
 Embedding-derived semantic relationships should use this pipeline:

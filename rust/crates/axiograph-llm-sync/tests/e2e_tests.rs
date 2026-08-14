@@ -258,6 +258,14 @@ async fn test_grounding_context_basic() {
         .build_grounding_context("titanium cutting", 10)
         .unwrap();
 
+    // Current grounding is explicitly evidence-plane; process-local PathDB
+    // rows never acquire accepted or certificate-backed authority.
+    assert_eq!(context.provenance.plane, GroundingPlaneV1::Evidence);
+    assert_eq!(
+        context.provenance.source,
+        "unified_storage_process_local_evidence"
+    );
+
     // Should have suggestions
     assert!(!context.suggested_queries.is_empty());
 

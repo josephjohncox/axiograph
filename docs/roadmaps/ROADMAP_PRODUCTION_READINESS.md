@@ -32,7 +32,12 @@ Last updated: 2026-04-28.
   - Code: `rust/crates/axiograph-ingest-docs/src/augment.rs`, CLI: `rust/crates/axiograph-cli/src/main.rs`.
 - Implemented: LLM sync keeps “pending review” facts and conflicts.
   - Code: `rust/crates/axiograph-llm-sync/src/sync.rs`.
-- Missing (critical): a hard enforcement boundary so untrusted/proposal facts do not silently become “accepted knowledge” or become default grounding inputs.
+- Implemented: process-local ingestion and LLM-sync state has no accepted-plane
+  mutation authority. Every current `GroundingContext` carries versioned
+  `evidence` provenance, and the public grounding plane enum intentionally has
+  no accepted/certified variant.
+- Missing: an accepted-derived grounding constructor that can be created only
+  from a verified materialization plus an authenticated accepted snapshot.
 
 ### 0.2 Certificates (implemented, but not yet everywhere)
 
@@ -101,11 +106,14 @@ Last updated: 2026-04-28.
 - W05 is a greenfield cutover: obsolete PathDB readers/writers are deleted;
   old bytes fail closed and must be rebuilt from exact accepted inputs.
 
-### 0.5 Grounding / “safe to use” (not enforced)
+### 0.5 Grounding / “safe to use” (evidence labeling enforced)
 
-- Implemented: grounding uses PathDB content, guardrails, and schema hints.
-  - Code: `rust/crates/axiograph-llm-sync/src/grounding.rs`
-- Missing: default grounding must come only from **accepted/certified** knowledge, with explicit labeling for any proposal/approximate context.
+- Implemented: grounding uses process-local PathDB content, guardrails, and
+  schema hints and always labels the resulting context as evidence-plane.
+  - Code: `rust/crates/axiograph-llm-sync/src/{lib,grounding,sync}.rs`
+- Missing: accepted/certified grounding. Adding it requires a separate typed
+  constructor bound to a verified AxiStore materialization and accepted
+  snapshot; callers cannot relabel current contexts as accepted.
 
 ---
 
@@ -141,8 +149,12 @@ Last updated: 2026-04-28.
 
 ### 1.4 Put “certified” on the API boundary
 
-- [ ] Add a “certified-only” mode for any grounding/query endpoint:
-  - if certificate verification fails, do not use the result for grounding (fail-closed or label explicitly).
+- [x] Keep uncertified grounding explicitly non-authoritative.
+  - Every current grounding route emits versioned `evidence` provenance; there
+    is no accepted/certified enum variant. Query routes separately expose
+    execution-only versus verified trust contracts.
+- [ ] Add an accepted-derived grounding mode only from authenticated accepted
+  snapshot and verified materialization handles.
 - [ ] Add a small “verifier service” boundary option:
   - engine returns `(answer, certificate)`,
   - verifier checks and returns `(answer, verified=true/false, explanation)`.

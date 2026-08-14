@@ -12,8 +12,8 @@
 use crate::{
     Conflict, ConflictResolver, ConflictType, ConversationTurn, ExtractedFact, FactExtractor,
     FactId, FactSource, FactStatus, FactValidator, GroundedFact, GroundingContext,
-    GuardrailContext, LLMProvider, Resolution, SchemaContext, SessionId, StructuredFact,
-    SyncConfig, SyncState, ValidationResult,
+    GroundingProvenanceV1, GuardrailContext, LLMProvider, Resolution, SchemaContext, SessionId,
+    StructuredFact, SyncConfig, SyncState, ValidationResult,
 };
 use axiograph_pathdb::PathDB;
 use axiograph_storage::{Change, ChangeSource, StorableFact, UnifiedStorage};
@@ -599,6 +599,7 @@ impl SyncManager {
         let guardrails = self.get_applicable_guardrails(&keywords);
 
         Ok(GroundingContext {
+            provenance: GroundingProvenanceV1::evidence("unified_storage_process_local_evidence"),
             facts,
             schema_context: Some(schema_context),
             active_guardrails: guardrails,

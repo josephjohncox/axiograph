@@ -293,6 +293,7 @@ mod tests {
             .generate_grounded(
                 "Hello",
                 &GroundingContext {
+                    provenance: crate::GroundingProvenanceV1::evidence("provider_test_evidence"),
                     facts: vec![],
                     schema_context: None,
                     active_guardrails: vec![],
