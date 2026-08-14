@@ -150,8 +150,9 @@ latex.out/
 .bin/
 
 bin/
-!rust/crates/axiograph-dsl/src/bin/
-!rust/crates/axiograph-dsl/src/bin/*.rs
+# Rust package entry points are source, not generated bin output.
+!rust/crates/*/src/bin/
+!rust/crates/*/src/bin/*.rs
 
 # Local direnv overrides
 .envrc.local
