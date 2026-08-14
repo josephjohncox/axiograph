@@ -8,8 +8,7 @@
 # - shows the imported constraints (including `param (...)`),
 # - validates the instance data against the meta-plane typing,
 # - runs a couple of small queries,
-# - renders a typed-overlay visualization,
-# - and saves a runnable `.axpd` query snapshot.
+# - and renders a typed-overlay visualization from process-local query state.
 #
 # Run (from repo root):
 #   make binaries

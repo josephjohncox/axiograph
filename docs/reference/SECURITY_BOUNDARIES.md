@@ -169,9 +169,15 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-llm-sync
 cargo test --manifest-path rust/Cargo.toml -p axiograph-store --test materialization
 python3 -m unittest scripts.tests.test_validate_release_archive
 make check-no-unsafe
+make verify-viz
 make verify-fuzz
 make verify-loom
 ```
+
+`make verify-viz` runs under Node.js 24.19.0, installs the exact npm lock with
+lifecycle scripts disabled, rejects moderate-or-higher advisories, and builds
+the production bundle. This blocks the release decision on known frontend
+supply-chain findings rather than relying only on default-branch alerts.
 
 `make verify-fuzz` uses checked seed corpora and exact nightly/cargo-fuzz
 versions. It exercises canonical `.axi`, strict Certificate V2/V3 JSON,

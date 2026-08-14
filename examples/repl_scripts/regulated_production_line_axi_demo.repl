@@ -5,7 +5,7 @@
 # - typed queries over order/work order/recipe lineage
 # - implementation-surface linkage through PLC/HMI/SOP relations
 # - certification and delivery/pricing lineage
-# - canonical module export + `.axpd` save for the examples e2e path
+# - typed visualization from process-local derived query state
 
 import_axi examples/industrial/RegulatedProductionLine.axi
 

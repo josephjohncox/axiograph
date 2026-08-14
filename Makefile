@@ -33,7 +33,7 @@
 	verify-lean-e2e-query-result-module-v4 \
 	verify-lean-e2e-resolution-v2 verify-lean-e2e-normalize-path-v2 verify-lean-e2e-path-equiv-v2 verify-lean-e2e-path-equiv-congr-v2 verify-lean-e2e-delta-f-v1 \
 	verify-lean-certificates verify-lean-certificate-rejections verify-lean-e2e-suite \
-	rust-test-semantics check-rust-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check rust-test-locked rust-test-all-targets-features check-cli-feature-matrix \
+	rust-test-semantics check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check rust-test-locked rust-test-all-targets-features check-cli-feature-matrix verify-viz \
 	verify-release-fixtures verify-release-packaging rehearse-release-publication \
 	release-gate check-no-unsafe verify-semantics verify-canonical-spine test-semantics test-backend-containers \
 	viz-install viz-build viz-dev \
@@ -63,6 +63,7 @@ RUST_VERSION := $(shell python3 -c 'import tomllib; print(tomllib.load(open("rus
 FUZZ_TOOLCHAIN ?= nightly-2026-07-23
 CARGO_FUZZ_VERSION ?= 0.13.2
 KANI_VERSION ?= 0.67.0
+NODE_VERSION := $(shell cat .node-version)
 
 # Lean configuration (optional)
 LAKE := lake
@@ -136,6 +137,16 @@ check-rust-toolchain:
 	@rustfmt --version >/dev/null
 	@cargo clippy --version >/dev/null
 	@echo "✓ Rust compiler, Cargo, rustfmt, and Clippy come from exact toolchain $(RUST_VERSION)"
+
+check-node-toolchain:
+	@echo "━━━ Checking exact Node.js toolchain $(NODE_VERSION) ━━━"
+	@test "$$(node --version)" = "v$(NODE_VERSION)" || { \
+		echo "error: frontend gate requires Node.js $(NODE_VERSION)"; \
+		node --version; \
+		exit 1; \
+	}
+	@npm --version >/dev/null
+	@echo "✓ Node.js and npm come from the exact frontend toolchain"
 
 check-clean-source-manifest:
 	@echo "━━━ Proving release inputs come from one clean Git checkout ━━━"
@@ -637,7 +648,7 @@ rehearse-release-publication:
 	python3 scripts/rehearse_release_publication.py
 	@echo "✓ Every injected failure and corrupted asset remained unpublished; one audited set committed atomically"
 
-release-gate: check-rust-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
+release-gate: check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-viz verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
 	python3 scripts/generate_release_source_manifest.py --check-only >/dev/null
 	git diff --check
 	@echo ""
@@ -669,6 +680,13 @@ verify-verus:
 	else \
 		echo "⚠️  verus not found - skipping (install: https://github.com/verus-lang/verus)"; \
 	fi
+
+verify-viz: check-node-toolchain
+	@echo "━━━ Auditing and building the locked visualization frontend ━━━"
+	cd frontend/viz && npm ci --ignore-scripts
+	cd frontend/viz && npm audit --audit-level=moderate
+	cd frontend/viz && npm run build
+	@echo "✓ Visualization dependencies are advisory-clean and the frontend builds"
 
 verify-fuzz:
 	@echo "━━━ Running bounded parser and authenticated-image fuzz targets ━━━"
@@ -734,25 +752,25 @@ docs: rust
 # Frontend (Viz)
 # ============================================================================
 
-viz-install:
-	@echo "━━━ Installing viz frontend deps ━━━"
-	cd frontend/viz && npm install
+viz-install: check-node-toolchain
+	@echo "━━━ Installing locked viz frontend deps ━━━"
+	cd frontend/viz && npm ci --ignore-scripts
 	@echo "✓ Viz deps installed"
 
-viz-build:
+viz-build: check-node-toolchain
 	@echo "━━━ Building viz frontend ━━━"
-	cd frontend/viz && npm install && npm run build
+	cd frontend/viz && npm ci --ignore-scripts && npm run build
 	@echo "✓ Viz frontend built (frontend/viz/dist)"
 
-viz-build-debug:
+viz-build-debug: check-node-toolchain
 	@echo "━━━ Building viz frontend (debug) ━━━"
-	cd frontend/viz && npm install && npm run build:debug
+	cd frontend/viz && npm ci --ignore-scripts && npm run build:debug
 	@echo "✓ Viz frontend built (debug) (frontend/viz/dist)"
 
-viz-dev:
+viz-dev: check-node-toolchain
 	@echo "━━━ Starting viz frontend dev server ━━━"
 	@echo "Tip: open the Vite dev URL and point Axiograph to it for UI iteration."
-	cd frontend/viz && npm install && npm run dev
+	cd frontend/viz && npm ci --ignore-scripts && npm run dev
 
 # ============================================================================
 # Clean
@@ -799,6 +817,7 @@ help:
 	@echo "  verify-lean-theory  Check finite category/dependent/groupoid semantics and adversarial cases"
 	@echo "  verify-lean-semantic-vcs  Verify Rust merge/rebase plans against Lean theory"
 	@echo "  check-no-unsafe  Reject unsafe code in all first-party Rust targets"
+	@echo "  verify-viz  Install, audit, and build the locked visualization frontend"
 	@echo "  verify-fuzz  Run corpus-seeded parser/image fuzzing under hard bounds"
 	@echo "  verify-miri  Run pure identity-kernel tests under Miri, or report unavailable"
 	@echo "  verify-loom  Model the real child-process concurrency limiter"
@@ -814,5 +833,6 @@ help:
 	@echo ""
 	@echo "Prerequisites:"
 	@echo "  - Rust $(RUST_VERSION) exactly for release-gate"
+	@echo "  - Node.js $(NODE_VERSION) for verify-viz and release-gate"
 	@echo "  - $(FUZZ_TOOLCHAIN) with Miri, cargo-fuzz $(CARGO_FUZZ_VERSION), and cargo-kani $(KANI_VERSION) for release-gate"
 	@echo "  - Lean4 + Lake (optional for verification)"
