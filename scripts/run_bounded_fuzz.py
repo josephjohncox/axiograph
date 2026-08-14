@@ -21,6 +21,7 @@ TARGETS = (
     ("axi_parser", 256, 1_048_576),
     ("certificate_json", 256, 1_048_576),
     ("repl_command", 512, 65_536),
+    ("proposal_adapter_json", 128, 8_388_608),
     ("axpd_bytes", 64, 262_144),
 )
 
@@ -118,8 +119,13 @@ def main() -> int:
     parser.add_argument("--max-output-bytes", type=int, default=8 * 1024 * 1024)
     args = parser.parse_args()
 
-    if os.name == "nt":
-        parser.error("bounded fuzz verification requires POSIX process-group containment")
+    waitid_available = all(
+        hasattr(os, attribute) for attribute in ("waitid", "P_PID", "WNOWAIT")
+    )
+    if os.name == "nt" or not waitid_available:
+        parser.error(
+            "bounded fuzz verification requires POSIX waitid/WNOWAIT process-group containment"
+        )
 
     positive_values = (
         args.subprocess_timeout_seconds,

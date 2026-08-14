@@ -14,6 +14,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axiograph_cli::proposal_adapter_boundary::{
+    parse_predictive_proposal_response_bounded, validate_predictive_proposal_response_shape,
+};
+pub use axiograph_cli::proposal_adapter_boundary::{
+    PredictiveProposalResponseV1, PREDICTIVE_PROPOSAL_PROTOCOL_V1,
+};
 use axiograph_ingest_docs::{
     EvidencePointer, ProposalMetaV1, ProposalSourceV1, ProposalV1, ProposalsFileV1,
 };
@@ -25,7 +31,6 @@ use axiograph_pathdb::{
 };
 use axiograph_pathdb::{Module, WellTypedModuleState};
 
-pub const PREDICTIVE_PROPOSAL_PROTOCOL_V1: &str = "axiograph_predictive_proposal_v1";
 pub const COMPETENCY_QUESTION_BUNDLE_VERSION_V1: &str = "competency_question_bundle_v1";
 const MAX_COMPETENCY_QUESTIONS: usize = 10_000;
 pub(crate) const MAX_PROPOSAL_ROLLOUT_HORIZON: usize = 16;
@@ -1086,19 +1091,13 @@ fn validate_predictive_proposal_response(
     response: &PredictiveProposalResponseV1,
     expected_trace_id: &ProposalAdapterRunId,
 ) -> Result<()> {
-    if response.protocol != PREDICTIVE_PROPOSAL_PROTOCOL_V1
-        || &response.trace_id != expected_trace_id
-    {
+    validate_predictive_proposal_response_shape(response)?;
+    if &response.trace_id != expected_trace_id {
         return Err(anyhow!(
-            "predictive proposal response protocol or trace id does not match request"
+            "predictive proposal response trace id does not match request"
         ));
     }
-    if response.notes.len() > 1_024 {
-        return Err(anyhow!(
-            "predictive proposal response note count exceeds 1024"
-        ));
-    }
-    axiograph_ingest_docs::validate_proposals_file_v1(&response.proposals)
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1205,18 +1204,6 @@ pub struct PredictiveProposalRequestV1 {
     pub input: PredictiveProposalInputV1,
     #[serde(default)]
     pub options: PredictiveProposalOptionsV1,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PredictiveProposalResponseV1 {
-    pub protocol: String,
-    pub trace_id: ProposalAdapterRunId,
-    pub generated_at_unix_secs: u64,
-    pub proposals: ProposalsFileV1,
-    #[serde(default)]
-    pub notes: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1404,7 +1391,7 @@ fn run_predictive_proposal_http(
             String::from_utf8_lossy(&bytes).trim()
         ));
     }
-    crate::security::parse_json_bounded(
+    parse_predictive_proposal_response_bounded(
         &bytes,
         crate::security::MAX_NETWORK_RESPONSE_BYTES,
         "predictive proposal adapter response",
@@ -1462,7 +1449,7 @@ fn run_predictive_proposal_plugin(
             program.display()
         )
     })?;
-    let response: PredictiveProposalResponseV1 = crate::security::parse_json_bounded(
+    let response = parse_predictive_proposal_response_bounded(
         stdout.as_bytes(),
         axiograph_security::DEFAULT_PLUGIN_STDOUT_BYTES,
         "predictive proposal plugin response",

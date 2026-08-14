@@ -1,0 +1,17 @@
+{
+  "protocol": "axiograph_predictive_proposal_v1",
+  "trace_id": "proposal::fuzz-seed",
+  "generated_at_unix_secs": 0,
+  "proposals": {
+    "version": 1,
+    "generated_at": "0",
+    "source": {
+      "source_type": "predictive_proposal_adapter",
+      "locator": "proposal::fuzz-seed"
+    },
+    "schema_hint": null,
+    "proposals": []
+  },
+  "notes": [],
+  "error": null
+}

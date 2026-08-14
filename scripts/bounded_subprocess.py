@@ -18,6 +18,23 @@ class BoundedProcessError(RuntimeError):
     pass
 
 
+def _direct_child_exited(process: subprocess.Popen[bytes]) -> bool:
+    waitid_available = all(
+        hasattr(os, attribute) for attribute in ("waitid", "P_PID", "WNOWAIT")
+    )
+    if os.name == "nt" or not waitid_available:
+        return process.poll() is not None
+    try:
+        status = os.waitid(
+            os.P_PID,
+            process.pid,
+            os.WEXITED | os.WNOHANG | os.WNOWAIT,
+        )
+    except ChildProcessError:
+        return True
+    return status is not None
+
+
 def _terminate_tree(process: subprocess.Popen[bytes]) -> None:
     if os.name == "nt":
         if process.poll() is not None:
@@ -37,7 +54,7 @@ def _terminate_tree(process: subprocess.Popen[bytes]) -> None:
         # The direct child may have exited after spawning descendants. Its
         # dedicated process group remains addressable until the last member
         # exits, so kill the group even when process.poll() is already set.
-        with suppress(ProcessLookupError):
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGKILL)
 
 
@@ -124,7 +141,7 @@ def run_bounded(
 
     deadline = time.monotonic() + timeout_seconds
     timed_out = False
-    while process.poll() is None:
+    while not _direct_child_exited(process):
         if overflow_event.wait(timeout=0.02):
             _terminate_tree(process)
             break

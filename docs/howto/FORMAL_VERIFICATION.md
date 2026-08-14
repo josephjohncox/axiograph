@@ -305,7 +305,8 @@ make verify-fuzz
 
 This lane pins `nightly-2026-07-23` and `cargo-fuzz 0.13.2`, preserves the
 checked seed corpora, and fuzzes `.axi`, Certificate V2/V3 JSON, production REPL
-tokenization, and authenticated `.axpd` image bytes. Fuzz success is runtime
+tokenization, the shared command/HTTP predictive-proposal response boundary,
+and authenticated `.axpd` image bytes. Fuzz success is runtime
 hardening evidence, not a semantic proof or a change to the Lean trust closure.
 
 ## Hardening Guidance

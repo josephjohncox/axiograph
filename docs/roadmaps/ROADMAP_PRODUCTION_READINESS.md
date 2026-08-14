@@ -212,7 +212,8 @@ Last updated: 2026-04-28.
     `fixed_prob_property_tests`.
   - `make verify-fuzz` runs checked-corpus targets for Rust `.axi` parsing,
     Certificate V2/V3 JSON, authenticated `.axpd` bytes before PathDB hydration,
-    and the production CLI/REPL tokenizer under explicit resource bounds.
+    the production CLI/REPL tokenizer, and the shared predictive-proposal
+    command/HTTP envelope plus validated payload under explicit resource bounds.
 - [ ] Gate: optional deep-verification lanes are executable.
   - Pass when `make verify-fuzz`, `make verify-miri`, `make verify-kani`, and
     `make verify-loom` or `make verify-shuttle` exist. Each target must either

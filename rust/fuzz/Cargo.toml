@@ -48,6 +48,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "proposal_adapter_json"
+path = "fuzz_targets/proposal_adapter_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "axpd_bytes"
 path = "fuzz_targets/axpd_bytes.rs"
 test = false

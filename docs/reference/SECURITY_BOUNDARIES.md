@@ -174,8 +174,10 @@ make verify-fuzz
 
 `make verify-fuzz` uses checked seed corpora and exact nightly/cargo-fuzz
 versions. It exercises canonical `.axi`, strict Certificate V2/V3 JSON,
-production REPL tokenization, and authenticated `.axpd` image opening under
-hard input, run-count, per-case time, process time, per-stream output, RSS,
+production REPL tokenization, the unknown-field-strict adapter envelope and
+bounded/validated predictive-proposal payload shared by command and HTTP, and
+authenticated `.axpd` image opening under hard input,
+run-count, per-case time, process time, per-stream output, RSS,
 and single-crash-artifact bounds. The POSIX driver kills the dedicated process
 group even when the direct child exits first. The working corpus is temporary,
 so a verification run cannot rewrite accepted seed artifacts. Release

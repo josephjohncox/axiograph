@@ -16,9 +16,8 @@ fn certificate_seeds_cover_accepted_v2_and_v3_shapes() {
     assert!(parsed_v2.anchor.is_some());
 
     let v3 = include_bytes!("../corpus/certificate_json/query_result_v4_exact.json");
-    let _: CertificateV3 =
-        axiograph_security::parse_json_bounded(v3, 8 * 1024 * 1024, "V3 seed")
-            .expect("CertificateV3 seed must remain accepted");
+    let _: CertificateV3 = axiograph_security::parse_json_bounded(v3, 8 * 1024 * 1024, "V3 seed")
+        .expect("CertificateV3 seed must remain accepted");
 }
 
 #[test]
@@ -32,6 +31,20 @@ fn repl_seed_reaches_the_axql_preserving_route() {
         tokens[3],
         "select ?x where name(\"Åsa\") -Parent-> ?x limit 3"
     );
+}
+
+#[test]
+fn proposal_adapter_seed_is_accepted_by_the_production_boundary() {
+    let seed = include_bytes!("../corpus/proposal_adapter_json/empty_response.json");
+    let response =
+        axiograph_cli::proposal_adapter_boundary::parse_predictive_proposal_response_bounded(
+            seed,
+            8 * 1024 * 1024,
+            "proposal adapter seed",
+        )
+        .expect("predictive proposal adapter seed must remain accepted");
+    assert!(response.proposals.proposals.is_empty());
+    assert!(response.notes.is_empty());
 }
 
 #[test]
