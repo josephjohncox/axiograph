@@ -272,6 +272,7 @@ dependencies = [
  "axiograph-security",
  "axiograph-store",
  "dashmap",
+ "parking_lot",
  "roaring",
  "schemars",
  "serde",
