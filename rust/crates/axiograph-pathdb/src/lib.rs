@@ -57,11 +57,12 @@ pub mod witness;
 use ahash::AHashMap;
 use anyhow::Result;
 use dashmap::DashMap;
+use parking_lot::Mutex;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex, Weak};
+use std::sync::{mpsc, Arc, Weak};
 use std::time::Duration;
 
 // Re-export key types
@@ -185,10 +186,7 @@ impl StringInterner {
             return *id;
         }
 
-        let _guard = self
-            .allocation_lock
-            .lock()
-            .expect("string interner lock poisoned");
+        let _guard = self.allocation_lock.lock();
         if let Some(id) = self.str_to_id.get(s) {
             return *id;
         }
@@ -785,12 +783,7 @@ impl PathIndex {
 
     pub fn set_lru_capacity(&self, capacity: usize) {
         self.lru_capacity.store(capacity, Ordering::Relaxed);
-        if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
+        if let Some(tx) = self.async_tx.lock().as_ref() {
             let _ = tx.try_send(IndexUpdate::SetCapacity(capacity));
         } else if capacity == 0 {
             self.lru_entries.clear();
@@ -798,7 +791,7 @@ impl PathIndex {
     }
 
     pub fn enable_async_updates(&self, queue_size: usize) {
-        let mut tx_guard = self.async_tx.lock().expect("path index async poisoned");
+        let mut tx_guard = self.async_tx.lock();
         if tx_guard.is_some() {
             return;
         }
@@ -811,7 +804,7 @@ impl PathIndex {
         let (tx, rx) = mpsc::sync_channel(queue_size);
         let lru_entries = Arc::clone(&self.lru_entries);
         let initial_capacity = self.lru_capacity.load(Ordering::Relaxed);
-        std::thread::Builder::new()
+        let spawn = std::thread::Builder::new()
             .name("axiograph_path_index_lru".to_string())
             .spawn(move || {
                 let mut state = LruWorkerState::new(initial_capacity);
@@ -838,25 +831,18 @@ impl PathIndex {
                         }
                     }
                 }
-            })
-            .expect("failed to spawn path index lru worker");
-        *tx_guard = Some(tx);
+            });
+        if spawn.is_ok() {
+            *tx_guard = Some(tx);
+        }
     }
 
     pub fn async_enabled(&self) -> bool {
-        self.async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .is_some()
+        self.async_tx.lock().is_some()
     }
 
     pub fn flush_async(&self) -> bool {
-        let tx = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .clone();
-        let Some(tx) = tx else {
+        let Some(tx) = self.async_tx.lock().clone() else {
             return false;
         };
         let (ack_tx, ack_rx) = mpsc::channel();
@@ -869,12 +855,7 @@ impl PathIndex {
     }
 
     fn clear_lru(&self) {
-        if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
+        if let Some(tx) = self.async_tx.lock().as_ref() {
             let _ = tx.try_send(IndexUpdate::Clear);
         } else {
             self.lru_entries.clear();
@@ -888,12 +869,7 @@ impl PathIndex {
         }
         let entry = self.lru_entries.get(path)?;
         let targets = entry.get(&start)?.clone();
-        if let Some(tx) = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .as_ref()
-        {
+        if let Some(tx) = self.async_tx.lock().as_ref() {
             let _ = tx.try_send(IndexUpdate::Touch {
                 path_sig: path.clone(),
             });
@@ -905,12 +881,7 @@ impl PathIndex {
         if self.lru_capacity() == 0 {
             return;
         }
-        let tx = self
-            .async_tx
-            .lock()
-            .expect("path index async poisoned")
-            .clone();
-        let Some(tx) = tx else {
+        let Some(tx) = self.async_tx.lock().clone() else {
             return;
         };
         let _ = tx.try_send(IndexUpdate::Insert {
