@@ -229,28 +229,27 @@ pub enum PathError {
 
 /// Builder for constructing valid paths
 pub struct PathBuilder {
-    current: Option<Uuid>,
+    current: Uuid,
     edges: Vec<EdgeData>,
 }
 
 impl PathBuilder {
     pub fn new(start: Uuid) -> Self {
         Self {
-            current: Some(start),
+            current: start,
             edges: vec![],
         }
     }
 
-    /// Add an edge to the path
+    /// Add an edge to the path.
     pub fn edge<R: Relationship>(mut self, target: Uuid, confidence: f32) -> Self {
-        let source = self.current.expect("Path already terminated");
         self.edges.push(EdgeData {
-            source,
+            source: self.current,
             target,
             relation: R::name().to_string(),
             confidence: Weight::new(confidence),
         });
-        self.current = Some(target);
+        self.current = target;
         self
     }
 
@@ -264,9 +263,7 @@ impl PathBuilder {
                 reason: "Empty path".to_string(),
             })?;
 
-        let end = self.current.ok_or(PathError::Invalid {
-            reason: "Path not properly constructed".to_string(),
-        })?;
+        let end = self.current;
 
         let path = Path {
             edges: self.edges,

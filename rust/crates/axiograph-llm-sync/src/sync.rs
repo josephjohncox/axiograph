@@ -533,7 +533,12 @@ impl SyncManager {
             } => Some(StorableFact::TacitKnowledge {
                 name: format!(
                     "tacit_{}",
-                    Uuid::new_v4().to_string().split('-').next().unwrap()
+                    Uuid::new_v4()
+                        .simple()
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
                 ),
                 rule: rule.clone(),
                 confidence: *confidence,

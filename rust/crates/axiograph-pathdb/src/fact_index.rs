@@ -21,8 +21,9 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, RwLock, Weak};
+use std::sync::Weak;
 
+use parking_lot::{Mutex, RwLock};
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
@@ -270,11 +271,7 @@ impl Default for FactIndexCache {
 
 impl FactIndexCache {
     pub(crate) fn attach_async_source(&self, source: Weak<PathDB>) {
-        let mut guard = self
-            .async_source
-            .lock()
-            .expect("fact index source poisoned");
-        *guard = Some(source);
+        *self.async_source.lock() = Some(source);
     }
 
     pub(crate) fn invalidate(&self) {
@@ -282,18 +279,12 @@ impl FactIndexCache {
     }
 
     pub(crate) fn load_index(&self, index: FactIndex, generation: u64) {
-        let mut guard = self.index.write().expect("fact index lock poisoned");
-        *guard = index;
+        *self.index.write() = index;
         self.built_generation.store(generation, Ordering::SeqCst);
     }
 
     fn schedule_build_async(&self, gen: u64) -> bool {
-        let source = self
-            .async_source
-            .lock()
-            .expect("fact index source poisoned")
-            .clone();
-        let Some(source) = source else {
+        let Some(source) = self.async_source.lock().clone() else {
             return false;
         };
         if self
@@ -304,7 +295,7 @@ impl FactIndexCache {
             return true;
         }
 
-        std::thread::Builder::new()
+        let spawn = std::thread::Builder::new()
             .name("axiograph_fact_index".to_string())
             .spawn(move || {
                 let Some(db) = source.upgrade() else {
@@ -316,8 +307,11 @@ impl FactIndexCache {
                     cache.load_index(new_index, gen);
                 }
                 cache.building_generation.store(u64::MAX, Ordering::SeqCst);
-            })
-            .expect("failed to spawn fact index build thread");
+            });
+        if spawn.is_err() {
+            self.building_generation.store(u64::MAX, Ordering::SeqCst);
+            return false;
+        }
         true
     }
 
@@ -329,8 +323,7 @@ impl FactIndexCache {
     ) -> R {
         let gen = self.generation.load(Ordering::SeqCst);
         if self.built_generation.load(Ordering::SeqCst) == gen {
-            let guard = self.index.read().expect("fact index lock poisoned");
-            return f(&guard);
+            return f(&self.index.read());
         }
 
         if self.schedule_build_async(gen) {
@@ -339,7 +332,6 @@ impl FactIndexCache {
 
         let new_index = FactIndex::build(db);
         self.load_index(new_index, gen);
-        let guard = self.index.read().expect("fact index lock poisoned");
-        f(&guard)
+        f(&self.index.read())
     }
 }
