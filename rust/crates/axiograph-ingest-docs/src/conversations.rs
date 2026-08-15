@@ -42,7 +42,7 @@ pub struct Conversation {
 pub fn parse_slack_transcript(text: &str, conv_id: &str) -> Result<Conversation> {
     validate_conversation_input(text, conv_id)?;
     // Pattern: "Speaker (HH:MM): message" or "Speaker: message"
-    let re = Regex::new(r"(?m)^([A-Za-z0-9_\s]+?)(?:\s*\(([^\)]+)\))?\s*:\s*(.+)$").unwrap();
+    let re = Regex::new(r"(?m)^([A-Za-z0-9_\s]+?)(?:\s*\(([^\)]+)\))?\s*:\s*(.+)$")?;
 
     let mut turns = Vec::new();
     let mut participants = std::collections::HashSet::new();
@@ -92,7 +92,7 @@ pub fn parse_slack_transcript(text: &str, conv_id: &str) -> Result<Conversation>
 pub fn parse_meeting_transcript(text: &str, conv_id: &str) -> Result<Conversation> {
     validate_conversation_input(text, conv_id)?;
     // Pattern: "SPEAKER NAME:" followed by content
-    let re = Regex::new(r"(?m)^([A-Z][A-Za-z\s]+):\s*").unwrap();
+    let re = Regex::new(r"(?m)^([A-Z][A-Za-z\s]+):\s*")?;
 
     let mut turns = Vec::new();
     let mut participants = std::collections::HashSet::new();
@@ -116,14 +116,20 @@ pub fn parse_meeting_transcript(text: &str, conv_id: &str) -> Result<Conversatio
                 });
             }
 
-            current_speaker = caps.get(1).unwrap().as_str().trim().to_string();
+            let Some(speaker_match) = caps.get(1) else {
+                continue;
+            };
+            let Some(full_match) = caps.get(0) else {
+                continue;
+            };
+            current_speaker = speaker_match.as_str().trim().to_string();
             participants.insert(current_speaker.clone());
             if participants.len() > MAX_CONVERSATION_PARTICIPANTS {
                 return Err(anyhow!(
                     "conversation participant count exceeds {MAX_CONVERSATION_PARTICIPANTS}"
                 ));
             }
-            current_content = line[caps.get(0).unwrap().end()..].to_string();
+            current_content = line[full_match.end()..].to_string();
         } else if !current_speaker.is_empty() {
             current_content.push(' ');
             current_content.push_str(line.trim());

@@ -3309,8 +3309,8 @@ fn cmd_readings(input: &Path, out: &Path, chunks_path: Option<&Path>, format: &s
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
 
     let readings = match format {
-        "bibtex" => axiograph_ingest_docs::parse_bibtex(&text),
-        "markdown" => axiograph_ingest_docs::parse_reading_list(&text)
+        "bibtex" => axiograph_ingest_docs::parse_bibtex(&text)?,
+        "markdown" => axiograph_ingest_docs::parse_reading_list(&text)?
             .into_iter()
             .map(|r| r.bib)
             .collect(),

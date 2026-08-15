@@ -78,17 +78,18 @@ pub fn parse_confluence_html(html: &str, page_id: &str, space: &str) -> Result<C
         ));
     }
     // Extract title from <title> or <h1>
-    let title_re = Regex::new(r"<title>([^<]+)</title>").unwrap();
-    let h1_re = Regex::new(r"<h1[^>]*>([^<]+)</h1>").unwrap();
+    let title_re = Regex::new(r"<title>([^<]+)</title>")?;
+    let h1_re = Regex::new(r"<h1[^>]*>([^<]+)</h1>")?;
 
     let title = title_re
         .captures(html)
         .or_else(|| h1_re.captures(html))
-        .map(|c| c[1].to_string())
+        .and_then(|captures| captures.get(1))
+        .map(|title| title.as_str().to_string())
         .unwrap_or_else(|| "Untitled".to_string());
 
     // Extract sections (h2, h3, etc. with following content)
-    let section_re = Regex::new(r"<h([2-6])[^>]*>([^<]+)</h\d>").unwrap();
+    let section_re = Regex::new(r"<h([2-6])[^>]*>([^<]+)</h\d>")?;
     let mut sections = Vec::new();
 
     for caps in section_re.captures_iter(html) {
@@ -97,17 +98,26 @@ pub fn parse_confluence_html(html: &str, page_id: &str, space: &str) -> Result<C
                 "Confluence section count exceeds {MAX_CONFLUENCE_ITEMS}"
             ));
         }
-        let level: u8 = caps[1].parse().unwrap_or(2);
-        let heading = caps[2].to_string();
+        let level = caps
+            .get(1)
+            .and_then(|level| level.as_str().parse::<u8>().ok())
+            .unwrap_or(2);
+        let Some(heading) = caps.get(2) else {
+            continue;
+        };
+        let Some(full_match) = caps.get(0) else {
+            continue;
+        };
+        let heading = heading.as_str().to_string();
         // Extract text between this heading and the next
-        let start = caps.get(0).unwrap().end();
+        let start = full_match.end();
         let end = section_re
             .find_at(html, start)
             .map(|m| m.start())
             .unwrap_or(html.len());
 
         let section_html = &html[start..end];
-        let text = strip_html_tags(section_html);
+        let text = strip_html_tags(section_html)?;
 
         sections.push(Section {
             heading,
@@ -117,20 +127,21 @@ pub fn parse_confluence_html(html: &str, page_id: &str, space: &str) -> Result<C
     }
 
     // Extract tables
-    let tables = extract_tables(html);
+    let tables = extract_tables(html)?;
 
     // Extract code blocks
-    let code_blocks = extract_code_blocks(html);
+    let code_blocks = extract_code_blocks(html)?;
 
     // Extract links
-    let links = extract_links(html);
+    let links = extract_links(html)?;
 
     // Extract labels (often in a specific div or meta)
-    let labels_re = Regex::new(r#"data-label="([^"]+)""#).unwrap();
+    let labels_re = Regex::new(r#"data-label="([^"]+)""#)?;
     let labels: Vec<String> = labels_re
         .captures_iter(html)
         .take(MAX_CONFLUENCE_ITEMS + 1)
-        .map(|c| c[1].to_string())
+        .filter_map(|captures| captures.get(1))
+        .map(|label| label.as_str().to_string())
         .collect();
 
     let table_items = tables.iter().try_fold(0_usize, |total, table| {
@@ -170,33 +181,41 @@ pub fn parse_confluence_html(html: &str, page_id: &str, space: &str) -> Result<C
     })
 }
 
-fn strip_html_tags(html: &str) -> String {
-    let tag_re = Regex::new(r"<[^>]+>").unwrap();
+fn strip_html_tags(html: &str) -> Result<String> {
+    let tag_re = Regex::new(r"<[^>]+>")?;
     let text = tag_re.replace_all(html, " ");
     // Collapse whitespace
-    let ws_re = Regex::new(r"\s+").unwrap();
-    ws_re.replace_all(&text, " ").trim().to_string()
+    let ws_re = Regex::new(r"\s+")?;
+    Ok(ws_re.replace_all(&text, " ").trim().to_string())
 }
 
-fn extract_tables(html: &str) -> Vec<Table> {
-    let table_re = Regex::new(r"(?s)<table[^>]*>(.*?)</table>").unwrap();
-    let row_re = Regex::new(r"(?s)<tr[^>]*>(.*?)</tr>").unwrap();
-    let cell_re = Regex::new(r"(?s)<t[hd][^>]*>(.*?)</t[hd]>").unwrap();
+fn extract_tables(html: &str) -> Result<Vec<Table>> {
+    let table_re = Regex::new(r"(?s)<table[^>]*>(.*?)</table>")?;
+    let row_re = Regex::new(r"(?s)<tr[^>]*>(.*?)</tr>")?;
+    let cell_re = Regex::new(r"(?s)<t[hd][^>]*>(.*?)</t[hd]>")?;
 
     let mut tables = Vec::new();
 
     for table_caps in table_re.captures_iter(html) {
-        let table_html = &table_caps[1];
+        let Some(table_html) = table_caps.get(1) else {
+            continue;
+        };
+        let table_html = table_html.as_str();
         let mut headers = Vec::new();
         let mut rows = Vec::new();
         let mut is_first_row = true;
 
         for row_caps in row_re.captures_iter(table_html) {
-            let row_html = &row_caps[1];
-            let cells: Vec<String> = cell_re
-                .captures_iter(row_html)
-                .map(|c| strip_html_tags(&c[1]))
-                .collect();
+            let Some(row_html) = row_caps.get(1) else {
+                continue;
+            };
+            let row_html = row_html.as_str();
+            let mut cells = Vec::new();
+            for cell_caps in cell_re.captures_iter(row_html) {
+                if let Some(cell) = cell_caps.get(1) {
+                    cells.push(strip_html_tags(cell.as_str())?);
+                }
+            }
 
             if is_first_row && row_html.contains("<th") {
                 headers = cells;
@@ -215,51 +234,59 @@ fn extract_tables(html: &str) -> Vec<Table> {
         }
     }
 
-    tables
+    Ok(tables)
 }
 
-fn extract_code_blocks(html: &str) -> Vec<CodeBlock> {
+fn extract_code_blocks(html: &str) -> Result<Vec<CodeBlock>> {
     let code_re = Regex::new(
         r#"(?s)<pre[^>]*(?:data-language="([^"]*)")?[^>]*><code[^>]*>(.*?)</code></pre>"#,
-    )
-    .unwrap();
+    )?;
     let alt_re = Regex::new(
         r#"(?s)<ac:structured-macro[^>]*ac:name="code"[^>]*>.*?<ac:parameter ac:name="language">([^<]*)</ac:parameter>.*?<ac:plain-text-body><!\[CDATA\[(.*?)\]\]></ac:plain-text-body>"#,
-    )
-    .unwrap();
+    )?;
 
     let mut blocks = Vec::new();
 
     for caps in code_re.captures_iter(html) {
-        let language = caps.get(1).map(|m| m.as_str().to_string());
-        let code = strip_html_tags(&caps[2]);
+        let language = caps.get(1).map(|value| value.as_str().to_string());
+        let Some(code) = caps.get(2) else {
+            continue;
+        };
+        let code = strip_html_tags(code.as_str())?;
         if !code.trim().is_empty() {
             blocks.push(CodeBlock { language, code });
         }
     }
 
     for caps in alt_re.captures_iter(html) {
-        let language = Some(caps[1].to_string());
-        let code = caps[2].to_string();
+        let Some(language) = caps.get(1) else {
+            continue;
+        };
+        let Some(code) = caps.get(2) else {
+            continue;
+        };
+        let language = Some(language.as_str().to_string());
+        let code = code.as_str().to_string();
         if !code.trim().is_empty() {
             blocks.push(CodeBlock { language, code });
         }
     }
 
-    blocks
+    Ok(blocks)
 }
 
-fn extract_links(html: &str) -> Vec<PageLink> {
-    let link_re = Regex::new(r#"<a[^>]*href="([^"]*)"[^>]*>([^<]*)</a>"#).unwrap();
+fn extract_links(html: &str) -> Result<Vec<PageLink>> {
+    let link_re = Regex::new(r#"<a[^>]*href="([^"]*)"[^>]*>([^<]*)</a>"#)?;
 
-    link_re
+    Ok(link_re
         .captures_iter(html)
-        .map(|caps| PageLink {
-            url: Some(caps[1].to_string()),
-            text: caps[2].to_string(),
+        .filter_map(|caps| Some((caps.get(1)?, caps.get(2)?)))
+        .map(|(url, text)| PageLink {
+            url: Some(url.as_str().to_string()),
+            text: text.as_str().to_string(),
             target_page_id: None,
         })
-        .collect()
+        .collect())
 }
 
 /// Convert Confluence page to document extraction
@@ -350,5 +377,30 @@ pub fn confluence_to_extraction(page: &ConfluencePage) -> DocumentExtraction {
             m.insert("labels".to_string(), page.labels.join(", "));
             m
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confluence_parser_extracts_bounded_structured_content() {
+        let html = r#"
+            <title>Operations</title>
+            <h2>Cutting</h2><p>Use coolant.</p>
+            <table><tr><th>Tool</th></tr><tr><td>Mill</td></tr></table>
+            <pre data-language="rust"><code>fn cut() {}</code></pre>
+            <a href="/next">Next</a>
+            <span data-label="machining"></span>
+        "#;
+        let page =
+            parse_confluence_html(html, "page-1", "OPS").expect("parse bounded Confluence fixture");
+        assert_eq!(page.title, "Operations");
+        assert_eq!(page.content.sections.len(), 1);
+        assert_eq!(page.content.tables.len(), 1);
+        assert_eq!(page.content.code_blocks.len(), 1);
+        assert_eq!(page.content.links.len(), 1);
+        assert_eq!(page.labels, ["machining"]);
     }
 }

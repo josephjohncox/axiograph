@@ -7,6 +7,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use crate::Chunk;
 
@@ -235,7 +236,10 @@ pub fn extract_facts_from_chunk(
         }
 
         for caps in pattern.regex.captures_iter(&chunk.text) {
-            let full_match = caps.get(0).unwrap().as_str();
+            let Some(full_match) = caps.get(0) else {
+                continue;
+            };
+            let full_match = full_match.as_str();
 
             // Extract entities
             let mut entities = HashMap::new();
@@ -287,9 +291,13 @@ fn compute_confidence(base: f64, chunk: &Chunk, evidence: &str) -> f64 {
         conf *= 0.9;
     }
 
-    // Boost for numerical specificity
-    let num_re = Regex::new(r"\d+(?:\.\d+)?").unwrap();
-    let num_count = num_re.find_iter(evidence).count();
+    // Boost for numerical specificity. Keep the compiled constant fallible so
+    // a pattern defect cannot become a process panic.
+    static NUMBER_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    let num_count = NUMBER_RE
+        .get_or_init(|| Regex::new(r"\d+(?:\.\d+)?"))
+        .as_ref()
+        .map_or(0, |regex| regex.find_iter(evidence).count());
     if num_count >= 2 {
         conf *= 1.1;
     }
