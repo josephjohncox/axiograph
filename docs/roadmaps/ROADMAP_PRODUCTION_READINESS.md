@@ -189,10 +189,15 @@ Last updated: 2026-04-28.
 
 ### 2.2 Determinism and reproducibility
 
-- [ ] Gate: no floats across trusted boundaries.
+- [~] Gate: no floats across trusted boundaries.
   - Pass when certificate JSON, anchors, canonical snapshots, accepted-plane
     manifests, and trust contracts reject floating-point fields or encode them
     through fixed-point/domain-specific types.
+  - Current enforced slice: certificate probabilities use checked fixed-point
+    integers; typed anchor/store identities contain no float fields; and the
+    query trust-contract family rejects unknown fields and floating-point values
+    where integer counts are required. A repository-wide serialized-schema
+    inventory remains before this gate can be closed.
 - [x] Gate: deterministic certificate JSON golden bytes.
   - Fixed typecheck, constraints, and `query_result_v4` inputs emit
     byte-identical JSON across repeated runs. Tests compare exact bytes and the

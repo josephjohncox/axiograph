@@ -5,12 +5,14 @@ use axiograph_pathdb::axi_semantics::{ConstraintDecl, MetaPlaneIndex};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct TrustScopeV1 {
     pub anchor: String,
     pub context: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct TrustContractV1 {
     pub trust_class: String,
     pub soundness: String,
@@ -31,6 +33,7 @@ pub struct TrustContractV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct QueryTrustContractV1 {
     pub trust_class: String,
     pub soundness: String,
@@ -59,6 +62,7 @@ pub struct QueryTrustContractV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticCoverageSummaryV1 {
     pub coverage_scope: String,
     pub in_scope_claims: usize,
@@ -69,6 +73,7 @@ pub struct SemanticCoverageSummaryV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticClaimSummaryV1 {
     pub subject: String,
     pub kind: String,
@@ -78,6 +83,7 @@ pub struct SemanticClaimSummaryV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct TrustGapV1 {
     pub code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -739,6 +745,28 @@ mod tests {
             .any(|claim| claim.kind == "declared_relation"));
         assert_eq!(trust.completeness_claim, "not_claimed");
         assert_eq!(trust.ontology_closure_claim, "not_claimed");
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_contract_json_rejects_floating_point_extensions() -> anyhow::Result<()> {
+        let query = crate::axql::parse_axql_query("select ?x where ?x : Node limit 3")?;
+        let trust = query_user_visible_trust_contract(&query, &query.certifiability(), false, None);
+
+        let mut unknown_float = serde_json::to_value(&trust)?;
+        unknown_float["confidence"] = serde_json::json!(0.5);
+        assert!(serde_json::from_value::<QueryTrustContractV1>(unknown_float).is_err());
+
+        let mut integer_field_float = serde_json::to_value(SemanticCoverageSummaryV1 {
+            coverage_scope: "finite_query".to_string(),
+            in_scope_claims: 1,
+            runtime_visible_claims: 1,
+            answer_relevant_claims: 1,
+            review_only_claims: 0,
+            unsupported_claims: 0,
+        })?;
+        integer_field_float["runtime_visible_claims"] = serde_json::json!(1.5);
+        assert!(serde_json::from_value::<SemanticCoverageSummaryV1>(integer_field_float).is_err());
         Ok(())
     }
 }
