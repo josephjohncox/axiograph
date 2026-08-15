@@ -64,12 +64,19 @@ fn test_axi_v1_parse_schema_module() {
 
 #[test]
 fn test_storage_pathdb_sync() {
-    use axiograph_storage::{ChangeSource, StorableFact, StorageConfig, UnifiedStorage};
+    use axiograph_storage::{
+        ChangeSource, ReviewPolicy, StorableFact, StorageConfig, UnifiedStorage,
+    };
 
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
         watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
         ..Default::default()
     };
 
@@ -113,8 +120,7 @@ fn test_storage_pathdb_sync() {
     let applied = storage.flush().unwrap();
 
     // Verify in PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
 
     assert!(db.find_by_type("Material").is_some());
     assert!(db.find_by_type("Tool").is_some());
@@ -263,6 +269,7 @@ async fn test_complete_pipeline() {
     let module = parse_axi_v1(schema_source).unwrap();
     let module_name = module.module_name.clone();
     assert_eq!(module_name, "MachiningKnowledge");
+    std::fs::write(dir.path().join("MachiningKnowledge.axi"), schema_source).unwrap();
 
     // Step 2: Create storage
     let config = StorageConfig {
@@ -310,8 +317,7 @@ async fn test_complete_pipeline() {
         .unwrap();
 
     // Step 5: Query the combined knowledge
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let materials = db.find_by_type("Material");
     assert!(materials.is_some());
 
@@ -338,13 +344,20 @@ async fn test_complete_pipeline() {
 
 #[tokio::test]
 async fn test_concurrent_writes() {
-    use axiograph_storage::{ChangeSource, StorableFact, StorageConfig, UnifiedStorage};
+    use axiograph_storage::{
+        ChangeSource, ReviewPolicy, StorableFact, StorageConfig, UnifiedStorage,
+    };
     use tokio::task::JoinSet;
 
     let dir = tempdir().unwrap();
     let config = StorageConfig {
         axi_dir: dir.path().to_path_buf(),
         watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
         ..Default::default()
     };
 
@@ -380,8 +393,7 @@ async fn test_concurrent_writes() {
     storage.flush().unwrap();
 
     // Verify all entities
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let entities = db.find_by_type("Test");
     assert!(entities.is_some());
     assert_eq!(entities.unwrap().len(), 10);
