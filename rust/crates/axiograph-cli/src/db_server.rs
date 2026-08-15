@@ -185,15 +185,10 @@ fn validate_server_args(args: &crate::DbServeArgs) -> Result<()> {
 }
 
 fn configure_runtime_indexes(materialized: &mut MaterializedPathDb, args: &crate::DbServeArgs) {
-    let db = materialized.db_mut();
-    if args.path_index_lru_async || args.path_index_lru_capacity > 0 {
-        db.enable_path_index_lru_async(if args.path_index_lru_async {
-            args.path_index_lru_queue
-        } else {
-            0
-        });
-    }
-    db.set_path_index_lru_capacity(args.path_index_lru_capacity);
+    let async_queue_size = args
+        .path_index_lru_async
+        .then_some(args.path_index_lru_queue);
+    materialized.configure_path_index_cache(args.path_index_lru_capacity, async_queue_size);
 }
 
 async fn run_server(args: crate::DbServeArgs, state: Arc<ServerState>) -> Result<()> {

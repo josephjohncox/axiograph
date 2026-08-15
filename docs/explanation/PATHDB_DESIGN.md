@@ -153,9 +153,11 @@ After verified hydration, PathDB preserves each finite n-ary fact as a fact
 object with ordered typed role projections. Context/world/temporal rows remain
 ordinary role projections and also gain the derived `axi_fact_in_context` scope
 edge used by the runtime fact index. Reversible generators hydrate into the
-process-local equivalence index. These structures preserve the checked finite
-rows; they do not establish univalence, arbitrary higher paths, general
-transport, or a Lean theorem about the Rust hydrator.
+process-local equivalence index. `MaterializedPathDb` exposes the hydrated rows
+through shared access only; its narrow mutable interface configures derived
+path-cache state without exposing logical-row mutation. These structures
+preserve the checked finite rows; they do not establish univalence, arbitrary
+higher paths, general transport, or a Lean theorem about the Rust hydrator.
 
 PathDB then uses:
 

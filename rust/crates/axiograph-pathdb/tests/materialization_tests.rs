@@ -249,13 +249,16 @@ fn pathdb_hydrates_only_from_store_verified_materialization() {
     let receipt = axi_store
         .publish_axpd(materialization, &AxpdLimits::default())
         .unwrap();
-    let loaded = load_verified_pathdb(
+    let mut loaded = load_verified_pathdb(
         store.path(),
         &receipt.materialization_id,
         &AxpdLimits::default(),
     )
     .unwrap();
 
+    assert_eq!(loaded.receipt(), &receipt);
+    loaded.configure_path_index_cache(7, None);
+    assert_eq!(loaded.db().path_index_lru_capacity(), 7);
     assert_eq!(loaded.receipt(), &receipt);
     assert_eq!(loaded.db().entities.len(), 2);
     assert_eq!(loaded.db().relations.len(), 1);

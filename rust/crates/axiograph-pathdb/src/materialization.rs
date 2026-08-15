@@ -26,8 +26,13 @@ impl MaterializedPathDb {
         &self.db
     }
 
-    pub fn db_mut(&mut self) -> &mut PathDB {
-        &mut self.db
+    /// Configure the derived in-process path cache without exposing mutable
+    /// access to the authenticated logical rows.
+    pub fn configure_path_index_cache(&mut self, capacity: usize, async_queue_size: Option<usize>) {
+        if let Some(queue_size) = async_queue_size {
+            self.db.enable_path_index_lru_async(queue_size);
+        }
+        self.db.set_path_index_lru_capacity(capacity);
     }
 
     pub fn into_db(self) -> PathDB {
