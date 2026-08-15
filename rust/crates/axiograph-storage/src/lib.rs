@@ -43,7 +43,7 @@ mod tests;
 use axiograph_dsl as dsl;
 use axiograph_pathdb::PathDB;
 use chrono::{DateTime, Utc};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -266,11 +266,12 @@ pub struct StorageConfig {
     pub watch_files: bool,
     /// Require human review for certain changes
     pub require_review: ReviewPolicy,
-    /// Maximum pending changes before force-sync
+    /// Hard maximum queued changes before additions fail closed.
     pub max_pending: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewPolicy {
     /// Review constraints/rules
     pub constraints: bool,
@@ -311,6 +312,8 @@ pub struct UnifiedStorage {
     changelog: Arc<RwLock<Vec<Change>>>,
     /// Current schema index (loaded from `.axi` files)
     schema: Arc<RwLock<AxiSchemaIndex>>,
+    /// Serializes state transitions spanning pending, PathDB, and changelog.
+    mutation_lock: Arc<Mutex<()>>,
 }
 
 impl UnifiedStorage {
@@ -319,6 +322,16 @@ impl UnifiedStorage {
     /// This type deliberately performs no durable writes. Accepted history and
     /// authenticated `.axpd` materializations belong to `axiograph_store::AxiStore`.
     pub fn new(config: StorageConfig) -> anyhow::Result<Self> {
+        if config.max_pending == 0 {
+            return Err(anyhow::anyhow!("max_pending must be greater than zero"));
+        }
+        if let Some(threshold) = config.require_review.low_confidence_threshold {
+            if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+                return Err(anyhow::anyhow!(
+                    "low_confidence_threshold must be a finite probability in [0, 1]"
+                ));
+            }
+        }
         let schema = Self::load_axi_files(&config.axi_dir)?;
         Ok(Self {
             config,
@@ -326,6 +339,7 @@ impl UnifiedStorage {
             pending: Arc::new(RwLock::new(Vec::new())),
             changelog: Arc::new(RwLock::new(Vec::new())),
             schema: Arc::new(RwLock::new(schema)),
+            mutation_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -686,11 +700,73 @@ impl UnifiedStorage {
     // ========================================================================
 
     /// Add facts to storage (from any source)
+    fn requires_review(&self, change: &Change) -> bool {
+        if self.config.require_review.constraints
+            && change
+                .facts
+                .iter()
+                .any(|fact| matches!(fact, StorableFact::Constraint { .. }))
+        {
+            return true;
+        }
+
+        if self.config.require_review.schema_changes {
+            let schema = self.schema.read();
+            let extends_schema = change.facts.iter().any(|fact| match fact {
+                StorableFact::Entity { entity_type, .. } => {
+                    !schema.entity_types.iter().any(|known| known == entity_type)
+                }
+                StorableFact::Relation { rel_type, .. } => {
+                    !schema.relation_types.iter().any(|known| known == rel_type)
+                }
+                _ => false,
+            });
+            if extends_schema {
+                return true;
+            }
+        }
+
+        let Some(threshold) = self.config.require_review.low_confidence_threshold else {
+            return false;
+        };
+        let below_threshold = |confidence: f32| !confidence.is_finite() || confidence < threshold;
+        change.facts.iter().any(|fact| match fact {
+            StorableFact::Relation { confidence, .. }
+            | StorableFact::TacitKnowledge { confidence, .. } => below_threshold(*confidence),
+            _ => false,
+        }) || match &change.source {
+            ChangeSource::LLMExtraction { confidence, .. } => below_threshold(*confidence),
+            _ => false,
+        }
+    }
+
     pub fn add_facts(
         &self,
         facts: Vec<StorableFact>,
         source: ChangeSource,
     ) -> anyhow::Result<ChangeId> {
+        let valid_confidence =
+            |confidence: f32| confidence.is_finite() && (0.0..=1.0).contains(&confidence);
+        for (index, fact) in facts.iter().enumerate() {
+            let confidence = match fact {
+                StorableFact::Relation { confidence, .. }
+                | StorableFact::TacitKnowledge { confidence, .. } => Some(*confidence),
+                _ => None,
+            };
+            if confidence.is_some_and(|value| !valid_confidence(value)) {
+                return Err(anyhow::anyhow!(
+                    "fact {index} confidence must be a finite probability in [0, 1]"
+                ));
+            }
+        }
+        if let ChangeSource::LLMExtraction { confidence, .. } = &source {
+            if !valid_confidence(*confidence) {
+                return Err(anyhow::anyhow!(
+                    "LLM extraction confidence must be a finite probability in [0, 1]"
+                ));
+            }
+        }
+
         let change = Change {
             id: Uuid::new_v4(),
             timestamp: Utc::now(),
@@ -699,23 +775,43 @@ impl UnifiedStorage {
             status: ChangeStatus::Pending,
         };
 
-        let change_id = change.id;
-        self.pending.write().push(change);
-
-        // Auto-apply if below threshold
         if self.pending.read().len() >= self.config.max_pending {
+            self.flush()?;
+        }
+
+        let change_id = change.id;
+        let should_flush = {
+            let mut pending = self.pending.write();
+            if pending.len() >= self.config.max_pending {
+                return Err(anyhow::anyhow!(
+                    "pending change limit {} reached; approve or reject reviewed changes",
+                    self.config.max_pending
+                ));
+            }
+            pending.push(change);
+            pending.len() >= self.config.max_pending
+        };
+        if should_flush {
             self.flush()?;
         }
 
         Ok(change_id)
     }
 
-    /// Apply all pending changes to the in-memory evidence view.
+    /// Apply pending changes that do not require review to the evidence view.
     ///
-    /// The operation is atomic in memory. Callers must promote reviewed facts
+    /// Review-required changes remain pending until `approve_change` or
+    /// `reject_change`. The operation is atomic in memory. Callers must promote reviewed facts
     /// through `AxiStore`; this manager never persists an unauthenticated cache.
     pub fn flush(&self) -> anyhow::Result<Vec<ApplyResult>> {
-        let pending = self.pending.read().clone();
+        let _mutation_guard = self.mutation_lock.lock();
+        let pending = self
+            .pending
+            .read()
+            .iter()
+            .filter(|change| !self.requires_review(change))
+            .cloned()
+            .collect::<Vec<_>>();
         if pending.is_empty() {
             return Ok(Vec::new());
         }
@@ -749,7 +845,54 @@ impl UnifiedStorage {
         }
     }
 
-    /// Apply a single change
+    /// Explicitly approve and apply one pending review-required change.
+    pub fn approve_change(&self, change_id: ChangeId) -> anyhow::Result<ApplyResult> {
+        let _mutation_guard = self.mutation_lock.lock();
+        let change = self
+            .pending
+            .read()
+            .iter()
+            .find(|change| change.id == change_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("pending change {change_id} was not found"))?;
+        let pathdb_before = self.pathdb.read().detached_clone()?;
+        let changelog_before = self.changelog.read().clone();
+
+        match self.apply_change(&change) {
+            Ok(result) => {
+                self.pending
+                    .write()
+                    .retain(|pending| pending.id != change_id);
+                Ok(result)
+            }
+            Err(error) => {
+                *self.pathdb.write() = pathdb_before;
+                *self.changelog.write() = changelog_before;
+                Err(error)
+            }
+        }
+    }
+
+    /// Explicitly reject one pending change without materializing its facts.
+    pub fn reject_change(&self, change_id: ChangeId, reason: &str) -> anyhow::Result<()> {
+        let _mutation_guard = self.mutation_lock.lock();
+        if reason.trim().is_empty() {
+            return Err(anyhow::anyhow!("rejection reason must not be empty"));
+        }
+        let mut pending = self.pending.write();
+        let position = pending
+            .iter()
+            .position(|change| change.id == change_id)
+            .ok_or_else(|| anyhow::anyhow!("pending change {change_id} was not found"))?;
+        let mut change = pending.remove(position);
+        drop(pending);
+        change.status = ChangeStatus::Rejected {
+            reason: reason.to_string(),
+        };
+        self.changelog.write().push(change);
+        Ok(())
+    }
+
     fn apply_change(&self, change: &Change) -> anyhow::Result<ApplyResult> {
         let mut pathdb = self.pathdb.write();
         Self::validate_relation_endpoints_for_change(&pathdb, &change.facts)?;
@@ -1004,14 +1147,14 @@ impl UnifiedStorage {
     // Read Operations
     // ========================================================================
 
-    /// Get PathDB for queries
-    pub fn pathdb(&self) -> Arc<RwLock<PathDB>> {
-        Arc::clone(&self.pathdb)
+    /// Borrow the process-local PathDB evidence view for read-only queries.
+    pub fn pathdb(&self) -> RwLockReadGuard<'_, PathDB> {
+        self.pathdb.read()
     }
 
-    /// Get current schema
-    pub fn schema(&self) -> Arc<RwLock<AxiSchemaIndex>> {
-        Arc::clone(&self.schema)
+    /// Borrow the current read-only schema index.
+    pub fn schema(&self) -> RwLockReadGuard<'_, AxiSchemaIndex> {
+        self.schema.read()
     }
 
     /// Get change history
@@ -1030,6 +1173,7 @@ impl UnifiedStorage {
 
     /// Rollback to a specific change
     pub fn rollback_to(&self, change_id: ChangeId) -> anyhow::Result<()> {
+        let _mutation_guard = self.mutation_lock.lock();
         // Find the change index
         let changelog = self.changelog.read();
         let idx = changelog

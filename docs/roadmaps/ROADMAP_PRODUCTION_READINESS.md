@@ -131,11 +131,20 @@ Last updated: 2026-04-28.
 
 ### 1.2 Make review policies real (not warnings)
 
-- [ ] Change `UnifiedStorage::apply_change` so review-required changes do **not** apply automatically.
-  - Constraints: hold as pending until explicit approval.
-  - Low-confidence: hold as pending until approval (or until corroborated).
-  - Schema changes: hold as pending until approval.
-- [ ] Add `approve_change(change_id)` / `reject_change(change_id)` APIs and CLI commands.
+- [x] Keep review-required `UnifiedStorage` changes pending instead of applying
+  them automatically.
+  - Constraints, low-confidence facts, and schema extensions require explicit
+    approval.
+  - Review configuration and evidence probabilities fail closed on invalid
+    bounds; the pending queue has a hard configured limit.
+  - PathDB and schema accessors expose read guards rather than mutable lock
+    handles, so callers cannot bypass the review transition.
+- [~] Add explicit approval and rejection flows.
+  - Implemented: serialized in-process `approve_change(change_id)` and
+    `reject_change(change_id, reason)` APIs with atomic rollback on failed
+    application and an audit-log rejection record.
+  - Missing: a stateful review service/CLI session. A standalone CLI command
+    cannot address the intentionally process-local queue by id.
 
 ### 1.3 Fix entity/relation identity (stop using placeholder IDs)
 

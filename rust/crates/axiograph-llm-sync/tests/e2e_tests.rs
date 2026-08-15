@@ -123,8 +123,7 @@ async fn test_facts_land_in_pathdb() {
         .unwrap();
 
     // Check PathDB has entities
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
 
     // Should have at least one entity type
     let has_entities = ["Material", "Tool", "TacitKnowledge"]
@@ -638,8 +637,7 @@ async fn test_full_roundtrip() {
     println!("Created {} .axi files", axi_files.len());
 
     // 4. Check PathDB
-    let pathdb = storage.pathdb();
-    let _db = pathdb.read();
+    let _db = storage.pathdb();
 
     // 5. Verify end state
     let stats = sync.stats();

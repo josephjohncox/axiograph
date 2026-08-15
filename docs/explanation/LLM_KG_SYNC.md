@@ -139,3 +139,7 @@ reviewed, the CQ is executable, and the relevant coverage/tooling policy passes.
 - MCP/LSP/API integrations should expose the same typed report families as CLI
   flows.
 - Accepted mutation always goes through Axiograph review and semantic VCS.
+- `UnifiedStorage` is a bounded process-local evidence queue. Policy-exempt
+  changes may materialize into its derived PathDB view; constraints,
+  low-confidence evidence, and schema extensions stay pending until an explicit
+  approval or rejection. Neither transition promotes accepted ontology state.

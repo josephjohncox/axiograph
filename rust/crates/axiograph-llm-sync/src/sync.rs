@@ -321,8 +321,7 @@ impl SyncManager {
         let mut invalid = Vec::new();
         let mut needs_review = Vec::new();
 
-        let pathdb = self.storage.pathdb();
-        let db = pathdb.read();
+        let db = self.storage.pathdb();
 
         for fact in facts {
             // Check schema validity
@@ -408,8 +407,7 @@ impl SyncManager {
 
     /// Detect conflicts with existing knowledge
     fn detect_conflicts(&self, facts: &[ExtractedFact]) -> anyhow::Result<Vec<Conflict>> {
-        let pathdb = self.storage.pathdb();
-        let db = pathdb.read();
+        let db = self.storage.pathdb();
         let mut conflicts = Vec::new();
 
         for fact in facts {
@@ -558,8 +556,7 @@ impl SyncManager {
         query: &str,
         max_facts: usize,
     ) -> anyhow::Result<GroundingContext> {
-        let pathdb = self.storage.pathdb();
-        let db = pathdb.read();
+        let db = self.storage.pathdb();
 
         // Extract keywords from query
         let keywords = self.extract_keywords(query);
@@ -592,8 +589,7 @@ impl SyncManager {
         }
 
         // Build schema context
-        let schema = self.storage.schema();
-        let schema_module = schema.read();
+        let schema_module = self.storage.schema();
         let schema_context = SchemaContext {
             entity_types: schema_module.entity_types.clone(),
             relation_types: schema_module.relation_types.clone(),

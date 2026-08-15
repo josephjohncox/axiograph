@@ -57,8 +57,7 @@ fn test_entity_materializes_to_evidence_record_and_pathdb_cache() {
     assert!(axi_content.contains("hardness"), "Should contain attribute");
 
     // Verify PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let materials = db.find_by_type("Material");
     assert!(materials.is_some(), "Should find Materials in PathDB");
     assert!(
@@ -109,8 +108,7 @@ fn test_relation_lands_in_query_cache_and_review_proposal() {
 
     // Verify PathDB relation endpoints use resolved entity IDs, not placeholder
     // IDs from insertion order.
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let source_ids = UnifiedStorage::entity_ids_by_storage_name(&db, "EndMill");
     let target_ids = UnifiedStorage::entity_ids_by_storage_name(&db, "Ti6Al4V");
     assert_eq!(source_ids.len(), 1);
@@ -172,11 +170,11 @@ fn test_relation_with_unresolved_endpoint_fails_closed() {
             && entity_name == "MissingTool"
     ));
     assert!(
-        storage.pathdb().read().relations.is_empty(),
+        storage.pathdb().relations.is_empty(),
         "failed relation should not create a placeholder PathDB edge"
     );
     assert!(
-        storage.pathdb().read().entities.is_empty(),
+        storage.pathdb().entities.is_empty(),
         "failed relation should reject the full change before partial entity writes"
     );
     assert!(
@@ -219,8 +217,7 @@ fn test_tacit_knowledge_storage() {
     storage.flush().unwrap();
 
     // Verify in PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let tacit = db.find_by_type("TacitKnowledge");
     assert!(tacit.is_some());
 }
@@ -245,6 +242,256 @@ fn test_constraint_storage() {
     assert!(content.contains("constraint"));
     assert!(content.contains("SpeedLimit"));
     assert!(content.contains("speed <= 60"));
+}
+
+#[test]
+fn review_required_constraint_stays_pending_until_explicit_approval() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: true,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
+        max_pending: 10,
+    })
+    .unwrap();
+    let change_id = storage
+        .add_facts(
+            vec![StorableFact::Constraint {
+                name: "SpeedLimit".to_string(),
+                condition: "speed <= 60".to_string(),
+                severity: "error".to_string(),
+                message: None,
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+
+    assert!(storage.flush().unwrap().is_empty());
+    assert_eq!(storage.pending().len(), 1);
+    assert!(storage.changelog().is_empty());
+
+    let approved = storage.approve_change(change_id).unwrap();
+    assert_eq!(approved.change_id, change_id);
+    assert!(approved
+        .axi_lines
+        .iter()
+        .any(|line| line.contains("SpeedLimit")));
+    assert!(storage.pending().is_empty());
+    assert!(matches!(
+        storage.changelog().as_slice(),
+        [Change {
+            status: ChangeStatus::Applied,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn low_confidence_fact_stays_pending_for_review() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: Some(0.7),
+            schema_changes: false,
+        },
+        max_pending: 10,
+    })
+    .unwrap();
+    let change_id = storage
+        .add_facts(
+            vec![StorableFact::TacitKnowledge {
+                name: "WeakRule".to_string(),
+                rule: "possibly_use_coolant".to_string(),
+                confidence: 0.4,
+                domain: "machining".to_string(),
+                source: "weak evidence".to_string(),
+            }],
+            ChangeSource::LLMExtraction {
+                session_id: uuid::Uuid::new_v4(),
+                model: "test-model".to_string(),
+                confidence: 0.4,
+            },
+        )
+        .unwrap();
+
+    assert!(storage.flush().unwrap().is_empty());
+    assert_eq!(storage.pending()[0].id, change_id);
+    assert!(storage.pathdb().entities.is_empty());
+}
+
+#[test]
+fn unknown_schema_type_stays_pending_for_review() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: None,
+            schema_changes: true,
+        },
+        max_pending: 10,
+    })
+    .unwrap();
+    let change_id = storage
+        .add_facts(
+            vec![StorableFact::Entity {
+                name: "NovelEntity".to_string(),
+                entity_type: "PreviouslyUnknownType".to_string(),
+                attributes: vec![],
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+
+    assert!(storage.flush().unwrap().is_empty());
+    assert_eq!(storage.pending()[0].id, change_id);
+    assert!(storage.pathdb().entities.is_empty());
+}
+
+#[test]
+fn review_change_can_be_explicitly_rejected_without_mutating_pathdb() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: true,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
+        max_pending: 10,
+    })
+    .unwrap();
+    let change_id = storage
+        .add_facts(
+            vec![StorableFact::Constraint {
+                name: "UnsafeRule".to_string(),
+                condition: "always".to_string(),
+                severity: "error".to_string(),
+                message: None,
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+
+    storage
+        .reject_change(change_id, "unsupported rule")
+        .unwrap();
+    assert!(storage.pending().is_empty());
+    assert!(storage.pathdb().entities.is_empty());
+    assert!(matches!(
+        storage.changelog().as_slice(),
+        [Change {
+            status: ChangeStatus::Rejected { reason },
+            ..
+        }] if reason == "unsupported rule"
+    ));
+}
+
+#[test]
+fn non_finite_evidence_confidence_is_rejected_before_queueing() {
+    let (storage, _dir) = test_storage();
+    let error = storage
+        .add_facts(
+            vec![StorableFact::TacitKnowledge {
+                name: "InvalidRule".to_string(),
+                rule: "invalid".to_string(),
+                confidence: f32::NAN,
+                domain: "test".to_string(),
+                source: "test".to_string(),
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .expect_err("non-finite confidence must fail closed");
+    assert!(error.to_string().contains("confidence"));
+    assert!(storage.pending().is_empty());
+}
+
+#[test]
+fn review_confidence_threshold_must_be_a_finite_probability() {
+    for threshold in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+        let dir = tempdir().unwrap();
+        let error = UnifiedStorage::new(StorageConfig {
+            axi_dir: dir.path().to_path_buf(),
+            watch_files: false,
+            require_review: ReviewPolicy {
+                constraints: false,
+                low_confidence_threshold: Some(threshold),
+                schema_changes: false,
+            },
+            max_pending: 1,
+        })
+        .err()
+        .expect("invalid review threshold must fail closed");
+        assert!(error.to_string().contains("low_confidence_threshold"));
+    }
+}
+
+#[test]
+fn zero_pending_limit_is_rejected_at_construction() {
+    let dir = tempdir().unwrap();
+    let error = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: false,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
+        max_pending: 0,
+    })
+    .err()
+    .expect("zero pending limit must fail closed");
+    assert!(error.to_string().contains("max_pending"));
+}
+
+#[test]
+fn pending_review_queue_fails_closed_at_configured_limit() {
+    let dir = tempdir().unwrap();
+    let storage = UnifiedStorage::new(StorageConfig {
+        axi_dir: dir.path().to_path_buf(),
+        watch_files: false,
+        require_review: ReviewPolicy {
+            constraints: true,
+            low_confidence_threshold: None,
+            schema_changes: false,
+        },
+        max_pending: 1,
+    })
+    .unwrap();
+    storage
+        .add_facts(
+            vec![StorableFact::Constraint {
+                name: "First".to_string(),
+                condition: "one".to_string(),
+                severity: "error".to_string(),
+                message: None,
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .unwrap();
+
+    let error = storage
+        .add_facts(
+            vec![StorableFact::Constraint {
+                name: "Second".to_string(),
+                condition: "two".to_string(),
+                severity: "error".to_string(),
+                message: None,
+            }],
+            ChangeSource::UserEdit { user_id: None },
+        )
+        .expect_err("pending review queue must remain bounded");
+    assert!(error.to_string().contains("pending change limit"));
+    assert_eq!(storage.pending().len(), 1);
 }
 
 #[test]
@@ -296,8 +543,7 @@ fn test_batch_operations() {
     storage.flush().unwrap();
 
     // Verify all in PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     let entities = db.find_by_type("BatchTest");
     assert!(entities.is_some());
     assert_eq!(entities.unwrap().len(), 50);
@@ -367,8 +613,7 @@ fn rollback_updates_log_and_rebuilds_in_memory_pathdb() {
     assert_eq!(changelog.len(), 2);
     assert!(matches!(changelog[0].status, ChangeStatus::Applied));
     assert!(matches!(changelog[1].status, ChangeStatus::Rolled { .. }));
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     assert_eq!(
         UnifiedStorage::entity_ids_by_storage_name(&db, "Keep").len(),
         1
@@ -401,8 +646,7 @@ fn test_concept_and_guideline_storage() {
     let results = storage.flush().unwrap();
 
     // Verify in PathDB
-    let pathdb = storage.pathdb();
-    let db = pathdb.read();
+    let db = storage.pathdb();
     assert!(db.find_by_type("Concept").is_some());
     assert!(db.find_by_type("SafetyGuideline").is_some());
 
