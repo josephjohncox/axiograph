@@ -195,6 +195,7 @@ fn extract_tables(html: &str) -> Result<Vec<Table>> {
     let cell_re = Regex::new(r"(?s)<t[hd][^>]*>(.*?)</t[hd]>")?;
 
     let mut tables = Vec::new();
+    let mut item_count = 0_usize;
 
     for table_caps in table_re.captures_iter(html) {
         let Some(table_html) = table_caps.get(1) else {
@@ -213,7 +214,13 @@ fn extract_tables(html: &str) -> Result<Vec<Table>> {
             let mut cells = Vec::new();
             for cell_caps in cell_re.captures_iter(row_html) {
                 if let Some(cell) = cell_caps.get(1) {
+                    if item_count >= MAX_CONFLUENCE_ITEMS {
+                        return Err(anyhow!(
+                            "Confluence table item count exceeds {MAX_CONFLUENCE_ITEMS}"
+                        ));
+                    }
                     cells.push(strip_html_tags(cell.as_str())?);
+                    item_count += 1;
                 }
             }
 
@@ -254,6 +261,11 @@ fn extract_code_blocks(html: &str) -> Result<Vec<CodeBlock>> {
         };
         let code = strip_html_tags(code.as_str())?;
         if !code.trim().is_empty() {
+            if blocks.len() >= MAX_CONFLUENCE_ITEMS {
+                return Err(anyhow!(
+                    "Confluence code block count exceeds {MAX_CONFLUENCE_ITEMS}"
+                ));
+            }
             blocks.push(CodeBlock { language, code });
         }
     }
@@ -268,6 +280,11 @@ fn extract_code_blocks(html: &str) -> Result<Vec<CodeBlock>> {
         let language = Some(language.as_str().to_string());
         let code = code.as_str().to_string();
         if !code.trim().is_empty() {
+            if blocks.len() >= MAX_CONFLUENCE_ITEMS {
+                return Err(anyhow!(
+                    "Confluence code block count exceeds {MAX_CONFLUENCE_ITEMS}"
+                ));
+            }
             blocks.push(CodeBlock { language, code });
         }
     }
@@ -277,16 +294,23 @@ fn extract_code_blocks(html: &str) -> Result<Vec<CodeBlock>> {
 
 fn extract_links(html: &str) -> Result<Vec<PageLink>> {
     let link_re = Regex::new(r#"<a[^>]*href="([^"]*)"[^>]*>([^<]*)</a>"#)?;
-
-    Ok(link_re
-        .captures_iter(html)
-        .filter_map(|caps| Some((caps.get(1)?, caps.get(2)?)))
-        .map(|(url, text)| PageLink {
+    let mut links = Vec::new();
+    for captures in link_re.captures_iter(html) {
+        let (Some(url), Some(text)) = (captures.get(1), captures.get(2)) else {
+            continue;
+        };
+        if links.len() >= MAX_CONFLUENCE_ITEMS {
+            return Err(anyhow!(
+                "Confluence link count exceeds {MAX_CONFLUENCE_ITEMS}"
+            ));
+        }
+        links.push(PageLink {
             url: Some(url.as_str().to_string()),
             text: text.as_str().to_string(),
             target_page_id: None,
-        })
-        .collect())
+        });
+    }
+    Ok(links)
 }
 
 /// Convert Confluence page to document extraction
@@ -402,5 +426,13 @@ mod tests {
         assert_eq!(page.content.code_blocks.len(), 1);
         assert_eq!(page.content.links.len(), 1);
         assert_eq!(page.labels, ["machining"]);
+    }
+
+    #[test]
+    fn confluence_parser_rejects_link_fanout_during_extraction() {
+        let html = r#"<a href="/next">Next</a>"#.repeat(MAX_CONFLUENCE_ITEMS + 1);
+        let error = parse_confluence_html(&html, "page-1", "OPS")
+            .expect_err("link fanout must fail closed");
+        assert!(error.to_string().contains("link count"));
     }
 }
