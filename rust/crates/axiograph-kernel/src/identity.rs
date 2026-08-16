@@ -115,6 +115,8 @@ impl IdentityDomainV2 {
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum IdentityError {
+    #[error("identity domain label is too large")]
+    DomainTooLarge,
     #[error("identity preimage contains too many fields")]
     TooManyFields,
     #[error("identity preimage field is too large")]
@@ -147,7 +149,7 @@ pub fn canonical_identity_preimage_v2(
     fields: &[&[u8]],
 ) -> Result<Vec<u8>, IdentityError> {
     let domain = domain.as_str().as_bytes();
-    let domain_len = u16::try_from(domain.len()).expect("closed identity domains fit in u16");
+    let domain_len = u16::try_from(domain.len()).map_err(|_| IdentityError::DomainTooLarge)?;
     let field_count = u32::try_from(fields.len()).map_err(|_| IdentityError::TooManyFields)?;
 
     let mut preimage = Vec::new();
@@ -165,11 +167,12 @@ pub fn canonical_identity_preimage_v2(
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(64);
     for byte in digest {
-        use fmt::Write as _;
-        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
 }
