@@ -1829,12 +1829,18 @@ impl CompiledFiniteQuery {
             .exploration_view_with_theory_graph(None, compiled_schema, theories)
             .refinement_candidates
             .into_iter()
-            .find(|candidate| candidate.handle.id == handle_id)
-            .map(|candidate| match candidate.handle.payload {
-                crate::typed_refinement::RuntimeRefinementPayloadV2::Query { handle } => handle,
-                _ => unreachable!("query exploration must only emit query-domain candidates"),
+            .find_map(|candidate| {
+                if candidate.handle.id != handle_id {
+                    return None;
+                }
+                match candidate.handle.payload {
+                    crate::typed_refinement::RuntimeRefinementPayloadV2::Query { handle } => {
+                        Some(handle)
+                    }
+                    _ => None,
+                }
             })
-            .ok_or_else(|| anyhow!("unknown refinement handle `{handle_id}`"))?;
+            .ok_or_else(|| anyhow!("unknown query refinement handle `{handle_id}`"))?;
         self.apply_refinement_handle_with_theory_graph(db, meta, &handle, compiled_schema, theories)
     }
 

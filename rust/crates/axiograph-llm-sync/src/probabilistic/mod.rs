@@ -27,6 +27,8 @@ pub enum FactorGraphError {
     DomainTooLarge { size: usize, maximum: usize },
     #[error("unknown factor-graph variable {0:?}")]
     UnknownVariable(VariableId),
+    #[error("inconsistent factor graph: {reason}")]
+    InconsistentGraph { reason: String },
     #[error("observation {value} is outside variable domain 0..{domain_size}")]
     ObservationOutOfRange { value: usize, domain_size: usize },
     #[error("invalid factor potential: {reason}")]
@@ -282,10 +284,13 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn uniform(size: usize) -> Self {
-        Self {
-            values: vec![1.0 / size as f64; size],
+    fn uniform(size: usize) -> Result<Self, FactorGraphError> {
+        if size == 0 {
+            return Err(FactorGraphError::EmptyDomain);
         }
+        Ok(Self {
+            values: vec![1.0 / size as f64; size],
+        })
     }
 
     pub fn normalize(&mut self) {
@@ -297,14 +302,23 @@ impl Message {
         }
     }
 
-    pub fn multiply(&self, other: &Message) -> Message {
-        let values: Vec<f64> = self
+    fn multiply(&self, other: &Message) -> Result<Message, FactorGraphError> {
+        if self.values.len() != other.values.len() {
+            return Err(FactorGraphError::InconsistentGraph {
+                reason: format!(
+                    "cannot multiply messages with domains {} and {}",
+                    self.values.len(),
+                    other.values.len()
+                ),
+            });
+        }
+        let values = self
             .values
             .iter()
-            .zip(other.values.iter())
-            .map(|(a, b)| a * b)
+            .zip(&other.values)
+            .map(|(left, right)| left * right)
             .collect();
-        Message { values }
+        Ok(Message { values })
     }
 }
 
@@ -336,9 +350,13 @@ impl BeliefPropagation {
     }
 
     /// Initialize messages
-    fn initialize(&mut self) {
+    fn initialize(&mut self) -> Result<(), FactorGraphError> {
+        self.var_to_factor.clear();
+        self.factor_to_var.clear();
+        self.beliefs.clear();
+
         for var in self.graph.variables() {
-            let msg = Message::uniform(var.domain_size);
+            let msg = Message::uniform(var.domain_size)?;
             for &factor_id in self.graph.factors_for_variable(var.id) {
                 self.var_to_factor.insert((var.id, factor_id), msg.clone());
             }
@@ -346,38 +364,64 @@ impl BeliefPropagation {
 
         for factor in self.graph.factors() {
             for &var_id in &factor.variables {
-                let var = self.graph.get_variable(var_id).unwrap();
-                let msg = Message::uniform(var.domain_size);
+                let var = self
+                    .graph
+                    .get_variable(var_id)
+                    .ok_or(FactorGraphError::UnknownVariable(var_id))?;
+                let msg = Message::uniform(var.domain_size)?;
                 self.factor_to_var.insert((factor.id, var_id), msg);
             }
         }
+        Ok(())
     }
 
-    /// Run belief propagation
-    pub fn run(&mut self) -> bool {
-        self.initialize();
+    /// Run belief propagation.
+    ///
+    /// `Ok(true)` means iteration converged; `Ok(false)` means it reached the
+    /// configured finite iteration bound. Structural inconsistencies fail
+    /// closed instead of producing partial beliefs.
+    pub fn run(&mut self) -> Result<bool, FactorGraphError> {
+        self.initialize()?;
 
         for _iteration in 0..self.max_iter {
-            let max_diff = self.iterate();
+            let max_diff = self.iterate()?;
             if max_diff < self.epsilon {
-                self.compute_beliefs();
-                return true;
+                self.compute_beliefs()?;
+                return Ok(true);
             }
         }
 
-        self.compute_beliefs();
-        false // Did not converge
+        self.compute_beliefs()?;
+        Ok(false)
     }
 
     /// One iteration of message passing
-    fn iterate(&mut self) -> f64 {
+    fn iterate(&mut self) -> Result<f64, FactorGraphError> {
         let mut max_diff = 0.0f64;
 
         // Variable to factor messages
         for var in self.graph.variables() {
             for &factor_id in self.graph.factors_for_variable(var.id) {
-                let new_msg = self.compute_var_to_factor_message(var.id, factor_id);
-                let old_msg = self.var_to_factor.get(&(var.id, factor_id)).unwrap();
+                let new_msg = self.compute_var_to_factor_message(var.id, factor_id)?;
+                let old_msg = self
+                    .var_to_factor
+                    .get(&(var.id, factor_id))
+                    .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                        reason: format!(
+                            "missing variable-to-factor message for {:?} -> {factor_id}",
+                            var.id
+                        ),
+                    })?;
+                if new_msg.values.len() != old_msg.values.len() {
+                    return Err(FactorGraphError::InconsistentGraph {
+                        reason: format!(
+                            "variable-to-factor message domain changed from {} to {} for {:?} -> {factor_id}",
+                            old_msg.values.len(),
+                            new_msg.values.len(),
+                            var.id
+                        ),
+                    });
+                }
 
                 let diff: f64 = new_msg
                     .values
@@ -394,8 +438,26 @@ impl BeliefPropagation {
         // Factor to variable messages
         for factor in self.graph.factors() {
             for &var_id in &factor.variables {
-                let new_msg = self.compute_factor_to_var_message(factor.id, var_id);
-                let old_msg = self.factor_to_var.get(&(factor.id, var_id)).unwrap();
+                let new_msg = self.compute_factor_to_var_message(factor.id, var_id)?;
+                let old_msg = self
+                    .factor_to_var
+                    .get(&(factor.id, var_id))
+                    .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                        reason: format!(
+                            "missing factor-to-variable message for {} -> {var_id:?}",
+                            factor.id
+                        ),
+                    })?;
+                if new_msg.values.len() != old_msg.values.len() {
+                    return Err(FactorGraphError::InconsistentGraph {
+                        reason: format!(
+                            "factor-to-variable message domain changed from {} to {} for {} -> {var_id:?}",
+                            old_msg.values.len(),
+                            new_msg.values.len(),
+                            factor.id
+                        ),
+                    });
+                }
 
                 let diff: f64 = new_msg
                     .values
@@ -409,90 +471,206 @@ impl BeliefPropagation {
             }
         }
 
-        max_diff
+        Ok(max_diff)
     }
 
     /// Compute message from variable to factor
-    fn compute_var_to_factor_message(&self, var: VariableId, factor: Uuid) -> Message {
-        let v = self.graph.get_variable(var).unwrap();
+    fn compute_var_to_factor_message(
+        &self,
+        var: VariableId,
+        factor: Uuid,
+    ) -> Result<Message, FactorGraphError> {
+        let v = self
+            .graph
+            .get_variable(var)
+            .ok_or(FactorGraphError::UnknownVariable(var))?;
 
         // If observed, send delta message
         if let Some(obs) = v.observed {
             let mut values = vec![0.0; v.domain_size];
-            values[obs] = 1.0;
-            return Message { values };
+            let domain_size = values.len();
+            let slot = values
+                .get_mut(obs)
+                .ok_or(FactorGraphError::ObservationOutOfRange {
+                    value: obs,
+                    domain_size,
+                })?;
+            *slot = 1.0;
+            return Ok(Message { values });
         }
 
         // Product of incoming messages from other factors
-        let mut msg = Message::uniform(v.domain_size);
+        let mut msg = Message::uniform(v.domain_size)?;
         for &other_factor in self.graph.factors_for_variable(var) {
             if other_factor != factor {
-                if let Some(incoming) = self.factor_to_var.get(&(other_factor, var)) {
-                    msg = msg.multiply(incoming);
-                }
+                let incoming = self
+                    .factor_to_var
+                    .get(&(other_factor, var))
+                    .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                        reason: format!(
+                            "missing factor-to-variable message for {other_factor} -> {var:?}"
+                        ),
+                    })?;
+                msg = msg.multiply(incoming)?;
             }
         }
         msg.normalize();
-        msg
+        Ok(msg)
     }
 
     /// Compute message from factor to variable
-    fn compute_factor_to_var_message(&self, factor_id: Uuid, target_var: VariableId) -> Message {
-        let factor = self.graph.factors.get(&factor_id).unwrap();
-        let target = self.graph.get_variable(target_var).unwrap();
+    fn compute_factor_to_var_message(
+        &self,
+        factor_id: Uuid,
+        target_var: VariableId,
+    ) -> Result<Message, FactorGraphError> {
+        let factor = self.graph.factors.get(&factor_id).ok_or_else(|| {
+            FactorGraphError::InconsistentGraph {
+                reason: format!("missing factor {factor_id}"),
+            }
+        })?;
+        if !factor.variables.contains(&target_var) {
+            return Err(FactorGraphError::InconsistentGraph {
+                reason: format!("factor {factor_id} does not contain target {target_var:?}"),
+            });
+        }
+        let target = self
+            .graph
+            .get_variable(target_var)
+            .ok_or(FactorGraphError::UnknownVariable(target_var))?;
 
         match &factor.potential {
-            FactorPotential::Unary(probs) => Message {
-                values: probs.clone(),
-            },
+            FactorPotential::Unary(probs) => {
+                if probs.len() != target.domain_size {
+                    return Err(FactorGraphError::InconsistentGraph {
+                        reason: format!(
+                            "unary factor {factor_id} has {} values for target domain {}",
+                            probs.len(),
+                            target.domain_size
+                        ),
+                    });
+                }
+                Ok(Message {
+                    values: probs.clone(),
+                })
+            }
             FactorPotential::Binary(matrix) => {
-                let other_var = factor.variables.iter().find(|&&v| v != target_var).unwrap();
-                let other_msg = self.var_to_factor.get(&(*other_var, factor_id)).unwrap();
+                let other_var = factor
+                    .variables
+                    .iter()
+                    .copied()
+                    .find(|&variable| variable != target_var)
+                    .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                        reason: format!("binary factor {factor_id} has no distinct peer variable"),
+                    })?;
+                let other_msg =
+                    self.var_to_factor
+                        .get(&(other_var, factor_id))
+                        .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                            reason: format!(
+                            "missing variable-to-factor message for {other_var:?} -> {factor_id}"
+                        ),
+                        })?;
 
-                let is_first = factor.variables[0] == target_var;
+                let is_first = factor.variables.first().copied() == Some(target_var);
                 let mut values = vec![0.0; target.domain_size];
 
                 if is_first {
                     // Sum over rows
-                    for i in 0..values.len() {
-                        for (j, &prob) in other_msg.values.iter().enumerate() {
-                            values[i] += matrix[i][j] * prob;
+                    for (i, value) in values.iter_mut().enumerate() {
+                        let row =
+                            matrix
+                                .get(i)
+                                .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                                    reason: format!(
+                                        "binary factor {factor_id} is missing matrix row {i}"
+                                    ),
+                                })?;
+                        if row.len() != other_msg.values.len() {
+                            return Err(FactorGraphError::InconsistentGraph {
+                                reason: format!(
+                                    "binary factor {factor_id} row {i} has width {}, expected {}",
+                                    row.len(),
+                                    other_msg.values.len()
+                                ),
+                            });
+                        }
+                        for (&potential, &probability) in row.iter().zip(&other_msg.values) {
+                            *value += potential * probability;
                         }
                     }
                 } else {
                     // Sum over columns
-                    for (j, value) in values.iter_mut().enumerate() {
-                        for (i, &prob) in other_msg.values.iter().enumerate() {
-                            *value += matrix[i][j] * prob;
+                    if matrix.len() != other_msg.values.len() {
+                        return Err(FactorGraphError::InconsistentGraph {
+                            reason: format!(
+                                "binary factor {factor_id} has {} rows, expected {}",
+                                matrix.len(),
+                                other_msg.values.len()
+                            ),
+                        });
+                    }
+                    for (column, value) in values.iter_mut().enumerate() {
+                        for (row, &probability) in matrix.iter().zip(&other_msg.values) {
+                            let potential = row.get(column).ok_or_else(|| {
+                                FactorGraphError::InconsistentGraph {
+                                    reason: format!(
+                                        "binary factor {factor_id} is missing matrix column {column}"
+                                    ),
+                                }
+                            })?;
+                            *value += potential * probability;
                         }
                     }
                 }
 
                 let mut msg = Message { values };
                 msg.normalize();
-                msg
+                Ok(msg)
             }
         }
     }
 
     /// Compute final beliefs
-    fn compute_beliefs(&mut self) {
+    fn compute_beliefs(&mut self) -> Result<(), FactorGraphError> {
         for var in self.graph.variables() {
-            let v = self.graph.get_variable(var.id).unwrap();
-
-            if let Some(obs) = v.observed {
-                let mut belief = vec![0.0; v.domain_size];
-                belief[obs] = 1.0;
+            if let Some(obs) = var.observed {
+                let mut belief = vec![0.0; var.domain_size];
+                let domain_size = belief.len();
+                let slot = belief
+                    .get_mut(obs)
+                    .ok_or(FactorGraphError::ObservationOutOfRange {
+                        value: obs,
+                        domain_size,
+                    })?;
+                *slot = 1.0;
                 self.beliefs.insert(var.id, belief);
                 continue;
             }
 
-            let mut belief = vec![1.0; v.domain_size];
+            let mut belief = vec![1.0; var.domain_size];
             for &factor_id in self.graph.factors_for_variable(var.id) {
-                if let Some(msg) = self.factor_to_var.get(&(factor_id, var.id)) {
-                    for (i, &v) in msg.values.iter().enumerate() {
-                        belief[i] *= v;
-                    }
+                let msg = self
+                    .factor_to_var
+                    .get(&(factor_id, var.id))
+                    .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                        reason: format!(
+                            "missing factor-to-variable message for {factor_id} -> {:?}",
+                            var.id
+                        ),
+                    })?;
+                if belief.len() != msg.values.len() {
+                    return Err(FactorGraphError::InconsistentGraph {
+                        reason: format!(
+                            "factor {factor_id} message has domain {}, expected {} for {:?}",
+                            msg.values.len(),
+                            belief.len(),
+                            var.id
+                        ),
+                    });
+                }
+                for (value, &message) in belief.iter_mut().zip(&msg.values) {
+                    *value *= message;
                 }
             }
 
@@ -506,6 +684,7 @@ impl BeliefPropagation {
 
             self.beliefs.insert(var.id, belief);
         }
+        Ok(())
     }
 
     /// Get belief for a variable
@@ -643,68 +822,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_factor_graph_construction() {
+    fn test_factor_graph_construction() -> Result<(), FactorGraphError> {
         let mut graph = FactorGraph::new();
         let x = graph.add_variable("X");
         let y = graph.add_variable("Y");
 
-        graph.add_prior(x, vec![0.3, 0.7]).unwrap();
-        graph
-            .add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.2, 0.8]])
-            .unwrap();
+        graph.add_prior(x, vec![0.3, 0.7])?;
+        graph.add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.2, 0.8]])?;
 
         assert_eq!(graph.variables().count(), 2);
         assert_eq!(graph.factors().count(), 2);
+        Ok(())
     }
 
     #[test]
-    fn test_belief_propagation() {
+    fn test_belief_propagation() -> Result<(), FactorGraphError> {
         let mut graph = FactorGraph::new();
         let x = graph.add_variable("X");
         let y = graph.add_variable("Y");
 
-        graph.add_prior(x, vec![0.3, 0.7]).unwrap();
-        graph
-            .add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.2, 0.8]])
-            .unwrap();
+        graph.add_prior(x, vec![0.3, 0.7])?;
+        graph.add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.2, 0.8]])?;
 
         let mut bp = BeliefPropagation::new(graph);
-        let converged = bp.run();
+        let converged = bp.run()?;
         assert!(converged);
 
-        let x_belief = bp.belief(x).unwrap();
-        let y_belief = bp.belief(y).unwrap();
+        let x_belief = bp
+            .belief(x)
+            .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                reason: "missing X belief after convergence".to_string(),
+            })?;
+        let y_belief = bp
+            .belief(y)
+            .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                reason: "missing Y belief after convergence".to_string(),
+            })?;
 
         assert!((x_belief[0] + x_belief[1] - 1.0).abs() < 1e-6);
         assert!((y_belief[0] + y_belief[1] - 1.0).abs() < 1e-6);
+        Ok(())
     }
 
     #[test]
-    fn test_observation() {
+    fn test_observation() -> Result<(), FactorGraphError> {
         let mut graph = FactorGraph::new();
         let x = graph.add_variable("X");
         let y = graph.add_variable("Y");
 
-        graph.add_prior(x, vec![0.5, 0.5]).unwrap();
-        graph
-            .add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.1, 0.9]])
-            .unwrap();
+        graph.add_prior(x, vec![0.5, 0.5])?;
+        graph.add_pairwise(x, y, vec![vec![0.9, 0.1], vec![0.1, 0.9]])?;
 
-        graph.observe(x, 1).unwrap(); // Observe X = true
+        graph.observe(x, 1)?; // Observe X = true
 
         let mut bp = BeliefPropagation::new(graph);
-        bp.run();
+        bp.run()?;
 
         // Y should be likely true given X = true
-        let y_prob = bp.prob_true(y).unwrap();
+        let y_prob = bp
+            .prob_true(y)
+            .ok_or_else(|| FactorGraphError::InconsistentGraph {
+                reason: "missing Y probability after observed inference".to_string(),
+            })?;
         assert!(y_prob > 0.8);
+        Ok(())
     }
 
     #[test]
-    fn invalid_graph_shapes_are_rejected_before_inference() {
+    fn invalid_graph_shapes_are_rejected_before_inference() -> Result<(), FactorGraphError> {
         let mut graph = FactorGraph::new();
         let x = graph.add_variable("X");
-        let y = graph.add_variable_with_domain("Y", 3).unwrap();
+        let y = graph.add_variable_with_domain("Y", 3)?;
         let unknown = VariableId(Uuid::new_v4());
 
         assert_eq!(
@@ -731,6 +919,23 @@ mod tests {
         assert!(graph
             .add_pairwise(x, y, vec![vec![1.0, 0.0], vec![0.0, 1.0]])
             .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn inference_rejects_inconsistent_internal_graph() -> Result<(), FactorGraphError> {
+        let mut graph = FactorGraph::new();
+        let variable = graph.add_variable("X");
+        graph.add_prior(variable, vec![0.5, 0.5])?;
+        graph.variables.remove(&variable);
+
+        let mut propagation = BeliefPropagation::new(graph);
+        assert!(matches!(
+            propagation.run(),
+            Err(FactorGraphError::UnknownVariable(id)) if id == variable
+        ));
+        assert!(propagation.belief(variable).is_none());
+        Ok(())
     }
 
     #[test]

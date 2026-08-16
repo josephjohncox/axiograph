@@ -1313,7 +1313,13 @@ fn finite_kernel_evolution_preview(
             (Some(_), Some(_)) => changed.push(item),
             (None, Some(_)) => added.push(item),
             (Some(_), None) => removed.push(item),
-            (None, None) => unreachable!("key came from one payload map"),
+            (None, None) => {
+                return Err(anyhow!(
+                    "semantic payload key `{}`/`{}` disappeared from both evolution inputs",
+                    key.0,
+                    key.1
+                ));
+            }
         }
     }
     Ok(FiniteKernelEvolutionPreviewV1 {

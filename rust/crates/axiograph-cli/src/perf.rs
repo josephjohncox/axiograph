@@ -1584,16 +1584,12 @@ fn wait_for(mut f: impl FnMut() -> bool, timeout: Duration) -> bool {
     false
 }
 
-fn path_sig(db: &PathDB, rels: &[&str]) -> PathSig {
-    let mut ids = Vec::with_capacity(rels.len());
-    for rel in rels {
-        let id = db
-            .interner
-            .id_of(rel)
-            .unwrap_or_else(|| panic!("missing relation {rel}"));
-        ids.push(id);
-    }
-    PathSig::new(ids)
+fn path_sig(db: &PathDB, rels: &[&str]) -> Option<PathSig> {
+    let ids = rels
+        .iter()
+        .map(|relation| db.interner.id_of(relation))
+        .collect::<Option<Vec<_>>>()?;
+    Some(PathSig::new(ids))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1633,8 +1629,9 @@ fn run_index_workload(
     }
 
     if lru_capacity > 0 && path_len > index_depth {
-        let sig = path_sig(db, &cold_path);
-        let _ = wait_for(|| db.path_index_lru_contains(&sig), async_timeout);
+        if let Some(signature) = path_sig(db, &cold_path) {
+            let _ = wait_for(|| db.path_index_lru_contains(&signature), async_timeout);
+        }
     }
 
     let mut rng = crate::synthetic_pathdb::XorShift64::new(seed.wrapping_add(1));

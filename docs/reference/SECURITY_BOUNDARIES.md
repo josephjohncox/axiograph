@@ -119,8 +119,12 @@ reader fallback at a verified boundary.
 
 ## Saturation And Query Scope
 
-Two different operations must not be conflated:
+These bounded operations must not be conflated:
 
+- Evidence-plane factor graphs accept finite non-empty domains of at most 4,096
+  values and validated unary/binary potentials. Loopy belief propagation stops
+  after 100 iterations, reports non-convergence, and rejects missing or
+  dimensionally inconsistent variables, factors, and messages.
 - `RuntimeTheoryCheckReportV1` performs a bounded admissibility scan over the
   compiled obligation list. It does not saturate arbitrary theory rules.
 - `category_kernel_v3` reconstructs a finite category presentation and performs

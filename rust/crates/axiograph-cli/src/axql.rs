@@ -1273,9 +1273,10 @@ impl TypecheckedAxqlQueryExpr {
         }
 
         if out.len() == 1 {
-            Ok(Self::Conjunction(
-                out.into_iter().next().expect("len checked"),
-            ))
+            let conjunction = out
+                .pop()
+                .ok_or_else(|| anyhow!("typechecked AxQL conjunction disappeared"))?;
+            Ok(Self::Conjunction(conjunction))
         } else {
             Ok(Self::Disjunction(out))
         }
@@ -2789,21 +2790,16 @@ fn lower_query_disjunct(query: &AxqlQuery, disjunct: &[AxqlAtom]) -> Result<Lowe
                 relation,
                 fields,
             } => {
-                let fact_term = match fact {
-                    Some(AxqlTerm::Var(v)) => AxqlTerm::Var(v),
+                let (fact_term, fact_var_name) = match fact {
+                    Some(AxqlTerm::Var(name)) => (AxqlTerm::Var(name.clone()), name),
                     Some(other) => {
                         return Err(anyhow!("fact binder must be a variable (got {other:?})"))
                     }
                     None => {
                         let name = format!("?_fact{fresh_anon}");
                         fresh_anon += 1;
-                        AxqlTerm::Var(name)
+                        (AxqlTerm::Var(name.clone()), name)
                     }
-                };
-
-                let fact_var_name = match &fact_term {
-                    AxqlTerm::Var(v) => v.clone(),
-                    _ => unreachable!("fact term is always a variable"),
                 };
                 let field_set = fact_field_intent_by_var.entry(fact_var_name).or_default();
 
@@ -8052,12 +8048,11 @@ fn compile_regex_fragment(
             (s, t)
         }
         AxqlRegex::Seq(parts) => {
-            if parts.is_empty() {
+            let Some((first, rest)) = parts.split_first() else {
                 return compile_regex_fragment(db, b, &AxqlRegex::Epsilon);
-            }
-            let mut it = parts.iter();
-            let (start, mut accept) = compile_regex_fragment(db, b, it.next().unwrap());
-            for p in it {
+            };
+            let (start, mut accept) = compile_regex_fragment(db, b, first);
+            for p in rest {
                 let (s2, a2) = compile_regex_fragment(db, b, p);
                 b.add_eps(accept, s2);
                 accept = a2;

@@ -7376,7 +7376,12 @@ fn cmd_ingest_dir(
                     "nq" | "nquads" => axiograph_ingest_rdfowl::RdfFormatV1::NQuads,
                     "trig" => axiograph_ingest_rdfowl::RdfFormatV1::TriG,
                     "rdf" | "owl" | "xml" => axiograph_ingest_rdfowl::RdfFormatV1::RdfXml,
-                    _ => unreachable!("extension matched RDF branch"),
+                    _ => {
+                        return Err(anyhow!(
+                            "unsupported RDF extension `{ext}` for {}",
+                            rel_path.display()
+                        ));
+                    }
                 };
                 let proposals = axiograph_ingest_rdfowl::proposals_from_rdf_v1(
                     &bytes,

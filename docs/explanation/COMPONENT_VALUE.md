@@ -29,7 +29,7 @@ Standard knowledge graphs can't express "X is possibly true" vs "X is necessaril
 
 ### Value
 
-```
+```text
 ❌ Without modal logic:
    "Titanium cutting speed should be 100-150 SFM"
    
@@ -55,27 +55,32 @@ Binary true/false loses information. "90% confident" is very different from "50%
 
 ### Value
 
-```
+```text
 ❌ Naive approach:
    if confidence > 0.5: true
    else: false
    
-✅ Factor graph approach:
-   - Models dependencies between facts
-   - Propagates uncertainty correctly
-   - Handles correlated evidence
-   
+✅ Current finite evidence estimator:
+   - Accepts only validated unary and binary potentials
+   - Runs loopy belief propagation for at most 100 iterations
+   - Reports whether iteration converged
+   - Rejects inconsistent graph/message dimensions instead of returning a score
+
 Example:
-   Expert A says X is true (0.9 confidence)
-   Expert B says X is true (0.8 confidence)
-   
-   Naive: 0.9 × 0.8 = 0.72 (wrong - double counting if correlated)
-   Factor graph: Depends on whether A and B are independent
+   Expert A assigns X a 0.9 evidence weight
+   Expert B assigns X a 0.8 evidence weight
+
+   Naive multiplication: 0.9 × 0.8 = 0.72, which assumes a composition rule
+   Finite factor graph: the explicit potential determines how the two evidence
+   variables interact; cyclic inference remains approximate
 ```
 
 ### Concrete Benefit
 
-When reconciling LLM-extracted facts with existing knowledge, proper probability handling prevents both overconfidence and unnecessary skepticism.
+These bounded scores can rank or triage LLM-extracted evidence for review. They
+are not truth values, accepted ontology facts, path equalities, independence
+proofs, or trusted-kernel theorems. Review and promotion remain separate state
+transitions.
 
 ---
 
@@ -87,7 +92,7 @@ Schema migrations break data. How do you safely evolve a knowledge graph?
 
 ### Value
 
-```
+```text
 ❌ Without HoTT:
    Schema V1: Material { name, hardness }
    Schema V2: Material { name, hardness, density }
@@ -115,7 +120,7 @@ Finding paths in a dense knowledge graph is O(n!) in the worst case.
 
 ### Value
 
-```
+```text
 Graph: 10,000 entities, 50,000 relations
 
 ❌ Naive BFS:
@@ -144,7 +149,7 @@ If the engine and the semantics/spec diverge, you can ship fast but incorrect in
 
 ### Value
 
-```
+```text
 ❌ Unverified:
    Rust returns an answer with no certificate
    Result: Hard to audit, easy to silently drift from intended meaning
@@ -169,7 +174,7 @@ Static rules become stale. Experts override them constantly.
 
 ### Value
 
-```
+```text
 ❌ Static guardrails:
    Rule: "Never exceed 150 SFM on titanium"
    Reality: Experts override 40% of the time
@@ -197,7 +202,7 @@ Binary formats without verification lead to silent corruption.
 
 ### Value
 
-```
+```text
 ❌ Raw binary:
    Corrupted file loads successfully
    Wrong data used in calculations
@@ -223,7 +228,7 @@ Unit tests only cover cases you think of.
 
 ### Value
 
-```
+```text
 ❌ Unit tests (5 cases):
    test_prob(0.0) ✓
    test_prob(0.5) ✓
@@ -251,7 +256,7 @@ LLMs are systematically overconfident.
 
 ### Value
 
-```
+```text
 ❌ Raw LLM confidence:
    LLM says: "95% confident"
    Reality: Correct 70% of the time
@@ -278,7 +283,7 @@ Crashes during writes corrupt data.
 
 ### Value
 
-```
+```text
 ❌ Bare materialization writes:
    1. Overwrite a live .axpd file
    2. CRASH
