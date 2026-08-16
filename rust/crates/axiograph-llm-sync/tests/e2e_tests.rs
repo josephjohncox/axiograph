@@ -93,25 +93,17 @@ async fn test_full_extraction_pipeline() {
 }
 
 #[tokio::test]
-async fn test_facts_land_in_axi() {
+async fn sync_never_writes_accepted_axi() {
     let (_storage, sync, dir) = test_env();
 
     sync.sync_from_conversation(&machinist_conversation(), None)
         .await
         .unwrap();
 
-    // Check .axi file was created
-    let axi_path = dir.path().join("llm_extracted.axi");
-
-    // May not exist if all facts need review
-    if axi_path.exists() {
-        let content = std::fs::read_to_string(&axi_path).unwrap();
-        assert!(!content.is_empty(), "Should have content");
-        assert!(
-            content.contains("LLM extraction"),
-            "Should have source comment"
-        );
-    }
+    assert!(
+        !dir.path().join("llm_extracted.axi").exists(),
+        "runtime evidence sync must not create accepted .axi files"
+    );
 }
 
 #[tokio::test]
@@ -617,7 +609,7 @@ async fn test_custom_provider() {
 
 #[tokio::test]
 async fn test_full_roundtrip() {
-    let (storage, sync, dir) = test_env();
+    let (storage, sync, _dir) = test_env();
 
     // 1. Extract from conversation
     sync.sync_from_conversation(&machinist_conversation(), None)
@@ -627,19 +619,10 @@ async fn test_full_roundtrip() {
     // 2. Build grounding context
     let _context = sync.build_grounding_context("titanium", 5).unwrap();
 
-    // 3. Check .axi file
-    let axi_files: Vec<_> = std::fs::read_dir(dir.path())
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "axi"))
-        .collect();
-
-    println!("Created {} .axi files", axi_files.len());
-
-    // 4. Check PathDB
+    // 3. Check the process-local PathDB evidence view.
     let _db = storage.pathdb();
 
-    // 5. Verify end state
+    // 4. Verify end state
     let stats = sync.stats();
     println!("Final stats: {stats:?}");
 

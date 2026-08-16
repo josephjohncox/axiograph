@@ -142,9 +142,13 @@ Last updated: 2026-04-28.
 - [~] Add explicit approval and rejection flows.
   - Implemented: serialized in-process `approve_change(change_id)` and
     `reject_change(change_id, reason)` APIs with atomic rollback on failed
-    application and an audit-log rejection record.
-  - Missing: a stateful review service/CLI session. A standalone CLI command
-    cannot address the intentionally process-local queue by id.
+    application and an audit-log rejection record. `SyncManager` retains the
+    exact fact-to-storage-change mapping, reports storage-deferred facts as
+    pending instead of integrated, and drives the same transition when a fact
+    is approved or rejected.
+  - Missing: a CLI/service transport for the stateful review session. A
+    standalone command cannot address the intentionally process-local queue by
+    id.
 
 ### 1.3 Fix entity/relation identity (stop using placeholder IDs)
 

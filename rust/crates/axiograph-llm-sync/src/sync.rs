@@ -16,10 +16,11 @@ use crate::{
     StructuredFact, SyncConfig, SyncState, ValidationResult,
 };
 use axiograph_pathdb::PathDB;
-use axiograph_storage::{Change, ChangeSource, StorableFact, UnifiedStorage};
+use axiograph_storage::{Change, ChangeId, ChangeSource, StorableFact, UnifiedStorage};
 use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -48,11 +49,7 @@ pub enum SyncEvent {
         types: Vec<ConflictType>,
     },
     /// Facts integrated into storage
-    FactsIntegrated {
-        count: usize,
-        axi_files: Vec<String>,
-        pathdb_ids: Vec<u32>,
-    },
+    FactsIntegrated { count: usize, pathdb_ids: Vec<u32> },
     /// Rollback performed
     RolledBack {
         to_version: u64,
@@ -75,6 +72,8 @@ pub struct SyncManager {
     storage: Arc<UnifiedStorage>,
     /// Current sync state
     state: Arc<RwLock<SyncState>>,
+    /// Storage review changes keyed by their corresponding pending fact.
+    pending_storage_changes: Arc<RwLock<HashMap<FactId, ChangeId>>>,
     /// Configuration
     config: SyncConfig,
     /// Event handlers
@@ -95,6 +94,7 @@ impl SyncManager {
             last_sync: Utc::now(),
             pending_facts: Vec::new(),
             recent_integrations: Vec::new(),
+            rejected_facts: Vec::new(),
             conflicts: Vec::new(),
             graph_version: 0,
         };
@@ -102,6 +102,7 @@ impl SyncManager {
         Self {
             storage,
             state: Arc::new(RwLock::new(state)),
+            pending_storage_changes: Arc::new(RwLock::new(HashMap::new())),
             config,
             event_handlers: Vec::new(),
             default_provider,
@@ -143,7 +144,7 @@ impl SyncManager {
         });
 
         // Step 2: Validate facts
-        let (valid, invalid, needs_review) = self.validate_facts(&extracted)?;
+        let (valid, invalid, mut needs_review) = self.validate_facts(&extracted)?;
 
         self.emit(SyncEvent::FactsValidated {
             valid: valid.len(),
@@ -162,11 +163,17 @@ impl SyncManager {
         }
 
         // Step 4: Integrate valid, non-conflicting facts
-        let integrated = self.integrate_facts(valid, &provider, session_id)?;
+        let (integrated, storage_review) = self.integrate_facts(valid, &provider, session_id)?;
+        {
+            let mut pending_storage_changes = self.pending_storage_changes.write();
+            for (fact, change_id) in storage_review {
+                pending_storage_changes.insert(fact.id, change_id);
+                needs_review.push(fact);
+            }
+        }
 
         self.emit(SyncEvent::FactsIntegrated {
             count: integrated.len(),
-            axi_files: vec!["llm_extracted.axi".to_string()],
             pathdb_ids: integrated
                 .iter()
                 .flat_map(|f| {
@@ -440,50 +447,65 @@ impl SyncManager {
     /// Integrate validated facts into runtime evidence storage.
     fn integrate_facts(
         &self,
-        facts: Vec<ExtractedFact>,
+        mut facts: Vec<ExtractedFact>,
         provider: &LLMProvider,
         session_id: SessionId,
-    ) -> anyhow::Result<Vec<ExtractedFact>> {
-        let mut integrated = Vec::new();
-
-        // Convert to storable facts
-        let storable: Vec<StorableFact> = facts
-            .iter()
-            .filter_map(|f| self.to_storable(&f.structured))
-            .collect();
-
-        if storable.is_empty() {
-            return Ok(integrated);
+    ) -> anyhow::Result<(Vec<ExtractedFact>, Vec<(ExtractedFact, ChangeId)>)> {
+        if facts.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
         }
-
-        // Add to runtime evidence storage.
+        let storable = facts
+            .iter()
+            .map(|fact| {
+                self.to_storable(&fact.structured).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "validated fact {} cannot be represented in storage",
+                        fact.id
+                    )
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let source = ChangeSource::LLMExtraction {
             session_id,
             model: format!("{provider:?}"),
-            confidence: facts.iter().map(|f| f.confidence).sum::<f32>() / facts.len() as f32,
+            confidence: facts
+                .iter()
+                .map(|fact| fact.confidence)
+                .fold(1.0_f32, f32::min),
         };
-
-        self.storage.add_facts(storable, source)?;
-
-        // Flush to persist
+        let change_id = self.storage.add_facts(storable, source)?;
         let results = self.storage.flush()?;
 
-        // Update fact statuses
-        for (i, fact) in facts.into_iter().enumerate() {
-            let mut updated = fact;
-            if let Some(result) = results.first() {
-                // Simplified
-                updated.status = FactStatus::Integrated {
+        if let Some(result) = results.iter().find(|result| result.change_id == change_id) {
+            for fact in &mut facts {
+                fact.status = FactStatus::Integrated {
                     entity_ids: result.pathdb_ids.clone(),
                 };
             }
-            integrated.push(updated);
+            Ok((facts, Vec::new()))
+        } else if self
+            .storage
+            .pending()
+            .iter()
+            .any(|change| change.id == change_id)
+        {
+            let pending = facts
+                .into_iter()
+                .map(|mut fact| {
+                    fact.status = FactStatus::NeedsReview {
+                        reason: "runtime evidence storage policy requires review".to_string(),
+                    };
+                    (fact, change_id)
+                })
+                .collect();
+            Ok((Vec::new(), pending))
+        } else {
+            Err(anyhow::anyhow!(
+                "storage change {change_id} was neither applied nor retained for review"
+            ))
         }
-
-        Ok(integrated)
     }
 
-    /// Convert extracted fact to storable fact
     fn to_storable(&self, fact: &StructuredFact) -> Option<StorableFact> {
         match fact {
             StructuredFact::Entity {
@@ -661,37 +683,104 @@ impl SyncManager {
 
     /// Approve a pending fact
     pub fn approve_fact(&self, fact_id: FactId) -> anyhow::Result<()> {
+        let fact = self
+            .state
+            .read()
+            .pending_facts
+            .iter()
+            .find(|fact| fact.id == fact_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("pending fact {fact_id} was not found"))?;
+
+        let mapped_change = self.pending_storage_changes.read().get(&fact_id).copied();
+        let approved_fact_ids = if let Some(change_id) = mapped_change {
+            let ids = self
+                .pending_storage_changes
+                .read()
+                .iter()
+                .filter_map(|(pending_fact_id, pending_change_id)| {
+                    (*pending_change_id == change_id).then_some(*pending_fact_id)
+                })
+                .collect::<Vec<_>>();
+            self.storage.approve_change(change_id)?;
+            ids
+        } else {
+            let storable = self.to_storable(&fact.structured).ok_or_else(|| {
+                anyhow::anyhow!("pending fact {fact_id} cannot be represented in storage")
+            })?;
+            let change_id = self
+                .storage
+                .add_facts(vec![storable], ChangeSource::UserEdit { user_id: None })?;
+            self.storage.approve_change(change_id)?;
+            vec![fact_id]
+        };
+
+        self.pending_storage_changes
+            .write()
+            .retain(|pending_fact_id, _| !approved_fact_ids.contains(pending_fact_id));
         let mut state = self.state.write();
-
-        if let Some(idx) = state.pending_facts.iter().position(|f| f.id == fact_id) {
-            let fact = state.pending_facts.remove(idx);
-            drop(state);
-
-            // Integrate the approved fact
-            if let Some(storable) = self.to_storable(&fact.structured) {
-                self.storage
-                    .add_facts(vec![storable], ChangeSource::UserEdit { user_id: None })?;
-                self.storage.flush()?;
-            }
-        }
-
+        state
+            .pending_facts
+            .retain(|pending| !approved_fact_ids.contains(&pending.id));
+        state.recent_integrations.extend(approved_fact_ids);
+        state.graph_version += 1;
         Ok(())
     }
 
-    /// Reject a pending fact
     pub fn reject_fact(&self, fact_id: FactId, reason: &str) -> anyhow::Result<()> {
-        let mut state = self.state.write();
-
-        if let Some(fact) = state.pending_facts.iter_mut().find(|f| f.id == fact_id) {
-            fact.status = FactStatus::Rejected {
-                reason: reason.to_string(),
-            };
+        if reason.trim().is_empty() {
+            return Err(anyhow::anyhow!("rejection reason must not be empty"));
+        }
+        if !self
+            .state
+            .read()
+            .pending_facts
+            .iter()
+            .any(|fact| fact.id == fact_id)
+        {
+            return Err(anyhow::anyhow!("pending fact {fact_id} was not found"));
         }
 
+        let mapped_change = self.pending_storage_changes.read().get(&fact_id).copied();
+        let rejected_fact_ids = if let Some(change_id) = mapped_change {
+            let ids = self
+                .pending_storage_changes
+                .read()
+                .iter()
+                .filter_map(|(pending_fact_id, pending_change_id)| {
+                    (*pending_change_id == change_id).then_some(*pending_fact_id)
+                })
+                .collect::<Vec<_>>();
+            self.storage.reject_change(change_id, reason)?;
+            ids
+        } else {
+            vec![fact_id]
+        };
+
+        self.pending_storage_changes
+            .write()
+            .retain(|pending_fact_id, _| !rejected_fact_ids.contains(pending_fact_id));
+        let mut state = self.state.write();
+        let rejected = state
+            .pending_facts
+            .iter()
+            .filter(|fact| rejected_fact_ids.contains(&fact.id))
+            .cloned()
+            .map(|mut fact| {
+                fact.status = FactStatus::Rejected {
+                    reason: reason.to_string(),
+                };
+                fact
+            })
+            .collect::<Vec<_>>();
+        state
+            .pending_facts
+            .retain(|pending| !rejected_fact_ids.contains(&pending.id));
+        state.rejected_facts.extend(rejected);
+        state.graph_version += 1;
         Ok(())
     }
 
-    /// Resolve a conflict
     pub fn resolve_conflict(
         &self,
         conflict_id: usize,
@@ -805,9 +894,13 @@ mod tests {
         };
 
         let storage = Arc::new(UnifiedStorage::new(config).unwrap());
-        let sync_config = SyncConfig::default();
+        let sync_config = SyncConfig {
+            auto_integrate_threshold: 0.0,
+            human_review_constraints: false,
+            ..Default::default()
+        };
         let manager = SyncManager::new(
-            storage,
+            Arc::clone(&storage),
             sync_config,
             LLMProvider::Custom {
                 name: "test".to_string(),
@@ -817,7 +910,7 @@ mod tests {
 
         let conversation = vec![ConversationTurn {
             role: crate::Role::User,
-            content: "Titanium is a Material with hardness of 36".to_string(),
+            content: "Titanium is a Material. Carbide is a Tool.".to_string(),
             timestamp: Utc::now(),
             metadata: std::collections::HashMap::new(),
         }];
@@ -827,7 +920,65 @@ mod tests {
             .await
             .unwrap();
 
-        // Should extract the entity
-        assert!(result.integrated_count > 0 || result.pending_review > 0);
+        assert_eq!(result.integrated_count, 0);
+        assert_eq!(result.pending_review, 2);
+        assert!(storage.pathdb().find_by_type("Material").is_none());
+        assert!(storage.pathdb().find_by_type("Tool").is_none());
+
+        let fact_id = manager.pending_review()[0].id;
+        manager.approve_fact(fact_id).unwrap();
+        assert!(manager.pending_review().is_empty());
+        assert!(storage.pathdb().find_by_type("Material").is_some());
+        assert!(storage.pathdb().find_by_type("Tool").is_some());
+    }
+
+    #[tokio::test]
+    async fn storage_review_change_is_rejected_with_pending_fact() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            Arc::clone(&storage),
+            SyncConfig {
+                auto_integrate_threshold: 0.0,
+                human_review_constraints: false,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        );
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Titanium is a Material with hardness of 36".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+        manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .unwrap();
+
+        let fact_id = manager.pending_review()[0].id;
+        manager
+            .reject_fact(fact_id, "unsupported evidence")
+            .unwrap();
+
+        assert!(manager.pending_review().is_empty());
+        assert!(storage.pending().is_empty());
+        assert!(storage.pathdb().find_by_type("Material").is_none());
+        assert!(matches!(
+            storage.changelog().as_slice(),
+            [Change {
+                status: axiograph_storage::ChangeStatus::Rejected { reason },
+                ..
+            }] if reason == "unsupported evidence"
+        ));
     }
 }

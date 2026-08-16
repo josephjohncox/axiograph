@@ -297,6 +297,8 @@ pub struct SyncState {
     pub pending_facts: Vec<ExtractedFact>,
     /// Recently integrated facts
     pub recent_integrations: Vec<FactId>,
+    /// Facts explicitly rejected during review.
+    pub rejected_facts: Vec<ExtractedFact>,
     /// Conflicts requiring resolution
     pub conflicts: Vec<Conflict>,
     /// Version of the graph at last sync.
