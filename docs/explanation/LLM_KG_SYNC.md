@@ -136,6 +136,8 @@ reviewed, the CQ is executable, and the relevant coverage/tooling policy passes.
   layers or evidence overlays unless lowered through the canonical IR.
 - Model-assisted authoring must produce typed handles and reports that agents
   can act on, not prose-only recommendations.
+- Runtime sync validation uses the schema index loaded from canonical `.axi`;
+  it does not maintain a second hard-coded list of privileged type names.
 - MCP/LSP/API integrations should expose the same typed report families as CLI
   flows.
 - Accepted mutation always goes through Axiograph review and semantic VCS.
@@ -143,5 +145,8 @@ reviewed, the CQ is executable, and the relevant coverage/tooling policy passes.
   changes may materialize into its derived PathDB view; constraints,
   low-confidence evidence, and schema extensions stay pending until an explicit
   approval or rejection. `SyncManager` preserves the exact fact-to-change
-  mapping and does not report a storage-deferred fact as integrated. Neither
-  transition promotes accepted ontology state.
+  mapping and does not report a storage-deferred fact as integrated. Detected
+  conflicts remain in the conflict queue and are not materialized. Runtime
+  conflict handling supports `KeepOld` and `HumanReview`; `ReplaceOld` and
+  untyped attribute `Merge` fail closed until their promised atomic operations
+  exist. Neither transition promotes accepted ontology state.

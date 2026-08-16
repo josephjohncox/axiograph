@@ -20,7 +20,7 @@ use axiograph_storage::{Change, ChangeId, ChangeSource, StorableFact, UnifiedSto
 use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -163,7 +163,16 @@ impl SyncManager {
         }
 
         // Step 4: Integrate valid, non-conflicting facts
-        let (integrated, storage_review) = self.integrate_facts(valid, &provider, session_id)?;
+        let conflicting_fact_ids = conflicts
+            .iter()
+            .map(|conflict| conflict.new_fact.id)
+            .collect::<HashSet<_>>();
+        let integrable = valid
+            .into_iter()
+            .filter(|fact| !conflicting_fact_ids.contains(&fact.id))
+            .collect();
+        let (integrated, storage_review) =
+            self.integrate_facts(integrable, &provider, session_id)?;
         {
             let mut pending_storage_changes = self.pending_storage_changes.write();
             for (fact, change_id) in storage_review {
@@ -328,11 +337,9 @@ impl SyncManager {
         let mut invalid = Vec::new();
         let mut needs_review = Vec::new();
 
-        let db = self.storage.pathdb();
-
         for fact in facts {
             // Check schema validity
-            let schema_valid = self.check_schema_validity(&fact.structured, &db);
+            let schema_valid = self.check_schema_validity(&fact.structured);
 
             if !schema_valid {
                 let mut rejected = fact.clone();
@@ -373,46 +380,19 @@ impl SyncManager {
     }
 
     /// Check if fact matches schema
-    fn check_schema_validity(&self, fact: &StructuredFact, _db: &PathDB) -> bool {
-        // Simplified - would check against actual schema
+    fn check_schema_validity(&self, fact: &StructuredFact) -> bool {
+        let schema = self.storage.schema();
         match fact {
             StructuredFact::Entity { entity_type, .. } => {
-                // Accept common entity types
-                matches!(
-                    entity_type.as_str(),
-                    "Material"
-                        | "Tool"
-                        | "Operation"
-                        | "Machine"
-                        | "Constraint"
-                        | "Guideline"
-                        | "Concept"
-                        | "Unknown"
-                        | "Person"
-                        | "Organization"
-                        | "Location"
-                        | "Event"
-                )
+                schema.entity_types.iter().any(|known| known == entity_type)
             }
             StructuredFact::Relation { rel_type, .. } => {
-                // Accept common relation types
-                matches!(
-                    rel_type.as_str(),
-                    "hasMaterial"
-                        | "usesTool"
-                        | "produces"
-                        | "requires"
-                        | "isPartOf"
-                        | "relatedTo"
-                        | "precedes"
-                        | "follows"
-                )
+                schema.relation_types.iter().any(|known| known == rel_type)
             }
-            _ => true, // Constraints and tacit knowledge always pass
+            StructuredFact::Constraint { .. } | StructuredFact::TacitKnowledge { .. } => true,
         }
     }
 
-    /// Detect conflicts with existing knowledge
     fn detect_conflicts(&self, facts: &[ExtractedFact]) -> anyhow::Result<Vec<Conflict>> {
         let db = self.storage.pathdb();
         let mut conflicts = Vec::new();
@@ -432,9 +412,7 @@ impl SyncManager {
                             new_fact: fact.clone(),
                             existing_facts: existing.iter().collect(),
                             conflict_type: ConflictType::AttributeMismatch,
-                            suggested_resolution: Resolution::Merge {
-                                weights: (0.5, 0.5),
-                            },
+                            suggested_resolution: Resolution::HumanReview,
                         });
                     }
                 }
@@ -787,40 +765,36 @@ impl SyncManager {
         resolution: Resolution,
     ) -> anyhow::Result<()> {
         let mut state = self.state.write();
-
-        if conflict_id < state.conflicts.len() {
-            let conflict = &state.conflicts[conflict_id];
-
-            match resolution {
-                Resolution::ReplaceOld => {
-                    // Integrate new fact
-                    if let Some(storable) = self.to_storable(&conflict.new_fact.structured) {
-                        drop(state);
-                        self.storage
-                            .add_facts(vec![storable], ChangeSource::UserEdit { user_id: None })?;
-                        self.storage.flush()?;
-                    }
-                }
-                Resolution::KeepOld => {
-                    // Just remove from conflicts
-                }
-                Resolution::Merge { weights: _ } => {
-                    // Would merge attributes
-                    // Simplified for now
-                }
-                Resolution::HumanReview => {
-                    // Move to pending review
-                    let conflict = state.conflicts.remove(conflict_id);
-                    state.pending_facts.push(conflict.new_fact);
-                    return Ok(());
-                }
-            }
-
-            let mut state = self.state.write();
-            state.conflicts.remove(conflict_id);
+        if conflict_id >= state.conflicts.len() {
+            return Err(anyhow::anyhow!("conflict {conflict_id} was not found"));
         }
 
-        Ok(())
+        match resolution {
+            Resolution::KeepOld => {
+                let conflict = state.conflicts.remove(conflict_id);
+                let mut fact = conflict.new_fact;
+                fact.status = FactStatus::Rejected {
+                    reason: "kept existing runtime evidence during conflict resolution".to_string(),
+                };
+                state.rejected_facts.push(fact);
+                Ok(())
+            }
+            Resolution::HumanReview => {
+                let conflict = state.conflicts.remove(conflict_id);
+                let mut fact = conflict.new_fact;
+                fact.status = FactStatus::NeedsReview {
+                    reason: "conflict requires explicit human review".to_string(),
+                };
+                state.pending_facts.push(fact);
+                Ok(())
+            }
+            Resolution::ReplaceOld => Err(anyhow::anyhow!(
+                "ReplaceOld is unsupported: runtime evidence storage cannot atomically replace the conflicting record"
+            )),
+            Resolution::Merge { .. } => Err(anyhow::anyhow!(
+                "Merge is unsupported: no typed attribute-merge operation is implemented"
+            )),
+        }
     }
 
     // ========================================================================
@@ -882,14 +856,28 @@ pub struct SyncStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axiograph_storage::StorageConfig;
+    use axiograph_storage::{ReviewPolicy, StorageConfig};
     use tempfile::tempdir;
+
+    fn write_test_schema(dir: &tempfile::TempDir, objects: &[&str]) {
+        let mut source = "module TestSchema\n\nschema S:\n".to_string();
+        for object in objects {
+            source.push_str(&format!("  object {object}\n"));
+        }
+        std::fs::write(dir.path().join("TestSchema.axi"), source).unwrap();
+    }
 
     #[tokio::test]
     async fn test_sync_from_conversation() {
         let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Material", "Tool"]);
         let config = StorageConfig {
             axi_dir: dir.path().to_path_buf(),
+            require_review: ReviewPolicy {
+                constraints: true,
+                low_confidence_threshold: Some(0.95),
+                schema_changes: true,
+            },
             ..Default::default()
         };
 
@@ -935,9 +923,15 @@ mod tests {
     #[tokio::test]
     async fn storage_review_change_is_rejected_with_pending_fact() {
         let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Material"]);
         let storage = Arc::new(
             UnifiedStorage::new(StorageConfig {
                 axi_dir: dir.path().to_path_buf(),
+                require_review: ReviewPolicy {
+                    constraints: true,
+                    low_confidence_threshold: Some(0.95),
+                    schema_changes: true,
+                },
                 ..Default::default()
             })
             .unwrap(),
@@ -979,6 +973,159 @@ mod tests {
                 status: axiograph_storage::ChangeStatus::Rejected { reason },
                 ..
             }] if reason == "unsupported evidence"
+        ));
+    }
+
+    #[tokio::test]
+    async fn sync_validation_uses_loaded_schema_types() {
+        let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Widget"]);
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            Arc::clone(&storage),
+            SyncConfig {
+                auto_integrate_threshold: 0.0,
+                human_review_constraints: false,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        );
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Bolt is a Widget.".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+
+        let result = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.integrated_count, 1);
+        assert_eq!(result.pending_review, 0);
+        assert!(storage.pathdb().find_by_type("Widget").is_some());
+    }
+
+    #[tokio::test]
+    async fn conflicting_fact_is_not_materialized() {
+        let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Material"]);
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                require_review: ReviewPolicy {
+                    constraints: false,
+                    low_confidence_threshold: None,
+                    schema_changes: false,
+                },
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        storage
+            .add_facts(
+                vec![StorableFact::Entity {
+                    name: "Titanium".to_string(),
+                    entity_type: "Material".to_string(),
+                    attributes: Vec::new(),
+                }],
+                ChangeSource::UserEdit { user_id: None },
+            )
+            .unwrap();
+        storage.flush().unwrap();
+        let manager = SyncManager::new(
+            Arc::clone(&storage),
+            SyncConfig {
+                auto_integrate_threshold: 0.0,
+                human_review_constraints: false,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        );
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Aluminum is a Material.".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+
+        let result = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.integrated_count, 0);
+        assert_eq!(result.conflicts, 1);
+        assert!(matches!(
+            manager.unresolved_conflicts()[0].suggested_resolution,
+            Resolution::HumanReview
+        ));
+        assert_eq!(
+            storage
+                .pathdb()
+                .find_by_type("Material")
+                .expect("preloaded Material")
+                .len(),
+            1
+        );
+
+        let error = manager
+            .resolve_conflict(0, Resolution::ReplaceOld)
+            .expect_err("unsupported replacement must preserve the conflict");
+        assert!(error.to_string().contains("ReplaceOld"));
+        assert_eq!(manager.unresolved_conflicts().len(), 1);
+        assert_eq!(
+            storage
+                .pathdb()
+                .find_by_type("Material")
+                .expect("preloaded Material")
+                .len(),
+            1
+        );
+
+        manager
+            .resolve_conflict(0, Resolution::HumanReview)
+            .unwrap();
+        assert!(manager.unresolved_conflicts().is_empty());
+        assert!(matches!(
+            manager.pending_review().as_slice(),
+            [ExtractedFact {
+                status: FactStatus::NeedsReview { reason },
+                ..
+            }] if reason.contains("conflict")
+        ));
+
+        let second_conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Copper is a Material.".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+        manager
+            .sync_from_conversation(&second_conversation, None)
+            .await
+            .unwrap();
+        manager.resolve_conflict(0, Resolution::KeepOld).unwrap();
+        assert!(manager.unresolved_conflicts().is_empty());
+        assert!(matches!(
+            manager.state().rejected_facts.as_slice(),
+            [ExtractedFact {
+                status: FactStatus::Rejected { reason },
+                ..
+            }] if reason.contains("kept existing")
         ));
     }
 }
