@@ -2373,9 +2373,17 @@ fn compile_schema_path(schema: &SchemaPresentationIr, text: &str) -> Result<Sche
             ));
         }
     }
+    let source = selected
+        .first()
+        .map(|generator| generator.source.clone())
+        .ok_or_else(|| "schema-generator path has no steps".to_string())?;
+    let target = selected
+        .last()
+        .map(|generator| generator.target.clone())
+        .ok_or_else(|| "schema-generator path has no steps".to_string())?;
     Ok(SchemaPathIr {
-        source: selected[0].source.clone(),
-        target: selected.last().expect("non-empty").target.clone(),
+        source,
+        target,
         steps: selected
             .iter()
             .map(|generator| generator.generator_ref.clone())
@@ -3058,7 +3066,14 @@ fn compile_instance_model(
                             .relations
                             .iter()
                             .find(|candidate| candidate.relation_id == *relation_id)
-                            .expect("compiled role target relation exists");
+                            .ok_or_else(|| KernelCompileError::UnknownRelationTarget {
+                                schema: schema.label.clone(),
+                                site: format!(
+                                    "instance `{}` relation `{}` role `{}`",
+                                    instance.name, relation.label, role.label
+                                ),
+                                target: relation_id.to_string(),
+                            })?;
                         match (fact_label_relation.get(raw), resolved_labels.get(raw)) {
                             (Some(actual), Some(fact_id)) if actual == &expected_relation.label => {
                                 TypedValueIr::RelationFact {
@@ -3170,25 +3185,32 @@ fn compile_instance_model(
             SchemaGeneratorKindIr::RoleProjection => {
                 let SchemaGeneratorRefIr::RoleProjection { role_id } = &generator.generator_ref
                 else {
-                    unreachable!("role projection kind/ref agree")
+                    return Err(KernelCompileError::GeneratorEndpointMismatch {
+                        instance: instance.name.clone(),
+                        generator: generator.label.clone(),
+                    });
                 };
                 let mut mappings = Vec::new();
                 for fact in &facts {
-                    if fact.relation_id
-                        != match &generator.source {
-                            SchemaObjectRefIr::RelationObject { relation_id } => {
-                                relation_id.clone()
-                            }
-                            _ => unreachable!("role projection source is relation object"),
-                        }
-                    {
+                    let SchemaObjectRefIr::RelationObject { relation_id } = &generator.source
+                    else {
+                        return Err(KernelCompileError::GeneratorEndpointMismatch {
+                            instance: instance.name.clone(),
+                            generator: generator.label.clone(),
+                        });
+                    };
+                    if &fact.relation_id != relation_id {
                         continue;
                     }
                     let value = fact
                         .ordered_role_values
                         .iter()
                         .find(|value| &value.role_id == role_id)
-                        .expect("compiler required every role exactly once");
+                        .ok_or_else(|| KernelCompileError::MissingRoleValue {
+                            instance: instance.name.clone(),
+                            relation: relation_id.to_string(),
+                            role: generator.label.clone(),
+                        })?;
                     mappings.push(FunctionMappingIr {
                         source: fact.fact_id.to_string(),
                         target: value.value.wire_value(),
@@ -4166,19 +4188,30 @@ fn validate_constraint_runtime_shape(
 }
 
 fn fact_role_value(
+    instance_label: &str,
     fact: &RelationFactIr,
     relation: &RelationObjectIr,
     role: &str,
-) -> Option<String> {
-    let role_id = &relation
+) -> Result<String, KernelCompileError> {
+    let role_id = relation
         .roles
         .iter()
-        .find(|candidate| candidate.label == role)?
-        .role_id;
+        .find(|candidate| candidate.label == role)
+        .map(|candidate| &candidate.role_id)
+        .ok_or_else(|| KernelCompileError::MissingRoleValue {
+            instance: instance_label.to_string(),
+            relation: relation.label.clone(),
+            role: role.to_string(),
+        })?;
     fact.ordered_role_values
         .iter()
         .find(|value| &value.role_id == role_id)
         .map(|value| value.value.wire_value())
+        .ok_or_else(|| KernelCompileError::MissingRoleValue {
+            instance: instance_label.to_string(),
+            relation: relation.label.clone(),
+            role: role.to_string(),
+        })
 }
 
 fn relation_facts<'a>(
@@ -4206,13 +4239,15 @@ fn check_at_most(
     for fact in relation_facts(relation, facts) {
         let mut key = params
             .iter()
-            .map(|param| fact_role_value(fact, relation, param).expect("formed role"))
-            .collect::<Vec<_>>();
-        key.push(fact_role_value(fact, relation, source).expect("formed role"));
-        targets
-            .entry(key)
-            .or_default()
-            .insert(fact_role_value(fact, relation, target).expect("formed role"));
+            .map(|param| fact_role_value(instance_label, fact, relation, param))
+            .collect::<Result<Vec<_>, _>>()?;
+        key.push(fact_role_value(instance_label, fact, relation, source)?);
+        targets.entry(key).or_default().insert(fact_role_value(
+            instance_label,
+            fact,
+            relation,
+            target,
+        )?);
     }
     if let Some((key, values)) = targets
         .iter()
@@ -4241,8 +4276,8 @@ fn check_key(
     for fact in relation_facts(relation, facts) {
         let key = fields
             .iter()
-            .map(|field| fact_role_value(fact, relation, field).expect("formed role"))
-            .collect::<Vec<_>>();
+            .map(|field| fact_role_value(instance_label, fact, relation, field))
+            .collect::<Result<Vec<_>, _>>()?;
         if !keys.insert(key.clone()) {
             return Err(KernelCompileError::ViolatedConstraint {
                 instance: instance_label.to_string(),
@@ -4255,17 +4290,31 @@ fn check_key(
 }
 
 fn carrier_pair<'a>(
+    instance_label: &str,
+    constraint: &str,
     relation: &'a RelationObjectIr,
     carriers: Option<&'a CarrierFieldsV1>,
-) -> (&'a str, &'a str) {
-    carriers
-        .map(|carriers| (carriers.left_field.as_str(), carriers.right_field.as_str()))
-        .unwrap_or_else(|| {
-            (
-                relation.roles[0].label.as_str(),
-                relation.roles[1].label.as_str(),
-            )
-        })
+) -> Result<(&'a str, &'a str), KernelCompileError> {
+    if let Some(carriers) = carriers {
+        return Ok((carriers.left_field.as_str(), carriers.right_field.as_str()));
+    }
+    let left = relation
+        .roles
+        .first()
+        .ok_or_else(|| KernelCompileError::ViolatedConstraint {
+            instance: instance_label.to_string(),
+            constraint: constraint.to_string(),
+            detail: format!("relation `{}` has no first carrier role", relation.label),
+        })?;
+    let right = relation
+        .roles
+        .get(1)
+        .ok_or_else(|| KernelCompileError::ViolatedConstraint {
+            instance: instance_label.to_string(),
+            constraint: constraint.to_string(),
+            detail: format!("relation `{}` has no second carrier role", relation.label),
+        })?;
+    Ok((left.label.as_str(), right.label.as_str()))
 }
 
 fn check_symmetric(
@@ -4277,23 +4326,24 @@ fn check_symmetric(
     params: &[String],
     guard: Option<(&String, &Vec<String>)>,
 ) -> Result<(), KernelCompileError> {
-    let (left, right) = carrier_pair(relation, carriers);
+    let (left, right) = carrier_pair(instance_label, constraint, relation, carriers)?;
     let tuples = relation_facts(relation, facts)
         .map(|fact| {
             let params = params
                 .iter()
-                .map(|param| fact_role_value(fact, relation, param).expect("formed role"))
-                .collect::<Vec<_>>();
+                .map(|param| fact_role_value(instance_label, fact, relation, param))
+                .collect::<Result<Vec<_>, _>>()?;
             let guard_value = guard
-                .map(|(field, _)| fact_role_value(fact, relation, field).expect("formed role"));
-            (
+                .map(|(field, _)| fact_role_value(instance_label, fact, relation, field))
+                .transpose()?;
+            Ok((
                 params,
-                fact_role_value(fact, relation, left).expect("formed role"),
-                fact_role_value(fact, relation, right).expect("formed role"),
+                fact_role_value(instance_label, fact, relation, left)?,
+                fact_role_value(instance_label, fact, relation, right)?,
                 guard_value,
-            )
+            ))
         })
-        .collect::<BTreeSet<_>>();
+        .collect::<Result<BTreeSet<_>, KernelCompileError>>()?;
     for (fiber, from, to, guard_value) in &tuples {
         if let Some((_, allowed)) = guard {
             if !guard_value
@@ -4327,19 +4377,19 @@ fn check_transitive(
     carriers: Option<&CarrierFieldsV1>,
     params: &[String],
 ) -> Result<(), KernelCompileError> {
-    let (left, right) = carrier_pair(relation, carriers);
+    let (left, right) = carrier_pair(instance_label, constraint, relation, carriers)?;
     let tuples = relation_facts(relation, facts)
         .map(|fact| {
-            (
+            Ok((
                 params
                     .iter()
-                    .map(|param| fact_role_value(fact, relation, param).expect("formed role"))
-                    .collect::<Vec<_>>(),
-                fact_role_value(fact, relation, left).expect("formed role"),
-                fact_role_value(fact, relation, right).expect("formed role"),
-            )
+                    .map(|param| fact_role_value(instance_label, fact, relation, param))
+                    .collect::<Result<Vec<_>, _>>()?,
+                fact_role_value(instance_label, fact, relation, left)?,
+                fact_role_value(instance_label, fact, relation, right)?,
+            ))
         })
-        .collect::<BTreeSet<_>>();
+        .collect::<Result<BTreeSet<_>, KernelCompileError>>()?;
     for (fiber, from, middle) in &tuples {
         for (_, candidate_middle, to) in
             tuples
