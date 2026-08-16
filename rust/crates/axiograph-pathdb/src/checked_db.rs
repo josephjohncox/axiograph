@@ -1125,7 +1125,13 @@ impl<'db> TypedFactBuilder<'db> {
                     .field_values
                     .get(&f.field_name)
                     .copied()
-                    .expect("checked above");
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "missing field `{}` while deriving stable fact name for relation `{}`",
+                            f.field_name,
+                            self.relation
+                        )
+                    })?;
                 bytes.extend_from_slice(id.to_string().as_bytes());
                 bytes.push(0);
             }
@@ -1165,7 +1171,13 @@ impl<'db> TypedFactBuilder<'db> {
                 .field_values
                 .get(&f.field_name)
                 .copied()
-                .expect("checked above");
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing field `{}` while committing relation `{}`",
+                        f.field_name,
+                        self.relation
+                    )
+                })?;
             self.db
                 .add_relation(&f.field_name, fact, value, self.edge_confidence, vec![]);
             if f.field_name == "ctx" {
@@ -1275,7 +1287,13 @@ impl<'db> TypedFactBuilder<'db> {
                 .field_values
                 .get(&f.field_name)
                 .copied()
-                .expect("checked above");
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing field `{}` while updating relation `{}`",
+                        f.field_name,
+                        self.relation
+                    )
+                })?;
             let Some(field_rel_id) = self.db.interner.id_of(&f.field_name) else {
                 return Err(anyhow!(
                     "fact {fact_id}: missing interned relation id for field `{}`",

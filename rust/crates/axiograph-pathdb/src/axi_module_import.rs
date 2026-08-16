@@ -1242,9 +1242,14 @@ impl<'a> InstanceImportContext<'a> {
             // Canonicalize tuple fields in schema-declared order.
             let mut ordered_fields: Vec<(&str, &str)> = Vec::with_capacity(decl.fields.len());
             for f in &decl.fields {
-                let v = field_value_names
-                    .get(&f.field)
-                    .expect("field presence checked above");
+                let v = field_value_names.get(&f.field).ok_or_else(|| {
+                    anyhow!(
+                        "missing field `{}` while canonicalizing `{}` tuple in instance `{}`",
+                        f.field,
+                        relation_name,
+                        self.inst.name
+                    )
+                })?;
                 ordered_fields.push((f.field.as_str(), v.as_str()));
             }
             let fact_id = runtime_fact_id_v2(
@@ -1304,7 +1309,14 @@ impl<'a> InstanceImportContext<'a> {
             for f in &decl.fields {
                 let value_name = field_value_names
                     .get(&f.field)
-                    .expect("field presence checked above")
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "missing field `{}` while importing `{}` tuple in instance `{}`",
+                            f.field,
+                            relation_name,
+                            self.inst.name
+                        )
+                    })?
                     .as_str();
                 let value_entity_id =
                     self.get_or_create_object_entity(f.ty.referenced_name(), value_name)?;

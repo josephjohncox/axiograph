@@ -110,6 +110,9 @@ shape requires:
   explanation depth.
 - Repository, document, conversation, RDF, protobuf, overlay, CQ, and proposal
   adapters impose format-specific collection and aggregate limits.
+- Document and conversation pattern suites use fallible regex construction and
+  checked capture access. Pattern initialization errors propagate or produce a
+  fail-closed empty result; they do not abort the process.
 
 Unsupported verified versions and nonzero flags reject. There is no legacy
 reader fallback at a verified boundary.

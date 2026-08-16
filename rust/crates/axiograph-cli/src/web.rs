@@ -595,7 +595,7 @@ fn cmd_web_ingest(
         }
 
         // Fact extraction (same default patterns as `extract_knowledge_full`).
-        let patterns = axiograph_ingest_docs::machining_patterns();
+        let patterns = axiograph_ingest_docs::machining_patterns()?;
         let mut page_facts: Vec<axiograph_ingest_docs::ExtractedFact> = Vec::new();
         for chunk in &extraction.chunks {
             page_facts.extend(axiograph_ingest_docs::extract_facts_from_chunk(

@@ -50,8 +50,8 @@ pub struct ExtractionPattern {
 }
 
 /// Build default extraction patterns for machining domain
-pub fn machining_patterns() -> Vec<ExtractionPattern> {
-    vec![
+pub fn machining_patterns() -> Result<Vec<ExtractionPattern>, regex::Error> {
+    Ok(vec![
         // -----------------------------------------------------------------
         // Common observations in shop-floor conversations
         // -----------------------------------------------------------------
@@ -61,12 +61,10 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             fact_type: FactType::Observation,
             regex: Regex::new(
                 r"(?i)(?:getting|having|experiencing)\s+(?:a\s+lot\s+of\s+)?(chatter|vibration)",
-            )
-            .unwrap(),
+            )?,
             base_confidence: 0.80,
             entity_groups: vec![(1, "issue".to_string())],
         },
-
         // Cutting parameter recommendations
         ExtractionPattern {
             name: "speed_recommendation".to_string(),
@@ -81,8 +79,7 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             // kind of context tracking belongs in a later "conversation context" pass.
             regex: Regex::new(
                 r"(?i)(?:try\s+(?:reducing|reduce|increasing|increase)\s*(?:to\s*)?|reduce(?:d|ing)?\s*(?:to\s*)?|increase(?:d|ing)?\s*(?:to\s*)?|use\s*(?:at\s*)?|set\s*(?:to\s*)?|run\s*(?:at\s*)?|running\s*(?:at\s*)?|recommend\s*)(\d+(?:\.\d+)?)\s*(sfm|rpm|m/min|m\s*/\s*min)",
-            )
-            .unwrap(),
+            )?,
             base_confidence: 0.75,
             entity_groups: vec![(1, "speed".to_string()), (2, "unit".to_string())],
         },
@@ -95,8 +92,7 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             // - "Running at 4500 RPM"
             regex: Regex::new(
                 r"(?i)(?:about|around|at|running\s+at|run\s+at)\s*(\d+(?:\.\d+)?)\s*(sfm|rpm|m/min|m\s*/\s*min)",
-            )
-            .unwrap(),
+            )?,
             base_confidence: 0.70,
             entity_groups: vec![(1, "speed".to_string()), (2, "unit".to_string())],
         },
@@ -110,8 +106,7 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             // - "Feed: 0.002 mm/tooth"
             regex: Regex::new(
                 r"(?i)(?:feed(?:\s+rate)?\s*(?:of|at|:|=)?\s*)?(?:try|recommend|use|run)?\s*(\d+(?:\.\d+)?)\s*(ipt|ipm|fpt|mm/rev|mm/tooth)",
-            )
-            .unwrap(),
+            )?,
             base_confidence: 0.7,
             entity_groups: vec![(1, "feed".to_string()), (2, "unit".to_string())],
         },
@@ -122,7 +117,7 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             // Covers common phrasing like:
             // - 'maybe 0.050" axial'
             // - '0.5 mm radial'
-            regex: Regex::new(r#"(?i)(\d+(?:\.\d+)?)\s*("|in|mm)\s*(axial|radial)"#).unwrap(),
+            regex: Regex::new(r#"(?i)(\d+(?:\.\d+)?)\s*("|in|mm)\s*(axial|radial)"#)?,
             base_confidence: 0.65,
             entity_groups: vec![
                 (1, "depth".to_string()),
@@ -135,7 +130,7 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             domain: "machining".to_string(),
             fact_type: FactType::Recommendation,
             // Very common shop-floor guidance; keep the regex tight to avoid matching every mention.
-            regex: Regex::new(r"(?i)(flood coolant|high pressure coolant)").unwrap(),
+            regex: Regex::new(r"(?i)(flood coolant|high pressure coolant)")?,
             base_confidence: 0.70,
             entity_groups: vec![(1, "coolant".to_string())],
         },
@@ -144,16 +139,22 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             name: "wear_observation".to_string(),
             domain: "machining".to_string(),
             fact_type: FactType::Observation,
-            regex: Regex::new(r"(?i)(flank|crater|notch|built-up edge|bue)\s*wear.*?(\d+(?:\.\d+)?)\s*(mm|minutes?|parts?)").unwrap(),
+            regex: Regex::new(
+                r"(?i)(flank|crater|notch|built-up edge|bue)\s*wear.*?(\d+(?:\.\d+)?)\s*(mm|minutes?|parts?)",
+            )?,
             base_confidence: 0.8,
-            entity_groups: vec![(1, "wear_type".to_string()), (2, "amount".to_string()), (3, "unit".to_string())],
+            entity_groups: vec![
+                (1, "wear_type".to_string()),
+                (2, "amount".to_string()),
+                (3, "unit".to_string()),
+            ],
         },
         // Chatter/vibration
         ExtractionPattern {
             name: "chatter_condition".to_string(),
             domain: "machining".to_string(),
             fact_type: FactType::Observation,
-            regex: Regex::new(r"(?i)chatter.*?(?:at|when|above|below)\s*(\d+)\s*(rpm|sfm|mm)").unwrap(),
+            regex: Regex::new(r"(?i)chatter.*?(?:at|when|above|below)\s*(\d+)\s*(rpm|sfm|mm)")?,
             base_confidence: 0.85,
             entity_groups: vec![(1, "threshold".to_string()), (2, "unit".to_string())],
         },
@@ -162,16 +163,24 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             name: "cause_effect".to_string(),
             domain: "machining".to_string(),
             fact_type: FactType::Causation,
-            regex: Regex::new(r"(?i)(increasing|decreasing|higher|lower)\s+(\w+)\s+(?:causes|leads to|results in|improves|worsens)\s+(\w+)").unwrap(),
+            regex: Regex::new(
+                r"(?i)(increasing|decreasing|higher|lower)\s+(\w+)\s+(?:causes|leads to|results in|improves|worsens)\s+(\w+)",
+            )?,
             base_confidence: 0.65,
-            entity_groups: vec![(1, "direction".to_string()), (2, "cause".to_string()), (3, "effect".to_string())],
+            entity_groups: vec![
+                (1, "direction".to_string()),
+                (2, "cause".to_string()),
+                (3, "effect".to_string()),
+            ],
         },
         // Rule of thumb / heuristics
         ExtractionPattern {
             name: "heuristic".to_string(),
             domain: "machining".to_string(),
             fact_type: FactType::Heuristic,
-            regex: Regex::new(r"(?i)(?:rule of thumb|generally|typically|as a rule|in practice)[:\s]+(.{10,100})").unwrap(),
+            regex: Regex::new(
+                r"(?i)(?:rule of thumb|generally|typically|as a rule|in practice)[:\s]+(.{10,100})",
+            )?,
             base_confidence: 0.6,
             entity_groups: vec![(1, "rule".to_string())],
         },
@@ -179,7 +188,7 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             name: "heuristic_higher_feeds_lower_speeds".to_string(),
             domain: "machining".to_string(),
             fact_type: FactType::Heuristic,
-            regex: Regex::new(r"(?i)(higher\s+feeds,?\s+lower\s+speeds)").unwrap(),
+            regex: Regex::new(r"(?i)(higher\s+feeds,?\s+lower\s+speeds)")?,
             base_confidence: 0.65,
             entity_groups: vec![(1, "rule".to_string())],
         },
@@ -188,9 +197,14 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             name: "material_tool".to_string(),
             domain: "machining".to_string(),
             fact_type: FactType::Recommendation,
-            regex: Regex::new(r"(?i)(?:for|when cutting|machining)\s+(aluminum|steel|titanium|inconel|stainless|brass|copper).*?(?:use|recommend|prefer)\s+(carbide|hss|ceramic|cbn|pcd|diamond)").unwrap(),
+            regex: Regex::new(
+                r"(?i)(?:for|when cutting|machining)\s+(aluminum|steel|titanium|inconel|stainless|brass|copper).*?(?:use|recommend|prefer)\s+(carbide|hss|ceramic|cbn|pcd|diamond)",
+            )?,
             base_confidence: 0.7,
-            entity_groups: vec![(1, "material".to_string()), (2, "tool_material".to_string())],
+            entity_groups: vec![
+                (1, "material".to_string()),
+                (2, "tool_material".to_string()),
+            ],
         },
         ExtractionPattern {
             name: "coated_tool_recommendation".to_string(),
@@ -201,8 +215,7 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             // - "Use AlCrN carbide."
             regex: Regex::new(
                 r"(?i)(?:always\s+use|use|recommend|prefer)\s+([a-z0-9][a-z0-9\-]*)\s+(?:coated\s+)?(carbide|hss|ceramic|cbn|pcd|diamond)",
-            )
-            .unwrap(),
+            )?,
             base_confidence: 0.70,
             entity_groups: vec![(1, "coating".to_string()), (2, "tool_material".to_string())],
         },
@@ -211,11 +224,11 @@ pub fn machining_patterns() -> Vec<ExtractionPattern> {
             name: "procedure_step".to_string(),
             domain: "general".to_string(),
             fact_type: FactType::Procedure,
-            regex: Regex::new(r"(?i)(?:first|then|next|finally|step \d+)[:\s]+(.{10,150})").unwrap(),
+            regex: Regex::new(r"(?i)(?:first|then|next|finally|step \d+)[:\s]+(.{10,150})")?,
             base_confidence: 0.55,
             entity_groups: vec![(1, "step".to_string())],
         },
-    ]
+    ])
 }
 
 /// Extract facts from a chunk using patterns

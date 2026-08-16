@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{anyhow, Context, Result};
 use axiograph_pathdb::axi_semantics::MetaPlaneIndex;
@@ -711,11 +712,20 @@ fn regulated_production_line_run_trust(anchor: &AcceptedAxiAnchor) -> TrustContr
 }
 
 fn relation_refs_in_query(query: &str) -> Vec<(String, String)> {
-    let re = Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\(")
-        .expect("relation reference regex should compile");
-    let mut refs = re
+    static RELATION_REF_RE: OnceLock<std::result::Result<Regex, regex::Error>> = OnceLock::new();
+    let Ok(regex) = RELATION_REF_RE
+        .get_or_init(|| Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\("))
+    else {
+        return Vec::new();
+    };
+    let mut refs = regex
         .captures_iter(query)
-        .map(|capture| (capture[1].to_string(), capture[2].to_string()))
+        .filter_map(|capture| {
+            Some((
+                capture.get(1)?.as_str().to_string(),
+                capture.get(2)?.as_str().to_string(),
+            ))
+        })
         .collect::<Vec<_>>();
     refs.sort();
     refs.dedup();

@@ -493,7 +493,7 @@ pub fn extract_knowledge_full(
     };
 
     // Extract facts from chunks
-    let patterns = machining_patterns();
+    let patterns = machining_patterns()?;
     let mut all_facts = Vec::new();
 
     for chunk in &extraction.chunks {
@@ -526,7 +526,7 @@ pub fn extract_knowledge_from_conversation(
     let extraction = conversation_to_extraction(&conv);
 
     // Extract facts
-    let patterns = machining_patterns();
+    let patterns = machining_patterns()?;
     let mut all_facts = Vec::new();
 
     for chunk in &extraction.chunks {
@@ -550,7 +550,7 @@ pub fn extract_knowledge_from_confluence(
     let page = parse_confluence_html(html, page_id, space)?;
     let extraction = confluence_to_extraction(&page);
 
-    let patterns = machining_patterns();
+    let patterns = machining_patterns()?;
     let mut all_facts = Vec::new();
 
     for chunk in &extraction.chunks {

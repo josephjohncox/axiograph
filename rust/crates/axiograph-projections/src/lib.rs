@@ -1455,15 +1455,7 @@ fn semantic_loss_report(
     backend: ProjectionBackendV1,
 ) -> SemanticLossReportV1 {
     let ir = snapshot.ir();
-    let declaration = backend_capabilities_v1(backend);
-    let capability = |wanted| {
-        declaration
-            .capabilities
-            .iter()
-            .find(|entry| entry.capability == wanted)
-            .expect("closed capability declaration")
-            .disposition
-    };
+    let capability = |wanted| disposition(backend, wanted);
     let mut losses = Vec::new();
 
     for schema in ir.schemas() {
