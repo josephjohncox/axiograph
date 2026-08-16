@@ -4858,6 +4858,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
         serde_json::to_string_pretty(&entity_summaries).unwrap_or_else(|_| "[]".to_string());
 
     #[derive(Debug, Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct LlmNewEntityV1 {
         entity_type: String,
         name: String,
@@ -4867,7 +4868,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
         description: Option<String>,
         #[serde(default)]
         confidence: Option<f64>,
-        #[serde(default, alias = "chunk_id")]
+        #[serde(default)]
         evidence_chunk_id: Option<String>,
         #[serde(default)]
         public_rationale: Option<String>,
@@ -4876,17 +4877,16 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
     }
 
     #[derive(Debug, Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct LlmNewRelationV1 {
         rel_type: String,
-        #[serde(alias = "source_entity_id", alias = "source_id", alias = "from")]
         source: String,
-        #[serde(alias = "target_entity_id", alias = "target_id", alias = "to")]
         target: String,
         #[serde(default)]
         attributes: std::collections::HashMap<String, String>,
         #[serde(default)]
         confidence: Option<f64>,
-        #[serde(default, alias = "chunk_id")]
+        #[serde(default)]
         evidence_chunk_id: Option<String>,
         #[serde(default)]
         public_rationale: Option<String>,
@@ -4895,6 +4895,7 @@ Max new proposals budget (ignored here): {max_new_proposals}"#
     }
 
     #[derive(Debug, Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct LlmAugmentResponseV1 {
         #[serde(default)]
         schema_hint_updates: Vec<SchemaHintUpdateV1>,

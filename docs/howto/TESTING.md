@@ -204,6 +204,9 @@ Windows bundle job can start.
 `make check-greenfield-surface` parses every tracked shell script and rejects
 retired binary aliases, bare `.axpd` loading/materialization commands, immutable
 image mutation commands, and missing scripts advertised by `scripts/ops/README.md`.
+It also scans production source for deprecated APIs, Serde field aliases,
+backward-compatibility branches, retired frontend storage-key migration, and the
+removed pre-`/api/embed` Ollama endpoint.
 
 The materialization suite checks insertion-order invariance, semantic-row digest
 sensitivity, exact N/N+1 count/string/fanout/page/file limits, SQLite header and

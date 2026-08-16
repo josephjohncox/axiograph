@@ -2349,11 +2349,7 @@ pub(crate) fn anthropic_chat_with_timeout(
     anthropic_messages_with_timeout(base_url, &key, model, user, system, timeout)
 }
 
-/// Compute embeddings for a batch of texts using Ollama.
-///
-/// Endpoint strategy:
-/// - Prefer `/api/embed` (batched) when available.
-/// - Fallback to `/api/embeddings` (per-item) for older Ollama versions.
+/// Compute embeddings for a batch of texts using Ollama's canonical `/api/embed` endpoint.
 #[cfg(feature = "llm-ollama")]
 pub(crate) fn ollama_embed_texts_with_timeout(
     host: &str,
@@ -2368,90 +2364,41 @@ pub(crate) fn ollama_embed_texts_with_timeout(
 
     let host = normalize_ollama_host(host);
     let timeout = required_network_timeout(timeout)?;
-
-    // ---------------------------------------------------------------------
-    // Try the newer batched endpoint first: `/api/embed`.
-    // ---------------------------------------------------------------------
-    let url_embed = url::Url::parse(&format!("{host}/api/embed"))
+    let url = url::Url::parse(&format!("{host}/api/embed"))
         .map_err(|error| anyhow!("invalid Ollama endpoint: {error}"))?;
-    let embed_transport = crate::web::PinnedLoopbackClient::new(&url_embed, timeout)?;
-    let body_embed = serde_json::json!({
+    let transport = crate::web::PinnedLoopbackClient::new(&url, timeout)?;
+    let body = serde_json::json!({
         "model": model,
         "input": texts,
         "truncate": true
     });
-    validate_network_json_request(&body_embed, "Ollama embeddings request")?;
+    validate_network_json_request(&body, "Ollama embeddings request")?;
 
-    let resp_embed = embed_transport
+    let response = transport
         .post()
-        .json(&body_embed)
+        .json(&body)
         .send()
-        .map_err(|error| anyhow!(error))
-        .and_then(|response| embed_transport.verify_response(response));
-    match resp_embed {
-        Ok(resp) if resp.status().is_success() => {
-            #[derive(Deserialize)]
-            struct EmbedResp {
-                embeddings: Vec<Vec<f32>>,
-            }
-
-            let out: EmbedResp = bounded_http_json(resp, "Ollama /api/embed response")?;
-            validate_embedding_vectors(&out.embeddings, texts.len())?;
-            return Ok(out.embeddings);
-        }
-        Ok(resp) => {
-            // Non-success: fall back to `/api/embeddings` (older versions).
-            let status = resp.status();
-            let text = bounded_http_text(resp, "Ollama /api/embed error response")?;
-            let _ = (status, text);
-        }
-        Err(e) => {
-            // If we can't even reach Ollama, surface that error instead of masking.
-            return Err(anyhow!(
-                "failed to reach ollama at {url_embed} (is it running?) ({e}). Try: `ollama serve` or set OLLAMA_HOST"
-            ));
-        }
+        .map_err(|error| {
+            anyhow!(
+                "failed to reach ollama at {url} (is it running?) ({error}). Try: `ollama serve` or set OLLAMA_HOST"
+            )
+        })?;
+    let response = transport.verify_response(response)?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = bounded_http_text(response, "Ollama /api/embed error response")?;
+        return Err(anyhow!("ollama /api/embed http error {status}: {text}"));
     }
 
-    // ---------------------------------------------------------------------
-    // Fallback: `/api/embeddings` (per-item).
-    // ---------------------------------------------------------------------
-    let url = url::Url::parse(&format!("{host}/api/embeddings"))
-        .map_err(|error| anyhow!("invalid Ollama endpoint: {error}"))?;
-    let fallback_transport = crate::web::PinnedLoopbackClient::new(&url, timeout)?;
     #[derive(Deserialize)]
-    struct EmbeddingsResp {
-        embedding: Vec<f32>,
+    #[serde(deny_unknown_fields)]
+    struct EmbedResp {
+        embeddings: Vec<Vec<f32>>,
     }
 
-    let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-    for t in texts {
-        let body = serde_json::json!({
-            "model": model,
-            "prompt": t
-        });
-        validate_network_json_request(&body, "Ollama embedding request")?;
-        let response = fallback_transport
-            .post()
-            .json(&body)
-            .send()
-            .map_err(|e| anyhow!(
-                "failed to reach ollama at {url} (is it running?) ({e}). Try: `ollama serve` or set OLLAMA_HOST"
-            ))?;
-        let resp = fallback_transport.verify_response(response)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = bounded_http_text(resp, "Ollama embedding error response")?;
-            return Err(anyhow!("ollama http error {status}: {text}"));
-        }
-
-        let r: EmbeddingsResp = bounded_http_json(resp, "Ollama /api/embeddings response")?;
-        out.push(r.embedding);
-    }
-
-    validate_embedding_vectors(&out, texts.len())?;
-    Ok(out)
+    let out: EmbedResp = bounded_http_json(response, "Ollama /api/embed response")?;
+    validate_embedding_vectors(&out.embeddings, texts.len())?;
+    Ok(out.embeddings)
 }
 
 pub(crate) fn parse_llm_json_object<T: for<'de> Deserialize<'de>>(text: &str) -> Result<T> {

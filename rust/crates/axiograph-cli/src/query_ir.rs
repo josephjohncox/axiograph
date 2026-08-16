@@ -374,16 +374,9 @@ pub fn query_ir_v1_json_schema() -> serde_json::Value {
                         "properties": {
                             "kind": { "const": "type" },
                             "term": { "$ref": "#/$defs/query_term" },
-                            "type": { "type": "string" },
-                            "ty": { "type": "string" },
-                            "type_name": { "type": "string" }
+                            "type": { "type": "string" }
                         },
-                        "required": ["kind", "term"],
-                        "anyOf": [
-                            { "required": ["type"] },
-                            { "required": ["ty"] },
-                            { "required": ["type_name"] }
-                        ]
+                        "required": ["kind", "term", "type"]
                     },
                     {
                         "additionalProperties": false,
@@ -2558,11 +2551,11 @@ impl QueryContextIrV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueryAtomIrV1 {
     Type {
         term: QueryTermIrV1,
-        #[serde(alias = "type", alias = "ty")]
+        #[serde(rename = "type")]
         type_name: String,
     },
     Edge {
@@ -2852,6 +2845,38 @@ mod tests {
             axiograph_kernel::revision_digest_v2(label).to_string(),
             format!("query-test:{label}"),
         )
+    }
+
+    #[test]
+    fn query_atom_ir_rejects_retired_type_field_aliases() {
+        let canonical = serde_json::json!({
+            "kind": "type",
+            "term": "?x",
+            "type": "Demo.Node"
+        });
+        assert!(serde_json::from_value::<QueryAtomIrV1>(canonical).is_ok());
+
+        for retired in ["type_name", "ty"] {
+            let mut value = serde_json::json!({
+                "kind": "type",
+                "term": "?x"
+            });
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert(retired.to_string(), serde_json::json!("Demo.Node"));
+            assert!(serde_json::from_value::<QueryAtomIrV1>(value).is_err());
+        }
+
+        let schema = query_ir_v1_json_schema();
+        let type_atom = &schema["$defs"]["query_atom"]["oneOf"][0];
+        assert!(type_atom["properties"].get("type").is_some());
+        assert!(type_atom["properties"].get("type_name").is_none());
+        assert!(type_atom["properties"].get("ty").is_none());
+        assert_eq!(
+            type_atom["required"],
+            serde_json::json!(["kind", "term", "type"])
+        );
     }
 
     #[test]

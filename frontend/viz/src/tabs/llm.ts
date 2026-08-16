@@ -60,12 +60,7 @@ function setLlmHistoryKey(next) {
 
 function loadLlmHistoryForKey(key) {
   try {
-    let raw = localStorage.getItem(key) || "";
-    // Backward-compat migration from v1 (host-scoped) history.
-    if (!raw.trim()) {
-      const host = (window.location && window.location.host) ? window.location.host : "offline";
-      raw = localStorage.getItem(`axiograph_llm_history_v1:${host}`) || "";
-    }
+    const raw = localStorage.getItem(key) || "";
     if (!raw.trim()) return [];
     const v = JSON.parse(raw);
     if (!Array.isArray(v)) return [];
