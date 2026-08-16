@@ -18,7 +18,7 @@
 
 use crate::branding::DbBranded;
 use crate::certificate::{
-    CertificateV2, FixedProb, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
+    CertificateV2, FixedPointProbability, NormalizePathProofV2, PathEquivProofV2, PathExprV2,
     ResolutionDecisionV2, ResolutionProofV2,
 };
 use crate::migration::{
@@ -455,9 +455,9 @@ impl ProofProducingOptimizer {
     /// Decide a reconciliation action (v2) and (optionally) return a full `ResolutionProofV2`.
     pub fn resolve_conflict_v2<M: ProofMode>(
         &self,
-        first_confidence_fp: FixedProb,
-        second_confidence_fp: FixedProb,
-        threshold_fp: FixedProb,
+        first_confidence_fp: FixedPointProbability,
+        second_confidence_fp: FixedPointProbability,
+        threshold_fp: FixedPointProbability,
     ) -> Proved<M, ResolutionDecisionV2, ResolutionProofV2> {
         let proof_payload =
             ResolutionProofV2::decide(first_confidence_fp, second_confidence_fp, threshold_fp);
@@ -474,9 +474,9 @@ impl ProofProducingOptimizer {
     pub fn resolve_conflict_v2_branded<M: ProofMode>(
         &self,
         db_token: DbToken,
-        first_confidence_fp: FixedProb,
-        second_confidence_fp: FixedProb,
-        threshold_fp: FixedProb,
+        first_confidence_fp: FixedPointProbability,
+        second_confidence_fp: FixedPointProbability,
+        threshold_fp: FixedPointProbability,
     ) -> Proved<M, ResolutionDecisionV2, DbBranded<ResolutionProofV2>> {
         let proof_payload =
             ResolutionProofV2::decide(first_confidence_fp, second_confidence_fp, threshold_fp);
@@ -492,9 +492,9 @@ impl ProofProducingOptimizer {
     /// Decide a reconciliation action (v2) and (optionally) emit a `CertificateV2` wrapper.
     pub fn resolve_conflict_certificate_v2<M: ProofMode>(
         &self,
-        first_confidence_fp: FixedProb,
-        second_confidence_fp: FixedProb,
-        threshold_fp: FixedProb,
+        first_confidence_fp: FixedPointProbability,
+        second_confidence_fp: FixedPointProbability,
+        threshold_fp: FixedPointProbability,
     ) -> Proved<M, ResolutionDecisionV2, CertificateV2> {
         let proof_payload =
             ResolutionProofV2::decide(first_confidence_fp, second_confidence_fp, threshold_fp);
@@ -870,9 +870,9 @@ mod tests {
 
         let proved = optimizer.resolve_conflict_v2_branded::<WithProof>(
             db1,
-            FixedProb::new_unchecked(900_000),
-            FixedProb::new_unchecked(850_000),
-            FixedProb::new_unchecked(800_000),
+            FixedPointProbability::new_unchecked(900_000),
+            FixedPointProbability::new_unchecked(850_000),
+            FixedPointProbability::new_unchecked(800_000),
         );
         assert!(proved.proof.assert_token(db1).is_ok());
         assert!(proved.proof.assert_token(db2).is_err());

@@ -31,12 +31,6 @@ pub struct FixedPointProbability {
     numerator: u32,
 }
 
-/// Short alias kept for convenience in Rust code.
-pub type FixedProb = FixedPointProbability;
-
-/// Lean-compatible name: `Axiograph.Prob.VProb` is this same fixed-point shape.
-pub type VProb = FixedPointProbability;
-
 impl Serialize for FixedPointProbability {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -54,7 +48,7 @@ impl<'de> Deserialize<'de> for FixedPointProbability {
         let numerator = u32::deserialize(deserializer)?;
         FixedPointProbability::try_new(numerator).ok_or_else(|| {
             serde::de::Error::custom(format!(
-                "FixedProb numerator must be ≤ {FIXED_POINT_DENOMINATOR}"
+                "fixed-point probability numerator must be ≤ {FIXED_POINT_DENOMINATOR}"
             ))
         })
     }
@@ -1665,7 +1659,6 @@ pub fn certificate_digest_v2(canonical_certificate_bytes: &[u8]) -> CertificateI
     CertificateIdV2::from_canonical_fields(&[canonical_certificate_bytes])
 }
 
-/// Runtime-facing alias for the canonical `.axi`-anchored query witness path.
 #[cfg(test)]
 mod query_result_v4_tests {
     use super::*;

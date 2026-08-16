@@ -19,9 +19,7 @@ mod enabled {
     pub enum ProfileFormat {
         Off,
         Flamegraph,
-        #[value(alias = "profile")]
         Pprof,
-        #[value(alias = "callstack", alias = "stacks")]
         Folded,
         All,
     }

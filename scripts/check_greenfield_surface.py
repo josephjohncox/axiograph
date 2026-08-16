@@ -17,6 +17,8 @@ SOURCE_ROOTS = {"rust", "lean", "frontend", "scripts"}
 SOURCE_FORBIDDEN = {
     r"#\[deprecated(?:\]|\()": "deprecated API surfaces are not retained in greenfield code",
     r"#\[serde\([^\]]*\balias\s*=": "Serde aliases are compatibility shims; keep one canonical field name",
+    r"#\[(?:arg|value|command)\([^\]]*\balias\s*=": "CLI aliases are compatibility shims; keep one canonical spelling",
+    r"pub type (?:FixedProb|VProb)\s*=\s*FixedPointProbability": "retired fixed-point type aliases are forbidden",
     r"(?i)backwards?[ _-]?compat": "backward-compatibility branches are forbidden",
     r"axiograph_llm_history_v1": "retired frontend storage keys are not migrated",
     r"/api/embeddings": "the canonical Ollama embedding endpoint is /api/embed",

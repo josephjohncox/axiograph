@@ -471,36 +471,9 @@ pub fn propose_relation_proposals_v1(
             if key.is_empty() || val.is_empty() {
                 return None;
             }
-            let key = if key.eq_ignore_ascii_case("context") {
-                "ctx"
-            } else {
-                key
-            };
             Some((key.to_string(), val.to_string()))
         })
         .collect();
-
-    // Allow callers to pass context/time via `extra_fields` for convenience.
-    // Top-level `context`/`time` still take precedence.
-    if context.is_none() {
-        if let Some(ctx) = extra_fields_input.get("ctx") {
-            if !ctx.trim().is_empty() {
-                context = Some(ctx.trim().to_string());
-                // Canonicalize common structured values so "family tree" resolves to "FamilyTree"
-                // when a `Context` entity exists.
-                if let Some(ctx2) = context.clone() {
-                    context = canonicalize_name_of_type(db, "Context", &ctx2).or(Some(ctx2));
-                }
-            }
-        }
-    }
-    if time_name.is_none() {
-        if let Some(t) = extra_fields_input.get("time") {
-            if !t.trim().is_empty() {
-                time_name = Some(t.trim().to_string());
-            }
-        }
-    }
 
     let meta = MetaPlaneIndex::from_db(db).unwrap_or_default();
     if !meta.schemas.is_empty() {
@@ -1185,20 +1158,14 @@ pub fn propose_fact_proposals_v1(
 
     let (src_field, dst_field) = infer_endpoint_fields(resolved.rel_decl)?;
 
-    // Normalize fields: trim values, and accept "context" as an alias for "ctx".
     let mut fields: HashMap<String, String> = HashMap::new();
-    for (k, v) in input.fields.into_iter() {
-        let key = k.trim();
-        let val = v.trim();
-        if key.is_empty() || val.is_empty() {
+    for (key, value) in input.fields {
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
             continue;
         }
-        let key = if key.eq_ignore_ascii_case("context") {
-            "ctx"
-        } else {
-            key
-        };
-        fields.insert(key.to_string(), val.to_string());
+        fields.insert(key.to_string(), value.to_string());
     }
 
     let Some(src_name) = fields.get(&src_field).cloned() else {
