@@ -2393,7 +2393,15 @@ pub(crate) fn ollama_embed_texts_with_timeout(
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct EmbedResp {
+        #[serde(default, rename = "model")]
+        _model: Option<String>,
         embeddings: Vec<Vec<f32>>,
+        #[serde(default, rename = "total_duration")]
+        _total_duration: Option<u64>,
+        #[serde(default, rename = "load_duration")]
+        _load_duration: Option<u64>,
+        #[serde(default, rename = "prompt_eval_count")]
+        _prompt_eval_count: Option<u64>,
     }
 
     let out: EmbedResp = bounded_http_json(response, "Ollama /api/embed response")?;
