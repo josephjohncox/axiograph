@@ -360,6 +360,7 @@ pub struct LLMSyncEngine {
 
 /// Configuration for sync behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SyncConfig {
     /// Minimum confidence to auto-integrate
     pub auto_integrate_threshold: f32,

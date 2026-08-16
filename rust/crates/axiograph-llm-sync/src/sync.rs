@@ -21,8 +21,32 @@ use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
+
+const MAX_SYNC_BATCH_SIZE: usize = 10_000;
+const MAX_SYNC_CONVERSATION_TURNS: usize = 4_096;
+const MAX_SYNC_CONVERSATION_BYTES: usize = 8 * 1024 * 1024;
+
+struct SyncExtractionPatterns {
+    is_a: regex::Regex,
+    has: regex::Regex,
+    rule: regex::Regex,
+}
+
+fn sync_extraction_patterns() -> anyhow::Result<&'static SyncExtractionPatterns> {
+    static PATTERNS: OnceLock<Result<SyncExtractionPatterns, regex::Error>> = OnceLock::new();
+    PATTERNS
+        .get_or_init(|| {
+            Ok(SyncExtractionPatterns {
+                is_a: regex::Regex::new(r"(?i)(\w+)\s+is\s+a\s+(\w+)")?,
+                has: regex::Regex::new(r"(?i)(\w+)\s+has\s+(\w+)\s+of\s+(\w+)")?,
+                rule: regex::Regex::new(r"(?i)(always|never|should)\s+(.+?)\s+when\s+(.+)")?,
+            })
+        })
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("compile sync extraction patterns: {error}"))
+}
 
 // ============================================================================
 // Sync Events for Observability
@@ -88,7 +112,19 @@ impl SyncManager {
         storage: Arc<UnifiedStorage>,
         config: SyncConfig,
         default_provider: LLMProvider,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
+        if !config.auto_integrate_threshold.is_finite()
+            || !(0.0..=1.0).contains(&config.auto_integrate_threshold)
+        {
+            return Err(anyhow::anyhow!(
+                "auto_integrate_threshold must be a finite probability in [0, 1]"
+            ));
+        }
+        if config.batch_size == 0 || config.batch_size > MAX_SYNC_BATCH_SIZE {
+            return Err(anyhow::anyhow!(
+                "batch_size must be in 1..={MAX_SYNC_BATCH_SIZE}"
+            ));
+        }
         let state = SyncState {
             session_id: Uuid::new_v4(),
             last_sync: Utc::now(),
@@ -99,14 +135,14 @@ impl SyncManager {
             graph_version: 0,
         };
 
-        Self {
+        Ok(Self {
             storage,
             state: Arc::new(RwLock::new(state)),
             pending_storage_changes: Arc::new(RwLock::new(HashMap::new())),
             config,
             event_handlers: Vec::new(),
             default_provider,
-        }
+        })
     }
 
     /// Add an event handler
@@ -131,11 +167,41 @@ impl SyncManager {
         conversation: &[ConversationTurn],
         provider: Option<LLMProvider>,
     ) -> anyhow::Result<SyncResult> {
+        if conversation.len() > MAX_SYNC_CONVERSATION_TURNS {
+            return Err(anyhow::anyhow!(
+                "conversation turn count {} exceeds {MAX_SYNC_CONVERSATION_TURNS}",
+                conversation.len()
+            ));
+        }
+        let mut conversation_bytes = 0_usize;
+        for turn in conversation {
+            conversation_bytes = conversation_bytes
+                .checked_add(turn.content.len())
+                .ok_or_else(|| anyhow::anyhow!("conversation byte count overflow"))?;
+            for (key, value) in &turn.metadata {
+                conversation_bytes = conversation_bytes
+                    .checked_add(key.len())
+                    .and_then(|total| total.checked_add(value.len()))
+                    .ok_or_else(|| anyhow::anyhow!("conversation byte count overflow"))?;
+            }
+            if conversation_bytes > MAX_SYNC_CONVERSATION_BYTES {
+                return Err(anyhow::anyhow!(
+                    "conversation bytes {conversation_bytes} exceed {MAX_SYNC_CONVERSATION_BYTES}"
+                ));
+            }
+        }
         let provider = provider.unwrap_or_else(|| self.default_provider.clone());
         let session_id = self.state.read().session_id;
 
         // Step 1: Extract facts
         let extracted = self.extract_facts(conversation, &provider).await?;
+        if extracted.len() > self.config.batch_size {
+            return Err(anyhow::anyhow!(
+                "extracted fact count {} exceeds configured batch_size {}",
+                extracted.len(),
+                self.config.batch_size
+            ));
+        }
 
         self.emit(SyncEvent::FactsExtracted {
             session_id,
@@ -225,7 +291,8 @@ impl SyncManager {
 
         for (idx, turn) in conversation.iter().enumerate() {
             // Simple pattern-based extraction (would use LLM in production)
-            let extracted = self.pattern_extract(&turn.content)?;
+            let remaining = self.config.batch_size.saturating_sub(facts.len());
+            let extracted = self.pattern_extract(&turn.content, remaining)?;
 
             for structured in extracted {
                 facts.push(ExtractedFact {
@@ -249,36 +316,61 @@ impl SyncManager {
     }
 
     /// Pattern-based fact extraction (simplified)
-    fn pattern_extract(&self, text: &str) -> anyhow::Result<Vec<StructuredFact>> {
+    fn pattern_extract(&self, text: &str, max_facts: usize) -> anyhow::Result<Vec<StructuredFact>> {
         let mut facts = Vec::new();
 
+        let patterns = sync_extraction_patterns()?;
+
         // Pattern: "X is a Y"
-        let is_a_re = regex::Regex::new(r"(?i)(\w+)\s+is\s+a\s+(\w+)")?;
-        for cap in is_a_re.captures_iter(text) {
+        for captures in patterns.is_a.captures_iter(text) {
+            let (Some(name), Some(entity_type)) = (captures.get(1), captures.get(2)) else {
+                continue;
+            };
+            if facts.len() >= max_facts {
+                return Err(anyhow::anyhow!(
+                    "extracted fact count exceeds configured batch_size"
+                ));
+            }
             facts.push(StructuredFact::Entity {
-                entity_type: cap[2].to_string(),
-                name: cap[1].to_string(),
+                entity_type: entity_type.as_str().to_string(),
+                name: name.as_str().to_string(),
                 attributes: std::collections::HashMap::new(),
             });
         }
 
         // Pattern: "X has Y of Z"
-        let has_re = regex::Regex::new(r"(?i)(\w+)\s+has\s+(\w+)\s+of\s+(\w+)")?;
-        for cap in has_re.captures_iter(text) {
+        for captures in patterns.has.captures_iter(text) {
+            let (Some(name), Some(attribute), Some(value)) =
+                (captures.get(1), captures.get(2), captures.get(3))
+            else {
+                continue;
+            };
             let mut attrs = std::collections::HashMap::new();
-            attrs.insert(cap[2].to_string(), cap[3].to_string());
+            attrs.insert(attribute.as_str().to_string(), value.as_str().to_string());
+            if facts.len() >= max_facts {
+                return Err(anyhow::anyhow!(
+                    "extracted fact count exceeds configured batch_size"
+                ));
+            }
             facts.push(StructuredFact::Entity {
                 entity_type: "Unknown".to_string(),
-                name: cap[1].to_string(),
+                name: name.as_str().to_string(),
                 attributes: attrs,
             });
         }
 
         // Pattern: "always/never/should X when Y"
-        let rule_re = regex::Regex::new(r"(?i)(always|never|should)\s+(.+?)\s+when\s+(.+)")?;
-        for cap in rule_re.captures_iter(text) {
+        for captures in patterns.rule.captures_iter(text) {
+            let (Some(action), Some(condition)) = (captures.get(2), captures.get(3)) else {
+                continue;
+            };
+            if facts.len() >= max_facts {
+                return Err(anyhow::anyhow!(
+                    "extracted fact count exceeds configured batch_size"
+                ));
+            }
             facts.push(StructuredFact::TacitKnowledge {
-                rule: format!("{} -> {}", &cap[3], &cap[2]),
+                rule: format!("{} -> {}", condition.as_str(), action.as_str()),
                 confidence: 0.8,
                 domain: "general".to_string(),
             });
@@ -867,6 +959,202 @@ mod tests {
         std::fs::write(dir.path().join("TestSchema.axi"), source).unwrap();
     }
 
+    #[test]
+    fn sync_config_rejects_legacy_or_unknown_fields() {
+        let mut value = serde_json::to_value(SyncConfig::default()).unwrap();
+        value["legacy_batch_limit"] = serde_json::json!(100);
+        assert!(serde_json::from_value::<SyncConfig>(value).is_err());
+    }
+
+    #[test]
+    fn sync_manager_rejects_non_finite_auto_integrate_threshold() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let error = SyncManager::new(
+            storage,
+            SyncConfig {
+                auto_integrate_threshold: f32::NAN,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .err()
+        .expect("non-finite sync threshold must fail closed");
+        assert!(error.to_string().contains("auto_integrate_threshold"));
+    }
+
+    #[test]
+    fn sync_manager_rejects_zero_batch_size() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let error = SyncManager::new(
+            storage,
+            SyncConfig {
+                batch_size: 0,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .err()
+        .expect("zero sync batch size must fail closed");
+        assert!(error.to_string().contains("batch_size"));
+    }
+
+    #[test]
+    fn sync_manager_rejects_unbounded_batch_size() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let error = SyncManager::new(
+            storage,
+            SyncConfig {
+                batch_size: usize::MAX,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .err()
+        .expect("unbounded sync batch size must fail closed");
+        assert!(error.to_string().contains("batch_size"));
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_extracted_fact_batches_over_configured_limit() {
+        let dir = tempdir().unwrap();
+        write_test_schema(&dir, &["Material", "Tool"]);
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            Arc::clone(&storage),
+            SyncConfig {
+                auto_integrate_threshold: 0.0,
+                batch_size: 1,
+                human_review_constraints: false,
+                ..Default::default()
+            },
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .unwrap();
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "Titanium is a Material. Carbide is a Tool.".to_string(),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+
+        let error = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .expect_err("oversized extracted-fact batch must fail closed");
+
+        assert!(error.to_string().contains("extracted fact count"));
+        assert!(storage.pending().is_empty());
+        assert!(storage.changelog().is_empty());
+        assert!(manager.pending_review().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_excessive_conversation_turns_before_extraction() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            storage,
+            SyncConfig::default(),
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .unwrap();
+        let conversation = (0..4097)
+            .map(|_| ConversationTurn {
+                role: crate::Role::User,
+                content: String::new(),
+                timestamp: Utc::now(),
+                metadata: std::collections::HashMap::new(),
+            })
+            .collect::<Vec<_>>();
+
+        let error = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .expect_err("excessive conversation turns must fail closed");
+        assert!(error.to_string().contains("conversation turn count"));
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_excessive_conversation_bytes_before_extraction() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(
+            UnifiedStorage::new(StorageConfig {
+                axi_dir: dir.path().to_path_buf(),
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let manager = SyncManager::new(
+            storage,
+            SyncConfig::default(),
+            LLMProvider::Custom {
+                name: "test".to_string(),
+                endpoint: "http://localhost".to_string(),
+            },
+        )
+        .unwrap();
+        let conversation = vec![ConversationTurn {
+            role: crate::Role::User,
+            content: "x".repeat(8 * 1024 * 1024 + 1),
+            timestamp: Utc::now(),
+            metadata: std::collections::HashMap::new(),
+        }];
+
+        let error = manager
+            .sync_from_conversation(&conversation, None)
+            .await
+            .expect_err("excessive conversation bytes must fail closed");
+        assert!(error.to_string().contains("conversation bytes"));
+    }
+
     #[tokio::test]
     async fn test_sync_from_conversation() {
         let dir = tempdir().unwrap();
@@ -894,7 +1182,8 @@ mod tests {
                 name: "test".to_string(),
                 endpoint: "http://localhost".to_string(),
             },
-        );
+        )
+        .expect("valid sync configuration");
 
         let conversation = vec![ConversationTurn {
             role: crate::Role::User,
@@ -947,7 +1236,8 @@ mod tests {
                 name: "test".to_string(),
                 endpoint: "http://localhost".to_string(),
             },
-        );
+        )
+        .expect("valid sync configuration");
         let conversation = vec![ConversationTurn {
             role: crate::Role::User,
             content: "Titanium is a Material with hardness of 36".to_string(),
@@ -998,7 +1288,8 @@ mod tests {
                 name: "test".to_string(),
                 endpoint: "http://localhost".to_string(),
             },
-        );
+        )
+        .expect("valid sync configuration");
         let conversation = vec![ConversationTurn {
             role: crate::Role::User,
             content: "Bolt is a Widget.".to_string(),
@@ -1054,7 +1345,8 @@ mod tests {
                 name: "test".to_string(),
                 endpoint: "http://localhost".to_string(),
             },
-        );
+        )
+        .expect("valid sync configuration");
         let conversation = vec![ConversationTurn {
             role: crate::Role::User,
             content: "Aluminum is a Material.".to_string(),

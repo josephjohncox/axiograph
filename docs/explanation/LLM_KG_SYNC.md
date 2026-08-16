@@ -138,6 +138,10 @@ reviewed, the CQ is executable, and the relevant coverage/tooling policy passes.
   can act on, not prose-only recommendations.
 - Runtime sync validation uses the schema index loaded from canonical `.axi`;
   it does not maintain a second hard-coded list of privileged type names.
+- Conversation sync rejects invalid configuration directly: finite confidence
+  threshold, batch size in `1..=10,000`, at most 4,096 turns, and at most 8 MiB
+  across conversation content and metadata. Fact extraction stops when the
+  configured batch is exhausted rather than allocating an oversized batch.
 - MCP/LSP/API integrations should expose the same typed report families as CLI
   flows.
 - Accepted mutation always goes through Axiograph review and semantic VCS.

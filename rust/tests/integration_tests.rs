@@ -206,7 +206,8 @@ async fn test_llm_sync_storage_integration() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     // Machinist conversation
     let conversation = vec![ConversationTurn {
@@ -303,7 +304,8 @@ async fn test_complete_pipeline() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     let conversation = vec![ConversationTurn {
         role: Role::Assistant,
@@ -434,7 +436,8 @@ async fn test_empty_sync() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     // Empty conversation should not panic
     let result = sync.sync_from_conversation(&[], None).await.unwrap();

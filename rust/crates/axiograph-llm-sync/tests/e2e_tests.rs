@@ -40,7 +40,8 @@ fn test_env() -> (Arc<UnifiedStorage>, SyncManager, tempfile::TempDir) {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     (storage, manager, dir)
 }
@@ -321,7 +322,8 @@ async fn test_pending_review_workflow() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     sync.sync_from_conversation(&machinist_conversation(), None)
         .await
@@ -365,7 +367,8 @@ async fn test_reject_fact() {
             name: "test".to_string(),
             endpoint: "local".to_string(),
         },
-    );
+    )
+    .expect("valid sync configuration");
 
     sync.sync_from_conversation(&machinist_conversation(), None)
         .await
@@ -593,7 +596,8 @@ async fn test_custom_provider() {
         endpoint: "http://localhost:8080".to_string(),
     };
 
-    let sync = SyncManager::new(storage, SyncConfig::default(), custom_provider);
+    let sync = SyncManager::new(storage, SyncConfig::default(), custom_provider)
+        .expect("valid sync configuration");
 
     // Should work with custom provider
     let result = sync
