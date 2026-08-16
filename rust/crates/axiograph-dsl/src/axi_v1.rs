@@ -11,9 +11,9 @@
 //! - certificates can be anchored to a single parser/AST
 //! - Rust and Lean stay in lockstep without end-user dialect drift
 
-pub use crate::schema_v1::{SchemaV1Module as AxiV1Module, SchemaV1ParseError as AxiV1ParseError};
+use crate::schema_v1::{SchemaV1Module, SchemaV1ParseError};
 
-pub fn parse_axi_v1(text: &str) -> Result<AxiV1Module, AxiV1ParseError> {
+pub fn parse_axi_v1(text: &str) -> Result<SchemaV1Module, SchemaV1ParseError> {
     crate::schema_v1::parse_schema_v1(text)
 }
 

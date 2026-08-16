@@ -47,7 +47,7 @@ struct FiniteQueryRequest {
 struct FiniteQueryResponse {
     family: &'static str,
     result: crate::axql::AxqlResult,
-    trust: crate::query_ir::QueryTrustContract,
+    trust: crate::trust_contract::QueryTrustContractV1,
     non_claims: [&'static str; 2],
 }
 

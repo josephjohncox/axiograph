@@ -18,6 +18,8 @@ SOURCE_FORBIDDEN = {
     r"#\[deprecated(?:\]|\()": "deprecated API surfaces are not retained in greenfield code",
     r"#\[serde\([^\]]*\balias\s*=": "Serde aliases are compatibility shims; keep one canonical field name",
     r"#\[(?:arg|value|command)\([^\]]*\balias\s*=": "CLI aliases are compatibility shims; keep one canonical spelling",
+    r"^\s*pub\s+use\s+.+\s+as\s+\w+": "public re-export aliases are forbidden",
+    r"^\s*pub\s+type\s+\w+\s*=\s*\w+V\d+\s*;": "unversioned aliases for versioned APIs are forbidden",
     r"pub type (?:FixedProb|VProb)\s*=\s*FixedPointProbability": "retired fixed-point type aliases are forbidden",
     r"(?i)\balias (?:kept|retained)\b": "retained convenience aliases are forbidden",
     r"(?i)\b(?:accept|support)\b.{0,60}\bas an alias\b": "alternate accepted spellings are forbidden",

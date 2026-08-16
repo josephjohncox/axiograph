@@ -42,8 +42,6 @@ pub const QUERY_IR_V1_VERSION: u32 = 1;
 pub const PREPARED_QUERY_METADATA_V1_VERSION: u32 = 1;
 pub const PREPARED_QUERY_METADATA_V2_VERSION: u32 = 2;
 
-pub type QueryTrustContract = QueryTrustContractV1;
-
 /// Shared query certificate policy for HTTP, CQ, and agent/server surfaces.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -148,7 +146,7 @@ pub struct QueryNonClaimsV1 {
 }
 
 impl QueryNonClaimsV1 {
-    fn from_trust(trust: &QueryTrustContract) -> Self {
+    fn from_trust(trust: &QueryTrustContractV1) -> Self {
         Self {
             claim_scope: trust.claim_scope.clone(),
             completeness_claim: trust.completeness_claim.clone(),
@@ -171,7 +169,7 @@ pub struct PreparedQueryMetadataV1 {
     pub introspection: PreparedQueryIntrospection,
     pub inferred_types: BTreeMap<String, Vec<String>>,
     pub certifiability: QueryCertifiability,
-    pub trust: QueryTrustContract,
+    pub trust: QueryTrustContractV1,
     pub non_claims: QueryNonClaimsV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refinement_handles: Vec<crate::typed_refinement::RuntimeRefinementHandleV2>,
@@ -225,8 +223,8 @@ pub struct QueryRefinementApplyResultV1 {
     pub base_query_ir_v1: QueryIrV1,
     pub refined_query_ir_v1: QueryIrV1,
     pub refined_elaborated_query_ir_v1: QueryIrV1,
-    pub trust_before: QueryTrustContract,
-    pub trust_after: QueryTrustContract,
+    pub trust_before: QueryTrustContractV1,
+    pub trust_after: QueryTrustContractV1,
     pub introspection_before: PreparedQueryIntrospection,
     pub introspection_after: PreparedQueryIntrospection,
     pub refined_exploration: PreparedQueryExplorationV1,
@@ -604,7 +602,7 @@ impl QueryIrV1 {
     /// claim; only a bound Lean receipt upgrades the declared finite denotation to
     /// exact completeness. Full ontology closure is never claimed here.
     #[allow(dead_code)]
-    pub fn trust_contract(&self) -> Result<QueryTrustContract> {
+    pub fn trust_contract(&self) -> Result<QueryTrustContractV1> {
         Ok(query_user_visible_trust_contract(
             &self.to_axql_query()?,
             &self.certifiability()?,
@@ -619,7 +617,7 @@ impl QueryIrV1 {
     pub fn trust_contract_with_meta(
         &self,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-    ) -> Result<QueryTrustContract> {
+    ) -> Result<QueryTrustContractV1> {
         Ok(query_user_visible_trust_contract_with_meta(
             &self.to_axql_query()?,
             &self.certifiability()?,
@@ -708,7 +706,7 @@ pub struct CompiledFiniteQuery {
     query_ir: QueryIrV1,
     query: AxqlQuery,
     handle: CompiledFiniteQueryPlan,
-    trust: QueryTrustContract,
+    trust: QueryTrustContractV1,
 }
 
 /// A temporary anchor-bound view over a prepared query.
@@ -732,7 +730,7 @@ pub struct AcceptedCompiledFiniteQuery<'a> {
 #[derive(Debug)]
 pub struct QueryAnswer<S> {
     result: AxqlResult,
-    trust: QueryTrustContract,
+    trust: QueryTrustContractV1,
     db_token: DbToken,
     meta_present: bool,
     prepared_query_digest_v1: Option<QueryIdV2>,
@@ -1112,7 +1110,7 @@ impl<S: LifecycleState> QueryAnswer<S> {
         &self.result
     }
 
-    pub fn trust_contract(&self) -> &QueryTrustContract {
+    pub fn trust_contract(&self) -> &QueryTrustContractV1 {
         &self.trust
     }
 
@@ -1238,7 +1236,7 @@ impl<S: LifecycleState> AcceptedAnchoredQueryAnswer<S> {
         self.answer.result()
     }
 
-    pub fn trust_contract(&self) -> &QueryTrustContract {
+    pub fn trust_contract(&self) -> &QueryTrustContractV1 {
         self.answer.trust_contract()
     }
 
@@ -1608,7 +1606,7 @@ impl CompiledFiniteQuery {
     }
 
     /// Return structured trust metadata for this prepared query.
-    pub fn trust_contract(&self) -> QueryTrustContract {
+    pub fn trust_contract(&self) -> QueryTrustContractV1 {
         self.trust.clone()
     }
 
@@ -1617,7 +1615,7 @@ impl CompiledFiniteQuery {
     pub fn trust_contract_with_meta(
         &self,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-    ) -> QueryTrustContract {
+    ) -> QueryTrustContractV1 {
         if meta.is_none() || self.trust.semantic_coverage.is_some() {
             return self.trust.clone();
         }
@@ -1973,7 +1971,7 @@ impl<'a> AcceptedCompiledFiniteQuery<'a> {
     pub fn trust_contract_with_meta(
         &self,
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
-    ) -> QueryTrustContract {
+    ) -> QueryTrustContractV1 {
         self.prepared.trust_contract_with_meta(meta)
     }
 

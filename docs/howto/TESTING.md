@@ -205,9 +205,9 @@ Windows bundle job can start.
 retired binary aliases, bare `.axpd` loading/materialization commands, immutable
 image mutation commands, and missing scripts advertised by `scripts/ops/README.md`.
 It also scans production source for deprecated APIs, Serde or CLI aliases,
-retired fixed-point type aliases, backward-compatibility branches, retired
-frontend storage-key migration, and the removed pre-`/api/embed` Ollama
-endpoint.
+public re-export aliases, unversioned aliases for versioned APIs, retired
+fixed-point aliases, backward-compatibility branches, retired frontend
+storage-key migration, and the removed pre-`/api/embed` Ollama endpoint.
 
 The materialization suite checks insertion-order invariance, semantic-row digest
 sensitivity, exact N/N+1 count/string/fanout/page/file limits, SQLite header and
