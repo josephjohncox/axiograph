@@ -116,22 +116,28 @@ pub(crate) fn sanitize_axi_ident(s: &str) -> String {
     out
 }
 
-fn uniq_name(used: &mut HashSet<String>, base: &str) -> String {
+fn uniq_name(used: &mut HashSet<String>, base: &str) -> Result<String> {
     let base = if base.is_empty() { "_" } else { base };
     if used.insert(base.to_string()) {
-        return base.to_string();
+        return Ok(base.to_string());
     }
-    for i in 2.. {
-        let candidate = format!("{base}_{i}");
+
+    // At function entry there are N used names. Searching N+1 distinct
+    // suffixes guarantees a free candidate without an unbounded loop or a
+    // duplicate overflow sentinel.
+    let largest_suffix = used
+        .len()
+        .checked_add(2)
+        .ok_or_else(|| anyhow!("generated identifier suffix range overflow"))?;
+    for suffix in 2..=largest_suffix {
+        let candidate = format!("{base}_{suffix}");
         if used.insert(candidate.clone()) {
-            return candidate;
-        }
-        if i > 10_000 {
-            // Safety valve; should never happen for reasonable inputs.
-            return format!("{base}_overflow");
+            return Ok(candidate);
         }
     }
-    unreachable!("infinite loop above has a return");
+    Err(anyhow!(
+        "failed to allocate a unique generated identifier for `{base}`"
+    ))
 }
 
 fn role_type_hole(rel: &str, role: &str) -> String {
@@ -244,7 +250,7 @@ pub fn draft_axi_module_from_proposals_with_suggestions(
 
     for e in entities_sorted {
         let base = sanitize_axi_ident(&e.name_raw);
-        let name = uniq_name(&mut used_names, &base);
+        let name = uniq_name(&mut used_names, &base)?;
         entity_axi_name.insert(e.entity_id.clone(), name);
     }
 
@@ -740,7 +746,21 @@ mod tests {
     }
 
     #[test]
-    fn missing_relation_endpoint_becomes_typed_hole_not_entity_fallback() {
+    fn unique_names_remain_unique_beyond_the_retired_overflow_sentinel() -> Result<()> {
+        let mut used = HashSet::from(["Node".to_string()]);
+        for suffix in 2..=10_001 {
+            used.insert(format!("Node_{suffix}"));
+        }
+
+        let generated = uniq_name(&mut used, "Node")?;
+
+        assert_eq!(generated, "Node_10002");
+        assert!(used.contains(&generated));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_relation_endpoint_becomes_typed_hole_not_entity_fallback() -> Result<()> {
         let file = ProposalsFileV1 {
             version: 1,
             generated_at: "0".to_string(),
@@ -769,15 +789,16 @@ mod tests {
             ],
         };
 
-        let axi = draft_axi_module_from_proposals(&file, &options()).expect("draft axi");
+        let axi = draft_axi_module_from_proposals(&file, &options())?;
         assert!(axi.contains("object TypeHole_depends_on_to"));
         assert!(axi.contains("references missing endpoint `missing`"));
         assert!(!axi.contains("object Entity"));
         assert!(!axi.contains("subtype Account < Entity"));
+        Ok(())
     }
 
     #[test]
-    fn heterogeneous_relation_roles_get_refinement_hole_supertypes() {
+    fn heterogeneous_relation_roles_get_refinement_hole_supertypes() -> Result<()> {
         let file = ProposalsFileV1 {
             version: 1,
             generated_at: "0".to_string(),
@@ -830,7 +851,7 @@ mod tests {
             ],
         };
 
-        let axi = draft_axi_module_from_proposals(&file, &options()).expect("draft axi");
+        let axi = draft_axi_module_from_proposals(&file, &options())?;
         assert!(axi.contains("object TypeHole_governs_from"));
         assert!(axi.contains("subtype Account < TypeHole_governs_from"));
         assert!(axi.contains("subtype Order < TypeHole_governs_from"));
@@ -838,5 +859,6 @@ mod tests {
             axi.contains("relation governs(from: TypeHole_governs_from @data, to: Policy @data)")
         );
         assert!(!axi.contains("Entity"));
+        Ok(())
     }
 }
