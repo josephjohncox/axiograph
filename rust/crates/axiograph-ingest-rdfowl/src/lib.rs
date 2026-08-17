@@ -6,12 +6,9 @@
 //! - It emits Axiograph ingestion artifacts (structured `proposals.json`).
 //! - It does *not* define or extend the trusted kernel semantics (Lean does that).
 //!
-//! Today this crate uses **Sophia** to parse common RDF serializations:
-//! - N-Triples (`.nt`)
-//! - Turtle (`.ttl`)
-//! - N-Quads (`.nq`)
-//! - TriG (`.trig`)
-//! - RDF/XML (`.rdf`, `.owl`, `.xml`)
+//! Today this crate uses **Sophia** for N-Triples, Turtle, N-Quads, and TriG,
+//! and the maintained **Oxigraph RDF/XML parser** for `.rdf`, `.owl`, and
+//! `.xml` inputs.
 //!
 //! Roadmap:
 //! - Add SHACL-like validation as a certificate-checked ingestion gate.
@@ -200,6 +197,46 @@ fn parse_node_term<T: sophia::api::term::Term>(term: T) -> Result<RdfNode> {
     }
 }
 
+fn parse_oxrdf_node(term: oxrdf::NamedOrBlankNode) -> RdfNode {
+    match term {
+        oxrdf::NamedOrBlankNode::NamedNode(node) => RdfNode::Iri(node.as_str().to_string()),
+        oxrdf::NamedOrBlankNode::BlankNode(node) => RdfNode::BlankNode(node.as_str().to_string()),
+    }
+}
+
+fn parse_oxrdf_term(term: oxrdf::Term) -> Result<RdfObject> {
+    match term {
+        oxrdf::Term::NamedNode(node) => {
+            Ok(RdfObject::Node(RdfNode::Iri(node.as_str().to_string())))
+        }
+        oxrdf::Term::BlankNode(node) => Ok(RdfObject::Node(RdfNode::BlankNode(
+            node.as_str().to_string(),
+        ))),
+        oxrdf::Term::Literal(literal) => {
+            if literal.direction().is_some() {
+                return Err(anyhow!(
+                    "directional RDF 1.2 literals are outside the ingestion proposal model"
+                ));
+            }
+            let language = literal.language().map(str::to_string);
+            let datatype = if language.is_some() {
+                None
+            } else {
+                Some(literal.datatype().as_str().to_string())
+                    .filter(|datatype| datatype != "http://www.w3.org/2001/XMLSchema#string")
+            };
+            Ok(RdfObject::Literal(RdfLiteral {
+                lexical: literal.value().to_string(),
+                datatype,
+                language,
+            }))
+        }
+        oxrdf::Term::Triple(_) => Err(anyhow!(
+            "quoted RDF 1.2 triple terms are outside the ingestion proposal model"
+        )),
+    }
+}
+
 fn compact_predicate_name(iri: &str) -> String {
     let local = local_name(iri);
     if local == iri {
@@ -313,9 +350,9 @@ fn validate_rdf_xml_with_patched_parser(bytes: &[u8]) -> Result<()> {
         Ok(())
     }
 
-    // Sophia 0.10 currently reaches quick-xml 0.37 through oxrdfxml. Parse the
-    // exact bytes first with patched quick-xml 0.41 so the legacy transitive
-    // parser never receives duplicate attributes or unbounded namespace sets.
+    // Parse exact bytes through a bounded structural pass before semantic
+    // RDF/XML decoding. Both passes use quick-xml 0.41, but this pass enforces
+    // Axiograph's tighter input, attribute, namespace, depth, and event limits.
     let mut reader = quick_xml::NsReader::from_reader(std::io::Cursor::new(bytes));
     let mut buffer = Vec::new();
     let mut depth = 0usize;
@@ -408,12 +445,16 @@ fn parse_rdf_statements_from_bytes_v1(
         }
         RdfFormatV1::RdfXml => {
             let mut out: Vec<RdfStatement> = Vec::new();
-            let mut parser = sophia::xml::parser::parse_bufread(reader);
-            parser
-                .try_for_each_triple(|triple| {
-                    push_triple_terms(&mut out, triple.s(), triple.p(), triple.o())
-                })
-                .map_err(|error| anyhow!("failed to parse RDF/XML: {error}"))?;
+            for triple in oxrdfxml::RdfXmlParser::new().for_slice(bytes) {
+                let triple = triple.map_err(|error| anyhow!("failed to parse RDF/XML: {error}"))?;
+                push_rdf_statement(
+                    &mut out,
+                    parse_oxrdf_node(triple.subject),
+                    triple.predicate.as_str().to_string(),
+                    parse_oxrdf_term(triple.object)?,
+                    None,
+                )?;
+            }
             Ok(out)
         }
     }
@@ -815,7 +856,7 @@ ex:a ex:label "Alice"@en .
     }
 
     #[test]
-    fn rdf_xml_passes_patched_structural_preflight_before_sophia() {
+    fn rdf_xml_passes_bounded_structural_preflight_before_semantic_parse() {
         let xml = r#"<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
          xmlns:ex="http://example.org/">
@@ -834,6 +875,37 @@ ex:a ex:label "Alice"@en .
             proposal,
             ProposalV1::Relation { rel_type, .. } if rel_type == "knows"
         )));
+    }
+
+    #[test]
+    fn rdf_xml_rejects_rdf_12_terms_the_proposal_model_cannot_preserve() {
+        let directional = r#"<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:ex="http://example.org/"
+         xmlns:its="http://www.w3.org/2005/11/its"
+         rdf:version="1.2">
+  <rdf:Description rdf:about="http://example.org/a">
+    <ex:label xml:lang="ar" its:dir="rtl">مرحبا</ex:label>
+  </rdf:Description>
+</rdf:RDF>"#;
+        let error = parse_rdf_statements_from_bytes_v1(directional.as_bytes(), RdfFormatV1::RdfXml)
+            .expect_err("directional literal semantics must not be discarded");
+        assert!(error.to_string().contains("directional RDF 1.2"));
+
+        let quoted_triple = r#"<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:ex="http://example.org/"
+         rdf:version="1.2">
+  <rdf:Description rdf:about="http://example.org/a">
+    <ex:claim rdf:parseType="Triple">
+      <rdf:Description rdf:type="http://example.org/Claim" />
+    </ex:claim>
+  </rdf:Description>
+</rdf:RDF>"#;
+        let error =
+            parse_rdf_statements_from_bytes_v1(quoted_triple.as_bytes(), RdfFormatV1::RdfXml)
+                .expect_err("quoted triple semantics must not be flattened");
+        assert!(error.to_string().contains("quoted RDF 1.2"));
     }
 
     #[test]

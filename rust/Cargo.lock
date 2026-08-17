@@ -315,7 +315,9 @@ dependencies = [
  "axiograph-ingest-docs",
  "axiograph-kernel",
  "axiograph-security",
- "quick-xml 0.41.0",
+ "oxrdf",
+ "oxrdfxml",
+ "quick-xml",
  "serde",
  "sophia",
  "thiserror",
@@ -1793,7 +1795,7 @@ dependencies = [
  "log",
  "num-format",
  "once_cell",
- "quick-xml 0.41.0",
+ "quick-xml",
  "rgb",
  "str_stack",
 ]
@@ -2289,25 +2291,23 @@ checksum = "54b4ed3a7192fa19f5f48f99871f2755047fabefd7f222f12a1df1773796a102"
 [[package]]
 name = "oxrdf"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0afd5c28e4a399c57ee2bc3accd40c7b671fdc7b6537499f14e95b265af7d7e0"
+source = "git+https://github.com/oxigraph/oxigraph.git?rev=e115a6a8dd9213fdf89a20cb72494ab333878218#e115a6a8dd9213fdf89a20cb72494ab333878218"
 dependencies = [
  "oxilangtag",
  "oxiri",
- "rand 0.9.4",
+ "rand 0.10.2",
  "thiserror",
 ]
 
 [[package]]
 name = "oxrdfxml"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd5516ae083d09bc57ec65ed5ee97701481725de6ffaa83d968ab42a96157ba1"
+source = "git+https://github.com/oxigraph/oxigraph.git?rev=e115a6a8dd9213fdf89a20cb72494ab333878218#e115a6a8dd9213fdf89a20cb72494ab333878218"
 dependencies = [
  "oxilangtag",
  "oxiri",
  "oxrdf",
- "quick-xml 0.37.5",
+ "quick-xml",
  "thiserror",
 ]
 
@@ -2648,15 +2648,6 @@ name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
-
-[[package]]
-name = "quick-xml"
-version = "0.37.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
-dependencies = [
- "memchr",
-]
 
 [[package]]
 name = "quick-xml"
@@ -3396,7 +3387,6 @@ dependencies = [
  "sophia_resource",
  "sophia_term",
  "sophia_turtle",
- "sophia_xml",
 ]
 
 [[package]]
@@ -3484,7 +3474,6 @@ dependencies = [
  "sophia_api",
  "sophia_iri",
  "sophia_turtle",
- "sophia_xml",
  "thiserror",
 ]
 
@@ -3509,20 +3498,6 @@ dependencies = [
  "sophia_iri",
  "thiserror",
  "uuid",
-]
-
-[[package]]
-name = "sophia_xml"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f26b07044c96e6b04106fb33b755fa5ddd90aa04d269df0af0d6bbc9f0cd8ca"
-dependencies = [
- "log",
- "oxiri",
- "oxrdf",
- "oxrdfxml",
- "sophia_api",
- "sophia_iri",
 ]
 
 [[package]]
@@ -3702,7 +3677,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.52.0",

@@ -234,7 +234,9 @@ dependencies = [
  "axiograph-ingest-docs",
  "axiograph-kernel",
  "axiograph-security",
- "quick-xml 0.41.0",
+ "oxrdf",
+ "oxrdfxml",
+ "quick-xml",
  "serde",
  "sophia",
  "thiserror",
@@ -425,6 +427,17 @@ name = "cfg_aliases"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
+
+[[package]]
+name = "chacha20"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "rand_core",
+]
 
 [[package]]
 name = "chrono"
@@ -1001,6 +1014,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
+ "rand_core",
 ]
 
 [[package]]
@@ -1705,8 +1719,7 @@ checksum = "54b4ed3a7192fa19f5f48f99871f2755047fabefd7f222f12a1df1773796a102"
 [[package]]
 name = "oxrdf"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0afd5c28e4a399c57ee2bc3accd40c7b671fdc7b6537499f14e95b265af7d7e0"
+source = "git+https://github.com/oxigraph/oxigraph.git?rev=e115a6a8dd9213fdf89a20cb72494ab333878218#e115a6a8dd9213fdf89a20cb72494ab333878218"
 dependencies = [
  "oxilangtag",
  "oxiri",
@@ -1717,13 +1730,12 @@ dependencies = [
 [[package]]
 name = "oxrdfxml"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd5516ae083d09bc57ec65ed5ee97701481725de6ffaa83d968ab42a96157ba1"
+source = "git+https://github.com/oxigraph/oxigraph.git?rev=e115a6a8dd9213fdf89a20cb72494ab333878218#e115a6a8dd9213fdf89a20cb72494ab333878218"
 dependencies = [
  "oxilangtag",
  "oxiri",
  "oxrdf",
- "quick-xml 0.37.5",
+ "quick-xml",
  "thiserror",
 ]
 
@@ -1837,15 +1849,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ppv-lite86"
-version = "0.2.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
-dependencies = [
- "zerocopy",
-]
-
-[[package]]
 name = "precomputed-hash"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1915,15 +1918,6 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.37.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
@@ -1954,33 +1948,20 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
-version = "0.8.7"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
 dependencies = [
- "libc",
- "rand_chacha",
- "rand_core",
-]
-
-[[package]]
-name = "rand_chacha"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
-dependencies = [
- "ppv-lite86",
+ "chacha20",
+ "getrandom 0.4.3",
  "rand_core",
 ]
 
 [[package]]
 name = "rand_core"
-version = "0.6.4"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
-dependencies = [
- "getrandom 0.2.17",
-]
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "redox_syscall"
@@ -2530,7 +2511,6 @@ dependencies = [
  "sophia_resource",
  "sophia_term",
  "sophia_turtle",
- "sophia_xml",
 ]
 
 [[package]]
@@ -2618,7 +2598,6 @@ dependencies = [
  "sophia_api",
  "sophia_iri",
  "sophia_turtle",
- "sophia_xml",
  "thiserror",
 ]
 
@@ -2643,20 +2622,6 @@ dependencies = [
  "sophia_iri",
  "thiserror",
  "uuid",
-]
-
-[[package]]
-name = "sophia_xml"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f26b07044c96e6b04106fb33b755fa5ddd90aa04d269df0af0d6bbc9f0cd8ca"
-dependencies = [
- "log",
- "oxiri",
- "oxrdf",
- "oxrdfxml",
- "sophia_api",
- "sophia_iri",
 ]
 
 [[package]]

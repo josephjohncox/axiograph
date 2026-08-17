@@ -703,13 +703,9 @@ verify-rustsec:
 		echo "error: expected cargo-audit $(CARGO_AUDIT_VERSION), found $$actual"; \
 		exit 1; \
 	fi
-	cd $(RUST_DIR) && cargo audit --file Cargo.lock \
-		--ignore RUSTSEC-2026-0194 \
-		--ignore RUSTSEC-2026-0195
-	cd $(RUST_DIR) && cargo audit --file fuzz/Cargo.lock \
-		--ignore RUSTSEC-2026-0194 \
-		--ignore RUSTSEC-2026-0195
-	@echo "✓ RustSec audits passed with only the documented RDF/XML preflight exceptions"
+	cd $(RUST_DIR) && cargo audit --file Cargo.lock
+	cd $(RUST_DIR) && cargo audit --file fuzz/Cargo.lock
+	@echo "✓ Both exact Rust dependency graphs are free of known RustSec vulnerabilities"
 
 verify-fuzz:
 	@echo "━━━ Running bounded parser and authenticated-image fuzz targets ━━━"

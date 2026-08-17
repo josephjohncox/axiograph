@@ -124,7 +124,7 @@ Current structured adapters in `axiograph ingest dir`:
 - `*.sql` → SQL DDL → table/column/foreign-key proposals
 - `*.json` → JSON sample → inferred schema proposals
 - `*.nt` / `*.ntriples` / `*.ttl` / `*.turtle` / `*.nq` / `*.nquads` / `*.trig` / `*.rdf` / `*.owl` / `*.xml`
-  → RDF graph (Sophia) → entity/relation proposals (named graphs become `Context` entities; each relation proposal carries a `context` attribute)
+  → RDF graph (Sophia for line-oriented formats; pinned Oxigraph for RDF/XML) → entity/relation proposals (named graphs become `Context` entities; each relation proposal carries a `context` attribute)
 
 Semantic Web interop design notes: `docs/explanation/SEMANTIC_WEB_INTEROP.md`.
 

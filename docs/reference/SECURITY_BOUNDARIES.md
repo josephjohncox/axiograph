@@ -197,18 +197,24 @@ the production bundle. This blocks the release decision on known frontend
 supply-chain findings rather than relying only on default-branch alerts.
 
 `make verify-rustsec` runs cargo-audit 0.22.2 over the exact workspace and
-isolated fuzz lockfiles.
-The gate permits only RUSTSEC-2026-0194 and RUSTSEC-2026-0195 for the
-quick-xml 0.37 parser that Sophia 0.10 reaches through oxrdfxml. Every RDF/XML
-byte sequence first passes quick-xml 0.41 over the exact same bytes. That
-preflight uses checked attribute iteration, a per-element limit of 64
-attributes, the patched namespace declaration limit, a depth limit of 128, an
-event limit of 1,000,000, and the existing 8 MiB input limit before Sophia can
-see the input. The attribute cap also bounds the older parser's duplicate-check
-work on otherwise unique attributes. Adversarial tests cover duplicate and
-excess attributes, namespace floods, and excess depth. No other RustSec
-vulnerability is allowed. The remaining ttf-parser notice is an informational
-unmaintained warning in pdf-extract's lopdf dependency, not a vulnerability.
+isolated fuzz lockfiles without ignored vulnerabilities. RDF/XML parsing uses
+Oxigraph's upstream commit
+`e115a6a8dd9213fdf89a20cb72494ab333878218`, which migrates oxrdfxml 0.2.3 to
+quick-xml 0.41. The source is immutable in both lockfiles and replaces the
+published oxrdfxml dependency only until a crate release contains that
+migration. Sophia remains the Turtle/N-Triples/N-Quads/TriG parser and no
+longer enables its quick-xml 0.37 RDF/XML path.
+
+Every RDF/XML byte sequence first passes a bounded structural quick-xml 0.41
+pass before semantic decoding by the same patched XML line. The preflight uses
+checked attribute iteration, a per-element limit of 64 attributes, the patched
+namespace declaration limit, a depth limit of 128, an event limit of 1,000,000,
+and the existing 8 MiB input limit. Adversarial tests cover duplicate and
+excess attributes, namespace floods, excess depth, and RDF 1.2 terms that the
+proposal model cannot preserve. Directional literals and quoted triples fail
+closed instead of losing semantics. The remaining `ttf-parser` notice is an
+informational unmaintained warning in pdf-extract's lopdf dependency, not a
+vulnerability.
 
 `make verify-fuzz` uses checked seed corpora and exact nightly/cargo-fuzz
 versions. It exercises canonical `.axi`, strict Certificate V2/V3 JSON,

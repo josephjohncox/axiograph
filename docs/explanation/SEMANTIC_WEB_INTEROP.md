@@ -37,13 +37,12 @@ Current boundary-layer mapping for evidence import:
   - IRI object → `ProposalV1::Relation`
   - literal object → attribute on the subject entity (`attributes[predicate]=literal`)
 
-Supported serializations (via Sophia):
+Supported serializations:
 
-- N-Triples (`.nt`, `.ntriples`)
-- Turtle (`.ttl`, `.turtle`)
-- N-Quads (`.nq`, `.nquads`)
-- TriG (`.trig`)
-- RDF/XML (`.rdf`, `.owl`, `.xml`)
+- N-Triples (`.nt`, `.ntriples`), Turtle (`.ttl`, `.turtle`), N-Quads
+  (`.nq`, `.nquads`), and TriG (`.trig`) via Sophia 0.10;
+- RDF/XML (`.rdf`, `.owl`, `.xml`) via the pinned upstream Oxigraph parser on
+  quick-xml 0.41, after Axiograph's bounded structural preflight.
 
 ### 1.1.1 Public datasets + demos (for realistic testing)
 

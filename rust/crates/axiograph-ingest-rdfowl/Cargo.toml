@@ -19,4 +19,6 @@ anyhow.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 sophia.workspace = true
+oxrdf.workspace = true
+oxrdfxml.workspace = true
 quick-xml.workspace = true

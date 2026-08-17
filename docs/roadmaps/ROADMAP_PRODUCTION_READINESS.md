@@ -85,9 +85,10 @@ Last updated: 2026-04-28.
 ### 0.4 Release/build audit (repository gate implemented, release open)
 
 - Implemented: `make release-gate` pins rustc 1.88.0 and Node.js 24.19.0 and
-  combines catalog, formatting, no-unsafe, full locked workspace, CLI
-  feature-matrix, locked frontend advisory/build checks, deep verification,
-  identity/certificate/lineage/merge/storage, semantics, and diff checks.
+  combines catalog, formatting, no-unsafe, no-panic, full locked workspace,
+  CLI feature-matrix, locked frontend advisory/build checks, zero-ignore
+  RustSec audits, deep verification, identity/certificate/lineage/merge/storage,
+  semantics, and diff checks.
 - Implemented: tag bundles use Rust host triples, deterministic archives,
   inner/outer SHA-256 checks, fresh extraction, Unix mode checks, CLI version,
   and a real envelope V3 / stdio V2 accepted verification.

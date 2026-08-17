@@ -303,9 +303,10 @@ The exact Rust dependency graph has a separate advisory gate:
 make verify-rustsec
 ```
 
-It pins cargo-audit 0.22.2 and permits only the two documented quick-xml 0.37
-findings behind the patched RDF/XML structural preflight. See
-`docs/reference/SECURITY_BOUNDARIES.md` for the compensating-control scope.
+It pins cargo-audit 0.22.2 and rejects every known vulnerability in both exact
+Rust lockfiles. RDF/XML uses an immutable upstream Oxigraph commit on
+quick-xml 0.41 until the next patched oxrdfxml crate release. See
+`docs/reference/SECURITY_BOUNDARIES.md` for the parser and source-pin scope.
 
 The bounded adversarial parser lane is executable separately:
 

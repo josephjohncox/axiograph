@@ -66,10 +66,16 @@ clap = { version = "4.6", features = ["derive"] }
 colored = "2.1"
 
 # Ingestion
-sophia = { version = "0.10", features = [
-  "xml",
-] } # RDF parsing toolkit (Turtle/N-Triples/N-Quads/TriG/RDF/XML)
-quick-xml = "0.41" # Patched RDF/XML structural preflight
+sophia = "0.10" # RDF parsing toolkit (Turtle/N-Triples/N-Quads/TriG)
+# oxrdfxml 0.2.3 still requires vulnerable quick-xml 0.37. Pin the maintained
+# upstream quick-xml 0.41 migration until the next oxrdfxml release.
+oxrdf = { git = "https://github.com/oxigraph/oxigraph.git", rev = "e115a6a8dd9213fdf89a20cb72494ab333878218", features = [
+  "rdf-12",
+] }
+oxrdfxml = { git = "https://github.com/oxigraph/oxigraph.git", rev = "e115a6a8dd9213fdf89a20cb72494ab333878218", features = [
+  "rdf-12",
+] }
+quick-xml = "0.41" # RDF/XML structural preflight and parser dependency
 sqlparser = "0.43" # SQL parsing
 pdf-extract = "0.12" # PDF text extraction
 walkdir = "2.4"
