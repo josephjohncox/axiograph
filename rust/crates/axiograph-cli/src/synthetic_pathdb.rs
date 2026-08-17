@@ -633,8 +633,8 @@ fn build_enterprise_scenario_named(
     // Cross-service call graph (endpoints call endpoints).
     for i in 0..scale {
         let next = (i + 1) % scale;
-        for e in 0..endpoints[i].len() {
-            b.rel("calls", endpoints[i][e], endpoints[next][e], 0.7);
+        for (&source, &target) in endpoints[i].iter().zip(&endpoints[next]) {
+            b.rel("calls", source, target, 0.7);
         }
     }
 

@@ -28,6 +28,11 @@ const MAX_SYNC_BATCH_SIZE: usize = 10_000;
 const MAX_SYNC_CONVERSATION_TURNS: usize = 4_096;
 const MAX_SYNC_CONVERSATION_BYTES: usize = 8 * 1024 * 1024;
 
+struct FactIntegrationOutcome {
+    integrated: Vec<ExtractedFact>,
+    pending_review: Vec<(ExtractedFact, ChangeId)>,
+}
+
 struct SyncExtractionPatterns {
     is_a: regex::Regex,
     has: regex::Regex,
@@ -237,11 +242,11 @@ impl SyncManager {
             .into_iter()
             .filter(|fact| !conflicting_fact_ids.contains(&fact.id))
             .collect();
-        let (integrated, storage_review) =
-            self.integrate_facts(integrable, &provider, session_id)?;
+        let integration = self.integrate_facts(integrable, &provider, session_id)?;
+        let integrated = integration.integrated;
         {
             let mut pending_storage_changes = self.pending_storage_changes.write();
-            for (fact, change_id) in storage_review {
+            for (fact, change_id) in integration.pending_review {
                 pending_storage_changes.insert(fact.id, change_id);
                 needs_review.push(fact);
             }
@@ -520,9 +525,12 @@ impl SyncManager {
         mut facts: Vec<ExtractedFact>,
         provider: &LLMProvider,
         session_id: SessionId,
-    ) -> anyhow::Result<(Vec<ExtractedFact>, Vec<(ExtractedFact, ChangeId)>)> {
+    ) -> anyhow::Result<FactIntegrationOutcome> {
         if facts.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
+            return Ok(FactIntegrationOutcome {
+                integrated: Vec::new(),
+                pending_review: Vec::new(),
+            });
         }
         let storable = facts
             .iter()
@@ -552,7 +560,10 @@ impl SyncManager {
                     entity_ids: result.pathdb_ids.clone(),
                 };
             }
-            Ok((facts, Vec::new()))
+            Ok(FactIntegrationOutcome {
+                integrated: facts,
+                pending_review: Vec::new(),
+            })
         } else if self
             .storage
             .pending()
@@ -568,7 +579,10 @@ impl SyncManager {
                     (fact, change_id)
                 })
                 .collect();
-            Ok((Vec::new(), pending))
+            Ok(FactIntegrationOutcome {
+                integrated: Vec::new(),
+                pending_review: pending,
+            })
         } else {
             Err(anyhow::anyhow!(
                 "storage change {change_id} was neither applied nor retained for review"

@@ -101,7 +101,7 @@ pub fn cmd_proto(command: ProtoCommands) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 fn cmd_proto_ingest(
-    root: &PathBuf,
+    root: &Path,
     out: &PathBuf,
     chunks_out: Option<&PathBuf>,
     descriptor_in: Option<&PathBuf>,
@@ -194,8 +194,8 @@ fn cmd_proto_ingest(
 }
 
 pub(crate) fn build_descriptor_set_binpb(
-    root: &PathBuf,
-    out: &PathBuf,
+    root: &Path,
+    out: &Path,
     exclude_imports: bool,
     exclude_source_info: bool,
 ) -> Result<Vec<u8>> {
