@@ -720,15 +720,8 @@ pub struct AcceptedCompiledFiniteQuery<'a> {
     prepared: &'a mut CompiledFiniteQuery,
 }
 
-/// A typed query answer artifact that preserves the workflow state of a query
-/// result after execution and optional certification.
-///
-/// This extends the existing typestate pattern used by `Module<Validated>` /
-/// `Module<Reviewed>` into the query workflow without changing the underlying
-/// AxQL execution engine.
-#[allow(dead_code)]
 #[derive(Debug)]
-pub struct QueryAnswer<S> {
+struct QueryAnswerCore {
     result: AxqlResult,
     trust: QueryTrustContractV1,
     db_token: DbToken,
@@ -737,12 +730,72 @@ pub struct QueryAnswer<S> {
     selected_rows_v1: Vec<StableSelectedRowV1>,
     row_limit: u64,
     runtime_truncated: bool,
-    module_digest_v2: Option<RevisionDigestV2>,
-    answer_digest_v1: Option<AnswerIdV2>,
-    certificate: Option<CertificateV3>,
-    certificate_text: Option<String>,
-    certificate_digest_v2: Option<CertificateIdV2>,
-    verifier_receipt: Option<crate::verifier_bridge::VerifierReceiptV2>,
+}
+
+#[doc(hidden)]
+mod query_answer_lifecycle_sealed {
+    pub trait Sealed {}
+
+    impl Sealed for axiograph_pathdb::Validated {}
+    impl Sealed for axiograph_pathdb::CertificateEmitted {}
+    impl Sealed for axiograph_pathdb::LeanVerified {}
+}
+
+/// State-specific evidence carried by a certificate-emitted query answer.
+///
+/// Fields remain private so callers can obtain this state only through the
+/// checked certification transition.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct CertificateEmittedQueryEvidence {
+    module_digest_v2: RevisionDigestV2,
+    answer_digest_v1: AnswerIdV2,
+    certificate: CertificateV3,
+    certificate_text: String,
+    certificate_digest_v2: CertificateIdV2,
+}
+
+/// State-specific evidence carried by a Lean-verified query answer.
+///
+/// Fields remain private so callers can obtain this state only through the
+/// receipt-binding transition.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct LeanVerifiedQueryEvidence {
+    emitted: CertificateEmittedQueryEvidence,
+    receipt: crate::verifier_bridge::VerifierReceiptV2,
+}
+
+/// Associates each query-answer lifecycle marker with the evidence required in
+/// that state. The private supertrait prevents downstream implementations.
+#[doc(hidden)]
+pub trait QueryAnswerLifecycle: LifecycleState + query_answer_lifecycle_sealed::Sealed {
+    type Evidence: std::fmt::Debug;
+}
+
+impl QueryAnswerLifecycle for Validated {
+    type Evidence = ();
+}
+
+impl QueryAnswerLifecycle for CertificateEmitted {
+    type Evidence = CertificateEmittedQueryEvidence;
+}
+
+impl QueryAnswerLifecycle for LeanVerified {
+    type Evidence = LeanVerifiedQueryEvidence;
+}
+
+/// A typed query answer artifact that preserves the workflow state of a query
+/// result after execution and optional certification.
+///
+/// State-specific evidence is not optional: a `CertificateEmitted` answer
+/// physically contains its certificate material, and a `LeanVerified` answer
+/// physically contains both that material and its validated receipt.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct QueryAnswer<S: QueryAnswerLifecycle> {
+    core: QueryAnswerCore,
+    evidence: S::Evidence,
     _state: PhantomData<S>,
 }
 
@@ -750,7 +803,7 @@ pub struct QueryAnswer<S> {
 /// throughout validated and certified query-answer lifecycle transitions.
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct AcceptedAnchoredQueryAnswer<S> {
+pub struct AcceptedAnchoredQueryAnswer<S: QueryAnswerLifecycle> {
     accepted_axi_anchor: AcceptedAxiAnchor,
     answer: QueryAnswer<S>,
 }
@@ -1105,29 +1158,29 @@ fn local_query_ref_name(name: &str) -> String {
 }
 
 #[allow(dead_code)]
-impl<S: LifecycleState> QueryAnswer<S> {
+impl<S: QueryAnswerLifecycle> QueryAnswer<S> {
     pub fn result(&self) -> &AxqlResult {
-        &self.result
+        &self.core.result
     }
 
     pub fn trust_contract(&self) -> &QueryTrustContractV1 {
-        &self.trust
+        &self.core.trust
     }
 
     pub fn prepared_query_digest_v1(&self) -> Option<&QueryIdV2> {
-        self.prepared_query_digest_v1.as_ref()
+        self.core.prepared_query_digest_v1.as_ref()
     }
 
     pub fn selected_rows_v1(&self) -> &[StableSelectedRowV1] {
-        &self.selected_rows_v1
+        &self.core.selected_rows_v1
     }
 
     pub fn row_limit(&self) -> u64 {
-        self.row_limit
+        self.core.row_limit
     }
 
     pub fn runtime_truncated(&self) -> bool {
-        self.runtime_truncated
+        self.core.runtime_truncated
     }
 
     pub fn lifecycle_state_name(&self) -> &'static str {
@@ -1138,42 +1191,33 @@ impl<S: LifecycleState> QueryAnswer<S> {
 #[allow(dead_code)]
 impl QueryAnswer<CertificateEmitted> {
     pub fn module_digest_v2(&self) -> &RevisionDigestV2 {
-        self.module_digest_v2
-            .as_ref()
-            .expect("certificate-emitted query answers carry the cryptographic module anchor")
+        &self.evidence.module_digest_v2
     }
 
     pub fn answer_digest_v1(&self) -> &AnswerIdV2 {
-        self.answer_digest_v1
-            .as_ref()
-            .expect("certificate-emitted query answers carry an answer digest")
+        &self.evidence.answer_digest_v1
     }
 
     pub fn certificate(&self) -> &CertificateV3 {
-        self.certificate
-            .as_ref()
-            .expect("certificate-emitted query answers always carry a V3 certificate")
+        &self.evidence.certificate
     }
 
     pub fn certificate_text(&self) -> &str {
-        self.certificate_text
-            .as_deref()
-            .expect("certificate-emitted query answers always carry exact certificate bytes")
+        &self.evidence.certificate_text
     }
 
     pub fn certificate_digest_v2(&self) -> &CertificateIdV2 {
-        self.certificate_digest_v2
-            .as_ref()
-            .expect("certificate-emitted query answers always carry a certificate digest")
+        &self.evidence.certificate_digest_v2
     }
 
     pub(crate) fn into_lean_verified(
-        mut self,
+        self,
         receipt: crate::verifier_bridge::VerifierReceiptV2,
     ) -> Result<QueryAnswer<LeanVerified>> {
         if !receipt.accepted()
             || receipt.revision_digest_v2() != self.module_digest_v2()
-            || Some(receipt.prepared_query_digest_v1()) != self.prepared_query_digest_v1.as_ref()
+            || Some(receipt.prepared_query_digest_v1())
+                != self.core.prepared_query_digest_v1.as_ref()
             || receipt.answer_digest_v1() != self.answer_digest_v1()
             || receipt.certificate_digest_v2() != self.certificate_digest_v2()
         {
@@ -1181,23 +1225,18 @@ impl QueryAnswer<CertificateEmitted> {
                 "Lean receipt does not bind this prepared query answer"
             ));
         }
-        self.trust.soundness = "lean_verified_finite_exact_complete".to_string();
-        self.verifier_receipt = Some(receipt);
+        let QueryAnswer {
+            mut core,
+            evidence,
+            _state: _,
+        } = self;
+        core.trust.soundness = "lean_verified_finite_exact_complete".to_string();
         Ok(QueryAnswer {
-            result: self.result,
-            trust: self.trust,
-            db_token: self.db_token,
-            meta_present: self.meta_present,
-            prepared_query_digest_v1: self.prepared_query_digest_v1,
-            selected_rows_v1: self.selected_rows_v1,
-            row_limit: self.row_limit,
-            runtime_truncated: self.runtime_truncated,
-            module_digest_v2: self.module_digest_v2,
-            answer_digest_v1: self.answer_digest_v1,
-            certificate: self.certificate,
-            certificate_text: self.certificate_text,
-            certificate_digest_v2: self.certificate_digest_v2,
-            verifier_receipt: self.verifier_receipt,
+            core,
+            evidence: LeanVerifiedQueryEvidence {
+                emitted: evidence,
+                receipt,
+            },
             _state: PhantomData,
         })
     }
@@ -1206,20 +1245,16 @@ impl QueryAnswer<CertificateEmitted> {
 #[allow(dead_code)]
 impl QueryAnswer<LeanVerified> {
     pub fn receipt(&self) -> &crate::verifier_bridge::VerifierReceiptV2 {
-        self.verifier_receipt
-            .as_ref()
-            .expect("Lean-verified answers always carry the validated full receipt")
+        &self.evidence.receipt
     }
 
     pub fn certificate(&self) -> &CertificateV3 {
-        self.certificate
-            .as_ref()
-            .expect("Lean-verified answers always carry a V3 certificate")
+        &self.evidence.emitted.certificate
     }
 }
 
 #[allow(dead_code)]
-impl<S: LifecycleState> AcceptedAnchoredQueryAnswer<S> {
+impl<S: QueryAnswerLifecycle> AcceptedAnchoredQueryAnswer<S> {
     pub fn accepted_axi_anchor(&self) -> &AcceptedAxiAnchor {
         &self.accepted_axi_anchor
     }
@@ -1479,20 +1514,17 @@ impl CompiledFiniteQuery {
         let row_limit = u64::try_from(self.query.limit)
             .map_err(|_| anyhow!("query row limit does not fit u64"))?;
         Ok(QueryAnswer {
-            runtime_truncated: result.truncated,
-            result,
-            trust: self.trust_contract_with_meta(meta),
-            db_token: self.handle.db_token(),
-            meta_present: self.handle.meta_present(),
-            prepared_query_digest_v1: self.handle.prepared_query_digest_v1().cloned(),
-            selected_rows_v1,
-            row_limit,
-            module_digest_v2: None,
-            answer_digest_v1: None,
-            certificate: None,
-            certificate_text: None,
-            certificate_digest_v2: None,
-            verifier_receipt: None,
+            core: QueryAnswerCore {
+                runtime_truncated: result.truncated,
+                result,
+                trust: self.trust_contract_with_meta(meta),
+                db_token: self.handle.db_token(),
+                meta_present: self.handle.meta_present(),
+                prepared_query_digest_v1: self.handle.prepared_query_digest_v1().cloned(),
+                selected_rows_v1,
+                row_limit,
+            },
+            evidence: (),
             _state: PhantomData,
         })
     }
@@ -1507,13 +1539,13 @@ impl CompiledFiniteQuery {
         meta: Option<&axiograph_pathdb::axi_semantics::MetaPlaneIndex>,
         module_digest_v2: RevisionDigestV2,
     ) -> Result<QueryAnswer<CertificateEmitted>> {
-        if answer.db_token != db.db_token() || answer.db_token != self.handle.db_token() {
+        if answer.core.db_token != db.db_token() || answer.core.db_token != self.handle.db_token() {
             return Err(anyhow!(
                 "validated query answer DB token differs from certification state"
             ));
         }
-        if answer.meta_present != meta.is_some()
-            || answer.meta_present != self.handle.meta_present()
+        if answer.core.meta_present != meta.is_some()
+            || answer.core.meta_present != self.handle.meta_present()
         {
             return Err(anyhow!(
                 "validated query answer meta-plane state differs from certification state"
@@ -1524,7 +1556,7 @@ impl CompiledFiniteQuery {
             .prepared_query_digest_v1()
             .cloned()
             .ok_or_else(|| anyhow!("query has no certifiable prepared binding"))?;
-        if answer.prepared_query_digest_v1.as_ref() != Some(&expected_prepared) {
+        if answer.core.prepared_query_digest_v1.as_ref() != Some(&expected_prepared) {
             return Err(anyhow!(
                 "validated query answer does not belong to this prepared binding"
             ));
@@ -1534,15 +1566,15 @@ impl CompiledFiniteQuery {
             .prepared_binding_v1()
             .ok_or_else(|| anyhow!("query has no certifiable prepared binding"))?
             .row_limit;
-        if answer.row_limit != expected_limit {
+        if answer.core.row_limit != expected_limit {
             return Err(anyhow!("validated query answer row limit drifted"));
         }
 
         let rerun_result = self.handle.execute(db, meta)?;
         let rerun_selected = crate::axql::stable_selected_rows_from_result_v1(db, &rerun_result)?;
-        if rerun_result != answer.result
-            || rerun_selected != answer.selected_rows_v1
-            || rerun_result.truncated != answer.runtime_truncated
+        if rerun_result != answer.core.result
+            || rerun_selected != answer.core.selected_rows_v1
+            || rerun_result.truncated != answer.core.runtime_truncated
         {
             return Err(anyhow!(
                 "validated query answer no longer matches the stored prepared execution"
@@ -1557,9 +1589,9 @@ impl CompiledFiniteQuery {
             .selected_rows_v1()
             .map_err(anyhow::Error::msg)?;
         if certificate.proof.prepared_query_digest_v1 != expected_prepared
-            || certificate.proof.binding.row_limit != answer.row_limit
-            || certificate.proof.runtime_truncated != answer.runtime_truncated
-            || certificate_rows != answer.selected_rows_v1
+            || certificate.proof.binding.row_limit != answer.core.row_limit
+            || certificate.proof.runtime_truncated != answer.core.runtime_truncated
+            || certificate_rows != answer.core.selected_rows_v1
         {
             return Err(anyhow!(
                 "certificate rows, binding, limit, or truncation differ from validated answer"
@@ -1577,20 +1609,17 @@ impl CompiledFiniteQuery {
             meta,
         );
         Ok(QueryAnswer {
-            result: answer.result,
-            trust,
-            db_token: answer.db_token,
-            meta_present: answer.meta_present,
-            prepared_query_digest_v1: answer.prepared_query_digest_v1,
-            selected_rows_v1: answer.selected_rows_v1,
-            row_limit: answer.row_limit,
-            runtime_truncated: answer.runtime_truncated,
-            module_digest_v2: Some(module_digest_v2),
-            answer_digest_v1: Some(answer_digest_v1),
-            certificate: Some(certificate),
-            certificate_text: Some(certificate_text),
-            certificate_digest_v2: Some(certificate_digest_v2),
-            verifier_receipt: None,
+            core: QueryAnswerCore {
+                trust,
+                ..answer.core
+            },
+            evidence: CertificateEmittedQueryEvidence {
+                module_digest_v2,
+                answer_digest_v1,
+                certificate,
+                certificate_text,
+                certificate_digest_v2,
+            },
             _state: PhantomData,
         })
     }
@@ -4404,31 +4433,31 @@ instance I of S:
         let digest_v2 = RevisionDigestV2::from_accepted_text(axi);
 
         let mut tampered = prepared.execute_answer(&db, Some(&meta))?;
-        tampered.selected_rows_v1[0].projections[0].entity = "Mallory".to_string();
+        tampered.core.selected_rows_v1[0].projections[0].entity = "Mallory".to_string();
         assert!(prepared
             .certify_answer_with_anchors(tampered, &db, Some(&meta), digest_v2.clone())
             .is_err());
 
         let mut reordered = prepared.execute_answer(&db, Some(&meta))?;
-        reordered.selected_rows_v1.swap(0, 1);
+        reordered.core.selected_rows_v1.swap(0, 1);
         assert!(prepared
             .certify_answer_with_anchors(reordered, &db, Some(&meta), digest_v2.clone())
             .is_err());
 
         let mut dropped = prepared.execute_answer(&db, Some(&meta))?;
-        dropped.selected_rows_v1.pop();
+        dropped.core.selected_rows_v1.pop();
         assert!(prepared
             .certify_answer_with_anchors(dropped, &db, Some(&meta), digest_v2.clone())
             .is_err());
 
         let mut duplicated = prepared.execute_answer(&db, Some(&meta))?;
-        duplicated.selected_rows_v1[1] = duplicated.selected_rows_v1[0].clone();
+        duplicated.core.selected_rows_v1[1] = duplicated.core.selected_rows_v1[0].clone();
         assert!(prepared
             .certify_answer_with_anchors(duplicated, &db, Some(&meta), digest_v2.clone())
             .is_err());
 
         let mut truncation = prepared.execute_answer(&db, Some(&meta))?;
-        truncation.runtime_truncated = !truncation.runtime_truncated;
+        truncation.core.runtime_truncated = !truncation.core.runtime_truncated;
         assert!(prepared
             .certify_answer_with_anchors(truncation, &db, Some(&meta), digest_v2)
             .is_err());
@@ -4535,14 +4564,9 @@ instance I of S:
             emitted.prepared_query_digest_v1().expect("prepared digest"),
             emitted.answer_digest_v1(),
         )?;
-        emitted
-            .certificate_text
-            .as_mut()
-            .expect("certificate text")
-            .push('\n');
-        emitted.certificate_digest_v2 = Some(CertificateIdV2::from_canonical_fields(&[emitted
-            .certificate_text()
-            .as_bytes()]));
+        emitted.evidence.certificate_text.push('\n');
+        emitted.evidence.certificate_digest_v2 =
+            CertificateIdV2::from_canonical_fields(&[emitted.evidence.certificate_text.as_bytes()]);
         assert!(emitted.into_lean_verified(receipt).is_err());
         Ok(())
     }
