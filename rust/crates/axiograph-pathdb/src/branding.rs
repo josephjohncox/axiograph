@@ -25,9 +25,13 @@ static NEXT_DB_TOKEN: AtomicU64 = AtomicU64::new(1);
 pub struct DbToken(NonZeroU64);
 
 impl DbToken {
+    #[allow(
+        clippy::expect_used,
+        reason = "a process cannot construct 2^64 live PathDB instances; wrapping the token would violate DB branding"
+    )]
     pub fn new() -> Self {
         let raw = NEXT_DB_TOKEN.fetch_add(1, Ordering::Relaxed);
-        Self(NonZeroU64::new(raw).expect("NEXT_DB_TOKEN starts at 1"))
+        Self(NonZeroU64::new(raw).expect("process-local DB token space exhausted"))
     }
 
     pub fn raw(self) -> u64 {

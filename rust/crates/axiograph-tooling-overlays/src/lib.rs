@@ -998,8 +998,13 @@ pub fn overlay_software_coverage_report_schema() -> Value {
     schema_value::<OverlaySoftwareCoverageReportV1>()
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "schemars::Schema contains only JSON-representable values and has no fallible custom serializer"
+)]
 fn schema_value<T: JsonSchema>() -> Value {
     serde_json::to_value(schemars::schema_for!(T))
+        // pi-lens-ignore: rust-expect
         .expect("schemars schema should serialize to JSON")
 }
 

@@ -35,7 +35,7 @@
 	verify-lean-certificates verify-lean-certificate-rejections verify-lean-e2e-suite \
 	rust-test-semantics check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog rust-fmt-check rust-test-locked rust-test-all-targets-features check-cli-feature-matrix verify-viz \
 	verify-release-fixtures verify-release-packaging rehearse-release-publication \
-	release-gate check-no-unsafe verify-semantics verify-canonical-spine test-semantics test-backend-containers \
+	release-gate check-no-unsafe check-no-panics verify-semantics verify-canonical-spine test-semantics test-backend-containers \
 	viz-install viz-build viz-dev \
 	demo test clean install help
 
@@ -202,6 +202,13 @@ check-no-unsafe:
 	python3 scripts/check_no_unsafe.py
 	cd $(RUST_DIR) && $(CARGO) check --workspace --all-targets --all-features --locked
 	@echo "✓ First-party Rust is compiler-enforced safe code"
+
+check-no-panics:
+	@echo "━━━ Rejecting recoverable panic paths in first-party production Rust ━━━"
+	cd $(RUST_DIR) && $(CARGO) clippy --workspace --lib --bins --all-features --locked -- \
+		-D clippy::unwrap_used -D clippy::expect_used \
+		-D clippy::panic -D clippy::unreachable
+	@echo "✓ Production Rust contains no unreviewed unwrap, expect, panic, or unreachable path"
 
 # ============================================================================
 # Lean Build (manifest refresh explicit; cache/build/verification fail closed)
@@ -649,7 +656,7 @@ rehearse-release-publication:
 	python3 scripts/rehearse_release_publication.py
 	@echo "✓ Every injected failure and corrupted asset remained unpublished; one audited set committed atomically"
 
-release-gate: check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe rust-test-all-targets-features check-cli-feature-matrix verify-viz verify-rustsec verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
+release-gate: check-rust-toolchain check-node-toolchain check-clean-source-manifest check-example-catalog check-greenfield-surface rust-fmt-check check-no-unsafe check-no-panics rust-test-all-targets-features check-cli-feature-matrix verify-viz verify-rustsec verify-fuzz verify-miri-required verify-loom verify-kani-required verify-release-packaging verify-release-fixtures verify-semantics
 	python3 scripts/generate_release_source_manifest.py --check-only >/dev/null
 	git diff --check
 	@echo ""

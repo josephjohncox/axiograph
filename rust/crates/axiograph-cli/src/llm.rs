@@ -6729,21 +6729,24 @@ fn tool_db_summary(db: &PathDB, args: &serde_json::Value) -> Result<serde_json::
 
 const TOKEN_HASH_DIM: usize = 128;
 
-fn token_hash_v2(s: &str) -> u64 {
+fn token_hash_v2(s: &str) -> Result<u64> {
     let identity = axiograph_kernel::object_blob_digest_v2(s.as_bytes());
     let hex = identity
         .rsplit(':')
         .next()
-        .expect("AXIOGRAPH-ID wire values contain a digest suffix");
-    u64::from_str_radix(&hex[..16], 16)
-        .expect("AXIOGRAPH-ID digest suffix is lowercase hexadecimal")
+        .ok_or_else(|| anyhow!("AXIOGRAPH-ID wire value has no digest suffix"))?;
+    let prefix = hex
+        .get(..16)
+        .ok_or_else(|| anyhow!("AXIOGRAPH-ID digest suffix is shorter than 16 hex digits"))?;
+    u64::from_str_radix(prefix, 16)
+        .map_err(|error| anyhow!("AXIOGRAPH-ID digest prefix is not hexadecimal: {error}"))
 }
 
-fn token_hash_embed_text(text: &str) -> [f32; TOKEN_HASH_DIM] {
+fn token_hash_embed_text(text: &str) -> Result<[f32; TOKEN_HASH_DIM]> {
     let tokens = axiograph_pathdb::tokenize_fts_query(text);
     let mut v = [0.0f32; TOKEN_HASH_DIM];
     for t in tokens {
-        let h = token_hash_v2(&t);
+        let h = token_hash_v2(&t)?;
         let idx = (h % (TOKEN_HASH_DIM as u64)) as usize;
         let sign = if ((h >> 32) & 1) == 0 { 1.0 } else { -1.0 };
         v[idx] += sign;
@@ -6759,7 +6762,7 @@ fn token_hash_embed_text(text: &str) -> [f32; TOKEN_HASH_DIM] {
             *x *= inv;
         }
     }
-    v
+    Ok(v)
 }
 
 fn token_hash_dot(a: &[f32; TOKEN_HASH_DIM], b: &[f32; TOKEN_HASH_DIM]) -> f32 {
@@ -6857,10 +6860,10 @@ fn build_exact_index(ids: Vec<u32>, vectors: Vec<[f32; TOKEN_HASH_DIM]>) -> Toke
 fn get_or_build_token_hash_exact_index(
     snapshot_key: &str,
     db: &PathDB,
-) -> std::sync::Arc<std::sync::Mutex<TokenHashExactIndex>> {
+) -> Result<std::sync::Arc<std::sync::Mutex<TokenHashExactIndex>>> {
     if let Ok(cache) = token_hash_exact_cache().lock() {
         if let Some(value) = cache.get(snapshot_key).cloned() {
-            return value;
+            return Ok(value);
         }
     }
 
@@ -6871,11 +6874,11 @@ fn get_or_build_token_hash_exact_index(
             continue;
         };
         entity_ids.push(id);
-        entity_vecs.push(token_hash_embed_text(&text));
+        entity_vecs.push(token_hash_embed_text(&text)?);
     }
     let entities = build_exact_index(entity_ids, entity_vecs);
 
-    let docchunks = db.find_by_type("DocChunk").and_then(|chunks| {
+    let docchunks = if let Some(chunks) = db.find_by_type("DocChunk") {
         let mut ids = Vec::new();
         let mut vectors = Vec::new();
         for id in chunks.iter() {
@@ -6883,10 +6886,12 @@ fn get_or_build_token_hash_exact_index(
                 continue;
             };
             ids.push(id);
-            vectors.push(token_hash_embed_text(&text));
+            vectors.push(token_hash_embed_text(&text)?);
         }
         (!ids.is_empty()).then(|| build_exact_index(ids, vectors))
-    });
+    } else {
+        None
+    };
 
     let built = std::sync::Arc::new(std::sync::Mutex::new(TokenHashExactIndex {
         entities,
@@ -6899,7 +6904,7 @@ fn get_or_build_token_hash_exact_index(
             cache.retain(|key, _| key == snapshot_key);
         }
     }
-    built
+    Ok(built)
 }
 
 fn tool_semantic_search(
@@ -6940,12 +6945,12 @@ fn tool_semantic_search(
     )?;
 
     // Deterministic token-hash retrieval (always-on).
-    let qv = token_hash_embed_text(query);
+    let qv = token_hash_embed_text(query)?;
 
     let mut det_entity_scores: Vec<(f32, u32)> = Vec::new();
     let mut det_chunk_scores: Vec<(f32, u32)> = Vec::new();
 
-    let exact = get_or_build_token_hash_exact_index(snapshot_key, db);
+    let exact = get_or_build_token_hash_exact_index(snapshot_key, db)?;
     let exact = exact
         .lock()
         .map_err(|_| anyhow!("semantic_search: exact index lock poisoned"))?;

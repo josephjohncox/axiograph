@@ -320,6 +320,12 @@ fn connect_migration(b: &mut ScenarioBuilder, from_schema: u32, migration: u32, 
     b.rel("toSchema", migration, to_schema, 1.0);
 }
 
+fn required_named_id(ids: &HashMap<String, u32>, name: &str, entity_kind: &str) -> Result<u32> {
+    ids.get(name)
+        .copied()
+        .ok_or_else(|| anyhow!("synthetic scenario omitted required {entity_kind} `{name}`"))
+}
+
 fn build_enterprise_scenario(
     scale: usize,
     index_depth: usize,
@@ -1566,7 +1572,7 @@ fn build_proto_api_scenario(
             ("GetWidgetRequest", "GetWidgetResponse"),
             ("DeleteWidgetRequest", "DeleteWidgetResponse"),
         ] {
-            let req_id = *named_message_ids.get(req).expect("request message exists");
+            let req_id = required_named_id(&named_message_ids, req, "request message")?;
             let req_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{req}.widget_id"),
@@ -1583,9 +1589,7 @@ fn build_proto_api_scenario(
                 field_type_message: None,
             });
 
-            let resp_id = *named_message_ids
-                .get(resp)
-                .expect("response message exists");
+            let resp_id = required_named_id(&named_message_ids, resp, "response message")?;
             let resp_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{resp}.widget"),
@@ -1661,12 +1665,10 @@ fn build_proto_api_scenario(
                 ],
             );
 
-            let request_message_id = *named_message_ids
-                .get(request_name)
-                .expect("request message exists");
-            let response_message_id = *named_message_ids
-                .get(response_name)
-                .expect("response message exists");
+            let request_message_id =
+                required_named_id(&named_message_ids, request_name, "request message")?;
+            let response_message_id =
+                required_named_id(&named_message_ids, response_name, "response message")?;
 
             rpcs.push(ProtoRpcSpec {
                 rpc_id,
@@ -1838,7 +1840,7 @@ fn build_proto_api_scenario(
             .rpcs
             .iter()
             .find(|r| r.http_method == "GET")
-            .expect("GetWidget exists");
+            .ok_or_else(|| anyhow!("proto_api scenario omitted the required GET RPC"))?;
         builder.rel("mentions_rpc", bundle.doc_id, get_rpc.rpc_id, 0.85);
         builder.rel(
             "mentions_http_endpoint",
@@ -1852,12 +1854,12 @@ fn build_proto_api_scenario(
             .rpcs
             .iter()
             .find(|r| r.http_method == "POST")
-            .expect("CreateWidget exists");
+            .ok_or_else(|| anyhow!("proto_api scenario omitted the required POST RPC"))?;
         let delete_rpc = bundle
             .rpcs
             .iter()
             .find(|r| r.http_method == "DELETE")
-            .expect("DeleteWidget exists");
+            .ok_or_else(|| anyhow!("proto_api scenario omitted the required DELETE RPC"))?;
 
         builder.rel(
             "workflow_suggests_order",
@@ -2411,9 +2413,7 @@ fn build_proto_api_business_scenario(
         for method in &rpc_method_names {
             let req_name = format!("{method}Request");
             let resp_name = format!("{method}Response");
-            let req_id = *named_message_ids
-                .get(&req_name)
-                .expect("request message exists");
+            let req_id = required_named_id(&named_message_ids, &req_name, "request message")?;
             let req_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{req_name}.id"),
@@ -2433,9 +2433,7 @@ fn build_proto_api_business_scenario(
                 field_type_message: None,
             });
 
-            let resp_id = *named_message_ids
-                .get(&resp_name)
-                .expect("response message exists");
+            let resp_id = required_named_id(&named_message_ids, &resp_name, "response message")?;
             let resp_field = builder.add_named_entity(
                 "ProtoField",
                 format!("{package_name}.{resp_name}.resource"),
@@ -2522,12 +2520,16 @@ fn build_proto_api_business_scenario(
                 ],
             );
 
-            let request_message_id = *named_message_ids
-                .get(&format!("{method_name}Request"))
-                .expect("request message exists");
-            let response_message_id = *named_message_ids
-                .get(&format!("{method_name}Response"))
-                .expect("response message exists");
+            let request_message_id = required_named_id(
+                &named_message_ids,
+                &format!("{method_name}Request"),
+                "request message",
+            )?;
+            let response_message_id = required_named_id(
+                &named_message_ids,
+                &format!("{method_name}Response"),
+                "response message",
+            )?;
 
             rpcs.push(ProtoRpcSpec {
                 rpc_id,
@@ -2719,7 +2721,7 @@ fn build_proto_api_business_scenario(
             .iter()
             .find(|r| r.method_name.starts_with("Get"))
             .or_else(|| bundle.rpcs.first())
-            .expect("at least one rpc exists");
+            .ok_or_else(|| anyhow!("proto_api_business scenario generated no RPCs"))?;
 
         builder.rel("mentions_rpc", bundle.doc_id, primary_rpc.rpc_id, 0.85);
         builder.rel(
@@ -3109,17 +3111,13 @@ fn build_social_network_scenario(
     let start = Instant::now();
 
     // Shared transform composition edges.
-    let meet_intro = *transform_ids.get("MeetIntro").expect("transform exists");
-    let strengthen = *transform_ids.get("Strengthen").expect("transform exists");
-    let deep_trust = *transform_ids.get("DeepTrust").expect("transform exists");
-    let formalize = *transform_ids.get("Formalize").expect("transform exists");
-    let became_friends = *transform_ids
-        .get("BecameFriends")
-        .expect("transform exists");
-    let became_close = *transform_ids.get("BecameClose").expect("transform exists");
-    let became_colleagues = *transform_ids
-        .get("BecameColleagues")
-        .expect("transform exists");
+    let meet_intro = required_named_id(&transform_ids, "MeetIntro", "transform")?;
+    let strengthen = required_named_id(&transform_ids, "Strengthen", "transform")?;
+    let deep_trust = required_named_id(&transform_ids, "DeepTrust", "transform")?;
+    let formalize = required_named_id(&transform_ids, "Formalize", "transform")?;
+    let became_friends = required_named_id(&transform_ids, "BecameFriends", "transform")?;
+    let became_close = required_named_id(&transform_ids, "BecameClose", "transform")?;
+    let became_colleagues = required_named_id(&transform_ids, "BecameColleagues", "transform")?;
 
     builder.rel("t1", compose_meet_intro, meet_intro, 1.0);
     builder.rel("t2", compose_meet_intro, strengthen, 1.0);
@@ -3133,10 +3131,13 @@ fn build_social_network_scenario(
     builder.rel("t2", compose_formalize, formalize, 1.0);
     builder.rel("result", compose_formalize, became_colleagues, 1.0);
 
-    let friend = *relation_type_ids.get("Friend").expect("rel exists");
-    let colleague = *relation_type_ids.get("Colleague").expect("rel exists");
-    let acquaintance = *relation_type_ids.get("Acquaintance").expect("rel exists");
-    let stranger = *relation_type_ids.get("Stranger").expect("rel exists");
+    let friend = required_named_id(&relation_type_ids, "Friend", "relation type")?;
+    let colleague = required_named_id(&relation_type_ids, "Colleague", "relation type")?;
+    let acquaintance = required_named_id(&relation_type_ids, "Acquaintance", "relation type")?;
+    let stranger = required_named_id(&relation_type_ids, "Stranger", "relation type")?;
+    let time_t0 = required_named_id(&time_ids, "T0", "time")?;
+    let time_t1 = required_named_id(&time_ids, "T1", "time")?;
+    let high_trust = required_named_id(&trust_level_ids, "High", "trust level")?;
 
     for (i, c) in clusters.iter().enumerate() {
         // Membership / participation
@@ -3164,12 +3165,7 @@ fn build_social_network_scenario(
         builder.rel("startRel", rel_path_0, stranger, 1.0);
         builder.rel("endRel", rel_path_0, acquaintance, 1.0);
         builder.rel("transform", rel_path_0, meet_intro, 1.0);
-        builder.rel(
-            "time",
-            rel_path_0,
-            *time_ids.get("T0").expect("T0 exists"),
-            1.0,
-        );
+        builder.rel("time", rel_path_0, time_t0, 1.0);
 
         let rel_path_1 = builder.add_named_entity(
             "RelationshipPath",
@@ -3181,12 +3177,7 @@ fn build_social_network_scenario(
         builder.rel("startRel", rel_path_1, acquaintance, 1.0);
         builder.rel("endRel", rel_path_1, friend, 1.0);
         builder.rel("transform", rel_path_1, strengthen, 1.0);
-        builder.rel(
-            "time",
-            rel_path_1,
-            *time_ids.get("T1").expect("T1 exists"),
-            1.0,
-        );
+        builder.rel("time", rel_path_1, time_t1, 1.0);
 
         // Trust paths (typed objects).
         let trust_path = builder.add_named_entity(
@@ -3196,12 +3187,7 @@ fn build_social_network_scenario(
         );
         builder.rel("from", trust_path, c.alice, 1.0);
         builder.rel("to", trust_path, c.bob, 1.0);
-        builder.rel(
-            "level",
-            trust_path,
-            *trust_level_ids.get("High").expect("High exists"),
-            1.0,
-        );
+        builder.rel("level", trust_path, high_trust, 1.0);
         builder.rel("witnesses", trust_path, c.bookclub, 1.0);
 
         // History equivalence / homotopy between two "histories" from Alice to Carol.

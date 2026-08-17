@@ -214,6 +214,10 @@ macro_rules! identity_type {
                 Self(format!("axi:{}:v2:{}:{}", Self::KIND, ALGORITHM, hex))
             }
 
+            #[allow(
+                clippy::expect_used,
+                reason = "registered domains are bounded; supported targets fit field lengths in u64, and more than u32 fields would exceed process resource limits"
+            )]
             fn derive_fields(fields: &[&[u8]]) -> Self {
                 Self::from_hex(
                     derive_hex(Self::DOMAIN, fields).expect(

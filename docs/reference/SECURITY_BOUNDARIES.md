@@ -177,11 +177,19 @@ cargo test --manifest-path rust/Cargo.toml -p axiograph-llm-sync
 cargo test --manifest-path rust/Cargo.toml -p axiograph-store --test materialization
 python3 -m unittest scripts.tests.test_validate_release_archive
 make check-no-unsafe
+make check-no-panics
 make verify-viz
 make verify-rustsec
 make verify-fuzz
 make verify-loom
 ```
+
+`make check-no-panics` runs Clippy over every first-party workspace library
+and binary with all features. It rejects unreviewed `unwrap`, `expect`,
+`panic!`, and `unreachable!` paths in production builds. The only local
+exceptions are closed identity framing, process-local DB-token exhaustion, and
+serialization of schemars' JSON-representable schema model; each exception is
+attached to the exact expression with a machine-checked lint reason.
 
 `make verify-viz` runs under Node.js 24.19.0, installs the exact npm lock with
 lifecycle scripts disabled, rejects moderate-or-higher advisories, and builds
