@@ -60,7 +60,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Weak};
 use std::time::Duration;
@@ -1348,6 +1348,29 @@ impl PathDB {
         self.entities.by_type(type_id)
     }
 
+    /// Deterministic entity-type names present in this derived runtime index.
+    /// Includes virtual type memberships added by runtime adapters.
+    pub fn entity_type_names(&self) -> Vec<String> {
+        self.entities
+            .type_index
+            .keys()
+            .filter_map(|type_id| self.interner.lookup(*type_id))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Deterministic relation-type names present in this derived runtime index.
+    pub fn relation_type_names(&self) -> Vec<String> {
+        self.relations
+            .type_index
+            .keys()
+            .filter_map(|type_id| self.interner.lookup(*type_id))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     /// Find entities where `attr(key)` contains `needle` (case-insensitive).
     ///
     /// This is an **approximate** / convenience operation intended for REPL and
@@ -2601,10 +2624,14 @@ mod tests {
         let alice = db.add_entity("Person", vec![("name", "Alice")]);
         let bob = db.add_entity("Person", vec![("name", "Bob")]);
         let carol = db.add_entity("Person", vec![("name", "Carol")]);
+        db.mark_virtual_type(alice, "Agent")
+            .expect("known entity accepts virtual type");
 
         // Add relations
         db.add_relation("knows", alice, bob, 1.0, vec![]);
         db.add_relation("knows", bob, carol, 0.8, vec![]);
+        assert_eq!(db.entity_type_names(), vec!["Agent", "Person"]);
+        assert_eq!(db.relation_type_names(), vec!["knows"]);
 
         // Build indexes
         db.build_indexes();

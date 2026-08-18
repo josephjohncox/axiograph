@@ -656,99 +656,26 @@ impl SyncManager {
     // KG → LLM: Build Grounding Context
     // ========================================================================
 
-    /// Build grounding context for LLM from knowledge graph
+    /// Build bounded, explicitly evidence-plane grounding from process-local
+    /// staged state. Schema names and constraints still come from the canonical
+    /// `.axi` schema loaded by `UnifiedStorage`.
     pub fn build_grounding_context(
         &self,
         query: &str,
         max_facts: usize,
     ) -> anyhow::Result<GroundingContext> {
         let db = self.storage.pathdb();
+        let mut context = crate::grounding::evidence_grounding_context(&db, query, max_facts)?;
+        context.provenance =
+            GroundingProvenanceV1::evidence("unified_storage_process_local_evidence");
 
-        // Extract keywords from query
-        let keywords = self.extract_keywords(query);
-
-        // Find relevant facts
-        let mut facts = Vec::new();
-        for keyword in &keywords {
-            if let Some(entities) = db.find_by_type(keyword) {
-                for id in entities.iter().take(max_facts / keywords.len().max(1)) {
-                    if let Some(entity) = db.get_entity(id) {
-                        facts.push(GroundedFact {
-                            id,
-                            natural: format!(
-                                "{} is a {}",
-                                entity
-                                    .attrs
-                                    .get("name")
-                                    .map(|s| s.as_str())
-                                    .unwrap_or("entity"),
-                                entity.entity_type
-                            ),
-                            structured: format!("Entity({}, type={})", id, entity.entity_type),
-                            confidence: 1.0,
-                            citation: vec![format!("PathDB:Entity:{}", id)],
-                            related: vec![],
-                        });
-                    }
-                }
-            }
-        }
-
-        // Build schema context
         let schema_module = self.storage.schema();
-        let schema_context = SchemaContext {
+        context.schema_context = Some(SchemaContext {
             entity_types: schema_module.entity_types.clone(),
             relation_types: schema_module.relation_types.clone(),
             constraints: schema_module.constraints.clone(),
-        };
-
-        // Get applicable guardrails
-        let guardrails = self.get_applicable_guardrails(&keywords);
-
-        Ok(GroundingContext {
-            provenance: GroundingProvenanceV1::evidence("unified_storage_process_local_evidence"),
-            facts,
-            schema_context: Some(schema_context),
-            active_guardrails: guardrails,
-            suggested_queries: self.suggest_followup_queries(query),
-        })
-    }
-
-    /// Extract keywords from query
-    fn extract_keywords(&self, query: &str) -> Vec<String> {
-        // Simple keyword extraction (would use NLP in production)
-        query
-            .split_whitespace()
-            .filter(|w| w.len() > 3)
-            .map(|w| w.to_lowercase())
-            .filter(|w| {
-                !matches!(
-                    w.as_str(),
-                    "what" | "how" | "when" | "where" | "which" | "that" | "this"
-                )
-            })
-            .collect()
-    }
-
-    /// Get applicable guardrails for topic
-    fn get_applicable_guardrails(&self, _keywords: &[String]) -> Vec<GuardrailContext> {
-        // Simplified - would query guardrail index
-        vec![GuardrailContext {
-            rule_id: "safety_001".to_string(),
-            severity: "warning".to_string(),
-            description: "Safety verification required for cutting operations".to_string(),
-            applies_when: "discussing cutting parameters".to_string(),
-        }]
-    }
-
-    /// Suggest follow-up queries
-    fn suggest_followup_queries(&self, _query: &str) -> Vec<String> {
-        // Simplified - would use query patterns
-        vec![
-            "What are the recommended parameters?".to_string(),
-            "Are there any safety constraints?".to_string(),
-            "What related concepts should I understand?".to_string(),
-        ]
+        });
+        Ok(context)
     }
 
     // ========================================================================

@@ -55,8 +55,9 @@ The output includes:
 - a generated Rust behavior test that is compiled and executed;
 - TypeDB and PathDB projection manifests/artifacts;
 - an AxiStore catalog, reviewed exact-two-parent merge, immutable SQLite
-  materialization, and restart report; and
-- `regulated_shipment_usefulness_report_v2`, the compact evidence index.
+  materialization, restart report, and accepted-derived grounding bound to the
+  reopened receipt and exact query; and
+- `regulated_shipment_usefulness_report_v3`, the compact evidence index.
 
 The gate also requires both adversarial `.axi` modules to fail, requires the
 shared Rust/Lean category formation corpus to agree, requires Lean's finite

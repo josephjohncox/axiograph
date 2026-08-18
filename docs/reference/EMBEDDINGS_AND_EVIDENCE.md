@@ -198,13 +198,22 @@ Agent-facing retrieval reports should always include:
 - suggested typed queries,
 - suggested proposal or refinement handles.
 
-`axiograph-llm-sync::GroundingContext` makes the current authority limit
+`axiograph-llm-sync::GroundingContext` makes the evidence authority limit
 machine-readable. Its `GroundingProvenanceV1` is always version 1 with plane
 `evidence`; the enum intentionally has no accepted/certified variant. Context
 built from process-local PathDB or `UnifiedStorage` state therefore cannot be
-mistaken for an accepted snapshot. A future accepted-derived constructor must
-require a verified materialization and authenticated accepted snapshot rather
-than accepting a caller-supplied label.
+mistaken for an accepted snapshot.
+
+Accepted-derived retrieval uses a separate output-only
+`AcceptedGroundingContext`. Its sole public constructor requires
+`MaterializedPathDb`, after AxiStore has authenticated the accepted snapshot,
+tree, module closure, kernel and fact-log digests, logical image, and exact image
+receipt. Its provenance additionally binds the exact grounding query, limit,
+truncation status, and ordered stable-id selection digest. The type omits
+confidence and numeric runtime row ids, cannot be deserialized or
+constructed from caller-supplied labels, and explicitly states that lexical
+selection is not entailment/completeness and does not certify downstream LLM
+output.
 
 ## Relationship Lifting
 

@@ -1,65 +1,49 @@
 //! Grounding Engine: Build context from KG for LLM generation
 
 use crate::{
-    GroundedFact, GroundingContext, GroundingProvenanceV1, GuardrailContext, SchemaContext,
+    AcceptedGroundedFact, AcceptedGroundingContext, AcceptedGroundingProvenanceV1, GroundedFact,
+    GroundingContext, GroundingProvenanceV1, GuardrailContext, SchemaContext,
 };
-use axiograph_pathdb::PathDB;
-use std::collections::HashSet;
+use anyhow::{anyhow, Result};
+use axiograph_kernel::ObjectBlobIdV2;
+use axiograph_pathdb::{materialization::MaterializedPathDb, PathDB};
+use roaring::RoaringBitmap;
+use std::collections::{BTreeSet, HashSet};
 
-/// Engine for building grounding context from PathDB
-pub struct GroundingEngine<'a> {
+pub const MAX_GROUNDING_FACTS: usize = 256;
+pub const MAX_GROUNDING_QUERY_BYTES: usize = 16 * 1024;
+const GROUNDING_SEARCH_ATTRIBUTES: &[&str] = &[
+    "name",
+    "label",
+    "text",
+    "description",
+    "axiograph.value",
+    "axiograph.entity_key",
+    "axi_fact_id",
+];
+
+/// Internal implementation shared by the evidence and accepted-derived
+/// grounding interfaces.
+struct GroundingEngine<'a> {
     pathdb: &'a PathDB,
     max_facts: usize,
-    include_schema: bool,
-    include_guardrails: bool,
 }
 
 impl<'a> GroundingEngine<'a> {
-    pub fn new(pathdb: &'a PathDB) -> Self {
-        Self {
-            pathdb,
-            max_facts: 20,
-            include_schema: true,
-            include_guardrails: true,
-        }
+    fn new(pathdb: &'a PathDB, max_facts: usize) -> Self {
+        Self { pathdb, max_facts }
     }
 
-    pub fn max_facts(mut self, n: usize) -> Self {
-        self.max_facts = n;
-        self
-    }
-
-    pub fn include_schema(mut self, include: bool) -> Self {
-        self.include_schema = include;
-        self
-    }
-
-    pub fn include_guardrails(mut self, include: bool) -> Self {
-        self.include_guardrails = include;
-        self
-    }
-
-    /// Build grounding context for a query
-    pub fn build_context(&self, query: &str) -> GroundingContext {
+    fn build_context(&self, query: &str) -> GroundingContext {
         let keywords = self.extract_keywords(query);
         let facts = self.retrieve_relevant_facts(&keywords);
-        let schema = if self.include_schema {
-            Some(self.build_schema_context())
-        } else {
-            None
-        };
-        let guardrails = if self.include_guardrails {
-            self.get_applicable_guardrails(&keywords)
-        } else {
-            vec![]
-        };
         let suggestions = self.generate_suggestions(query, &facts);
 
         GroundingContext {
             provenance: GroundingProvenanceV1::evidence("pathdb_process_local_evidence"),
             facts,
-            schema_context: schema,
-            active_guardrails: guardrails,
+            schema_context: Some(self.build_schema_context()),
+            active_guardrails: self.get_applicable_guardrails(&keywords),
             suggested_queries: suggestions,
         }
     }
@@ -86,53 +70,57 @@ impl<'a> GroundingEngine<'a> {
             .collect()
     }
 
-    /// Retrieve facts relevant to keywords
-    fn retrieve_relevant_facts(&self, keywords: &[String]) -> Vec<GroundedFact> {
-        let mut facts = Vec::new();
-        let mut seen_ids = HashSet::new();
-
+    fn retrieve_relevant_entity_ids(&self, keywords: &[String]) -> (Vec<u32>, bool) {
+        let mut matches = RoaringBitmap::new();
+        let type_names = self.pathdb.entity_type_names();
         for keyword in keywords {
-            // Try as entity type
-            if let Some(entities) = self.pathdb.find_by_type(keyword) {
-                for id in entities.iter().take(self.max_facts / keywords.len().max(1)) {
-                    if seen_ids.insert(id) {
-                        if let Some(entity) = self.pathdb.get_entity(id) {
-                            facts.push(GroundedFact {
-                                id,
-                                natural: self.entity_to_natural(&entity),
-                                structured: format!(
-                                    "Entity(id={}, type={})",
-                                    id, entity.entity_type
-                                ),
-                                confidence: 1.0,
-                                citation: vec![format!("PathDB:Entity:{}", id)],
-                                related: self.get_related_concepts(id),
-                            });
-                        }
+            for type_name in &type_names {
+                if type_name.to_ascii_lowercase().contains(keyword) {
+                    if let Some(ids) = self.pathdb.find_by_type(type_name) {
+                        matches |= ids;
                     }
                 }
             }
-
-            // Try relations
-            // (simplified - would use relation type index)
+            for attribute in GROUNDING_SEARCH_ATTRIBUTES {
+                matches |= self.pathdb.entities_with_attr_fts_any(attribute, keyword);
+            }
         }
+        let truncated = matches.len() > self.max_facts as u64;
+        (matches.iter().take(self.max_facts).collect(), truncated)
+    }
 
-        // Limit total
-        facts.truncate(self.max_facts);
-        facts
+    /// Retrieve facts relevant to keywords.
+    fn retrieve_relevant_facts(&self, keywords: &[String]) -> Vec<GroundedFact> {
+        self.retrieve_relevant_entity_ids(keywords)
+            .0
+            .into_iter()
+            .filter_map(|id| {
+                let entity = self.pathdb.get_entity(id)?;
+                Some(GroundedFact {
+                    id,
+                    natural: self.entity_to_natural(&entity),
+                    structured: format!("Entity(id={id}, type={})", entity.entity_type),
+                    confidence: 1.0,
+                    citation: vec![format!("PathDB:Entity:{id}")],
+                    related: self.get_related_concepts(id),
+                })
+            })
+            .collect()
     }
 
     fn entity_to_natural(&self, entity: &axiograph_pathdb::EntityView) -> String {
         let name = entity
             .attrs
             .get("name")
-            .map(|s| s.as_str())
+            .or_else(|| entity.attrs.get("label"))
+            .or_else(|| entity.attrs.get("axiograph.value"))
+            .map(String::as_str)
             .unwrap_or("entity");
 
         let attrs: Vec<String> = entity
             .attrs
             .iter()
-            .filter(|(k, _)| k.as_str() != "name")
+            .filter(|(key, _)| !matches!(key.as_str(), "name" | "label" | "axiograph.value"))
             .map(|(k, v)| format!("{k}: {v}"))
             .collect();
 
@@ -147,63 +135,95 @@ impl<'a> GroundingEngine<'a> {
         }
     }
 
-    fn get_related_concepts(&self, _entity_id: u32) -> Vec<String> {
-        // Would traverse relations to find related concepts
-        vec![]
+    fn get_related_concepts(&self, entity_id: u32) -> Vec<String> {
+        let mut related = BTreeSet::new();
+        for relation in self.pathdb.relations.outgoing_any(entity_id) {
+            let relation_type = self
+                .pathdb
+                .interner
+                .lookup(relation.rel_type)
+                .unwrap_or_else(|| "unknown_relation".to_string());
+            related.insert(format!(
+                "{relation_type}->{}",
+                self.entity_reference_label(relation.target)
+            ));
+        }
+        for relation in self.pathdb.relations.incoming_any(entity_id) {
+            let relation_type = self
+                .pathdb
+                .interner
+                .lookup(relation.rel_type)
+                .unwrap_or_else(|| "unknown_relation".to_string());
+            related.insert(format!(
+                "<-{relation_type}-{}",
+                self.entity_reference_label(relation.source)
+            ));
+        }
+        related.into_iter().take(self.max_facts).collect()
+    }
+
+    fn entity_reference_label(&self, entity_id: u32) -> String {
+        let Some(entity) = self.pathdb.get_entity(entity_id) else {
+            return format!("entity:{entity_id}");
+        };
+        entity
+            .attrs
+            .get("name")
+            .or_else(|| entity.attrs.get("label"))
+            .or_else(|| entity.attrs.get("axiograph.value"))
+            .cloned()
+            .unwrap_or_else(|| format!("entity:{entity_id}"))
     }
 
     fn build_schema_context(&self) -> SchemaContext {
-        // Would build from actual schema
         SchemaContext {
-            entity_types: vec![
-                "Material".to_string(),
-                "Tool".to_string(),
-                "Operation".to_string(),
-                "Concept".to_string(),
-            ],
-            relation_types: vec![
-                "hasMaterial".to_string(),
-                "usesTool".to_string(),
-                "requires".to_string(),
-                "produces".to_string(),
-            ],
-            constraints: vec![],
+            entity_types: self.pathdb.entity_type_names(),
+            relation_types: self.pathdb.relation_type_names(),
+            constraints: Vec::new(),
         }
     }
 
     fn get_applicable_guardrails(&self, keywords: &[String]) -> Vec<GuardrailContext> {
-        let mut guardrails = Vec::new();
-
-        // Check for safety-related keywords
-        let safety_keywords = ["cutting", "speed", "feed", "titanium", "heat", "coolant"];
-        if keywords
-            .iter()
-            .any(|k| safety_keywords.contains(&k.as_str()))
-        {
-            guardrails.push(GuardrailContext {
-                rule_id: "machining_safety".to_string(),
-                severity: "warning".to_string(),
-                description:
-                    "Machining parameters should be verified against material specifications"
-                        .to_string(),
-                applies_when: "discussing cutting parameters".to_string(),
-            });
-        }
-
-        // Check for constraint keywords
-        if keywords
-            .iter()
-            .any(|k| k == "constraint" || k == "rule" || k == "must")
-        {
-            guardrails.push(GuardrailContext {
-                rule_id: "constraint_review".to_string(),
-                severity: "info".to_string(),
-                description: "Constraints should be validated by domain expert".to_string(),
-                applies_when: "defining constraints or rules".to_string(),
-            });
-        }
-
-        guardrails
+        let Some(ids) = self.pathdb.find_by_type("Guardrail") else {
+            return Vec::new();
+        };
+        ids.iter()
+            .filter_map(|id| self.pathdb.get_entity(id))
+            .filter(|entity| {
+                let searchable = entity
+                    .attrs
+                    .values()
+                    .map(|value| value.to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                keywords.iter().any(|keyword| searchable.contains(keyword))
+            })
+            .take(self.max_facts)
+            .map(|entity| GuardrailContext {
+                rule_id: entity
+                    .attrs
+                    .get("rule_id")
+                    .or_else(|| entity.attrs.get("name"))
+                    .cloned()
+                    .unwrap_or_else(|| format!("PathDB:Guardrail:{}", entity.id)),
+                severity: entity
+                    .attrs
+                    .get("severity")
+                    .cloned()
+                    .unwrap_or_else(|| "unspecified".to_string()),
+                description: entity
+                    .attrs
+                    .get("description")
+                    .or_else(|| entity.attrs.get("rule"))
+                    .cloned()
+                    .unwrap_or_else(|| format!("stored Guardrail entity {}", entity.id)),
+                applies_when: entity
+                    .attrs
+                    .get("applies_when")
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect()
     }
 
     fn generate_suggestions(&self, _query: &str, facts: &[GroundedFact]) -> Vec<String> {
@@ -229,99 +249,124 @@ impl<'a> GroundingEngine<'a> {
     }
 }
 
-/// Builder pattern for context construction
-pub struct ContextBuilder<'a> {
-    pathdb: &'a PathDB,
-    query: Option<String>,
-    entity_ids: Vec<u32>,
-    include_relations: bool,
-    depth: usize,
-    max_facts: usize,
+fn validate_grounding_request(query: &str, max_facts: usize) -> Result<()> {
+    if query.len() > MAX_GROUNDING_QUERY_BYTES {
+        return Err(anyhow!(
+            "grounding query bytes {} exceed {MAX_GROUNDING_QUERY_BYTES}",
+            query.len()
+        ));
+    }
+    if !(1..=MAX_GROUNDING_FACTS).contains(&max_facts) {
+        return Err(anyhow!(
+            "grounding fact limit must be in 1..={MAX_GROUNDING_FACTS}, got {max_facts}"
+        ));
+    }
+    Ok(())
 }
 
-impl<'a> ContextBuilder<'a> {
-    pub fn new(pathdb: &'a PathDB) -> Self {
-        Self {
-            pathdb,
-            query: None,
-            entity_ids: vec![],
-            include_relations: true,
-            depth: 2,
-            max_facts: 20,
-        }
-    }
+/// Build explicitly non-authoritative grounding from process-local PathDB
+/// evidence. Limits are checked before retrieval.
+pub fn evidence_grounding_context(
+    pathdb: &PathDB,
+    query: &str,
+    max_facts: usize,
+) -> Result<GroundingContext> {
+    validate_grounding_request(query, max_facts)?;
+    Ok(GroundingEngine::new(pathdb, max_facts).build_context(query))
+}
 
-    pub fn query(mut self, q: &str) -> Self {
-        self.query = Some(q.to_string());
-        self
-    }
+fn accepted_runtime_stable_id(entity: &axiograph_pathdb::EntityView) -> Option<&str> {
+    entity
+        .attrs
+        .get("axiograph.entity_key")
+        .or_else(|| entity.attrs.get("axi_fact_id"))
+        .map(String::as_str)
+}
 
-    pub fn entities(mut self, ids: Vec<u32>) -> Self {
-        self.entity_ids = ids;
-        self
-    }
-
-    pub fn include_relations(mut self, include: bool) -> Self {
-        self.include_relations = include;
-        self
-    }
-
-    pub fn depth(mut self, d: usize) -> Self {
-        self.depth = d;
-        self
-    }
-
-    pub fn max_facts(mut self, n: usize) -> Self {
-        self.max_facts = n;
-        self
-    }
-
-    pub fn build(self) -> GroundingContext {
-        let engine = GroundingEngine::new(self.pathdb).max_facts(self.max_facts);
-
-        if let Some(q) = self.query {
-            engine.build_context(&q)
-        } else if !self.entity_ids.is_empty() {
-            // Build context from specific entities
-            let mut facts = Vec::new();
-            for id in &self.entity_ids {
-                if let Some(entity) = self.pathdb.get_entity(*id) {
-                    facts.push(GroundedFact {
-                        id: *id,
-                        natural: format!(
-                            "{} is a {}",
-                            entity
-                                .attrs
-                                .get("name")
-                                .map(|s| s.as_str())
-                                .unwrap_or("entity"),
-                            entity.entity_type
-                        ),
-                        structured: format!("Entity(id={}, type={})", *id, entity.entity_type),
-                        confidence: 1.0,
-                        citation: vec![format!("PathDB:Entity:{}", *id)],
-                        related: vec![],
-                    });
-                }
-            }
-
-            GroundingContext {
-                provenance: GroundingProvenanceV1::evidence("pathdb_process_local_evidence"),
-                facts,
-                schema_context: None,
-                active_guardrails: vec![],
-                suggested_queries: vec![],
-            }
-        } else {
-            GroundingContext {
-                provenance: GroundingProvenanceV1::evidence("pathdb_process_local_evidence"),
-                facts: vec![],
-                schema_context: None,
-                active_guardrails: vec![],
-                suggested_queries: vec!["Try asking a specific question".to_string()],
+fn accepted_related_stable_ids(pathdb: &PathDB, entity_id: u32, limit: usize) -> Vec<String> {
+    let mut related = BTreeSet::new();
+    for relation in pathdb.relations.outgoing_any(entity_id) {
+        if let Some(entity) = pathdb.get_entity(relation.target) {
+            if let Some(stable_id) = accepted_runtime_stable_id(&entity) {
+                related.insert(stable_id.to_string());
             }
         }
     }
+    for relation in pathdb.relations.incoming_any(entity_id) {
+        if let Some(entity) = pathdb.get_entity(relation.source) {
+            if let Some(stable_id) = accepted_runtime_stable_id(&entity) {
+                related.insert(stable_id.to_string());
+            }
+        }
+    }
+    related.into_iter().take(limit).collect()
+}
+
+/// Build accepted-derived grounding exclusively from an authenticated AxiStore
+/// materialization. There is no constructor from a bare `PathDB` or receipt.
+pub fn accepted_grounding_context(
+    materialized: &MaterializedPathDb,
+    query: &str,
+    max_facts: usize,
+) -> Result<AcceptedGroundingContext> {
+    validate_grounding_request(query, max_facts)?;
+    let engine = GroundingEngine::new(materialized.db(), max_facts);
+    let keywords = engine.extract_keywords(query);
+    let (entity_ids, truncated) = engine.retrieve_relevant_entity_ids(&keywords);
+    let materialization_id = materialized.receipt().materialization_id.to_string();
+    let facts = entity_ids
+        .into_iter()
+        .map(|id| {
+            let entity = materialized
+                .db()
+                .get_entity(id)
+                .ok_or_else(|| anyhow!("grounding selected absent runtime entity {id}"))?;
+            let stable_id = accepted_runtime_stable_id(&entity)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "authenticated runtime entity {id} has no stable entity or fact identity"
+                    )
+                })?;
+            Ok(AcceptedGroundedFact::new(
+                stable_id.clone(),
+                engine.entity_to_natural(&entity),
+                format!(
+                    "AcceptedEntity(stable_id={stable_id}, type={})",
+                    entity.entity_type
+                ),
+                vec![format!(
+                    "AxiStore:Materialization:{materialization_id}:Entity:{stable_id}"
+                )],
+                accepted_related_stable_ids(materialized.db(), id, max_facts),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let limit_bytes = (max_facts as u64).to_be_bytes();
+    let query_digest = ObjectBlobIdV2::from_canonical_fields(&[
+        b"axiograph_accepted_grounding_query_v1",
+        query.as_bytes(),
+        &limit_bytes,
+    ]);
+    let truncated_bytes = [u8::from(truncated)];
+    let mut selection_fields = Vec::with_capacity(facts.len() + 4);
+    selection_fields.push(b"axiograph_accepted_grounding_selection_v1".as_slice());
+    selection_fields.push(query_digest.as_str().as_bytes());
+    selection_fields.push(materialization_id.as_bytes());
+    selection_fields.push(truncated_bytes.as_slice());
+    selection_fields.extend(facts.iter().map(|fact| fact.stable_id().as_bytes()));
+    let selection_digest = ObjectBlobIdV2::from_canonical_fields(&selection_fields);
+    let provenance = AcceptedGroundingProvenanceV1::from_materialized_pathdb(
+        materialized,
+        &query_digest,
+        &selection_digest,
+    );
+    Ok(AcceptedGroundingContext::new(
+        provenance,
+        facts,
+        engine.build_schema_context(),
+        truncated,
+    ))
 }
 
 #[cfg(test)]
@@ -329,9 +374,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_keyword_extraction() {
+    fn keyword_extraction_omits_stopwords() {
         let pathdb = PathDB::new();
-        let engine = GroundingEngine::new(&pathdb);
+        let engine = GroundingEngine::new(&pathdb, 20);
 
         let keywords = engine.extract_keywords("What is the hardness of titanium?");
         assert!(keywords.contains(&"hardness".to_string()));
@@ -341,26 +386,57 @@ mod tests {
     }
 
     #[test]
-    fn test_context_builder() {
-        let pathdb = PathDB::new();
-        let context = ContextBuilder::new(&pathdb)
-            .query("titanium cutting")
-            .max_facts(10)
-            .build();
+    fn evidence_grounding_is_bounded_and_uses_runtime_types() {
+        let mut pathdb = PathDB::new();
+        let alice = pathdb.add_entity("Person", vec![("name", "Alice")]);
+        let team = pathdb.add_entity("Team", vec![("name", "Safety")]);
+        pathdb.add_relation("memberOf", alice, team, 1.0, Vec::new());
 
-        // Empty PathDB, so no facts, but suggestions should exist.
-        assert!(!context.suggested_queries.is_empty());
-        assert_eq!(
-            context.provenance.version,
-            crate::GROUNDING_PROVENANCE_VERSION_V1
-        );
+        let context = evidence_grounding_context(&pathdb, "Alice", 10)
+            .expect("bounded evidence grounding should build");
+        assert_eq!(context.facts.len(), 1);
+        assert_eq!(context.facts[0].related, vec!["memberOf->Safety"]);
+        let schema = context
+            .schema_context
+            .as_ref()
+            .expect("runtime schema summary");
+        assert_eq!(schema.entity_types, vec!["Person", "Team"]);
+        assert_eq!(schema.relation_types, vec!["memberOf"]);
         assert_eq!(context.provenance.plane, crate::GroundingPlaneV1::Evidence);
-        assert_eq!(context.provenance.source, "pathdb_process_local_evidence");
 
         let mut wire = serde_json::to_value(&context).expect("serialize grounding context");
         wire.as_object_mut()
             .expect("context object")
             .insert("accepted".to_string(), serde_json::Value::Bool(true));
         assert!(serde_json::from_value::<GroundingContext>(wire).is_err());
+
+        assert!(evidence_grounding_context(&pathdb, "Alice", 0).is_err());
+        assert!(evidence_grounding_context(&pathdb, "Alice", MAX_GROUNDING_FACTS + 1).is_err());
+        assert!(
+            evidence_grounding_context(&pathdb, &"q".repeat(MAX_GROUNDING_QUERY_BYTES + 1), 1,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn guardrails_come_only_from_stored_entities() {
+        let mut pathdb = PathDB::new();
+        let context = evidence_grounding_context(&pathdb, "titanium cutting", 10)
+            .expect("empty evidence context");
+        assert!(context.active_guardrails.is_empty());
+
+        pathdb.add_entity(
+            "Guardrail",
+            vec![
+                ("rule_id", "stored_safety_rule"),
+                ("severity", "warning"),
+                ("description", "Review titanium cutting parameters"),
+                ("applies_when", "cutting titanium"),
+            ],
+        );
+        let context = evidence_grounding_context(&pathdb, "titanium cutting", 10)
+            .expect("stored guardrail context");
+        assert_eq!(context.active_guardrails.len(), 1);
+        assert_eq!(context.active_guardrails[0].rule_id, "stored_safety_rule");
     }
 }

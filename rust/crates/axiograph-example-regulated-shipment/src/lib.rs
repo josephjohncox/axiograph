@@ -18,13 +18,15 @@ use axiograph_kernel::{
     CompiledKernelSnapshot, KernelCompilationRequest, ObjectBlobIdV2, QueryIdV2, RepositoryIdV2,
     RevisionDigestV2, SchemaGeneratorKindIr, ScopeAxisIr, SnapshotIdV2, TypeExprIr,
 };
+use axiograph_llm_sync::grounding::accepted_grounding_context;
+use axiograph_llm_sync::AcceptedGroundingPlaneV1;
 use axiograph_pathdb::materialization::load_verified_pathdb;
 use axiograph_pathdb::{CertificateV3, RuntimeTheoryCheckReportV1, RuntimeTheoryCheckStatusV1};
 use axiograph_store::*;
 use serde::{Deserialize, Serialize};
 
 pub const REGULATED_SHIPMENT_USEFULNESS_REPORT_VERSION: &str =
-    "regulated_shipment_usefulness_report_v2";
+    "regulated_shipment_usefulness_report_v3";
 const MODULE_NAME: &str = "RegulatedShipment";
 
 #[derive(Debug, Clone)]
@@ -108,6 +110,17 @@ pub struct RegulatedShipmentPersistenceEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegulatedShipmentAcceptedGroundingEvidence {
+    pub plane: String,
+    pub accepted_snapshot_id: String,
+    pub materialization_id: String,
+    pub query_digest: String,
+    pub selection_digest: String,
+    pub stable_fact_ids: Vec<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegulatedShipmentUsefulnessReport {
     pub version: String,
     pub scenario: String,
@@ -120,6 +133,7 @@ pub struct RegulatedShipmentUsefulnessReport {
     pub finite_query: RegulatedShipmentQueryEvidence,
     pub merge: RegulatedShipmentMergeEvidence,
     pub persistence: RegulatedShipmentPersistenceEvidence,
+    pub accepted_grounding: RegulatedShipmentAcceptedGroundingEvidence,
     pub trusted_receipt_inputs: Vec<String>,
     pub checked_runtime_scope: Vec<String>,
     pub non_claims: Vec<String>,
@@ -1410,6 +1424,25 @@ pub fn run_workflow(
         .reconciliation
         .as_ref()
         .ok_or_else(|| anyhow!("merge plan omitted typed reconciliation"))?;
+    let accepted_grounding = accepted_grounding_context(&loaded, "Shipment_RX_1007", 16)
+        .context("build accepted-derived grounding from verified materialization")?;
+    if accepted_grounding.provenance().plane() != AcceptedGroundingPlaneV1::AcceptedDerived {
+        return Err(anyhow!(
+            "verified grounding did not retain accepted-derived plane"
+        ));
+    }
+    if accepted_grounding.provenance().accepted_snapshot_id()
+        != merge.promotion.snapshot.snapshot_id.as_str()
+    {
+        return Err(anyhow!(
+            "verified grounding accepted snapshot differs from reviewed merge"
+        ));
+    }
+    if accepted_grounding.facts().is_empty() {
+        return Err(anyhow!(
+            "verified grounding omitted the accepted Shipment_RX_1007 entity"
+        ));
+    }
 
     Ok(RegulatedShipmentUsefulnessReport {
         version: REGULATED_SHIPMENT_USEFULNESS_REPORT_VERSION.to_string(),
@@ -1444,6 +1477,28 @@ pub fn run_workflow(
             hydrated_relations: loaded.db().relations.len(),
             shipment_rx_1007_present_after_restart: shipment_present,
         },
+        accepted_grounding: RegulatedShipmentAcceptedGroundingEvidence {
+            plane: "accepted_derived".to_string(),
+            accepted_snapshot_id: accepted_grounding
+                .provenance()
+                .accepted_snapshot_id()
+                .to_string(),
+            materialization_id: accepted_grounding
+                .provenance()
+                .materialization_id()
+                .to_string(),
+            query_digest: accepted_grounding.provenance().query_digest().to_string(),
+            selection_digest: accepted_grounding
+                .provenance()
+                .selection_digest()
+                .to_string(),
+            stable_fact_ids: accepted_grounding
+                .facts()
+                .iter()
+                .map(|fact| fact.stable_id().to_string())
+                .collect(),
+            truncated: accepted_grounding.truncated(),
+        },
         trusted_receipt_inputs: vec![
             inputs.baseline_query_verification.display().to_string(),
             inputs.candidate_query_verification.display().to_string(),
@@ -1453,6 +1508,7 @@ pub fn run_workflow(
             "finite relation objects, ordered role projections, indexed/refined role witnesses, checked formal groupoid equations, and explanation-certified saturation".to_string(),
             "AxiStore exact-two-parent reviewed merge and authenticated SQLite materialization".to_string(),
             "receipt-checked PathDB hydration after process-level reopen".to_string(),
+            "accepted-derived grounding bound to the reopened materialization, accepted snapshot, and exact query digest".to_string(),
         ],
         non_claims: vec![
             "no arbitrary categorical pushout, colimit, or complete-lattice merge claim".to_string(),
@@ -1848,6 +1904,45 @@ print(json.dumps({
         assert!(report.persistence.entity_rows > 0);
         assert!(report.persistence.relation_fact_rows > 0);
         assert!(report.persistence.shipment_rx_1007_present_after_restart);
+        assert_eq!(report.accepted_grounding.plane, "accepted_derived");
+        assert_eq!(
+            report.accepted_grounding.accepted_snapshot_id,
+            report.accepted_snapshot_id
+        );
+        assert_eq!(
+            report.accepted_grounding.materialization_id,
+            report.persistence.materialization_id
+        );
+        assert!(!report.accepted_grounding.stable_fact_ids.is_empty());
+        let grounding_limit = 16_u64.to_be_bytes();
+        let expected_query_digest = ObjectBlobIdV2::from_canonical_fields(&[
+            b"axiograph_accepted_grounding_query_v1",
+            b"Shipment_RX_1007",
+            &grounding_limit,
+        ]);
+        assert_eq!(
+            report.accepted_grounding.query_digest,
+            expected_query_digest.to_string()
+        );
+        let truncated_bytes = [u8::from(report.accepted_grounding.truncated)];
+        let mut selection_fields =
+            Vec::with_capacity(report.accepted_grounding.stable_fact_ids.len() + 4);
+        selection_fields.push(b"axiograph_accepted_grounding_selection_v1".as_slice());
+        selection_fields.push(expected_query_digest.as_str().as_bytes());
+        selection_fields.push(report.accepted_grounding.materialization_id.as_bytes());
+        selection_fields.push(truncated_bytes.as_slice());
+        selection_fields.extend(
+            report
+                .accepted_grounding
+                .stable_fact_ids
+                .iter()
+                .map(String::as_bytes),
+        );
+        assert_eq!(
+            report.accepted_grounding.selection_digest,
+            ObjectBlobIdV2::from_canonical_fields(&selection_fields).to_string()
+        );
+        assert!(!report.accepted_grounding.truncated);
     }
 
     #[test]

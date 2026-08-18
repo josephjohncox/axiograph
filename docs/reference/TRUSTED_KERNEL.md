@@ -375,10 +375,14 @@ certificate or gate result:
 - `axiograph-projections` manifests, native artifacts, semantic-loss reports,
   and backend readback reports
 - authoring/query typed-hole and refinement-candidate reports
+- accepted-derived grounding contexts over authenticated `.axpd` receipts
 
 These outputs may cite kernel-checked anchors, certificates, and IR ids. That
-does not make the whole report trusted. The correct product language is still
-`certified`, `mixed`, `execution-only`, or `evidence-grounded` according to the
+does not make the whole report trusted. `AcceptedGroundingContext` proves its
+source rows and accepted-state anchors passed AxiStore authentication; lexical
+selection remains a runtime operation and downstream model output remains
+untrusted. The correct product language is still `certified`, `mixed`,
+`execution-only`, `accepted-derived`, or `evidence-grounded` according to the
 stated contract. Structured typed holes are especially important to classify
 correctly: runtime hole handles are checker/exploration artifacts over compiled
 IR and anchors, not trusted semantic proofs. The dependent `TypedPathHole` in

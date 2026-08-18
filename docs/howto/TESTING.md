@@ -112,7 +112,7 @@ cargo run -p axiograph-cli --release -- tools perf scenario --scenario proto_api
 | Gate | Use it for | Notes |
 | --- | --- | --- |
 | `make release-gate` | The only binary/container publication decision | Requires rustc 1.88.0, Node.js 24.19.0, cargo-audit 0.22.2, `nightly-2026-07-23` with Miri and `rust-src`, `cargo-fuzz 0.13.2`, and `cargo-kani 0.67.0` exactly; then runs catalog validation, Rust formatting, the no-unsafe and no-panic gates, full locked workspace tests, the CLI feature matrix, locked frontend and RustSec advisory audits, bounded fuzz targets, pure identity-kernel Miri tests, the Loom child-limiter model, the Kani fixed-point-constructor proof, `make verify-semantics` (including the regulated-shipment fixture), and `git diff --check`. Publication workflows must depend on this result. |
-| `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint/category certificates; runs `axiograph check finite-query` for baseline and candidate; binds the accepted exact-answer receipt into each reviewed trust gate; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; compiles the generated Rust test; and requires adversarial reviewer, path, query, placeholder-receipt, explanation, and materialization cases to reject. |
+| `make verify-regulated-shipment` | Primary usefulness and CI fixture | Compiles baseline/candidate canonical modules; checks runtime theory, CQ, evolution, behavior/codegen, TypeDB/PathDB projections, VerifyMain type/constraint/category certificates; runs `axiograph check finite-query` for baseline and candidate; binds the accepted exact-answer receipt into each reviewed trust gate; materializes a reviewed typed merge; reopens authenticated SQLite/PathDB state; builds accepted-derived grounding bound to the reopened receipt and exact query; compiles the generated Rust test; and requires adversarial reviewer, path, query, placeholder-receipt, explanation, and materialization cases to reject. |
 | `make check-no-unsafe` | First-party Rust safety policy | Verifies every workspace package inherits `unsafe_code = "forbid"`, scans every checked-in Rust source file for the `unsafe` keyword outside comments and literals, then checks all targets and features with the compiler lint enabled. |
 | `make check-no-panics` | First-party production panic policy | Runs Clippy over every workspace library and binary with all features and rejects `unwrap`, `expect`, `panic!`, and `unreachable!`. Three closed, resource-impossible or serializer-infallible invariants carry local reviewed lint exceptions; test-only assertion paths are outside this production target. |
 | `make verify-viz` | Frontend dependency and production-build gate | Requires Node.js 24.19.0 from `.node-version`, installs only `package-lock.json` with lifecycle scripts disabled, rejects moderate-or-higher npm advisories, and builds the Vite production bundle. Current pins are Vite 8.2.1, esbuild 0.28.2, PostCSS 8.5.26, and Rolldown 1.2.4; obsolete vulnerable Rollup is absent. |
@@ -296,8 +296,9 @@ Cross-crate integration tests:
 6. Review the finite compiled-payload evolution diff and its typed `Merge`
    finite-theory scope/coverage receipt.
 7. Publish the candidate on a review ref and materialize an exact-two-parent typed AxiStore merge.
-8. Build an immutable SQLite .axpd image, reopen the store, and hydrate PathDB only after receipt checks.
-9. Emit TypeDB/PathDB projections and compile/run the generated Rust behavior test.
+8. Build an immutable SQLite `.axpd` image, reopen the store, and hydrate PathDB only after receipt checks.
+9. Build accepted-derived grounding whose private provenance binds that reopened receipt, accepted snapshot, stable fact ids, and exact query digest.
+10. Emit TypeDB/PathDB projections and compile/run the generated Rust behavior test.
 ```
 
 The exact-completeness theorem is scoped to the bounded finite query denotation.

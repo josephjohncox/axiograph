@@ -118,7 +118,7 @@ The remaining architectural debt is concentrated in a few places:
 | `axiograph-tooling-overlays` | DDD/fDDD overlays, weak queries, coverage inputs. | Keep `.axi` pure by putting tooling metadata here. |
 | `axiograph-software-authoring` | Shared authoring/codegen/coverage engine. | Prefer this over CLI-only implementations. |
 | `axiograph-storage` | Process-local runtime evidence staging. | Keep it non-durable and non-authoritative; publication belongs to AxiStore. |
-| `axiograph-llm-sync` | LLM extraction, grounding, evidence/reconciliation inputs. | Keep outputs evidence-plane until review/promotion. |
+| `axiograph-llm-sync` | LLM extraction, typed evidence grounding, accepted-derived retrieval, and reconciliation inputs. | Keep model outputs evidence-plane until review/promotion; accepted-derived retrieval must require receipt-checked `MaterializedPathDb` and must not certify downstream model output. |
 | ingest crates | Boundary importers. | Lower into canonical proposals or overlays; avoid direct accepted-state mutation. Do not keep non-compiling importer crates in the active workspace. |
 | example crates | Pedagogical application packages. | Consume public library surfaces only; do not become private kernels. |
 

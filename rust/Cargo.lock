@@ -246,6 +246,7 @@ version = "0.6.0"
 dependencies = [
  "anyhow",
  "axiograph-kernel",
+ "axiograph-llm-sync",
  "axiograph-pathdb",
  "axiograph-projections",
  "axiograph-security",
@@ -353,6 +354,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axiograph-dsl",
+ "axiograph-kernel",
  "axiograph-pathdb",
  "axiograph-security",
  "axiograph-storage",
@@ -362,6 +364,7 @@ dependencies = [
  "proptest",
  "regex",
  "reqwest",
+ "roaring",
  "serde",
  "serde_json",
  "sha2 0.10.9",

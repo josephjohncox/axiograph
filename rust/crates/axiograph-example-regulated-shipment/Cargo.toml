@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 axiograph-kernel = { path = "../axiograph-kernel" }
+axiograph-llm-sync = { path = "../axiograph-llm-sync" }
 axiograph-pathdb = { path = "../axiograph-pathdb" }
 axiograph-security = { path = "../axiograph-security" }
 axiograph-store = { path = "../axiograph-store" }

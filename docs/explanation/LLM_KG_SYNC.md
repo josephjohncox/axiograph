@@ -35,6 +35,7 @@ Use existing typed services rather than inventing one-off message protocols:
 | CQ/BDD/DDD authoring | `.cq`, `semantic_competency_questions`, behavior-case tools |
 | Software coverage and codegen planning | authoring overlay tools and read-only authoring MCP |
 | Evidence from embeddings | `EmbeddingSidecarManifestV1`, `EmbeddingEvidenceOverlayV1` |
+| Accepted-derived retrieval | `accepted_grounding_context` over `MaterializedPathDb` |
 | Ontology/code deltas | proposal import, typed refinement handles, evolution previews |
 | Promotion | semantic VCS review, CQ/trust/coverage/runtime-theory gates |
 
@@ -86,6 +87,16 @@ Strong outputs require typed Axiograph checks:
 Do not collapse this distinction into one confidence number. Reports should
 surface trust class, anchors, coverage mode, unresolved refs, residual
 obligations, and next actions.
+
+Accepted-derived grounding is a source-integrity claim, not an LLM correctness
+claim. `accepted_grounding_context` accepts only a receipt-checked
+`MaterializedPathDb` and returns an output-only type bound to the accepted
+snapshot, tree, module closure, kernel/fact-log digests, exact materialization,
+query digest, truncation status, and ordered stable-id selection digest. It
+omits confidence and numeric runtime row ids. Its lexical
+selection can still be incomplete or irrelevant, and any model response remains
+untrusted until a separate typed query or certificate gate checks the claimed
+result.
 
 ## Proposal Lifecycle
 

@@ -261,8 +261,22 @@ async fn test_grounding_context_basic() {
     // Should have suggestions
     assert!(!context.suggested_queries.is_empty());
 
-    // Should have guardrails for machining topic
-    assert!(!context.active_guardrails.is_empty());
+    // Grounding must not invent a domain guardrail that was never stored.
+    assert!(context.active_guardrails.is_empty());
+
+    assert!(sync.build_grounding_context("titanium", 0).is_err());
+    assert!(sync
+        .build_grounding_context(
+            "titanium",
+            axiograph_llm_sync::grounding::MAX_GROUNDING_FACTS + 1,
+        )
+        .is_err());
+    assert!(sync
+        .build_grounding_context(
+            &"q".repeat(axiograph_llm_sync::grounding::MAX_GROUNDING_QUERY_BYTES + 1),
+            1,
+        )
+        .is_err());
 }
 
 #[tokio::test]

@@ -33,11 +33,12 @@ Last updated: 2026-04-28.
 - Implemented: LLM sync keeps “pending review” facts and conflicts.
   - Code: `rust/crates/axiograph-llm-sync/src/sync.rs`.
 - Implemented: process-local ingestion and LLM-sync state has no accepted-plane
-  mutation authority. Every current `GroundingContext` carries versioned
-  `evidence` provenance, and the public grounding plane enum intentionally has
-  no accepted/certified variant.
-- Missing: an accepted-derived grounding constructor that can be created only
-  from a verified materialization plus an authenticated accepted snapshot.
+  mutation authority. Every `GroundingContext` carries versioned `evidence`
+  provenance, and the public evidence grounding plane enum intentionally has no
+  accepted/certified variant.
+- Implemented: the separate output-only `AcceptedGroundingContext` can be
+  constructed only from a verified materialization whose receipt is bound to an
+  authenticated accepted AxiStore snapshot.
 
 ### 0.2 Certificates (implemented, but not yet everywhere)
 
@@ -107,14 +108,20 @@ Last updated: 2026-04-28.
 - W05 is a greenfield cutover: obsolete PathDB readers/writers are deleted;
   old bytes fail closed and must be rebuilt from exact accepted inputs.
 
-### 0.5 Grounding / “safe to use” (evidence labeling enforced)
+### 0.5 Grounding / “safe to use” (typed planes enforced)
 
-- Implemented: grounding uses process-local PathDB content, guardrails, and
-  schema hints and always labels the resulting context as evidence-plane.
+- Implemented: process-local PathDB and `UnifiedStorage` grounding always emits
+  `GroundingContext` with evidence-plane provenance. Retrieval and query size
+  are bounded, schema summaries use runtime or canonical schema state, and
+  guardrails come only from stored entities rather than built-in examples.
+- Implemented: `accepted_grounding_context` accepts only `MaterializedPathDb`,
+  so its output-only `AcceptedGroundingContext` is bound to an authenticated
+  AxiStore accepted snapshot, tree, module closure, kernel/fact-log digests,
+  exact materialization, query digest, truncation status, and ordered stable-id
+  selection digest. Bare PathDB, caller-supplied labels,
+  and deserialized JSON cannot construct this authority type.
   - Code: `rust/crates/axiograph-llm-sync/src/{lib,grounding,sync}.rs`
-- Missing: accepted/certified grounding. Adding it requires a separate typed
-  constructor bound to a verified AxiStore materialization and accepted
-  snapshot; callers cannot relabel current contexts as accepted.
+  - End-to-end fixture: `axiograph-example-regulated-shipment`.
 
 ---
 
@@ -164,11 +171,13 @@ Last updated: 2026-04-28.
 ### 1.4 Put “certified” on the API boundary
 
 - [x] Keep uncertified grounding explicitly non-authoritative.
-  - Every current grounding route emits versioned `evidence` provenance; there
-    is no accepted/certified enum variant. Query routes separately expose
+  - Process-local routes emit versioned `evidence` provenance. The evidence
+    plane enum has no accepted/certified variant. Query routes separately expose
     execution-only versus verified trust contracts.
-- [ ] Add an accepted-derived grounding mode only from authenticated accepted
-  snapshot and verified materialization handles.
+- [x] Add accepted-derived grounding only from authenticated accepted snapshot
+  and verified materialization handles.
+  - The accepted type is output-only, omits confidence and numeric PathDB row ids,
+    carries explicit non-claims, and cannot certify downstream LLM output.
 - [ ] Add a small “verifier service” boundary option:
   - engine returns `(answer, certificate)`,
   - verifier checks and returns `(answer, verified=true/false, explanation)`.
