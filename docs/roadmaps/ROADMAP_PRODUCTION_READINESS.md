@@ -111,9 +111,21 @@ Last updated: 2026-04-28.
 ### 0.5 Grounding / “safe to use” (typed planes enforced)
 
 - Implemented: process-local PathDB and `UnifiedStorage` grounding always emits
-  `GroundingContext` with evidence-plane provenance. Retrieval and query size
-  are bounded, schema summaries use runtime or canonical schema state, and
-  guardrails come only from stored entities rather than built-in examples.
+  `GroundingContext` with evidence-plane provenance. Each request caps query
+  bytes, deduplicated keywords, entity-row visits, returned facts, per-entity
+  attributes (128 per entity), total related-edge visits, guardrail visits,
+  schema-summary output, and total rendered string bytes (256 KiB per request).
+  Source-only and target-only adjacency indexes keep related traversal
+  proportional to the
+  selected entities' degrees. Every budget that can omit context sets
+  `truncated` and adds a deterministic `truncation_reasons` entry. Runtime type
+  and relation name collection is independently bounded by the in-memory graph;
+  for authenticated materializations each logical row class is already capped
+  by `AxpdLimits` (by default, two million entity and relation-fact rows and
+  eight million projection rows), while the emitted schema lists are capped at
+  512 names each. Canonical schema overrides
+  also cap entity types, relation types, and constraints at 512 each.
+  Guardrails come only from stored entities rather than built-in examples.
 - Implemented: `accepted_grounding_context` accepts only `MaterializedPathDb`,
   so its output-only `AcceptedGroundingContext` is bound to an authenticated
   AxiStore accepted snapshot, tree, module closure, kernel/fact-log digests,

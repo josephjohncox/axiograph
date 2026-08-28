@@ -251,6 +251,10 @@ pub struct GroundingContext {
     pub active_guardrails: Vec<GuardrailContext>,
     /// Suggested queries for follow-up
     pub suggested_queries: Vec<String>,
+    /// True when any request work or output budget can have omitted context.
+    pub truncated: bool,
+    /// Deterministic names of every budget that can have omitted context.
+    pub truncation_reasons: Vec<String>,
 }
 
 /// Authority plane for grounding derived exclusively from an authenticated
@@ -417,6 +421,7 @@ pub struct AcceptedGroundingContext {
     facts: Vec<AcceptedGroundedFact>,
     schema_context: SchemaContext,
     truncated: bool,
+    truncation_reasons: Vec<String>,
     non_claims: Vec<String>,
 }
 
@@ -425,13 +430,14 @@ impl AcceptedGroundingContext {
         provenance: AcceptedGroundingProvenanceV1,
         facts: Vec<AcceptedGroundedFact>,
         schema_context: SchemaContext,
-        truncated: bool,
+        truncation_reasons: Vec<String>,
     ) -> Self {
         Self {
             provenance,
             facts,
             schema_context,
-            truncated,
+            truncated: !truncation_reasons.is_empty(),
+            truncation_reasons,
             non_claims: vec![
                 "lexical grounding selection is not an entailment or completeness proof"
                     .to_string(),
@@ -456,6 +462,10 @@ impl AcceptedGroundingContext {
 
     pub fn truncated(&self) -> bool {
         self.truncated
+    }
+
+    pub fn truncation_reasons(&self) -> &[String] {
+        &self.truncation_reasons
     }
 
     pub fn non_claims(&self) -> &[String] {

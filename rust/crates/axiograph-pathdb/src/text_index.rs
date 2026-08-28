@@ -89,6 +89,24 @@ impl TextIndexCache {
         query_any(index, tokens)
     }
 
+    pub(crate) fn query_any_tokens_bounded(
+        &self,
+        db: &PathDB,
+        attr_key_id: StrId,
+        tokens: &[String],
+        max_visits: usize,
+    ) -> (Vec<u32>, usize, bool) {
+        if tokens.is_empty() || max_visits == 0 {
+            return (Vec::new(), 0, false);
+        }
+
+        // Always use the same entity-id traversal. Consulting a warm posting
+        // cache here would make accepted grounding depend on process-local
+        // cache history because posting visits and entity-row visits account
+        // work differently.
+        fallback_any_bounded(db, attr_key_id, tokens, max_visits)
+    }
+
     pub(crate) fn query_all_tokens(
         &self,
         db: &PathDB,
@@ -225,6 +243,42 @@ fn fallback_any(db: &PathDB, attr_key_id: StrId, tokens: &[String]) -> RoaringBi
     out
 }
 
+fn fallback_any_bounded(
+    db: &PathDB,
+    attr_key_id: StrId,
+    tokens: &[String],
+    max_visits: usize,
+) -> (Vec<u32>, usize, bool) {
+    let Some(col) = db.entities.attrs.get(&attr_key_id) else {
+        return (Vec::new(), 0, false);
+    };
+
+    let mut matches = Vec::new();
+    let mut visits = 0;
+    let entity_count = db.entities.len();
+    let mut truncated = false;
+    for entity_id in 0..entity_count {
+        if visits == max_visits {
+            truncated = true;
+            break;
+        }
+        visits += 1;
+        let entity_id = entity_id as u32;
+        let Some(&value_id) = col.get(&entity_id) else {
+            continue;
+        };
+        let matched = db
+            .interner
+            .with_lookup(value_id, |value| text_contains_any_token(value, tokens))
+            .unwrap_or(false);
+        if matched {
+            matches.push(entity_id);
+        }
+    }
+
+    (matches, visits, truncated)
+}
+
 fn fallback_all(db: &PathDB, attr_key_id: StrId, tokens: &[String]) -> RoaringBitmap {
     let Some(col) = db.entities.attrs.get(&attr_key_id) else {
         return RoaringBitmap::new();
@@ -302,6 +356,14 @@ fn tokenize_text(text: &str) -> Vec<String> {
 }
 
 fn push_token_if_interesting(tokens: &mut Vec<String>, current: &mut String) {
+    if token_is_interesting(current) {
+        tokens.push(std::mem::take(current));
+    } else {
+        current.clear();
+    }
+}
+
+fn token_is_interesting(token: &str) -> bool {
     // Ignore very short tokens (keeps the index smaller and avoids matching lots of noise),
     // but allow "id"/"ga" style tokens (use stopwords to keep common English noise down).
     const MIN_TOKEN_LEN: usize = 2;
@@ -309,10 +371,40 @@ fn push_token_if_interesting(tokens: &mut Vec<String>, current: &mut String) {
         "a", "an", "and", "as", "at", "by", "for", "in", "is", "of", "on", "or", "the", "to",
         "with",
     ];
+    token.len() >= MIN_TOKEN_LEN && !STOPWORDS.contains(&token)
+}
 
-    if current.len() >= MIN_TOKEN_LEN && !STOPWORDS.contains(&current.as_str()) {
-        tokens.push(std::mem::take(current));
-    } else {
-        current.clear();
+fn text_contains_any_token(text: &str, needles: &[String]) -> bool {
+    let mut current = String::new();
+    let mut prev_was_lower = false;
+    let matches_current = |current: &str| {
+        token_is_interesting(current) && needles.iter().any(|needle| needle == current)
+    };
+
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() {
+            if c.is_ascii_uppercase() && prev_was_lower && !current.is_empty() {
+                if matches_current(&current) {
+                    return true;
+                }
+                current.clear();
+            }
+            let lower = c.to_ascii_lowercase();
+            if current.len() < 64 {
+                current.push(lower);
+            }
+            prev_was_lower = lower.is_ascii_lowercase();
+            continue;
+        }
+
+        if !current.is_empty() {
+            if matches_current(&current) {
+                return true;
+            }
+            current.clear();
+        }
+        prev_was_lower = false;
     }
+
+    !current.is_empty() && matches_current(&current)
 }

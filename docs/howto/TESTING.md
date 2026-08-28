@@ -297,7 +297,7 @@ Cross-crate integration tests:
    finite-theory scope/coverage receipt.
 7. Publish the candidate on a review ref and materialize an exact-two-parent typed AxiStore merge.
 8. Build an immutable SQLite `.axpd` image, reopen the store, and hydrate PathDB only after receipt checks.
-9. Build accepted-derived grounding whose private provenance binds that reopened receipt, accepted snapshot, stable fact ids, and exact query digest.
+9. Build accepted-derived grounding whose private provenance binds that reopened receipt, accepted snapshot, stable ids, and exact query digest.
 10. Emit TypeDB/PathDB projections and compile/run the generated Rust behavior test.
 ```
 

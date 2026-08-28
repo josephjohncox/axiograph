@@ -26,7 +26,7 @@ use axiograph_store::*;
 use serde::{Deserialize, Serialize};
 
 pub const REGULATED_SHIPMENT_USEFULNESS_REPORT_VERSION: &str =
-    "regulated_shipment_usefulness_report_v3";
+    "regulated_shipment_usefulness_report_v4";
 const MODULE_NAME: &str = "RegulatedShipment";
 
 #[derive(Debug, Clone)]
@@ -116,8 +116,10 @@ pub struct RegulatedShipmentAcceptedGroundingEvidence {
     pub materialization_id: String,
     pub query_digest: String,
     pub selection_digest: String,
-    pub stable_fact_ids: Vec<String>,
+    pub stable_ids: Vec<String>,
     pub truncated: bool,
+    pub truncation_reasons: Vec<String>,
+    pub non_claims: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1402,13 +1404,12 @@ pub fn run_workflow(
         &AxpdLimits::default(),
     )?;
     let image = verified.image();
-    let shipment_present = image
+    let expected_shipment_key = image
         .entities
         .iter()
-        .any(|entity| entity.value == "Shipment_RX_1007");
-    if !shipment_present {
-        return Err(anyhow!("verified restart image omitted Shipment_RX_1007"));
-    }
+        .find(|entity| entity.value == "Shipment_RX_1007")
+        .map(|entity| entity.entity_key.to_string())
+        .ok_or_else(|| anyhow!("verified restart image omitted Shipment_RX_1007"))?;
     let accepted_commit_id = restarted_status
         .state
         .accepted_commit_id
@@ -1438,9 +1439,13 @@ pub fn run_workflow(
             "verified grounding accepted snapshot differs from reviewed merge"
         ));
     }
-    if accepted_grounding.facts().is_empty() {
+    if !accepted_grounding
+        .facts()
+        .iter()
+        .any(|fact| fact.stable_id() == expected_shipment_key.as_str())
+    {
         return Err(anyhow!(
-            "verified grounding omitted the accepted Shipment_RX_1007 entity"
+            "verified grounding omitted exact accepted Shipment_RX_1007 key {expected_shipment_key}"
         ));
     }
 
@@ -1475,7 +1480,7 @@ pub fn run_workflow(
             relation_fact_rows: image.relation_facts.len(),
             hydrated_entities: loaded.db().entities.len(),
             hydrated_relations: loaded.db().relations.len(),
-            shipment_rx_1007_present_after_restart: shipment_present,
+            shipment_rx_1007_present_after_restart: true,
         },
         accepted_grounding: RegulatedShipmentAcceptedGroundingEvidence {
             plane: "accepted_derived".to_string(),
@@ -1492,12 +1497,14 @@ pub fn run_workflow(
                 .provenance()
                 .selection_digest()
                 .to_string(),
-            stable_fact_ids: accepted_grounding
+            stable_ids: accepted_grounding
                 .facts()
                 .iter()
                 .map(|fact| fact.stable_id().to_string())
                 .collect(),
             truncated: accepted_grounding.truncated(),
+            truncation_reasons: accepted_grounding.truncation_reasons().to_vec(),
+            non_claims: accepted_grounding.non_claims().to_vec(),
         },
         trusted_receipt_inputs: vec![
             inputs.baseline_query_verification.display().to_string(),
@@ -1876,6 +1883,39 @@ print(json.dumps({
     }
 
     #[test]
+    fn regulated_shipment_v4_grounding_wire_schema_is_exact() {
+        assert_eq!(
+            REGULATED_SHIPMENT_USEFULNESS_REPORT_VERSION,
+            "regulated_shipment_usefulness_report_v4"
+        );
+        let evidence = RegulatedShipmentAcceptedGroundingEvidence {
+            plane: "accepted_derived".to_string(),
+            accepted_snapshot_id: "snapshot".to_string(),
+            materialization_id: "materialization".to_string(),
+            query_digest: "query".to_string(),
+            selection_digest: "selection".to_string(),
+            stable_ids: vec!["entity:key".to_string()],
+            truncated: true,
+            truncation_reasons: vec!["output_byte_limit".to_string()],
+            non_claims: vec!["lexical selection only".to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(evidence).unwrap(),
+            serde_json::json!({
+                "plane": "accepted_derived",
+                "accepted_snapshot_id": "snapshot",
+                "materialization_id": "materialization",
+                "query_digest": "query",
+                "selection_digest": "selection",
+                "stable_ids": ["entity:key"],
+                "truncated": true,
+                "truncation_reasons": ["output_byte_limit"],
+                "non_claims": ["lexical selection only"]
+            })
+        );
+    }
+
+    #[test]
     fn regulated_shipment_survives_typed_merge_materialization_and_restart() {
         let temp = tempdir().unwrap();
         let inputs = fixture_inputs(temp.path(), temp.path().join("store"));
@@ -1913,7 +1953,42 @@ print(json.dumps({
             report.accepted_grounding.materialization_id,
             report.persistence.materialization_id
         );
-        assert!(!report.accepted_grounding.stable_fact_ids.is_empty());
+        let materialization_id = report
+            .persistence
+            .materialization_id
+            .parse()
+            .expect("typed materialization identity");
+        let store = AxiStore::open(&inputs.store_dir).unwrap();
+        let verified = store
+            .open_axpd(&materialization_id, &AxpdLimits::default())
+            .unwrap();
+        let expected_shipment_key = verified
+            .image()
+            .entities
+            .iter()
+            .find(|entity| entity.value == "Shipment_RX_1007")
+            .map(|entity| entity.entity_key.to_string())
+            .expect("verified image must contain Shipment_RX_1007");
+        assert!(report
+            .accepted_grounding
+            .stable_ids
+            .contains(&expected_shipment_key));
+        assert_eq!(report.accepted_grounding.non_claims.len(), 4);
+        assert!(report
+            .accepted_grounding
+            .non_claims
+            .iter()
+            .any(|non_claim| {
+                non_claim
+                    == "lexical grounding selection is not an entailment or completeness proof"
+            }));
+        assert!(report
+            .accepted_grounding
+            .non_claims
+            .iter()
+            .any(|non_claim| {
+                non_claim == "accepted-derived source rows do not certify downstream LLM output"
+            }));
         let grounding_limit = 16_u64.to_be_bytes();
         let expected_query_digest = ObjectBlobIdV2::from_canonical_fields(&[
             b"axiograph_accepted_grounding_query_v1",
@@ -1926,7 +2001,7 @@ print(json.dumps({
         );
         let truncated_bytes = [u8::from(report.accepted_grounding.truncated)];
         let mut selection_fields =
-            Vec::with_capacity(report.accepted_grounding.stable_fact_ids.len() + 4);
+            Vec::with_capacity(report.accepted_grounding.stable_ids.len() + 4);
         selection_fields.push(b"axiograph_accepted_grounding_selection_v1".as_slice());
         selection_fields.push(expected_query_digest.as_str().as_bytes());
         selection_fields.push(report.accepted_grounding.materialization_id.as_bytes());
@@ -1934,7 +2009,7 @@ print(json.dumps({
         selection_fields.extend(
             report
                 .accepted_grounding
-                .stable_fact_ids
+                .stable_ids
                 .iter()
                 .map(String::as_bytes),
         );
@@ -1943,6 +2018,7 @@ print(json.dumps({
             ObjectBlobIdV2::from_canonical_fields(&selection_fields).to_string()
         );
         assert!(!report.accepted_grounding.truncated);
+        assert!(report.accepted_grounding.truncation_reasons.is_empty());
     }
 
     #[test]

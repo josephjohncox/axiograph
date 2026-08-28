@@ -202,9 +202,19 @@ impl StringInterner {
         self.str_to_id.get(s).map(|id| *id)
     }
 
-    /// Look up string by ID
+    /// Look up string by ID.
     pub fn lookup(&self, id: StrId) -> Option<String> {
         self.id_to_str.get(&id).map(|s| s.clone())
+    }
+
+    /// Use an interned string without cloning it.
+    ///
+    /// The callback runs while the interner shard is read-locked and must not
+    /// call an operation that mutates this interner.
+    pub fn with_lookup<R>(&self, id: StrId, use_value: impl FnOnce(&str) -> R) -> Option<R> {
+        self.id_to_str
+            .get(&id)
+            .map(|value| use_value(value.as_str()))
     }
 }
 
@@ -241,6 +251,8 @@ pub struct EntityStore {
     types: Vec<StrId>,
     /// Attribute columns: attr_name -> (entity_id -> value)
     attrs: HashMap<StrId, HashMap<u32, StrId>>,
+    /// Entity-local attribute rows used by degree-bounded traversal.
+    entity_attrs: Vec<Vec<(StrId, StrId)>>,
     /// Type index: type_id -> bitmap of entity IDs
     type_index: HashMap<StrId, RoaringBitmap>,
     /// Next entity ID
@@ -275,13 +287,24 @@ impl EntityStore {
         // Update type index
         self.type_index.entry(type_id).or_default().insert(id);
 
-        // Store attributes
+        // Store attributes in both columnar and entity-local indexes. Duplicate
+        // names retain the last value, matching the columnar representation.
+        let mut entity_attrs = Vec::new();
         for (attr_name, attr_value) in attrs {
             self.attrs
                 .entry(attr_name)
                 .or_default()
                 .insert(id, attr_value);
+            if let Some((_, stored_value)) = entity_attrs
+                .iter_mut()
+                .find(|(stored_name, _)| *stored_name == attr_name)
+            {
+                *stored_value = attr_value;
+            } else {
+                entity_attrs.push((attr_name, attr_value));
+            }
         }
+        self.entity_attrs.push(entity_attrs);
 
         id
     }
@@ -299,6 +322,30 @@ impl EntityStore {
     /// Get attribute value
     pub fn get_attr(&self, entity_id: u32, attr_name: StrId) -> Option<StrId> {
         self.attrs.get(&attr_name)?.get(&entity_id).copied()
+    }
+
+    /// Get one entity's attributes without scanning unrelated attribute columns.
+    pub fn attrs_for_entity(&self, entity_id: u32) -> Option<&[(StrId, StrId)]> {
+        self.entity_attrs.get(entity_id as usize).map(Vec::as_slice)
+    }
+
+    fn upsert_attr(&mut self, entity_id: u32, attr_name: StrId, attr_value: StrId) -> bool {
+        let Some(entity_attrs) = self.entity_attrs.get_mut(entity_id as usize) else {
+            return false;
+        };
+        self.attrs
+            .entry(attr_name)
+            .or_default()
+            .insert(entity_id, attr_value);
+        if let Some((_, stored_value)) = entity_attrs
+            .iter_mut()
+            .find(|(stored_name, _)| *stored_name == attr_name)
+        {
+            *stored_value = attr_value;
+        } else {
+            entity_attrs.push((attr_name, attr_value));
+        }
+        true
     }
 
     /// Find all entities where `attr_name == value`.
@@ -339,6 +386,10 @@ pub struct RelationStore {
     forward_index: HashMap<(u32, StrId), Vec<u32>>,
     /// Backward index: (target, rel_type) -> relation IDs
     backward_index: HashMap<(u32, StrId), Vec<u32>>,
+    /// Source-only adjacency index used by bounded extension-layer traversal.
+    outgoing_index: HashMap<u32, Vec<u32>>,
+    /// Target-only adjacency index used by bounded extension-layer traversal.
+    incoming_index: HashMap<u32, Vec<u32>>,
     /// Type index: rel_type -> relation IDs
     type_index: HashMap<StrId, RoaringBitmap>,
 }
@@ -380,6 +431,8 @@ impl RelationStore {
             .or_default()
             .push(id);
 
+        self.outgoing_index.entry(rel.source).or_default().push(id);
+        self.incoming_index.entry(rel.target).or_default().push(id);
         self.type_index.entry(rel.rel_type).or_default().insert(id);
 
         self.relations.push(rel);
@@ -398,35 +451,44 @@ impl RelationStore {
             .unwrap_or_default()
     }
 
-    /// Get outgoing relations from source (any type).
-    ///
-    /// This is primarily intended for lightweight tooling (FFI, debugging).
-    /// Performance-sensitive callers should use `outgoing(source, rel_type)` or
-    /// a query plan that fixes `rel_type`.
-    pub fn outgoing_any(&self, source: u32) -> Vec<&Relation> {
-        let mut out = Vec::new();
-        for ((src, _), ids) in &self.forward_index {
-            if *src != source {
-                continue;
-            }
-            out.extend(ids.iter().filter_map(|&id| self.relations.get(id as usize)));
-        }
-        out
+    /// Iterate outgoing relations from `source` without scanning unrelated
+    /// relation types or sources. Relations retain insertion order.
+    pub fn outgoing_any_iter(&self, source: u32) -> impl Iterator<Item = &Relation> {
+        self.outgoing_index
+            .get(&source)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| self.relations.get(id as usize))
     }
 
-    /// Get incoming relations to target (any type).
-    ///
-    /// This is primarily intended for lightweight tooling (REPL, debugging).
-    /// Performance-sensitive callers should fix `rel_type` and use `incoming(...)`.
+    /// Number of outgoing relations from `source` across all relation types.
+    pub fn outgoing_any_len(&self, source: u32) -> usize {
+        self.outgoing_index.get(&source).map_or(0, Vec::len)
+    }
+
+    /// Collect outgoing relations from `source` across all relation types.
+    pub fn outgoing_any(&self, source: u32) -> Vec<&Relation> {
+        self.outgoing_any_iter(source).collect()
+    }
+
+    /// Iterate incoming relations to `target` without scanning unrelated
+    /// relation types or targets. Relations retain insertion order.
+    pub fn incoming_any_iter(&self, target: u32) -> impl Iterator<Item = &Relation> {
+        self.incoming_index
+            .get(&target)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| self.relations.get(id as usize))
+    }
+
+    /// Number of incoming relations to `target` across all relation types.
+    pub fn incoming_any_len(&self, target: u32) -> usize {
+        self.incoming_index.get(&target).map_or(0, Vec::len)
+    }
+
+    /// Collect incoming relations to `target` across all relation types.
     pub fn incoming_any(&self, target: u32) -> Vec<&Relation> {
-        let mut out = Vec::new();
-        for ((dst, _), ids) in &self.backward_index {
-            if *dst != target {
-                continue;
-            }
-            out.extend(ids.iter().filter_map(|&id| self.relations.get(id as usize)));
-        }
-        out
+        self.incoming_any_iter(target).collect()
     }
 
     /// Get incoming relations to target with given type
@@ -1203,11 +1265,9 @@ impl PathDB {
 
         let key_id = self.interner.intern(key);
         let value_id = self.interner.intern(value);
-        self.entities
-            .attrs
-            .entry(key_id)
-            .or_default()
-            .insert(entity_id, value_id);
+        if !self.entities.upsert_attr(entity_id, key_id, value_id) {
+            return Err(anyhow::anyhow!("unknown entity id {entity_id}"));
+        }
         Ok(())
     }
 
@@ -1348,6 +1408,47 @@ impl PathDB {
         self.entities.by_type(type_id)
     }
 
+    /// Find entities by an already interned type id.
+    pub fn find_by_type_id(&self, type_id: StrId) -> Option<&RoaringBitmap> {
+        self.entities.by_type(type_id)
+    }
+
+    /// Deterministic entity type ids in interner order.
+    pub fn entity_type_ids(&self) -> Vec<StrId> {
+        let mut ids = self.entities.type_index.keys().copied().collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.raw());
+        ids
+    }
+
+    /// Deterministic relation type ids in interner order.
+    pub fn relation_type_ids(&self) -> Vec<StrId> {
+        let mut ids = self
+            .relations
+            .type_index
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.raw());
+        ids
+    }
+
+    /// Return a bounded deterministic set of `(attribute, value)` ids for an
+    /// entity. The lowest interned attribute ids are retained when the entity
+    /// has more than `limit` attributes.
+    pub fn entity_attr_ids_bounded(
+        &self,
+        entity_id: u32,
+        limit: usize,
+    ) -> (Vec<(StrId, StrId)>, bool) {
+        let Some(entity_attrs) = self.entities.attrs_for_entity(entity_id) else {
+            return (Vec::new(), false);
+        };
+        let truncated = entity_attrs.len() > limit;
+        let mut attrs = entity_attrs.iter().copied().take(limit).collect::<Vec<_>>();
+        attrs.sort_unstable_by_key(|(attribute, value)| (attribute.raw(), value.raw()));
+        (attrs, truncated)
+    }
+
     /// Deterministic entity-type names present in this derived runtime index.
     /// Includes virtual type memberships added by runtime adapters.
     pub fn entity_type_names(&self) -> Vec<String> {
@@ -1429,6 +1530,25 @@ impl PathDB {
         self.text_index.query_any_tokens(self, key_id, &tokens)
     }
 
+    /// Bounded OR-token attribute matching for extension-layer grounding.
+    ///
+    /// Returns `(ordered_entity_ids, visited_entity_rows, truncated)`.
+    /// The traversal always scans deterministic entity ids up to `max_visits`;
+    /// process-local FTS cache state never changes bounded results.
+    pub fn entities_with_attr_fts_any_bounded(
+        &self,
+        key: &str,
+        query: &str,
+        max_visits: usize,
+    ) -> (Vec<u32>, usize, bool) {
+        let Some(key_id) = self.interner.id_of(key) else {
+            return (Vec::new(), 0, false);
+        };
+        let tokens = text_index::tokenize_query(query);
+        self.text_index
+            .query_any_tokens_bounded(self, key_id, &tokens, max_visits)
+    }
+
     /// Find entities where `attr(key)` is within a Levenshtein distance of
     /// `max_dist` from `needle` (case-insensitive).
     ///
@@ -1474,16 +1594,14 @@ impl PathDB {
         let entity_type = self.interner.lookup(type_id)?;
 
         let mut attrs: HashMap<String, String> = HashMap::new();
-        for (attr_name_id, col) in &self.entities.attrs {
-            if let Some(value_id) = col.get(&entity_id) {
-                let Some(name) = self.interner.lookup(*attr_name_id) else {
-                    continue;
-                };
-                let Some(value) = self.interner.lookup(*value_id) else {
-                    continue;
-                };
-                attrs.insert(name, value);
-            }
+        for &(attr_name_id, value_id) in self.entities.attrs_for_entity(entity_id)? {
+            let Some(name) = self.interner.lookup(attr_name_id) else {
+                continue;
+            };
+            let Some(value) = self.interner.lookup(value_id) else {
+                continue;
+            };
+            attrs.insert(name, value);
         }
 
         Some(EntityView {
@@ -2615,6 +2733,79 @@ impl PathDB {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_fts_is_cache_state_independent() {
+        let mut db = PathDB::new();
+        for ordinal in 0..20_000 {
+            let name = if ordinal == 19_999 {
+                "Needle"
+            } else {
+                "Unrelated"
+            };
+            db.add_entity("Node", vec![("name", name)]);
+        }
+
+        let cold = db.entities_with_attr_fts_any_bounded("name", "needle", 16_384);
+        assert_eq!(cold, (Vec::new(), 16_384, true));
+
+        assert_eq!(db.entities_with_attr_fts_any("name", "needle").len(), 1);
+        let warm = db.entities_with_attr_fts_any_bounded("name", "needle", 16_384);
+        assert_eq!(warm, cold);
+    }
+
+    #[test]
+    fn any_adjacency_is_degree_bounded() {
+        let mut db = PathDB::new();
+        let selected = db.add_entity("Node", vec![]);
+        let selected_target = db.add_entity("Node", vec![]);
+        db.add_relation("selected", selected, selected_target, 1.0, vec![]);
+
+        for ordinal in 0..4_096 {
+            let source = db.add_entity("Unrelated", vec![("ordinal", &ordinal.to_string())]);
+            let target = db.add_entity("Unrelated", vec![]);
+            db.add_relation("unrelated", source, target, 1.0, vec![]);
+        }
+
+        assert_eq!(db.relations.outgoing_any_len(selected), 1);
+        assert_eq!(db.relations.incoming_any_len(selected_target), 1);
+        assert_eq!(db.relations.outgoing_index[&selected].len(), 1);
+        assert_eq!(db.relations.incoming_index[&selected_target].len(), 1);
+        assert_eq!(db.relations.outgoing_any_iter(selected).count(), 1);
+        assert_eq!(db.relations.incoming_any_iter(selected_target).count(), 1);
+    }
+
+    #[test]
+    fn entity_attributes_are_degree_bounded() {
+        let mut db = PathDB::new();
+        let source_attrs = (0..256)
+            .map(|ordinal| (format!("attribute_{ordinal:03}"), ordinal.to_string()))
+            .collect::<Vec<_>>();
+        let source_attr_refs = source_attrs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        let selected = db.add_entity("Selected", source_attr_refs);
+
+        for ordinal in 0..4_096 {
+            let key = format!("unrelated_attribute_{ordinal}");
+            let value = ordinal.to_string();
+            db.add_entity("Unrelated", vec![(key.as_str(), value.as_str())]);
+        }
+
+        let (attrs, truncated) = db.entity_attr_ids_bounded(selected, 8);
+        assert_eq!(attrs.len(), 8);
+        assert!(truncated);
+        assert_eq!(db.entities.attrs_for_entity(selected).unwrap().len(), 256);
+
+        db.upsert_entity_attr(selected, "attribute_000", "updated")
+            .unwrap();
+        assert_eq!(
+            db.get_entity(selected).unwrap().attrs["attribute_000"],
+            "updated"
+        );
+        assert_eq!(db.entities.attrs_for_entity(selected).unwrap().len(), 256);
+    }
 
     #[test]
     fn test_basic_operations() {

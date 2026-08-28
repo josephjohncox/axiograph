@@ -665,16 +665,17 @@ impl SyncManager {
         max_facts: usize,
     ) -> anyhow::Result<GroundingContext> {
         let db = self.storage.pathdb();
-        let mut context = crate::grounding::evidence_grounding_context(&db, query, max_facts)?;
+        let schema_module = self.storage.schema();
+        let mut context = crate::grounding::evidence_grounding_context_with_schema(
+            &db,
+            query,
+            max_facts,
+            &schema_module.entity_types,
+            &schema_module.relation_types,
+            &schema_module.constraints,
+        )?;
         context.provenance =
             GroundingProvenanceV1::evidence("unified_storage_process_local_evidence");
-
-        let schema_module = self.storage.schema();
-        context.schema_context = Some(SchemaContext {
-            entity_types: schema_module.entity_types.clone(),
-            relation_types: schema_module.relation_types.clone(),
-            constraints: schema_module.constraints.clone(),
-        });
         Ok(context)
     }
 

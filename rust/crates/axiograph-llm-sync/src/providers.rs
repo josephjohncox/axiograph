@@ -298,6 +298,8 @@ mod tests {
                     schema_context: None,
                     active_guardrails: vec![],
                     suggested_queries: vec![],
+                    truncated: false,
+                    truncation_reasons: vec![],
                 },
             )
             .await
